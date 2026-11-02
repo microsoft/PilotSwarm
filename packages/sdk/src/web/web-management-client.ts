@@ -344,12 +344,14 @@ export class WebPilotSwarmManagementClient {
     }
 
     /**
-     * Workflow v2: a person's workflow command (INACTIVE): direct mode only
-     * until its Web API operation exists; the workflow's parent agent changes
-     * a workflow with its update_workflow tool.
+     * Workflow v2: a person's command to a workflow session (updateWorkflow,
+     * session:manage; INACTIVE: the deployment answers 501
+     * WORKFLOW_COMMANDS_UNAVAILABLE unless it enables it). The server stamps
+     * the caller as the actor; `options` is accepted for the direct client's
+     * signature and not sent.
      */
-    updateWorkflow(): never {
-        throw webModeUnsupported("updateWorkflow", "a person's workflow command has no Web API operation yet (inactive, direct mode only)");
+    async updateWorkflow(sessionId: string, command: Record<string, unknown>, _options: Record<string, unknown> = {}): Promise<any> {
+        return this._api.call("updateWorkflow", { sessionId, command });
     }
 
     /** Session workspaces: set or clear the workspace (external flow). */

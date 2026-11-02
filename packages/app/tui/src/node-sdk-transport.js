@@ -517,7 +517,7 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
@@ -553,6 +553,8 @@ export class NodeSdkTransport {
             workspaceFiles: workspaceFilesConfigFromEnv(),
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
+            // Workflow v2 (INACTIVE; test-only): a person's workflow commands. Unset, they answer 501.
+            ...(workflowCommands ? { workflowCommands } : {}),
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -1124,6 +1126,20 @@ export class NodeSdkTransport {
     /** Workflow v2: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read). */
     async readWorkflow(sessionId, options = {}) {
         return this.mgmt.readWorkflow(sessionId, options);
+    }
+
+    /**
+     * Workflow v2: a person's command to a workflow session (updateWorkflow;
+     * INACTIVE unless this transport was created with workflowCommands).
+     * Authorization is the caller's (the portal gates session:manage);
+     * `options.principal` is the signed-in caller, recorded as the actor. In
+     * the TUI's direct mode it is the TUI's own user, when one is known.
+     */
+    async updateWorkflow(sessionId, command, options = {}) {
+        // The portal always names the caller (null: no signed-in user); the TUI names none, and its own user is the caller.
+        const principal = Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
+            : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
+        return this.mgmt.updateWorkflow(sessionId, command, { principal });
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {

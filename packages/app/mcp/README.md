@@ -408,6 +408,12 @@ pending, not refused. `stopped` is true only for `stopped` or `stop_forced`.
 | `list_session_groups` | List YOUR groups (private per-user organization); `include_sessions` adds the sessions you placed in each |
 | `manage_session_group` | `action: create \| update \| place \| assign \| move \| cancel \| complete \| delete` — `place` puts sessions you can read into your own groups (assign/move are deprecated aliases; cancel/complete are deprecated) |
 
+### Workflows *(inactive; registered only with the test-only `workflowCommands` option)*
+
+| Tool | Description |
+|------|-------------|
+| `update_workflow` | A person's command to a version 2 workflow session: the `update_workflow` agent tool's `operation`, `operation_id` and arguments (`POST /api/v1/sessions/:sessionId/workflow/commands` in web mode). A workflow inside a workflow agent state's subtree takes only `pause`, `stop` and `cancel` |
+
 ### Artifacts *(web)*
 
 | Tool | Description |

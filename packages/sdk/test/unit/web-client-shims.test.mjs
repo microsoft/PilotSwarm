@@ -41,6 +41,9 @@ const USER = { provider: "entra", subject: "u1" };
  * them at request time, so the shape here is what the shim itself emits.
  */
 const SHIM_CASES = [
+    // — workflow v2: a person's command (the server stamps the actor; options are not sent) —
+    { call: (c) => c.updateWorkflow("wf-1", { operation: "pause", operation_id: "p-1" }, { principal: USER }), op: "updateWorkflow",
+        params: { sessionId: "wf-1", command: { operation: "pause", operation_id: "p-1" } } },
     // — facts —
     { call: (c) => c.readFacts({ keyPattern: "k*", scope: "shared" }), op: "readFacts", params: { keyPattern: "k*", scope: "shared" } },
     { call: (c) => c.storeFact({ key: "k", value: 1 }), op: "storeFact", params: { input: { key: "k", value: 1 } } },
@@ -121,8 +124,6 @@ test("direct-only plumbing refuses loudly with WEB_MODE_UNSUPPORTED", () => {
         "listGroupSessions",
         "normalizeModel",
         "getModelCredentialStatus",
-        // A person's workflow command (INACTIVE) has no Web API operation yet.
-        "updateWorkflow",
     ]) {
         assert.throws(
             () => client[method](),

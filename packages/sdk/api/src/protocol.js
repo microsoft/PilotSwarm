@@ -67,6 +67,7 @@ export const OPERATIONS = [
     { name: "createSession", access: "session:create", method: "POST", path: "/sessions", params: { model: body(), reasoningEffort: body(), contextTier: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder." },
     { name: "createWorkflowSession", access: "session:create", method: "POST", path: "/sessions/workflow", params: { yaml: body(), inputs: body(), groupId: body(), visibility: body() }, summary: "Create a workflow session from Workflow YAML (kind: Workflow). It runs the workflow graph instead of a conversation; inputs is a JSON object checked against the workflow's inputs schema and read by its states as context.inputs." },
     { name: "readWorkflow", access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow", params: { sessionId: path("sessionId"), runId: query("string", { strict: true }) }, summary: "Read a version 2 workflow session without changing it: definition state, current revision and its diagnostics (no YAML), graph, runs, and one run (runId, default the live run) with its node executions, typed input inbox and outbox. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow, RUN_NOT_FOUND for a run that is not one of its runs." },
+    { name: "updateWorkflow", access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow/commands", params: { sessionId: path("sessionId"), command: body() }, summary: "A person's command to a version 2 workflow session (INACTIVE: 501 WORKFLOW_COMMANDS_UNAVAILABLE unless the deployment enables it): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). 404 WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow; refusals carry their status and details." },
     { name: "createSessionForAgent", access: "session:create", method: "POST", path: "/sessions/for-agent", params: { agentName: body(), model: body(), reasoningEffort: body(), contextTier: body(), title: body(), splash: body(), splashMobile: body(), initialPrompt: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session bound to a named agent. workspace { root, folder? } sets its working folder." },
     { name: "getSession", access: "session:read", method: "GET", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get one session view (live orchestration status)." },
     { name: "deleteSession", access: "session:destroy", method: "DELETE", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Cancel and soft-delete a session." },
@@ -389,7 +390,7 @@ export function artifactDownloadPath(sessionId, filename) {
 }
 
 export class ApiError extends Error {
-    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined } = {}) {
+    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined, etag = undefined, size = undefined, details = undefined } = {}) {
         super(message);
         this.name = "ApiError";
         this.code = code;
@@ -399,5 +400,7 @@ export class ApiError extends Error {
         // and a too-large file's size.
         if (etag === null || typeof etag === "string") this.etag = etag;
         if (Number.isFinite(size)) this.size = size;
+        // A refusal's details the server marked safe to show (a workflow command's field errors).
+        if (details !== undefined && details !== null) this.details = details;
     }
 }

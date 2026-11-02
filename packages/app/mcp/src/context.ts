@@ -85,6 +85,11 @@ interface ServerContextBase {
     /** Agent-package management tool tier ("off" | "read" | "full"). */
     agentMgmt: "off" | "read" | "full";
     /**
+     * Workflow v2 (INACTIVE; test-only): register update_workflow, a person's
+     * workflow command. False (the default): the tool is absent.
+     */
+    workflowCommands?: boolean;
+    /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
      * from /auth/me and /bootstrap; direct mode is privileged (`admin`) with
@@ -134,6 +139,13 @@ export interface CreateContextOptions {
      * default) adds publish/sync/scope/pin/delete.
      */
     agentMgmt?: "off" | "read" | "full";
+    /**
+     * Workflow v2 (INACTIVE; test-only): register update_workflow. In direct
+     * mode the management client then takes a person's workflow commands
+     * (`requests: true` when the workers run controller 1.9.0); in web mode the
+     * deployment decides (501 unless it enables them).
+     */
+    workflowCommands?: { requests?: boolean } | null;
 }
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
@@ -224,7 +236,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         ctxRole = "admin";
         client = new PilotSwarmClient({ store: opts.store });
         await client.start();
-        mgmt = new PilotSwarmManagementClient({ store: opts.store });
+        mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands ? { workflowCommands: opts.workflowCommands } : {}) });
         await mgmt.start();
 
         // Enhanced facts + graph provisioning from HORIZON_* env — the same
@@ -340,6 +352,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         })(),
         role: ctxRole,
         authz: ctxAuthz,
+        ...(opts.workflowCommands ? { workflowCommands: true } : {}),
         webMode: Boolean(opts.apiUrl),
         models,
         skills,

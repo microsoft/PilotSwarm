@@ -250,6 +250,11 @@ export class HttpApiTransport {
         return this.api.call("readWorkflow", { sessionId, ...(runId === undefined || runId === null ? {} : { runId }) });
     }
 
+    /** Workflow v2: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
+    async updateWorkflow(sessionId, command) {
+        return this.api.call("updateWorkflow", { sessionId, command });
+    }
+
     async setSessionWorkspace(sessionId, input = {}, options = {}) {
         return this.api.call("setSessionWorkspace", { sessionId, expectedRevision: input.expectedRevision, workspace: input.workspace ?? null, options });
     }

@@ -118,6 +118,10 @@ function requireUserPrincipal(authContext, methodName) {
     return principal;
 }
 
+// New operations with no pre-model behavior to preserve: their session gate is
+// enforced even during the ownership dark-launch, as session:share's is.
+const ENFORCED_NEW_METHODS = new Set(["updateWorkflow"]);
+
 // Break-glass audit coverage: every non-read session op, plus the reads that
 // expose content (transcript, artifacts, history). Status polling and list
 // metadata are excluded to keep the audit stream signal-dense.
@@ -179,8 +183,10 @@ function providerNames(raw) {
 }
 
 export class PortalRuntime {
-    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
-        this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
+    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
+        // workflowCommands (Workflow v2, INACTIVE; test-only): a person's workflow commands. Unset, updateWorkflow answers 501.
+        this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser,
+            ...(workflowCommands ? { workflowCommands } : {}) });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;
@@ -374,7 +380,9 @@ export class PortalRuntime {
         // flip to enforce (adversarial review HIGH-2).
         // session:files (the Workspace pane) is new as well: the session's
         // owner only, whatever the ownership switch says.
-        const effectiveEnforce = this.authz.enforce || accessClass === "session:share" || accessClass === "session:files";
+        // updateWorkflow (a person's workflow command) is new too: owner or admin, whatever the switch says.
+        const effectiveEnforce = this.authz.enforce || accessClass === "session:share" || accessClass === "session:files"
+            || ENFORCED_NEW_METHODS.has(method);
         const hasSessionId = sessionId != null && String(sessionId).trim() !== "";
 
         // HIGH-1: a supplied-but-unresolvable id (missing OR soft-deleted —
@@ -728,6 +736,12 @@ export class PortalRuntime {
             case "readWorkflow":
                 return this.transport.readWorkflow(safeParams.sessionId,
                     safeParams.runId === undefined || safeParams.runId === null ? {} : { runId: safeParams.runId });
+            // Workflow v2 (INACTIVE unless the deployment enables it): a person's command, after the session:manage gate
+            // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
+            // never a field of the command; the command is passed as it is, and the adapter refuses what is not one.
+            case "updateWorkflow":
+                return this.transport.updateWorkflow(safeParams.sessionId, safeParams.command,
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });
             // Session workspaces: the wait for the answer holds this request,
             // so the caller's timeout is bounded like the other long waits.
             case "setSessionWorkspace":

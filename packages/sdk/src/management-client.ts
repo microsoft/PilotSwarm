@@ -1940,8 +1940,8 @@ export class PilotSwarmManagementClient {
             Object.assign(new Error(message), { code, status, ...(details !== undefined ? { details } : {}) });
         const enabled = this.config.workflowCommands;
         if (!enabled) {
-            throw failure("WORKFLOW_COMMANDS_UNAVAILABLE", 501, "This deployment does not take workflow commands from people yet; "
-                + "the workflow's parent agent changes it with its update_workflow tool.");
+            throw Object.assign(failure("WORKFLOW_COMMANDS_UNAVAILABLE", 501, "This deployment does not take workflow commands from people yet; "
+                + "the workflow's parent agent changes it with its update_workflow tool."), { expose: true });
         }
         const session = await this._catalog!.getSession(sessionId);
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
@@ -1956,7 +1956,12 @@ export class PilotSwarmManagementClient {
         try {
             return await updateWorkflowForPerson(command, { host, workflowSessionId: sessionId, actor });
         } catch (error) {
-            if (error instanceof WorkflowStoreError) throw failure(error.code, workflowCommandStatus(error.code), error.message, error.details);
+            // The details of a refusal (field errors, the conflicting revision, the controlling agent) are safe to show over the
+            // Web API (exposeDetails), as its message is.
+            if (error instanceof WorkflowStoreError) {
+                throw Object.assign(failure(error.code, workflowCommandStatus(error.code), error.message, error.details), { exposeDetails: true });
+            }
+            if ((error as { code?: unknown })?.code === "WORKFLOW_HUMAN_INPUT_DENIED") throw Object.assign(error as Error, { exposeDetails: true });
             throw error;
         }
     }

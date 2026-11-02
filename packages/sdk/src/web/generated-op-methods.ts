@@ -180,6 +180,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "updateMyProviderCredential",
     "updateSessionGroup",
     "updateSharedProviderCredential",
+    "updateWorkflow",
     "uploadAgentPackage",
     "uploadArtifact",
     "upsertGraphEdge",
@@ -1747,6 +1748,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * A person's command to a version 2 workflow session (INACTIVE: 501 WORKFLOW_COMMANDS_UNAVAILABLE unless the deployment enables it): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). 404 WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow; refusals carry their status and details.
+     * @remarks `POST /sessions/:sessionId/workflow/commands` — access: `session:manage`
+     */
+    updateWorkflow(params: {
+        sessionId: string;
+        command?: any;
+    }): Promise<any>;
+
+    /**
      * Publish a package from inline files ([{path, contentBase64}], ≤ 2 MB total); validates, canonically packs, and registers as the caller.
      * @remarks `POST /agent-packages/upload` — access: `authed`
      */
@@ -1994,6 +2004,7 @@ export function createManagementOps(
         updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),
+        updateWorkflow: (params: Record<string, unknown> = {}) => callOp("updateWorkflow", params),
         uploadAgentPackage: (params: Record<string, unknown> = {}) => callOp("uploadAgentPackage", params),
         uploadArtifact: (params: Record<string, unknown> = {}) => callOp("uploadArtifact", params),
         upsertGraphEdge: (params: Record<string, unknown> = {}) => callOp("upsertGraphEdge", params),

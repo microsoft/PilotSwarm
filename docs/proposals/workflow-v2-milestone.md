@@ -470,7 +470,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | Agent tools (a request's responder, an agent state's child) | — | `respond_session_request`, `complete_workflow_node` (in-process, bound by the host) |
 | REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, portal | the same `readWorkflowV2View` | nothing |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
-| Management client (direct mode; INACTIVE, test-only option `workflowCommands`) | — | `updateWorkflow`: a person's `update_workflow` command (below) |
+| REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -508,9 +508,13 @@ with the test-only option `workflowCommands`; otherwise it answers 501
 `WORKFLOW_COMMANDS_UNAVAILABLE` and changes nothing.
 
 - **Who.** The caller's access to the session is decided before the
-  command runs (the portal's gate, in the next slice; the direct client is
-  trusted). The recorded actor is the caller's principal (a user), or the
-  client itself (system) without one; a command never names its actor.
+  command runs: the portal's `session:manage` gate (owner or admin, with
+  not-found privacy), enforced even while the ownership switch is off, as
+  `session:share` is (a new capability); an admin outside the owner's
+  visibility is audited as break-glass; the direct client is trusted. The
+  recorded actor is the signed-in caller (a user), the TUI's own user in its
+  direct mode, or the client itself (system) without one; a command never
+  names its actor.
 - **What.** The command targets the session it is sent to (a `workflow_id`
   naming another is refused), which must be a version 2 workflow (404
   otherwise). `recover` stays the agent's. A refusal carries its code and
@@ -524,17 +528,26 @@ with the test-only option `workflowCommands`; otherwise it answers 501
   runs or tests, `resume` included) is refused with 403
   `WORKFLOW_HUMAN_INPUT_DENIED`, naming its controlling agent. The workflow
   container above it takes every command.
-- **Not over the Web API yet.** The web management client refuses
-  `updateWorkflow` with `WEB_MODE_UNSUPPORTED`.
+- **Surfaces.** `POST /api/v1/sessions/:sessionId/workflow/commands` with
+  `{ command }` (protocol operation `updateWorkflow`); the web management
+  client and `HttpApiTransport` send it; the TUI's direct transport and the
+  portal's transport run it through the management client; the MCP server
+  registers `update_workflow` only with its test-only `workflowCommands`
+  option. Over HTTP a refusal keeps its code and status, its `details` when
+  the adapter marks them safe to show (`exposeDetails`: field errors, the
+  conflicting state, the controlling agent), and the inactive 501's message;
+  both HTTP-backed clients carry the details back on the error.
+- **Inactive.** A deployment enables it only through the test-only
+  `workflowCommands` option of the portal runtime, the TUI transport, the
+  management client or the MCP server; none is set anywhere in production.
 
 Unfulfilled requirements (open, not waived; R26):
 
-- **Human command routes over REST/MCP** (`updateWorkflow`, test runs,
-  typed input): the SDK command exists (above), but no REST operation, Web
-  client method, MCP tool or TUI command carries it yet, so the human REST
-  surface stays read-only. Design 04 proposes
-  `/sessions/{id}/workflow/commands`, `/test-runs` and `/inbox`; the path
-  names are API review item D11.
+- **Human test-run and typed-input routes** (`/test-runs`, `/inbox`): a
+  person's test operations travel as `updateWorkflow` commands (above);
+  design 04's separate `/test-runs` and `/inbox` paths, and the final path
+  names, are API review item D11. No portal or TUI screen sends a command
+  yet: the UI stays read-only.
 - **Response and completion routes** (REST/MCP for `respond_session_request`
   and `complete_workflow_node`): design 04 requires scoped, service-issued
   invocation credentials (caller, audience, session/run/node binding, expiry,
