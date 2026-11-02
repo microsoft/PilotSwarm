@@ -1,4 +1,4 @@
-import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, checkRemoteEndpoint, computeBindingKey, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, checkRemoteEndpoint, computeBindingKey, computeSharesWorkerFiles, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
 import { computeCopyLimits, planComputeCopy, type ComputeCopyLimits, type ComputeCopyRefusal } from "./compute-assets.js";
 import { COMPUTE_CONTROL_COPY_TIMEOUT_MS, ComputeControlLink, type ComputeCallerStatement } from "./compute-control.js";
 import { computeCopyName, mcpOriginKey, packageMcpFolders, packageMcpFoldersForAgents, remoteMcpCustomAgents, remoteMcpServers, type McpServerOrigin } from "./compute-mcp.js";
@@ -2827,7 +2827,16 @@ export class SessionManager {
                 // shell may be using the folder.
                 const stale = this._heldWithHandle(sessionId, warm).filter((folder) => !inUse(folder));
                 if (stale.length > 0) {
-                    const busy = warm ? await warm.activeBackgroundTasks().catch(() => []) : [];
+                    // Compute providers: a remote host that will not say what
+                    // is running leaves the session busy, so the folder stays
+                    // held rather than being pulled from under a shell on the
+                    // host (the conservative answer, as in the busy guards).
+                    const busy = warm
+                        ? await warm.activeBackgroundTasks().catch(
+                            (error: any) => warm.runsRemotely()
+                                ? [{ id: "unknown", type: `unreadable: ${String(error?.message ?? error)}` }]
+                                : [])
+                        : [];
                     if (busy.length === 0) {
                         await this.releaseWorkspaceFolders(sessionId, stale, {
                             reason: "workspace_changed",
@@ -2974,6 +2983,19 @@ export class SessionManager {
                 message: "this session's tree runs its agent on a compute host, so this worker will not run it here",
             });
         }
+        // Compute providers: carried on the session's own configuration for
+        // this turn, so the parts of it that must not treat a process id, a
+        // path or a file on the host as one of this machine's own can see
+        // where the runtime is without asking the manager.
+        config.computeRuntime = remoteEndpoint && compute
+            ? {
+                targetName: compute.target.name,
+                hostId: this.computeHosts.get(sessionId)?.host.id ?? "",
+                hostIncarnation: this.computeHosts.get(sessionId)?.host.incarnation ?? "",
+                files: compute.provider.capabilities?.files ?? "none",
+                sharesWorkerFiles: computeSharesWorkerFiles(compute.provider.capabilities?.files),
+            }
+            : undefined;
         if (remoteEndpoint && !resolvedProviderConfig.provider) {
             // GitHub Copilot models authenticate inside the runtime with a
             // GitHub token. A remote runtime must not hold the worker's, and

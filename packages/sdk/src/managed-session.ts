@@ -579,11 +579,22 @@ function acknowledgeTurnBoundary(action: string): string {
  * the pid it keeps may since belong to another process (process-tree.ts).
  * The busy check and the release use this one test, so a finished shell
  * neither blocks a workspace change nor gets another process killed.
+ *
+ * Compute providers: `local` is false when the runtime runs somewhere the
+ * worker did not start it. The numbers in that task list are then process
+ * ids on another machine, and this machine's process table says nothing
+ * about them: a missing one would hide a shell that is still running, and
+ * a matching one would belong to some unrelated process here. So a remote
+ * task is taken at the runtime's word — it runs while the runtime says it
+ * runs, which is the conservative answer for a busy check.
  */
-function backgroundTaskRuns(task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }): boolean {
+function backgroundTaskRuns(
+    task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown },
+    local = true,
+): boolean {
     if (task.type !== "shell" && task.type !== "agent") return false;
     if (task.status !== "running" && task.status !== "idle") return false;
-    if (task.type === "shell" && typeof task.pid === "number") return taskProcessAlive(task.pid, task.startedAt);
+    if (local && task.type === "shell" && typeof task.pid === "number") return taskProcessAlive(task.pid, task.startedAt);
     return true;
 }
 
@@ -909,9 +920,13 @@ export class ManagedSession {
      * Refused while one runs, as set_session_workspace is (WORKSPACE_BUSY).
      */
     private async busyForLoad(): Promise<string | null> {
-        const busy = await this.activeBackgroundTasks().catch(() => []);
-        if (busy.length === 0) return null;
-        return `WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
+        const { tasks, unknown } = await this.busyBackgroundTasks();
+        if (unknown) {
+            return `WORKSPACE_BUSY: whether background tasks are still running could not be established — ${unknown}. `
+                + "Loading or unloading restarts the session's tools at the next turn, which would stop them. Try again once the host answers.";
+        }
+        if (tasks.length === 0) return null;
+        return `WORKSPACE_BUSY: ${tasks.length} background task(s) are running (${tasks.map((t) => `${t.type} ${t.id}`).join(", ")}). `
             + "Loading or unloading restarts the session's tools at the next turn, which would stop them. Wait for them or stop them first.";
     }
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
@@ -3090,7 +3105,11 @@ export class ManagedSession {
             // A running shell may be using a folder this call takes
             // away; adding extra folders takes nothing away.
             if (merged.changesWorkingFolder || merged.removed.length > 0 || merged.replaced.length > 0) {
-                const busy = await this.activeBackgroundTasks().catch(() => []);
+                const { tasks: busy, unknown } = await this.busyBackgroundTasks();
+                if (unknown) {
+                    return refuse("Error: WORKSPACE_BUSY: whether background tasks are still running could not be established — "
+                        + `${unknown}. Taking a folder away now could pull it from under one. Try again once the host answers.`);
+                }
                 if (busy.length > 0) {
                     return refuse(`Error: WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
                         + "Stop them first, then call set_session_workspace again.");
@@ -4163,12 +4182,82 @@ export class ManagedSession {
         if (this.activeTurnState) this.activeTurnState.workspaceChangeRequested = true;
     }
 
-    /** Running or idle background shells and agent tasks (the WORKSPACE_BUSY check). */
+    /**
+     * Compute providers: true while this session's agent runtime runs
+     * somewhere the worker did not start it. Nothing the runtime reports
+     * about processes, paths or files then names anything on this machine.
+     */
+    runsRemotely(): boolean {
+        return Boolean(this.config.computeRuntime);
+    }
+
+    /**
+     * Compute providers: a cancel this session could not prove finished.
+     *
+     * A remote shell is stopped by asking its runtime; the worker has no
+     * second way. When the runtime neither confirms nor lists the task as
+     * gone, what is still running on the host is unknown, so the session
+     * stays busy and says why rather than quietly moving its folders.
+     */
+    private computeStopFailure: { at: number; reason: string; tasks: string[] } | null = null;
+
+    /** The last cancel on a remote host this session could not prove finished, if any. */
+    getComputeStopFailure(): { at: number; reason: string; tasks: string[] } | null {
+        return this.computeStopFailure;
+    }
+
+    private noteComputeStopFailure(reason: string, tasks: string[]): void {
+        this.computeStopFailure = { at: Date.now(), reason, tasks };
+        console.warn(`[ManagedSession] ${this.sessionId}: ${reason}`);
+    }
+
+    /**
+     * Running or idle background shells and agent tasks (the WORKSPACE_BUSY
+     * check).
+     *
+     * Compute providers: for a remote runtime an unanswerable list is not
+     * an empty one. The caller is deciding whether it may take a folder
+     * away or let the session move, and the only honest answer when the
+     * host cannot be asked is that the session is still busy — so this
+     * throws rather than reporting no tasks, and the guards below turn that
+     * into a refusal.
+     */
     async activeBackgroundTasks(): Promise<Array<{ id: string; type: string }>> {
+        const local = !this.runsRemotely();
         const tasks = (await this.copilotSession.rpc.tasks.list()).tasks ?? [];
         return tasks
-            .filter(backgroundTaskRuns)
+            .filter((task: any) => backgroundTaskRuns(task, local))
             .map((task: any) => ({ id: String(task.id), type: String(task.type) }));
+    }
+
+    /**
+     * The background tasks a busy guard should act on, and what to say when
+     * the answer could not be had.
+     *
+     * An ordinary session keeps the behaviour it has always had: a task
+     * list that fails counts as no tasks, because the worker started those
+     * processes and a dead handle means they are gone with it. A remote
+     * session fails the other way, because its processes outlive the
+     * handle.
+     */
+    async busyBackgroundTasks(): Promise<{ tasks: Array<{ id: string; type: string }>; unknown?: string }> {
+        const unstopped = this.runsRemotely() ? this.computeStopFailure : null;
+        try {
+            const tasks = await this.activeBackgroundTasks();
+            if (unstopped) {
+                return {
+                    tasks,
+                    unknown: `an earlier stop on the compute host was never confirmed (${unstopped.reason})`,
+                };
+            }
+            return { tasks };
+        } catch (error: any) {
+            if (!this.runsRemotely()) return { tasks: [] };
+            return {
+                tasks: [],
+                unknown: `the compute host did not say what is still running (${String(error?.message ?? error)})`,
+            };
+        }
     }
 
     /** Session workspaces: this session's workspace and its last attach on this worker. */
@@ -4255,17 +4344,36 @@ export class ManagedSession {
      * killed on missing data.
      */
     async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin }: { rounds?: number; pauseMs?: number; startedWithin?: { since: number; until: number } } = {}): Promise<number> {
+        const remote = this.runsRemotely();
         const startedInScope = (task: { startedAt?: unknown }) => {
             if (!startedWithin) return true;
             const at = typeof task.startedAt === "string" ? Date.parse(task.startedAt)
                 : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
             return Number.isFinite(at) && at >= startedWithin.since && at <= startedWithin.until;
         };
-        const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task) && startedInScope(task);
+        const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task, !remote) && startedInScope(task);
+        // A list this session cannot get is not an empty one when the tasks
+        // are somebody else's processes: the failure is recorded before it
+        // is raised, so the busy guards keep refusing until a later round
+        // gets an answer.
+        const listActive = async (): Promise<any[]> => {
+            try {
+                return ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
+            } catch (error: any) {
+                if (remote) {
+                    this.noteComputeStopFailure(
+                        `the compute host did not list this session's tasks (${String(error?.message ?? error)})`, []);
+                }
+                throw error;
+            }
+        };
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
-            const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
-            if (tasks.length === 0) return cancelled;
+            const tasks = await listActive();
+            if (tasks.length === 0) {
+                if (!remote) this.computeStopFailure = null;
+                return cancelled;
+            }
             for (const task of tasks) {
                 let stopped = false;
                 try {
@@ -4274,15 +4382,26 @@ export class ManagedSession {
                 // CLI 1.0.83: after session.abort(), tasks.cancel answers
                 // { cancelled: false } and the shell keeps running. Kill the
                 // shell and every process below it, by the pid the CLI reports.
-                if (!stopped && task.type === "shell") stopped = killProcessTree((task as { pid?: unknown }).pid);
+                //
+                // Compute providers: not for a runtime the worker did not
+                // start. That pid names a process on the host, and the only
+                // thing this machine could do with it is kill whatever
+                // happens to hold the same number here. Asking the runtime
+                // is the one way a remote shell is stopped; when it will not
+                // say the task ended, that is reported rather than papered
+                // over.
+                if (!stopped && task.type === "shell" && !remote) stopped = killProcessTree((task as { pid?: unknown }).pid);
                 if (stopped) cancelled++;
             }
             await new Promise((resolve) => setTimeout(resolve, pauseMs));
         }
-        const remaining = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
+        const remaining = await listActive();
         if (remaining.length > 0) {
-            throw new Error(`${remaining.length} background task(s) still active after ${rounds} cancel rounds`);
+            const reason = `${remaining.length} background task(s) still active after ${rounds} cancel rounds`;
+            if (remote) this.noteComputeStopFailure(reason, remaining.map((task: any) => String(task.id)));
+            throw new Error(reason);
         }
+        if (remote) this.computeStopFailure = null;
         return cancelled;
     }
 

@@ -726,6 +726,13 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      * SessionManager when it builds the CLI config. Runtime-only.
      */
     workspaceAdoption?: WorkspaceAdoptionReport;
+    /**
+     * Compute providers: where this turn's agent runtime runs, when it is
+     * not the worker's own child process. Absent for an ordinary session.
+     * Set by SessionManager when it builds the CLI config; runtime-only,
+     * never serialized.
+     */
+    computeRuntime?: import("./compute.js").ComputeRuntimeContext;
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
     /**

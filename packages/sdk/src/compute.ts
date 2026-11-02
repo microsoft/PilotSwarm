@@ -107,6 +107,36 @@ export interface ComputeCapabilities {
 }
 
 /**
+ * What the worker knows about the place this turn's agent runtime is
+ * running, when that place is not the worker's own child process.
+ *
+ * It travels with the session's configuration for one turn and is never
+ * stored: the parts of the worker that must behave differently for a
+ * runtime they do not own read it instead of guessing from a path or a
+ * process id. The rule it encodes is a single one — a process the worker
+ * did not start is not the worker's to inspect, signal or name.
+ */
+export interface ComputeRuntimeContext {
+    /** The target this session's tree runs on, for messages a person reads. */
+    targetName: string;
+    hostId: string;
+    hostIncarnation: string;
+    /** What this host's provider says about reaching its files from the worker. */
+    files: ComputeCapabilities["files"];
+    /**
+     * Whether the worker and the host see the same bytes in the session's
+     * folders. False means a worker path is not a path on the host, and a
+     * file mode of a PilotSwarm tool has nothing to read.
+     */
+    sharesWorkerFiles: boolean;
+}
+
+/** Whether a provider's files capability means the worker can reach the host's folders. */
+export function computeSharesWorkerFiles(files: ComputeCapabilities["files"] | undefined): boolean {
+    return files === "worker-local" || files === "shared-mount";
+}
+
+/**
  * An opaque handle to a host. `id` is stable for the host's life;
  * `incarnation` changes whenever the host is replaced. The worker keeps it
  * in memory for the binding and never reads `data`.
