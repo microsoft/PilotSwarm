@@ -251,6 +251,10 @@ export {
     computeHostKey,
     computeBindingKey,
     computeLeaseSchedule,
+    formatComputeFailure,
+    computeFailureError,
+    computeFailureMessage,
+    isBuiltInComputeCode,
     DEFAULT_COMPUTE_LEASE_MS,
     DEFAULT_COMPUTE_LEASE_RENEW_MS,
 } from "./compute.js";

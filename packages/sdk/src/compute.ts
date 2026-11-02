@@ -178,7 +178,80 @@ export interface ComputeHostRef {
     data?: Record<string, unknown>;
 }
 
-export type ComputeFailure = { ok: false; code: string; message: string; retryAfterMs?: number };
+export type ComputeFailure = {
+    ok: false;
+    code: string;
+    message: string;
+    retryAfterMs?: number;
+    /**
+     * Whether retrying this failure cannot help. A provider may set it on
+     * a failure of its own, and only on one: a built-in code's kind is
+     * decided by PilotSwarm, which is the only way a provider cannot talk
+     * a permanent failure into looking retryable or the other way round.
+     */
+    permanent?: boolean;
+};
+
+/** Whether a code is one PilotSwarm defines, rather than a provider's own. */
+export function isBuiltInComputeCode(code: unknown): boolean {
+    return typeof code === "string" && (Object.values(COMPUTE_ERROR_CODES) as string[]).includes(code);
+}
+
+/**
+ * One compute failure as the single line a turn carries: `CODE: message`.
+ *
+ * A provider's own code may say which kind it is — `CODE: [permanent]
+ * message` or `CODE: [temporary] message` — so that `permanent` is not
+ * lost between the provider and whatever reads the turn's error. A
+ * built-in code never carries the marker, however the provider set
+ * `permanent`: PilotSwarm classifies its own codes, and a provider may
+ * not talk one into a different kind.
+ *
+ * Every compute error thrown from a provider failure goes through this,
+ * so there is one format and one place to change it.
+ *
+ * TEMPORARY: this is a stand-in for `formatComputeFailure` in
+ * `compute-failures.ts`, which arrives with the failure-reasons work
+ * (Spec B) and classifies codes as well as formatting them. The output is
+ * the same by construction; at integration this is deleted and the import
+ * points at that module instead.
+ */
+export function formatComputeFailure(failure: Pick<ComputeFailure, "code" | "message" | "permanent">): string {
+    const code = typeof failure?.code === "string" && failure.code.trim() ? failure.code.trim() : COMPUTE_ERROR_CODES.UNAVAILABLE;
+    const message = typeof failure?.message === "string" ? failure.message.trim() : "";
+    const kind = typeof failure?.permanent === "boolean" && !isBuiltInComputeCode(code)
+        ? (failure.permanent ? "[permanent] " : "[temporary] ")
+        : "";
+    return `${code}: ${kind}${message}`;
+}
+
+/**
+ * The message of a failure that is being re-raised from an error which
+ * already carries its own code, with that prefix taken off.
+ *
+ * A compute failure is raised once and may be caught and re-raised
+ * further out. Without this it would be formatted twice and read
+ * `CODE: CODE: ...`.
+ */
+export function computeFailureMessage(code: string, raw: unknown): string {
+    const text = String((raw as Error)?.message ?? raw ?? "").trim();
+    const prefix = new RegExp(`^${code.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}:\\s*(\\[(?:permanent|temporary)\\]\\s*)?`);
+    return text.replace(prefix, "");
+}
+
+/**
+ * The same failure as an Error to throw, carrying the parts the rest of
+ * the worker acts on: the code, how long to wait, and whether retrying
+ * can help at all.
+ */
+export function computeFailureError(failure: Pick<ComputeFailure, "code" | "message" | "retryAfterMs" | "permanent">): Error {
+    const code = typeof failure?.code === "string" && failure.code.trim() ? failure.code.trim() : COMPUTE_ERROR_CODES.UNAVAILABLE;
+    return Object.assign(new Error(formatComputeFailure(failure)), {
+        code,
+        ...(failure?.retryAfterMs ? { retryAfterMs: failure.retryAfterMs } : {}),
+        ...(typeof failure?.permanent === "boolean" && !isBuiltInComputeCode(code) ? { permanent: failure.permanent } : {}),
+    });
+}
 
 /** Every provider call carries a deadline; a provider should stop work when it fires. */
 interface ComputeCall {

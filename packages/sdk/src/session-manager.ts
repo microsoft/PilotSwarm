@@ -1,4 +1,4 @@
-import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, DEFAULT_COMPUTE_LEASE_MS, advertisedHostModels, computeBindingKey, computeLeaseSchedule, isLoopbackAddress, normalizeAdvertisement, parseTargetModelRef, runtimeConnectionFor, runtimeEndpointKey, targetMayOfferHostModels, type ComputeAdvertisement, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, DEFAULT_COMPUTE_LEASE_MS, advertisedHostModels, computeBindingKey, computeFailureError, computeFailureMessage, computeLeaseSchedule, isLoopbackAddress, normalizeAdvertisement, parseTargetModelRef, runtimeConnectionFor, runtimeEndpointKey, targetMayOfferHostModels, type ComputeAdvertisement, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
 import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, askHostModels, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
 import { ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
@@ -1310,8 +1310,11 @@ export class SessionManager {
         target: ComputeTarget;
         provider: ComputeProvider;
     } | null> {
-        const fail = (code: string, message: string, retryAfterMs?: number): never => {
-            throw Object.assign(new Error(`${code}: ${message}`), { code, ...(retryAfterMs ? { retryAfterMs } : {}) });
+        // Every compute failure leaves this method as one coded error in
+        // the one format the rest of the worker reads, so a provider's own
+        // sense of whether retrying can help is never lost on the way out.
+        const fail = (code: string, message: string, retryAfterMs?: number, permanent?: boolean): never => {
+            throw computeFailureError({ code, message, retryAfterMs, permanent });
         };
         const catalog = this.sessionCatalog;
         if (!catalog?.computeTargets || !catalog.getSessionCreationConfig) return null;
@@ -1348,12 +1351,12 @@ export class SessionManager {
         if (provider.validateTarget) {
             const valid = await this._computeCall("validateTarget", COMPUTE_CONNECT_TIMEOUT_MS,
                 (signal) => provider.validateTarget!({ target, principal: owner, signal }));
-            if (!valid.ok) return fail(valid.code, valid.message, valid.retryAfterMs);
+            if (!valid.ok) return fail(valid.code, valid.message, valid.retryAfterMs, valid.permanent);
         }
         const previous = this.computeHosts.get(sessionId);
         const bound = await this._computeCall("bind", COMPUTE_BIND_TIMEOUT_MS,
             (signal) => provider.bind({ target, sessionId, rootSessionId, owner, workerNodeId, signal }));
-        if (!bound.ok) return fail(bound.code, bound.message, bound.retryAfterMs);
+        if (!bound.ok) return fail(bound.code, bound.message, bound.retryAfterMs, bound.permanent);
         if (previous && (previous.target.id !== target.id || previous.host.id !== bound.host.id || previous.host.incarnation !== bound.host.incarnation)) {
             // The session's host was replaced: leave the old one.
             this.computeHosts.delete(sessionId);
@@ -1384,7 +1387,7 @@ export class SessionManager {
             });
         if (!connected.ok) {
             await this.releaseCompute(sessionId, "failed");
-            return fail(connected.code, connected.message, connected.retryAfterMs);
+            return fail(connected.code, connected.message, connected.retryAfterMs, connected.permanent);
         }
         if (connected.endpoint.transport === "uri" && !this.computeAllowNonLoopbackEndpoints && !isLoopbackAddress(connected.endpoint.address)) {
             await this.releaseCompute(sessionId, "failed");
@@ -1404,9 +1407,9 @@ export class SessionManager {
                 endpoint = await this._bridgeEndpoint(binding, endpoint);
             } catch (error) {
                 await this.releaseCompute(sessionId, "failed");
-                const code = (error as { code?: string })?.code;
+                const { code, permanent } = (error ?? {}) as { code?: string; permanent?: boolean };
                 return typeof code === "string" && code.startsWith("COMPUTE_")
-                    ? fail(code, String((error as Error)?.message ?? error))
+                    ? fail(code, computeFailureMessage(code, error), undefined, permanent)
                     : fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
                         `the connection to the compute host could not be prepared: ${String((error as Error)?.message ?? error)}`, 5_000);
             }
@@ -1451,9 +1454,10 @@ export class SessionManager {
             throw new Error(`the compute provider "${provider.kind}" returned a connection it has no code to open`);
         }
         if (!endpoint.handshake) {
-            throw Object.assign(
-                new Error(`the compute provider "${provider.kind}" gave this binding no handshake secret, so the host at the other end cannot be recognized`),
-                { code: COMPUTE_ERROR_CODES.HANDSHAKE_FAILED });
+            throw computeFailureError({
+                code: COMPUTE_ERROR_CODES.HANDSHAKE_FAILED,
+                message: `the compute provider "${provider.kind}" gave this binding no handshake secret, so the host at the other end cannot be recognized`,
+            });
         }
         // Kept per host rather than captured, so a later turn's address,
         // details and secret are the ones the bridge uses, and so the
@@ -1625,11 +1629,12 @@ export class SessionManager {
                     try {
                         endpoint = await this._bridgeEndpoint(probeBinding, endpoint);
                     } catch (error) {
-                        const code = (error as { code?: string })?.code;
+                        const { code: raw, permanent } = (error ?? {}) as { code?: string; permanent?: boolean };
+                        const code = typeof raw === "string" && raw.startsWith("COMPUTE_") ? raw : COMPUTE_ERROR_CODES.UNAVAILABLE;
                         return {
-                            ok: false,
-                            code: typeof code === "string" && code.startsWith("COMPUTE_") ? code : COMPUTE_ERROR_CODES.UNAVAILABLE,
-                            message: String((error as Error)?.message ?? error),
+                            ok: false, code,
+                            message: computeFailureMessage(code, error),
+                            ...(typeof permanent === "boolean" ? { permanent } : {}),
                         };
                     } finally {
                         probeBridge = probeBinding.bridge;
@@ -1654,11 +1659,12 @@ export class SessionManager {
                 }
             }
         } catch (error) {
-            const code = (error as { code?: string })?.code;
+            const { code: raw, permanent } = (error ?? {}) as { code?: string; permanent?: boolean };
+            const code = typeof raw === "string" && raw.startsWith("COMPUTE_") ? raw : COMPUTE_ERROR_CODES.UNAVAILABLE;
             return {
-                ok: false,
-                code: typeof code === "string" && code.startsWith("COMPUTE_") ? code : COMPUTE_ERROR_CODES.UNAVAILABLE,
-                message: String((error as Error)?.message ?? error),
+                ok: false, code,
+                message: computeFailureMessage(code, error),
+                ...(typeof permanent === "boolean" ? { permanent } : {}),
             };
         }
     }
@@ -1825,9 +1831,11 @@ export class SessionManager {
                 new Promise<never>((_, reject) => {
                     timer = setTimeout(() => {
                         controller.abort();
-                        reject(Object.assign(
-                            new Error(`${COMPUTE_ERROR_CODES.UNAVAILABLE}: the compute provider did not answer ${name} within ${timeoutMs} ms`),
-                            { code: COMPUTE_ERROR_CODES.UNAVAILABLE, retryAfterMs: 5_000 }));
+                        reject(computeFailureError({
+                            code: COMPUTE_ERROR_CODES.UNAVAILABLE,
+                            message: `the compute provider did not answer ${name} within ${timeoutMs} ms`,
+                            retryAfterMs: 5_000,
+                        }));
                     }, timeoutMs);
                 }),
             ]);
@@ -2281,8 +2289,10 @@ export class SessionManager {
             if (hostModel) computeKey = computeKey.slice(0, -COMPUTE_HOST_MODEL_CLIENT_MARK.length);
             endpoint = this.computeEndpoints.get(computeKey);
             if (!endpoint) {
-                throw Object.assign(new Error("COMPUTE_UNAVAILABLE: the remote runtime for this session is not known on this worker"),
-                    { code: COMPUTE_ERROR_CODES.UNAVAILABLE });
+                throw computeFailureError({
+                    code: COMPUTE_ERROR_CODES.UNAVAILABLE,
+                    message: "the remote runtime for this session is not known on this worker",
+                });
             }
             key = key.slice(0, computeAt);
         }
@@ -2951,22 +2961,22 @@ export class SessionManager {
         if (hostModelRef) {
             if (!compute || !remoteEndpoint) {
                 throw Object.assign(
-                    new Error(`${COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE}: "${config.model}" is a model of a compute target, and this session does not run on one`),
-                    { code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, status: 400 },
-                );
+                computeFailureError({ code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, message: `"${config.model}" is a model of a compute target, and this session does not run on one` }),
+                { status: 400 },
+            );
             }
             if (compute.target.name !== hostModelRef.target) {
                 throw Object.assign(
-                    new Error(`${COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE}: "${config.model}" is a model of another compute target; this session runs on "${compute.target.name}"`),
-                    { code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, status: 400 },
-                );
+                computeFailureError({ code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, message: `"${config.model}" is a model of another compute target; this session runs on "${compute.target.name}"` }),
+                { status: 400 },
+            );
             }
             if (!targetMayOfferHostModels(compute.target, compute.provider.capabilities)
                 || !advertisedHostModels(compute.target).some((m) => m.id === hostModelRef.model)) {
                 throw Object.assign(
-                    new Error(`${COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE}: the compute target "${compute.target.name}" no longer offers the model "${hostModelRef.model}"; choose another model for this session`),
-                    { code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, status: 400 },
-                );
+                computeFailureError({ code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, message: `the compute target "${compute.target.name}" no longer offers the model "${hostModelRef.model}"; choose another model for this session` }),
+                { status: 400 },
+            );
             }
             // Nothing of PilotSwarm's goes to a host running its own model.
             this.remoteGrants.delete(sessionId);
@@ -2977,8 +2987,8 @@ export class SessionManager {
             // A target's own model is the exception: the host signs for
             // itself, so nothing of the worker's is involved.
             throw Object.assign(
-                new Error(`${COMPUTE_ERROR_CODES.UNSUPPORTED}: GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider, or one the target offers itself`),
-                { code: COMPUTE_ERROR_CODES.UNSUPPORTED, status: 400 },
+                computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: `GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider, or one the target offers itself` }),
+                { status: 400 },
             );
         }
         // The provider config the runtime sees: on a remote host, credentials
@@ -2999,9 +3009,9 @@ export class SessionManager {
                 const grant = remoteSessionGrant(realProvider?.baseUrl, redacted.secrets);
                 if (!grant) {
                     throw Object.assign(
-                        new Error(`${COMPUTE_ERROR_CODES.UNSUPPORTED}: this session's model provider has no http(s) base URL, which a remote runtime needs`),
-                        { code: COMPUTE_ERROR_CODES.UNSUPPORTED, status: 400 },
-                    );
+                computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: `this session's model provider has no http(s) base URL, which a remote runtime needs` }),
+                { status: 400 },
+            );
                 }
                 entry = { grant, endpointKey: compute!.endpointKey, fingerprint, provider: redacted.provider };
                 this.remoteGrants.set(sessionId, entry);
