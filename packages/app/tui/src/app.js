@@ -962,6 +962,11 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.OPEN_HELP).catch(() => {});
             return;
         }
+        // Workflow sessions: w opens the read-only workflow view (states, details, an agent state's child chats).
+        if (plainShortcut && input === "w") {
+            controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW).catch(() => {});
+            return;
+        }
         if (plainShortcut && input === "m") {
             controller.handleCommand(UI_COMMANDS.CYCLE_INSPECTOR_TAB).catch(() => {});
             return;

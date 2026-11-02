@@ -521,6 +521,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
+| TUI workflow view (`w` on a workflow session; read-only) | the states in graph order, the selected state's details and transitions, an agent state's child session per occurrence (below) | nothing: it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -800,8 +801,36 @@ Unfulfilled requirements (open, not waived; R26):
   names, are API review item D11.
 - **The rest of the UI commands**: the portal sends every person's command
   (above). Test fixtures and a several-key variables update go through the
-  API, MCP or the agent tool, and the TUI has no workflow command keys (it
-  does not draw the workflow view).
+  API, MCP or the agent tool. The TUI draws a read-only workflow view
+  (below) and has no workflow command keys.
+
+**The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
+state, read-only child chats"; T115).** On a workflow session, `w` (outside
+the prompt) opens it: the same projection the portal's workflow pane draws
+(`projectWorkflowV2`, or the legacy node views; `workflow-tui.js`), from the
+same reads (`ensureWorkflowDefinition`, which also reads the v2 read model,
+again while the view is open as new events arrive). The states come in graph
+order: by layer as the portal lays the graph out (a loop is one layer), then
+by position. Each row shows the observed state and the number of
+executions. The selected state's details show its state, executions, last
+outcome and description, its transitions (an outcome, a runtime-error
+route, where a parallel state's branches start, and a transition inside a
+loop marked as one), the latest output or runtime error, and for an agent
+state the child session of each occurrence, newest first. ↑↓ select a
+state, Tab chooses an occurrence, Enter opens that occurrence's actual chat
+(`loadSession`, as the portal's node details open it) and Esc closes. The
+view sends nothing and changes nothing; the server keeps refusing human
+input to an agent state's subtree. Not in the TUI yet (open, not waived):
+- a person's workflow commands (run controls, variables, publication,
+  draft editing, test start, test answers and the virtual clock): the
+  portal, the API, MCP and the agent tools take them;
+- the run picker (the view shows the live run) and the test run's
+  interceptions panel;
+- the full execution history and output of a state (the view shows its
+  latest output or error, bounded);
+- a read-only composer for a session in an agent state's subtree (T115 "no
+  human composer", T116 in the TUI): the TUI still shows its prompt there,
+  and the SDK refuses what is sent (403 `WORKFLOW_HUMAN_INPUT_DENIED`).
 
 **Responses and completions stay in process (owner scope, 2026-11-02).**
 External agents are not in scope: agents run only within PilotSwarm, as

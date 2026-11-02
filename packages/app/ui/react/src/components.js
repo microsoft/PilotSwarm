@@ -26,6 +26,7 @@ import {
     selectContextTierPickerModal,
     selectRenameSessionModal,
     selectWorkflowCreateModal,
+    selectWorkflowViewModal,
     selectSessionAgentPickerModal,
     selectShareSessionModal,
     selectSessionGroupNameModal,
@@ -1736,6 +1737,83 @@ function ThemePickerModalContainer({ controller }) {
     return React.createElement(ThemePickerModal, { state });
 }
 
+/**
+ * Workflow sessions (TUI): the read-only workflow view (selectWorkflowViewModal): the states in graph order with the
+ * selected one, then the selected state's details, transitions and agent chats. It sends nothing.
+ */
+export function WorkflowViewModal({ state }) {
+    const platform = useUiPlatform();
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(110, (viewport.width || 120) - 8));
+    const modal = selectWorkflowViewModal(state, width);
+    if (!modal) return null;
+    const available = Math.max(16, (viewport.height || 40) - 6);
+    const listHeight = Math.max(6, Math.min(modal.rows.length + 2, Math.floor(available / 2)));
+    const detailsHeight = Math.max(8, available - listHeight - 1);
+    const contentRows = Math.max(1, listHeight - 2);
+    const maxOffset = Math.max(0, modal.rows.length - contentRows);
+    const scrollOffset = Math.max(0, Math.min(modal.selectedRowIndex - Math.floor(contentRows / 2), maxOffset));
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: listHeight,
+                lines: modal.rows,
+                scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.detailsTitle,
+                color: "cyan",
+                focused: false,
+                width,
+                height: detailsHeight,
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+const EMPTY_WORKFLOW_EVENTS = [];
+
+function WorkflowViewModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => {
+        const modal = rootState.ui.modal;
+        const sessionId = modal?.type === "workflowView" ? modal.sessionId : null;
+        return {
+            modal,
+            session: sessionId ? rootState.sessions.byId[sessionId] || null : null,
+            history: sessionId ? rootState.history.bySessionId.get(sessionId) || null : null,
+            view: sessionId ? rootState.ui.workflowViews?.[sessionId] || null : null,
+            canvas: sessionId ? rootState.canvas?.bySessionId?.[sessionId] || null : null,
+        };
+    }, shallowEqualObject);
+    const sessionId = state.modal?.type === "workflowView" ? state.modal.sessionId : null;
+    const events = state.history?.events || EMPTY_WORKFLOW_EVENTS;
+    const sessionUpdatedAt = state.session?.updatedAt ?? null;
+    // While the view is open, new events or a changed session row read the workflow again, as the portal's pane does.
+    React.useEffect(() => {
+        if (sessionId) controller.ensureWorkflowDefinition(sessionId).catch(() => {});
+    }, [controller, sessionId, events, sessionUpdatedAt]);
+    if (!sessionId) return null;
+    const selectorState = {
+        ui: { modal: state.modal, workflowViews: state.view ? { [sessionId]: state.view } : {} },
+        sessions: { byId: state.session ? { [sessionId]: state.session } : {} },
+        history: { bySessionId: new Map(state.history ? [[sessionId, state.history]] : []) },
+        canvas: { bySessionId: state.canvas ? { [sessionId]: state.canvas } : {} },
+    };
+    return React.createElement(WorkflowViewModal, { state: selectorState });
+}
+
 function ArtifactPickerModalContainer({ controller }) {
     const state = useControllerSelector(controller, (rootState) => ({
         ui: {
@@ -2589,6 +2667,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(ArtifactUploadModalContainer, { controller }),
         React.createElement(ArtifactPickerModalContainer, { controller }),
         React.createElement(HelpModalContainer, { controller }),
+        React.createElement(WorkflowViewModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ContextTierPickerModalContainer, { controller }),

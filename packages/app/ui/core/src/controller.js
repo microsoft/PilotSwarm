@@ -1,5 +1,6 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { workflowDefinition } from "./workflow-view.js";
+import { selectWorkflowViewSelection, workflowViewDefaultNode, workflowViewNodes, workflowViewProjectionFor } from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
     workflowV2RunCommandWire,
@@ -8148,6 +8149,74 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: "Keybindings — ? or Esc to close" });
     }
 
+    /**
+     * Workflow sessions: open the read-only workflow view (TUI; design 02
+     * "Portal/TUI: graph, observed state, read-only child chats"; T115) for
+     * the active session: its states in graph order, the selected state's
+     * details and an agent state's child sessions (workflow-tui.js). It asks
+     * for the same reads the portal's workflow pane makes
+     * (ensureWorkflowDefinition, which also reads the v2 read model) and
+     * sends nothing; another kind of session gets a status line instead.
+     */
+    openWorkflowViewModal() {
+        const state = this.getState();
+        const sessionId = state.sessions.activeSessionId;
+        if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow") {
+            this.dispatch({ type: "ui/status", text: "The workflow view is for workflow sessions" });
+            return;
+        }
+        // A definition already in the loaded history is applied at once; the read model arrives later.
+        this.ensureWorkflowDefinition(sessionId).catch(() => {});
+        const projection = workflowViewProjectionFor(this.getState(), sessionId);
+        const selectedNodeId = workflowViewDefaultNode(projection, workflowViewNodes(projection));
+        this.dispatch({
+            type: "ui/modal",
+            modal: { type: "workflowView", sessionId, selectedNodeId, occurrenceIndex: 0, previousFocus: state.ui.focusRegion },
+        });
+        this.dispatch({ type: "ui/status", text: "Workflow view — ↑↓ state · Tab agent chat · Enter open · Esc close" });
+    }
+
+    /** The workflow view: select the state `delta` rows away, in graph order (clamped), and its newest agent chat. */
+    moveWorkflowViewSelection(delta) {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection || selection.nodes.length === 0) return;
+        const next = Math.max(0, Math.min(selection.selectedIndex + delta, selection.nodes.length - 1));
+        this.dispatch({ type: "ui/modal", modal: { ...selection.modal, selectedNodeId: selection.nodes[next].id, occurrenceIndex: 0 } });
+    }
+
+    /** The workflow view: choose another occurrence of the selected agent state (Tab, Shift-Tab), cycling. */
+    moveWorkflowViewOccurrence(delta) {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection || selection.occurrences.length === 0) return;
+        const count = selection.occurrences.length;
+        const next = (selection.occurrenceIndex + delta + count) % count;
+        this.dispatch({ type: "ui/modal", modal: { ...selection.modal, selectedNodeId: selection.selected.id, occurrenceIndex: next } });
+    }
+
+    /**
+     * The workflow view: open the chosen occurrence's child session, the
+     * agent's actual chat (T115), as the portal's node details open it
+     * (loadSession). It changes nothing: people can read the chat, and the
+     * server refuses their prompts, answers and steers to it. A state without
+     * a child session keeps the view open with a status line.
+     */
+    async openWorkflowViewChild() {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return;
+        const occurrence = selection.occurrence;
+        if (!occurrence?.childSessionId) {
+            this.dispatch({ type: "ui/status", text: selection.selected
+                ? `State ${selection.selected.id} has no agent chat to open`
+                : "No state is selected" });
+            return;
+        }
+        this.dispatch({ type: "ui/modal", modal: null });
+        if (selection.modal.previousFocus) this.setFocus(selection.modal.previousFocus);
+        this.dispatch({ type: "ui/status", text: `Opened the agent chat of ${selection.selected.id}`
+            + `${occurrence.ordinal === null ? "" : ` (visit ${occurrence.ordinal})`}: people can read it; the server refuses their input to it` });
+        await this.loadSession(occurrence.childSessionId);
+    }
+
     openThemePicker() {
         // listThemes() is already ordered by group then label, so the picker
         // renders a heading wherever `group` changes rather than re-sorting.
@@ -9355,6 +9424,10 @@ export class PilotSwarmUiController {
     moveModalSelection(delta) {
         const modal = this.getState().ui.modal;
         if (!modal) return;
+        if (modal.type === "workflowView") {
+            this.moveWorkflowViewSelection(delta);
+            return;
+        }
         if (modal.type === "help") {
             const current = Math.max(0, Number(modal.selectedIndex) || 0);
             this.dispatch({ type: "ui/modalSelection", index: Math.max(0, current + delta) });
@@ -9396,6 +9469,10 @@ export class PilotSwarmUiController {
 
     moveModalPane(delta) {
         const modal = this.getState().ui.modal;
+        if (modal?.type === "workflowView") {
+            this.moveWorkflowViewOccurrence(delta);
+            return;
+        }
         if (modal?.type === "sessionAgentPicker") {
             this.moveAgentPickerSection(delta);
             return;
@@ -9422,6 +9499,10 @@ export class PilotSwarmUiController {
         if (!modal) return;
         if (modal.type === "help") {
             this.closeModal();
+            return;
+        }
+        if (modal.type === "workflowView") {
+            await this.openWorkflowViewChild();
             return;
         }
         if (modal.type === "confirm") {
@@ -12274,6 +12355,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.OPEN_HELP:
                 this.openHelpModal();
+                return;
+            case UI_COMMANDS.OPEN_WORKFLOW_VIEW:
+                this.openWorkflowViewModal();
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

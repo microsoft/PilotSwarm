@@ -49,6 +49,8 @@ export const UI_COMMANDS = {
     SHRINK_FOCUSED_PANE: "shrinkFocusedPane",
     OPEN_ARTIFACT_PICKER: "openArtifactPicker",
     OPEN_HELP: "openHelp",
+    // Workflow sessions (TUI): the read-only workflow view (states, details, an agent state's child chats).
+    OPEN_WORKFLOW_VIEW: "openWorkflowView",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",
