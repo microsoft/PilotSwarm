@@ -50,6 +50,19 @@ on a separate host chosen per session. A compute provider supplies hosts. The
 worker drives the agent over a connection; everything the agent sends back is
 checked by the worker.
 
+**Two ways a host can become available**, and this change builds the first:
+
+- **Deployment-time registration.** The deployment installs a provider in the
+  worker, and an administrator registers a target that names it. The provider
+  knows how to create or find its hosts, and answers every turn with an
+  address the worker connects to. Everything in sections 4 and 5 is this
+  model.
+- **Runtime registration.** A host announces itself when it becomes
+  available — by pairing with a one-time code, for example — rather than the
+  deployment knowing where it is in advance. Hosts come and go, and such a
+  host usually connects outwards rather than waiting to be dialled. This is
+  future work; section 12 says which entries belong to it.
+
 ```mermaid
 flowchart LR
   subgraph T["Trusted: PilotSwarm"]
@@ -284,6 +297,26 @@ Finish
 ```
 
 ## 4. PilotSwarm design
+
+### 4.0 Which registration model this builds
+
+**Deployment-time registration**, throughout. A provider is installed in the
+worker by the deployment, an administrator registers a target naming its
+kind, and the provider answers `bind` and `connect` with a host and an
+address the worker opens a connection to. The deployment decides what hosts
+exist and how they are made; a host is reached because the provider says
+where it is.
+
+**Runtime registration** is the other model, and nothing here builds it: a
+host announces itself when it becomes available — pairing with a one-time
+code, say — so the deployment does not know its address in advance, hosts
+come and go, and such a host usually connects outwards instead of being
+dialled. Section 12 groups the entries that would make up that model.
+
+The two are not alternatives to choose between: runtime registration needs
+the same target record, the same provider interface, the same bridge and the
+same handshake, so it is an addition to what is here rather than a
+replacement for it.
 
 ### 4.1 Targets and names
 
@@ -1331,6 +1364,11 @@ so the `process` provider can be run as a registered one in tests.
 
 ### 12.3 Capabilities, and a target's own models
 
+> Part of **runtime registration** (section 4.0) where it covers a target
+> somebody registers for themselves: a target of one's own is how a host a
+> person brought becomes usable, and 12.5 and 12.21 are the other two
+> pieces.
+
 **Value.** A person is shown the targets and models that will actually work,
 rather than guessing. And providers whose hosts also offer models of their own
 become usable: a session can run on a model the host serves with the host's
@@ -1394,7 +1432,13 @@ caller of operations that already exist.
 - Session creation on every surface takes a target name in the same form, and
   a name the caller cannot use is refused at creation, not at the first turn.
 
-### 12.5 Hosts that cannot be dialed directly
+### 12.5 Runtime registration: hosts that cannot be dialed directly
+
+> **Runtime registration.** This entry, 12.3's per-person targets and 12.21's
+> pairing make up the second registration model (section 4.0): a host
+> announces itself when it becomes available instead of the deployment
+> knowing where it is in advance. Each is useful on its own, and together
+> they are that model.
 
 **Value.** Reach hosts that can only connect out — a person's own machine, or
 a service with no inbound address — without the provider shipping networking
@@ -1753,3 +1797,38 @@ files the agent is working in.
   that session, rather than quietly showing another tree.
 - Change notices carry where they came from, so a session is never told its
   files changed when the change was made somewhere it cannot see.
+
+### 12.21 Runtime registration: pairing a host that offers itself
+
+> **Runtime registration.** With 12.5 (a host that connects outwards) and
+> 12.3's per-person targets, this is the second registration model of
+> section 4.0.
+
+**Value.** A host can be offered to a deployment by whoever runs it, without
+an administrator knowing in advance that it exists or where it is. That is
+what makes a host somebody brings — their own machine, a short-lived one
+somebody started for an afternoon — usable at all, and it is the half of the
+problem that installing a provider in the worker does not solve.
+
+**What it adds.** A way for a host to announce itself and be accepted: the
+deployment issues a one-time code, the host presents it once over a
+connection it opens, and what comes back is a target record and a binding
+secret of the shape everything above already uses. A host that stops
+announcing itself stops being offered, so hosts coming and going is the
+ordinary case rather than a failure.
+
+**Requirements when it is built.**
+
+- A code is good for one host and one acceptance, expires on its own, and is
+  never a credential the host keeps: what the host keeps afterwards is a
+  binding secret like any other.
+- Who may issue a code, and whose sessions the resulting target may serve,
+  are decided on the trusted side; a host never says what it is allowed to
+  run.
+- A host that announces itself again after a restart is a new incarnation,
+  so a session bound to the old one rebinds rather than silently continuing
+  (section 4.15).
+- Everything else is unchanged: the same target record, the same provider
+  interface, the same bridge, the same handshake. A host registered this way
+  is as untrusted as one a provider created, and nothing about what the
+  worker takes from it differs.
