@@ -59,3 +59,76 @@ description and parameter enum are unchanged.
 
 Not yet covered: the UI read model's `stopped` label, REST/MCP parity and
 the formal lifecycle model's stop transitions.
+
+## Agent states (design 03 agent node; R09 to R11, R14, R15, R23)
+
+A state of `type: agent` runs an ordinary child agent session and is
+finished only by that child's typed completion, raced against an outer
+deadline. It compiles to IR 8 only when agent states are enabled (the
+compile option `enableAgents`, set with `enableRequests` by a host that
+starts 1.9.0 runs); elsewhere it stays unsupported, exactly as before. A
+reader takes IR 8 only when asked to (`WORKFLOW_V2_MILESTONE_IR_VERSION`).
+
+```yaml
+review:
+  type: agent
+  invoke: { prompt: "Review this exact change. Do not edit source." }
+  # or: invoke: { agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }
+  inputSchema: { $ref: "#/schemas/ReviewInput" }
+  outputSchema: { $ref: "#/schemas/ReviewResult" }
+  timeoutSeconds: 900
+  transition: { next: { accepted: done, changes_required: rework, needs_input: ask, timed_out: blocked, failure: failed } }
+```
+
+- **Task.** Exactly one of an inline `prompt` (at most 32 KiB) or a named
+  `agent`. A package `version` needs its `package`. A package's
+  `workflowInterface` is not supported yet: the state's own `inputSchema`
+  and `outputSchema` are its contract.
+- **Outcomes.** Declared with `outcomes`, or by default the state's routes
+  that are not runtime routes. The agent may also report `needs_input` or
+  `execution_failed`; every other runtime code (`timed_out`, `unavailable`,
+  `forbidden`, `invalid_output`, `cancelled`) is decided by the workflow.
+- **Admission.** The input is checked against `inputSchema`. The deadline
+  is the admission's store-clock reading plus `timeoutSeconds` (a literal or
+  one binding, checked on entry). The invocation record (migration 0097)
+  freezes the child's session id (a UUID derived from the node execution,
+  so a retry names the same session and a later occurrence another), the
+  controlling parent agent (the workflow's parent), the task, the outcomes
+  and the output schema.
+- **The child.** The agent orchestration (`workflow-v2-agent` 1.0.0) asks the
+  worker's agent host to create the child and send it one first prompt,
+  the host-generated wrapper (`workflowAgentPrompt`), with a stable client
+  message id, as the workflow (never as a human). The same wrapper serves
+  an inline prompt and a named agent: how to finish the state, the
+  validated input, the schemas, the outcomes, the deadline, the controlling
+  parent agent, that humans cannot prompt it, then the task. The host
+  (`agent-host.ts`) creates the child under the workflow, one level below
+  it, at most level 3 (D02), owned as any spawned child is, with the
+  controlling agent's model; a named agent is bound to the definition its
+  owner sees, with that definition's own tools only. A refusal (unknown,
+  system, mismatched pin, too deep) fails the state `unavailable` or
+  `forbidden`; a worker without a host fails it `unavailable`.
+- **Completion.** `complete_workflow_node` is given only to an agent state's
+  child. The caller is the host-stamped session, never an argument. One
+  transaction: the call's shape, the operation id (the same id and result
+  replays its answer; another result is `OPERATION_CONFLICT`), the store's
+  one clock reading against the deadline (durable expiry: once an operation
+  was refused `NODE_EXPIRED`, every later one is too), then the contract.
+  Field errors leave the state pending (`OUTPUT_INVALID`, with
+  `attemptsLeft`); the third invalid completion fails it `invalid_output`.
+  A valid one decides the state (winner `agent`) and wakes the controller.
+  Final chat text never completes a state.
+- **Deadline and end.** Only the controller's elapse decides `timed_out`.
+  When the controller collects an agent state's result it ends the child:
+  `done` after the agent's own completion, `cancel` after anything else.
+  When the run ends (any end), the children of its decided agent states
+  are ended too. The end is recorded once and sent while the child's
+  session runs; a spawn that created the child after the end found no
+  session sends it again.
+- **Child chat (R23).** `read_workflow` shows each agent state's
+  `agent.childSessionId`, the session a click on the state opens, and its
+  lifecycle (spawned, end, end sent).
+
+Not yet covered here: human-input denial and the depth allowance for the
+node agent's own child (B5), the UI read model and click-through (B9), a
+real-model run of an agent state, and package workflow interfaces.

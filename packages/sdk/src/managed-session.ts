@@ -25,6 +25,7 @@ import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer
 import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 import { READ_WORKFLOW_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC } from "./workflow/v2/tools.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "./workflow/v2/agent-node-service.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -3114,6 +3115,17 @@ export class ManagedSession {
                 },
             })]
             : [];
+        // Workflow agent states (INACTIVE): only an agent state's child, on a turn whose bridge can complete it, gets the tool.
+        const completeWorkflowNodeTools: Tool<any>[] = controlBridge?.completeWorkflowNode
+            ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, {
+                ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC,
+                handler: async (args: Record<string, unknown>) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(COMPLETE_WORKFLOW_NODE_TOOL);
+                    if (!controlBridge?.completeWorkflowNode) return `Error: ${COMPLETE_WORKFLOW_NODE_TOOL} is not available in this session.`;
+                    return await controlBridge.completeWorkflowNode(args ?? {});
+                },
+            })]
+            : [];
 
         const subAgentToolsForTurn = isServiceSession
             ? []
@@ -3126,6 +3138,7 @@ export class ManagedSession {
                     readWorkflowTool,
                     sendWorkflowInputTool,
                     ...respondSessionRequestTools,
+                    ...completeWorkflowNodeTools,
                     messageAgentTool,
                     checkAgentsTool,
                     waitForAgentsTool,

@@ -36,12 +36,19 @@ export const WORKFLOW_V2_KIND = "Workflow";
  *   A reader takes it only when asked to (parseWorkflowIr's maxIrVersion):
  *   a build that does not run request states refuses it explicitly and
  *   never reads it as version 6.
+ * - 8: version 7 plus agent states (WORKFLOW_V2_AGENT_IR_VERSION), written
+ *   only for a workflow that has one and only when agents are enabled
+ *   (WorkflowCompileOptions; INACTIVE: only controller 1.9.0 runs them). A
+ *   reader takes it only when asked to, as version 7.
  */
 export const WORKFLOW_V2_IR_VERSION = 3;
 export const WORKFLOW_V2_WAIT_IR_VERSION = 4;
 export const WORKFLOW_V2_MESSAGING_IR_VERSION = 5;
 export const WORKFLOW_V2_SEND_IR_VERSION = 6;
 export const WORKFLOW_V2_REQUEST_IR_VERSION = 7;
+export const WORKFLOW_V2_AGENT_IR_VERSION = 8;
+/** The newest IR version controller 1.9.0's activities read (request and agent states; INACTIVE). */
+export const WORKFLOW_V2_MILESTONE_IR_VERSION = WORKFLOW_V2_AGENT_IR_VERSION;
 /** The newest IR version a worker reads unless asked for more: request states are not run yet. */
 export const WORKFLOW_V2_RUNNABLE_IR_VERSION = 6;
 /** A wait state's seconds: an integer in this range, literal or bound. */
@@ -55,6 +62,10 @@ export const MESSAGE_SENT = "sent";
 /** A request state's business outcomes: an accepted response, or the responder's declared refusal. */
 export const REQUEST_RESPONDED = "responded";
 export const REQUEST_DECLINED = "declined";
+/** The largest inline task prompt of an agent state, in UTF-8 bytes. */
+export const AGENT_PROMPT_MAX_BYTES = 32 * 1024;
+/** The runtime error codes an agent state's agent may report itself (complete_workflow_node), apart from its business outcomes. */
+export const AGENT_REPORTED_ERROR_CODES = ["needs_input", "execution_failed"] as const;
 /** The largest response schema, with every schema it references, in UTF-8 bytes of their canonical JSON. */
 export const REQUEST_RESPONSE_SCHEMA_MAX_BYTES = 8 * 1024;
 /** A contract name: a name, '@' and a positive integer version, such as BuildEvent@1. */
@@ -212,6 +223,33 @@ export interface WorkflowIRRequest {
     next: Record<string, string>;
 }
 
+/**
+ * An agent state (IR 8; INACTIVE): an ordinary child agent session with the
+ * standard base, given the state's validated input in a host-generated
+ * wrapper, that finishes the state only with a typed completion
+ * (complete_workflow_node: one of `outcomes` with an output that satisfies
+ * `outputSchema`, or a reported runtime error), raced against its outer
+ * deadline (timed_out).
+ */
+export interface WorkflowIRAgent {
+    id: string;
+    type: "agent";
+    description: string | null;
+    /** Exactly one task source: an inline prompt, or a named agent definition (resolved when the state is entered, then pinned). */
+    invoke: { prompt: string } | { agent: { name: string; package: string | null; version: string | null } };
+    /** The state's input: the input binding's value, or without one the value that arrived. */
+    hasInput: boolean;
+    input: JsonValue;
+    inputSchema: string | null;
+    outputSchema: string | null;
+    /** Business outcomes the agent may report, each with a route. */
+    outcomes: string[];
+    /** The outer deadline: an integer of seconds, or one whole-string binding checked and frozen when the state is entered. */
+    timeoutSeconds: number | string;
+    /** Route label -> target node: the outcomes, and runtime routes (timed_out, needs_input and the others). */
+    next: Record<string, string>;
+}
+
 export interface WorkflowIRContract {
     /** The schema (in schemaDefs) every payload of this contract must satisfy. */
     schema: string;
@@ -219,14 +257,14 @@ export interface WorkflowIRContract {
     response?: { schema: string };
 }
 
-export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRMessaging | WorkflowIRTerminal;
+export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRTerminal;
 
 export interface WorkflowIR {
     /**
      * 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3, 4 with wait states, 5 with
-     * receive states, 6 with send states or 7 with request states or contract responses is written now.
+     * receive states, 6 with send states, 7 with request states or contract responses, or 8 with agent states is written now.
      */
-    irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+    irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
     apiVersion: typeof WORKFLOW_V2_API_VERSION;
     name: string;
     version: string;
@@ -267,6 +305,12 @@ export interface WorkflowCompileOptions {
      * valid, published or run until requests are enabled.
      */
     enableRequests?: boolean;
+    /**
+     * Compile agent states to IR 8 (INACTIVE: only a host that starts runs
+     * at controller 1.9.0 sets it). Off by default: a state of type agent
+     * stays unsupported, as before.
+     */
+    enableAgents?: boolean;
 }
 
 /** True when the text declares the v2 apiVersion (used to route spawn_workflow; legacy YAML keeps its path). */
@@ -695,6 +739,103 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
     };
 }
 
+/** An agent definition's name, or its package's: a letter or digit, then up to 127 letters, digits, '_', '.' or '-'. */
+const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+
+/**
+ * An agent state (IR 8; enabled only with enableAgents): an ordinary child
+ * agent session (the standard base, normal capabilities) given the state's
+ * input in a host-generated wrapper. `invoke` names exactly one task
+ * source: an inline `prompt`, or `agent: {name, package?, version?}`, a
+ * visible agent definition resolved when the state is entered and pinned
+ * for that entry (a package's workflow interface is not supported yet:
+ * the state's own inputSchema and outputSchema are its contract). The
+ * agent finishes the state only with complete_workflow_node: one of its
+ * outcomes (declared, or by default its routes that are not runtime
+ * routes) with an output that satisfies outputSchema, or needs_input or
+ * execution_failed. timeoutSeconds is its outer deadline (timed_out).
+ */
+function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean,
+    diagnostics: Diagnostics): WorkflowIRAgent | null {
+    const path = `states.${id}`;
+    checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition"], path, diagnostics);
+    let invoke: WorkflowIRAgent["invoke"] | null = null;
+    if (!isJsonObject(raw.invoke)) {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.invoke`, "an agent state needs invoke: { prompt: <task> } or { agent: { name: <agent> } }.");
+    } else {
+        const sources = (["prompt", "agent"] as const).filter(key => Object.hasOwn(raw.invoke as Record<string, unknown>, key));
+        checkKeys(raw.invoke, ["prompt", "agent"], `${path}.invoke`, diagnostics);
+        if (sources.length !== 1) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.invoke`, "invoke must give exactly one of prompt or agent.");
+        } else if (sources[0] === "prompt") {
+            const prompt = raw.invoke.prompt;
+            if (typeof prompt !== "string" || !prompt.trim() || !isStorableText(prompt) || Buffer.byteLength(prompt, "utf8") > AGENT_PROMPT_MAX_BYTES) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.invoke.prompt`, `prompt must be non-empty text of at most ${AGENT_PROMPT_MAX_BYTES} bytes.`);
+            } else invoke = { prompt };
+        } else {
+            const agent = raw.invoke.agent;
+            const agentPath = `${path}.invoke.agent`;
+            if (!isJsonObject(agent)) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", agentPath, "agent must be { name: <agent>, package?: <package>, version?: <semver> }.");
+            } else {
+                checkKeys(agent, ["name", "package", "version", "interface"], agentPath, diagnostics);
+                if (agent.interface !== undefined) {
+                    diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${agentPath}.interface`,
+                        "a package's workflow interface is not supported yet; declare the state's inputSchema and outputSchema instead.");
+                }
+                const name = typeof agent.name === "string" && AGENT_NAME_PATTERN.test(agent.name) ? agent.name : null;
+                if (name === null) diagnostics.error("WORKFLOW_FIELD_INVALID", `${agentPath}.name`, "agent.name must name an agent: a letter or digit, then letters, digits, '_', '.' or '-'.");
+                let packageName: string | null = null;
+                if (agent.package !== undefined) {
+                    if (typeof agent.package === "string" && AGENT_NAME_PATTERN.test(agent.package)) packageName = agent.package;
+                    else diagnostics.error("WORKFLOW_FIELD_INVALID", `${agentPath}.package`, "agent.package must name a package.");
+                }
+                let version: string | null = null;
+                if (agent.version !== undefined) {
+                    if (typeof agent.version === "string" && SEMVER.test(agent.version)) version = agent.version;
+                    else diagnostics.error("WORKFLOW_SEMVER_INVALID", `${agentPath}.version`, "agent.version must be a semantic version string (quote it in YAML).");
+                    if (agent.package === undefined) diagnostics.error("WORKFLOW_FIELD_INVALID", `${agentPath}.version`, "agent.version needs agent.package.");
+                }
+                if (name !== null) invoke = { agent: { name, package: packageName, version } };
+            }
+        }
+    }
+    const hasInput = Object.hasOwn(raw, "input");
+    const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
+    const inputSchema = schemaField(raw.inputSchema, `node.${id}.input`, `${path}.inputSchema`, schemas, diagnostics);
+    const outputSchema = schemaField(raw.outputSchema, `node.${id}.output`, `${path}.outputSchema`, schemas, diagnostics);
+    const timeoutSeconds = secondsField(raw.timeoutSeconds, `${path}.timeoutSeconds`, diagnostics, "timeoutSeconds");
+    const next = compileRoutes(raw, path, "an agent state", nodeIds, diagnostics);
+    let outcomes: string[];
+    if (raw.outcomes !== undefined) {
+        if (!isStringList(raw.outcomes) || raw.outcomes.length === 0 || !raw.outcomes.every(item => ID_PATTERN.test(item) && !isRuntimeRoute(item))
+            || new Set(raw.outcomes).size !== raw.outcomes.length) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.outcomes`, "outcomes must be a non-empty list of distinct route labels that are not runtime routes.");
+            outcomes = [];
+        } else {
+            outcomes = raw.outcomes;
+            for (const outcome of outcomes) {
+                if (!Object.hasOwn(next, outcome)) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `declared outcome '${outcome}' has no route.`);
+            }
+            for (const label of Object.keys(next)) {
+                if (!outcomes.includes(label) && !isRuntimeRoute(label)) {
+                    diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`,
+                        `route '${label}' is neither a declared outcome nor a runtime route.`);
+                }
+            }
+        }
+    } else {
+        outcomes = Object.keys(next).filter(label => !isRuntimeRoute(label));
+    }
+    if (outcomes.length === 0) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, "an agent state needs at least one business outcome route.");
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    if (invoke === null || timeoutSeconds === null) return null;
+    return {
+        id, type: "agent", description: optionalText(raw.description, `${path}.description`, diagnostics),
+        invoke, hasInput, input, inputSchema, outputSchema, outcomes, timeoutSeconds, next,
+    };
+}
+
 function compileTerminal(id: string, raw: Record<string, unknown>, schemas: SchemaCollector, diagnostics: Diagnostics): WorkflowIRTerminal | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "outcome", "output", "summary", "outputSchema"], path, diagnostics);
@@ -750,6 +891,7 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
 export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions = {}): WorkflowCompileResult {
     const diagnostics = new Diagnostics();
     const enableRequests = options.enableRequests === true;
+    const enableAgents = options.enableAgents === true;
     if (typeof yaml !== "string") throw new TypeError("Workflow YAML must be a string.");
     const yamlSha256 = sha256Hex(yaml);
     const result = (name: string | null, version: string | null, ir: WorkflowIR | null): WorkflowCompileResult => {
@@ -909,6 +1051,9 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
             } else if (type === "terminal") {
                 const node = compileTerminal(id, rawNode, schemas, diagnostics);
                 if (node) nodes[id] = node;
+            } else if (type === "agent" && enableAgents) {
+                const node = compileAgent(id, rawNode, nodeIds, schemas, hasCatchAll, diagnostics);
+                if (node) nodes[id] = node;
             } else if (typeof type === "string" && KNOWN_NODE_TYPES.includes(type)) {
                 diagnostics.error("WORKFLOW_NODE_TYPE_UNSUPPORTED", `${path}.type`, `state type '${type}' is not supported by this build yet (supported: ${SUPPORTED_NODE_TYPES.join(", ")}).`);
             } else {
@@ -958,12 +1103,15 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
         }
     }
     const responds = Object.values(contracts).some(contract => contract.response !== undefined);
-    const hasMessaging = received.size > 0 || sent.size > 0 || requested.size > 0 || responds;
-    const ir: WorkflowIR = {
-        irVersion: requested.size > 0 || responds ? WORKFLOW_V2_REQUEST_IR_VERSION
+    const irVersion: WorkflowIR["irVersion"] = Object.values(nodes).some(node => node.type === "agent") ? WORKFLOW_V2_AGENT_IR_VERSION
+        : requested.size > 0 || responds ? WORKFLOW_V2_REQUEST_IR_VERSION
             : sent.size > 0 ? WORKFLOW_V2_SEND_IR_VERSION
                 : received.size > 0 ? WORKFLOW_V2_MESSAGING_IR_VERSION
-                    : Object.values(nodes).some(node => node.type === "wait") ? WORKFLOW_V2_WAIT_IR_VERSION : WORKFLOW_V2_IR_VERSION,
+                    : Object.values(nodes).some(node => node.type === "wait") ? WORKFLOW_V2_WAIT_IR_VERSION : WORKFLOW_V2_IR_VERSION;
+    // From version 5 on, the IR states its contracts (an empty map when it has none).
+    const hasMessaging = irVersion >= WORKFLOW_V2_MESSAGING_IR_VERSION;
+    const ir: WorkflowIR = {
+        irVersion,
         apiVersion: WORKFLOW_V2_API_VERSION,
         name, version,
         description: optionalText(root.description, "description", diagnostics),
@@ -1040,9 +1188,10 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
     const maxIrVersion = options.maxIrVersion ?? WORKFLOW_V2_RUNNABLE_IR_VERSION;
     need(isJsonObject(value), "stored IR is not an object");
     need(value.irVersion === 1 || value.irVersion === 2 || value.irVersion === 3 || value.irVersion === 4 || value.irVersion === 5
-        || value.irVersion === 6 || (value.irVersion === 7 && maxIrVersion >= WORKFLOW_V2_REQUEST_IR_VERSION),
+        || value.irVersion === 6 || (value.irVersion === 7 && maxIrVersion >= WORKFLOW_V2_REQUEST_IR_VERSION)
+        || (value.irVersion === 8 && maxIrVersion >= WORKFLOW_V2_AGENT_IR_VERSION),
         `stored IR version ${String(value.irVersion)} is not supported by this worker`);
-    const irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 = value.irVersion;
+    const irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 = value.irVersion;
     // A field a version introduced must be stated (null when absent) from that version on.
     const rootOutputSchema = irVersion === 1 && !Object.hasOwn(value, "outputSchema") ? null : value.outputSchema;
     const catchAll = irVersion < 3 && !Object.hasOwn(value, "catchAll") ? null : value.catchAll;
@@ -1132,6 +1281,25 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
             nodes[id] = {
                 id, type: "messaging", description: node.description, mode: "receive", contract: node.contract, from: sender,
                 correlate: node.correlate, waitSeconds, hasInput: node.hasInput, input: node.input, next: node.next,
+            };
+        } else if (node.type === "agent") {
+            const invoke = node.invoke;
+            const agent = isJsonObject(invoke) && isJsonObject(invoke.agent) ? invoke.agent : null;
+            const validInvoke = isJsonObject(invoke) && Object.keys(invoke).length === 1
+                && (typeof invoke.prompt === "string" || (agent !== null && Object.keys(agent).length === 3 && typeof agent.name === "string"
+                    && nullableString(agent.package) && nullableString(agent.version)));
+            const timeoutSeconds = node.timeoutSeconds;
+            need(irVersion >= WORKFLOW_V2_AGENT_IR_VERSION && validInvoke && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input")
+                && nullableString(node.inputSchema) && nullableString(node.outputSchema) && stringArray(node.outcomes) && node.outcomes.length > 0
+                && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next),
+                `stored IR agent state ${id} is invalid`);
+            nodes[id] = {
+                id, type: "agent", description: node.description,
+                invoke: agent !== null
+                    ? { agent: { name: agent.name as string, package: agent.package as string | null, version: agent.version as string | null } }
+                    : { prompt: (invoke as { prompt: string }).prompt },
+                hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
+                outcomes: node.outcomes, timeoutSeconds, next: node.next,
             };
         } else if (node.type === "terminal") {
             need(isTerminalOutcome(node.outcome)

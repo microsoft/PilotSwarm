@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
-import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult } from "./compiler.js";
+import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowCompileResult } from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
 import { schemaSetFor } from "./schema.js";
@@ -85,7 +85,12 @@ function notifyVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
 
 /** A definition as a host compiles it (WorkflowV2Host.requests). */
 function compileFor(host: Pick<WorkflowV2Host, "requests">, yaml: string): WorkflowCompileResult {
-    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true } : {});
+    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true, enableAgents: true } : {});
+}
+
+/** How a host reads stored IR: a host that starts 1.9.0 runs reads its request and agent states (IR 7 and 8). */
+function irOptionsFor(host: Pick<WorkflowV2Host, "requests">): { maxIrVersion?: number } {
+    return host.requests === true ? { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION } : {};
 }
 
 export interface CreateWorkflowV2Request {
@@ -528,7 +533,7 @@ export async function updateWorkflowV2(
         if (command.operation === "publish_and_start") {
             const revision = await host.store.readRevision(workflowSessionId, command.expectedRevision);
             if (revision?.valid && revision.irSha256) {
-                const ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256);
+                const ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host));
                 const problems = ir.inputsSchema ? schemaSetFor(revision.irSha256, ir.schemaDefs).validate(ir.inputsSchema, command.inputs) : [];
                 if (problems.length) {
                     throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
@@ -547,7 +552,7 @@ export async function updateWorkflowV2(
     } else {
         const definition = await host.store.readDefinition(workflowSessionId);
         if (definition?.state === "published" && definition.publishedRevision !== null && definition.publishedIrSha256) {
-            const ir = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256);
+            const ir = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256, irOptionsFor(host));
             const problems = ir.inputsSchema ? schemaSetFor(definition.publishedIrSha256, ir.schemaDefs).validate(ir.inputsSchema, command.inputs) : [];
             if (problems.length) {
                 throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
@@ -842,7 +847,8 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     const run = request.runId ? runs.find(item => item.runId === request.runId) : runs.find(item => item.mode === "live");
     if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", request.runId ? `Run ${request.runId} is not a run of this workflow.` : "This workflow has no live run to give input to.");
     if (typeof request.contract !== "string") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "contract must name a contract, such as BuildEvent@1.");
-    const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
+    // Reading the contracts runs nothing: a run of request or agent states (IR 7 and 8, INACTIVE) takes input as any run.
+    const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
     const contract = ir.contracts?.[request.contract];
     const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
     if (!contract || !received.has(request.contract)) {

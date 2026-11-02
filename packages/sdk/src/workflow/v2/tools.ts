@@ -1,6 +1,7 @@
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, WorkflowJsonError, type JsonValue } from "./json.js";
+import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
 import { describeWorkflowV2States } from "./runtime.js";
 import {
     controlWorkflowV2Run,
@@ -22,6 +23,7 @@ import {
     type WorkflowDefinitionReceipt,
     type WorkflowRunCommandReceipt,
     type WorkflowStore,
+    type WorkflowAgentInvocation,
 } from "./store.js";
 
 /**
@@ -332,11 +334,17 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     if (!revision) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The current revision is missing.");
     const graphRevision = definition.publishedRevision ?? definition.currentRevision;
     const graphRow = graphRevision === revision.revision ? revision : await store.readRevision(workflowSessionId, graphRevision);
-    const ir = graphRow?.valid && graphRow.irSha256 ? await store.readRevisionIr(workflowSessionId, graphRow.revision, graphRow.irSha256) : null;
+    // Reading shows any stored graph, request and agent states (IR 7 and 8, INACTIVE) included; it runs nothing.
+    const ir = graphRow?.valid && graphRow.irSha256
+        ? await store.readRevisionIr(workflowSessionId, graphRow.revision, graphRow.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION }) : null;
     const runs = await store.listRuns(workflowSessionId);
     const selected = options.runId ? runs.find(run => run.runId === options.runId) : runs.find(run => run.mode === "live");
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
     const nodes = selected ? await store.listNodeExecutions(selected.runId, 200) : [];
+    // An agent state's child session and its lifecycle (IR 8, INACTIVE): read only for a run that has one.
+    const agents = selected && nodes.some(node => node.nodeType === "agent")
+        ? new Map((await store.listAgentInvocations(selected.runId)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
+        : new Map<string, WorkflowAgentInvocation>();
     const inbox = selected ? await store.listInbox(selected.runId, 50) : [];
     const outbox = selected ? await store.listOutbox(selected.runId, 50) : [];
     // A recipient's later intake refusal of a delivered message (design 5.6), shown beside the delivery, which it never rewrites;
@@ -380,6 +388,7 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
                 ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
                 ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
+                ...(agents.has(node.nodeExecutionId) ? { agent: agentViewOf(agents.get(node.nodeExecutionId)!) } : {}),
                 ...(node.resultKind === "business" ? { outputPreview: previewJson(node.output, 500) } : {}),
                 ...(node.resultKind === "runtime_error" ? { errorPreview: previewJson(node.error, 500) } : {}),
             })),
@@ -397,6 +406,21 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 ...(intakeOutcomes.has(message.exchangeId) ? { ...intakeOutcomes.get(message.exchangeId) } : {}),
             })),
         } : null,
+    };
+}
+
+/** An agent state's child, as read_workflow shows it: the session to open for its chat, and where its lifecycle is. */
+function agentViewOf(invocation: WorkflowAgentInvocation): { [key: string]: JsonValue } {
+    return {
+        childSessionId: invocation.childSessionId,
+        task: invocation.task.source === "prompt" ? { source: "prompt" }
+            : { source: "agent", name: invocation.task.name, package: invocation.task.package, version: invocation.task.version },
+        controllingSessionId: invocation.controllingSessionId,
+        spawned: invocation.spawnedAt !== null,
+        spawnAttempts: invocation.spawnAttempts,
+        end: invocation.endRequested,
+        endSent: invocation.endSentAt !== null,
+        ...(invocation.endChildStatus !== null ? { endChildStatus: invocation.endChildStatus } : {}),
     };
 }
 

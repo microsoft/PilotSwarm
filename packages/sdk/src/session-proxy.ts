@@ -76,6 +76,7 @@ import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
+import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
 import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/v2/intake-admission.js";
@@ -2468,6 +2469,11 @@ export function registerActivities(
             const sdkClient = await getInlineClient();
             return { catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient() };
         };
+        // Workflow agent states (INACTIVE): on a turn of a worker that runs them, a session that is an agent state's child
+        // gets complete_workflow_node; no other session does.
+        const workflowAgentChild = workflowRequestTurn && catalog?.workflowStore
+            ? (await catalog.workflowStore().readAgentInvocationByChild(input.sessionId)) !== null
+            : false;
 
         const isAutonomousSystemTurn = () => {
             if (!SYSTEM_AGENT_IDS.has(runConfig.agentIdentity || "")) return false;
@@ -2827,6 +2833,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         callerSessionId: input.sessionId, store: host.store,
                         dispatcher: new WorkflowResponseWakeDispatcher(host.store, host.duroxideClient),
                     });
+                },
+            } : {}),
+            /** complete_workflow_node (agent states, INACTIVE): the calling session is the host-stamped child of the state. */
+            ...(workflowAgentChild ? {
+                completeWorkflowNode: async (args: Record<string, unknown>) => {
+                    const host = await workflowV2Host();
+                    return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient });
                 },
             } : {}),
 

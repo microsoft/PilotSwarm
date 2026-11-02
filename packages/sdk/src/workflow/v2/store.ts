@@ -1,11 +1,11 @@
 import type { Pool, PoolClient } from "pg";
 import {
-    MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, WAIT_MAX_SECONDS,
-    WORKFLOW_V2_API_VERSION, WORKFLOW_V2_REQUEST_IR_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
+    AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, WAIT_MAX_SECONDS,
+    WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
 } from "./compiler.js";
 import {
     assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, jsonSha256, kindValueSha256, parseStoredJson, sha256Hex,
-    utf8ByteLength, WorkflowJsonError, type JsonValue,
+    utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue,
 } from "./json.js";
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
@@ -520,6 +520,129 @@ export interface RequestSpecInput extends SendSpecInput {
     timeoutSeconds: number;
     responseSchema: string;
     workflowRecipient: { result: NodeResultInput; projection?: SessionProjection };
+}
+
+// ─── Agent states (IR 8, migration 0097; INACTIVE: only controller 1.9.0 admits them) ──
+
+/** An agent state's task: its inline prompt, or the named agent definition it runs. */
+export type WorkflowAgentTask =
+    | { source: "prompt"; prompt: string }
+    | { source: "agent"; name: string; package: string | null; version: string | null };
+
+/**
+ * What an agent state admitted pending records (enterNode): its child agent
+ * session's stable id, the workflow's controlling parent agent, its task,
+ * its business outcomes and output schema (the ones its pinned definition
+ * declares for the state) and its outer deadline's seconds.
+ */
+export interface AgentSpecInput {
+    childSessionId: string;
+    controllingSessionId: string | null;
+    task: WorkflowAgentTask;
+    outcomes: string[];
+    outputSchema: string | null;
+    timeoutSeconds: number;
+}
+
+/** An agent state's invocation record (workflow_agent_invocations). */
+export interface WorkflowAgentInvocation {
+    nodeExecutionId: string;
+    runId: string;
+    workflowSessionId: string;
+    childSessionId: string;
+    controllingSessionId: string | null;
+    task: WorkflowAgentTask;
+    outcomes: string[];
+    outputSchema: string | null;
+    deadlineAt: Date;
+    createdAt: Date;
+    spawnAttempts: number;
+    spawnedAt: Date | null;
+    endRequested: "done" | "cancel" | null;
+    endRequestedAt: Date | null;
+    /** When the end command was handed to the child's queue, or found unneeded; null while it is owed. */
+    endSentAt: Date | null;
+    /** The child session orchestration's status when the end was sent or found unneeded. */
+    endChildStatus: string | null;
+}
+
+/** The receipt of the complete_workflow_node operation that decided an agent state. */
+export interface WorkflowAgentCompletionReceipt {
+    nodeExecutionId: string;
+    workflowSessionId: string;
+    runId: string;
+    stateId: string;
+    childSessionId: string;
+    operationId: string;
+    kind: "result" | "error";
+    /** The business outcome, or the reported runtime error code. */
+    outcome: string;
+    resultSha256: string;
+    /** The store's reading that decided it, ISO 8601 with microseconds. */
+    decidedAt: string;
+}
+
+/** Refusals of a complete_workflow_node operation (the state's record is unchanged unless noted). */
+export type WorkflowAgentCompletionRefusal =
+    /** Field errors; the state stays pending (attemptsLeft more invalid completions are taken). */
+    | "OUTPUT_INVALID"
+    /** The invalid completion that spent the correction budget: the state failed invalid_output. */
+    | "OUTPUT_ATTEMPTS_EXHAUSTED"
+    /** At or after the deadline: only the controller decides the state now (timed_out). */
+    | "NODE_EXPIRED"
+    /** The state was decided by something else (its deadline, a cancel, a stop, a deletion). */
+    | "NODE_CLOSED"
+    /** The state was completed with another result. */
+    | "COMPLETION_CONFLICT"
+    /** The operation id was used for another result. */
+    | "OPERATION_CONFLICT";
+
+export type WorkflowAgentCompletionResult =
+    | { kind: "accepted"; replayed: boolean; receipt: WorkflowAgentCompletionReceipt; controllerInstanceId: string }
+    | { kind: "refused"; replayed: boolean; code: WorkflowAgentCompletionRefusal; problems: JsonValue; attemptsLeft: number | null;
+        state: { status: "pending" | "completed"; outcome: string | null; winner: string | null }; controllerInstanceId: string };
+
+/** Invalid completions an agent state takes before the one that fails it invalid_output (its correction budget). */
+export const WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS = 3;
+/** The longest message of an agent's reported runtime error. */
+export const WORKFLOW_V2_AGENT_ERROR_MESSAGE_MAX = 2_000;
+/** The largest details value of an agent's reported runtime error, in UTF-8 bytes of canonical JSON. */
+export const WORKFLOW_V2_AGENT_ERROR_DETAILS_MAX_BYTES = 16 * 1024;
+
+function agentTaskOf(value: JsonValue): WorkflowAgentTask {
+    const corrupt = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored agent task has an invalid shape.");
+    if (!isJsonObject(value)) throw corrupt();
+    if (value.source === "prompt" && typeof value.prompt === "string" && Object.keys(value).length === 2) return { source: "prompt", prompt: value.prompt };
+    if (value.source === "agent" && typeof value.name === "string" && (value.package === null || typeof value.package === "string")
+        && (value.version === null || typeof value.version === "string") && Object.keys(value).length === 4) {
+        return { source: "agent", name: value.name, package: value.package, version: value.version };
+    }
+    throw corrupt();
+}
+
+function agentInvocationFrom(row: Row): WorkflowAgentInvocation {
+    const outcomes = parseStoredJson(str(row, "outcomes"), "outcomes");
+    const end = strOrNull(row, "end_requested");
+    if (!Array.isArray(outcomes) || !outcomes.every(item => typeof item === "string") || (end !== null && end !== "done" && end !== "cancel")) {
+        throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored agent invocation has an invalid shape.");
+    }
+    return {
+        nodeExecutionId: str(row, "node_execution_id"), runId: str(row, "run_id"), workflowSessionId: str(row, "workflow_session_id"),
+        childSessionId: str(row, "child_session_id"), controllingSessionId: strOrNull(row, "controlling_session_id"),
+        task: agentTaskOf(parseStoredJson(str(row, "task"), "task")), outcomes: outcomes as string[], outputSchema: strOrNull(row, "output_schema"),
+        deadlineAt: date(row, "deadline_at"), createdAt: date(row, "created_at"), spawnAttempts: int(row, "spawn_attempts"),
+        spawnedAt: dateOrNull(row, "spawned_at"), endRequested: end, endRequestedAt: dateOrNull(row, "end_requested_at"),
+        endSentAt: dateOrNull(row, "end_sent_at"), endChildStatus: strOrNull(row, "end_child_status"),
+    };
+}
+
+function agentReceiptOf(value: JsonValue): WorkflowAgentCompletionReceipt {
+    const corrupt = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored agent completion receipt has an invalid shape.");
+    if (!isJsonObject(value)) throw corrupt();
+    const { nodeExecutionId, workflowSessionId, runId, stateId, childSessionId, operationId, kind, outcome, resultSha256, decidedAt } = value;
+    if ([nodeExecutionId, workflowSessionId, runId, stateId, childSessionId, operationId, outcome, resultSha256, decidedAt].some(item => typeof item !== "string")
+        || (kind !== "result" && kind !== "error")) throw corrupt();
+    return { nodeExecutionId, workflowSessionId, runId, stateId, childSessionId, operationId, kind, outcome, resultSha256, decidedAt } as WorkflowAgentCompletionReceipt;
 }
 
 /**
@@ -1336,7 +1459,7 @@ export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
-        intakeExposures: string;
+        intakeExposures: string; agentInvocations: string; agentCompletions: string;
         sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
@@ -1349,6 +1472,7 @@ export class WorkflowStore {
             requests: `${s}.workflow_requests`, requestResponses: `${s}.workflow_request_responses`,
             requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`, intake: `${s}.workflow_intake`,
             intakeInvocations: `${s}.workflow_intake_invocations`, intakeExposures: `${s}.workflow_intake_exposures`,
+            agentInvocations: `${s}.workflow_agent_invocations`, agentCompletions: `${s}.workflow_agent_completions`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
@@ -2598,6 +2722,13 @@ export class WorkflowStore {
          * is null with it.
          */
         request?: RequestSpecInput | null;
+        /**
+         * What an agent state records (null for other states and for one that
+         * failed at admission; INACTIVE: only controller 1.9.0 passes one).
+         * Its deadline is the admission's accepted-entry reading plus its
+         * seconds, as a wait's; waitSeconds is null with it.
+         */
+        agent?: AgentSpecInput | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
@@ -2643,10 +2774,27 @@ export class WorkflowStore {
             if (request !== null && !(Number.isSafeInteger(request.timeoutSeconds) && request.timeoutSeconds >= 1 && request.timeoutSeconds <= WAIT_MAX_SECONDS)) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid request deadline.`);
             }
+            // An agent spec belongs to an agent state admitted without an immediate result; its deadline is a whole number
+            // of seconds, and its output contract is the one its state declares in the run's pinned definition.
+            const agent = input.agent ?? null;
+            if ((agent !== null) !== (input.nodeType === "agent" && immediate === null)
+                || (agent !== null && !(Number.isSafeInteger(agent.timeoutSeconds) && agent.timeoutSeconds >= 1 && agent.timeoutSeconds <= WAIT_MAX_SECONDS))
+                || (agent !== null && !storableId(agent.childSessionId))) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid agent spec.`);
+            }
+            if (agent !== null) {
+                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
+                const declared = ir.nodes[input.nodeId];
+                if (declared?.type !== "agent" || declared.outputSchema !== agent.outputSchema
+                    || canonicalJson([...declared.outcomes].sort()) !== canonicalJson([...agent.outcomes].sort())) {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an agent spec whose output contract `
+                        + `is not the one its state declares.`);
+                }
+            }
             // A request's record freezes the response schema that its state's contract declares in the run's pinned
             // definition, never another schema of that definition.
             if (request !== null) {
-                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_REQUEST_IR_VERSION });
+                const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
                 if (declaredResponseSchema(ir, input.nodeId, request.contract, `Node execution ${input.nodeExecutionId}`) !== request.responseSchema) {
                     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has a request spec whose response `
                         + `schema ${request.responseSchema} is not the one contract ${request.contract} declares.`);
@@ -2701,6 +2849,8 @@ export class WorkflowStore {
                     request = null;
                 } else waitSeconds = request.timeoutSeconds;
             }
+            // An agent state admitted pending has its outer deadline as a wait has.
+            if (agent !== null) waitSeconds = agent.timeoutSeconds;
             // A receive decides at one reading of the store's clock, taken here,
             // after the locks and guards, and kept as exact SQL text (a
             // JavaScript Date keeps only milliseconds): the first message the
@@ -2777,6 +2927,18 @@ export class WorkflowStore {
                     [node.nodeExecutionId, workflowSessionId, input.runId, request.recipient, request.contract, sha256Hex(request.payloadText),
                         request.responseSchema]);
                 if (!recorded[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${node.nodeExecutionId} was admitted without its deadline.`);
+            }
+            // An agent state admitted pending: its invocation record, with the node's deadline and entry time, before any spawn.
+            if (agent !== null) {
+                const { rows: recorded } = await client.query(
+                    `INSERT INTO ${this.t.agentInvocations}
+                        (node_execution_id, run_id, workflow_session_id, child_session_id, controlling_session_id, task, outcomes, output_schema,
+                         deadline_at, created_at)
+                     SELECT $1, $2, $3, $4, $5, $6, $7, $8, deadline_at, entered_at FROM ${this.t.nodes}
+                      WHERE node_execution_id = $1 AND deadline_at IS NOT NULL RETURNING node_execution_id`,
+                    [node.nodeExecutionId, input.runId, workflowSessionId, agent.childSessionId, agent.controllingSessionId,
+                        canonicalJson(agent.task), canonicalJson(agent.outcomes), agent.outputSchema]);
+                if (!recorded[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${node.nodeExecutionId} was admitted without its deadline.`);
             }
             if (claim) {
                 const { rows: claimed } = await client.query(
@@ -3325,7 +3487,7 @@ export class WorkflowStore {
 
             // 5. The schema of the response (the one its state's contract declares in the run's pinned definition) or of a decline.
             const run = await this.lockRun(client, request.runId);
-            const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_REQUEST_IR_VERSION });
+            const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
             const { nodeId: stateId } = await this.nodeIn(client, request.exchangeId);
             if (declaredResponseSchema(ir, stateId, request.contract, `Request ${request.exchangeId}`) !== request.responseSchema) {
                 return corrupt(`Request ${request.exchangeId} froze response schema ${request.responseSchema}, which contract ${request.contract} does not declare.`);
@@ -4661,6 +4823,383 @@ export class WorkflowStore {
             invocationId: str(row, "invocation_id"), recipientSessionId: str(row, "recipient_session_id"), attemptId: str(row, "attempt_id"),
             exposedAt: str(row, "exposed_at_iso"),
         } : null;
+    }
+
+    // ─── Agent states (IR 8, migration 0097; INACTIVE: only controller 1.9.0 and tests call these) ──
+
+    async readAgentInvocation(nodeExecutionId: string): Promise<WorkflowAgentInvocation | null> {
+        const { rows } = await this.pool.query(`SELECT * FROM ${this.t.agentInvocations} WHERE node_execution_id = $1`, [nodeExecutionId]);
+        return rows[0] ? agentInvocationFrom(rows[0]) : null;
+    }
+
+    /** The invocation whose child agent session is `childSessionId`, or null. */
+    async readAgentInvocationByChild(childSessionId: string): Promise<WorkflowAgentInvocation | null> {
+        if (!storableId(childSessionId)) return null;
+        const { rows } = await this.pool.query(`SELECT * FROM ${this.t.agentInvocations} WHERE child_session_id = $1`, [childSessionId]);
+        return rows[0] ? agentInvocationFrom(rows[0]) : null;
+    }
+
+    async listAgentInvocations(runId: string, limit = 200): Promise<WorkflowAgentInvocation[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.agentInvocations} WHERE run_id = $1 ORDER BY created_at, node_execution_id LIMIT $2`, [runId, limit]);
+        return rows.map(agentInvocationFrom);
+    }
+
+    /**
+     * Begin one spawn attempt of an agent state's child, under the session
+     * lock and the invocation's: a state decided meanwhile is not spawned
+     * ("decided"), a child already recorded as spawned is not spawned again
+     * ("spawned"); otherwise the attempt is counted ("spawn"). The child's id
+     * is stable, so an attempt that crashed after creating it finds the same
+     * session; the spawner must not create a second one.
+     */
+    async beginAgentSpawn(nodeExecutionId: string): Promise<{ action: "spawn" | "spawned" | "decided"; invocation: WorkflowAgentInvocation; node: WorkflowNodeExecutionRow }> {
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
+            const { rows: locked } = await client.query(`SELECT * FROM ${this.t.agentInvocations} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            if (!locked[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not an agent state.`);
+            const node = await this.nodeIn(client, nodeExecutionId);
+            const invocation = agentInvocationFrom(locked[0]);
+            if (!live || node.state !== "pending") return { action: "decided" as const, invocation, node };
+            if (invocation.spawnedAt !== null) return { action: "spawned" as const, invocation, node };
+            const { rows } = await client.query(
+                `UPDATE ${this.t.agentInvocations} SET spawn_attempts = spawn_attempts + 1 WHERE node_execution_id = $1 RETURNING *`, [nodeExecutionId]);
+            return { action: "spawn" as const, invocation: agentInvocationFrom(rows[0]), node };
+        });
+    }
+
+    /** Record that the child of an agent state was created and given its task (once; a repeat changes nothing). */
+    async recordAgentSpawned(nodeExecutionId: string, projection?: (invocation: WorkflowAgentInvocation) => SessionProjection)
+        : Promise<{ recorded: boolean; invocation: WorkflowAgentInvocation }> {
+        return this.transaction(async client => {
+            await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
+            const { rows } = await client.query(
+                `UPDATE ${this.t.agentInvocations} SET spawned_at = clock_timestamp() WHERE node_execution_id = $1 AND spawned_at IS NULL RETURNING *`,
+                [nodeExecutionId]);
+            if (rows[0]) {
+                const invocation = agentInvocationFrom(rows[0]);
+                if (projection) await this.project(client, projection(invocation));
+                return { recorded: true, invocation };
+            }
+            const { rows: stored } = await client.query(`SELECT * FROM ${this.t.agentInvocations} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            if (!stored[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not an agent state.`);
+            return { recorded: false, invocation: agentInvocationFrom(stored[0]) };
+        });
+    }
+
+    /**
+     * Record what the workflow asked of an agent state's child once the state
+     * was decided (done after the agent's typed completion, cancel after
+     * anything else), once: the first request stands. The caller sends the
+     * command (at least once) whatever this returns.
+     */
+    async recordAgentEnd(nodeExecutionId: string, end: "done" | "cancel"): Promise<{ recorded: boolean; invocation: WorkflowAgentInvocation }> {
+        const { rows } = await this.pool.query(
+            `UPDATE ${this.t.agentInvocations} SET end_requested = $2, end_requested_at = clock_timestamp()
+              WHERE node_execution_id = $1 AND end_requested IS NULL RETURNING *`, [nodeExecutionId, end]);
+        if (rows[0]) return { recorded: true, invocation: agentInvocationFrom(rows[0]) };
+        const invocation = await this.readAgentInvocation(nodeExecutionId);
+        if (!invocation) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not an agent state.`);
+        return { recorded: false, invocation };
+    }
+
+    /** Record that an agent state's end command was handed to its child's queue, or was not needed (the child's status), once. */
+    async markAgentEndSent(nodeExecutionId: string, childStatus: string): Promise<{ marked: boolean; invocation: WorkflowAgentInvocation }> {
+        const { rows } = await this.pool.query(
+            `UPDATE ${this.t.agentInvocations} SET end_sent_at = clock_timestamp(), end_child_status = $2
+              WHERE node_execution_id = $1 AND end_requested IS NOT NULL AND end_sent_at IS NULL RETURNING *`,
+            [nodeExecutionId, jsonbSafeText(childStatus, 100)]);
+        if (rows[0]) return { marked: true, invocation: agentInvocationFrom(rows[0]) };
+        const invocation = await this.readAgentInvocation(nodeExecutionId);
+        if (!invocation || invocation.endRequested === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} has no end to send.`);
+        return { marked: false, invocation };
+    }
+
+    /**
+     * Elapse an agent state at its outer deadline (timed_out, decided by the
+     * controller), as elapseRequest does for a request: one reading of the
+     * store's clock, taken after the session lock, decides and is stored; at
+     * or after the deadline, or once a completion was bound expired (durable
+     * expiry: the store's clock is not monotonic), the state is decided now.
+     * Before that it reports the time left; a result stored first is kept.
+     */
+    async elapseAgentNode(nodeExecutionId: string, result: NodeResultInput, projection?: SessionProjection): Promise<
+        { result: "elapsed" | "decided"; node: WorkflowNodeExecutionRow } | { result: "not_due"; remainingMs: number; node: WorkflowNodeExecutionRow }> {
+        if (result.resultKind !== "runtime_error" || result.outcome !== "timed_out" || result.winner !== "controller") {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} elapses only as timed_out, decided by the controller.`);
+        }
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
+            const { rows: invocations } = await client.query(`SELECT node_execution_id FROM ${this.t.agentInvocations} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            if (!invocations[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not an agent state.`);
+            if (live) {
+                const { rows } = await client.query(
+                    `WITH decided AS (SELECT clock_timestamp() AS at)
+                     UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = $2, result_kind = 'runtime_error', output = NULL, error = $3,
+                            winner = 'controller', completed_at = (SELECT at FROM decided)
+                      WHERE node_execution_id = $1 AND state = 'pending' AND node_type = 'agent'
+                        AND (deadline_at <= (SELECT at FROM decided)
+                             OR EXISTS (SELECT 1 FROM ${this.t.agentCompletions} WHERE node_execution_id = $1 AND outcome = 'expired'))
+                      RETURNING *`,
+                    [nodeExecutionId, result.outcome, result.valueText]);
+                if (rows[0]) {
+                    await this.project(client, projection);
+                    return { result: "elapsed" as const, node: nodeFrom(rows[0]) };
+                }
+            }
+            const { rows } = await client.query(
+                `SELECT *, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (deadline_at - clock_timestamp())) * 1000))::bigint AS remaining_ms
+                   FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            if (!rows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
+            const node = nodeFrom(rows[0]);
+            if (node.state === "completed" || !live) return { result: "decided" as const, node };
+            if (node.nodeType !== "agent" || node.deadlineAt === null) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} is not pending with a deadline.`);
+            }
+            return { result: "not_due" as const, remainingMs: int(rows[0], "remaining_ms"), node };
+        });
+    }
+
+    /**
+     * The typed completion of an agent state by its own child session
+     * (complete_workflow_node; design 03 agent node, D05), in one transaction.
+     * The caller is the child session the tool's host names, never a field
+     * of the call; it finds its state by the invocation's child id (none:
+     * AGENT_NODE_NOT_FOUND, nothing written). In order:
+     *
+     * 1. The call's shape (COMPLETION_INVALID, nothing written): an object
+     *    with exactly one of `outcome` (a string; `output`, a JSON value,
+     *    defaults to null) or `error` ({code, message, details?}); and the
+     *    operation id. Its result identity is the sha256 of the canonical
+     *    JSON of {kind, value} (kindValueSha256).
+     * 2. The session, run and invocation locks, then a known operation
+     *    decides alone: the same result identity gets what it got before
+     *    (the deciding receipt, or its refusal), another one is
+     *    OPERATION_CONFLICT. A deleted workflow gets NODE_CLOSED, unbound.
+     * 3. One reading of the store's clock, after the node's lock. A decided
+     *    state: the deciding result again is accepted (bound `same`), another
+     *    result of the agent is COMPLETION_CONFLICT, any other winner is
+     *    NODE_CLOSED. A pending state at or after its deadline, or with an
+     *    operation bound expired before, is NODE_EXPIRED (durable expiry).
+     * 4. The result is checked: an outcome the state declares with an output
+     *    that satisfies its output schema in the pinned definition (at most
+     *    WORKFLOW_PAYLOAD_MAX_BYTES), or an error whose code the agent may
+     *    report (needs_input, execution_failed) with a message of 1 to
+     *    WORKFLOW_V2_AGENT_ERROR_MESSAGE_MAX characters and optional details
+     *    of at most WORKFLOW_V2_AGENT_ERROR_DETAILS_MAX_BYTES. A failed check
+     *    is bound `invalid` with its field errors and decides nothing
+     *    (OUTPUT_INVALID), until the WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS
+     *    one, which fails the state invalid_output (OUTPUT_ATTEMPTS_EXHAUSTED).
+     * 5. A valid result decides the state (winner agent, completed at the
+     *    reading), with its receipt and events; final chat is never a result.
+     *
+     * The caller wakes the run's controller after the commit (a hint; its
+     * backstop collection finds the result too).
+     */
+    async completeAgentNode(input: { childSessionId: string; operationId: string; call: unknown }): Promise<WorkflowAgentCompletionResult> {
+        const notFound = () => new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This session is not running a workflow agent state.");
+        if (!storableId(input.childSessionId)) throw notFound();
+        // 1. The call's shape and the operation id.
+        const operationId: unknown = input.operationId;
+        if (typeof operationId !== "string" || !operationId.trim() || operationId.length > 256 || !isStorableText(operationId)) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation_id must be 1-256 characters of valid Unicode text without NUL characters.");
+        }
+        const shape = (message: string) => new WorkflowStoreError("COMPLETION_INVALID", message);
+        const call: unknown = input.call;
+        if (!isJsonObject(call)) throw shape("A completion is { outcome, output } or { error: { code, message, details? } }.");
+        const kinds = (["outcome", "error"] as const).filter(name => Object.hasOwn(call, name));
+        if (kinds.length !== 1) throw shape("A completion gives exactly one of outcome (with output) or error.");
+        let kind: "result" | "error";
+        let value: JsonValue;
+        try {
+            if (kinds[0] === "outcome") {
+                const extra = Object.keys(call).filter(key => key !== "outcome" && key !== "output");
+                if (typeof call.outcome !== "string" || extra.length > 0) throw shape("outcome must be a string, given with output only.");
+                const output = Object.hasOwn(call, "output") ? call.output : null;
+                assertJsonValue(output, "output");
+                kind = "result";
+                value = { outcome: call.outcome, output };
+            } else {
+                const error = call.error;
+                if (Object.keys(call).length !== 1 || !isJsonObject(error)) throw shape("error must be { code, message, details? }.");
+                const extra = Object.keys(error).filter(key => key !== "code" && key !== "message" && key !== "details");
+                if (typeof error.code !== "string" || typeof error.message !== "string" || extra.length > 0) {
+                    throw shape("error must be { code, message, details? }, with a string code and message.");
+                }
+                const details = Object.hasOwn(error, "details") ? error.details : null;
+                assertJsonValue(details, "error.details");
+                kind = "error";
+                value = { code: error.code, message: error.message, details };
+            }
+        } catch (error) {
+            if (error instanceof WorkflowJsonError) throw shape(error.message);
+            throw error;
+        }
+        const valueText = canonicalJson(value);
+        const resultSha256 = kindValueSha256(kind, valueText);
+        return this.transaction(async client => {
+            const { rows: found } = await client.query(`SELECT node_execution_id, workflow_session_id, run_id FROM ${this.t.agentInvocations} WHERE child_session_id = $1`,
+                [input.childSessionId]);
+            if (!found[0]) throw notFound();
+            const nodeExecutionId = str(found[0], "node_execution_id");
+            // 2. The locks, then a known operation decides alone.
+            const live = await this.lockLiveSession(client, str(found[0], "workflow_session_id"));
+            const run = await this.lockRun(client, str(found[0], "run_id"));
+            const { rows: locked } = await client.query(`SELECT * FROM ${this.t.agentInvocations} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            const invocation = agentInvocationFrom(locked[0]);
+            const { rows: nodeRows } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            if (!nodeRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} has no node execution.`);
+            const node = nodeFrom(nodeRows[0]);
+            const state = { status: node.state, outcome: node.outcome, winner: node.winner };
+            const controllerInstanceId = run.controllerInstanceId;
+            const refused = (code: WorkflowAgentCompletionRefusal, replayed: boolean, problems: JsonValue = null, attemptsLeft: number | null = null) =>
+                ({ kind: "refused" as const, replayed, code, problems, attemptsLeft, state, controllerInstanceId });
+            const decidedReceipt = async (): Promise<{ receipt: WorkflowAgentCompletionReceipt; resultSha256: string } | null> => {
+                const { rows } = await client.query(
+                    `SELECT receipt, result_sha256 FROM ${this.t.agentCompletions} WHERE node_execution_id = $1 AND outcome = 'decided'`, [nodeExecutionId]);
+                return rows[0] ? { receipt: agentReceiptOf(parseStoredJson(str(rows[0], "receipt"), "receipt")), resultSha256: str(rows[0], "result_sha256") } : null;
+            };
+            const { rows: known } = await client.query(
+                `SELECT result_sha256, outcome, problems FROM ${this.t.agentCompletions} WHERE node_execution_id = $1 AND operation_id = $2`,
+                [nodeExecutionId, operationId]);
+            if (known[0]) {
+                if (str(known[0], "result_sha256") !== resultSha256) return refused("OPERATION_CONFLICT", true);
+                const outcome = str(known[0], "outcome");
+                if (outcome === "decided" || outcome === "same") {
+                    const decided = await decidedReceipt();
+                    if (decided === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} has a ${outcome} operation but no decision.`);
+                    return { kind: "accepted" as const, replayed: true, receipt: decided.receipt, controllerInstanceId };
+                }
+                if (outcome === "invalid") {
+                    const stored = jsonOrNull(known[0], "problems");
+                    const code = isJsonObject(stored) && stored.code === "OUTPUT_ATTEMPTS_EXHAUSTED" ? "OUTPUT_ATTEMPTS_EXHAUSTED" as const : "OUTPUT_INVALID" as const;
+                    return refused(code, true, isJsonObject(stored) ? stored.problems ?? null : null);
+                }
+                return refused(outcome === "expired" ? "NODE_EXPIRED" : outcome === "closed" ? "NODE_CLOSED" : "COMPLETION_CONFLICT", true);
+            }
+            if (!live) return refused("NODE_CLOSED", false);
+
+            // 3. One reading of the store's clock decides by the state's record.
+            const { rows: clock } = await client.query(
+                `WITH reading AS (SELECT clock_timestamp() AS at) SELECT at::text AS at, ${isoUtc("at")} AS at_iso FROM reading`);
+            const at = str(clock[0], "at");
+            const atIso = str(clock[0], "at_iso");
+            const bind = async (outcome: "decided" | "same" | "invalid" | "expired" | "closed" | "conflict", problems: JsonValue = null,
+                receipt: WorkflowAgentCompletionReceipt | null = null): Promise<void> => {
+                await client.query(
+                    `INSERT INTO ${this.t.agentCompletions} (node_execution_id, operation_id, result_sha256, outcome, problems, receipt, created_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz)`,
+                    [nodeExecutionId, operationId, resultSha256, outcome, problems === null ? null : canonicalJson(problems),
+                        receipt === null ? null : canonicalJson(receipt), at]);
+            };
+            if (node.state === "completed") {
+                // Decided by a completion of the agent: the same result again is that completion; another is a conflict. Any other
+                // decision (its deadline, a cancel, a stop, a deletion, the correction budget spent) closed the state.
+                const decided = node.winner === "agent" ? await decidedReceipt() : null;
+                if (decided !== null) {
+                    if (decided.resultSha256 === resultSha256) {
+                        await bind("same");
+                        return { kind: "accepted" as const, replayed: true, receipt: decided.receipt, controllerInstanceId };
+                    }
+                    await bind("conflict");
+                    return refused("COMPLETION_CONFLICT", false);
+                }
+                await bind("closed");
+                return refused("NODE_CLOSED", false);
+            }
+            if (!ACTIVE_RUN_STATUSES.includes(run.status)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} is pending in an ended run.`);
+            const { rows: early } = await client.query(
+                `SELECT $1::timestamptz < deadline_at
+                        AND NOT EXISTS (SELECT 1 FROM ${this.t.agentCompletions} WHERE node_execution_id = $2 AND outcome = 'expired') AS in_time
+                   FROM ${this.t.agentInvocations} WHERE node_execution_id = $2`, [at, nodeExecutionId]);
+            if (!bool(early[0], "in_time")) {
+                await bind("expired");
+                return refused("NODE_EXPIRED", false);
+            }
+
+            // 4. The result against the state's contract in the run's pinned definition.
+            const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
+            const declared = ir.nodes[node.nodeId];
+            if (declared?.type !== "agent" || declared.outputSchema !== invocation.outputSchema) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} froze an output contract its state does not declare.`);
+            }
+            const problems: SchemaProblem[] = [];
+            let resultText = "";
+            if (kind === "result") {
+                const { outcome, output } = value as { outcome: string; output: JsonValue };
+                if (!invocation.outcomes.includes(outcome)) {
+                    problems.push({ path: "outcome", message: `outcome must be one of ${invocation.outcomes.join(", ")}.` });
+                }
+                if (invocation.outputSchema !== null) problems.push(...schemaSetFor(run.irSha256, ir.schemaDefs).validate(invocation.outputSchema, output));
+                resultText = canonicalJson(output);
+                if (utf8ByteLength(resultText) > WORKFLOW_PAYLOAD_MAX_BYTES) {
+                    problems.push({ path: "output", message: `output is larger than ${WORKFLOW_PAYLOAD_MAX_BYTES} bytes; store large data as an artifact and give its reference.` });
+                }
+            } else {
+                const { code, message, details } = value as { code: string; message: string; details: JsonValue };
+                if (!(AGENT_REPORTED_ERROR_CODES as readonly string[]).includes(code)) {
+                    problems.push({ path: "error.code", message: `error.code must be one of ${AGENT_REPORTED_ERROR_CODES.join(", ")}.` });
+                }
+                if (!message.trim() || message.length > WORKFLOW_V2_AGENT_ERROR_MESSAGE_MAX || !isStorableText(message)) {
+                    problems.push({ path: "error.message", message: `error.message must be 1 to ${WORKFLOW_V2_AGENT_ERROR_MESSAGE_MAX} characters of text.` });
+                }
+                if (utf8ByteLength(canonicalJson(details)) > WORKFLOW_V2_AGENT_ERROR_DETAILS_MAX_BYTES) {
+                    problems.push({ path: "error.details", message: `error.details must be at most ${WORKFLOW_V2_AGENT_ERROR_DETAILS_MAX_BYTES} bytes of JSON.` });
+                }
+                resultText = canonicalJson({ code, message: message.trim(), ...(details !== null ? { details } : {}) });
+            }
+            if (problems.length > 0) {
+                const fields = problems.map(problem => ({ path: problem.path, message: problem.message }));
+                const { rows: invalid } = await client.query(
+                    `SELECT count(*)::int AS n FROM ${this.t.agentCompletions} WHERE node_execution_id = $1 AND outcome = 'invalid'`, [nodeExecutionId]);
+                const used = int(invalid[0], "n") + 1;
+                if (used < WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS) {
+                    await bind("invalid", { code: "OUTPUT_INVALID", problems: fields });
+                    return refused("OUTPUT_INVALID", false, fields, WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS - used);
+                }
+                // The correction budget is spent: the state fails invalid_output (its agent decided it).
+                const errorText = canonicalJson({ code: "invalid_output",
+                    message: `The agent gave ${used} completions that did not match the state's contract.`, details: { problems: fields } });
+                const { rows: failed } = await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = 'invalid_output', result_kind = 'runtime_error', output = NULL, error = $2, winner = 'agent',
+                            completed_at = $3::timestamptz
+                      WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`, [nodeExecutionId, errorText, at]);
+                if (!failed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} changed under its lock.`);
+                await bind("invalid", { code: "OUTPUT_ATTEMPTS_EXHAUSTED", problems: fields });
+                await this.project(client, { sessionId: run.workflowSessionId, update: { touch: true }, events: [{ eventType: "workflow.state_failed", data: {
+                    runId: run.runId, nodeExecutionId, stateId: node.nodeId, step: node.ordinal, outcome: "invalid_output", resultKind: "runtime_error",
+                    childSessionId: invocation.childSessionId, error: jsonbSafeText(errorText, 2_000),
+                } }] });
+                return { ...refused("OUTPUT_ATTEMPTS_EXHAUSTED", false, fields, 0),
+                    state: { status: "completed" as const, outcome: "invalid_output", winner: "agent" } };
+            }
+
+            // 5. The result decides the state.
+            const outcome = kind === "result" ? (value as { outcome: string }).outcome : (value as { code: string }).code;
+            const resultKind: NodeResultKind = kind === "result" ? "business" : "runtime_error";
+            const { rows: completed } = await client.query(
+                `UPDATE ${this.t.nodes}
+                    SET state = 'completed', outcome = $2, result_kind = $3,
+                        output = CASE WHEN $3 = 'business' THEN $4 END, error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
+                        winner = 'agent', completed_at = $5::timestamptz
+                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
+                [nodeExecutionId, outcome, resultKind, resultText, at]);
+            if (!completed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} changed under its lock.`);
+            const receipt: WorkflowAgentCompletionReceipt = {
+                nodeExecutionId, workflowSessionId: run.workflowSessionId, runId: run.runId, stateId: node.nodeId, childSessionId: invocation.childSessionId,
+                operationId, kind, outcome, resultSha256, decidedAt: atIso,
+            };
+            await bind("decided", null, receipt);
+            await this.project(client, { sessionId: run.workflowSessionId, update: { touch: true }, events: [{
+                eventType: resultKind === "business" ? "workflow.state_completed" : "workflow.state_failed", data: {
+                    runId: run.runId, nodeExecutionId, stateId: node.nodeId, step: node.ordinal, outcome, resultKind,
+                    childSessionId: invocation.childSessionId, operationId,
+                    ...(resultKind === "business" ? { outputPreview: jsonbSafeText(resultText, 1_000) } : { error: jsonbSafeText(resultText, 2_000) }),
+                } }] });
+            return { kind: "accepted" as const, replayed: false, receipt, controllerInstanceId };
+        });
     }
 
     /**

@@ -286,6 +286,13 @@ export interface TurnOptions {
          * a worker that runs request states (INACTIVE: only tests). Returns JSON.
          */
         respondSessionRequest?(args: Record<string, unknown>): Promise<string>;
+        /**
+         * Workflow v2 agent states: finish the workflow state this session
+         * runs with a typed result (complete_workflow_node). Present only for
+         * an agent state's child on a turn of a worker that runs agent states
+         * (INACTIVE: only tests). Returns JSON.
+         */
+        completeWorkflowNode?(args: Record<string, unknown>): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;
