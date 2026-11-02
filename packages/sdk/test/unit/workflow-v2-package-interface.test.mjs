@@ -140,6 +140,8 @@ test("schema files stay inside the package, are ordinary JSON files, and stand a
         "contracts/unknown.json": JSON.stringify({ type: "object", propertiez: {} }),
         "contracts/invalid.json": JSON.stringify({ type: "nope" }),
         "contracts/list.json": JSON.stringify([1, 2]),
+        "contracts/infinite.json": "{\"type\": \"number\", \"maximum\": 1e400}",
+        "contracts/deep.json": `${"{\"not\": ".repeat(70)}{}${"}".repeat(70)}`,
         "contracts/large.json": JSON.stringify({ type: "string", description: "x".repeat(WORKFLOW_INTERFACE_SCHEMA_MAX_BYTES) }),
     });
     fs.symlinkSync(path.join(dir, "contracts", "review-result.schema.json"), path.join(dir, "contracts", "link.json"));
@@ -160,6 +162,8 @@ test("schema files stay inside the package, are ordinary JSON files, and stand a
         ["contracts/unknown.json", /propertiez/],
         ["contracts/invalid.json", /type/],
         ["contracts/list.json", /a schema must be a mapping or a boolean/],
+        ["contracts/infinite.json", /numbers must be finite/],
+        ["contracts/deep.json", /nesting exceeds 64 levels/],
         ["contracts/large.json", new RegExp(`larger than ${WORKFLOW_INTERFACE_SCHEMA_MAX_BYTES} bytes`)],
     ]) {
         const { exported, issues } = exportWorkflowInterface(dir, { ...DECLARED, outputSchema: ref });

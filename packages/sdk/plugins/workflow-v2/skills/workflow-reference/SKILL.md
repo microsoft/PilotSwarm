@@ -136,10 +136,11 @@ invalid completions), `unavailable`, `forbidden` and `cancelled`.
 workflow interface that the package agent exports. The state must declare
 `outputSchema`. At publication, and when a real-agent test starts, the
 state's outcomes and `outputSchema` must be exactly the interface's, and so
-must `inputSchema` when the interface has one. Copy the interface's schemas
-into `schemas` as they are, without `$ref`. A stricter or looser schema does
-not match. A mismatch refuses with `CONTRACT_MISMATCH` and its `problems`; a
-match pins the interface's digest with the package revision.
+must `inputSchema` when the interface has one. Copy each interface schema
+into `schemas` without changes, and refer to it from the state. Do not add a
+`$ref` inside the copy. A stricter or looser schema does not match. A
+mismatch refuses with `CONTRACT_MISMATCH` and its `problems`; a match pins
+the interface's digest with the package revision.
 
 ### parallel
 

@@ -3,7 +3,7 @@ import path from "node:path";
 import {
     isRuntimeRoute, WORKFLOW_INTERFACE_NAME_PATTERN, WORKFLOW_INTERFACE_VERSION_PATTERN, WORKFLOW_V2_ID_PATTERN, type WorkflowIR, type WorkflowIRAgent,
 } from "./compiler.js";
-import { canonicalJson, isJsonObject, sha256Hex, type JsonValue } from "./json.js";
+import { assertJsonValue, canonicalJson, isJsonObject, sha256Hex, type JsonValue } from "./json.js";
 import { normalizeSchema, schemaReferences, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 
 /**
@@ -142,7 +142,9 @@ function readInterfaceSchema(rootDir: string, ref: string, field: string, issues
         return fail(`is not valid JSON (${error instanceof Error ? error.message : String(error)})`);
     }
     try {
-        // `$` is the file's own root: a problem names where in the file it is.
+        // `$` is the file's own root: a problem names where in the file it is. Plain JSON data first (finite numbers, at
+        // most 64 levels deep), so a schema that is not cannot reach the digest.
+        assertJsonValue(parsed, "$");
         return standaloneSchema(parsed, "$");
     } catch (error) {
         return fail(error instanceof Error ? error.message : String(error));
@@ -171,6 +173,7 @@ export function readWorkflowInterfaceExport(value: unknown): WorkflowInterfaceEx
     if (typeof name !== "string" || !WORKFLOW_INTERFACE_NAME_PATTERN.test(name) || typeof version !== "string"
         || !WORKFLOW_INTERFACE_VERSION_PATTERN.test(version) || !isOutcomeList(outcomes) || typeof digest !== "string") return null;
     try {
+        assertJsonValue(value, "workflowInterface");
         const output = standaloneSchema(outputSchema, "workflowInterface.outputSchema");
         const input = inputSchema === null || inputSchema === undefined ? null : standaloneSchema(inputSchema, "workflowInterface.inputSchema");
         const body = { name, version, inputSchema: input, outputSchema: output, outcomes: [...outcomes] };
