@@ -1918,7 +1918,9 @@ body.is-resizing-pane-y iframe {
   border: 0;
   border-left: 3px solid var(--ps-chat-card-accent, var(--ps-accent));
   border-radius: 0 var(--ps-radius-sm) var(--ps-radius-sm) 0;
-  background: var(--ps-chat-card-body);
+  /* The header tone, as before the rail: the body tone was too close to the
+     transcript in Duroxide (8.6 against a minimum of 10). */
+  background: var(--ps-chat-card-header);
   box-shadow: none;
 }
 .ps-chat-panel .ps-native-task {
