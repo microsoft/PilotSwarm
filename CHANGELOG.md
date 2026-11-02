@@ -19,8 +19,40 @@ decision. Compute targets are
 managed through the management client and the Web API. A deployment may name a
 default target for sessions that choose none, and may require compute, after
 which the worker refuses to run an agent runtime of its own; both are off by
-default, so sessions without a compute target are unchanged. The exported interface is experimental and may
-change before release.
+default, so sessions without a compute target are unchanged.
+
+A session that runs on a host gets the same skill folders and the same MCP
+servers as one that runs on the worker, and the worker still lends nothing.
+Beside the runtime connection the worker opens a second connection to the same
+host component, proved by the same handshake and named in its hello, and over
+it: the skill folders the session is authorized to see are copied to the host
+read-only, named by their content so an unchanged folder is never sent again,
+and the runtime is given the host's paths; a server defined by an agent package
+runs on the host out of that copy, built from the entry as it was written, so
+no worker value or worker path can reach it (one that asks for a worker value
+is unavailable, with the field named); and a server the deployment configured
+keeps running on the trusted side with its own command, environment, headers
+and credentials, reached by the runtime through the host component. PilotSwarm
+forwards that traffic without interpreting it, so whatever the runtime and the
+server support keeps working. On that path it forwards only to servers the
+deployment configured for that session, bounds message sizes and call
+durations, passes the caller's own credentials through unchanged, adds none of
+its own, and attaches a worker-vouched statement of the session and its owner
+for the server's checks and audit. Repository MCP servers stay off.
+
+A session's copy carries 64 MiB and 4,096 files by default
+(`computeCopyMaxBytes` / `computeCopyMaxFiles`, or
+`PILOTSWARM_COMPUTE_COPY_MAX_BYTES` / `PILOTSWARM_COMPUTE_COPY_MAX_FILES`).
+Anything that cannot be copied is unavailable with the reason in the session's
+events and the turn goes on. A deployment catalog entry may carry
+`"remote": false` to keep that server away from sessions whose agent runs
+elsewhere; servers are available by default, and the field is deployment-only,
+like `default` and `allowedAgents`. **A server offered to these sessions should
+act as the caller:** one that uses its own standing credentials gives every
+remote agent whatever those credentials reach, which is the deployment's
+choice to make.
+
+The exported interface is experimental and may change before release.
 
 **Provider request headers.** A provider type in the model catalog may set
 `headers`: fixed HTTP headers sent on every model request, for endpoints that

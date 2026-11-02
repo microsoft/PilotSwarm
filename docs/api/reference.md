@@ -325,6 +325,35 @@ them and run a session on one.
 | updateComputeTarget **[admin]** | `PATCH /api/v1/management/compute-targets/:name` | name (path), displayName?, config?, enabled? (body) | Update or enable/disable a target. |
 | deleteComputeTarget **[admin]** | `DELETE /api/v1/management/compute-targets/:name` | name (path) | Delete a target. |
 
+A session on a target gets the same skill folders and MCP servers as one on
+the worker. The folders it is authorized to see are copied to its host
+read-only and the runtime is given the host's paths; a server an agent package
+defines runs on that host out of the copy, with only what its own entry states;
+a server the deployment configured keeps running on the trusted side with its
+own command, environment, headers and credentials, and the runtime reaches it
+through the host component. PilotSwarm forwards that traffic without reading
+it, to the configured servers only, with the caller's own credentials passed
+through unchanged, none of the worker's added, and a worker-vouched statement
+of the session and its owner attached for the server's own checks.
+
+**A server offered to these sessions should act as the caller.** One that uses
+its own standing credentials gives every remote agent whatever those
+credentials can reach — a deployment's choice to make. To keep a server away
+from them, set `"remote": false` on its deployment `.mcp.json` entry; servers
+are available by default, the field is deployment-catalog only (like `default`
+and `allowedAgents`), and it is stripped before any configuration reaches a
+runtime.
+
+| Worker option | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `computeCopyMaxBytes` | `PILOTSWARM_COMPUTE_COPY_MAX_BYTES` | 67108864 (64 MiB) | The most bytes one session's copy of its folders carries to its host. |
+| `computeCopyMaxFiles` | `PILOTSWARM_COMPUTE_COPY_MAX_FILES` | 4096 | The most files one session's copy carries. |
+
+Anything that cannot be copied — too large, missing, unreadable, or a link out
+of its folder — is unavailable, the reason is recorded in the session's events
+as `session.compute_capabilities`, and the turn goes on. If nothing can be
+delivered to the host, the turn fails with `COMPUTE_UNAVAILABLE`.
+
 Trusted session creation resolves `explicit → user default → cluster default →
 first usable provider/model`, validates capabilities, and writes the exact
 qualified model before orchestration starts. System sessions resolve

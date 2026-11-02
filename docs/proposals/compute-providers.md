@@ -506,7 +506,11 @@ The trust boundary, concern by concern:
 | Session state (SessionFs) | Confined to the worker's folder for that session. Only the virtual root, the runtime's own session-state form and relative paths are accepted; no link inside is followed; one write carries at most 64 MiB. |
 | Folders mounted on a host | A provider whose `files` capability says it mounts the session's folders must mount only that session's own folders, with access control on the file server, so a host can never reach another session's or another person's folders. PilotSwarm states the rule and cannot enforce it. |
 | Worker files named by tools | Any tool that names a worker path from a remote session — the artifact file tools, and loading an agent or skill by path — may use only that session's own workspace folders, and only when the provider says the host shares them with the worker; otherwise none. For those sessions a path is resolved before it is checked, so a link inside a folder that points out of it is refused. A session that runs on the worker is unchanged. |
-| Skills and MCP servers | Not yet sent to a remote runtime: their configs are worker-local. Giving a remote session the same skills and MCP servers as one on the worker is part of this change and still to be built on this branch. |
+| Skill folders | The folders this session is authorized to see — the same selection a session on the worker gets — are copied to the host read-only and named by the host's paths. Every file is resolved before it is read and must stay inside the folder it was found in; the copy has a file count and a byte count a deployment sets. `load_skill` is a worker tool and is unchanged. |
+| A package's MCP server | Runs on the host, started by the runtime out of the copied package folder, from the entry as it was written. It gets the environment the host gives it: never the worker's, and never a `${VAR}` resolved against the worker's. An entry that asks for a worker value, or names a path outside its own package folder, is unavailable with the reason. |
+| A deployment's MCP server | Runs on the trusted side, started and configured exactly as it is today — same command, same environment, same headers, same credentials. The runtime reaches it as a remote server through the host component, and PilotSwarm forwards the traffic without reading it. The server's command, environment, headers and address never cross. |
+| What a forwarded call carries | Only servers the deployment configured for that session, named by a ticket the worker minted. The caller's own credentials travel unchanged and the worker adds none of its own; it adds a statement of which session is calling and who owns it. Messages and calls are bounded. A deployment can keep any of its servers away from these sessions. |
+| Repository MCP servers | Off, as they are for a session on the worker. |
 | Runtime-authenticated models | A model that signs inside the runtime with a credential the worker holds is refused on a remote target. |
 
 ### 4.7 Where a provider runs
@@ -654,6 +658,146 @@ steps. Migration 0084 only adds a table and its procedures; it changes no
 existing row. It adds no orchestration version. There is no feature flag: the new
 behaviour appears only for a session that names a target.
 
+### 4.13 Skills and MCP servers on remote sessions
+
+A session that runs on the worker is handed its skill folders as worker
+paths and its MCP servers as worker commands, worker environments and
+worker addresses. None of those mean anything on a compute host, and
+several of them are exactly what must not go there. **(built)**
+
+The rule that decides every case below is the one the whole design
+serves, stated as a loan: **the worker lends nothing.** Its identity, its
+secrets and its network never reach a host, and are never used on a
+remote caller's behalf.
+
+**The side channel.** Beside the runtime connection, the worker opens a
+second connection to the same host component, proved by the same
+handshake. A connection says in its hello what it is for — `runtime` or
+`control` — and the purpose is signed into both proofs, so a connection
+proved for one can never be used as the other. The side channel carries
+length-prefixed frames: notices, and any number of independent byte
+streams, so a file copy and several MCP conversations share one
+connection without waiting for each other. A frame is bounded, a notice
+is bounded, and one channel carries a bounded number of streams. One
+channel per host, like the bridge, and only when a session on that host
+actually has folders or servers.
+
+**Skill folders are copied.** The worker walks the folders this session
+is authorized to see — the same list the local path builds, with the same
+visibility rules — and writes down a digest per file and a digest per
+folder. It asks the host which digests it is missing, sends only those,
+and asks for the folders to be laid out. The runtime is given the host's
+paths. Because every file is named by its content, a folder that has not
+changed costs a question and an answer; a folder that has changed is laid
+out again, and a host that has been replaced has an empty store and gets
+everything. A folder's digest is part of what decides whether the session
+rebinds, so an edited skill is read as it now stands on the next turn.
+
+A link that points out of a folder is left behind with the reason, not
+followed. The one shape that is carried is a folder of links to folders,
+which is how skills from several sources reach a runtime as one folder
+today: each link's own folder becomes a folder in its own right, and
+everything inside it must stay inside it.
+
+A session's copy has a byte count and a file count, 64 MiB and 4,096 by
+default and both settable by the deployment. Anything that does not fit,
+is not there, or cannot be read is unavailable, the reason is recorded in
+the session's events, and the turn goes on — the same as a local MCP
+server that fails to start. If nothing can be delivered to the host at
+all, the turn fails where every compute failure is named.
+
+**A package's servers run on the host.** Code out of an agent package is
+no more trusted than the model that asked for it, so it runs where that
+model runs: the runtime starts it out of the copied package folder. It is
+built from the entry **as it was written**, never from the entry the
+worker resolved, because resolving is what puts worker values into it. A
+`${VAR}` is therefore not quietly emptied — the server is unavailable,
+and the reason names the field that asked. Paths are rewritten to the
+copy; a path outside the package folder is a worker path, and that server
+is unavailable too. Its environment is what its own entry states and
+nothing else.
+
+**A deployment's servers stay here.** The deployment's own code, with the
+deployment's own credentials, keeps running on the trusted side, started
+and configured exactly as it is today. The runtime is given, for each
+one, something it can reach on its host: for a server that speaks over
+its own input and output, a small PilotSwarm relay the runtime starts; for
+one reached over HTTP, a local address on the host component. Both do the
+same thing — hand what the runtime said to the worker down a stream of
+the side channel, and hand back what comes the other way.
+
+PilotSwarm forwards that traffic **without interpreting it**, so whatever
+the runtime and the server support between them keeps working: tools,
+resources, prompts, notifications, anything added later. Only HTTP itself
+is understood, because an HTTP request has to be made to be forwarded at
+all. Its rules on that path are few and all of them are about the loan:
+
+- **Only servers that session was given.** Each one is named by an opaque
+  ticket the worker minted for one session and one server; a ticket this
+  worker did not mint, or minted for a session that has let go of the
+  host, reaches nothing. A session keeps the same ticket for a server for
+  as long as it is on that host, so a warm runtime keeps working.
+- **The caller's own credentials, unchanged.** Where the transport
+  carries one — an `Authorization` from the runtime side — it goes
+  through as it arrived. The worker never swaps in one of its own and
+  never adds its own identity.
+- **A statement of who is calling.** The worker attaches the session, its
+  tree, its owner and its target — as headers for a server reached over
+  HTTP, as environment for one the worker starts — so the server can make
+  its own checks and keep its own record. It is attached last, so nothing
+  from the host can be passed off as it.
+- **Bounded.** One conversation has a byte ceiling in each direction and
+  one HTTP call has a deadline, the server's own setting when it has one.
+
+**Repository MCP servers stay off**, exactly as they are for a session on
+the worker.
+
+#### What a deployment should know
+
+A server offered to these sessions is reachable by model-chosen code
+running on an untrusted host. **A server offered to remote sessions should
+act as the caller.** The worker passes the caller's own credentials
+through and vouches for which session and owner is calling; a server that
+decides what it will do from those is safe to offer.
+
+A server that instead uses its own standing credentials gives **every**
+remote agent whatever those credentials can reach. That is a choice a
+deployment is allowed to make, and PilotSwarm neither prevents it nor
+pretends it is contained. Where it is not wanted, keep the server away
+from these sessions:
+
+```json
+{
+    "internal-db": {
+        "type": "stdio", "command": "node", "args": ["/app/plugin/mcp/db.mjs"],
+        "tools": ["*"],
+        "remote": false
+    }
+}
+```
+
+`remote` is a deployment-catalog field, like `default` and
+`allowedAgents`: a package `.mcp.json` may not carry it, it is stripped
+before any configuration reaches a runtime, and servers are available by
+default. A server kept away this way is unavailable with that reason in
+the session's events, and the rest of the session's map is unaffected.
+
+#### What this does not do
+
+- **A host is one trust domain.** The sessions of a tree share a host, and
+  a session's relay configuration is readable by anything on that host. A
+  sibling session on the same host can therefore use another sibling's
+  ticket. Sessions of one tree are not isolated from each other by this
+  design; the host is.
+- **A package's server must bring what it needs.** It runs out of the
+  copy, so its dependencies have to be in the package folder or already on
+  the host. Nothing is installed on a host.
+- **The copy is a copy.** A runtime that writes into it is writing to a
+  read-only folder on its own host; nothing is written back.
+- **The connection is not encrypted.** The side channel crosses the same
+  network as the runtime stream and carries the same requirement
+  (section 4.5, and section 12).
+
 ## 5. The `process` provider: the test provider
 
 `createProcessComputeProvider()` (kind `process`) runs each session tree's
@@ -783,6 +927,11 @@ and Windows, so nothing may assume a path separator or a shell.
 | Failures (**built**) | U | Every compute error is `CODE: message` with its code and retry hint, and is never prefixed twice |
 | Management surfaces (**built**) | U, L | List, create, update, enable/disable and delete across the management client and the Web API; every mutation audited; surface-parity tests updated |
 | Turning it on (**built**) | U, L | A default target is recorded at creation and sub-agents still inherit; requiring compute fails a session with nowhere to run before any runtime starts, and leaves a deployment that has not turned it on unchanged; a session with a compute target is routed only to workers that declare the compute tag |
+| The side channel (**built**) | U | Frames are whole however the bytes arrive; an oversized frame ends the channel; a stream number from the wrong half is refused; the stream count is bounded; a closed connection closes every stream with its reason; a connection proved for one purpose cannot be used as the other |
+| The copies (**built**) | U | A folder is carried whole and recognised again unchanged; only changed files are sent; a folder of links to folders is carried and a link out of a folder is not; the byte and file limits refuse with the reason; a manifest cannot make the host write outside its store; a file is kept only under the digest its own bytes have; nothing that crosses carries a worker path |
+| Where servers run (**built**) | U | A package's server is rebuilt for the host out of the copy, with only what its entry states; one asking for a worker value, or naming a path outside its package folder, is unavailable with the reason; a deployment's server becomes a ticket and its command, environment, headers and address never cross; a deployment can keep a server away; `default`, `allowedAgents` and `remote` never reach a runtime; nested custom-agent maps are transformed too |
+| Forwarding (**built**) | U | A ticket this worker did not mint reaches nothing, and a session's tickets go when it leaves the host; a session keeps one ticket per server so a warm runtime keeps working; the caller's own credentials pass through unchanged, the configuration fills in what the caller did not send, and the worker's statement cannot be forged from the host; a conversation past its ceiling is cut off |
+| Parity, end to end (**built**) | L | One remote turn reads a file out of a copied skill folder at a host path, calls a tool on a deployment server that ran in the worker's own process with its configured value (which never appears anywhere the host can see), and calls a tool on a package server that ran on the host out of the copy with none of the worker's environment; a second turn copies nothing again; an edited skill is read as it now stands; a server kept away is absent and the session's events say why |
 
 ## 9. Decisions, verified facts and open items
 
@@ -833,6 +982,9 @@ and Windows, so nothing may assume a path separator or a shell.
 | Portal and TUI views for compute | Future work (section 12). |
 | Provisioning (creating hosts on demand) | Out of scope; a compute provisioner can come later. |
 | SessionFs quotas (total size and file count per session), and SQL tools on remote sessions | To do. |
+| Which skill folders a remote session's copy covers | Exactly the list a session on the worker is given this turn, built by the same code: for a base-V2 session the owner-filtered folders, otherwise the deployment's own. The copy widens nothing; if that selection should be narrower for a remote session, it is a change to the selection and applies to both. |
+| The sessions of one tree on one host | Not separated from each other; the host is the boundary (section 12.12). |
+| What a package's MCP server needs to run | It runs out of the read-only copy, so its dependencies must be in the package folder or already on the host; nothing is installed on a host (section 12.13). |
 
 ## 10. Implementation map
 
@@ -851,6 +1003,12 @@ branch; section 12 lists what was deliberately left out.
 | `copilot-client.ts`, `session-manager.ts` | The remote connection and turn wiring | built |
 | `compute-handshake.ts`, `compute-host.ts`, `compute-host-cli.ts` | The handshake, the host component, and the command that runs it on a host | built |
 | `compute-failures.ts` | The one shape every compute error the worker raises takes | built |
+| `compute-channel.ts` | The framed side channel beside the runtime connection: notices and many independent byte streams, all bounded | built |
+| `compute-assets.ts` | The read-only copies: walking a folder, the digests, the limits, path confinement, and the host's store | built |
+| `compute-control.ts` | The worker's end of the side channel: sending the copies, and forwarding MCP traffic to the servers that stay here | built |
+| `compute-host-services.ts` | The host's end: laying the copies out, the relay the runtime starts, and the local address for a server reached over HTTP | built |
+| `compute-mcp.ts` | Which servers run where, and what a remote runtime's map looks like | built |
+| `mcp-loader.ts`, `worker.ts` | The entry as it was written kept beside the resolved one, where each catalog entry came from, and the `remote` field | built |
 | `management-client.ts`, `web/*`, `api/*`, `packages/app/mcp/*` | The target-management surfaces | built |
 
 ## 11. Delivery plan
@@ -1203,3 +1361,36 @@ all.
   enough to be the default there.
 - The helpers that run a model over text without an agent (titles, model
   listing, distillation) either move with it or are shown to need no agent.
+
+### 12.12 Separating the sessions of a tree on one host
+
+**Value.** A session's grants stop being reachable by its siblings.
+
+**What it adds.** The sessions of a tree share a host, and a session's relay
+configuration is readable by anything on that host, so one sibling can use
+another's forwarding ticket (section 4.13). Today the host is the boundary and
+the sessions inside it are not separated from each other.
+
+**Requirements when it is built.**
+
+- Either a host per session, which costs a host per sub-agent, or a way for
+  the host component to tell which session a connection came from that does
+  not depend on a value written into a file the session can read.
+- Whatever is chosen must survive a warm session: a runtime holds the
+  configuration it was given until it is rebound.
+
+### 12.13 Installing what a package's MCP server needs
+
+**Value.** A package server with dependencies works on a host without the
+package having to carry them.
+
+**What it adds.** A package's MCP server runs out of the read-only copy, so
+anything it imports must already be in the package folder or on the host.
+Nothing is installed on a host, by design — an installer on an untrusted host
+is a way to run code nobody reviewed.
+
+**Requirements when it is built.**
+
+- Whatever resolves dependencies runs on the host, from a manifest the package
+  declared, and never reaches the worker's network or registry credentials.
+- A failure is the server being unavailable with a reason, not a failed turn.
