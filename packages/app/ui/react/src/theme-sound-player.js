@@ -12,6 +12,9 @@
 import { nextCrackleGapMs, themeSoundEnvelope, themeSoundTiming } from "pilotswarm/ui-core";
 
 const TICK_MS = 200;
+// Events that count as a user gesture for unlocking audio. On a touch screen
+// pointerdown does not: a tap unlocks only on pointerup or touchend.
+const GESTURES = ["pointerdown", "pointerup", "touchend", "keydown"];
 // Peak gain at volume 100. The fire is ambience, not an alert. A limiter on
 // the output keeps the loudest pops from clipping.
 const MAX_GAIN = 1;
@@ -220,16 +223,14 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
     const schedule = () => {
         if (timer || !win) return;
         timer = win.setInterval(tick, TICK_MS);
-        win.addEventListener("pointerdown", onGesture, true);
-        win.addEventListener("keydown", onGesture, true);
+        for (const type of GESTURES) win.addEventListener(type, onGesture, true);
     };
 
     const unschedule = () => {
         if (!timer || !win) return;
         win.clearInterval(timer);
         timer = null;
-        win.removeEventListener("pointerdown", onGesture, true);
-        win.removeEventListener("keydown", onGesture, true);
+        for (const type of GESTURES) win.removeEventListener(type, onGesture, true);
     };
 
     return {

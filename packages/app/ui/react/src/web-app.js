@@ -367,10 +367,14 @@ function normalizeProfileSettings(settings) {
         const chatReading = normalizeChatReading(candidate.chatReading);
         if (chatReading) normalized.chatReading = chatReading;
     }
-    // Desktop only, carried through a phone save like chatReading.
+    // Theme sound, one slot per device class (like touch size).
     if (hasOwn(candidate, "themeSound")) {
         const themeSound = normalizeThemeSound(candidate.themeSound);
         if (themeSound) normalized.themeSound = themeSound;
+    }
+    if (hasOwn(candidate, "themeSoundMobile")) {
+        const themeSoundMobile = normalizeThemeSound(candidate.themeSoundMobile);
+        if (themeSoundMobile) normalized.themeSoundMobile = themeSoundMobile;
     }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
         const storedFilter = candidate.sessionOwnerFilter;
@@ -558,13 +562,14 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             && Object.keys(state.agentPickerUsage).length > 0
             ? { agentPickerUsage: state.agentPickerUsage }
             : {}),
-        // Desktop-only preferences, held in state on every device so a
-        // narrow window still carries the stored values: widening it must
-        // not fall back to defaults and then save them over the person's
-        // choice. Their USE is gated by width (the reading column only on the
-        // desktop chat, the sound only above the phone breakpoint).
+        // Held in state on every device so a narrow window still carries the
+        // stored values: widening it must not fall back to defaults and then
+        // save them over the person's choice. Their USE is gated by width (the
+        // reading column only on the desktop chat; each sound slot only on its
+        // own side of the phone breakpoint).
         chatReading: state.chatReading,
         ...(state.themeSound ? { themeSound: state.themeSound } : {}),
+        ...(state.themeSoundMobile ? { themeSoundMobile: state.themeSoundMobile } : {}),
     });
 }
 
@@ -681,6 +686,9 @@ function materializeProfileSettings(remoteSettings, defaults) {
             : {}),
         ...(hasOwn(normalizedRemote, "themeSound")
             ? { themeSound: normalizedRemote.themeSound }
+            : {}),
+        ...(hasOwn(normalizedRemote, "themeSoundMobile")
+            ? { themeSoundMobile: normalizedRemote.themeSoundMobile }
             : {}),
         // Read back for the same reason as touchScale above: written but never
         // merged means the fold state resets on every reload. No default here
@@ -14620,9 +14628,43 @@ function ThemeSoundControl({ setting, theme, onChange }) {
             : React.createElement("p", { className: "ps-admin-console__hint" }, "This theme has no sound."));
 }
 
+function MobileThemeSoundRows({ setting, theme, onChange }) {
+    const value = setting || { on: false, volume: 40 };
+    const set = (patch) => onChange({ ...value, ...patch });
+    return React.createElement(React.Fragment, null,
+        React.createElement("label", { className: "ps-mobile-setting-row" },
+            React.createElement("span", null, "Theme sounds",
+                React.createElement("small", null, theme?.sound ? "On this phone" : "This theme has no sound")),
+            React.createElement("input", {
+                type: "checkbox",
+                role: "switch",
+                checked: value.on,
+                onChange: (event) => {
+                    // Inside the tap, so the browser allows the sound to start.
+                    if (event.target.checked) themeSoundPlayer().prime();
+                    set({ on: event.target.checked });
+                },
+            })),
+        value.on
+            ? React.createElement("label", { className: "ps-mobile-setting-row ps-mobile-volume-row" },
+                React.createElement("span", null, "Volume"),
+                React.createElement("input", {
+                    type: "range",
+                    min: 0,
+                    max: 100,
+                    step: 5,
+                    value: value.volume,
+                    "aria-label": "Theme sound volume",
+                    onChange: (event) => set({ volume: Number(event.target.value) }),
+                }),
+                React.createElement("span", { className: "ps-mobile-volume-value" }, String(value.volume)))
+            : null);
+}
+
 function AppearanceSettingsPane({ controller, mobile = false }) {
     const reading = useControllerSelector(controller, (state) => state.ui.chatReading);
     const themeSound = useControllerSelector(controller, (state) => state.ui.themeSound);
+    const themeSoundMobile = useControllerSelector(controller, (state) => state.ui.themeSoundMobile);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, state => state.ui.touchScale);
     if (mobile) return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
@@ -14634,14 +14676,15 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
         React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
             onClick: () => controller.openThemePicker() },
             React.createElement("span", null, "Theme"), React.createElement("span", null, getTheme(themeId)?.label || themeId, " ›")),
+        React.createElement(MobileThemeSoundRows, {
+            setting: themeSoundMobile,
+            theme: getTheme(themeId),
+            onChange: (next) => controller.dispatch({ type: "ui/themeSound", device: "mobile", themeSound: next }),
+        }),
         React.createElement("fieldset", { disabled: true, className: "ps-mobile-desktop-only" },
             React.createElement("label", { className: "ps-mobile-setting-row" },
                 React.createElement("span", null, "Reading column", React.createElement("small", null, "desktop only")),
-                React.createElement("input", { type: "checkbox", role: "switch", checked: Boolean(reading?.on), readOnly: true }))),
-        React.createElement("fieldset", { disabled: true, className: "ps-mobile-desktop-only" },
-            React.createElement("label", { className: "ps-mobile-setting-row" },
-                React.createElement("span", null, "Theme sounds", React.createElement("small", null, "desktop only")),
-                React.createElement("input", { type: "checkbox", role: "switch", checked: Boolean(themeSound?.on), readOnly: true }))));
+                React.createElement("input", { type: "checkbox", role: "switch", checked: Boolean(reading?.on), readOnly: true }))));
     return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
         React.createElement("h3", null, "Appearance"),
         React.createElement("fieldset", { className: "ps-appearance__desktop" },
@@ -16128,6 +16171,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         touchScale: Boolean(rootState.ui.touchScale),
         chatReading: rootState.ui.chatReading,
         themeSound: rootState.ui.themeSound,
+        themeSoundMobile: rootState.ui.themeSoundMobile,
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
         agentPickerUsage: rootState.ui.agentPickerUsage,
         ownerFilter: rootState.sessions.ownerFilter,
@@ -16499,7 +16543,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
@@ -16507,9 +16551,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     }, [state.themeId, state.touchScale]);
 
     // The theme's ambient sound, if it has one and the person turned sounds on.
-    // Desktop only; the phone has no Appearance settings.
-    // Desktop only: re-evaluated when the window crosses the phone breakpoint,
-    // so shrinking a desktop window to phone width silences the sound.
+    // Each device class has its own setting: crossing the phone breakpoint
+    // switches to the other one, so shrinking a desktop window to phone width
+    // follows the phone's choice (off by default).
     const [narrowViewport, setNarrowViewport] = React.useState(isNarrowViewport);
     React.useEffect(() => {
         if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
@@ -16520,13 +16564,13 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     }, []);
     React.useEffect(() => {
         const theme = getTheme(state.themeId);
-        const setting = state.themeSound || {};
+        const setting = (narrowViewport ? state.themeSoundMobile : state.themeSound) || {};
         themeSoundPlayer().update({
             sound: theme?.sound || null,
-            enabled: setting.on === true && !narrowViewport,
+            enabled: setting.on === true,
             volume: (Number(setting.volume) || 0) / 100,
         });
-    }, [state.themeId, state.themeSound, narrowViewport]);
+    }, [state.themeId, state.themeSound, state.themeSoundMobile, narrowViewport]);
     React.useEffect(() => () => themeSoundPlayer().update({ enabled: false }), []);
 
     React.useEffect(() => {

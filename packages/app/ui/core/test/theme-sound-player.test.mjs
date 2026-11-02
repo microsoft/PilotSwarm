@@ -93,6 +93,7 @@ test("turning sound off, on and off during the fade leaves no fire running", (t)
     player.update({ sound: fire, enabled: true, volume: 0.4 });
     advance(t, 3000);
     assert.equal(audio.running(), 1, "one fire plays");
+    for (const type of ["pointerup", "touchend"]) assert.ok(audio.listeners.has(type), `a tap unlocks audio through ${type}`);
 
     for (let round = 0; round < 5; round += 1) {
         player.update({ sound: fire, enabled: false, volume: 0.4 });

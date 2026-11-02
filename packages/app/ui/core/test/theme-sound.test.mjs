@@ -17,6 +17,7 @@ import { createInitialState } from "../src/state.js";
 import { getTheme } from "../src/themes/index.js";
 import {
     defaultThemeSound,
+    defaultThemeSoundMobile,
     nextCrackleGapMs,
     normalizeThemeSound,
     themeSoundEnvelope,
@@ -26,10 +27,12 @@ import {
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const close = (actual, expected, label) => assert.ok(Math.abs(actual - expected) < 1e-6, `${label}: ${actual} != ${expected}`);
 
-test("theme sounds are on by default at volume 40", () => {
+test("theme sounds are on by default at volume 40 on desktop, off on a phone", () => {
     const state = createInitialState({ mode: "web" });
     assert.deepEqual(state.ui.themeSound, defaultThemeSound());
     assert.deepEqual(state.ui.themeSound, { on: true, volume: 40 });
+    assert.deepEqual(state.ui.themeSoundMobile, defaultThemeSoundMobile());
+    assert.deepEqual(state.ui.themeSoundMobile, { on: false, volume: 40 });
     assert.deepEqual(normalizeThemeSound({ on: false }), { on: false, volume: 40 }, "a missing volume takes the default");
 });
 
@@ -39,6 +42,19 @@ test("the setting round-trips through the profile and a partial profile keeps it
     assert.deepEqual(state.ui.themeSound, { on: true, volume: 60 });
     state = appReducer(state, { type: "profileSettings/apply", settings: { themeId: "hearth" } });
     assert.deepEqual(state.ui.themeSound, { on: true, volume: 60 }, "a poll that omits the key keeps it");
+    state = appReducer(state, { type: "profileSettings/apply", settings: { themeSoundMobile: { on: true, volume: 25 } } });
+    assert.deepEqual(state.ui.themeSoundMobile, { on: true, volume: 25 });
+    assert.deepEqual(state.ui.themeSound, { on: true, volume: 60 }, "the phone slot never changes the desktop slot");
+});
+
+test("each device class edits only its own slot", () => {
+    let state = createInitialState({ mode: "web" });
+    state = appReducer(state, { type: "ui/themeSound", device: "mobile", themeSound: { on: true, volume: 30 } });
+    assert.deepEqual(state.ui.themeSoundMobile, { on: true, volume: 30 });
+    assert.deepEqual(state.ui.themeSound, { on: true, volume: 40 });
+    state = appReducer(state, { type: "ui/themeSound", themeSound: { on: false, volume: 40 } });
+    assert.deepEqual(state.ui.themeSound, { on: false, volume: 40 });
+    assert.deepEqual(state.ui.themeSoundMobile, { on: true, volume: 30 });
 });
 
 test("a repeat write is a no-op and bad values clamp or are ignored", () => {
@@ -84,9 +100,11 @@ test("the portal wires the setting to Appearance, the profile, and the player", 
     assert.match(webApp, /function ThemeSoundControl/);
     assert.match(webApp, /"Theme sounds"/);
     assert.match(webApp, /themeSoundPlayer\(\)\.prime\(\)/, "the switch primes audio inside its click");
-    assert.match(webApp, /enabled: setting\.on === true && !narrowViewport/, "desktop only");
-    assert.match(webApp, /\[state\.themeId, state\.themeSound, narrowViewport\]/, "crossing the phone breakpoint re-evaluates the sound");
-    assert.match(webApp, /themeSound: normalizedRemote\.themeSound/, "applied from the profile on desktop");
+    assert.match(webApp, /\(narrowViewport \? state\.themeSoundMobile : state\.themeSound\)/, "each device class uses its own setting");
+    assert.match(webApp, /\[state\.themeId, state\.themeSound, state\.themeSoundMobile, narrowViewport\]/, "crossing the phone breakpoint re-evaluates the sound");
+    assert.match(webApp, /themeSound: normalizedRemote\.themeSound/, "applied from the profile");
+    assert.match(webApp, /themeSoundMobile: normalizedRemote\.themeSoundMobile/, "the phone slot is applied from the profile");
+    assert.match(webApp, /device: "mobile", themeSound: next/, "the phone switch edits the phone slot");
     assert.match(player, /themeSoundEnvelope\(elapsed, sound\)/);
     assert.match(player, /doc\.hidden/, "silent while the tab is hidden");
     assert.match(player, /bedGain\.gain\.value = 0\.11/, "the low rumble stays under the crackle");

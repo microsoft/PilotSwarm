@@ -1,5 +1,5 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
-import { defaultThemeSound } from "./theme-sound.js";
+import { defaultThemeSound, defaultThemeSoundMobile } from "./theme-sound.js";
 import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
 import { createMotdState, createMotdAdminState } from "./motd.js";
 
@@ -466,8 +466,10 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Desktop chat column. Phone has no slot. Master of Agents does
             // not read this; only the main desktop chat does.
             chatReading: defaultChatReading(),
-            // Theme sounds: off until the person turns them on. Desktop only.
+            // Theme sounds, per device class: on by default on a desktop,
+            // off on a phone until the person turns them on there.
             themeSound: defaultThemeSound(),
+            themeSoundMobile: defaultThemeSoundMobile(),
             // The session detail box starts folded to its one-line summary. It
             // is ten rows of reference detail against a list you are trying to
             // read, and most of it is looked up once per session, not per

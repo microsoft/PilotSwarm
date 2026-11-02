@@ -1032,11 +1032,13 @@ function baseReducer(state, action) {
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
         case "ui/themeSound": {
+            // device "mobile" edits the phone's own setting; anything else the desktop's.
+            const key = action.device === "mobile" ? "themeSoundMobile" : "themeSound";
             const next = normalizeThemeSound(action.themeSound);
             if (!next) return state;
-            const current = state.ui.themeSound;
+            const current = state.ui[key];
             if (current && current.on === next.on && current.volume === next.volume) return state;
-            return { ...state, ui: { ...state.ui, themeSound: next } };
+            return { ...state, ui: { ...state.ui, [key]: next } };
         }
 
         case "ui/chatReading": {
@@ -1086,6 +1088,9 @@ function baseReducer(state, action) {
                 : null;
             const nextThemeSound = Object.prototype.hasOwnProperty.call(settings, "themeSound")
                 ? normalizeThemeSound(settings.themeSound)
+                : null;
+            const nextThemeSoundMobile = Object.prototype.hasOwnProperty.call(settings, "themeSoundMobile")
+                ? normalizeThemeSound(settings.themeSoundMobile)
                 : null;
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
@@ -1190,6 +1195,7 @@ function baseReducer(state, action) {
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
                     chatReading: nextChatReading || selection.ui.chatReading,
                     themeSound: nextThemeSound || selection.ui.themeSound,
+                    themeSoundMobile: nextThemeSoundMobile || selection.ui.themeSoundMobile,
                     sessionDetailCollapsed: hasSessionDetailCollapsed
                         ? settings.sessionDetailCollapsed
                         : selection.ui.sessionDetailCollapsed,

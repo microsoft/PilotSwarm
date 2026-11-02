@@ -11689,6 +11689,8 @@ textarea.ps-link-input {
   .ps-admin-mobile-body .ps-budget-seg-btn, .ps-budget-sheet.is-phone-fullscreen .ps-budget-seg-btn { min-height: 44px; font-size: 16px; }
   .ps-admin-mobile-body :is(input:not([type="checkbox"]):not([type="range"]), select) { max-width: 100%; font-size: 16px; box-sizing: border-box; }
   .ps-admin-mobile-body .ps-appearance { padding: 14px; }
+  .ps-mobile-volume-row input[type="range"] { flex: 1; min-width: 0; min-height: 44px; }
+  .ps-mobile-volume-value { min-width: 2.5em; text-align: right; color: var(--ps-muted); font-variant-numeric: tabular-nums; }
   .ps-mobile-desktop-only { min-width: 0; margin: 16px 0; padding: 0; border: 0; color: var(--ps-muted); }
   .ps-mobile-desktop-only :is(input, label) { opacity: 0.65; cursor: not-allowed; }
   .ps-admin-mobile-body .ps-admin-provider-block { overflow: visible; }

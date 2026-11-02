@@ -245,9 +245,20 @@ for (const themeId of ["hearth", "github-light"]) {
             await expect.poll(() => f.profileSettings().touchScaleMobile).toBe(!checked);
             expect(f.profileSettings().touchScale).toBe(false);
             await expect(pane.getByRole("button", { name: /^Theme / })).toBeVisible();
-            await expect(pane.locator("fieldset")).toHaveCount(2);
+            // Only the reading column is desktop-only; theme sounds have a phone setting.
+            await expect(pane.locator("fieldset")).toHaveCount(1);
             await expect(pane.locator("fieldset").first()).toContainText("desktop only");
             for (const control of await pane.locator("fieldset input").all()) await expect(control).toBeDisabled();
+            const sound = pane.getByRole("switch", { name: /Theme sounds/ });
+            await expect(sound).toBeEnabled();
+            await expect(sound).not.toBeChecked();
+            await expect(pane.getByRole("slider", { name: "Theme sound volume" })).toHaveCount(0);
+            await sound.setChecked(true);
+            await expect(pane.getByRole("slider", { name: "Theme sound volume" })).toBeVisible();
+            await expect.poll(() => f.profileSettings().themeSoundMobile?.on).toBe(true);
+            expect(f.profileSettings().themeSound?.on ?? true, "the desktop setting is untouched").toBe(true);
+            await sound.setChecked(false);
+            await expect.poll(() => f.profileSettings().themeSoundMobile?.on).toBe(false);
             await screenshot(page, `appearance-${themeId}`);
             await pane.getByRole("button", { name: /^Theme / }).click();
             await expect(page.locator(".ps-modal.is-theme-picker")).toBeVisible();

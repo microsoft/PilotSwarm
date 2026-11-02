@@ -5,13 +5,18 @@
 // are on by default; the sound plays continuously while they are on, fading
 // in when it starts and out when it stops. A theme may instead ask for a window:
 // `playSeconds` out of every `everySeconds`, fading in and out each time.
-// The setting is desktop-only: the phone shows it as "desktop only", and a
-// phone in a pocket should not crackle.
+// The setting is per device class, like touch size: `themeSound` for the
+// desktop (on by default) and `themeSoundMobile` for a phone (off by default,
+// so a phone never starts making noise on its own).
 
 export const THEME_SOUND_VOLUME_DEFAULT = 40;
 
 export function defaultThemeSound() {
     return { on: true, volume: THEME_SOUND_VOLUME_DEFAULT };
+}
+
+export function defaultThemeSoundMobile() {
+    return { on: false, volume: THEME_SOUND_VOLUME_DEFAULT };
 }
 
 export function normalizeThemeSound(value) {
