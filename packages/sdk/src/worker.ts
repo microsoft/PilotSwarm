@@ -1029,6 +1029,7 @@ export class PilotSwarmWorker {
             const artifactTools = createArtifactTools({
                 blobStore: this.artifactStore,
                 localPathRootsFor: (sessionId) => this.sessionManager?.computeLocalPathRoots(sessionId),
+                computeFolderMapFor: (sessionId) => this.sessionManager?.computeFolderMap(sessionId),
             });
             // The write bundle attaches patch artifacts through the same store.
             if (this.sessionManager) this.sessionManager.artifactStore = this.artifactStore ?? null;

@@ -406,6 +406,16 @@ export function buildBindingFingerprintInput(parts: {
      * rebind instead of failing every call for the rest of its life.
      */
     remoteCapabilities?: string;
+    /**
+     * Compute providers: the session's folders as the HOST sees them, one
+     * entry per folder.
+     *
+     * A warm runtime keeps the working directory it was created with. A
+     * provider that places the same folder somewhere else on a later turn
+     * leaves the agent working in the old place while every tool reports
+     * the new one, which is worse than a rebind.
+     */
+    computeFolders?: string[];
     boundAgentName: unknown;
     boundAgentSource: unknown;
     boundAgentCopy: unknown;
@@ -419,6 +429,7 @@ export function buildBindingFingerprintInput(parts: {
         baseAgentPolicy: parts.baseAgentPolicy,
         ...(parts.v2InventoryFingerprint ? { v2InventoryFingerprint: parts.v2InventoryFingerprint, sdkSkillDirectories: parts.sdkSkillDirectories } : {}),
         ...(parts.remoteCapabilities !== undefined ? { remoteCapabilities: parts.remoteCapabilities } : {}),
+        ...(parts.computeFolders ? { computeFolders: parts.computeFolders } : {}),
         boundAgentName: parts.boundAgentName,
         boundAgentSource: parts.boundAgentSource,
         boundAgentCopy: parts.boundAgentCopy,
@@ -484,6 +495,55 @@ export const DURABLE_FOLDERS_NOTE = [
         + "Other people's sessions may be able to read these folders: never put secrets in them. "
         + "get_session_workspace names each folder.",
 ].join("\n\n");
+
+/**
+ * Compute providers: the base prompt tells every agent that `bash` writes
+ * to the worker's disk, and that `write_artifact({fromFile})` is the byte
+ * channel out of it. Neither is true for a session whose runtime runs on a
+ * compute host: its shell is there, and the worker's file tools read the
+ * worker. A session that is told nothing follows the base prompt into
+ * folders that are not there.
+ *
+ * Two shapes, because the two cases differ in what the agent can do, not
+ * just in wording: a host that shares the session's folders with the worker
+ * still has file modes; one that shares nothing has none.
+ */
+export function computeHostNote(sharesWorkerFiles: boolean): string {
+    return [
+        "## Your shell runs on this session's compute host",
+        "Your `bash` tool, your background shells and every file you make with them are on your compute host, "
+            + "not on the worker that runs PilotSwarm. Paths outside the folders `get_session_workspace` lists are "
+            + "yours alone: no PilotSwarm tool can see them, nothing saves them, and they are gone when the host is "
+            + "replaced. Processes you leave running there outlive your turn.",
+        sharesWorkerFiles
+            ? "The folders `get_session_workspace` lists are shared with the worker, so `write_artifact({fromFile})` and "
+                + "`read_artifact({toFile})` work for files inside them. Use the paths that tool gives you; they are "
+                + "paths on your host."
+            : "This host shares no folders with the worker, so `write_artifact({fromFile})` and `read_artifact({toFile})` "
+                + "are unavailable to you. To save a file, pass its text as `content` (or base64 for a small binary "
+                + "one). Reading a stored artifact inline works as it always does.",
+    ].join("\n\n");
+}
+
+/** Compute providers: add `computeHostNote` for a session whose runtime is not the worker's own. */
+export function withComputeHostNote(
+    message: SystemMessageConfig | undefined,
+    runtime: { sharesWorkerFiles: boolean } | undefined,
+): SystemMessageConfig | undefined {
+    if (!runtime || !message || typeof message !== "object") return message;
+    const note = computeHostNote(runtime.sharesWorkerFiles);
+    if ((message as any).mode === "customize") {
+        const sections = (message as any).sections ?? {};
+        const custom = sections.custom_instructions;
+        if (!custom) return message;
+        return {
+            ...(message as any),
+            sections: { ...sections, custom_instructions: { ...custom, content: `${custom.content ?? ""}\n\n${note}` } },
+        } as SystemMessageConfig;
+    }
+    if (typeof (message as any).content === "string") return { ...(message as any), content: `${(message as any).content}\n\n${note}` } as SystemMessageConfig;
+    return message;
+}
 
 /** Section 4.11: add DURABLE_FOLDERS_NOTE when the turn has folders; otherwise the message is unchanged. */
 export function withDurableFoldersNote(message: SystemMessageConfig | undefined, hasFolders: boolean): SystemMessageConfig | undefined {
@@ -648,6 +708,11 @@ interface ComputeBinding {
     endpointKey: string;
     /** The session's workspace folders as the worker sees them. */
     workerPaths: string[];
+    /**
+     * The session's folders as both sides name them, from the provider's
+     * answer to `connect`. Empty until connect succeeds.
+     */
+    folderMap: ComputeFolderMap;
     /**
      * Which host this is, across the sessions of a tree: the target, the
      * host and which incarnation of it. Everything shared per host — the
@@ -1513,6 +1578,7 @@ export class SessionManager {
             endpointKey: sameHost ? previous!.endpointKey : "",
             owner,
             workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
+            folderMap: new ComputeFolderMap([]),
         };
         this.computeHosts.set(sessionId, binding);
         const connected = await this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
@@ -2035,6 +2101,17 @@ export class SessionManager {
         this.computeHosts.delete(sessionId);
         this.remoteGrants.delete(sessionId);
         if (binding) await this._releaseBinding(sessionId, binding, reason);
+    }
+
+    /**
+     * Compute providers: a session's folders as the worker and its host
+     * each name them, or undefined when it runs on the worker and there is
+     * one set of paths.
+     */
+    computeFolderMap(sessionId: string | undefined): ComputeFolderMap | undefined {
+        if (!sessionId) return undefined;
+        const binding = this.computeHosts.get(sessionId);
+        return binding?.endpointKey ? binding.folderMap : undefined;
     }
 
     /**
@@ -3584,10 +3661,11 @@ export class SessionManager {
         // instructions, when their folder is an extra folder (the CLI reads
         // instruction files only from its working folder), follow PilotSwarm's
         // base and come before the repo's.
-        const systemMessage = withPersonalInstructions(withDurableFoldersNote(keepAdoptedRepoInstructions(
+        const systemMessage = withComputeHostNote(withPersonalInstructions(withDurableFoldersNote(keepAdoptedRepoInstructions(
             this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null),
             workspaceAttach?.adopt?.instructions === true,
-        ), Boolean(workspaceAttach)), workspaceAttach?.home?.adopt?.instructions ? workspaceAttach.home.repo?.instructionText ?? [] : [], workspaceAttach?.home?.path);
+        ), Boolean(workspaceAttach)), workspaceAttach?.home?.adopt?.instructions ? workspaceAttach.home.repo?.instructionText ?? [] : [], workspaceAttach?.home?.path),
+            config.computeRuntime);
 
         // Handler changes use updateConfig; declaration, MCP and authored prompt
         // changes need a fresh CLI handle at this turn boundary. Do not include
@@ -3735,6 +3813,14 @@ export class SessionManager {
                 adopt: workspaceAttach.adopt ?? null,
                 ...(repoAdoption?.hash ? { repoAgentHash: repoAdoption.hash } : {}),
             } } : {}),
+            // Compute providers: the folders as the HOST sees them. A warm
+            // runtime keeps the working directory it was created with, so a
+            // host that maps the same folder somewhere else this turn has
+            // to be rebound — without this the agent goes on working in the
+            // old place while every tool reports the new one.
+            ...(config.computeRuntime ? {
+                computeFolders: config.computeRuntime.folders.map((folder) => `${folder.name}\u001f${folder.hostPath}`),
+            } : {}),
         }));
         const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
             && this.sessionBindingFingerprints.get(sessionId) !== bindingFingerprint;

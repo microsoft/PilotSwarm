@@ -873,7 +873,14 @@ export class ManagedSession {
         // are checked. A session that runs on the worker is unchanged.
         const allowed = loadFoldersFor(attachedFoldersOf(this.config.workspaceAttach), services.localPathRoots?.());
         if (!allowed.ok) return { ok: false, error: allowed.reason };
-        const where = resolveLoadPath(input, allowed.folders, { linkSafe: allowed.linkSafe });
+        // The agent named a path on its own host. The file is read on the
+        // worker, so the name is turned back into the worker's before it
+        // is checked — otherwise a host path under a different mount
+        // prefix is either refused outright or, worse, lands on some other
+        // worker file the session happens to be allowed.
+        const asked = this.workerPathFor(input);
+        if (!asked.ok) return { ok: false, error: asked.error };
+        const where = resolveLoadPath(asked.path, allowed.folders, { linkSafe: allowed.linkSafe });
         if (!where.ok) return { ok: false, error: where.reason };
         const [read] = await readLoadFiles([{ kind, absolute: where.absolute, folder: where.folder }]);
         if (!read?.ok) return { ok: false, error: `cannot load ${where.absolute}: ${read?.reason ?? "unreadable"}` };
@@ -898,7 +905,8 @@ export class ManagedSession {
         } catch (error: any) {
             return { ok: false, error: `could not save the load: ${error?.message ?? error}` };
         }
-        return { ok: true, name, absolute: where.absolute, description, body };
+        // Named back to the agent the way it names paths itself.
+        return { ok: true, name, absolute: this.agentPath(where.absolute) ?? where.absolute, description, body };
     }
 
     /** Section 4.12: drop a loaded agent or skill by name. */
@@ -2913,6 +2921,14 @@ export class ManagedSession {
                     const augmented = {
                         ...invocation,
                         durableSessionId,
+                        // Compute providers: a deployment's own tool runs
+                        // in the worker, and the agent calling it may be on
+                        // another machine. A tool that takes a path has no
+                        // other way of knowing that, and would otherwise
+                        // open worker files for a session that is not
+                        // allowed any. Absent for a session that runs on
+                        // the worker, where nothing has changed.
+                        ...(this.config.computeRuntime ? { compute: this.computeToolContext() } : {}),
                         ...(this.factsAccessor ? { facts: this.factsAccessor } : {}),
                     };
                     try {
@@ -3142,10 +3158,21 @@ export class ManagedSession {
                     type: "set_workspace", workspace: next, path,
                     ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
                 });
-                const oldPath = this.config.workspaceAttach?.path ?? this.config.workingDirectory ?? "the current working directory";
+                const oldPath = this.agentPath(this.config.workspaceAttach?.path) ?? this.config.workingDirectory ?? "the current working directory";
+                // Compute providers: the worker checked and attached the
+                // folder on its own machine. Where the agent will find it
+                // is the host's path for it, which the worker only learns
+                // when it connects for the next turn — so it is not
+                // promised here.
+                const nextPath = this.config.computeRuntime
+                    ? (path ? "the folder you asked for, at the path your host gives it" : "the default working directory")
+                    : (path ?? "the default working directory");
                 return `Workspace change accepted: ${describeWorkspaceForModel(next)}.\n`
                     + `[SYSTEM: set_session_workspace acknowledged. You are still in ${oldPath}. `
-                    + `The working directory becomes ${path ?? "the default working directory"} only after this turn ends. `
+                    + `The working directory becomes ${nextPath} only after this turn ends. `
+                    + (this.config.computeRuntime
+                        ? "Call get_session_workspace in your next turn for the path on your compute host. "
+                        : "")
                     + "Do not edit or run anything now. Stop and end your turn.]";
             }
             // Extra folders only (section 4.10): the new ones are
@@ -3170,12 +3197,22 @@ export class ManagedSession {
                 path: this.config.workspaceAttach?.path ?? null,
                 ...(attached.length > 0 ? { extraPaths: Object.fromEntries(attached.map((extra) => [extra.name, extra.path])) } : {}),
             });
+            // Compute providers: the worker attached the folder on its own
+            // machine. Nothing has put it on the host, and the host's path
+            // for it is only known at the next connect — so a remote
+            // session is told plainly that the folder arrives next turn,
+            // rather than being given a path that is not there.
+            const deferred = Boolean(this.config.computeRuntime);
             const lines = [
-                ...attached.map((extra) => `${merged.added.includes(extra.name) ? "Added" : "Replaced"}: ${extra.name} at ${extra.path}${extra.readOnly ? " (read-only)" : ""}`),
+                ...attached.map((extra) => `${merged.added.includes(extra.name) ? "Added" : "Replaced"}: ${extra.name}`
+                    + (deferred ? "" : ` at ${extra.path}`) + (extra.readOnly ? " (read-only)" : "")),
                 ...merged.removed.map((name) => `Removed: ${name} (released after this turn)`),
             ];
             return `Extra folders changed.\n${lines.join("\n")}\n`
-                + "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]";
+                + (deferred
+                    ? "[SYSTEM: Your agent runs on a compute host, so a new folder is prepared there for your next turn, not this one. "
+                        + "Do not use it yet; call get_session_workspace next turn for its path. The working directory is unchanged. Continue your task.]"
+                    : "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]");
         };
         const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools ? [
             // Section 4.12: an agent from a file. The CLI takes its agents when
@@ -3219,6 +3256,21 @@ export class ManagedSession {
                 ...GET_SESSION_WORKSPACE_TOOL_SPEC,
                 handler: async () => {
                     const attach = this.config.workspaceAttach;
+                    const runtime = this.config.computeRuntime;
+                    // Compute providers: attached on the worker and
+                    // available on the host are two different things, and
+                    // the second is the one the agent can act on. A folder
+                    // the worker attached and the host has not been given
+                    // is reported as attached, with no path — never as a
+                    // worker path the agent would follow to nothing.
+                    const onHost = (workerPath: string | null | undefined) => {
+                        if (!runtime) return {};
+                        const hostPath = this.agentPath(workerPath);
+                        return {
+                            attachedOnWorker: workerPath ?? null,
+                            availableOnHost: hostPath !== null,
+                        };
+                    };
                     // Extra folders (section 4.10), as attached for this turn.
                     const extras = Object.entries(this.config.workspace?.extra ?? {}).map(([name, extra]) => {
                         const attached = attach?.extras?.find((one) => one.name === name);
@@ -3228,15 +3280,25 @@ export class ManagedSession {
                             root: extra.root,
                             folder: extra.folder ?? null,
                             required: extra.required !== false,
-                            path: attached?.path ?? null,
+                            path: this.agentPath(attached?.path),
                             status: attached ? "attached" : missing ? "unavailable" : "not attached",
+                            ...onHost(attached?.path),
                             ...(attached?.readOnly ? { readOnly: true } : {}),
                             ...(missing ? { error: `${missing.code}: ${missing.message}` } : {}),
                         };
                     });
                     return JSON.stringify({
                         workspace: this.config.workspace ?? null,
-                        path: this.config.workspace ? attach?.path ?? null : null,
+                        path: this.config.workspace ? this.agentPath(attach?.path) : null,
+                        ...(this.config.workspace ? onHost(attach?.path) : {}),
+                        ...(runtime ? {
+                            compute: {
+                                target: runtime.targetName,
+                                note: "Your shell runs on this session's compute host. Every path here is a path on that host. "
+                                    + "A folder that is attached but not available on the host is one PilotSwarm's own tools can reach and you cannot."
+                                    + (runtime.sharesWorkerFiles ? "" : " PilotSwarm's file tools cannot read or write your host's files."),
+                            },
+                        } : {}),
                         ...(this.config.workspace && attach?.readOnly ? { readOnly: true } : {}),
                         revision: this.config.workspace ? attach?.revision ?? null : null,
                         ...(extras.length > 0 ? { extra: extras } : {}),
@@ -3252,15 +3314,16 @@ export class ManagedSession {
                         // this turn. They are not part of the record above.
                         ...(attach && (attach.homeIsWorkingFolder || attach.defaultExtras?.length) ? {
                             defaults: {
-                                ...(attach.homeIsWorkingFolder ? { workingFolder: { root: attach.root, path: attach.path } } : {}),
+                                ...(attach.homeIsWorkingFolder ? { workingFolder: { root: attach.root, path: this.agentPath(attach.path), ...onHost(attach.path) } } : {}),
                                 extra: (attach.defaultExtras ?? []).map((name) => {
                                     const attached = attach.extras?.find((one) => one.name === name);
                                     const missing = attach.extrasUnavailable?.find((one) => one.name === name);
                                     return {
                                         name,
                                         root: attached?.root ?? missing?.root ?? null,
-                                        path: attached?.path ?? null,
+                                        path: this.agentPath(attached?.path),
                                         status: attached ? "attached" : missing ? "unavailable" : "not attached",
+                                        ...onHost(attached?.path),
                                         ...(attached?.readOnly ? { readOnly: true } : {}),
                                     };
                                 }),
@@ -4194,6 +4257,77 @@ export class ManagedSession {
      */
     noteWorkspaceChangeRequested(): void {
         if (this.activeTurnState) this.activeTurnState.workspaceChangeRequested = true;
+    }
+
+    /**
+     * Compute providers: this session's folders as the worker and its host
+     * each name them, or undefined for a session that runs on the worker
+     * and has one set of paths.
+     *
+     * Built per call from the turn's configuration, which is where the
+     * mapping arrives: it can change from turn to turn, and nothing may
+     * answer from a remembered one.
+     */
+    private folderMap(): ComputeFolderMap | undefined {
+        const runtime = this.config.computeRuntime;
+        return runtime ? new ComputeFolderMap(runtime.folders) : undefined;
+    }
+
+    /**
+     * A path the agent named, as the worker's own path.
+     *
+     * A session that runs on the worker names worker paths already. A
+     * remote session names host paths: an absolute one is translated, and
+     * a relative one is left alone because it is resolved against a folder
+     * both sides have.
+     */
+    private workerPathFor(input: unknown): { ok: true; path: unknown } | { ok: false; error: string } {
+        const map = this.folderMap();
+        if (!map || typeof input !== "string" || !path.isAbsolute(input)) return { ok: true, path: input };
+        const worker = map.toWorker(input);
+        if (!worker) {
+            return {
+                ok: false,
+                error: `${input} is not inside this session's folders on its compute host (${map.hostRoots.join(", ") || "none are shared"})`,
+            };
+        }
+        return { ok: true, path: worker };
+    }
+
+    /**
+     * What a worker-side tool is told about where this session's agent
+     * runs, so a tool that takes a path can confine it.
+     *
+     * `allowedWorkerPaths` is the whole list: empty means this session's
+     * host shares no folders with the worker, and no worker path is this
+     * session's to open. `hostPaths` is the same folders as the agent
+     * names them, for a tool that wants to report a path back.
+     */
+    computeToolContext(): {
+        runsRemotely: true;
+        target: string;
+        sharesWorkerFiles: boolean;
+        allowedWorkerPaths: string[];
+        hostPaths: string[];
+    } | undefined {
+        const runtime = this.config.computeRuntime;
+        if (!runtime) return undefined;
+        const map = this.folderMap();
+        return {
+            runsRemotely: true,
+            target: runtime.targetName,
+            sharesWorkerFiles: runtime.sharesWorkerFiles,
+            allowedWorkerPaths: runtime.sharesWorkerFiles ? (map?.workerRoots ?? []) : [],
+            hostPaths: map?.hostRoots ?? [],
+        };
+    }
+
+    /** The path the agent must use for a folder the worker attached at `workerPath`. */
+    private agentPath(workerPath: string | null | undefined): string | null {
+        if (!workerPath) return null;
+        const map = this.folderMap();
+        if (!map) return workerPath;
+        return map.toHost(workerPath) ?? null;
     }
 
     /**

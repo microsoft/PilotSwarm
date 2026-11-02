@@ -141,11 +141,135 @@ export interface ComputeRuntimeContext {
      * file mode of a PilotSwarm tool has nothing to read.
      */
     sharesWorkerFiles: boolean;
+    /** The session's folders as each side names them (`ComputeFolderMap`). */
+    folders: ComputeFolderMapping[];
 }
 
 /** Whether a provider's files capability means the worker can reach the host's folders. */
 export function computeSharesWorkerFiles(files: ComputeCapabilities["files"] | undefined): boolean {
     return files === "worker-local" || files === "shared-mount";
+}
+
+/** The name of a session's working folder in the map below. */
+export const COMPUTE_WORKING_FOLDER = "";
+
+/** One of a session's folders, as each side of the connection names it. */
+export interface ComputeFolderMapping {
+    /** "" for the working folder, otherwise the extra folder's name. */
+    name: string;
+    /** Where the worker attached it. */
+    workerPath: string;
+    /** Where the host sees the same folder. */
+    hostPath: string;
+}
+
+/** Split a path into its parts, whichever separator the side that wrote it uses. */
+function pathParts(value: string): string[] {
+    return String(value).replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+}
+
+/** Whether `child` is `parent` or sits under it, comparing part by part. */
+function underPath(child: string, parent: string): boolean {
+    const a = pathParts(child);
+    const b = pathParts(parent);
+    if (a.length < b.length) return false;
+    return b.every((part, index) => part === a[index]);
+}
+
+/**
+ * A session's folders as both sides name them, and the translation between
+ * them.
+ *
+ * The agent works on its host and names host paths; PilotSwarm's own file
+ * tools run on the worker and read worker paths. With a provider that maps
+ * the two identically there is nothing to do, and that is the only case
+ * this ever worked for. With any other mount prefix an untranslated path
+ * sends a command to a folder that is not there, or — worse — names a
+ * different, permitted worker file.
+ *
+ * Only the session's own folders are in the map: nothing else of either
+ * machine is a path this session may name.
+ */
+export class ComputeFolderMap {
+    /** Longest worker path first, so the most specific folder wins. */
+    private readonly byWorker: ComputeFolderMapping[];
+    private readonly byHost: ComputeFolderMapping[];
+
+    constructor(readonly folders: readonly ComputeFolderMapping[]) {
+        this.byWorker = [...folders].sort((a, b) => b.workerPath.length - a.workerPath.length);
+        this.byHost = [...folders].sort((a, b) => b.hostPath.length - a.hostPath.length);
+    }
+
+    /** Whether both sides see every folder at the same path, so nothing needs translating. */
+    get identical(): boolean {
+        return this.folders.every((folder) => folder.workerPath === folder.hostPath);
+    }
+
+    get workerRoots(): string[] {
+        return this.folders.map((folder) => folder.workerPath);
+    }
+
+    get hostRoots(): string[] {
+        return this.folders.map((folder) => folder.hostPath);
+    }
+
+    /** The host path for one of the session's folders, by name. */
+    hostPathOf(name: string): string | undefined {
+        return this.folders.find((folder) => folder.name === name)?.hostPath;
+    }
+
+    /** What the host calls a worker path inside the session's folders, or undefined. */
+    toHost(workerPath: string | undefined): string | undefined {
+        return reroot(workerPath, this.byWorker, "workerPath", "hostPath");
+    }
+
+    /** What the worker calls a host path inside the session's folders, or undefined. */
+    toWorker(hostPath: string | undefined): string | undefined {
+        return reroot(hostPath, this.byHost, "hostPath", "workerPath");
+    }
+}
+
+/**
+ * Pair a session's folders as the worker attached them with the same
+ * folders as the provider says the host sees them.
+ *
+ * They line up by position: the worker sends the working folder and then
+ * the extra folders in order, and `connect` answers with the host's view
+ * of the same list. A provider that returns fewer folders than it was
+ * given has not placed the rest, so those are left out rather than guessed.
+ */
+export function computeFolderMapOf(
+    worker: ComputeWorkspacePaths,
+    host: ComputeWorkspacePaths,
+    extraNames: string[],
+): ComputeFolderMap {
+    const folders: ComputeFolderMapping[] = [];
+    if (worker.cwd && host.cwd) folders.push({ name: COMPUTE_WORKING_FOLDER, workerPath: worker.cwd, hostPath: host.cwd });
+    const workerExtras = worker.additionalDirectories ?? [];
+    const hostExtras = host.additionalDirectories ?? [];
+    for (let index = 0; index < workerExtras.length; index++) {
+        const hostPath = hostExtras[index];
+        if (!workerExtras[index] || !hostPath) continue;
+        folders.push({ name: extraNames[index] ?? `extra-${index + 1}`, workerPath: workerExtras[index], hostPath });
+    }
+    return new ComputeFolderMap(folders);
+}
+
+function reroot(
+    value: string | undefined,
+    folders: readonly ComputeFolderMapping[],
+    from: "workerPath" | "hostPath",
+    to: "workerPath" | "hostPath",
+): string | undefined {
+    if (typeof value !== "string" || !value.trim()) return undefined;
+    const folder = folders.find((candidate) => candidate[from] && underPath(value, candidate[from]));
+    if (!folder) return undefined;
+    const rest = pathParts(value).slice(pathParts(folder[from]).length);
+    const base = String(folder[to]).replace(/\/+$/, "");
+    // The target side's own separator: a host that writes Windows paths
+    // keeps them, and so does a worker.
+    const separator = folder[to].includes("\\") && !folder[to].includes("/") ? "\\" : "/";
+    return rest.length === 0 ? folder[to] : `${base}${separator}${rest.join(separator)}`;
 }
 
 /**
