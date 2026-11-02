@@ -1,5 +1,5 @@
 /**
- * Workflow v2 durable recipient intake: migration 0094 and the store's claim,
+ * Workflow v2 durable recipient intake: migrations 0094 and 0095 and the store's claim,
  * bind and settle primitives (design docs/proposals/workflow-durable-intake.md,
  * revision 3 with amendment 2, sections 3, 4, 5.1, 5.2, 5.6 and 5.7), on real
  * PostgreSQL. The intake is inactive: no sender decides a durable mode and no
@@ -49,6 +49,21 @@
  *   Every check is a total boolean (INTAKE-S2-03, INTAKE-S2-04): a null
  *   column never lets a row take an outcome without a durable mode, a time
  *   without an outcome, or a final processing without the bind's bound.
+ * - The possible-exposure record (migration 0095; exposure protocol
+ *   revision 2, sections 3 and 6): the admission takes exactly the active
+ *   batch, in member order, under the member claims, with each text's
+ *   stored hash; the first one records its attempt; the same attempt again
+ *   and the invocation's own retry are allowed, any other attempt is refused
+ *   exposed; an ended invocation, or a payload naming an item cancelled
+ *   before any exposure, is refused settled, never shrunk; everything else
+ *   fails visibly and writes nothing. After an exposure, a requested
+ *   not_dispatched end is applied interrupted (its replay too), other
+ *   outcomes stand, and an unsent cancel records cancel_requested and
+ *   answers exposed, a replay after the end included, while an item
+ *   cancelled before the exposure stays settled. Admission serializes with
+ *   the end and the unsent cancel on the invocation's identity, in both
+ *   orders (barrier-held). The record is never updated or deleted, and 0095
+ *   upgrades a populated 0094 schema.
  *
  * Barrier-held races use a second store over a pool whose statements pass
  * through a hook (the store's own statements, held at COMMIT or followed by
@@ -75,6 +90,7 @@ import {
 import { workflowLiveControllerInstanceId, workflowSendClientMessageId, workflowSendPrompt } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor, WorkflowStore } from "../../src/workflow/v2/store.ts";
 import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
+import { runWorkflowIntakeSettle } from "../../src/workflow/v2/intake-activities.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-intake-store-test" };
@@ -426,7 +442,7 @@ describe("workflow v2 durable intake: the outbox fence (migration 0094)", () => 
             const message = await h.store.readOutboxMessage(exchangeId);
 
             await h.catalog.initialize();
-            expect(await versions()).toEqual([...before, "0094"]);
+            expect(await versions()).toEqual([...before, "0094", "0095"]);
             expect(await h.q(`SELECT intake_mode, attempt_token, intake_outcome, intake_outcome_at FROM SCHEMA.workflow_outbox WHERE exchange_id = $1`,
                 [exchangeId])).toEqual([{ intake_mode: null, attempt_token: null, intake_outcome: null, intake_outcome_at: null }]);
             expect(await h.store.readOutboxMessage(exchangeId)).toEqual(message);
@@ -440,7 +456,7 @@ describe("workflow v2 durable intake: the outbox fence (migration 0094)", () => 
                 WHERE exchange_id = $1`, [exchangeId])).rejects.toThrow(/first attempt/);
             // Applying the registered migrations again changes nothing.
             await runMigrations(h.pool, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema), CMS_LOCK_SEED);
-            expect(await versions()).toEqual([...before, "0094"]);
+            expect(await versions()).toEqual([...before, "0094", "0095"]);
         } finally { await h.stop(); }
     });
 });
@@ -1263,6 +1279,298 @@ describe("workflow v2 durable intake: the row guard (migration 0094)", () => {
             for (const [exchangeId, row] of Object.entries(rows)) expect(await h.store.readWorkflowIntake(exchangeId)).toEqual(row);
             expect(rows[holding]).toMatchObject({ state: "holding", duplicates: 1 });
             expect(rows[ended]).toMatchObject({ processing: "completed", cancelRequested: true });
+        } finally { await h.stop(); }
+    });
+});
+
+describe("workflow v2 durable intake: the possible-exposure record and its fences (migration 0095, store)", () => {
+    /** Claimed held items of one run, by exchange id; `ref` and `sent` name one as a bind and as an admission do. */
+    async function exposureItems(h, count) {
+        const run = await h.workflow();
+        const items = {};
+        const ids = [];
+        for (let ordinal = 1; ordinal <= count; ordinal += 1) {
+            const exchangeId = await h.durable(run, { ordinal, payload: { note: `item ${ordinal}` } });
+            const claimed = await h.claim(await h.envelopeOf(exchangeId), `claim-${ordinal}`);
+            expect(claimed).toMatchObject({ result: "accepted", inserted: true });
+            items[exchangeId] = claimed.item;
+            ids.push(exchangeId);
+        }
+        const ref = exchangeId => ({ exchangeId, claimId: items[exchangeId].claimId });
+        const sent = exchangeId => ({ ...ref(exchangeId), textSha256: sha256Hex(items[exchangeId].text) });
+        const bind = (invocationId, exchangeIds) => h.store.bindWorkflowIntake({ recipientSessionId: h.recipient, invocationId, items: exchangeIds.map(ref) });
+        const exposeVia = (store, invocationId, attemptId, exchangeIds, { sentBefore = false, recipientSessionId = h.recipient, entries } = {}) =>
+            store.exposeWorkflowIntake({ recipientSessionId, invocationId, attemptId, sentBefore, items: entries ?? exchangeIds.map(sent) });
+        const expose = (...args) => exposeVia(h.store, ...args);
+        const endVia = (store, invocationId, outcome, refs) => store.endWorkflowIntake({ recipientSessionId: h.recipient, invocationId, outcome,
+            items: refs.map(([exchangeId, cancelRequested = false]) => ({ ...ref(exchangeId), cancelRequested })) });
+        const end = (...args) => endVia(h.store, ...args);
+        const cancelVia = (store, invocationId, exchangeId) => store.cancelUnsentWorkflowIntake({ recipientSessionId: h.recipient, ...ref(exchangeId), invocationId });
+        const cancel = (...args) => cancelVia(h.store, ...args);
+        const read = exchangeId => h.store.readWorkflowIntake(exchangeId);
+        const exposure = invocationId => h.store.readWorkflowIntakeExposure(invocationId);
+        return { ids, items, ref, sent, bind, expose, exposeVia, end, endVia, cancel, cancelVia, read, exposure };
+    }
+
+    it("admits only the exact active batch: the first attempt is recorded, the same attempt and the own retry are allowed, another attempt is refused exposed; a stale payload is refused settled", { timeout: TIMEOUT }, async () => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const x = await exposureItems(h, 4);
+            const [a, b, c, d] = x.ids;
+            expect(await x.bind("inv-1", [a, b])).toMatchObject({ bound: true });
+            const rowsBefore = [await x.read(a), await x.read(b)];
+            expect(await x.exposure("inv-1")).toBeNull();
+
+            // Anything but the exact active batch, under its claims, with each text's stored hash, by its recipient: a visible failure,
+            // and nothing written.
+            for (const [label, call, code] of [
+                ["reordered", () => x.expose("inv-1", "att-1", [b, a]), "WORKFLOW_STORE_CORRUPT"],
+                ["an omission", () => x.expose("inv-1", "att-1", [a]), "WORKFLOW_STORE_CORRUPT"],
+                ["an extra item", () => x.expose("inv-1", "att-1", [a, b, c]), "WORKFLOW_STORE_CORRUPT"],
+                ["a duplicate", () => x.expose("inv-1", "att-1", [a, a]), "WORKFLOW_INTAKE_INVALID"],
+                ["another claim", () => x.expose("inv-1", "att-1", [], { entries: [{ ...x.sent(a), claimId: "claim-9" }, x.sent(b)] }), "WORKFLOW_STORE_CORRUPT"],
+                ["another text", () => x.expose("inv-1", "att-1", [], { entries: [{ ...x.sent(a), textSha256: sha256Hex("another text") }, x.sent(b)] }),
+                    "WORKFLOW_STORE_CORRUPT"],
+                ["another recipient", () => x.expose("inv-1", "att-1", [a, b], { recipientSessionId: h.stranger }), "WORKFLOW_STORE_CORRUPT"],
+                ["an invocation never bound", () => x.expose("inv-none", "att-1", [a, b]), "WORKFLOW_STORE_CORRUPT"],
+                ["no item", () => x.expose("inv-1", "att-1", []), "WORKFLOW_INTAKE_INVALID"],
+                ["no attempt id", () => x.expose("inv-1", "", [a, b]), "WORKFLOW_INTAKE_INVALID"],
+                ["a hash that is not a digest", () => x.expose("inv-1", "att-1", [], { entries: [{ ...x.sent(a), textSha256: "x" }, x.sent(b)] }),
+                    "WORKFLOW_INTAKE_INVALID"],
+                ["a flag that is not a boolean", () => h.store.exposeWorkflowIntake({ recipientSessionId: h.recipient, invocationId: "inv-1",
+                    attemptId: "att-1", sentBefore: "yes", items: [x.sent(a), x.sent(b)] }), "WORKFLOW_INTAKE_INVALID"],
+            ]) {
+                const failed = await expectCode(call(), code);
+                expect(failed, label).toBeDefined();
+            }
+            expect(await x.exposure("inv-1")).toBeNull();
+
+            // The first admission records the exposure: this attempt's id, at the store's clock.
+            expect(await x.expose("inv-1", "att-1", [a, b])).toEqual({ allowed: true });
+            const first = await x.exposure("inv-1");
+            expect(first).toEqual({ invocationId: "inv-1", recipientSessionId: h.recipient, attemptId: "att-1", exposedAt: expect.stringMatching(EXACT_TIME) });
+            // The same attempt again (a redelivery, a repeated call, a recovery re-run), and the invocation's own retry: allowed, nothing written.
+            expect(await x.expose("inv-1", "att-1", [a, b])).toEqual({ allowed: true });
+            expect(await x.expose("inv-1", "att-2", [a, b], { sentBefore: true })).toEqual({ allowed: true });
+            // Any other attempt: refused exposed. The record and the rows never change.
+            expect(await x.expose("inv-1", "att-3", [a, b])).toEqual({ allowed: false, reason: "exposed" });
+            expect(await x.exposure("inv-1")).toEqual(first);
+            expect([await x.read(a), await x.read(b)]).toEqual(rowsBefore);
+
+            // An ended invocation refuses every admission settled, the first attempt's and the own retry's included.
+            expect(await x.end("inv-1", "completed", [[a], [b]])).toEqual({ ended: true });
+            expect(await x.expose("inv-1", "att-1", [a, b])).toEqual({ allowed: false, reason: "settled" });
+            expect(await x.expose("inv-1", "att-2", [a, b], { sentBefore: true })).toEqual({ allowed: false, reason: "settled" });
+            expect(await x.exposure("inv-1")).toEqual(first);
+
+            // An item cancelled before any exposure: a payload naming it is stale, refused settled and never shrunk (alone or with the
+            // remaining member); the remaining batch is admitted.
+            expect(await x.bind("inv-2", [c, d])).toMatchObject({ bound: true });
+            expect(await x.cancel("inv-2", c)).toEqual({ cancelled: true });
+            expect(await x.expose("inv-2", "att-4", [c, d])).toEqual({ allowed: false, reason: "settled" });
+            expect(await x.expose("inv-2", "att-4", [c])).toEqual({ allowed: false, reason: "settled" });
+            expect(await x.exposure("inv-2")).toBeNull();
+            expect(await x.expose("inv-2", "att-4", [d])).toEqual({ allowed: true });
+            expect(await x.exposure("inv-2")).toMatchObject({ invocationId: "inv-2", attemptId: "att-4" });
+            expect(await x.read(c)).toMatchObject({ processing: "not_dispatched", reason: "cancelled", cancelRequested: false });
+        } finally { await h.stop(); }
+    });
+
+    it("after an exposure, a requested not_dispatched end is applied interrupted, its replay too, and other outcomes stand; an end first makes every admission refuse settled", { timeout: TIMEOUT }, async () => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const x = await exposureItems(h, 6);
+            const [a, b, c, d, e, f] = x.ids;
+            expect(await x.bind("inv-1", [a, b])).toMatchObject({ bound: true });
+            expect(await x.expose("inv-1", "att-1", [a, b])).toEqual({ allowed: true });
+            expect(await x.end("inv-1", "not_dispatched", [[a], [b]])).toEqual({ ended: true, outcome: "interrupted" });
+            const interrupted = [await x.read(a), await x.read(b)];
+            for (const row of interrupted) expect(row).toMatchObject({ processing: "interrupted", reason: null, settledAt: expect.stringMatching(EXACT_TIME) });
+            // The replay compares with the applied outcome; the applied outcome itself is the same end; any other fails.
+            expect(await x.end("inv-1", "not_dispatched", [[a], [b]])).toEqual({ ended: false, outcome: "interrupted" });
+            expect(await x.end("inv-1", "interrupted", [[a], [b]])).toEqual({ ended: false });
+            await expectCode(x.end("inv-1", "completed", [[a], [b]]), "WORKFLOW_STORE_CORRUPT");
+            expect([await x.read(a), await x.read(b)]).toEqual(interrupted);
+
+            // Other outcomes stand beside an exposure.
+            expect(await x.bind("inv-2", [c])).toMatchObject({ bound: true });
+            expect(await x.expose("inv-2", "att-2", [c])).toEqual({ allowed: true });
+            expect(await x.end("inv-2", "completed", [[c]])).toEqual({ ended: true });
+            expect(await x.read(c)).toMatchObject({ processing: "completed" });
+            expect(await x.bind("inv-3", [d])).toMatchObject({ bound: true });
+            expect(await x.expose("inv-3", "att-3", [d])).toEqual({ allowed: true });
+            expect(await x.end("inv-3", "failed_indeterminate", [[d]])).toEqual({ ended: true });
+            expect(await x.read(d)).toMatchObject({ processing: "failed_indeterminate" });
+
+            // Without an exposure, not_dispatched stands; a later admission is refused settled and records nothing.
+            expect(await x.bind("inv-4", [e])).toMatchObject({ bound: true });
+            expect(await x.end("inv-4", "not_dispatched", [[e]])).toEqual({ ended: true });
+            expect(await x.read(e)).toMatchObject({ processing: "not_dispatched", reason: null });
+            expect(await x.expose("inv-4", "att-4", [e])).toEqual({ allowed: false, reason: "settled" });
+            expect(await x.exposure("inv-4")).toBeNull();
+
+            // A record the store did not write (a fixture written directly): another recipient's fails visibly; an empty end beside a
+            // record fails visibly, since an admission never records one for a batch whose items were all cancelled.
+            expect(await x.bind("inv-5", [f])).toMatchObject({ bound: true });
+            await h.q(`INSERT INTO SCHEMA.workflow_intake_exposures (invocation_id, recipient_session_id, attempt_id, exposed_at)
+                VALUES ('inv-5', $1, 'att-x', clock_timestamp())`, [h.stranger]);
+            await expectCode(x.expose("inv-5", "att-x", [f]), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(x.end("inv-5", "not_dispatched", [[f]]), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(x.cancel("inv-5", f), "WORKFLOW_STORE_CORRUPT");
+            expect(await x.read(f)).toMatchObject({ processing: "bound", cancelRequested: false });
+            expect(await x.cancel("inv-4", e).catch(error => error.code)).toBe("WORKFLOW_STORE_CORRUPT");
+        } finally { await h.stop(); }
+    });
+
+    it("an unsent cancel after an exposure records cancel_requested and answers exposed, a replay after the end too; an item cancelled before it stays settled (cancel A, expose B, replay A)", { timeout: TIMEOUT }, async () => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const x = await exposureItems(h, 4);
+            const [a, b, c, d] = x.ids;
+            expect(await x.bind("inv-1", [a, b])).toMatchObject({ bound: true });
+            // A is cancelled before any exposure; only B is then admitted.
+            expect(await x.cancel("inv-1", a)).toEqual({ cancelled: true });
+            const cancelledA = await x.read(a);
+            expect(await x.expose("inv-1", "att-1", [b])).toEqual({ allowed: true });
+            // A's replay is answered before the exposure is read: settled, never exposed or revived.
+            expect(await x.cancel("inv-1", a)).toEqual({ cancelled: false });
+            expect(await x.read(a)).toEqual(cancelledA);
+            // B after the exposure: the cancel is recorded as requested, once; the processing stays bound.
+            expect(await x.cancel("inv-1", b)).toEqual({ cancelled: false, exposed: true });
+            const requestedB = await x.read(b);
+            expect(requestedB).toMatchObject({ processing: "bound", cancelRequested: true, settledAt: null });
+            expect(await x.cancel("inv-1", b)).toEqual({ cancelled: false, exposed: true });
+            expect(await x.read(b)).toEqual(requestedB);
+            // The activity answers item by item: settled for A, exposed for B.
+            expect(await runWorkflowIntakeSettle({ store: h.store }, {
+                op: "cancel_unsent", recipientSessionId: h.recipient, invocationId: "inv-1", items: [x.ref(a), x.ref(b)],
+            })).toEqual({ ok: true, result: { items: [{ exchangeId: a, settled: false }, { exchangeId: b, exposed: true }] } });
+            // The end names B with its cancel; not_dispatched is applied interrupted; A is never named.
+            await expectCode(x.end("inv-1", "not_dispatched", [[a], [b, true]]), "WORKFLOW_STORE_CORRUPT");
+            expect(await x.end("inv-1", "not_dispatched", [[b, true]])).toEqual({ ended: true, outcome: "interrupted" });
+            const endedB = await x.read(b);
+            expect(endedB).toMatchObject({ processing: "interrupted", cancelRequested: true });
+            // A cancel replayed after the end (a late duplicate execution): the same answers; the final processing is kept.
+            expect(await x.cancel("inv-1", b)).toEqual({ cancelled: false, exposed: true });
+            expect(await x.cancel("inv-1", a)).toEqual({ cancelled: false });
+            expect([await x.read(a), await x.read(b)]).toEqual([cancelledA, endedB]);
+
+            // A first cancel after the end of an exposed invocation records the flag on the final row and keeps its processing.
+            expect(await x.bind("inv-2", [c, d])).toMatchObject({ bound: true });
+            expect(await x.expose("inv-2", "att-2", [c, d])).toEqual({ allowed: true });
+            expect(await x.end("inv-2", "completed", [[c], [d]])).toEqual({ ended: true });
+            const completedD = await x.read(d);
+            expect(await x.cancel("inv-2", d)).toEqual({ cancelled: false, exposed: true });
+            expect(await x.read(d)).toMatchObject({ processing: "completed", cancelRequested: true, settledAt: completedD.settledAt });
+            expect(await x.end("inv-2", "completed", [[c], [d, true]])).toEqual({ ended: false });
+        } finally { await h.stop(); }
+    });
+
+    it("serializes the admission with the end and the unsent cancel on the invocation's identity, in both orders", { timeout: TIMEOUT }, async () => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const x = await exposureItems(h, 4);
+            const [a, b, c, d] = x.ids;
+            const invocationLock = sql => sql.includes("pg_advisory_xact_lock");
+            const admissionInsert = sql => sql.includes("INSERT INTO") && sql.includes(".workflow_intake_exposures");
+            const endUpdate = sql => /^\s*UPDATE\b/.test(sql) && sql.includes("SET processing = $3");
+            const cancelUpdate = sql => /^\s*UPDATE\b/.test(sql) && sql.includes("SET processing = 'not_dispatched', reason = 'cancelled'");
+            expect(await h.isolation()).toEqual({ default: "repeatable read", plainBegin: "repeatable read", storeTransaction: "read committed" });
+
+            // Admission commits first: the end waits for it, then applies interrupted to the requested not_dispatched.
+            expect(await x.bind("inv-1", [a])).toMatchObject({ bound: true });
+            let held = h.holdCommit(admissionInsert, invocationLock);
+            const admitting = settle(x.exposeVia(h.hooked, "inv-1", "att-1", [a]));
+            const admittingPid = await reachedBefore(held, admitting, "the admission");
+            const ending = settle(x.endVia(h.hooked, "inv-1", "not_dispatched", [[a]]));
+            const endingPid = await waiterBefore(held, ending, "the end");
+            expect(await h.waitsOn(endingPid, admittingPid)).toBe(true);
+            held.open();
+            expect((await admitting).value).toEqual({ allowed: true });
+            expect((await ending).value).toEqual({ ended: true, outcome: "interrupted" });
+            h.control.hook = null;
+            expect(await x.read(a)).toMatchObject({ processing: "interrupted" });
+
+            // The end commits first: the admission waits for it, then finds the invocation ended and is refused settled; nothing is recorded.
+            expect(await x.bind("inv-2", [b])).toMatchObject({ bound: true });
+            held = h.holdCommit(endUpdate, invocationLock);
+            const endingFirst = settle(x.endVia(h.hooked, "inv-2", "not_dispatched", [[b]]));
+            const endingFirstPid = await reachedBefore(held, endingFirst, "the end");
+            const late = settle(x.exposeVia(h.hooked, "inv-2", "att-2", [b]));
+            const latePid = await waiterBefore(held, late, "the late admission");
+            expect(await h.waitsOn(latePid, endingFirstPid)).toBe(true);
+            held.open();
+            expect((await endingFirst).value).toEqual({ ended: true });
+            expect((await late).value).toEqual({ allowed: false, reason: "settled" });
+            h.control.hook = null;
+            expect(await x.read(b)).toMatchObject({ processing: "not_dispatched" });
+            expect(await x.exposure("inv-2")).toBeNull();
+
+            // Admission first, then the unsent cancel: requested, answered exposed.
+            expect(await x.bind("inv-3", [c])).toMatchObject({ bound: true });
+            held = h.holdCommit(admissionInsert, invocationLock);
+            const admittingC = settle(x.exposeVia(h.hooked, "inv-3", "att-3", [c]));
+            const admittingCPid = await reachedBefore(held, admittingC, "the admission of inv-3");
+            const cancellingC = settle(x.cancelVia(h.hooked, "inv-3", c));
+            const cancellingCPid = await waiterBefore(held, cancellingC, "the cancel of inv-3");
+            expect(await h.waitsOn(cancellingCPid, admittingCPid)).toBe(true);
+            held.open();
+            expect((await admittingC).value).toEqual({ allowed: true });
+            expect((await cancellingC).value).toEqual({ cancelled: false, exposed: true });
+            h.control.hook = null;
+            expect(await x.read(c)).toMatchObject({ processing: "bound", cancelRequested: true });
+
+            // The unsent cancel first, then the admission: it finds the named item cancelled and is refused settled; nothing is recorded.
+            expect(await x.bind("inv-4", [d])).toMatchObject({ bound: true });
+            held = h.holdCommit(cancelUpdate, invocationLock);
+            const cancellingD = settle(x.cancelVia(h.hooked, "inv-4", d));
+            const cancellingDPid = await reachedBefore(held, cancellingD, "the cancel of inv-4");
+            const admittingD = settle(x.exposeVia(h.hooked, "inv-4", "att-4", [d]));
+            const admittingDPid = await waiterBefore(held, admittingD, "the admission of inv-4");
+            expect(await h.waitsOn(admittingDPid, cancellingDPid)).toBe(true);
+            held.open();
+            expect((await cancellingD).value).toEqual({ cancelled: true });
+            expect((await admittingD).value).toEqual({ allowed: false, reason: "settled" });
+            h.control.hook = null;
+            expect(await x.read(d)).toMatchObject({ processing: "not_dispatched", reason: "cancelled", cancelRequested: false });
+            expect(await x.exposure("inv-4")).toBeNull();
+        } finally { await h.stop(); }
+    });
+
+    it("keeps the record written once (no update, a no-op one included, and no delete), and upgrades a populated 0094 schema", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const h = await intakeHarness(env, { migrate: "0094" });
+        try {
+            const versions = async () => (await h.q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).map(row => row.version);
+            const before = await versions();
+            expect(before.at(-1)).toBe("0094");
+            expect(await h.q("SELECT to_regclass($1) AS exposures", [`"${env.cmsSchema}".workflow_intake_exposures`])).toEqual([{ exposures: null }]);
+            // Rows 0094 writes: a held claim bound to an invocation (the bind reads no exposure).
+            const x = await exposureItems(h, 1);
+            const [a] = x.ids;
+            expect(await x.bind("inv-1", [a])).toMatchObject({ bound: true });
+            const bound = await x.read(a);
+            const invocations = await h.q("SELECT * FROM SCHEMA.workflow_intake_invocations ORDER BY invocation_id");
+
+            await h.catalog.initialize();
+            expect(await versions()).toEqual([...before, "0095"]);
+            expect(await x.read(a)).toEqual(bound);
+            expect(await h.q("SELECT * FROM SCHEMA.workflow_intake_invocations ORDER BY invocation_id")).toEqual(invocations);
+            expect((await h.q("SELECT count(*)::int AS n FROM SCHEMA.workflow_intake_exposures"))[0].n).toBe(0);
+            // The upgraded invocation is admitted, and its record is never changed or deleted.
+            expect(await x.expose("inv-1", "att-1", [a])).toEqual({ allowed: true });
+            const record = await x.exposure("inv-1");
+            await expect(h.q("UPDATE SCHEMA.workflow_intake_exposures SET attempt_id = attempt_id WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
+            await expect(h.q("UPDATE SCHEMA.workflow_intake_exposures SET attempt_id = 'att-9' WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
+            await expect(h.q("DELETE FROM SCHEMA.workflow_intake_exposures WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
+            // The 0094 guards are unchanged: an invocation is still never changed or deleted.
+            await expect(h.q("DELETE FROM SCHEMA.workflow_intake_invocations WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
+            expect(await x.exposure("inv-1")).toEqual(record);
+            // Applying the registered migrations again changes nothing.
+            await runMigrations(h.pool, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema), CMS_LOCK_SEED);
+            expect(await versions()).toEqual([...before, "0095"]);
+            expect(await x.exposure("inv-1")).toEqual(record);
+            expect(await x.read(a)).toEqual(bound);
         } finally { await h.stop(); }
     });
 });

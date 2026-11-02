@@ -149,9 +149,12 @@ export async function runWorkflowIntakeClaim(deps: WorkflowIntakeActivityDeps, i
 /**
  * A settlement (design 5.2), by `op`:
  * - `bind` { recipientSessionId, invocationId, items: [{ exchangeId, claimId }] }
- * - `end` { recipientSessionId, invocationId, outcome, items: [{ exchangeId, claimId, cancelRequested }] }, items possibly empty
+ * - `end` { recipientSessionId, invocationId, outcome, items: [{ exchangeId, claimId, cancelRequested }] }, items possibly empty;
+ *   the answer names `outcome` only when the store applied another (interrupted for a requested not_dispatched beside an exposure)
  * - `cancel_held` { recipientSessionId, items: [{ exchangeId, claimId }] }: each holding row cancelled
- * - `cancel_unsent` { recipientSessionId, invocationId, items }: each item of an unsent invocation not_dispatched (cancelled)
+ * - `cancel_unsent` { recipientSessionId, invocationId, items }: each item of an unsent invocation not_dispatched (cancelled), answered
+ *   `settled`; or, when the invocation's items were possibly seen (an exposure is recorded, migration 0095), its cancel recorded as
+ *   requested, answered `exposed: true`
  * - `request_cancel` { recipientSessionId, invocationId, items }: each item of a sent invocation records cancel_requested
  * - `refuse` { recipientSessionId, exchangeId, claimId, outcome }: a holding row refused_full or refused_size
  * A list is settled item by item in its order; every settle is the same
@@ -195,16 +198,19 @@ export async function runWorkflowIntakeSettle(deps: WorkflowIntakeActivityDeps, 
         if (op === "cancel_unsent" || op === "request_cancel") {
             const value = intakeObject(input, "settle", ["op", "recipientSessionId", "invocationId", "items"]);
             const items = listOf(value.items, "settle.items", ["exchangeId", "claimId"]);
-            const results: Array<{ exchangeId: string; settled: boolean }> = [];
+            const results: Array<{ exchangeId: string; settled: boolean } | { exchangeId: string; exposed: true }> = [];
             for (const item of items) {
                 const call = {
                     recipientSessionId: text(value.recipientSessionId), invocationId: text(value.invocationId),
                     exchangeId: text(item.exchangeId), claimId: text(item.claimId),
                 };
-                const settled = op === "cancel_unsent"
-                    ? (await store.cancelUnsentWorkflowIntake(call)).cancelled
-                    : (await store.requestCancelWorkflowIntake(call)).recorded;
-                results.push({ exchangeId: call.exchangeId, settled });
+                if (op === "cancel_unsent") {
+                    // The invocation's items were possibly seen (an exposure is recorded): the store recorded the cancel as requested.
+                    const cancelled = await store.cancelUnsentWorkflowIntake(call);
+                    results.push(cancelled.exposed === true ? { exchangeId: call.exchangeId, exposed: true } : { exchangeId: call.exchangeId, settled: cancelled.cancelled });
+                } else {
+                    results.push({ exchangeId: call.exchangeId, settled: (await store.requestCancelWorkflowIntake(call)).recorded });
+                }
             }
             return { items: results };
         }

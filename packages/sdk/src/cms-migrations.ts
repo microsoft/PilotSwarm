@@ -24,6 +24,7 @@ import { workflowV2OutboxMigration } from "./migrations/workflow-v2-0091.js";
 import { workflowV2OutboxRecipientMigration } from "./migrations/workflow-v2-0092.js";
 import { workflowV2RequestsMigration } from "./migrations/workflow-v2-0093.js";
 import { workflowV2IntakeMigration } from "./migrations/workflow-v2-0094.js";
+import { workflowV2IntakeExposuresMigration } from "./migrations/workflow-v2-0095.js";
 
 function workflowSessionKindMigration(schema: string): string {
     const s = `"${schema}"`;
@@ -451,6 +452,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0092", name: "workflow_v2_outbox_recipient", sql: workflowV2OutboxRecipientMigration(schema) },
         { version: "0093", name: "workflow_v2_requests", sql: workflowV2RequestsMigration(schema) },
         { version: "0094", name: "workflow_v2_intake", sql: workflowV2IntakeMigration(schema) },
+        { version: "0095", name: "workflow_v2_intake_exposures", sql: workflowV2IntakeExposuresMigration(schema) },
     ];
 }
 

@@ -10,13 +10,13 @@ import {
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
-    INTAKE_MAX_HELD, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem, intakeClientMessageId,
-    intakeEnvelopeSha256, intakeExchangeId, intakeId, intakeItemBytes, intakeItemFitsAlone, intakeObject, intakeTextWithinCap, IntakeShapeError,
-    parseIntakeEnvelope, type IntakeEnvelope, type IntakeProcessingOutcome,
+    INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
+    intakeClientMessageId, intakeEnvelopeSha256, intakeExchangeId, intakeId, intakeItemBytes, intakeItemFitsAlone, intakeObject, intakeSha256,
+    intakeTextWithinCap, IntakeShapeError, parseIntakeEnvelope, type IntakeEnvelope, type IntakeProcessingOutcome,
 } from "./intake.js";
 
 /**
- * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0094).
+ * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0095).
  *
  * Every definition mutation runs in one transaction that first locks the
  * definition row (or creates it with INSERT ... ON CONFLICT, which waits for
@@ -968,6 +968,42 @@ function intakeMemberClaim(invocation: IntakeInvocationRecord, invocationId: str
     return member ? member.claimId : intakeBroken(exchangeId, `it is not a member of invocation ${invocationId}`);
 }
 
+/**
+ * An admission's answer (migration 0095; exposure protocol revision 2,
+ * section 3): allowed, or refused. `exposed`: the items were possibly seen
+ * under another attempt, and this one may not include them. `settled`: the
+ * invocation ended, or a named item was cancelled before any exposure; the
+ * payload is stale, which is never evidence of exposure.
+ */
+export type WorkflowIntakeAdmission = { allowed: true } | { allowed: false; reason: "exposed" | "settled" };
+
+/** An invocation's exposure record (migration 0095), as stored: the first admission that let an attempt include its items. */
+export interface WorkflowIntakeExposure {
+    invocationId: string;
+    recipientSessionId: string;
+    /** The admitted attempt's id, as the orchestration recorded it in the attempt's scheduled input. */
+    attemptId: string;
+    exposedAt: string;
+}
+
+/** The items an admission names: 1 to INTAKE_MAX_HELD distinct exchanges, each with its claim and the hash of the exact text to be sent. */
+function intakeAdmissionBatch(raw: unknown, path: string): Array<{ exchangeId: string; claimId: string; textSha256: string }> {
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > INTAKE_MAX_HELD) {
+        throw new IntakeShapeError(path, `is not a list of 1 to ${INTAKE_MAX_HELD} items`);
+    }
+    const seen = new Set<string>();
+    return raw.map((item: unknown, index: number) => {
+        const value = intakeObject(item, `${path}[${index}]`, ["exchangeId", "claimId", "textSha256"]);
+        const exchangeId = intakeExchangeId(value.exchangeId, `${path}[${index}].exchangeId`);
+        if (seen.has(exchangeId)) throw new IntakeShapeError(`${path}[${index}].exchangeId`, "names an exchange twice");
+        seen.add(exchangeId);
+        return {
+            exchangeId, claimId: intakeId(value.claimId, `${path}[${index}].claimId`),
+            textSha256: intakeSha256(value.textSha256, `${path}[${index}].textSha256`),
+        };
+    });
+}
+
 /** A request's immutable record (migration 0093), with exact times. */
 interface WorkflowRequestRecord {
     exchangeId: string;
@@ -1258,6 +1294,7 @@ export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
+        intakeExposures: string;
         sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
@@ -1269,7 +1306,7 @@ export class WorkflowStore {
             kvRevisions: `${s}.workflow_kv_revisions`, inbox: `${s}.workflow_inbox`, outbox: `${s}.workflow_outbox`,
             requests: `${s}.workflow_requests`, requestResponses: `${s}.workflow_request_responses`,
             requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`, intake: `${s}.workflow_intake`,
-            intakeInvocations: `${s}.workflow_intake_invocations`,
+            intakeInvocations: `${s}.workflow_intake_invocations`, intakeExposures: `${s}.workflow_intake_exposures`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
@@ -3480,7 +3517,7 @@ export class WorkflowStore {
         });
     }
 
-    // ─── Durable recipient intake (migration 0094; inactive: no runtime calls these yet) ──
+    // ─── Durable recipient intake (migrations 0094 and 0095; inactive: no runtime calls these yet) ──
 
     /** One reading of the store's clock, as text that later statements of the transaction read back exactly. */
     private async clockIn(client: PoolClient): Promise<string> {
@@ -3519,6 +3556,24 @@ export class WorkflowStore {
         if (invocation === null) return broken(`invocation ${invocationId} was never bound`);
         if (invocation.recipientSessionId !== recipientSessionId) return broken(`invocation ${invocationId} belongs to another recipient`);
         return invocation;
+    }
+
+    /**
+     * The invocation's exposure record (migration 0095), read under its lock
+     * (only an admission holding that lock inserts one): its attempt id, or
+     * null when no admission let an attempt include its items. A record of
+     * another recipient, or without a valid attempt id, is corrupt.
+     */
+    private async intakeExposureIn(client: PoolClient, invocationId: string, recipientSessionId: string): Promise<{ attemptId: string } | null> {
+        const { rows } = await client.query(
+            `SELECT recipient_session_id, attempt_id FROM ${this.t.intakeExposures} WHERE invocation_id = $1`, [invocationId]);
+        if (!rows[0]) return null;
+        const attemptId = str(rows[0], "attempt_id");
+        if (str(rows[0], "recipient_session_id") !== recipientSessionId || attemptId.length === 0 || attemptId.length > INTAKE_MAX_ID_LENGTH
+            || !isStorableText(attemptId)) {
+            return corrupt(`Intake invocation ${invocationId}'s exposure record is not its recipient's, or has no valid attempt id.`);
+        }
+        return { attemptId };
     }
 
     /** An exchange's outbox row FOR UPDATE, with its intake columns and its send state's id; null when there is none. */
@@ -3789,6 +3844,98 @@ export class WorkflowStore {
     }
 
     /**
+     * Admit an attempt's include of an invocation's items in a model request
+     * (migration 0095; exposure protocol revision 2, section 3): the durable
+     * record that the items were possibly seen, made before any request may
+     * include them, and never evidence that a request was sent or completed.
+     * In one READ COMMITTED transaction, under the invocation's lock
+     * (lockBoundIntakeInvocation) and its member rows' (FOR UPDATE, in
+     * exchange order); no outbox or session lock is taken:
+     *
+     * - The invocation is the recipient's; every row bound to it is a member
+     *   under its member claim; each named item is a member under its claim.
+     * - The members an unsent cancel settled (not_dispatched, reason
+     *   cancelled) are set aside first. A named one makes the payload stale:
+     *   refused `settled`, never silently left out. So does any other member
+     *   whose processing is no longer bound: the invocation ended.
+     * - The named items must then be exactly the remaining members, in member
+     *   order; a duplicate, a reordering, an omission or an extra is a broken
+     *   invariant. Each named hash must be its row's stored hash, the hash of
+     *   its stored text: the caller hashes the exact text it would send.
+     * - With no exposure recorded, this attempt's is inserted, at the store's
+     *   clock: allowed. Recorded under the same attempt id (a redelivery of
+     *   the attempt, a repeat of this call, a recovery re-run): allowed, with
+     *   nothing written; duplicate requests are possible, never exactly once.
+     *   Recorded under another attempt id: allowed only for the invocation's
+     *   own retry (`sentBefore`, set by the orchestration's producer of that
+     *   retry alone), otherwise refused `exposed`.
+     *
+     * A broken invariant or a malformed input throws and writes nothing.
+     */
+    async exposeWorkflowIntake(input: {
+        recipientSessionId: string;
+        invocationId: string;
+        attemptId: string;
+        sentBefore: boolean;
+        items: ReadonlyArray<{ exchangeId: string; claimId: string; textSha256: string }>;
+    }): Promise<WorkflowIntakeAdmission> {
+        const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
+        const invocationId = intakeId(input.invocationId, "invocationId");
+        const attemptId = intakeId(input.attemptId, "attemptId");
+        const sentBefore: unknown = input.sentBefore;
+        if (typeof sentBefore !== "boolean") throw new IntakeShapeError("sentBefore", "is not a boolean");
+        const items = intakeAdmissionBatch(input.items, "items");
+        return this.transaction<WorkflowIntakeAdmission>(async client => {
+            const invocation = await this.lockBoundIntakeInvocation(client, invocationId, recipientSessionId, items[0].exchangeId);
+            const memberClaims = new Map<string, string>(invocation.members.map(member => [member.exchangeId, member.claimId] as [string, string]));
+            const rows = await this.lockIntakeRows(client, invocation.members.map(member => member.exchangeId), invocationId);
+            for (const row of rows.values()) {
+                const claimId = memberClaims.get(row.exchangeId);
+                if (claimId === undefined) intakeBroken(row.exchangeId, `it is bound to invocation ${invocationId} but is not one of its members`);
+                assertIntakeHolder(row, recipientSessionId, claimId);
+                if (row.state !== "admitted" || row.invocationId !== invocationId) {
+                    intakeBroken(row.exchangeId, `it is a member of invocation ${invocationId} but is not bound to it`);
+                }
+            }
+            for (const item of items) {
+                const claimId = memberClaims.get(item.exchangeId);
+                if (claimId === undefined) intakeBroken(item.exchangeId, `it is not a member of invocation ${invocationId}`);
+                if (claimId !== item.claimId) intakeBroken(item.exchangeId, `it is a member of invocation ${invocationId} under claim ${claimId}, not ${item.claimId}`);
+            }
+            const named = new Set(items.map(item => item.exchangeId));
+            const active: WorkflowIntakeRow[] = [];
+            let stale = false;
+            for (const member of invocation.members) {
+                const row = rows.get(member.exchangeId) ?? intakeBroken(member.exchangeId, "it has no intake row");
+                if (row.processing === "not_dispatched" && row.reason === "cancelled") {
+                    if (named.has(row.exchangeId)) stale = true;
+                    continue;
+                }
+                if (row.processing !== "bound") stale = true;
+                active.push(row);
+            }
+            if (stale) return { allowed: false, reason: "settled" };
+            if (active.length !== items.length || active.some((row, index) => row.exchangeId !== items[index].exchangeId)) {
+                return intakeBroken(items[0].exchangeId, `the admission does not name invocation ${invocationId}'s active batch in its order`);
+            }
+            for (let index = 0; index < active.length; index += 1) {
+                const row = active[index];
+                if (row.text === null || sha256Hex(row.text) !== row.textSha256) intakeBroken(row.exchangeId, "its stored text does not match its hash");
+                if (items[index].textSha256 !== row.textSha256) intakeBroken(row.exchangeId, "the text to be sent is not its stored text");
+            }
+            const exposure = await this.intakeExposureIn(client, invocationId, recipientSessionId);
+            if (exposure === null) {
+                await client.query(
+                    `INSERT INTO ${this.t.intakeExposures} (invocation_id, recipient_session_id, attempt_id, exposed_at)
+                     VALUES ($1, $2, $3, clock_timestamp())`, [invocationId, recipientSessionId, attemptId]);
+                return { allowed: true };
+            }
+            if (exposure.attemptId === attemptId || sentBefore) return { allowed: true };
+            return { allowed: false, reason: "exposed" };
+        });
+    }
+
+    /**
      * End an invocation (design 5.2, 5.5). Under the invocation's lock, the
      * batch is checked against its complete membership: every member is the
      * recipient's row under its member claim and admitted to it, no other row
@@ -3807,24 +3954,38 @@ export class WorkflowStore {
      * the same way that the invocation was bound for this recipient and that
      * each of its members is a cancelled-unsent row, and writes nothing, its
      * retries alike. `ended` is true only for the call that settled rows.
+     *
+     * Possible exposure (migration 0095; exposure protocol revision 2,
+     * section 6): with an exposure recorded, a requested `not_dispatched` is
+     * applied as `interrupted`, the outcome computed under the lock before
+     * the first update, and the one a replay compares with; the answer then
+     * names it (`outcome`), and only then. No other outcome changes. An empty
+     * batch beside an exposure record is a broken invariant: an admission
+     * refuses a payload whose items were all cancelled.
      */
     async endWorkflowIntake(input: {
         recipientSessionId: string;
         invocationId: string;
         outcome: IntakeProcessingOutcome;
         items: ReadonlyArray<{ exchangeId: string; claimId: string; cancelRequested: boolean }>;
-    }): Promise<{ ended: boolean }> {
+    }): Promise<{ ended: boolean; outcome?: "interrupted" }> {
         const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
         const invocationId = intakeId(input.invocationId, "invocationId");
-        const outcome: unknown = input.outcome;
-        if (typeof outcome !== "string" || !(INTAKE_PROCESSING_OUTCOMES as readonly string[]).includes(outcome)) {
+        const requested: unknown = input.outcome;
+        if (typeof requested !== "string" || !(INTAKE_PROCESSING_OUTCOMES as readonly string[]).includes(requested)) {
             throw new IntakeShapeError("outcome", `is not one of ${INTAKE_PROCESSING_OUTCOMES.join(", ")}`);
         }
         const items = intakeBatch(input.items, "items", true, true);
-        return this.transaction<{ ended: boolean }>(async client => {
+        return this.transaction<{ ended: boolean; outcome?: "interrupted" }>(async client => {
             const invocation = await this.lockBoundIntakeInvocation(client, invocationId, recipientSessionId, items[0]?.exchangeId ?? null);
             const memberClaims = new Map<string, string>(invocation.members.map(member => [member.exchangeId, member.claimId] as [string, string]));
             const rows = await this.lockIntakeRows(client, invocation.members.map(member => member.exchangeId), invocationId);
+            const exposed = await this.intakeExposureIn(client, invocationId, recipientSessionId) !== null;
+            const outcome: IntakeProcessingOutcome = requested === "not_dispatched" && exposed ? "interrupted" : requested as IntakeProcessingOutcome;
+            const answer = (ended: boolean) => (outcome !== requested ? { ended, outcome: "interrupted" as const } : { ended });
+            if (items.length === 0 && exposed) {
+                return corrupt(`Intake invocation ${invocationId}: an end names no item, but its items were possibly sent.`);
+            }
             for (const row of rows.values()) {
                 const claimId = memberClaims.get(row.exchangeId);
                 if (claimId === undefined) intakeBroken(row.exchangeId, `it is bound to invocation ${invocationId} but is not one of its members`);
@@ -3857,7 +4018,7 @@ export class WorkflowStore {
                 }
             }
             if (ended > 0 && ended < items.length) intakeBroken(items[0].exchangeId, `invocation ${invocationId}'s end is partly applied`);
-            if (ended === items.length) return { ended: false };
+            if (ended === items.length) return answer(false);
             const at = await this.clockIn(client);
             const { rowCount } = await client.query(
                 `UPDATE ${this.t.intake}
@@ -3866,7 +4027,7 @@ export class WorkflowStore {
                   WHERE exchange_id = ANY($1::text[]) AND invocation_id = $2 AND processing = 'bound'`,
                 [items.map(item => item.exchangeId), invocationId, outcome, at, items.filter(item => item.cancelRequested).map(item => item.exchangeId)]);
             if (rowCount !== items.length) return corrupt(`Invocation ${invocationId}'s batch changed under its locks.`);
-            return { ended: true };
+            return answer(true);
         });
     }
 
@@ -3893,15 +4054,20 @@ export class WorkflowStore {
      * the invocation's lock, a member admitted to it under its member claim
      * with processing bound becomes not_dispatched, reason cancelled, and the
      * invocation's end no longer names it. Already so: the same (nothing
-     * written).
+     * written), answered before any exposure is read, so an item cancelled
+     * before an exposure stays settled (exposure protocol revision 2, section
+     * 6). With an exposure recorded (migration 0095), the items were possibly
+     * seen: the cancel is recorded as requested, once (cancel_requested, as
+     * requestCancelWorkflowIntake records it), whatever the row's processing,
+     * a final one included and kept, and the answer says `exposed`.
      */
     async cancelUnsentWorkflowIntake(input: { recipientSessionId: string; exchangeId: string; claimId: string; invocationId: string })
-        : Promise<{ cancelled: boolean }> {
+        : Promise<{ cancelled: boolean; exposed?: true }> {
         const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
         const exchangeId = intakeExchangeId(input.exchangeId, "exchangeId");
         const claimId = intakeId(input.claimId, "claimId");
         const invocationId = intakeId(input.invocationId, "invocationId");
-        return this.transaction<{ cancelled: boolean }>(async client => {
+        return this.transaction<{ cancelled: boolean; exposed?: true }>(async client => {
             const invocation = await this.lockBoundIntakeInvocation(client, invocationId, recipientSessionId, exchangeId);
             if (intakeMemberClaim(invocation, invocationId, exchangeId) !== claimId) {
                 return intakeBroken(exchangeId, `it is a member of invocation ${invocationId} under another claim than ${claimId}`);
@@ -3910,6 +4076,13 @@ export class WorkflowStore {
             assertIntakeHolder(row, recipientSessionId, claimId);
             if (row.state !== "admitted" || row.invocationId !== invocationId) return intakeBroken(exchangeId, `it is not bound to invocation ${invocationId}`);
             if (row.processing === "not_dispatched" && row.reason === "cancelled") return { cancelled: false };
+            if (await this.intakeExposureIn(client, invocationId, recipientSessionId) !== null) {
+                if (!row.cancelRequested) {
+                    await client.query(
+                        `UPDATE ${this.t.intake} SET cancel_requested = true, updated_at = clock_timestamp() WHERE exchange_id = $1`, [exchangeId]);
+                }
+                return { cancelled: false, exposed: true };
+            }
             if (row.processing !== "bound") return intakeBroken(exchangeId, `its processing is ${row.processing}, not bound`);
             const at = await this.clockIn(client);
             await client.query(
@@ -3976,6 +4149,19 @@ export class WorkflowStore {
         if (!storableId(exchangeId)) return null;
         const { rows } = await this.pool.query(`SELECT ${INTAKE_COLUMNS} FROM ${this.t.intake} WHERE exchange_id = $1`, [exchangeId]);
         return rows[0] ? intakeFrom(rows[0]) : null;
+    }
+
+    /** An invocation's exposure record as stored (migration 0095), or null when no admission let an attempt include its items. */
+    async readWorkflowIntakeExposure(invocationId: string): Promise<WorkflowIntakeExposure | null> {
+        if (!storableId(invocationId)) return null;
+        const { rows } = await this.pool.query(
+            `SELECT invocation_id, recipient_session_id, attempt_id, ${isoUtc("exposed_at")} AS exposed_at_iso
+               FROM ${this.t.intakeExposures} WHERE invocation_id = $1`, [invocationId]);
+        const row = rows[0];
+        return row ? {
+            invocationId: str(row, "invocation_id"), recipientSessionId: str(row, "recipient_session_id"), attemptId: str(row, "attempt_id"),
+            exposedAt: str(row, "exposed_at_iso"),
+        } : null;
     }
 
     /**
