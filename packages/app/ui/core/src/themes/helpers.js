@@ -71,7 +71,7 @@ export function isThemeLight(theme) {
     return getRelativeLuminance(background) >= 0.5;
 }
 
-export function createTheme({ id, label, description, group = THEME_GROUP_OTHER, page, terminal, tui = {}, icon = null }) {
+export function createTheme({ id, label, description, group = THEME_GROUP_OTHER, page, terminal, tui = {}, icon = null, sound = null }) {
     const baseTui = {
         background: page?.background || terminal?.background || "#000000",
         surface: terminal?.background || page?.background || "#000000",
@@ -113,6 +113,9 @@ export function createTheme({ id, label, description, group = THEME_GROUP_OTHER,
         // broken. Data, not markup — ui/core has no framework and must not
         // inject HTML. Shape: { viewBox, paths: [{ d, fill }] }.
         icon: icon || null,
+        // Optional ambient sound, by name. The portal decides whether and when
+        // to play it; ui/core only carries the description.
+        sound: sound || null,
         page,
         terminal,
         tui: {

@@ -85,6 +85,8 @@ export function installJsonBodyLimits(app, { workspaceFileMb } = {}) {
     // Agent packages allow 2 MB DECODED. Base64 plus JSON overhead exceeds
     // the default 2 MB request cap, so reserve 4 MB for this route.
     app.use("/api/v1/agent-packages/upload", express.json({ limit: "4mb" }));
+    // Two 2 MB pictures become about 5.4 MB of base64, plus markdown.
+    app.post("/api/v1/management/motd", express.json({ limit: "6mb" }));
     // Workspace files (the Workspace pane) and canvas-ws writes carry a whole
     // file as base64: the file limit (PORTAL_WORKSPACE_MAX_FILE_MB, default
     // 20 MB) plus a third, plus room for the rest of the call.

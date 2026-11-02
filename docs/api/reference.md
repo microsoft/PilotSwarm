@@ -411,6 +411,76 @@ on the turn-control path; list rows do not carry these fields).
   control's sender is the parent agent (`kind: "agent"`), and
   `sessions.steering` resolves for the parent session's owner.
 
+## Message of the day
+
+Signed-in portal viewers use Settings > Message of the day to read today's
+notice and message history, including pictures. Show splash again is a local
+preview and does not dismiss a message. Admins also get create and delete
+controls. Non-admins have a read-only panel.
+
+The automatic splash reads the current notice at most every 30 seconds.
+A click on that splash dismisses that message for that person.
+
+All paths below are relative to `/api/v1`.
+
+| Method / path | Operation | Access |
+| --- | --- | --- |
+| GET `/management/motd/current` | `getCurrentMotd` | Authenticated |
+| POST `/management/motd/:motdId/dismiss` | `dismissMotd` | Self |
+| GET `/management/motd/:motdId/image?mobile=true` | `getMotdImage` | Authenticated |
+| GET `/management/motd?limit=50&before=123` | `listMotds` | Authenticated |
+| POST `/management/motd` | `createMotd` | Admin |
+| DELETE `/management/motd/:motdId` | `deleteMotd` | Admin |
+
+Creation requires `bodyMd` (at most 16 KB of UTF-8) and `requestId`.
+`startsAt` and `endsAt` are optional ISO 8601 times with UTC offsets. An
+omitted start uses server creation time. Omit `endsAt` to keep the message
+until replaced or deleted. An explicit end is exclusive and must be in the
+future; when both times are supplied, end must follow start. Legacy `fromAt`
+and `toAt` aliases remain accepted. Reuse the same request ID and unchanged
+input to retry an uncertain response.
+
+Among all active messages, the latest to become
+active wins: `GREATEST(start, created_at)` descending, then message ID
+descending. A newly created active message takes over at once. An
+earlier-created schedule takes over when its start arrives. Open-ended
+messages do not expire. Readers still cannot see future schedules.
+Current selection happens before the viewer's dismissal is checked. If the
+viewer dismissed that message, current returns null; an older active message
+does not resurface. Deleting the current row is different: the next-newest
+active row becomes current again, subject to its own saved dismissal.
+
+Optional `image` and `mobileImage` each contain `{base64, contentType, alt}`.
+PNG, JPEG, WebP and GIF are allowed. Each picture is at most 2 MB of decoded
+bytes. Creation has a 6 MB JSON body limit; other routes keep their existing
+limits. `imagePlacement` is `above` (default), `beside` or `background`. Phones
+always use `above`. Optional `mobileBodyMd` supplies a shorter phone notice;
+otherwise the desktop body scrolls in a bottom sheet with Got it visible.
+Markdown escapes raw HTML and leaves body images as placeholders.
+The splash preserves a leading markdown `---` block. It is not front matter.
+The portal loads the picture for the current device. Failed picture reads
+back off for five minutes. Transfers have a 60-second limit and cancel on
+timeout. The text remains visible when a picture cannot be loaded.
+
+Message IDs are decimal strings. Deletion removes the message and its
+pictures, writes no audit record, and keeps dismissal rows. IDs are not reused.
+History returns `live`, `hidden`, `scheduled` or `ended`, plus dismissal count.
+Current reads do not expose the creator's identity.
+History includes creator identity and dismissal counts only for admins.
+Authenticated viewers can read existing message pictures for history and
+preview after a message's start time, including after it ends. Scheduled
+messages remain admin-only until their start time. Deleted messages and
+pictures remain unreadable. Migration 0085 enables this read-only access over
+deployed 0084; it does not change create or delete authorization.
+
+The matching MCP names are `get_current_motd`, `dismiss_motd`, `get_motd_image`,
+`list_motds`, `create_motd` and `delete_motd`. Direct MCP mutations require
+`PILOTSWARM_MCP_MOTD_ADMIN=true` and an explicit actor provider and subject.
+Web MCP uses the authenticated server identity instead. Built-in admin agent
+tools use the same operation list, but creation takes picture artifact
+references `{sessionId, filename, alt}` so image bytes stay out of model context.
+The source session must be readable by that caller.
+
 ## Feature flags
 
 Settings → Feature flags exposes personal preferences and admin cluster/user controls.

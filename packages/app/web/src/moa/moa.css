@@ -272,3 +272,45 @@
 }
 .ps-moa-drag-label { position: fixed; z-index: 22; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 10px; border: 1px solid var(--ps-border); background: var(--ps-selection-background); color: var(--ps-selection-foreground); border-radius: 3px; box-shadow: 0 2px 6px #0005; }
 :root[data-ps-theme="win95"] .ps-moa-preview-pane > span { background: var(--w95-face); color: #000; }
+
+/* ── Panel headers: accent rail ───────────────────────────────────────────
+   The header is a tinted bar a step off the pane, with a rail on its left
+   edge and a small uppercase title, so it never reads as a transcript line.
+   The active pane's rail widens to 8px in the selection colour, its tint
+   deepens and an accent underline appears. Retro themes keep their own
+   focused-header overrides (more specific selectors). */
+.ps-moa-workspace {
+  --ps-moa-head: color-mix(in srgb, var(--ps-surface) 85%, var(--ps-foreground));
+  --ps-moa-head-rule: color-mix(in srgb, var(--ps-border) 70%, var(--ps-foreground));
+  /* The selection colour nudged 12% toward the text colour keeps it visible
+     against the tint in every palette. */
+  --ps-moa-active: color-mix(in srgb, var(--ps-selection-background) 88%, var(--ps-foreground));
+}
+/* Focus must never change header height: the title line reserves the button
+   row's height on every pane, focused or not. */
+.ps-moa-workspace:not(.is-mobile) .ps-moa-panel > header { row-gap: 0; padding-block: 3px; }
+.ps-moa-workspace:not(.is-mobile) .ps-moa-panel > header > .ps-moa-panel-title {
+  line-height: var(--ps-control-min-height, 34px);
+}
+.ps-moa-panel > header {
+  background: var(--ps-moa-head);
+  border-bottom: 1px solid var(--ps-moa-head-rule);
+  padding-left: 14px;
+  box-shadow: inset 4px 0 0 var(--ps-moa-head-rule);
+}
+.ps-moa-panel-title { font-weight: 700; text-transform: uppercase; letter-spacing: .06em; font-size: var(--ps-font-size-dense); }
+.ps-moa-panel.is-focused { border-color: var(--ps-moa-active); }
+.ps-moa-panel.is-focused > header {
+  background: color-mix(in srgb, var(--ps-moa-active) 22%, var(--ps-moa-head));
+  box-shadow: inset 8px 0 0 var(--ps-moa-active), inset 0 -2px 0 var(--ps-moa-active);
+}
+
+/* ── 2px gap between panels ───────────────────────────────────────────────
+   The divider shows the page background as a 2px gap between pane frames.
+   Its grab zone is 14px: a transparent 6px overhang on each side, drawn above
+   the panes. Without it, a press a few pixels below a horizontal gap landed
+   on the next pane's header and started a pane move instead of a resize. */
+.ps-moa-stage > .ps-moa-divider { flex: none; z-index: 2; overflow: visible; background: var(--ps-page-background, var(--ps-background)); }
+.ps-moa-stage > .ps-moa-divider::before { content: ""; position: absolute; inset: 0 -6px; }
+.ps-moa-stage > .ps-moa-divider[aria-orientation="horizontal"]::before { inset: -6px 0; }
+.ps-moa-stage > .ps-moa-divider:hover, .ps-moa-stage > .ps-moa-divider:focus-visible { background: var(--ps-selection-background); }

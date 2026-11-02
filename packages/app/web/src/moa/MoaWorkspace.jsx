@@ -5,7 +5,7 @@ import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionCompose
 import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
-import { paneLayout, boxStyle, emptySessionPanes } from "./pane-layout.js";
+import { paneLayout, boxStyle, emptySessionPanes, MOA_PANE_GAP_PX } from "./pane-layout.js";
 import { usePaneDrag } from "./use-pane-drag.js";
 
 // Only an explicit terminal signal clears bindings; catalog absence is not deletion.
@@ -602,8 +602,9 @@ function PaneDivider({ item, stage, onPreview, onResize }) {
             if (!start.current || e.pointerId !== start.current.pointerId) return;
             const rect = stage.current.getBoundingClientRect(), row = node.direction === "row";
             const size = row ? rect.width : rect.height, axis = bounds[row ? "x" : "y"], extent = bounds[row ? "width" : "height"];
-            const offset = (row ? e.clientX - rect.left : e.clientY - rect.top) - axis[0] * size - axis[1] - 4;
-            ratio.current = Math.max(10, Math.min(90, 100 * offset / Math.max(1, extent[0] * size + extent[1] - 8)));
+            // The pointer marks the middle of the gap, so the first pane ends half a gap before it.
+            const offset = (row ? e.clientX - rect.left : e.clientY - rect.top) - axis[0] * size - axis[1] - MOA_PANE_GAP_PX / 2;
+            ratio.current = Math.max(10, Math.min(90, 100 * offset / Math.max(1, extent[0] * size + extent[1] - MOA_PANE_GAP_PX)));
             onPreview({ id: node.id, ratio: ratio.current });
         }} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={() => { if (start.current) cancel(); }} />;
 }

@@ -461,6 +461,12 @@ export class HttpApiTransport {
 
     listProviders() { return this.api.call("listProviders"); }
     listFeatureFlags() { return this.api.call("listFeatureFlags"); }
+    getCurrentMotd() { return this.api.call("getCurrentMotd"); }
+    dismissMotd(motdId) { return this.api.call("dismissMotd", { motdId }); }
+    getMotdImage(motdId, mobile = false, options) { return this.api.call("getMotdImage", { motdId, mobile }, options); }
+    listMotds(limit, before) { return this.api.call("listMotds", { limit, before }); }
+    createMotd(input, options) { return this.api.call("createMotd", input, options); }
+    deleteMotd(motdId) { return this.api.call("deleteMotd", { motdId }); }
     getClusterFeatureFlags() { return this.api.call("getClusterFeatureFlags"); }
     getMyFeatureFlags() { return this.api.call("getMyFeatureFlags"); }
     getUserFeatureFlags(userId) { return this.api.call("getUserFeatureFlags", { userId }); }

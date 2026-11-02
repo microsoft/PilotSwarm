@@ -1,5 +1,7 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
+import { defaultThemeSound, defaultThemeSoundMobile } from "./theme-sound.js";
 import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
+import { createMotdState, createMotdAdminState } from "./motd.js";
 
 const ARTIFACT_SOURCES = new Set(["agent", "user", "system"]);
 
@@ -151,6 +153,38 @@ export function normalizeStoredCollapsedSessionIds(value) {
  */
 export function normalizeStoredRightPaneMode(value) {
     return value === "canvas" ? "canvas" : "panes";
+}
+
+/** Desktop chat reading column. There is no phone slot. */
+export const CHAT_READING_LIMITS = Object.freeze({
+    widthMin: 480,
+    widthMax: 1100,
+    padMin: 0,
+    padMax: 160,
+});
+
+/**
+ * `width: null` means no maximum: the chat fills the pane, as it did before
+ * this setting existed. A number is an opt-in cap.
+ */
+export function normalizeChatReading(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const width = Number(value.width);
+    const pad = Number(value.pad);
+    return {
+        on: value.on === true,
+        width: value.width == null || value.width === "full" || !Number.isFinite(width)
+            ? null
+            : Math.min(CHAT_READING_LIMITS.widthMax, Math.max(CHAT_READING_LIMITS.widthMin, Math.round(width))),
+        align: value.align === "center" ? "center" : "left",
+        pad: Number.isFinite(pad)
+            ? Math.min(CHAT_READING_LIMITS.padMax, Math.max(CHAT_READING_LIMITS.padMin, Math.round(pad)))
+            : 0,
+    };
+}
+
+export function defaultChatReading() {
+    return { on: false, width: null, align: "left", pad: 0 };
 }
 
 /**
@@ -429,6 +463,13 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // portrait is not the only case — a wall display or a shared screen wants
             // the same thing — so it is a preference, not a viewport query.
             touchScale: false,
+            // Desktop chat column. Phone has no slot. Master of Agents does
+            // not read this; only the main desktop chat does.
+            chatReading: defaultChatReading(),
+            // Theme sounds, per device class (desktop and phone), both on by
+            // default; a phone in silent mode stays silent.
+            themeSound: defaultThemeSound(),
+            themeSoundMobile: defaultThemeSoundMobile(),
             // The session detail box starts folded to its one-line summary. It
             // is ten rows of reference detail against a list you are trying to
             // read, and most of it is looked up once per session, not per
@@ -721,6 +762,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // stale waiting line unmarked.
             pausedError: null,
         },
+        motd: createMotdState(),
         admin: {
             // Whether the Admin Console is taking over the workspace and
             // hiding the session/chat panes. Persisted only in-memory.
@@ -788,6 +830,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // state remains available for rollback compatibility only.
             section: "providers",
             features: { mode: "mine", userId: null, data: null, users: [], drafts: {}, loading: false, saving: false, error: null, generation: 0, fetchedAt: null, userQuery: "" },
+            motds: createMotdAdminState(),
             // Agent packages (docs/proposals/agent-packages.md) — registry
             // list, selected package detail, and the workspace viewer.
             packages: {
@@ -796,6 +839,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 list: [],
                 workerState: [],
                 fetchedAt: 0,
+                // In-page filter. Typing updates this and nothing else.
+                query: "",
+                queryField: "all",
                 selectedName: null,
                 detail: null,
                 detailLoading: false,
