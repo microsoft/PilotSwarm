@@ -16206,7 +16206,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     useMobileAdminOverlay(mobileAdminNavigation, mobile && state.adminVisible, Boolean(state.modalType),
         "modal", () => controller.closeModal());
     useMobileAdminOverlay(mobileAdminNavigation, mobile && state.adminVisible, state.motdPreview,
-        "motd-preview", () => { void controller.dismissCurrentMotd(); });
+        // Back closes the preview only. If the preview is already gone, it
+        // must not fall through to dismissing today's real message.
+        "motd-preview", () => controller.closeMotdPreview());
     const readOnlyChatPane = state.activeSessionIsGroup;
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 

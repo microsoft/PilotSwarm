@@ -4037,10 +4037,15 @@ export class PilotSwarmUiController {
             }
         }
     }
+    /** Close an admin preview. Never records a dismissal. */
+    closeMotdPreview() {
+        if (!this.getState().motd.preview) return;
+        this.dispatch({ type: "motd/patch", patch: { preview: null, previewMobile: false } });
+    }
     async dismissCurrentMotd() {
         const state = this.getState();
         if (state.motd.preview) {
-            this.dispatch({ type: "motd/patch", patch: { preview: null, previewMobile: false } });
+            this.closeMotdPreview();
             return;
         }
         const id = state.motd.current?.motdId;

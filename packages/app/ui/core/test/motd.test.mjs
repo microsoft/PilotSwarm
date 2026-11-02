@@ -160,6 +160,16 @@ test("delete waits while a Duplicate is filling the draft", async () => {
     await controller.deleteAdminMotd("1");
     assert.equal(deletes, 1);
 });
+test("closing a preview never dismisses the current message", async () => {
+    let dismissed = 0;
+    const { controller, store, state } = setup({ dismissMotd: async () => { dismissed += 1; } });
+    store.dispatch({ type: "motd/patch", patch: { current: message(), preview: message("2") } });
+    controller.closeMotdPreview();
+    assert.equal(state().preview, null);
+    controller.closeMotdPreview();
+    assert.equal(state().current?.motdId, message().motdId);
+    assert.equal(dismissed, 0);
+});
 test("request timeout releases reads and rejects late replies", async t => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     let resolve;
