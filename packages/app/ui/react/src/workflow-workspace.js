@@ -2,7 +2,11 @@ import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
 import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
-import { WorkflowV2Banners, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RunPicker, WorkflowV2TestInterceptions } from "./workflow-v2-panels.js";
+import { workflowV2RunCommandNotice, workflowV2RunControls } from "../../core/src/workflow-v2-commands.js";
+import {
+    WorkflowV2Banners, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RunCommandNotice, WorkflowV2RunControls, WorkflowV2RunPicker,
+    WorkflowV2TestInterceptions,
+} from "./workflow-v2-panels.js";
 
 const EMPTY_EVENTS = [];
 const EMPTY_VIEW = {};
@@ -49,8 +53,13 @@ function useWorkflowView(controller) {
         controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
         controller.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
     };
+    // A person's run controls (INACTIVE): only the selection's own read model can offer them, for the run it shows, and only
+    // when it says which commands the workflow takes from people.
+    const runCommand = view.runCommand ?? null;
+    const runControls = React.useMemo(() => v2 ? workflowV2RunControls(readModel, runCommand) : null, [v2, readModel, runCommand]);
+    const runNotice = workflowV2RunCommandNotice(runCommand);
     return { sessionId, session, view, nodes, selected, select, live, status, v2, definition, readError,
-        workflowModel, selectedRunId, ownModelLoaded: readModel != null };
+        workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, runNotice };
 }
 
 /** The read model's last failure for the selected run, beside the graph, with a Retry that asks again now. */
@@ -136,7 +145,8 @@ function WorkflowGraph({ definition, nodes, selected, select, banners }) {
 }
 
 export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
-    const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded } = useWorkflowView(controller);
+    const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded,
+        runControls, runNotice } = useWorkflowView(controller);
     const splitRef = React.useRef(null);
     const dragRef = React.useRef(false);
     const [splitHeight, setSplitHeight] = React.useState(500);
@@ -161,9 +171,11 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
             React.createElement("strong", null, icon, definition?.name || session?.title || "Workflow"),
             React.createElement("span", { className: "ps-workflow-status" }, status),
             v2 ? React.createElement(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
+            runControls ? React.createElement(WorkflowV2RunControls, { controller, sessionId, model: runControls }) : null,
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
                 onClick: () => selectNode(selected.id) }, "Node details")),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
+        React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
         v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test }) : null,
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
             style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },

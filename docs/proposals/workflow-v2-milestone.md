@@ -468,7 +468,8 @@ publication gate on declared test scenarios (not in the YAML design).
 |---|---|---|
 | Agent tools (the workflow's parent) | `read_workflow` | `update_workflow` (draft, publish, start, KV, pause, resume, cancel; on a 1.9.0 host also stop, test, test_respond, test_advance), `send_workflow_input` |
 | Agent tools (a request's responder, an agent state's child) | — | `respond_session_request`, `complete_workflow_node` (in-process, bound by the host) |
-| REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, portal | the same `readWorkflowV2View` | nothing |
+| REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, portal | the same `readWorkflowV2View`; with `workflowCommands` (INACTIVE) also `personCommands` | nothing |
+| Portal workflow view run controls (INACTIVE: only with `personCommands`) | `personCommands` and the shown run | a person's `pause`, `resume`, `stop`, `cancel` of the shown run, as `updateWorkflow` commands |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 
@@ -495,6 +496,7 @@ the same agent child, branch, stop, test and pin fields. The shared UI
 - **Human input.** A session whose access reports `canSendPrompt: false` has
   no composer; the note gives the reason and the controlling agent. The
   server refuses the input anyway.
+- **Run controls (R17, R26; mocks M04, M16; INACTIVE).** See below.
 
 **A person's workflow command (`updateWorkflow`; design 04, R26; INACTIVE).**
 The direct management client takes a person's command to a workflow
@@ -541,13 +543,61 @@ with the test-only option `workflowCommands`; otherwise it answers 501
   `workflowCommands` option of the portal runtime, the TUI transport, the
   management client or the MCP server; none is set anywhere in production.
 
+**Run controls in the workflow view (R17, R26; mocks M04, M16; INACTIVE).**
+The portal's workflow view lets a person pause, resume, stop or cancel the
+run it shows, through the transport's `updateWorkflow`, with no new route.
+
+- **What the view offers.** A read model says which commands the workflow
+  takes from people (`personCommands`, `human-commands.ts`): the management
+  client adds it only with its test-only `workflowCommands` option, so
+  without it there are no controls and the view stays read-only. It lists
+  the operations the host takes from a person (`stop` and the test
+  operations only on a 1.9.0 host); for a workflow in a workflow agent
+  state's subtree only `pause`, `stop` and `cancel`, with a `restriction`
+  that names the workflow holding the agent state and its controlling
+  agent; and, for the shown run, whether it takes a graceful stop
+  (`run.stop`; a run admitted for a controller that cannot stop gracefully
+  can only be cancelled). The portal adds `viewer`: whether the signed-in
+  caller may send them, decided as `updateWorkflow`'s own gate decides
+  (`session:manage`, owner or admin, enforced whatever the ownership switch
+  says), on the read's access. None of this grants anything; the server
+  decides every command again.
+- **What a person sees.** Beside the run picker: Pause while the run waits
+  to start or runs, Resume while it is paused, Stop and Cancel until it
+  ends; a stopping run shows only Cancel, an ended run none. A workflow in
+  an agent state's subtree never shows Resume, and a note says that people
+  can only pause, stop or cancel it and names its controlling agent. A
+  control the caller may not use (not the owner or an admin; Stop on a run
+  that cannot stop gracefully; any control while a command is being sent)
+  is disabled and says why in its tooltip.
+- **Sending.** A control is the shown run's command (`run_id` is that run,
+  never "the live run now"), with an operation id of its own. Stop and
+  Cancel ask first: neither undoes effects that already happened. While it
+  is sent the control reads "Pausing…" (or the like) and the others wait.
+  Accepted: the status line says what was accepted (an accepted stop or
+  cancel is a request its controller applies; the run's status says when it
+  ends) and the read model is read again at once. Refused (a 4xx answer, or
+  501 where the deployment takes no person's commands): a notice gives the
+  reason; nothing changed. No answer (or a server failure): a notice says
+  the command may not have arrived, and Retry sends it again with the same
+  operation id, so the server answers with the first command's receipt
+  instead of applying it twice.
+- **Cancel's reason.** A person's cancel without a reason ends the run as
+  "Cancelled by a person" (an operator's client without a principal:
+  "Cancelled by an operator"); the agent tool's default stays "Cancelled by
+  its parent".
+
 Unfulfilled requirements (open, not waived; R26):
 
 - **Human test-run and typed-input routes** (`/test-runs`, `/inbox`): a
   person's test operations travel as `updateWorkflow` commands (above);
   design 04's separate `/test-runs` and `/inbox` paths, and the final path
-  names, are API review item D11. No portal or TUI screen sends a command
-  yet: the UI stays read-only.
+  names, are API review item D11.
+- **The rest of the UI commands**: the portal sends only the run controls
+  (above). Setting KV (`set_vars`), the draft's replace, publish and start,
+  and the test operations (start, answer an interception, advance the
+  virtual clock) have no screen yet, and the TUI has no workflow command
+  keys (it does not draw the workflow view).
 - **Credentialed actions from other runtimes**: the MCP server can act for
   configured holder sessions (below); a hand-off to runtimes other than an
   MCP server in direct mode (a web-mode MCP server, a TUI command, an

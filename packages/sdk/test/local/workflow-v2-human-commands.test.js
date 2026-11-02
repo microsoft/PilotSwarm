@@ -17,6 +17,12 @@
  *   brakes (pause, cancel): anything else is 403 WORKFLOW_HUMAN_INPUT_DENIED,
  *   naming its controlling agent; the workflow container above it takes every
  *   command.
+ * - Reading: only a client that takes a person's commands reports which ones
+ *   the workflow takes (personCommands: the operations, the subtree's
+ *   restriction naming its controlling agent, and whether the shown run takes
+ *   a graceful stop); without the option the view is unchanged.
+ * - A person's cancel without a reason ends the run as cancelled by a person,
+ *   not by its parent.
  *
  * No controller runs here: the receipts and the store's run state are what a
  * person's command changes. Not an activation proof.
@@ -113,6 +119,11 @@ describe("workflow v2: a person's workflow command (direct management client, in
             const parent = randomUUID();
             await catalog.createSession(parent, { owner: PERSON });
             const draft = await workflowOf(catalog, parent, YAML("person-draft"));
+            // Reading: only a client that takes a person's commands says which ones the workflow takes.
+            expect(Object.hasOwn(await plain.readWorkflow(draft.workflowSessionId), "personCommands")).toBe(false);
+            expect((await mgmt.readWorkflow(draft.workflowSessionId)).personCommands).toEqual({
+                operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"],
+                restriction: null, run: null });
 
             // Inactive: refused, and nothing changes.
             await refused(() => plain.updateWorkflow(draft.workflowSessionId, { operation: "publish", operation_id: "p-0", expected_revision: 1,
@@ -132,6 +143,8 @@ describe("workflow v2: a person's workflow command (direct management client, in
                 definition_hash: replaced.definitionHash, inputs: {} }, { principal: PERSON });
             expect(started).toMatchObject({ operation: "start", run: { mode: "live", revision: 2 } });
             const runId = started.run.runId;
+            // The shown run: this host stops no run gracefully (controller 1.8.0), so it offers no stop.
+            expect((await mgmt.readWorkflow(draft.workflowSessionId)).personCommands.run).toEqual({ runId, stop: false });
             // A repeat of an operation id returns its receipt.
             expect(await mgmt.updateWorkflow(draft.workflowSessionId, { operation: "start", operation_id: "start-1",
                 definition_hash: replaced.definitionHash, inputs: {} }, { principal: PERSON })).toMatchObject({ replayed: true, run: { runId } });
@@ -149,9 +162,12 @@ describe("workflow v2: a person's workflow command (direct management client, in
             // An operation id used for another request is a conflict (409), as for the tool.
             await refused(() => mgmt.updateWorkflow(draft.workflowSessionId, { operation: "set_vars", operation_id: "kv-1", set: { threshold: 9 },
                 expected_kv_revision: 3 }, { principal: PERSON }), "OPERATION_CONFLICT", 409);
-            expect(await mgmt.updateWorkflow(draft.workflowSessionId, { operation: "cancel", operation_id: "cancel-1", reason: "done" }, { principal: PERSON }))
+            expect(await mgmt.updateWorkflow(draft.workflowSessionId, { operation: "cancel", operation_id: "cancel-1" }, { principal: PERSON }))
                 .toMatchObject({ operation: "cancel", runId });
             const events = await catalog.getSessionEvents(draft.workflowSessionId, 0, 500);
+            // Without a reason, the run's end says a person cancelled it (the agent tool's default names its parent).
+            expect(events.find(event => event.eventType === "workflow.cancelled")?.data).toMatchObject({ runId, reason: "Cancelled by a person" });
+            expect((await store.readRun(runId)).terminalError).toMatchObject({ code: "cancelled", message: "Cancelled by a person" });
             const actors = events.filter(event => ["workflow.vars_set", "workflow.paused", "workflow.resumed"].includes(event.eventType))
                 .map(event => [event.eventType, event.data.actor]);
             expect(actors).toEqual([["workflow.vars_set", { kind: "user", ...PERSON }], ["workflow.paused", { kind: "user", ...PERSON }],
@@ -196,6 +212,13 @@ describe("workflow v2: a person's workflow command (direct management client, in
             // The agent's own workflow, in the agent state's subtree.
             const nested = await workflowOf(catalog, child, YAML("nested"), { start: true, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION });
 
+            // What it takes from a person, as its read model says: the brakes, with the reason and its controlling agent.
+            expect((await mgmt.readWorkflow(nested.workflowSessionId)).personCommands).toEqual({
+                operations: ["pause", "stop", "cancel"],
+                restriction: { reason: "This workflow runs in a workflow agent state's subtree: people can pause, stop or cancel it; only its controlling agent changes, resumes or tests it.",
+                    workflowSessionId: container.workflowSessionId, controllingSessionId: parent },
+                run: { runId: nested.runId, stop: true },
+            });
             const denied = await refused(() => mgmt.updateWorkflow(nested.workflowSessionId, { operation: "set_vars", operation_id: "kv-1", set: { a: 1 },
                 expected_kv_revision: 1 }, { principal: PERSON }), WORKFLOW_HUMAN_INPUT_DENIED, 403);
             expect(denied.details).toMatchObject({ sessionId: nested.workflowSessionId, action: "workflow", workflowSessionId: container.workflowSessionId,
@@ -214,7 +237,12 @@ describe("workflow v2: a person's workflow command (direct management client, in
             expect(await mgmt.updateWorkflow(nested.workflowSessionId, { operation: "stop", operation_id: "s-1", grace_seconds: 0 }, { principal: PERSON }))
                 .toMatchObject({ operation: "stop", runId: nested.runId });
 
-            // The container is not in an agent state's subtree: the person commands it.
+            // The container is not in an agent state's subtree: the person commands it, every operation of a 1.9.0 host.
+            expect((await mgmt.readWorkflow(container.workflowSessionId)).personCommands).toEqual({
+                operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel",
+                    "stop", "test", "test_respond", "test_advance"],
+                restriction: null, run: { runId: container.runId, stop: true },
+            });
             expect(await mgmt.updateWorkflow(container.workflowSessionId, { operation: "set_vars", operation_id: "kv-1", set: { note: "go" },
                 expected_kv_revision: 1 }, { principal: PERSON })).toMatchObject({ operation: "set_vars", runId: container.runId, kvRevision: 2 });
             expect(await mgmt.updateWorkflow(container.workflowSessionId, { operation: "pause", operation_id: "p-1" }, { principal: PERSON }))

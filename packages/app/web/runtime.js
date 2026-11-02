@@ -421,6 +421,23 @@ export class PortalRuntime {
         return this._decideSessionAccess(method, accessClass, snapshot, sessionId, authContext, { isAdmin, effectiveEnforce });
     }
 
+    /**
+     * Workflow v2 (INACTIVE): whether the signed-in caller may send a person's
+     * workflow commands to the session a read was for, as updateWorkflow's own
+     * gate decides it (session:manage: owner or admin, enforced whatever the
+     * ownership switch says), on that read's access snapshot. Nothing is
+     * audited and nothing is granted: the command is gated again when sent.
+     */
+    _workflowCommandViewer(snapshot, isAdmin) {
+        const decision = evaluateSessionAccess("session:manage", snapshot, {
+            isAdmin,
+            adminScope: this.authz.adminScope,
+            systemReadable: this.authz.systemVisibility === "read",
+        });
+        if (decision.allowed) return { allowed: true, reason: null };
+        return { allowed: false, reason: decision.notFound ? "Only this workflow's owner or an admin can command it." : decision.reason };
+    }
+
     _decideSessionAccess(method, accessClass, snapshot, sessionId, authContext, { isAdmin, effectiveEnforce }) {
         const decision = evaluateSessionAccess(accessClass, snapshot, {
             isAdmin,
@@ -745,9 +762,14 @@ export class PortalRuntime {
             // Workflow v2: the read-only view of a workflow session, after the session:read gate above (its not-found
             // privacy comes first). Only an absent run is omitted: a run given, empty or not a string included, reaches the
             // adapter's own validation unchanged. The run is looked up within the authorized workflow; nothing is changed.
-            case "readWorkflow":
-                return this.transport.readWorkflow(safeParams.sessionId,
+            // When the deployment takes a person's workflow commands (INACTIVE), the view says which ones this workflow
+            // takes, and this adds whether the caller may send them (updateWorkflow's own gate, decided on this read's access).
+            case "readWorkflow": {
+                const view = await this.transport.readWorkflow(safeParams.sessionId,
                     safeParams.runId === undefined || safeParams.runId === null ? {} : { runId: safeParams.runId });
+                if (!view || typeof view !== "object" || !view.personCommands || typeof view.personCommands !== "object") return view;
+                return { ...view, personCommands: { ...view.personCommands, viewer: this._workflowCommandViewer(gate.snapshot, isAdmin) } };
+            }
             // Workflow v2 (INACTIVE unless the deployment enables it): a person's command, after the session:manage gate
             // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
             // never a field of the command; the command is passed as it is, and the adapter refuses what is not one.

@@ -165,3 +165,30 @@ test("over HTTP: the receipt, the refusals with their status and safe details, t
         await h.close();
     }
 });
+
+for (const enforce of [true, false]) {
+    test(`readWorkflow adds the caller's own command decision to the commands a workflow takes from people, and nothing else (ownership switch ${enforce ? "on" : "off"})`, async () => {
+        const { runtime, calls } = runtimeWith({ enforce });
+        let personCommands = { operations: ["pause", "resume", "cancel"], restriction: null, run: { runId: "r1", stop: false } };
+        const reads = [];
+        runtime.transport.readWorkflow = async (sessionId, options) => {
+            reads.push([sessionId, options]);
+            return { workflowId: sessionId, runs: [], run: null, ...(personCommands ? { personCommands } : {}) };
+        };
+        // The owner and an admin may command it: updateWorkflow's own gate, decided on the read's access.
+        const owned = await runtime.call("readWorkflow", { sessionId: "s1" }, as("alice"));
+        assert.deepEqual(owned.personCommands, { ...personCommands, viewer: { allowed: true, reason: null } });
+        assert.deepEqual((await runtime.call("readWorkflow", { sessionId: "s1" }, as("ada", "admin"))).personCommands.viewer, { allowed: true, reason: null });
+        // Someone it is shared with for writing reads it, and is told that only its owner or an admin commands it.
+        const shared = await runtime.call("readWorkflow", { sessionId: "shared" }, as("bob"));
+        assert.equal(shared.personCommands.viewer.allowed, false);
+        assert.match(shared.personCommands.viewer.reason, /^Only the session owner \(Alice\)/);
+        assert.deepEqual(shared.personCommands.operations, ["pause", "resume", "cancel"], "what the workflow takes is the server's, unchanged");
+        // A read model without it (the deployment takes no person's commands) is returned as it is.
+        personCommands = null;
+        const plain = await runtime.call("readWorkflow", { sessionId: "s1" }, as("alice"));
+        assert.deepEqual(plain, { workflowId: "s1", runs: [], run: null });
+        assert.equal(reads.length, 4);
+        assert.equal(calls.length, 0, "reading sends no command");
+    });
+}

@@ -162,7 +162,7 @@ import {
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2View } from "./workflow/v2/tools.js";
-import { updateWorkflowForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
+import { updateWorkflowForPerson, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
 import {
     completeWorkflowNodeWithCredential, issueWorkflowInvocationCredential, respondSessionRequestWithCredential, WorkflowCredentialError,
 } from "./workflow/v2/invocation-credentials.js";
@@ -1904,7 +1904,10 @@ export class PilotSwarmManagementClient {
      * changes nothing. A missing or deleted session is NOT_FOUND (404), a
      * session that is not a version 2 workflow WORKFLOW_NOT_FOUND (404), a
      * run that is not one of its runs RUN_NOT_FOUND (404), and an invalid run
-     * id INVALID_REQUEST (400).
+     * id INVALID_REQUEST (400). A client created with the test-only option
+     * `workflowCommands` (INACTIVE) also reports the commands the workflow
+     * takes from a person (`personCommands`, human-commands.ts), so a screen
+     * offers only those; without it the view is exactly the tool's.
      */
     async readWorkflow(sessionId: string, options: { runId?: string | null } = {}): Promise<Record<string, unknown>> {
         this._ensureStarted();
@@ -1917,14 +1920,20 @@ export class PilotSwarmManagementClient {
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
         const store = this._catalog!.workflowStore?.();
         if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
+        let view: Record<string, unknown>;
         try {
-            return await readWorkflowV2View(store, sessionId, { runId });
+            view = await readWorkflowV2View(store, sessionId, { runId });
         } catch (error) {
             if (error instanceof WorkflowStoreError && (error.code === "WORKFLOW_NOT_FOUND" || error.code === "RUN_NOT_FOUND")) {
                 throw failure(error.code, 404, error.message);
             }
             throw error;
         }
+        const enabled = this.config.workflowCommands;
+        if (!enabled) return view;
+        const run = view.run as { runId?: unknown } | null | undefined;
+        const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
+        return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId, { requests: enabled.requests === true, runId: shown }) };
     }
 
     /**

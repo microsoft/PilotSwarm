@@ -785,7 +785,10 @@ export async function controlWorkflowV2Run(
     }
     const requestSha256 = jsonSha256({ kind: command.operation, runId: run.runId, reason: command.reason });
     if (command.operation === "cancel") {
-        const reason = command.reason ?? "Cancelled by its parent";
+        // Without a reason, the run's end names who cancelled it: its parent agent, a person (updateWorkflow, R26), or an
+        // operator's own client (a management client without a principal).
+        const reason = command.reason ?? (context.actor.kind === "agent" ? "Cancelled by its parent"
+            : context.actor.kind === "user" ? "Cancelled by a person" : "Cancelled by an operator");
         const requestedBy = context.actor.kind === "agent" ? context.actor.sessionId : null;
         const stored = await host.store.recordRunCancelRequest({ workflowSessionId, runId: run.runId, operationId: context.operationId, requestSha256,
             reason, requestedBy });

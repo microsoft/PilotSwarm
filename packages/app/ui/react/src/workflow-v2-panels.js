@@ -303,3 +303,37 @@ export function WorkflowV2TestInterceptions({ test }) {
                 h("td", null, item.stateId || "—"),
                 h("td", null, item.response ? `${item.response.kind} · ${item.response.disposition}` : "Waiting for the parent"))))));
 }
+
+/**
+ * A person's run controls (R17, R26; mocks M04 and M16; INACTIVE: only a read model that says which commands the
+ * workflow takes from people has any). `model` is workflowV2RunControls' answer. Native buttons; a disabled one says why
+ * in its title. Stop and cancel open the confirm dialog; the server decides every command again.
+ */
+export function WorkflowV2RunControls({ controller, sessionId, model }) {
+    const noteId = `wf-run-controls-${React.useId().replace(/:/g, "")}`;
+    if (!model?.controls?.length) return null;
+    return h("div", { className: "ps-workflow-run-controls", role: "group", "aria-label": "Run controls", "aria-busy": model.busy || undefined,
+        "aria-describedby": model.restriction ? noteId : undefined, "data-run-id": model.runId,
+        style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0, maxWidth: "100%" } },
+    model.controls.map(control => h("button", { key: control.operation, type: "button",
+        className: `ps-mini-button${control.danger ? " is-danger" : ""}`, "data-operation": control.operation,
+        disabled: !control.enabled, title: control.title,
+        onClick: () => { controller.sendWorkflowRunCommand(sessionId, { operation: control.operation, runId: model.runId }); } }, control.label)),
+    model.restriction ? h("span", { id: noteId, className: "ps-workflow-run-restriction",
+        style: { color: "var(--ps-muted)", fontSize: "0.75rem", overflowWrap: "anywhere" } }, model.restriction) : null);
+}
+
+/**
+ * The last run control that was refused, or whose answer never came, beside the graph (workflowV2RunCommandNotice's
+ * answer). Retry sends the same command again, with the same operation id; Dismiss only clears the notice.
+ */
+export function WorkflowV2RunCommandNotice({ controller, sessionId, notice }) {
+    if (!notice) return null;
+    return h("div", { className: "ps-workflow-run-command-notice", role: "alert", "data-level": notice.level,
+        style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", fontSize: "0.8rem",
+            color: TONES[notice.level] || TONES.info, borderBottom: "1px solid var(--ps-border)", overflowWrap: "anywhere" } },
+    h("span", { style: { flex: 1, minWidth: 0 } }, notice.text),
+    notice.retry ? h("button", { type: "button", className: "ps-mini-button",
+        onClick: () => { controller.sendWorkflowRunCommand(sessionId, { operation: notice.operation, runId: notice.runId, confirmed: true }); } }, "Retry") : null,
+    h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.dismissWorkflowRunCommand(sessionId) }, "Dismiss"));
+}

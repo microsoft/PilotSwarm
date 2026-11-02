@@ -1,7 +1,8 @@
 import { workflowHumanInputError } from "./input-policy.js";
 import type { JsonValue } from "./json.js";
+import { WORKFLOW_V2_STOP_CONTROLLER_VERSIONS } from "./runtime.js";
 import type { WorkflowV2Host } from "./service.js";
-import { WorkflowStoreError, type WorkflowActor } from "./store.js";
+import { WorkflowStoreError, type WorkflowActor, type WorkflowStore } from "./store.js";
 import { runUpdateWorkflowCommand } from "./tools.js";
 
 /**
@@ -34,6 +35,51 @@ import { runUpdateWorkflowCommand } from "./tools.js";
 
 /** A person's brakes: the lifecycle controls a workflow in an agent state's subtree still takes (design 03). */
 export const WORKFLOW_HUMAN_BRAKE_OPERATIONS: readonly string[] = ["pause", "stop", "cancel"];
+
+/** A person's operations on every host: the update_workflow tool's, without recover (the agent's path). */
+export const WORKFLOW_HUMAN_OPERATIONS: readonly string[] = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"];
+
+/** A person's further operations on a host that runs controller 1.9.0 (WorkflowV2Host.requests): stop and the test operations. */
+export const WORKFLOW_HUMAN_MILESTONE_OPERATIONS: readonly string[] = ["stop", "test", "test_respond", "test_advance"];
+
+/** "pause, stop or cancel". */
+function operationWords(operations: readonly string[]): string {
+    return operations.length < 2 ? operations.join("") : `${operations.slice(0, -1).join(", ")} or ${operations.at(-1)}`;
+}
+
+/**
+ * The commands a workflow session takes from a person (design 04; R26, R13),
+ * as its read model reports them (`personCommands`; INACTIVE: the management
+ * client adds it only when it takes a person's commands), so a screen offers
+ * only commands the workflow would take. It decides nothing:
+ * updateWorkflowForPerson decides each command again, and the caller's access
+ * to the session is decided where the read model is served (the portal adds
+ * the signed-in caller's own decision as `viewer`).
+ * - `operations`: every operation the host takes from a person, or, for a
+ *   workflow in a workflow agent state's subtree, only a person's brakes,
+ *   which `restriction` then explains, naming the workflow that holds the
+ *   agent state and its controlling agent.
+ * - `run`: for the run the read model shows (`runId`), whether it takes a
+ *   graceful stop (offered, and its run was admitted for a controller that
+ *   stops runs); null when no run is shown.
+ */
+export async function workflowCommandsForPerson(store: Pick<WorkflowStore, "readWorkflowLineage" | "readRun">, workflowSessionId: string,
+    options: { requests: boolean; runId: string | null }): Promise<{ [key: string]: JsonValue }> {
+    const offered = options.requests ? [...WORKFLOW_HUMAN_OPERATIONS, ...WORKFLOW_HUMAN_MILESTONE_OPERATIONS] : [...WORKFLOW_HUMAN_OPERATIONS];
+    const [lineage, run] = await Promise.all([store.readWorkflowLineage(workflowSessionId), options.runId ? store.readRun(options.runId) : null]);
+    const root = lineage?.agentRoot ?? null;
+    const operations = root ? WORKFLOW_HUMAN_BRAKE_OPERATIONS.filter(operation => offered.includes(operation)) : offered;
+    const shown = run !== null && run.workflowSessionId === workflowSessionId ? run : null;
+    return {
+        operations,
+        restriction: root ? {
+            reason: `This workflow runs in a workflow agent state's subtree: people can ${operationWords(operations)} it; only its controlling agent changes, resumes or tests it.`,
+            workflowSessionId: root.workflowSessionId, controllingSessionId: root.controllingSessionId,
+        } : null,
+        run: shown ? { runId: shown.runId, stop: operations.includes("stop") && shown.controllerVersion !== null
+            && WORKFLOW_V2_STOP_CONTROLLER_VERSIONS.includes(shown.controllerVersion) } : null,
+    };
+}
 
 const NOT_FOUND = new Set(["WORKFLOW_NOT_FOUND", "WORKFLOW_DELETED", "RUN_NOT_FOUND", "NODE_NOT_FOUND", "INTERCEPTION_NOT_FOUND", "AGENT_NODE_NOT_FOUND"]);
 const INVALID = new Set(["WORKFLOW_COMMAND_INVALID", "WORKFLOW_YAML_INVALID", "INPUT_INVALID"]);
