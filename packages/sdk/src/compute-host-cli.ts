@@ -16,9 +16,12 @@
  *
  * The binding's secret is read from PILOTSWARM_COMPUTE_HANDSHAKE_SECRET
  * and never taken from the command line, where anything on the host could
- * read it out of the process list.
+ * read it out of the process list. It is taken out of the environment as
+ * it is read, so nothing this program starts inherits it, and a provider
+ * must not pass it to the runtime either.
  */
-import { COMPUTE_HOST_IDLE_TIMEOUT_MS, startComputeHost } from "./compute-host.js";
+import { COMPUTE_HOST_IDLE_TIMEOUT_MS, readHandshakeSecret, startComputeHost } from "./compute-host.js";
+
 
 function argument(argv: string[], name: string): string | undefined {
     const at = argv.indexOf(`--${name}`);
@@ -42,7 +45,7 @@ async function main(): Promise<void> {
     const runtimeAddress = argument(argv, "runtime") ?? "";
     const listen = argument(argv, "listen");
     const idle = argument(argv, "idle-timeout");
-    const secret = process.env.PILOTSWARM_COMPUTE_HANDSHAKE_SECRET ?? "";
+    const secret = readHandshakeSecret(process.env);
     if (!bindingId || !runtimeAddress || !listen) {
         console.error("usage: pilotswarm-compute-host --binding <id> --runtime <host:port|port> --listen <host:port> [--idle-timeout <ms>]");
         process.exitCode = 2;

@@ -243,6 +243,7 @@ export {
     isLoopbackAddress,
     computeHostKey,
     computeBindingKey,
+    checkRemoteEndpoint,
 } from "./compute.js";
 export type {
     ComputeProvider,
@@ -261,7 +262,7 @@ export type {
     ComputeWorkspacePaths,
     ComputeReleaseReason,
 } from "./compute.js";
-export { ComputeRuntimeBridge, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_CONNECTIONS, openTcpPipe } from "./compute-bridge.js";
+export { ComputeRuntimeBridge, ComputeBridgeRegistry, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_CONNECTIONS, openTcpPipe } from "./compute-bridge.js";
 export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
 export { formatComputeFailure, computeFailureError, computeFailureMessage } from "./compute-failures.js";
 export type { ComputeTargetRow } from "./compute-target-store.js";

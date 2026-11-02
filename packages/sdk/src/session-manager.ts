@@ -1,6 +1,6 @@
-import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, computeBindingKey, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, checkRemoteEndpoint, computeBindingKey, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
 import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
-import { ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
+import { ComputeBridgeRegistry, ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
 import { computeFailureError, computeFailureMessage } from "./compute-failures.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
@@ -630,6 +630,13 @@ interface ComputeBinding {
      * a host, so they must share its address and its pooled client.
      */
     bridge?: ComputeRuntimeBridge;
+    /**
+     * The coded failure of a handshake on a connection through this
+     * binding's bridge, when one has failed since the bridge was proved.
+     * A turn that cannot reach its runtime reports this rather than
+     * whatever the SDK made of a socket that died on it.
+     */
+    handshakeFailure?: Error;
 }
 
 /**
@@ -846,16 +853,18 @@ export class SessionManager {
     /** Per session: the compute host it is bound to, for release. */
     private computeHosts = new Map<string, ComputeBinding>();
     /**
-     * Per host: its bridge on this machine and the way to it as of the
-     * most recent connect. Shared by every session of a tree bound to that
-     * host, so they share one address and one pooled client; the bridge
-     * reads `reach` at each pipe it opens, so a host whose address or
-     * secret changes keeps its bridge while still being reached correctly.
+     * Per host: its bridge on this machine, shared by every session of a
+     * tree bound to that host, so they share one address and one pooled
+     * client. The registry is what makes two turns starting together get
+     * one bridge rather than two.
      */
-    private computeBridges = new Map<string, {
-        bridge: ComputeRuntimeBridge;
-        reach: Exclude<ComputeRuntimeEndpoint, { transport: "local" }>;
-    }>();
+    private computeBridges = new ComputeBridgeRegistry();
+    /**
+     * Per host: the way to it as of the most recent connect, read fresh at
+     * every pipe the bridge opens, so a host whose address or secret
+     * changes keeps its bridge while still being reached correctly.
+     */
+    private computeReach = new Map<string, Exclude<ComputeRuntimeEndpoint, { transport: "local" }>>();
     /** Whether a provider may hand back a runtime address that is not on this machine. */
     private computeAllowNonLoopbackEndpoints = false;
     private unsubscribeFeatureFlags: (() => void) | null = null;
@@ -1331,7 +1340,7 @@ export class SessionManager {
         const sameHost = Boolean(previous && previous.host.id === bound.host.id && previous.host.incarnation === bound.host.incarnation);
         const binding: ComputeBinding = {
             provider, target, host: bound.host, rootSessionId, workerNodeId,
-            hostKey: computeBindingKey(target.id, bound.host),
+            hostKey: computeBindingKey(target.id, bound.host, rootSessionId),
             endpointKey: sameHost ? previous!.endpointKey : "",
             workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
         };
@@ -1390,55 +1399,58 @@ export class SessionManager {
      * Over every one of them the worker and the host prove to each other
      * that they hold this binding's secret before anything else crosses.
      *
-     * A binding with no secret cannot be used: a remote runtime that
-     * cannot be recognized is exactly what the handshake exists to refuse.
+     * A binding with no secret, or with no connection token, cannot be
+     * used: see `checkRemoteEndpoint`.
      */
     private async _bridgeEndpoint(
         binding: ComputeBinding,
         endpoint: Exclude<ComputeRuntimeEndpoint, { transport: "local" }>,
     ): Promise<ComputeRuntimeEndpoint> {
-        const { provider } = binding;
-        if (!endpoint.handshake) {
-            throw computeFailureError({
-                code: COMPUTE_ERROR_CODES.HANDSHAKE_FAILED,
-                message: `the compute provider "${provider.kind}" gave this binding no handshake secret, so the host at the other end cannot be recognized`,
-            });
-        }
-        // Kept per host rather than captured, so a later turn's address,
-        // details and secret are the ones the bridge uses, and so the
-        // sessions of a tree all reach their host the same way.
+        const { provider, target, host } = binding;
+        checkRemoteEndpoint(endpoint, provider.kind);
         const key = binding.hostKey;
-        let entry = this.computeBridges.get(key);
-        if (entry && entry.bridge.isClosed) {
-            this.computeBridges.delete(key);
-            entry = undefined;
-        }
-        if (entry) {
-            entry.reach = endpoint;
-        } else {
-            const held = { reach: endpoint } as { bridge: ComputeRuntimeBridge; reach: typeof endpoint };
-            const bridge = new ComputeRuntimeBridge(
-                (signal) => openTcpPipe(held.reach.address, signal),
-                { handshake: () => held.reach.handshake },
+        // Kept per host rather than captured, so a later turn's address
+        // and secret are the ones the bridge uses, and so the sessions of
+        // a tree all reach their host the same way.
+        this.computeReach.set(key, endpoint);
+        // What must still be true for a cached bridge to be this host's
+        // bridge. Which provider object is serving the kind can change
+        // under a key; the bridge must not go on using the old one.
+        const fingerprint = JSON.stringify([
+            this.computeProviders.get(provider.kind) === provider,
+            provider.kind, target.id, host.id, host.incarnation,
+        ]);
+        const bridge = await this.computeBridges.acquire(key, fingerprint, async () => {
+            const made = new ComputeRuntimeBridge(
+                (signal) => openTcpPipe(this.computeReach.get(key)!.address, signal),
+                {
+                    handshake: () => this.computeReach.get(key)?.handshake,
+                    onHandshakeFailure: (error) => {
+                        // A connection that carried, or was to carry, a
+                        // turn could not prove the host. Remembered on the
+                        // binding so the turn reports the coded failure
+                        // rather than a socket that died on the SDK.
+                        binding.handshakeFailure = error;
+                    },
+                },
             );
-            held.bridge = bridge;
-            await bridge.start();
+            await made.start();
             try {
                 // Fail here, where a compute failure can be named, rather
                 // than leaving the SDK to report a connection that died on
                 // it — and before a prompt or a model request has moved.
-                await bridge.verify();
+                await made.verify();
             } catch (error) {
-                await bridge.close().catch(() => { /* best effort */ });
+                await made.close().catch(() => { /* best effort */ });
                 throw error;
             }
-            entry = held;
-            this.computeBridges.set(key, held);
-        }
-        binding.bridge = entry.bridge;
+            return made;
+        });
+        binding.bridge = bridge;
+        binding.handshakeFailure = undefined;
         return {
             transport: "uri",
-            address: entry.bridge.address,
+            address: bridge.address,
             ...(endpoint.connectionToken ? { connectionToken: endpoint.connectionToken } : {}),
         };
     }
@@ -1492,10 +1504,14 @@ export class SessionManager {
         await this._retireEndpointIfUnused(binding.endpointKey);
         // The bridge belongs to the host, so it goes only when the last
         // session using that host has gone, and after the clients that
-        // were reaching it through the bridge.
-        if (binding.bridge && ![...this.computeHosts.values()].some((other) => other.hostKey === binding.hostKey)) {
-            this.computeBridges.delete(binding.hostKey);
-            try { await binding.bridge.close(); } catch { /* best effort */ }
+        // were reaching it through the bridge. The registry counts the
+        // holders of the bridge itself, so a bridge that was replaced
+        // under this key is not closed twice or left behind.
+        if (binding.bridge) {
+            await this.computeBridges.release(binding.hostKey, binding.bridge);
+            if (![...this.computeHosts.values()].some((other) => other.hostKey === binding.hostKey)) {
+                this.computeReach.delete(binding.hostKey);
+            }
         }
         if (!binding.provider.release) return;
         try {
@@ -1780,22 +1796,48 @@ export class SessionManager {
         return starting;
     }
 
+    /**
+     * A connection failure, told as what it really was when the worker
+     * knows better than the SDK could.
+     *
+     * The SDK connects to a bridge on this machine. When the connection
+     * behind that bridge cannot prove the host, the bridge destroys the
+     * local socket and the SDK sees a reset — true, and useless. The
+     * bridge records the coded failure against the binding, so a turn can
+     * be told the handshake failed instead.
+     */
+    private _asComputeFailure(sessionId: string, error: unknown): unknown {
+        const binding = this.computeHosts.get(sessionId);
+        const failure = binding?.handshakeFailure;
+        if (!failure) return error;
+        binding.handshakeFailure = undefined;
+        return failure;
+    }
+
     /** `client.createSession`, after the client's shared start. */
-    private _createCopilotSession(client: CopilotClient, config: SessionConfig): Promise<CopilotSession> {
-        const starting = this._startClient(client);
-        return starting ? starting.then(() => client.createSession(config)) : client.createSession(config);
+    private async _createCopilotSession(client: CopilotClient, config: SessionConfig, sessionId?: string): Promise<CopilotSession> {
+        try {
+            const starting = this._startClient(client);
+            return await (starting ? starting.then(() => client.createSession(config)) : client.createSession(config));
+        } catch (error) {
+            throw sessionId ? this._asComputeFailure(sessionId, error) : error;
+        }
     }
 
     /** `client.resumeSession`, after the client's shared start. */
-    private _resumeCopilotSession(
+    private async _resumeCopilotSession(
         client: CopilotClient,
         sessionId: string,
         config: Parameters<CopilotClient["resumeSession"]>[1],
     ): Promise<CopilotSession> {
-        const starting = this._startClient(client);
-        return starting
-            ? starting.then(() => client.resumeSession(sessionId, config))
-            : client.resumeSession(sessionId, config);
+        try {
+            const starting = this._startClient(client);
+            return await (starting
+                ? starting.then(() => client.resumeSession(sessionId, config))
+                : client.resumeSession(sessionId, config));
+        } catch (error) {
+            throw this._asComputeFailure(sessionId, error);
+        }
     }
 
     /**
@@ -3212,7 +3254,7 @@ export class SessionManager {
                 await this._resetSessionState(sessionId);
             }
 
-            copilotSession = await this._createCopilotSession(client, sessionConfig);
+            copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
         } else if (epochStart) {
             // Session regeneration: first turn of a fresh epoch whose chain is
             // empty (the caller verified via the lifecycle preamble). Epoch-
@@ -3224,7 +3266,7 @@ export class SessionManager {
                 { trace },
             );
             await this._resetSessionStateForEpoch(sessionId, transcriptEpoch);
-            copilotSession = await this._createCopilotSession(client, sessionConfig);
+            copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
             // Birth marker: the preamble's epoch invariant refuses to trust a
             // markerless dir under epoch >= 1, so stamp the incarnation the
             // moment it exists (version 0 = no commit yet).
@@ -3277,13 +3319,13 @@ export class SessionManager {
                     if (fs.existsSync(sessionDir)) {
                         copilotSession = await this._resumeCopilotSession(client, sessionId, sessionConfig);
                     } else {
-                        copilotSession = await this._createCopilotSession(client, sessionConfig);
+                        copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
                     }
                 } catch {
-                    copilotSession = await this._createCopilotSession(client, sessionConfig);
+                    copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
                 }
             } else {
-                copilotSession = await this._createCopilotSession(client, sessionConfig);
+                copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
             }
         }
 

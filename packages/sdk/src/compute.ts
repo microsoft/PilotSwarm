@@ -16,6 +16,7 @@
  */
 import { createHash } from "node:crypto";
 import { RuntimeConnection } from "@github/copilot-sdk";
+import { computeFailureError } from "./compute-failures.js";
 import { COMPUTE_HANDSHAKE_FAILED, type ComputeHandshakeCredential } from "./compute-handshake.js";
 
 export const LOCAL_COMPUTE_KIND = "local";
@@ -256,6 +257,37 @@ export interface ComputeProvider {
     release?(req: ComputeReleaseRequest): Promise<void>;
 }
 
+/**
+ * What a remote endpoint must carry before the worker will use it.
+ *
+ * The handshake proves which host is at the other end: an endpoint
+ * without a secret names a host the worker would have no way of
+ * recognizing.
+ *
+ * The connection token is what makes reaching the bridge worth nothing.
+ * The bridge listens on the worker's own machine and serves whoever
+ * connects to it, and a session that runs on the worker is model-chosen
+ * code on that same machine. Without a token such a session could open a
+ * proven connection to another session's host and drive its runtime,
+ * which reaches that host's shell. So both are required, and a provider
+ * that leaves either out is refused here rather than at the socket.
+ */
+export function checkRemoteEndpoint(endpoint: ComputeRuntimeEndpoint | undefined, providerKind: string): void {
+    if (!endpoint || endpoint.transport === "local") return;
+    if (!endpoint.handshake) {
+        throw computeFailureError({
+            code: COMPUTE_ERROR_CODES.HANDSHAKE_FAILED,
+            message: `the compute provider "${providerKind}" gave this binding no handshake secret, so the host at the other end cannot be recognized`,
+        });
+    }
+    if (typeof endpoint.connectionToken !== "string" || !endpoint.connectionToken.trim()) {
+        throw computeFailureError({
+            code: COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
+            message: `the compute provider "${providerKind}" returned a runtime with no connection token; without one anything else on this machine could drive that runtime`,
+        });
+    }
+}
+
 /** The built-in provider: the runtime runs as the worker's child process, as today. */
 export function createLocalComputeProvider(): ComputeProvider {
     return {
@@ -425,12 +457,25 @@ export function computeHostKey(host: Pick<ComputeHostRef, "id" | "incarnation">)
 }
 
 /**
- * One binding, as the worker holds it in memory: the target and the host,
- * so that every session of a tree bound to the same host shares what
- * belongs to that host and a replaced host gets its own.
+ * One binding, as the worker holds it in memory: the session tree, the
+ * target and the host, so that every session of a tree bound to the same
+ * host shares what belongs to that host and a replaced host gets its own.
+ *
+ * The tree is in the key because everything shared per host — the bridge,
+ * its address, its pooled client and the reach it reads, secret included —
+ * hangs off it. A provider is meant to give one host to one tree, but if
+ * it ever hands the same host to two, leaving the tree out would make
+ * them share all of that: whichever connected last would overwrite the
+ * other's secret, and two trees, possibly of two different people, would
+ * run down one control connection. With the tree in the key that cannot
+ * happen on this worker whatever a provider does.
  */
-export function computeBindingKey(targetId: string, host: Pick<ComputeHostRef, "id" | "incarnation">): string {
-    return `${targetId}\u001f${computeHostKey(host)}`;
+export function computeBindingKey(
+    targetId: string,
+    host: Pick<ComputeHostRef, "id" | "incarnation">,
+    rootSessionId: string,
+): string {
+    return `${rootSessionId}\u001f${targetId}\u001f${computeHostKey(host)}`;
 }
 
 /** Whether an endpoint address names this machine (localhost, 127.0.0.0/8 or ::1). */

@@ -13,6 +13,7 @@ import {
     isLoopbackAddress,
     runtimeConnectionFor,
     runtimeEndpointKey,
+    computeBindingKey,
     validateComputeTargetName,
 } from "../../dist/compute.js";
 import { projectSerializableSessionConfig } from "../../dist/client.js";
@@ -126,4 +127,20 @@ test("migration 0084 adds compute targets after 0083", () => {
         assert.match(sql, new RegExp(`"ps_test"\\.${fn}\\(`), fn);
     }
     assert.match(sql, /CREATE TABLE IF NOT EXISTS "ps_test"\.compute_targets/);
+});
+
+test("the binding key names the session tree, so two trees never share one host's bridge", () => {
+    const host = { kind: "k", id: "host-1", incarnation: "1" };
+
+    const one = computeBindingKey("target-1", host, "tree-a");
+    assert.equal(computeBindingKey("target-1", { ...host }, "tree-a"), one,
+        "every session of a tree shares its host's bridge, address and pooled client");
+
+    // A provider is meant to give one host to one tree. If it ever gives
+    // the same host to two, they must still not share the bridge: the
+    // reach the bridge reads carries the binding's secret, and whichever
+    // connected last would overwrite the other's.
+    assert.notEqual(computeBindingKey("target-1", host, "tree-b"), one);
+    assert.notEqual(computeBindingKey("target-2", host, "tree-a"), one);
+    assert.notEqual(computeBindingKey("target-1", { ...host, incarnation: "2" }, "tree-a"), one);
 });

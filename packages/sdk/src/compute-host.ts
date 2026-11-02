@@ -33,10 +33,25 @@
  * host must be private or otherwise protected.
  */
 import { connect as netConnect, createServer, type AddressInfo, type Server, type Socket } from "node:net";
-import { COMPUTE_HANDSHAKE_TIMEOUT_MS, ComputeHandshakeError, runHostHandshake, type ComputeHandshakeCredential } from "./compute-handshake.js";
+import { ComputeHandshakeError, runHostHandshake, type ComputeHandshakeCredential } from "./compute-handshake.js";
 
-/** The most connections one host component carries at a time. */
+/** The most proved connections one host component carries at a time. */
 export const COMPUTE_HOST_MAX_CONNECTIONS = 16;
+/**
+ * The most connections that may be part-way through proving themselves.
+ *
+ * Counted apart from the proved ones, and much smaller, because anything
+ * that can reach this port can open a connection and then say nothing.
+ * Counted together, a handful of silent connections would hold every slot
+ * for the whole handshake deadline and the worker could not get in.
+ */
+export const COMPUTE_HOST_MAX_PENDING_CONNECTIONS = 4;
+/**
+ * How long a connection has to prove itself. Shorter than the handshake's
+ * own deadline, since the worker's side answers at once and anything
+ * slower is not the worker.
+ */
+export const COMPUTE_HOST_PREAUTH_TIMEOUT_MS = 5_000;
 /** How long the component waits for the runtime's port to accept. */
 export const COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS = 15_000;
 /**
@@ -55,6 +70,20 @@ export const COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS = 15_000;
  */
 export const COMPUTE_HOST_IDLE_TIMEOUT_MS = 30 * 60_000;
 
+/**
+ * This binding's secret, taken out of the environment as it is read.
+ *
+ * It must not be inherited by anything this program starts, and on a host
+ * the runtime often is started from the same environment. A provider must
+ * not export it to the runtime either: the runtime has its own connection
+ * token and has no use for this one.
+ */
+export function readHandshakeSecret(env: Record<string, string | undefined>): string {
+    const secret = env.PILOTSWARM_COMPUTE_HANDSHAKE_SECRET ?? "";
+    delete env.PILOTSWARM_COMPUTE_HANDSHAKE_SECRET;
+    return secret;
+}
+
 export interface ComputeHostOptions extends ComputeHandshakeCredential {
     /** Listen for the worker's side. `port` 0 asks the operating system for one. */
     listen: { host?: string; port: number };
@@ -62,6 +91,8 @@ export interface ComputeHostOptions extends ComputeHandshakeCredential {
     runtimeAddress: string;
     handshakeTimeoutMs?: number;
     maxConnections?: number;
+    /** The most connections proving themselves at once. */
+    maxPendingConnections?: number;
     /**
      * End the component after this long with no connection — none proved
      * and none still proving itself. Default
@@ -135,8 +166,9 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
     if (!options.listen) throw new Error("a host component needs the address to listen on");
     const runtime = parseAddress(options.runtimeAddress);
     const credential: ComputeHandshakeCredential = { bindingId: options.bindingId, secret: options.secret };
-    const handshakeTimeoutMs = options.handshakeTimeoutMs ?? COMPUTE_HANDSHAKE_TIMEOUT_MS;
+    const handshakeTimeoutMs = options.handshakeTimeoutMs ?? COMPUTE_HOST_PREAUTH_TIMEOUT_MS;
     const maxConnections = options.maxConnections ?? COMPUTE_HOST_MAX_CONNECTIONS;
+    const maxPending = options.maxPendingConnections ?? COMPUTE_HOST_MAX_PENDING_CONNECTIONS;
     // One memory of worker nonces for the whole component: a hello this
     // host has already answered is refused however it arrives.
     const seenNonces = new Set<string>();
@@ -189,7 +221,10 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
         let runtimeSocket: Socket | undefined;
         try {
             if (closed) throw new Error("the host component is closing");
-            if (live.size + pending.size > maxConnections) {
+            if (pending.size > maxPending) {
+                throw new Error("this host component already has as many connections proving themselves as it will");
+            }
+            if (live.size >= maxConnections) {
                 throw new Error("this host component already carries as many connections as it will");
             }
             await runHostHandshake(socket, credential, { timeoutMs: handshakeTimeoutMs, seenNonces });

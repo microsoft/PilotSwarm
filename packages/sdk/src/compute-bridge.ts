@@ -38,7 +38,8 @@
  */
 import { connect as netConnect, createServer, type AddressInfo, type Server, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
-import { COMPUTE_HANDSHAKE_TIMEOUT_MS, runWorkerHandshake, type ComputeHandshakeCredential } from "./compute-handshake.js";
+import { computeFailureError } from "./compute-failures.js";
+import { COMPUTE_HANDSHAKE_FAILED, COMPUTE_HANDSHAKE_TIMEOUT_MS, runWorkerHandshake, type ComputeHandshakeCredential } from "./compute-handshake.js";
 
 /** How long a pipe has to open before the attempt is abandoned. */
 export const COMPUTE_PIPE_OPEN_TIMEOUT_MS = 30_000;
@@ -95,8 +96,23 @@ export class ComputeRuntimeBridge {
     private readonly live = new Set<{ socket: Socket; pipe: Duplex }>();
     private closed = false;
     private port = 0;
+    /** Connections accepted and not yet joined: opening, or handshaking. */
+    private opening = 0;
     /** The last reason a pipe could not be opened, for the error a turn shows. */
     lastOpenError: Error | null = null;
+    /**
+     * The last handshake a connection through this bridge failed, as the
+     * coded compute error.
+     *
+     * Kept apart from `lastOpenError` because it means something
+     * different: the host answered and could not prove itself, or would
+     * not accept this worker's proof. `verify()` catches that for the
+     * first connection of a binding, but a host can pass that and refuse
+     * the next one, and a bridge made on an earlier turn never verifies
+     * again. Without this the SDK sees a socket that died on it and the
+     * turn reports a reset instead of a handshake it can name.
+     */
+    lastHandshakeError: Error | null = null;
 
     constructor(
         private readonly openPipe: (signal: AbortSignal) => Promise<Duplex>,
@@ -113,6 +129,8 @@ export class ComputeRuntimeBridge {
              */
             handshake?: ComputeHandshakeCredential | (() => ComputeHandshakeCredential | undefined);
             handshakeTimeoutMs?: number;
+            /** Told when a connection through this bridge fails its handshake. */
+            onHandshakeFailure?: (error: Error) => void;
         } = {},
     ) {}
 
@@ -124,6 +142,11 @@ export class ComputeRuntimeBridge {
     /** How many connections are open through the bridge right now. */
     get openConnections(): number {
         return this.live.size;
+    }
+
+    /** Connections joined, plus those still being opened and proved. */
+    private get inFlight(): number {
+        return this.live.size + this.opening;
     }
 
     get isClosed(): boolean {
@@ -163,9 +186,14 @@ export class ComputeRuntimeBridge {
         // error); the event must not become an unhandled one.
         socket.on("error", () => { /* reported where it can be acted on */ });
         let pipe: Duplex | undefined;
+        // Counted from here, not from the join: an opener that is slow, or
+        // a host that never answers its handshake, would otherwise let any
+        // number of connections be opened at once while none of them has
+        // reached `live`.
+        this.opening += 1;
         try {
             if (this.closed) throw new Error("the compute bridge is closed");
-            if (this.live.size >= (this.options.maxConnections ?? COMPUTE_BRIDGE_MAX_CONNECTIONS)) {
+            if (this.inFlight > (this.options.maxConnections ?? COMPUTE_BRIDGE_MAX_CONNECTIONS)) {
                 throw new Error("this compute bridge already carries as many connections as it will");
             }
             pipe = await this.openProven();
@@ -176,8 +204,14 @@ export class ComputeRuntimeBridge {
             // seen, not hang: the socket dies carrying the reason.
             const reason = error instanceof Error ? error : new Error(String(error));
             this.lastOpenError = reason;
+            if ((reason as { code?: string }).code === COMPUTE_HANDSHAKE_FAILED) {
+                this.lastHandshakeError = reason;
+                this.options.onHandshakeFailure?.(reason);
+            }
             try { pipe?.destroy(); } catch { /* already gone */ }
             socket.destroy(reason);
+        } finally {
+            this.opening -= 1;
         }
     }
 
@@ -205,7 +239,12 @@ export class ComputeRuntimeBridge {
                 });
             } catch (error) {
                 try { pipe.destroy(); } catch { /* already gone */ }
-                throw error;
+                // Raised with its code from here on, so a turn can say a
+                // handshake failed rather than reporting a dead socket.
+                throw computeFailureError({
+                    code: COMPUTE_HANDSHAKE_FAILED,
+                    message: String((error as Error)?.message ?? error),
+                });
             }
         }
         return pipe;
@@ -294,5 +333,110 @@ export class ComputeRuntimeBridge {
         this.server = null;
         if (!server) return;
         await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+}
+
+/**
+ * The bridges this worker has, one per host of a session tree.
+ *
+ * Making a bridge takes two awaits — listening, then proving the host —
+ * and the sessions of one tree start their turns at the same time. Held
+ * as a plain map, both of them find nothing, both build a bridge, and the
+ * map keeps the last: the other one's listener and pipes are never
+ * closed, and the two sessions reach the same runtime down two addresses,
+ * so they get two pooled clients and two control connections into it.
+ *
+ * So the pending construction goes in the map before the awaits, and a
+ * caller that arrives meanwhile waits on it and gets the same bridge.
+ *
+ * `fingerprint` is everything that must still be true for a cached bridge
+ * to be the right one — the provider object, the target, the host and its
+ * incarnation. Reaching the host can change under a bridge and is read
+ * fresh at every pipe; the fingerprint is for what cannot, so a bridge
+ * built for one of them is never handed to another.
+ */
+export class ComputeBridgeRegistry {
+    private readonly entries = new Map<string, {
+        fingerprint: string;
+        holders: number;
+        bridge: Promise<ComputeRuntimeBridge>;
+    }>();
+
+    /**
+     * The bridge for this key, made if there is none. `make` is called at
+     * most once per bridge, however many callers arrive together.
+     *
+     * A cached bridge is retired and rebuilt when its fingerprint has
+     * changed, when it has been closed, or when a connection through it
+     * has failed its handshake — that last one is what makes the next turn
+     * fail with a coded handshake error at the point where a compute
+     * failure can be named, instead of as a socket that died.
+     */
+    async acquire(key: string, fingerprint: string, make: () => Promise<ComputeRuntimeBridge>): Promise<ComputeRuntimeBridge> {
+        const held = this.entries.get(key);
+        if (held) {
+            let usable: ComputeRuntimeBridge | undefined;
+            try {
+                usable = await held.bridge;
+            } catch {
+                // Its construction failed; whoever asked for it was told.
+                if (this.entries.get(key) === held) this.entries.delete(key);
+            }
+            if (usable && this.entries.get(key) === held) {
+                const stale = held.fingerprint !== fingerprint || usable.isClosed || usable.lastHandshakeError;
+                if (!stale) {
+                    held.holders += 1;
+                    return usable;
+                }
+                this.entries.delete(key);
+                await usable.close().catch(() => { /* going away anyway */ });
+            }
+        }
+        const entry = { fingerprint, holders: 1, bridge: make() };
+        this.entries.set(key, entry);
+        try {
+            const bridge = await entry.bridge;
+            // Another caller may have retired this entry while it was
+            // being built. Then this bridge is nobody's: close it rather
+            // than leave it listening.
+            if (this.entries.get(key) !== entry) await bridge.close().catch(() => { /* already gone */ });
+            return bridge;
+        } catch (error) {
+            if (this.entries.get(key) === entry) this.entries.delete(key);
+            throw error;
+        }
+    }
+
+    /**
+     * One holder has let go. The bridge closes when the last one does, and
+     * only if it is still the bridge this key names — a bridge already
+     * replaced was closed when it was replaced.
+     */
+    async release(key: string, bridge: ComputeRuntimeBridge): Promise<void> {
+        const held = this.entries.get(key);
+        if (!held) {
+            await bridge.close().catch(() => { /* already gone */ });
+            return;
+        }
+        const current = await held.bridge.catch(() => undefined);
+        if (current !== bridge) return;
+        held.holders -= 1;
+        if (held.holders > 0) return;
+        this.entries.delete(key);
+        await bridge.close().catch(() => { /* already gone */ });
+    }
+
+    /** Drop this key's bridge whoever still holds it: the host has gone. */
+    async retire(key: string): Promise<void> {
+        const held = this.entries.get(key);
+        if (!held) return;
+        this.entries.delete(key);
+        const bridge = await held.bridge.catch(() => undefined);
+        if (bridge) await bridge.close().catch(() => { /* already gone */ });
+    }
+
+    /** Test and diagnostic view: how many bridges this worker holds. */
+    get size(): number {
+        return this.entries.size;
     }
 }

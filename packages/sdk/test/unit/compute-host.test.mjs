@@ -203,3 +203,40 @@ test("an open connection keeps the host component alive, and the clock starts ag
     });
     assert.equal(component.isClosed, true, "once the last connection has gone, the clock runs again");
 });
+
+test("connections that say nothing are refused quickly and never take a proved connection's place", async (t) => {
+    const runtime = await echoRuntime(t);
+    const credential = { bindingId: "binding-flood", secret: newComputeHandshakeSecret() };
+    const refusals = [];
+    const component = await startComputeHost({
+        ...credential,
+        listen: { host: "127.0.0.1", port: 0 },
+        runtimeAddress: `127.0.0.1:${runtime.port}`,
+        maxPendingConnections: 2,
+        // Stands in for the pre-auth deadline, which is what bounds how
+        // long anything that says nothing can hold a place at all.
+        handshakeTimeoutMs: 250,
+        idleTimeoutMs: 0,
+        onConnectionClosed: ({ ok, error }) => { if (!ok) refusals.push(error?.message ?? ""); },
+    });
+    t.after(() => component.close());
+
+    // More connections that say nothing than the pre-auth cap allows.
+    const silent = [];
+    for (let i = 0; i < 6; i++) silent.push(await connect(t, component.address));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.ok(refusals.some((m) => /proving themselves/.test(m)),
+        "the ones over the pre-auth cap are refused at once");
+    assert.equal(component.connections, 0,
+        "and none of them takes one of the places a proved connection would use");
+
+    // Their deadline is the short one, so the port frees up in a quarter
+    // of a second rather than the handshake's fifteen.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const worker = await connect(t, component.address);
+    await runWorkerHandshake(worker, credential);
+    worker.write("hello");
+    assert.equal(await once(worker), "runtime:hello", "and the worker gets in");
+    for (const socket of silent) socket.destroy();
+});

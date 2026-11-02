@@ -12,8 +12,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
 import { PassThrough, Duplex } from "node:stream";
-import { ComputeRuntimeBridge } from "../../dist/compute-bridge.js";
-import { ComputeProviderRegistry } from "../../dist/compute.js";
+import { ComputeBridgeRegistry, ComputeRuntimeBridge } from "../../dist/compute-bridge.js";
+import { ComputeProviderRegistry, checkRemoteEndpoint } from "../../dist/compute.js";
 
 /** A stand-in for a host's runtime: an echo server with a prefix. */
 function echoHost(t, prefix = "") {
@@ -145,7 +145,7 @@ test("a pipe that breaks takes its connection with it, and the next one is a fre
     assert.notEqual(pipes[1], pipes[0]);
 });
 
-test("the provider is given a deadline it can see", async (t) => {
+test("the opener is given a deadline it can see", async (t) => {
     let seen;
     const bridge = new ComputeRuntimeBridge((signal) => {
         seen = signal;
@@ -155,9 +155,9 @@ test("the provider is given a deadline it can see", async (t) => {
     await bridge.start();
     const socket = await connect(Number(bridge.address.split(":")[1]));
     await deathOf(socket);
-    assert.match(String(bridge.lastOpenError?.message), /did not open a connection within/,
-        "the bridge keeps its own deadline, whatever the provider does with the signal");
-    assert.equal(seen.aborted, true, "and the provider is told the attempt is over");
+    assert.match(String(bridge.lastOpenError?.message), /did not open within/,
+        "the bridge keeps its own deadline, whatever the opener does with the signal");
+    assert.equal(seen.aborted, true, "and the opener is told the attempt is over");
 });
 
 test("closing the bridge closes what it was carrying, and it stops listening", async (t) => {
@@ -224,4 +224,116 @@ test("a provider that opens its own connections is refused, because every host i
         () => registry.register({ ...base, kind: "declares-a-transport", transport: "direct" }),
         /opens its own connections/,
     );
+});
+
+test("connections that are still opening count against the cap, so nothing can make the bridge open pipes without end", async (t) => {
+    // An opener that never answers: every connection stays in flight.
+    const stuck = [];
+    const bridge = new ComputeRuntimeBridge(
+        () => new Promise((_, reject) => { stuck.push(reject); }),
+        { maxConnections: 2, openTimeoutMs: 60_000 },
+    );
+    t.after(() => { for (const reject of stuck) reject(new Error("test over")); return bridge.close(); });
+    await bridge.start();
+    const { port } = new URL(`tcp://${bridge.address}`);
+
+    const first = await connect(Number(port));
+    const second = await connect(Number(port));
+    // Give both time to reach the opener.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(stuck.length, 2, "both are waiting on the opener");
+
+    const third = await connect(Number(port));
+    await deathOf(third);
+    assert.match(String(bridge.lastOpenError?.message), /as many connections as it will/);
+    assert.equal(stuck.length, 2, "and the third never asked for a pipe");
+    first.destroy();
+    second.destroy();
+});
+
+test("two turns of one tree starting together get one bridge, not two", async (t) => {
+    const host = await echoHost(t);
+    const registry = new ComputeBridgeRegistry();
+    let made = 0;
+    const slowMake = async () => {
+        made++;
+        // The real one awaits listening and then a handshake; what matters
+        // is that there is an await at all.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const bridge = new ComputeRuntimeBridge(() => connect(host.port));
+        await bridge.start();
+        return bridge;
+    };
+
+    const [a, b] = await Promise.all([
+        registry.acquire("host-1", "fp", slowMake),
+        registry.acquire("host-1", "fp", slowMake),
+    ]);
+    t.after(() => registry.retire("host-1"));
+
+    assert.equal(made, 1, "the second turn waits for the first bridge instead of building another");
+    assert.equal(a, b, "and both reach the host down one address");
+    assert.equal(registry.size, 1);
+
+    // One holder letting go leaves the bridge up for the other.
+    await registry.release("host-1", a);
+    assert.equal(a.isClosed, false, "a sub-agent finishing does not take the parent's bridge away");
+    await registry.release("host-1", b);
+    assert.equal(a.isClosed, true, "the last one to let go closes it");
+    assert.equal(registry.size, 0);
+});
+
+test("a bridge is rebuilt when what it was built for has changed", async (t) => {
+    const host = await echoHost(t);
+    const registry = new ComputeBridgeRegistry();
+    t.after(() => registry.retire("host-1"));
+    const make = async () => {
+        const bridge = new ComputeRuntimeBridge(() => connect(host.port));
+        await bridge.start();
+        return bridge;
+    };
+
+    const first = await registry.acquire("host-1", "provider-a", make);
+    const second = await registry.acquire("host-1", "provider-b", make);
+
+    assert.notEqual(first, second, "a bridge built for one provider is never handed to another");
+    assert.equal(first.isClosed, true, "and the one it replaces is closed rather than left listening");
+    assert.notEqual(first.address, second.address);
+});
+
+test("a bridge whose handshake has failed is retired, so the next turn is told what happened", async (t) => {
+    const host = await echoHost(t);
+    const registry = new ComputeBridgeRegistry();
+    t.after(() => registry.retire("host-1"));
+    const make = async () => {
+        const bridge = new ComputeRuntimeBridge(() => connect(host.port));
+        await bridge.start();
+        return bridge;
+    };
+
+    const first = await registry.acquire("host-1", "fp", make);
+    // What the bridge records when a connection cannot prove the host.
+    first.lastHandshakeError = Object.assign(new Error("COMPUTE_HANDSHAKE_FAILED: the host did not prove it holds this binding's secret"),
+        { code: "COMPUTE_HANDSHAKE_FAILED" });
+
+    const second = await registry.acquire("host-1", "fp", make);
+    assert.notEqual(second, first, "it is not handed out again");
+    assert.equal(first.isClosed, true);
+});
+
+test("a remote runtime with no connection token is refused, and so is one with no secret", () => {
+    const handshake = { bindingId: "b", secret: "x".repeat(64) };
+
+    assert.throws(
+        () => checkRemoteEndpoint({ transport: "uri", address: "127.0.0.1:1", handshake }, "k"),
+        (error) => error.code === "COMPUTE_ENDPOINT_REFUSED" && /no connection token/.test(error.message),
+    );
+    assert.throws(
+        () => checkRemoteEndpoint({ transport: "uri", address: "127.0.0.1:1", connectionToken: "t" }, "k"),
+        (error) => error.code === "COMPUTE_HANDSHAKE_FAILED",
+    );
+    // A session that runs on the worker is not reached over a connection
+    // at all, so there is nothing to check.
+    checkRemoteEndpoint({ transport: "local" }, "k");
+    checkRemoteEndpoint({ transport: "uri", address: "127.0.0.1:1", connectionToken: "t", handshake }, "k");
 });
