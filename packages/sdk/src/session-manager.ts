@@ -26,7 +26,7 @@ import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
-import { WORKFLOW_SESSION_GUIDANCE } from "./workflow/guidance.js";
+import { WORKFLOW_AUTHORING_POINTER, WORKFLOW_SESSION_GUIDANCE, workflowAuthoringSkillLoaded } from "./workflow/guidance.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -4302,8 +4302,10 @@ export class SessionManager {
         boundAgentCopy: AgentCopyEntry | null = resolveBoundAgentCopy(this.workerDefaults, config, sessionOwnerKey) ?? null,
     ): SystemMessageConfig | undefined {
         const base = baseAgentInstructions(config.baseAgentPolicy, this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage);
+        // The authoring skill's pointer (R24) only on a worker that loaded that skill (INACTIVE: none does yet).
         const frameworkBase = this.workflowScriptsEnabled
-            ? [base, WORKFLOW_SESSION_GUIDANCE].filter(Boolean).join("\n\n")
+            ? [base, WORKFLOW_SESSION_GUIDANCE, workflowAuthoringSkillLoaded(this.workerDefaults.skills) ? WORKFLOW_AUTHORING_POINTER : null]
+                .filter(Boolean).join("\n\n")
             : base;
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);

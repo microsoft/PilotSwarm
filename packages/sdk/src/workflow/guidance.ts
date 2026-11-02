@@ -1,3 +1,6 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 /** Runtime base guidance, supplied only on workers with workflow support. */
 export const WORKFLOW_SESSION_GUIDANCE = `## Workflow Sessions
 
@@ -10,3 +13,30 @@ Author a versioned \`kind: Workflow\` definition with explicit outcomes, failure
 For durable waits, use \`transition.delaySeconds: { unchanged: 30 }\` with \`transition.next: { unchanged: poll }\`. The controller schedules the durable timer after the state returns; it survives worker restart and consumes no model turn. Do not call \`wait\`, \`cron\`, \`sleep\` or JavaScript timers inside the script. Each delay is an integer from 1 to 3,600 seconds; every run must have a terminal path and stays within the bound of 1,000 script-state executions per run.
 
 Choose \`notify_on_completion\` deliberately: leave it true when the parent must handle the result; use false when the user only needs to inspect the workflow and no parent follow-up is required. Do not poll from the parent merely to repeat the child's progress. A completed workflow is not an instruction to start another. A failure is not permission to repair and rerun unless that recovery is within the user's authorized scope. Report "started" after admission; report success only from the actual terminal result.`;
+
+
+/**
+ * The workflow-authoring skills (design 04; R24): `workflow-authoring` (the
+ * core), `workflow-reference` and `workflow-testing`, in the SDK package's
+ * plugins/workflow-v2/skills. INACTIVE: no worker tier loads this directory;
+ * a test passes it as a skill directory, beside the workers that run
+ * controller 1.9.0.
+ */
+export const WORKFLOW_V2_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow-v2/skills", import.meta.url));
+export const WORKFLOW_AUTHORING_SKILL = "workflow-authoring";
+
+/**
+ * The standard base's short discovery pointer to the authoring skill (design
+ * 04). The base carries it only when the worker loaded that skill from
+ * WORKFLOW_V2_SKILLS_DIR, so every other prompt is unchanged.
+ */
+export const WORKFLOW_AUTHORING_POINTER = "When an authorized task is a finite procedure with explicit steps, branches, waits or repeated checks, "
+    + "consider a workflow child instead of repeated parent model turns. Before you create, edit or test a version 2 workflow definition, "
+    + "load the `workflow-authoring` skill. Create a draft for user review when the user asks for review; a draft or a mocked test run "
+    + "is not a live run. Use the workflow controls and typed results, and keep every existing permission.";
+
+/** Whether a worker's loadable skills include the authoring skill from WORKFLOW_V2_SKILLS_DIR (a same-named skill elsewhere does not count). */
+export function workflowAuthoringSkillLoaded(skills: ReadonlyArray<{ name: string; dir?: string }> | undefined): boolean {
+    const own = path.join(WORKFLOW_V2_SKILLS_DIR, WORKFLOW_AUTHORING_SKILL);
+    return (skills ?? []).some(skill => skill.name === WORKFLOW_AUTHORING_SKILL && typeof skill.dir === "string" && path.resolve(skill.dir) === own);
+}

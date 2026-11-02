@@ -405,3 +405,34 @@ Not added, by design or pending a decision:
   invocation credentials (caller, audience, session/run/node binding, expiry,
   revocation); an ordinary human bearer token must not complete a node.
   That credential design is not resolved, so these stay in-process tools.
+
+## Authoring skills (design 04; R24, T124)
+
+Three on-demand skills in `packages/sdk/plugins/workflow-v2/skills`:
+
+- `workflow-authoring` (the core): when a workflow fits, how to choose each
+  state type, bounded graphs, data flow and bindings, scripts, typed
+  contracts, agent and parallel states, the draft, test, publish and start
+  lifecycle, run control, failure diagnosis and review fan-out.
+- `workflow-reference`: every root key and state field with its limits, each
+  state's outputs, the runtime error codes, the tool operations and their
+  arguments, the refusals an author can fix, and what is not supported.
+- `workflow-testing`: the test operations, interception ids, valid answers,
+  fixtures, the virtual clock, test evidence and scenario planning.
+
+Each skill describes the implemented syntax only; the design examples'
+`transition.function`, `interface`, `request:` and `timeout` spellings are
+listed as not supported. Each complete example (`# example:` blocks) is
+compiled by a unit test with the milestone options and has no diagnostics;
+together they use every state type.
+
+No worker tier loads the directory (`WORKFLOW_V2_SKILLS_DIR`); a test passes
+it as a skill directory. The standard base adds a short discovery pointer
+(`WORKFLOW_AUTHORING_POINTER`) after the workflow guidance only when the
+worker loaded `workflow-authoring` from that directory, so every other prompt
+is unchanged. The agent state's wrapper reaches its child without the skill.
+
+Not yet covered: the update_workflow and read_workflow tool descriptions on
+a turn of a worker that runs controller 1.9.0 still list the production
+operations only (next change: milestone tool specs with the matching
+handler gate).
