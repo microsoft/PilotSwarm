@@ -8503,7 +8503,6 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
  * status rail in the bright status colour, and keep secondary text on the
  * foreground side of the muted slot. */
 :root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run,
-:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-native-tasks,
 :root[data-ps-theme="duroxide"] .ps-chat-panel .ps-chat-card {
   background: var(--ps-page-background);
 }
@@ -8532,11 +8531,19 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 :root[data-ps-theme="duroxide"] .ps-chat-call-tag {
   color: #efc069;
 }
+/* The native-task group keeps the shared header tone: on the page ground it
+   sat only 8.6 away from the transcript (the browser suite needs 10). */
 :root[data-ps-theme="duroxide"] .ps-chat-panel .ps-native-tasks:not(.ps-activity-run),
 :root[data-ps-theme="duroxide"] .ps-chat-panel .ps-artifact-card {
   border: 0;
   border-left: 4px solid #efc069;
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-artifact-card {
   background: var(--ps-page-background);
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-native-tasks:not(.ps-activity-run),
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-native-tasks.ps-activity-run {
+  background: var(--ps-chat-card-header);
 }
 :root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run {
   border-left-color: #9bc888;
