@@ -349,7 +349,8 @@ describe("workflow v2 durable intake: the session queue and the version check (i
             ["1.0.999999999", true], ["999999999.0.0", true],
             // Malformed or oversized: a leading zero, a tenth digit, a sign, an exponent, whitespace, a trailing newline, a non-string.
             ["1.0.083", false], ["01.0.83", false], ["1.0.1000000000", false], ["9007199254740993.0.0", false], ["1.0.-83", false],
-            ["1.0.8e1", false], [" 1.0.83", false], ["1.0.83 ", false], ["1.0.83\n", false], [1.083, false], [{ toString: () => "1.0.83" }, false],
+            ["1.0.8e1", false], [" 1.0.83", false], ["1.0.83 ", false], ["1.0.83\n", false], ["1.0.83\r\n", false], [1.083, false],
+            [{ toString: () => "1.0.83" }, false],
         ]) {
             expect(intakeCapableVersion(version), String(version)).toBe(capable);
         }

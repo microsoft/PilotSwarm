@@ -892,9 +892,10 @@ const INTAKE_VERSION_PATTERN = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{
 
 /** Whether an observed session orchestration version has the durable intake; a missing, malformed or oversized one has not (fail closed). */
 export function intakeCapableVersion(version: string | null | undefined): boolean {
+    // The whole value must be the match: nothing before or after it, a line terminator included.
     const numbers = (value: string) => {
         const match = INTAKE_VERSION_PATTERN.exec(value);
-        return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+        return match && match.index === 0 && match[0] === value ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
     };
     const observed = typeof version === "string" ? numbers(version) : null;
     const minimum = numbers(WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION)!;
