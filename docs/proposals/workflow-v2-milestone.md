@@ -344,8 +344,9 @@ default.
   not pin (unavailable, a system agent, another package or version)
   refuses the test with `AGENT_UNAVAILABLE` before anything is written. A
   pin with a package revision runs that exact revision. A repeated test
-  operation returns its receipt and pins nothing again. Without a host
-  agent resolver (deployed enablement), nothing is pinned and the child is
+  operation returns its receipt and pins nothing again. The hosts that run
+  controller 1.9.0 pin with the agent registry ("Publication pins" below);
+  a host without an agent resolver pins nothing, and the child is then
   bound by name when it is created, by the same visibility rules.
 - **Framework tools are intercepted.** In every turn of the child, and of
   any session in its subtree, each framework tool call (a worker or
@@ -383,8 +384,8 @@ default.
 
 Deviations still open: typed input's expiry (`ttl_seconds`) runs on real
 time. A tool call the parent answers after its wait ended is recorded and
-changes nothing. Deployed enablement still needs a registry-backed agent
-resolver that reports package revisions.
+changes nothing. Deployed enablement still needs the agent host's
+production connection (see "Publication pins" below).
 
 **Retention (design 05 cleanup; D07 configurable defaults).** After each new
 test admission, the workflow's ended test runs beyond the newest `keep`
@@ -412,9 +413,10 @@ hash, start one live run) was already in place. This milestone adds what
 binds a publication and a test to the exact versions they used
 (migration 0099):
 
-- **Agent pins.** On a host that resolves agents (`WorkflowV2Host.resolveAgent`,
-  set only by tests), publication resolves every agent state that names an
-  agent, for the workflow's parent, as its child would be bound. An agent
+- **Agent pins.** On a host that resolves agents (`WorkflowV2Host.resolveAgent`:
+  the hosts that run controller 1.9.0, below), publication resolves every
+  agent state that names an agent, for the workflow's parent, as its child
+  would be bound. An agent
   that is missing, a worker-managed system agent, or not at the package or
   version the state names refuses the publication with `AGENT_UNAVAILABLE`
   and nothing is published (a definition created as published refuses
@@ -447,16 +449,44 @@ binds a publication and a test to the exact versions they used
   shows the revision on the agent state's task. A publication made before
   revisions were pinned keeps the earlier rule (its run is refused once its
   version is gone).
+- **Resolution from the agent registry (`agent-resolver.ts`).** The hosts
+  that run controller 1.9.0 resolve with it: a worker's turn with the
+  test option `workflowRequests` (its `update_workflow` and
+  `spawn_workflow` tools) and a management client created with
+  `workflowCommands.requests` (a person's `updateWorkflow` from the portal,
+  the Web API, MCP or the TUI). Other hosts set no resolver and pin
+  nothing, as before. The name goes through `spawn_agent`'s own rule
+  (`resolveAgentDefinitionForCaller`: owner privacy and the owner's own
+  copy first, with the owner from the caller's lineage) over the
+  registry's enabled packages at their active versions
+  (`getAgentPackagesInstallManifest`), so a package agent's version and
+  exact revision (the content hash of that version) come from the
+  registry, never from a worker's installed copy, which can lag a
+  republish. A state that names a package resolves among that package's
+  agents only, so another package's agent of the same name never takes
+  its place; the agent host asks the same way when it creates the child.
+  A worker also resolves its own deployment agents and system agents by
+  name, in a worker's order (deployment agents, then the registry's
+  packages). A management client knows the registry only: a deployment
+  agent's name refuses a person's publication with `AGENT_UNAVAILABLE`
+  (`registryOnly`), saying that such a workflow is published by its parent
+  agent. A registry that cannot be read refuses the publication with
+  `AGENT_UNAVAILABLE` (`retryable`) before anything is written, without the
+  failure's own text; the same request may then be sent again.
 - **Test scenario labels.** `update_workflow` operation `test` takes an
   optional `scenario` name, kept with the test run
   (`workflow_runs.test_scenario`) and shown by `read_workflow` beside the
   tested revision and the stale flag. Test results, publication receipts
   and pins stay separate records; a test never stands in for publication.
 
-Still open (not waived): the resolver that reports `packageRevision` is a
-test-only host hook, as the agent host itself is, so a deployed worker pins
-revisions only once the agent host is enabled with a registry-backed
-resolver (the deployed enablement gap). A real-agent test run of a draft
+Still open (not waived): the agent host's production connection. The
+publication hosts above pin with the registry, but no worker registers an
+agent host yet (`registerWorkflowV2` in `worker.ts` takes no `agentNodes`),
+so only test hosts create agent states' children. The next slice builds the
+worker's agent host from the same resolver and
+`clientWorkflowAgentChildCreator`, behind the worker's controller 1.9.0
+switch. A person's publication pins package agents only (the management
+client does not see a worker's deployment agents). A real-agent test run of a draft
 revision is pinned when it is admitted, as its publication would be
 (migration 0101; see "Real agents" above). Also not covered:
 package interface digests (`interface:` is refused at compile) and a
@@ -802,10 +832,10 @@ argument is taken behind the same gate, refused elsewhere, and the
 reference skill's operation table names exactly the operations the
 description lists.
 
-Not wired on such a turn: agent resolution for publication pins
-(`resolveAgent`) and the agent host that creates agent states' children;
-both stay test-host only, so a named agent is not pinned there and an agent
-state there fails `unavailable`. No deployed worker enables controller
+Such a turn's publications pin their named agents from the agent registry
+(`resolveAgent`, `agent-resolver.ts`). Not wired on it: the agent host that
+creates agent states' children; it stays test-host only, so an agent state
+there fails `unavailable`. No deployed worker enables controller
 1.9.0: that needs a worker switch, which is an activation decision.
 
 ## Run deadline (design 02 run lifecycle, D03; canonical `limits`)

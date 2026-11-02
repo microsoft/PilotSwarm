@@ -215,6 +215,10 @@ function withoutBudgetGate(catalog) {
  * promise, holds that activity's real handler until it settles (a held
  * write, to order a race); the handler itself is never replaced.
  * `options.snapshots` and `options.afterActivity`: see the file's comment.
+ * `options.inlineClient` gives the worker's activities the test's store and
+ * schemas, so a turn's workflow tools (update_workflow) can open the client
+ * they use, as on a worker; `options.userAgents` and `options.systemAgents`
+ * are the agents the worker loaded (registerActivities' lists).
  * `restart()` crashes the running runtime (its in-flight activity is never
  * completed by it: the lock it held runs out) and starts another on the
  * same provider with the same registrations, so a work item it held is
@@ -304,8 +308,11 @@ export async function intakeNativeFixture(env, script, options = {}) {
                     });
                 },
             };
+            const inline = options.inlineClient === true;
             registerActivities(adapter, sessionManager, snapshots?.store ?? null, undefined, withoutBudgetGate(intake.catalog), provider,
-                undefined, undefined, undefined, undefined, null, [], undefined, null, workerNodeId, null,
+                inline ? env.store : undefined, inline ? env.cmsSchema : undefined,
+                inline ? { duroxideSchema: env.duroxideSchema, factsSchema: env.factsSchema } : undefined,
+                options.systemAgents, null, [], options.userAgents, null, workerNodeId, null,
                 { workflowIntakeTurns: true, ...(options.testOptions ?? {}) });
             // No fact store here: the knowledge index is empty.
             adapter.registerActivity("loadKnowledgeIndex", async () => ({ skills: [], asks: [] }));

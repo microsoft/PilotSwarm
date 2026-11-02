@@ -88,8 +88,14 @@ export interface WorkflowAgentChildSpec {
 
 export interface WorkflowAgentHostDeps {
     getSession(sessionId: string): Promise<WorkflowAgentHostSessionRow | null>;
-    /** The agent definition the workflow's owner sees by this name (as spawn_agent resolves it for a session of that owner), or null. */
-    resolveAgent(name: string, callerSessionId: string): Promise<WorkflowAgentDefinition | null>;
+    /**
+     * The agent definition the workflow's owner sees by this name (as
+     * spawn_agent resolves it for a session of that owner), among the agents
+     * of `packageName` when the state names one, or null. The registry-backed
+     * resolver that 1.9.0 hosts pin publications with (agent-resolver.ts) has
+     * this shape; no worker builds this host yet.
+     */
+    resolveAgent(name: string, callerSessionId: string, packageName?: string | null): Promise<WorkflowAgentDefinition | null>;
     /**
      * Create the child session (an existing one with this id is reused as it
      * is) and send its first prompt with its client message id. Throws on a
@@ -139,7 +145,7 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
             };
             if (request.task.source === "agent") {
                 const task = request.task;
-                const definition = await deps.resolveAgent(task.name, request.controllingSessionId ?? request.workflowSessionId);
+                const definition = await deps.resolveAgent(task.name, request.controllingSessionId ?? request.workflowSessionId, task.package);
                 if (!definition) {
                     return { refused: { code: "unavailable" as const, message: `Agent "${task.name}" is not available to this workflow's owner.` } };
                 }

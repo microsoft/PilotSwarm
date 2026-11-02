@@ -163,6 +163,7 @@ import {
 import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2View } from "./workflow/v2/tools.js";
 import { updateWorkflowForPerson, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
+import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
 import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
 import type { WorkflowV2Host } from "./workflow/v2/service.js";
@@ -820,8 +821,11 @@ export interface PilotSwarmManagementClientOptions {
      * (updateWorkflow). `requests: true` when the deployment's workers run
      * controller 1.9.0 (their test option workflowRequests): the commands then
      * take the milestone operations (stop, test, test_respond, test_advance)
-     * and start runs at 1.9.0, as that host's tools do. Unset: updateWorkflow
-     * answers WORKFLOW_COMMANDS_UNAVAILABLE (501) and changes nothing.
+     * and start runs at 1.9.0, as that host's tools do, and a publication pins
+     * its named agents: package agents only, at the agent registry's exact
+     * revision (a deployment agent's name is refused AGENT_UNAVAILABLE here).
+     * Unset: updateWorkflow answers WORKFLOW_COMMANDS_UNAVAILABLE (501) and
+     * changes nothing.
      */
     workflowCommands?: { requests?: boolean } | null;
 }
@@ -1967,8 +1971,11 @@ export class PilotSwarmManagementClient {
         const provider = typeof options.principal?.provider === "string" ? options.principal.provider.trim() : "";
         const subject = typeof options.principal?.subject === "string" ? options.principal.subject.trim() : "";
         const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
+        // With controller 1.9.0, a publication pins its named agents as the workers' publications do (agent-resolver.ts);
+        // this client knows the agent registry, not a worker's deployment agents, so it pins package agents only.
         const host: WorkflowV2Host = {
-            catalog: this._catalog!, store, duroxideClient: this._duroxideClient, ...(enabled.requests === true ? { requests: true } : {}),
+            catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
+            ...(enabled.requests === true ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
         };
         try {
             return await updateWorkflowForPerson(command, { host, workflowSessionId: sessionId, actor });

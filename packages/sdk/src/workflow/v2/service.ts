@@ -82,12 +82,15 @@ export interface WorkflowV2Host {
     /**
      * Resolve a named agent as an agent state's child would be bound to it
      * (INACTIVE; design 03 package agents): the definition the caller's
-     * owner sees by that name, or null. When the host has it, publication
-     * pins every named agent state of the published revision to what it
-     * returns (WorkflowStore publication, migration 0099) and refuses one
-     * it cannot resolve (AGENT_UNAVAILABLE).
+     * owner sees by that name, among the agents of `packageName` when the
+     * state names one, or null. When the host has it, publication pins every
+     * named agent state of the published revision to what it returns
+     * (WorkflowStore publication, migration 0099) and refuses one it cannot
+     * resolve (AGENT_UNAVAILABLE), also when the resolution itself fails.
+     * The hosts that run controller 1.9.0 resolve with agent-resolver.ts: a
+     * package agent at the registry's exact revision.
      */
-    resolveAgent?: (name: string, callerSessionId: string) => Promise<WorkflowPublicationAgent | null>;
+    resolveAgent?: (name: string, callerSessionId: string, packageName?: string | null) => Promise<WorkflowPublicationAgent | null>;
     /**
      * The test-run retention policy (design 05 cleanup; INACTIVE: only a host
      * that runs tests applies it): after each test admission, the workflow's
@@ -134,10 +137,23 @@ async function publicationAgentPins(host: Pick<WorkflowV2Host, "resolveAgent">, 
     for (const node of Object.values(ir.nodes)) {
         if (node.type !== "agent" || !("agent" in node.invoke)) continue;
         const named = node.invoke.agent;
-        const resolved = await host.resolveAgent(named.name, callerSessionId);
+        const about = { stateId: node.id, agent: named.name, package: named.package, version: named.version };
         const refuse = (message: string): never => {
-            throw new WorkflowStoreError("AGENT_UNAVAILABLE", message, { stateId: node.id, agent: named.name, package: named.package, version: named.version });
+            throw new WorkflowStoreError("AGENT_UNAVAILABLE", message, about);
         };
+        let resolved: WorkflowPublicationAgent | null;
+        try {
+            resolved = await host.resolveAgent(named.name, callerSessionId, named.package);
+        } catch (error) {
+            // The host's own refusal keeps its reason; any other failure (the agent registry could not be read) refuses
+            // too. Either way nothing is written, and a retry of the same request may succeed.
+            if (error instanceof WorkflowStoreError && error.code === "AGENT_UNAVAILABLE") {
+                throw new WorkflowStoreError("AGENT_UNAVAILABLE", `State '${node.id}': ${error.message}`,
+                    { ...(isJsonObject(error.details) ? error.details : {}), ...about });
+            }
+            throw new WorkflowStoreError("AGENT_UNAVAILABLE", `Agent "${named.name}" of state '${node.id}' could not be resolved: `
+                + "the agent registry could not be read. Nothing was changed; try again.", { ...about, retryable: true });
+        }
         if (!resolved) refuse(`Agent "${named.name}" of state '${node.id}' is not available to this workflow's owner; publication pins every named agent.`);
         else {
             if (resolved.system && resolved.creatable === false) refuse(`Agent "${named.name}" of state '${node.id}' is a worker-managed system agent; a workflow cannot run it.`);

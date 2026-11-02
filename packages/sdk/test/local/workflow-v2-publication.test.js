@@ -1,8 +1,10 @@
 /**
  * Workflow v2 publication pins (design 02 publication record, 03 package
  * agents; R18, R28; T011, T018, T070; migration 0099), INACTIVE: only a host
- * that starts runs at controller 1.9.0 compiles agent states, and only tests
- * give a host the resolveAgent hook.
+ * that starts runs at controller 1.9.0 compiles agent states and resolves
+ * agents. Here a mutable test-double catalog stands in for the resolver
+ * (the registry-backed one those hosts use is
+ * workflow-v2-agent-resolver.test.js's).
  *
  * - Publication resolves every named agent state for the workflow's parent,
  *   as the child would be bound: an agent that is missing, a worker-managed

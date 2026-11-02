@@ -77,6 +77,7 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
+import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
 import { spawnNesting } from "./workflow/v2/input-policy.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
@@ -112,8 +113,8 @@ export type RequiredToolAgentResolution =
     | { status: "not_found"; candidates: string[] }
     | { status: "ambiguous"; candidates: string[] };
 
-/** Same lineage principal for inline and durable agent selection. */
-async function resolveCallerAgentOwnerKey(catalog: SessionCatalog | null | undefined, sessionId?: string): Promise<string | null> {
+/** Same lineage principal for inline and durable agent selection (and a workflow v2 publication's named agents, agent-resolver.ts). */
+export async function resolveCallerAgentOwnerKey(catalog: Pick<SessionCatalog, "getSession"> | null | undefined, sessionId?: string): Promise<string | null> {
     const owner = catalog && sessionId
         ? await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), sessionId).catch(() => null)
         : null;
@@ -2479,11 +2480,22 @@ export function registerActivities(
         };
 
         // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests register one), the workflow tools take its
-        // request, agent and parallel states and its stop and test operations; every other turn's host is unchanged.
+        // request, agent and parallel states and its stop and test operations, and a publication pins its named agents:
+        // package agents at the registry's exact revision, this worker's deployment and system agents by name
+        // (agent-resolver.ts). Every other turn's host is unchanged.
         const workflowV2Host = async (): Promise<WorkflowToolHost> => {
             if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
             const sdkClient = await getInlineClient();
-            return { catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(), ...(workflowRequestTurn ? { requests: true } : {}) };
+            return {
+                catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(),
+                ...(workflowRequestTurn ? {
+                    requests: true,
+                    resolveAgent: createWorkflowAgentResolver({
+                        catalog,
+                        deploymentAgents: () => ({ userAgents: [...(unpinnedAgents(userAgents) ?? [])], systemAgents: [...(systemAgents ?? [])] }),
+                    }),
+                } : {}),
+            };
         };
         // The request and agent-state bridges (INACTIVE) need only the workflow store and a duroxide client to wake the
         // controller: on this worker's own provider, as notifyParent does, with no inline PilotSwarmClient (so no storeUrl).

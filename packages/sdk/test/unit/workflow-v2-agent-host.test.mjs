@@ -10,8 +10,8 @@
  * - It is owned as a spawned child is (the lineage's effective owner) and
  *   uses the controlling parent agent's model.
  * - An inline prompt has no named agent; a named agent is bound to the
- *   definition the resolver gives for the workflow's owner, with its own
- *   tools only; an unknown one, a worker-managed system agent, and a pinned
+ *   definition the resolver gives for the workflow's owner (asked within
+ *   the state's package when it names one), with its own tools only; an unknown one, a worker-managed system agent, and a pinned
  *   package or version that does not match are refused; nothing is created.
  * - The first prompt is sent as the workflow, with the state's client
  *   message id; the client-based creator starts and stops a client for each
@@ -49,7 +49,10 @@ function hostOver(sessions, definitions = {}) {
     const resolved = [];
     const host = createWorkflowAgentNodeHost({
         getSession: async id => sessions[id] ?? null,
-        resolveAgent: async (name, caller) => { resolved.push({ name, caller }); return definitions[name] ?? null; },
+        resolveAgent: async (name, caller, packageName) => {
+            resolved.push({ name, caller, ...(packageName ? { packageName } : {}) });
+            return definitions[name] ?? null;
+        },
         createChild: async spec => { created.push(spec); },
     });
     return { host, created, resolved };
@@ -116,6 +119,8 @@ test("a named agent is bound to the definition its owner sees, with its own tool
     assert.deepEqual(await host.spawn(request({ task: { source: "agent", name: "packaged", package: "review-kit", version: "1.2.0" } })), { spawned: true });
     assert.deepEqual([created[1].boundAgentName, created[1].boundAgentPackageId, created[1].agentId, created[1].toolNames],
         ["packaged", "pkg-1", "packaged-id", []]);
+    // A state that names a package is resolved among that package's agents (agent-resolver.ts), as at its publication.
+    assert.deepEqual(resolved[1], { name: "packaged", caller: "P", packageName: "review-kit" });
     for (const [task, code] of [
         [{ source: "agent", name: "missing", package: null, version: null }, "unavailable"],
         [{ source: "agent", name: "sweeper", package: null, version: null }, "forbidden"],
