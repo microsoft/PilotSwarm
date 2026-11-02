@@ -15,9 +15,9 @@ const TICK_MS = 200;
 // Peak gain at volume 100. The fire is ambience, not an alert.
 const MAX_GAIN = 0.7;
 // Gap between crackle events: the minimum plus a spread skewed toward short
-// gaps. Mean about 360 ms; it was about 120 ms, which read as constant hiss.
-const CRACKLE_GAP_MIN_MS = 140;
-const CRACKLE_GAP_SPREAD_MS = 880;
+// gaps. Mean about 1.1 s, so each crackle stands on its own.
+const CRACKLE_GAP_MIN_MS = 500;
+const CRACKLE_GAP_SPREAD_MS = 2400;
 
 function brownNoise(ctx, seconds) {
     const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
@@ -38,8 +38,8 @@ function whiteNoise(ctx, seconds) {
     return buffer;
 }
 
-// A fire that is mostly crackle: small crackles and snaps at irregular,
-// unhurried intervals (about three a second on average), now and then the
+// A fire that is mostly crackle: distinct crackles and snaps at irregular,
+// unhurried intervals (about one a second on average), now and then the
 // deeper pop of a settling log, over a quiet low rumble that breathes slowly.
 function startFire(ctx, output, cache) {
     cache.bed = cache.bed || brownNoise(ctx, 5);
@@ -85,8 +85,8 @@ function startFire(ctx, output, cache) {
             filter.Q.value = 0.7 + Math.random() * 2.2;
         }
         const gain = ctx.createGain();
-        const peak = kind === "pop" ? 0.8 : kind === "snap" ? 0.45 + Math.random() * 0.5 : 0.16 + Math.random() * 0.74;
-        const length = kind === "pop" ? 0.11 : kind === "snap" ? 0.025 + Math.random() * 0.035 : 0.004 + Math.random() * 0.026;
+        const peak = kind === "pop" ? 1.4 : kind === "snap" ? 0.9 + Math.random() * 0.5 : 0.35 + Math.random() * 0.95;
+        const length = kind === "pop" ? 0.12 : kind === "snap" ? 0.03 + Math.random() * 0.04 : 0.006 + Math.random() * 0.03;
         gain.gain.setValueAtTime(0.0001, at);
         gain.gain.linearRampToValueAtTime(peak, at + 0.0015);
         gain.gain.exponentialRampToValueAtTime(0.0005, at + length);
@@ -98,10 +98,10 @@ function startFire(ctx, output, cache) {
     const crackle = () => {
         if (!running) return;
         const at = ctx.currentTime + 0.01;
-        const count = Math.random() < 0.3 ? 2 + Math.floor(Math.random() * 4) : 1;
+        const count = Math.random() < 0.25 ? 2 + Math.floor(Math.random() * 2) : 1;
         for (let k = 0; k < count; k += 1) pop(at + k * (0.008 + Math.random() * 0.04), "crackle");
-        if (Math.random() < 0.15) pop(at + 0.015, "snap");
-        if (Math.random() < 0.08) pop(at + 0.02, "pop");
+        if (Math.random() < 0.2) pop(at + 0.015, "snap");
+        if (Math.random() < 0.1) pop(at + 0.02, "pop");
         timer = setTimeout(crackle, CRACKLE_GAP_MIN_MS + Math.random() * Math.random() * CRACKLE_GAP_SPREAD_MS);
     };
     crackle();
