@@ -273,6 +273,7 @@ export const WORKFLOW_V2_REQUEST_ACTIVITIES = {
     cancelBranches: "workflow.v2.r1.cancelBranches",
     join: "workflow.v2.r1.join",
     intercept: "workflow.v2.r1.intercept",
+    expire: "workflow.v2.r1.expire",
 } as const;
 
 type WorkflowV2ActivityKey = keyof typeof WORKFLOW_V2_ACTIVITIES;
@@ -424,6 +425,12 @@ export interface ControllerPlan {
      * or request exchange starts), and its deadlines run on its virtual clock. Absent for a live run.
      */
     test?: true;
+    /**
+     * A live run's deadline (1.9.0 plans only; limits.timeoutSeconds, migration 0100), as the store wrote it when the run
+     * began: the controller wakes then to have the run expired. A test run's deadline is on its virtual clock and has none
+     * here: its collection and admissions report it.
+     */
+    deadlineMs?: number;
 }
 
 export interface ControllerResult {
@@ -560,10 +567,13 @@ function parsePlan(value: unknown, requests = false): ControllerPlan {
     const catchAll = plan.catchAll === undefined ? null : textOrNull(plan.catchAll, "catchAll");
     expect(catchAll === null || Object.hasOwn(parsed, catchAll), "plan catch-all state is missing");
     expect(plan.test === undefined || (requests && plan.test === true), "plan test flag is invalid");
+    expect(plan.deadlineMs === undefined || (requests && typeof plan.deadlineMs === "number" && Number.isSafeInteger(plan.deadlineMs) && plan.deadlineMs > 0),
+        "plan deadline is invalid");
     return {
         name: text(plan.name, "name"), version: text(plan.version, "version"), initial: text(plan.initial, "initial"),
         maxNodeExecutions: plan.maxNodeExecutions, wakeBackstopMs: plan.wakeBackstopMs, catchAll, nodes: parsed,
         ...(plan.test === true ? { test: true as const } : {}),
+        ...(typeof plan.deadlineMs === "number" ? { deadlineMs: plan.deadlineMs } : {}),
     };
 }
 
@@ -600,11 +610,13 @@ function parseStopping(value: unknown, what: string): { deadlineMs: number } | n
  * activities report one).
  */
 function parseEnter(value: unknown): { admitted: true; nodeExecutionId: string; state: "pending" | "completed"; deadlineMs: number | null; branches: number | null }
-    | { admitted: false; status: WorkflowRunStatus; outcome: string | null; stopping: { deadlineMs: number } | null } {
+    | { admitted: false; status: WorkflowRunStatus; outcome: string | null; stopping: { deadlineMs: number } | null; expired: boolean } {
     const entered = record(value, "enter result");
     if (entered.admitted === false) {
         expect(isRunStatus(entered.status), "enter status is invalid");
-        return { admitted: false, status: entered.status, outcome: textOrNull(entered.outcome, "outcome"), stopping: parseStopping(entered.stopping, "enter stopping") };
+        expect(entered.expired === undefined || entered.expired === true, "enter expiry is invalid");
+        return { admitted: false, status: entered.status, outcome: textOrNull(entered.outcome, "outcome"), stopping: parseStopping(entered.stopping, "enter stopping"),
+            expired: entered.expired === true };
     }
     expect(entered.admitted === true, "enter result is invalid");
     expect(entered.state === "pending" || entered.state === "completed", "enter state is invalid");
@@ -628,9 +640,24 @@ function parseElapse(value: unknown): Array<{ nodeExecutionId: string; remaining
 }
 
 /** Controller 1.9.0's collect result: the stored results, and the run's accepted stop (its deadline), read after them. */
-function parseCollectedWithStop(value: unknown): { collected: CollectedResult[]; stopping: { deadlineMs: number } | null } {
+function parseCollectedWithStop(value: unknown): { collected: CollectedResult[]; stopping: { deadlineMs: number } | null; expired: boolean } {
     const result = record(value, "collect result");
-    return { collected: parseCollected(result.collected), stopping: parseStopping(result.stopping, "collect stopping") };
+    expect(result.expired === undefined || result.expired === true, "collect expiry is invalid");
+    return { collected: parseCollected(result.collected), stopping: parseStopping(result.stopping, "collect stopping"), expired: result.expired === true };
+}
+
+/**
+ * The expire activity's answer (controller 1.9.0; migration 0100): the run ended (`expired` when its deadline ended it,
+ * false when another end came first), or the time its clock has left (at least 1 ms).
+ */
+function parseExpire(value: unknown): { ended: true; expired: boolean; result: ControllerResult } | { ended: false; remainingMs: number } {
+    const expiry = record(value, "expire result");
+    if (expiry.ended === false) {
+        expect(typeof expiry.remainingMs === "number" && Number.isSafeInteger(expiry.remainingMs) && expiry.remainingMs >= 1, "expire time left is invalid");
+        return { ended: false, remainingMs: expiry.remainingMs };
+    }
+    expect(expiry.ended === true && typeof expiry.expired === "boolean", "expire result is invalid");
+    return { ended: true, expired: expiry.expired, result: parseResult(expiry.result) };
 }
 
 /** The stop activity's answer (controller 1.9.0): the run ended (by this stop, or by an end that came first), or the store's time left. */
@@ -1129,6 +1156,24 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     // The run's accepted stop, as the store last reported its deadline (not carried by continue-as-new: a stop is never
     // withdrawn, and the next execution reads it again at its first admission or collection).
     let stopping: { deadlineMs: number } | null = null;
+    // The run's deadline (limits.timeoutSeconds, migration 0100) on this controller's timers: a live run's, as the store wrote
+    // it when the run began, moved later while the store's clock has not reached it. A test run's is on its virtual clock and
+    // is not timed here: its admissions and collections report it.
+    let runDeadlineMs: number | null = plan.deadlineMs ?? null;
+    /** Have the store end the run at its deadline (its clock decides); null while that clock has not reached it. */
+    const expireRun = function* (): Generator<ScheduledTask, ControllerResult | null, unknown> {
+        const expiry = parseExpire(yield* persistentlyTagged(ctx, R.expire, { runId: input.runId }));
+        if (!expiry.ended) {
+            if (plan.test !== true) runDeadlineMs = parseNow(yield ctx.utcNow()) + expiry.remainingMs;
+            return null;
+        }
+        // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
+        if (!expiry.expired) {
+            yield* REQUEST_PROFILE.afterEnd!(ctx, input.runId);
+            return expiry.result;
+        }
+        return yield* reportEnded(ctx, input.runId, expiry.result, REQUEST_PROFILE);
+    };
     const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
         yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
             WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
@@ -1216,6 +1261,12 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }));
             if (!entered.admitted) {
+                // A run past its deadline admits nothing (stopping, paused or not): the store ends it, or reports the time left.
+                if (entered.expired) {
+                    const expired = yield* expireRun();
+                    if (expired !== null) return expired;
+                    break;
+                }
                 // A stopping run admits nothing (paused or not); its admitted work settles below.
                 if (entered.stopping !== null) { stopping = entered.stopping; break; }
                 if (entered.status === "paused") { paused = true; break; }
@@ -1320,7 +1371,18 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         // 1a. Paused, as 1.8.0. A request's deadline is not paused: its elapse waits for the resume to be collected.
         if (paused) {
             publishStatus(ctx, input, plan, state, "waiting");
-            const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(plan.wakeBackstopMs)));
+            // A paused run's deadline keeps running (D03): it wakes at the deadline too.
+            let pausedTimerMs = plan.wakeBackstopMs;
+            if (runDeadlineMs !== null) {
+                const current = parseNow(yield ctx.utcNow());
+                if (current >= runDeadlineMs) {
+                    const expired = yield* expireRun();
+                    if (expired !== null) return expired;
+                    continue;
+                }
+                pausedTimerMs = Math.max(1, Math.min(pausedTimerMs, runDeadlineMs - current));
+            }
+            const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(pausedTimerMs)));
             if (raced.index === 0) {
                 const command = parseWorkflowCommand(raced.value);
                 if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
@@ -1361,6 +1423,11 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
         const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingIds }));
+        // A run past its deadline (read after the results): the store ends it before any of them is routed.
+        if (collection.expired) {
+            const expired = yield* expireRun();
+            if (expired !== null) return expired;
+        }
         const collected = collection.collected;
         if (stopping === null) stopping = collection.stopping;
         // An agent state's child is ended once its state is decided (done after its typed completion, cancel after
@@ -1464,6 +1531,17 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         publishStatus(ctx, input, plan, state, "running");
         const deadlines = waits().map(wait => wait.deadlineMs);
         if (stopping !== null) deadlines.push(stopping.deadlineMs);
+        // The run's deadline: past it by this clock, the store decides (its clock may not have reached it yet).
+        if (runDeadlineMs !== null) {
+            const current = now ?? parseNow(yield ctx.utcNow());
+            now = current;
+            if (current >= runDeadlineMs) {
+                const expired = yield* expireRun();
+                if (expired !== null) return expired;
+                continue;
+            }
+            deadlines.push(runDeadlineMs);
+        }
         const nearest = now === null || deadlines.length === 0 ? null : Math.min(...deadlines) - now;
         const timerMs = nearest === null ? plan.wakeBackstopMs : Math.max(1, Math.min(plan.wakeBackstopMs, nearest));
         const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(timerMs)));
@@ -2159,6 +2237,13 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         return { admitted: false, status: run.status, outcome: null, stopping: { deadlineMs: run.stop.deadlineAt.getTime() } };
     };
+    /** The enter result of a run past its deadline (controller 1.9.0; migration 0100): no admission; its controller expires it. */
+    const expiredRefusal = (run: WorkflowRunRow, requests: boolean) => {
+        if (!requests || run.deadlineAt === null) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} has a deadline, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
+        }
+        return { admitted: false, status: run.status, outcome: null, expired: true };
+    };
     /**
      * End the child of a decided agent state (controller 1.9.0; IR 8): done
      * after the agent's own typed completion, cancel after anything else (its
@@ -2442,6 +2527,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const runId = text(record(rawInput, "begin input").runId, "runId");
         const run = await runOf(runId);
         const ir = await irOf(run, requests);
+        // A run deadline (controller 1.9.0; limits.timeoutSeconds) starts when the run begins: the begin writes it.
         const begun = await store.beginRun(runId, {
             sessionId: run.workflowSessionId,
             events: [{ eventType: "workflow.started", data: {
@@ -2449,7 +2535,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 name: ir.name, version: ir.version, initial: ir.initial, states: describeWorkflowV2States(ir),
             } }],
             update: { state: "running", lastError: null, touch: true },
-        });
+        }, requests && ir.limits.timeoutSeconds !== undefined ? { deadlineSeconds: ir.limits.timeoutSeconds } : {});
         // A run that an accepted cancel ended before it began (this begin's
         // repair, or the cancel's own transaction) ended without a controller
         // to report it, and the request that ended it may have stopped before
@@ -2492,6 +2578,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             ...(run.mode === "test" ? (() => {
                 if (!requests) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is a test run, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
                 return { test: true as const };
+            })() : {}),
+            // A live run's deadline (migration 0100), as its begin wrote it; a test run's is on its virtual clock.
+            ...(run.deadlineAt !== null && run.mode === "live" ? (() => {
+                if (!requests) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} has a deadline, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
+                return { deadlineMs: run.deadlineAt.getTime() };
             })() : {}),
         };
         return plan;
@@ -2736,6 +2827,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     ...(node.type === "parallel" ? { branches: manifestSize(result.node) } : {}) };
             }
             if (result.reason === "inactive") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
+            if (result.reason === "expired") return expiredRefusal(result.run, requests);
             if (result.reason === "stopping") return stoppingRefusal(result.run, requests);
             // kv_changed: a set_vars committed after this evaluation read the run.
             if (evaluation >= WORKFLOW_V2_ADMISSION_EVALUATIONS) {
@@ -2826,7 +2918,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // Controller 1.9.0: also the run's accepted stop, read after the results, so a stop accepted before this read
         // reaches the controller with them (it routes none of them then). A stop is never withdrawn.
         const run = await runOf(runId);
-        return { collected, stopping: ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null ? { deadlineMs: run.stop.deadlineAt.getTime() } : null };
+        // And whether the run is past its deadline (migration 0100), by its own clock: only a run with one says so.
+        const expired = ACTIVE_RUN_STATUSES.includes(run.status) && await store.isRunExpired(run);
+        return { collected, stopping: ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null ? { deadlineMs: run.stop.deadlineAt.getTime() } : null,
+            ...(expired ? { expired: true } : {}) };
     });
 
     register("finish", async (_ctx, rawInput, requests) => {
@@ -3748,6 +3843,66 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         await noticeTestInterception(run, intercepted, executed.nodeId);
         return { decided: false };
+    });
+
+    /**
+     * End a run at its deadline (controller 1.9.0; limits.timeoutSeconds with
+     * onExceeded expired, migration 0100): by the run's own clock (a test
+     * run's virtual clock, else the store's clock), store.expireRun ends it
+     * failed with timed_out, paused or stopping or not, and cancels what is
+     * still pending; before the deadline it reports the time left. Then the
+     * effect of every node execution the deadline cancelled is asked to stop
+     * (a running script's liveness check stops it too). The list comes from
+     * the store on every execution, so an attempt retried after the run ended
+     * still sends the requests. A run that another end decided first is
+     * reported as it ended (`expired` false).
+     */
+    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.expire, async (actx, rawInput) => {
+        const runId = text(record(rawInput, "expire input").runId, "runId");
+        const run = await runOf(runId);
+        const ir = await irOf(run, true);
+        const timeoutSeconds = ir.limits.timeoutSeconds;
+        if (timeoutSeconds === undefined) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId} declares no deadline.`);
+        const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
+        const expiry = await store.expireRun({
+            runId, timeoutSeconds,
+            projection: ({ run: ended, cancelled }) => {
+                const errorText = ended.terminalError === null ? null : canonicalJson(ended.terminalError);
+                return {
+                    sessionId: ended.workflowSessionId,
+                    events: [{ eventType: "workflow.failed", data: {
+                        runId, name: label?.name ?? null, stateId: null, outcome: null, deadline: true, timeoutSeconds,
+                        cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 50),
+                        ...(errorText !== null ? { error: jsonbSafeText(errorText, 2_000) } : {}),
+                    } }],
+                    update: { state: "failed", lastError: jsonbSafeText(errorText ?? "The run reached its deadline.", 2_000), touch: true },
+                };
+            },
+        });
+        if (expiry.result === "not_due") return { ended: false, remainingMs: expiry.remainingMs };
+        const ended = expiry.run;
+        // A retry after the expiry committed finds the run ended by it (only the expiry writes this error): it is reported,
+        // and its effects asked to stop, as the first attempt would have.
+        const error = ended.terminalError;
+        const byDeadline = expiry.result === "ended" || (ended.status === "failed" && isJsonObject(error) && error.code === "timed_out"
+            && isJsonObject(error.details) && error.details.limit === "timeoutSeconds");
+        if (byDeadline) {
+            const client = actx.getClient();
+            if (!client) throw new Error("Workflow expiry needs the durable client.");
+            const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
+            for (const nodeExecutionId of await store.listCancelledNodeIds(runId, "deadline")) {
+                const instanceId = workflowEffectInstanceId(nodeExecutionId);
+                const status = await client.getStatus(instanceId);
+                if (status.status === "Running" || status.status === "Suspended") {
+                    await client.cancelInstance(instanceId, "The run reached its deadline.");
+                    requested.push({ nodeExecutionId, instanceId, status: status.status });
+                }
+            }
+            if (requested.length) {
+                await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId, effects: requested, deadline: true } }]);
+            }
+        }
+        return { ended: true, expired: byDeadline, result: { runId, status: ended.status, outcome: ended.terminalOutcome } };
     });
 
     /**

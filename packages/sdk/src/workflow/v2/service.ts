@@ -148,7 +148,7 @@ function notifyVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
 
 /** A definition as a host compiles it (WorkflowV2Host.requests): a host that starts 1.9.0 runs compiles request, agent and parallel states. */
 function compileFor(host: Pick<WorkflowV2Host, "requests">, yaml: string): WorkflowCompileResult {
-    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true, enableAgents: true, enableParallel: true } : {});
+    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true } : {});
 }
 
 /** How a host reads stored IR: a host that starts 1.9.0 runs reads its request, agent and parallel states (IR 7 and 8). */

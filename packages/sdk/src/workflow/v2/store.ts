@@ -158,6 +158,11 @@ export interface WorkflowRunRow {
     virtualNow: Date | null;
     /** The scenario a test run was started for (migration 0099); null for a live run and a test run without one. */
     testScenario: string | null;
+    /**
+     * The run's deadline (migration 0100; limits.timeoutSeconds, controller 1.9.0): the run's clock when it began (a test
+     * run's virtual clock) plus those seconds; null for a run without one. It is not paused with the run.
+     */
+    deadlineAt: Date | null;
 }
 
 /**
@@ -397,7 +402,7 @@ function runFrom(row: Row): WorkflowRunRow {
         createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"), finishedAt: dateOrNull(row, "finished_at"),
         kv: parseStoredJson(str(row, "kv"), "kv"), kvRevision: int(row, "kv_revision"), pausedFrom: pausedFromOf(row),
         controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row), virtualNow: dateOrNull(row, "virtual_now"),
-        testScenario: strOrNull(row, "test_scenario"),
+        testScenario: strOrNull(row, "test_scenario"), deadlineAt: dateOrNull(row, "deadline_at"),
     };
 }
 
@@ -2741,7 +2746,19 @@ export class WorkflowStore {
      * one. A receipt written any other way (a test, direct SQL) is attributed
      * the same way, and the parent is then not told of that cancel.
      */
-    async beginRun(runId: string, projection?: SessionProjection): Promise<{ run: WorkflowRunRow; transitioned: boolean }> {
+    /**
+     * `options.deadlineSeconds` (controller 1.9.0; a definition with limits.timeoutSeconds): the transition that begins the
+     * run also writes its deadline (migration 0100): the run's clock now (a test run's virtual clock) plus those seconds.
+     */
+    async beginRun(runId: string, projection?: SessionProjection, options: { deadlineSeconds?: number | null } = {})
+        : Promise<{ run: WorkflowRunRow; transitioned: boolean }> {
+        const deadlineSeconds = options.deadlineSeconds ?? null;
+        if (deadlineSeconds !== null && !(Number.isSafeInteger(deadlineSeconds) && deadlineSeconds >= 1)) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId} has an invalid deadline of ${String(deadlineSeconds)} seconds.`);
+        }
+        // Named only with a deadline, so a schema before migration 0100 begins every other run as before.
+        const deadline = deadlineSeconds === null ? "" : ", deadline_at = COALESCE(virtual_now, clock_timestamp()) + $2::integer * interval '1 second'";
+        const deadlineParams = deadlineSeconds === null ? [] : [deadlineSeconds];
         return this.transaction(async client => {
             const live = await this.lockLiveSession(client, await this.workflowOfRun(client, runId));
             const run = await this.lockRun(client, runId);
@@ -2763,14 +2780,14 @@ export class WorkflowStore {
             // A run paused before its controller began has begun now; it stays paused.
             if (run.status === "paused" && run.pausedFrom === "admitted") {
                 const { rows } = await client.query(
-                    `UPDATE ${this.t.runs} SET paused_from = 'running', updated_at = now() WHERE run_id = $1 RETURNING *`, [runId]);
+                    `UPDATE ${this.t.runs} SET paused_from = 'running', updated_at = now() ${deadline} WHERE run_id = $1 RETURNING *`, [runId, ...deadlineParams]);
                 // The session row shows a paused workflow as waiting (the session statuses have no "paused").
                 await this.project(client, projection ? { ...projection, update: { ...projection.update, state: "waiting" } } : undefined);
                 return { run: runFrom(rows[0]), transitioned: true };
             }
             if (run.status !== "admitted") return { run, transitioned: false };
             const { rows } = await client.query(
-                `UPDATE ${this.t.runs} SET status = 'running', updated_at = now() WHERE run_id = $1 RETURNING *`, [runId]);
+                `UPDATE ${this.t.runs} SET status = 'running', updated_at = now() ${deadline} WHERE run_id = $1 RETURNING *`, [runId, ...deadlineParams]);
             await this.project(client, projection);
             return { run: runFrom(rows[0]), transitioned: true };
         });
@@ -2890,7 +2907,7 @@ export class WorkflowStore {
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
-        | { admitted: false; reason: "inactive" | "kv_changed" | "stopping"; run: WorkflowRunRow }> {
+        | { admitted: false; reason: "inactive" | "kv_changed" | "stopping" | "expired"; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
         return this.transaction(async client => {
             const workflowSessionId = await this.workflowOfRun(client, input.runId);
@@ -2910,6 +2927,10 @@ export class WorkflowStore {
                     throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Node execution ${input.nodeExecutionId} was admitted with different coordinates.`);
                 }
                 return { admitted: true as const, inserted: false, node };
+            }
+            // A run past its deadline (migration 0100) admits nothing, stopping or paused or not: its controller ends it.
+            if (live && ACTIVE_RUN_STATUSES.includes(run.status) && run.deadlineAt !== null && await this.runExpiredIn(client, run.runId)) {
+                return { admitted: false as const, reason: "expired" as const, run };
             }
             // A run with an accepted stop admits nothing new (migration 0096), paused or not: its admitted work settles,
             // then it ends stopped. A paused run admits nothing new; a deleted or ended one admits nothing at all.
@@ -3428,7 +3449,7 @@ export class WorkflowStore {
      * The node executions of a run decided by a cancel (winner `cancel`), or by another such end (a stop's: `stop`; a
      * parallel state's failFast cancellation of its other branches: `fail_fast`).
      */
-    async listCancelledNodeIds(runId: string, winner: "cancel" | "stop" | "fail_fast" = "cancel"): Promise<string[]> {
+    async listCancelledNodeIds(runId: string, winner: "cancel" | "stop" | "fail_fast" | "deadline" = "cancel"): Promise<string[]> {
         const { rows } = await this.pool.query(
             `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND winner = $2 ORDER BY node_execution_id`, [runId, winner]);
         return rows.map(row => str(row, "node_execution_id"));
@@ -5571,6 +5592,86 @@ export class WorkflowStore {
     }
 
     /**
+     * Whether a run's deadline (migration 0100) has passed by its own clock: a
+     * test run's virtual clock, else the store's clock. Only a run with a
+     * deadline is asked (a schema before migration 0100 has no such column).
+     */
+    private async runExpiredIn(client: PoolClient, runId: string): Promise<boolean> {
+        const { rows } = await client.query(
+            `SELECT deadline_at IS NOT NULL AND deadline_at <= COALESCE(virtual_now, clock_timestamp()) AS expired FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
+        return rows[0]?.expired === true;
+    }
+
+    /** runExpiredIn outside a transaction (controller 1.9.0's collection reports it). False for a run without a deadline. */
+    async isRunExpired(run: Pick<WorkflowRunRow, "runId" | "deadlineAt">): Promise<boolean> {
+        if (run.deadlineAt === null) return false;
+        const { rows } = await this.pool.query(
+            `SELECT deadline_at IS NOT NULL AND deadline_at <= COALESCE(virtual_now, clock_timestamp()) AS expired FROM ${this.t.runs} WHERE run_id = $1`, [run.runId]);
+        return rows[0]?.expired === true;
+    }
+
+    /**
+     * End a run whose deadline passed (migration 0100; limits.timeoutSeconds,
+     * onExceeded expired; its controller, 1.9.0, asks): in one transaction
+     * under the session and run locks, with one reading of the run's clock (a
+     * test run's virtual clock, else the store's clock) deciding. At or after
+     * the deadline the run ends failed with timed_out, paused or stopping or
+     * not: every node execution still pending is cancelled with winner
+     * `deadline`, a message one of its send states sent to a workflow and
+     * still pending is decided with it (decidePendingSendsIn), and the run's
+     * terminal error records the deadline (its seconds, the time, and which
+     * node executions it cancelled), with the projection `projection`
+     * builds. Before the deadline it changes nothing and reports the
+     * milliseconds left by that clock (at least 1). A run that has ended, or
+     * whose session was deleted, is returned as it is (inactive): the first
+     * run end stands.
+     */
+    async expireRun(input: {
+        runId: string;
+        timeoutSeconds: number;
+        projection: (ended: { run: WorkflowRunRow; cancelled: string[] }) => SessionProjection;
+    }): Promise<{ result: "ended"; run: WorkflowRunRow; cancelled: string[] }
+        | { result: "not_due"; remainingMs: number }
+        | { result: "inactive"; run: WorkflowRunRow }> {
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
+            const run = await this.lockRun(client, input.runId);
+            if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return { result: "inactive" as const, run };
+            if (run.deadlineAt === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} has no deadline to expire.`);
+            const { rows: clock } = await client.query(
+                `SELECT reading.at >= run.deadline_at AS due,
+                        GREATEST(1, CEIL(EXTRACT(EPOCH FROM (run.deadline_at - reading.at)) * 1000))::bigint AS remaining_ms
+                   FROM ${this.t.runs} AS run, LATERAL (SELECT COALESCE(run.virtual_now, clock_timestamp()) AS at) AS reading
+                  WHERE run.run_id = $1`, [run.runId]);
+            if (clock[0].due !== true) return { result: "not_due" as const, remainingMs: int(clock[0], "remaining_ms") };
+            const { rows: pendingRows } = await client.query(
+                `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending' ORDER BY node_execution_id FOR UPDATE`, [run.runId]);
+            const cancelled = pendingRows.map(row => str(row, "node_execution_id"));
+            if (cancelled.length > 0) {
+                await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
+                            winner = 'deadline', completed_at = clock_timestamp()
+                      WHERE run_id = $1 AND state = 'pending'`,
+                    [run.runId, canonicalJson({ code: "cancelled", message: "The run reached its deadline before this state finished." })]);
+            }
+            const errorText = canonicalJson({ code: "timed_out", message: `The run reached its deadline (limits.timeoutSeconds ${input.timeoutSeconds}) before it ended.`,
+                details: { limit: "timeoutSeconds", timeoutSeconds: input.timeoutSeconds, onExceeded: "expired", deadlineAt: run.deadlineAt.toISOString(),
+                    stopping: run.stop !== null, paused: run.status === "paused", cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 100) } });
+            const { rows } = await client.query(
+                `UPDATE ${this.t.runs}
+                    SET status = 'failed', terminal_node_id = NULL, terminal_outcome = NULL, terminal_output = NULL, terminal_error = $2,
+                        paused_from = NULL, updated_at = now(), finished_at = clock_timestamp()
+                  WHERE run_id = $1 RETURNING *`,
+                [run.runId, errorText]);
+            await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
+            const ended = { run: runFrom(rows[0]), cancelled };
+            await this.project(client, input.projection(ended));
+            return { result: "ended" as const, ...ended };
+        });
+    }
+
+    /**
      * Cancel the other branches of a parallel state whose failFast policy
      * met a branch that did not succeed (controller 1.9.0; IR 8): in one
      * transaction under the session and run locks, every node execution of
@@ -5856,10 +5957,13 @@ export class WorkflowStore {
                            ${isoUtc("(virtual_now - $2::integer * interval '1 second')")} AS from_iso`,
                 [run.runId, input.seconds]);
             const nowText = str(moved[0], "now_text");
+            // A deadline after the run's own (migration 0100) is never reached: the run expires first, and its controller's
+            // expiry cancels what is still pending then.
             const { rows: due } = await client.query(
                 `SELECT * FROM ${this.t.nodes}
-                  WHERE run_id = $1 AND state = 'pending' AND deadline_at IS NOT NULL AND deadline_at <= $2::timestamptz
-                  ORDER BY deadline_at, node_execution_id FOR UPDATE`, [run.runId, nowText]);
+                  WHERE run_id = $1 AND state = 'pending' AND deadline_at IS NOT NULL
+                    AND deadline_at <= LEAST($2::timestamptz, COALESCE($3::timestamptz, $2::timestamptz))
+                  ORDER BY deadline_at, node_execution_id FOR UPDATE`, [run.runId, nowText, run.deadlineAt === null ? null : run.deadlineAt.toISOString()]);
             const decided: WorkflowTestAdvanceReceipt["decided"] = [];
             for (const row of due) {
                 const node = nodeFrom(row);

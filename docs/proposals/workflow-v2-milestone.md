@@ -458,3 +458,42 @@ Not wired on such a turn: agent resolution for publication pins
 both stay test-host only, so a named agent is not pinned there and an agent
 state there fails `unavailable`. No deployed worker enables controller
 1.9.0: that needs a worker switch, which is an activation decision.
+
+## Run deadline (design 02 run lifecycle, D03; canonical `limits`)
+
+```yaml
+limits: { maxNodeExecutions: 100, timeoutSeconds: 3600, onExceeded: expired }
+```
+
+- **Compile.** `limits.timeoutSeconds` (an integer from 1 to 2,592,000) and
+  `onExceeded` (`expired`, the default and only policy) compile to IR 8 only
+  with run limits enabled (`enableRunLimits`, set by a host that starts
+  1.9.0 runs); elsewhere they are refused with
+  `WORKFLOW_FEATURE_UNSUPPORTED`, so no definition that a 1.8.0 run would
+  not enforce is published. A definition without a deadline keeps its IR
+  byte for byte.
+- **The deadline.** The begin transaction writes it once (migration 0100,
+  `workflow_runs.deadline_at`): the run's clock when it begins plus the
+  seconds. A test run counts on its virtual clock. Pause does not stop it
+  (D03).
+- **Enforcement, by the run's own clock.** Past the deadline the store admits
+  no node execution (refusal `expired`, before a stop's refusal), and
+  controller 1.9.0's collection reports it. The controller then asks the
+  store to expire the run (`expireRun`): in one transaction every node
+  execution still pending is cancelled with winner `deadline`, a pending
+  send to a workflow is decided with it, and the run ends `failed` with the
+  error `timed_out` (details: the limit, the seconds, the deadline, whether
+  the run was paused or stopping, and what was cancelled). The effects of
+  cancelled scripts are asked to stop, agent children are ended as for any
+  end, and the parent is told. A live run's controller also times the
+  deadline itself; when the store's clock has not reached it yet, the store
+  reports the time left and the controller waits again. The first end
+  stands: a cancel or a deletion that came first is kept.
+- **Test runs.** `test_advance` never decides a deadline after the run's own:
+  the run expires first and its expiry cancels those states. An answer to an
+  interception after the expiry is refused (`RUN_ENDED`).
+- **Reading.** `read_workflow` shows `run.deadline` for a run with one.
+
+Not covered: another `onExceeded` policy (the design names only
+`expired`), a deadline given by a binding, and the UI's display of the run
+deadline.

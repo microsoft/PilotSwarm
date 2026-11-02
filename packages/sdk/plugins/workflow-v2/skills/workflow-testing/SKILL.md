@@ -104,7 +104,9 @@ real time. Answer tool calls promptly or give fixtures.
 ## 5. The virtual clock
 
 - The clock starts at 9000-01-01T00:00:00Z. Every deadline of the test run
-  counts on it: waits, a receive's wait, request and agent timeouts.
+  counts on it: waits, a receive's wait, request and agent timeouts, and the
+  run's own `limits.timeoutSeconds` (an advance past it decides nothing after
+  it, and the run then ends failed with `timed_out`).
 - `{ "operation": "test_advance", "run_id": "<test run>", "seconds": 600 }`
   (1 to 2,592,000, once per `operation_id`) moves it forward and decides, in
   deadline order, what became due: a wait or a receive's wait `elapsed`, a

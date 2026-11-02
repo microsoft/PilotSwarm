@@ -71,6 +71,12 @@ export const PARALLEL_BLOCKED = "blocked";
 export const WORKFLOW_V2_PARALLEL_MAX_ITEMS = 64;
 /** The most branches of one parallel state that are active at once. */
 export const WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY = 16;
+/**
+ * A run's deadline (root limits.timeoutSeconds; IR 8, INACTIVE: only controller 1.9.0 runs it): at most this many seconds,
+ * counted from when the run begins. onExceeded expired (the only policy) ends the run failed with timed_out.
+ */
+export const WORKFLOW_V2_RUN_TIMEOUT_MAX_SECONDS = 30 * 86_400;
+export const WORKFLOW_V2_RUN_ON_EXCEEDED = ["expired"] as const;
 /** The largest inline task prompt of an agent state, in UTF-8 bytes. */
 export const AGENT_PROMPT_MAX_BYTES = 32 * 1024;
 /** The runtime error codes an agent state's agent may report itself (complete_workflow_node), apart from its business outcomes. */
@@ -321,7 +327,11 @@ export interface WorkflowIR {
      * once per run; an unhandled error after that fails the run.
      */
     catchAll: string | null;
-    limits: { maxNodeExecutions: number };
+    /**
+     * maxNodeExecutions, and from version 8 an optional run deadline: timeoutSeconds, counted from when the run begins,
+     * with its policy onExceeded (expired: the run ends failed with timed_out). Both are absent without a deadline.
+     */
+    limits: { maxNodeExecutions: number; timeoutSeconds?: number; onExceeded?: typeof WORKFLOW_V2_RUN_ON_EXCEEDED[number] };
     schemaDefs: Record<string, JsonValue>;
     /** Version 5 and later: the root contracts (absent before version 5). Its receive and send states name them. */
     contracts?: Record<string, WorkflowIRContract>;
@@ -358,6 +368,13 @@ export interface WorkflowCompileOptions {
      * stays unsupported, as before.
      */
     enableParallel?: boolean;
+    /**
+     * Compile a run deadline (limits.timeoutSeconds and onExceeded) to IR 8
+     * (INACTIVE: only a host that starts runs at controller 1.9.0 sets it).
+     * Off by default: the fields are refused with WORKFLOW_FEATURE_UNSUPPORTED,
+     * so no definition that a 1.8.0 run would not enforce is published.
+     */
+    enableRunLimits?: boolean;
 }
 
 /** True when the text declares the v2 apiVersion (used to route spawn_workflow; legacy YAML keeps its path). */
@@ -1164,15 +1181,33 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
     }
 
     let maxNodeExecutions = WORKFLOW_V2_DEFAULT_MAX_NODE_EXECUTIONS;
+    // A run deadline (IR 8; enableRunLimits): seconds from when the run begins, and what happens when it passes.
+    let runDeadline: { timeoutSeconds: number; onExceeded: typeof WORKFLOW_V2_RUN_ON_EXCEEDED[number] } | null = null;
     if (root.limits !== undefined) {
         if (!isJsonObject(root.limits)) diagnostics.error("WORKFLOW_FIELD_INVALID", "limits", "limits must be a mapping.");
         else {
-            checkKeys(root.limits, ["maxNodeExecutions"], "limits", diagnostics);
+            checkKeys(root.limits, ["maxNodeExecutions", "timeoutSeconds", "onExceeded"], "limits", diagnostics);
             const value = root.limits.maxNodeExecutions;
             if (value !== undefined) {
                 if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > WORKFLOW_V2_MAX_NODE_EXECUTIONS) {
                     diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.maxNodeExecutions", `maxNodeExecutions must be an integer from 1 to ${WORKFLOW_V2_MAX_NODE_EXECUTIONS}.`);
                 } else maxNodeExecutions = value;
+            }
+            const timeout = root.limits.timeoutSeconds;
+            const onExceeded = root.limits.onExceeded;
+            if (timeout !== undefined || onExceeded !== undefined) {
+                if (options.enableRunLimits !== true) {
+                    diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", timeout !== undefined ? "limits.timeoutSeconds" : "limits.onExceeded",
+                        "a run deadline (limits.timeoutSeconds, onExceeded) is not enabled in this build: a definition with one is not published or run.");
+                }
+                if (timeout === undefined) {
+                    diagnostics.error("WORKFLOW_FIELD_REQUIRED", "limits.timeoutSeconds", "onExceeded needs limits.timeoutSeconds.");
+                } else if (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 1 || timeout > WORKFLOW_V2_RUN_TIMEOUT_MAX_SECONDS) {
+                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.timeoutSeconds", `timeoutSeconds must be an integer from 1 to ${WORKFLOW_V2_RUN_TIMEOUT_MAX_SECONDS}.`);
+                } else if (onExceeded !== undefined && !(WORKFLOW_V2_RUN_ON_EXCEEDED as readonly unknown[]).includes(onExceeded)) {
+                    diagnostics.error("WORKFLOW_FIELD_INVALID", "limits.onExceeded",
+                        "onExceeded must be expired: when the deadline passes, the run's pending work is cancelled and the run ends failed with timed_out.");
+                } else runDeadline = { timeoutSeconds: timeout, onExceeded: "expired" };
             }
         }
     }
@@ -1316,7 +1351,8 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
         }
     }
     const responds = Object.values(contracts).some(contract => contract.response !== undefined);
-    const irVersion: WorkflowIR["irVersion"] = Object.values(nodes).some(node => node.type === "agent" || node.type === "parallel") ? WORKFLOW_V2_AGENT_IR_VERSION
+    const irVersion: WorkflowIR["irVersion"] = Object.values(nodes).some(node => node.type === "agent" || node.type === "parallel") || runDeadline !== null
+        ? WORKFLOW_V2_AGENT_IR_VERSION
         : requested.size > 0 || responds ? WORKFLOW_V2_REQUEST_IR_VERSION
             : sent.size > 0 ? WORKFLOW_V2_SEND_IR_VERSION
                 : received.size > 0 ? WORKFLOW_V2_MESSAGING_IR_VERSION
@@ -1333,7 +1369,7 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
         inputsSchema,
         outputSchema: rootOutputSchema,
         catchAll,
-        limits: { maxNodeExecutions },
+        limits: { maxNodeExecutions, ...(runDeadline !== null ? runDeadline : {}) },
         schemaDefs: schemas.defs,
         ...(hasMessaging ? { contracts } : {}),
         nodes,
@@ -1413,6 +1449,12 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
         && nullableString(value.description) && nullableString(value.inputsSchema) && nullableString(rootOutputSchema)
         && nullableString(catchAll), "stored IR header is invalid");
     need(isJsonObject(value.limits) && typeof value.limits.maxNodeExecutions === "number", "stored IR limits are invalid");
+    // A run deadline is stored from version 8 on, with both its fields.
+    const deadlineSeconds = value.limits.timeoutSeconds;
+    const onExceeded = value.limits.onExceeded;
+    need((deadlineSeconds === undefined && onExceeded === undefined) || (irVersion >= WORKFLOW_V2_AGENT_IR_VERSION
+        && typeof deadlineSeconds === "number" && Number.isSafeInteger(deadlineSeconds) && deadlineSeconds >= 1
+        && deadlineSeconds <= WORKFLOW_V2_RUN_TIMEOUT_MAX_SECONDS && onExceeded === "expired"), "stored IR run deadline is invalid");
     need(isJsonObject(value.schemaDefs) && isJsonObject(value.nodes), "stored IR schemas or nodes are invalid");
     need(Object.hasOwn(value, "initialInput"), "stored IR has no initialInput");
     const schemaDefs = value.schemaDefs;
@@ -1554,7 +1596,9 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
     return {
         irVersion, apiVersion: WORKFLOW_V2_API_VERSION, name: value.name, version: value.version,
         description: value.description, initial: value.initial, initialInput: value.initialInput,
-        inputsSchema: value.inputsSchema, outputSchema: rootOutputSchema, catchAll, limits: { maxNodeExecutions: value.limits.maxNodeExecutions },
+        inputsSchema: value.inputsSchema, outputSchema: rootOutputSchema, catchAll,
+        limits: { maxNodeExecutions: value.limits.maxNodeExecutions,
+            ...(typeof deadlineSeconds === "number" ? { timeoutSeconds: deadlineSeconds, onExceeded: "expired" as const } : {}) },
         schemaDefs, ...(contracts !== undefined ? { contracts } : {}), nodes,
     };
 }

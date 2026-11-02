@@ -24,7 +24,7 @@ included. A contract name is `Name@N` (for example `BuildEvent@1`).
 | `outputSchema` | Optional: the output of a `succeeded` terminal must match it. |
 | `initial` | The first state; not a terminal. |
 | `initialInput` | Optional JSON template (bindings: `inputs`, `kv`); the first state's input. Default null. |
-| `limits` | Optional `{ maxNodeExecutions }`: 1 to 10,000, default 1,000 node executions per run. |
+| `limits` | Optional `{ maxNodeExecutions?, timeoutSeconds?, onExceeded? }`. `maxNodeExecutions`: 1 to 10,000, default 1,000 node executions per run. `timeoutSeconds`: the run's deadline, 1 to 2,592,000 seconds from when it begins; pause does not stop it. `onExceeded`: `expired` (the default and only policy): at the deadline the run's pending work is cancelled and the run ends failed with `timed_out`. |
 | `catchAll` | Optional state that takes a runtime error no route takes; not `initial`; at most once per run. |
 | `schemas` | Named JSON Schema 2020-12 documents; refer to one as `{ $ref: "#/schemas/Name" }`. |
 | `contracts` | `Name@N: { schema, description?, response?: { schema, description? } }`. A request's contract needs `response`. |
@@ -171,7 +171,7 @@ both are required.
 `transition.function`, `transition.delaySeconds` (version 1 only; use a wait
 state), `invoke.agent.interface`, join states, quorum or any-of joins, a
 parallel state in a body, `inputSchema` or `outputSchema` on a receive,
-`limits.timeoutSeconds`, `parentNotification`, the request field `request`
+`parentNotification`, the request field `request`
 and the route `timeout`, and text around a binding.
 
 ## Tools

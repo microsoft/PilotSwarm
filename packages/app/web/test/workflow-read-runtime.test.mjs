@@ -117,7 +117,7 @@ async function routeHarness() {
     // and the definition pins no agent.
     const run = (runId, mode, status) => ({ runId, mode, status, revision: 1, irSha256: "i", terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
         terminalOutput: null, terminalError: null, kvRevision: 0, kv: {}, controllerVersion: null, stop: null,
-        testAgentMode: mode === "test" ? "mocked" : null, virtualNow: null, testScenario: null });
+        testAgentMode: mode === "test" ? "mocked" : null, virtualNow: null, testScenario: null, deadlineAt: null });
     const runs = [run("run-live", "live", "running"), run("R", "test", "running")];
     const store = {
         readDefinition: async () => ({ state: "published", semver: "1.0.0", currentRevision: 1, publishedRevision: 1, publishedYamlSha256: "h",

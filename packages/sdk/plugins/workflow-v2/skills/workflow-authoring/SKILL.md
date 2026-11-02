@@ -64,6 +64,9 @@ checked against the schema you declare.
 - Bound every loop. Count rounds in the data the loop carries, or let a
   schema refuse the next round (`maximum: 3`). `limits.maxNodeExecutions`
   (default 1,000) is the last safety limit, not the design.
+- Give a run that must not outlive a time window a deadline:
+  `limits: { timeoutSeconds: 3600 }`. At the deadline its pending work is
+  cancelled and the run ends failed with `timed_out`, paused or not.
 - Give each terminal an `output` binding when its result matters. Without one,
   the output is null. The root `outputSchema` checks the output of a
   `succeeded` terminal.

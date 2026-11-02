@@ -513,6 +513,9 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 ...(stopping !== null ? { settled: stopSettled } : {}),
             } } : {}),
             ...(test !== null ? { test } : {}),
+            // A run deadline (migration 0100; limits.timeoutSeconds, controller 1.9.0): only a run with one shows it (a test
+            // run's is on its virtual clock).
+            ...(selected.deadlineAt ? { deadline: selected.deadlineAt.toISOString() } : {}),
             terminalState: selected.terminalNodeId,
             output: selected.terminalOutput === null ? null : previewJson(selected.terminalOutput, 2_000),
             error: selected.terminalError === null ? null : previewJson(selected.terminalError, 2_000),
