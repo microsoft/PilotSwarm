@@ -2,9 +2,10 @@
  * Workflow v2: a person's workflow commands in the workflow view (design 04
  * and 07, mocks M03, M04, M15 and M16; R04, R05, R17, R18, R26; INACTIVE): the
  * run controls (pause, resume, stop, cancel), the run's variables (set_vars:
- * set or remove a key at the expected KV revision) and the definition's
- * publication (publish the exact revision shown, publish it and start its
- * live run, start the published revision's live run). Pure: nothing here
+ * set or remove a key at the expected KV revision), the draft's YAML
+ * (replace_definition at the revision the edit started from) and the
+ * definition's publication (publish the exact revision shown, publish it and
+ * start its live run, start the published revision's live run). Pure: nothing here
  * calls anything. The controller sends a command (sendWorkflowRunCommand) as
  * an updateWorkflow command through the transport; this module says which
  * commands the workflow offers, checks what a person typed, and says what the
@@ -24,9 +25,12 @@ const ACTIVE = new Set(["admitted", "running", "paused"]);
 const ENDED = new Set(["completed", "failed", "cancelled", "stopped"]);
 const LABELS = { pause: "Pause", resume: "Resume", stop: "Stop", cancel: "Cancel" };
 /** How a notice names each command. */
-const NOTICE_LABELS = { ...LABELS, set_vars: "The variables update", publish: "Publish", publish_and_start: "Publish and start", start: "Start" };
+const NOTICE_LABELS = { ...LABELS, set_vars: "The variables update", publish: "Publish", publish_and_start: "Publish and start", start: "Start",
+    replace_definition: "Saving the draft" };
 /** The definition's commands: they name no run. */
-const DEFINITION_OPERATIONS = new Set(["publish", "publish_and_start", "start"]);
+const DEFINITION_OPERATIONS = new Set(["replace_definition", "publish", "publish_and_start", "start"]);
+/** The largest workflow YAML (compiler.ts WORKFLOW_V2_MAX_YAML_BYTES); the server checks it again. */
+const YAML_MAX_BYTES = 256 * 1024;
 /** The longest KV key (store.ts WORKFLOW_V2_KV_LIMITS.maxKeyLength). */
 const KV_KEY_MAX = 128;
 /** The longest value shown in the variables list; editing uses the whole value. */
@@ -142,6 +146,12 @@ export function workflowV2RunCommandArgs(operation, input = {}) {
  */
 function definitionArgs(operation, input) {
     if (!isRecord(input)) return { ok: false };
+    // replace_definition: the whole new YAML, at the revision the edit started from (a changed draft is refused).
+    if (operation === "replace_definition") {
+        if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) return { ok: false };
+        if (typeof input.yaml !== "string" || !input.yaml.trim()) return { ok: false };
+        return { ok: true, args: { expectedRevision: input.expectedRevision, yaml: input.yaml } };
+    }
     const hash = typeof input.definitionHash === "string" && input.definitionHash ? input.definitionHash : null;
     if (hash === null) return { ok: false };
     if (operation === "publish" || operation === "publish_and_start") {
@@ -168,6 +178,10 @@ export function workflowV2RunCommandWire(operation, runId, operationId, args = n
     if (DEFINITION_OPERATIONS.has(operation)) {
         const command = { operation, operation_id: operationId };
         if (args?.expectedRevision !== undefined) command.expected_revision = args.expectedRevision;
+        if (operation === "replace_definition") {
+            command.yaml = args?.yaml;
+            return command;
+        }
         command.definition_hash = args?.definitionHash;
         if (args?.inputs !== undefined) command.inputs = args.inputs;
         if (args?.vars !== undefined) command.vars = args.vars;
@@ -334,6 +348,48 @@ export function workflowV2DefinitionControls(model, command = null) {
 }
 
 /**
+ * The draft editor (design 04 replace_definition; mocks M01 and M02; R03,
+ * R17, R26) given the view's last command, or null: without
+ * `personCommands.draft` (the deployment takes no person's commands, the
+ * definition is published, the workflow is in a workflow agent state's
+ * subtree, or the caller may not change it: the portal leaves the YAML out)
+ * or when it does not name the definition's current revision. Never throws.
+ * `revision` and `yaml` are the current revision's: an edit starts from
+ * them and is saved at the revision it started from, so a draft another
+ * person changed meanwhile is refused (409 REVISION_CONFLICT), not
+ * overwritten. While a command is being sent (`busy`) nothing else is sent.
+ */
+export function workflowV2DraftEditor(model, command = null) {
+    if (!isRecord(model) || !isRecord(model.personCommands) || !isRecord(model.personCommands.draft) || !isRecord(model.definition)) return null;
+    const draft = model.personCommands.draft;
+    if (model.definition.state !== "draft" || !Number.isSafeInteger(draft.revision) || typeof draft.yaml !== "string") return null;
+    const offered = Array.isArray(model.personCommands.operations) && model.personCommands.operations.includes("replace_definition");
+    if (!offered) return null;
+    const busy = isRecord(command) && command.phase === "pending";
+    return { revision: draft.revision, definitionHash: text(draft.definitionHash), yaml: draft.yaml, semver: text(model.definition.semver),
+        current: draft.revision === model.definition.currentRevision, busy, pending: busy && command.operation === "replace_definition" };
+}
+
+/**
+ * What a person's edit is, against the revision it started from (`base`:
+ * { revision, yaml }) and the draft the read model shows now (`model`, the
+ * editor model): unchanged, changed, or in conflict (the draft moved on to
+ * another revision while it was edited; saving would be refused). Saving
+ * needs text, a change and no conflict; the text is at most 256 KiB.
+ */
+export function workflowV2DraftEdit(base, textValue, model) {
+    const edited = typeof textValue === "string" ? textValue : "";
+    const changed = isRecord(base) && edited !== base.yaml;
+    const conflict = Boolean(isRecord(base) && isRecord(model) && model.revision !== base.revision);
+    const bytes = new TextEncoder().encode(edited).length;
+    const reason = !edited.trim() ? "The YAML is empty."
+        : bytes > YAML_MAX_BYTES ? `The YAML is ${bytes} bytes; a workflow is at most ${YAML_MAX_BYTES}.`
+            : conflict ? `The draft is now at revision ${model.revision}; this edit started from revision ${base.revision}. Load revision ${model.revision}, or keep your edits on it, before saving.`
+                : !changed ? "Nothing changed." : null;
+    return { changed, conflict, canSave: reason === null && !model?.busy, reason };
+}
+
+/**
  * The confirm dialog of a command that ends work or loses data, or null for
  * one that needs none: stop and cancel (mock M16: neither undoes effects
  * that already happened), and a variables update that removes keys.
@@ -367,6 +423,14 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
     const run = `run ${shortId(String(runId ?? ""))}`;
     const again = isRecord(receipt) && receipt.replayed === true ? " It had already been accepted." : "";
     const status = isRecord(receipt) ? text(receipt.status) : null;
+    if (operation === "replace_definition") {
+        const saved = isRecord(receipt) && Number.isSafeInteger(receipt.revision) ? `revision ${receipt.revision}` : "a new revision";
+        const errors = isRecord(receipt) && Array.isArray(receipt.diagnostics)
+            ? receipt.diagnostics.filter(item => isRecord(item) && item.severity !== "warning").length : 0;
+        const valid = isRecord(receipt) && receipt.valid === false
+            ? ` It has ${errors || "unlisted"} error${errors === 1 ? "" : "s"}, so it cannot be published until they are fixed.` : "";
+        return `Saved the draft as ${saved}.${valid}${again}`;
+    }
     if (DEFINITION_OPERATIONS.has(operation)) {
         const published = isRecord(receipt) && Number.isSafeInteger(receipt.publishedRevision) ? receipt.publishedRevision : args?.expectedRevision;
         const revision = Number.isSafeInteger(published) ? `revision ${published}` : "the revision";

@@ -1896,7 +1896,9 @@ export class PilotSwarmManagementClient {
      * id INVALID_REQUEST (400). A client created with the test-only option
      * `workflowCommands` (INACTIVE) also reports the commands the workflow
      * takes from a person (`personCommands`, human-commands.ts), so a screen
-     * offers only those; without it the view is exactly the tool's.
+     * offers only those, and, for a draft a person may change, its current
+     * YAML (`personCommands.draft`); without it the view is exactly the
+     * tool's.
      */
     async readWorkflow(sessionId: string, options: { runId?: string | null } = {}): Promise<Record<string, unknown>> {
         this._ensureStarted();
@@ -1924,7 +1926,11 @@ export class PilotSwarmManagementClient {
         if (!enabled) return view;
         const run = view.run as { runId?: unknown } | null | undefined;
         const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
-        return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId, { requests: enabled.requests === true, runId: shown }) };
+        // A draft's current revision: its YAML is what a person who may change the draft edits.
+        const definition = view.definition as { state?: unknown; currentRevision?: unknown } | null | undefined;
+        const draftRevision = definition?.state === "draft" && typeof definition.currentRevision === "number" ? definition.currentRevision : null;
+        return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId,
+            { requests: enabled.requests === true, runId: shown, draftRevision }) };
     }
 
     /**

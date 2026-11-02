@@ -2,7 +2,9 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, projectWorkflowV2ReadModel, workflowV2RouteKind,
 } from "../../core/src/workflow-v2-view.js";
-import { workflowV2JsonObjectDraft, workflowV2VariableDraft, workflowV2VariableRemoval } from "../../core/src/workflow-v2-commands.js";
+import {
+    workflowV2DraftEdit, workflowV2JsonObjectDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
+} from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
 const TONES = { error: "var(--ps-danger)", warning: "var(--ps-warning)", info: "var(--ps-muted)" };
@@ -477,4 +479,60 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id }) 
         h("button", { type: "button", className: "ps-mini-button",
             onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: false } }) }, "Close")),
     error ? h("span", { role: "alert", style: { color: TONES.error } }, error) : null);
+}
+
+/** The header button that opens and closes the draft editor (the view's `draftOpen`). */
+export function WorkflowV2DraftToggle({ controller, sessionId, model, open, controls }) {
+    if (!model) return null;
+    return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
+        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: !open } }) }, "Edit draft");
+}
+
+/**
+ * The draft's YAML editor (design 04 replace_definition; mocks M01 and M02; R03, R17, R26; INACTIVE: only a read model
+ * that carries the draft's YAML for this caller has it). `model` is workflowV2DraftEditor's answer. An edit starts from
+ * the revision shown and is saved at that revision, so a draft someone else changed meanwhile is refused, never
+ * overwritten: the editor then says so and offers to load the new revision (discarding the edit) or to keep the edit on
+ * it. Edits are kept across a refusal and a new read. The version (metadata.version) cannot change: a new version needs
+ * a new workflow, and the server refuses it.
+ */
+export function WorkflowV2DraftEditor({ controller, sessionId, model, id }) {
+    const [base, setBase] = React.useState(() => model ? { revision: model.revision, yaml: model.yaml } : null);
+    const [textValue, setTextValue] = React.useState(() => model?.yaml ?? "");
+    // A new revision read while nothing was edited (or one that is exactly this edit, once saved) is taken as it is.
+    React.useEffect(() => {
+        if (!model || !base || model.revision === base.revision) return;
+        if (textValue === base.yaml || textValue === model.yaml) {
+            setBase({ revision: model.revision, yaml: model.yaml });
+            setTextValue(model.yaml);
+        }
+    }, [model?.revision, model?.yaml]);
+    if (!model || !base) return null;
+    const edit = workflowV2DraftEdit(base, textValue, model);
+    const save = () => {
+        if (!edit.canSave) return;
+        controller.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: base.revision, yaml: textValue });
+    };
+    return h("section", { id, className: "ps-workflow-draft-editor", "aria-label": "Draft editor", "data-revision": base.revision,
+        style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
+    h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, `Draft · editing revision ${base.revision}`),
+    h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
+        `Saving makes a new revision; it never overwrites one someone else saved meanwhile.${model.semver ? ` The version stays ${model.semver}: a new version needs a new workflow.` : ""}`),
+    edit.conflict ? h("div", { role: "alert", "data-conflict": "true", style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, color: TONES.warning } },
+        h("span", { style: { flex: "1 1 20em" } }, edit.reason),
+        h("button", { type: "button", className: "ps-mini-button", "data-action": "load",
+            onClick: () => { setBase({ revision: model.revision, yaml: model.yaml }); setTextValue(model.yaml); } }, `Load revision ${model.revision}`),
+        h("button", { type: "button", className: "ps-mini-button", "data-action": "keep",
+            onClick: () => setBase({ revision: model.revision, yaml: model.yaml }) }, `Keep my edits on revision ${model.revision}`)) : null,
+    h("textarea", { value: textValue, rows: 16, spellCheck: false, "aria-label": "Workflow YAML", "data-field": "yaml",
+        onChange: event => setTextValue(event.target.value),
+        style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%", resize: "vertical" } }),
+    h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 } },
+        h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", disabled: !edit.canSave,
+            title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save draft"),
+        h("button", { type: "button", className: "ps-mini-button", "data-action": "discard", disabled: !edit.changed,
+            onClick: () => setTextValue(base.yaml) }, "Discard edits"),
+        h("button", { type: "button", className: "ps-mini-button",
+            onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: false } }) }, "Close"),
+        edit.changed && !edit.conflict ? h("span", { role: "status", style: { color: "var(--ps-muted)" } }, "Unsaved changes") : null));
 }

@@ -1,5 +1,5 @@
 import { workflowHumanInputError } from "./input-policy.js";
-import type { JsonValue } from "./json.js";
+import { jsonbSafeText, type JsonValue } from "./json.js";
 import { WORKFLOW_V2_STOP_CONTROLLER_VERSIONS } from "./runtime.js";
 import type { WorkflowV2Host } from "./service.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowStore } from "./store.js";
@@ -62,14 +62,22 @@ function operationWords(operations: readonly string[]): string {
  * - `run`: for the run the read model shows (`runId`), whether it takes a
  *   graceful stop (offered, and its run was admitted for a controller that
  *   stops runs); null when no run is shown.
+ * - `draft` (only for a draft, `draftRevision`, that a person may change:
+ *   replace_definition offered): the current revision's number, definition
+ *   hash and YAML, the text a person edits. The human read omits the YAML
+ *   (it holds the scripts and prompts the graph does not show); a server that
+ *   serves the read to callers who may not command the workflow leaves it out
+ *   for them (the portal does).
  */
-export async function workflowCommandsForPerson(store: Pick<WorkflowStore, "readWorkflowLineage" | "readRun">, workflowSessionId: string,
-    options: { requests: boolean; runId: string | null }): Promise<{ [key: string]: JsonValue }> {
+export async function workflowCommandsForPerson(store: Pick<WorkflowStore, "readWorkflowLineage" | "readRun" | "readRevision">, workflowSessionId: string,
+    options: { requests: boolean; runId: string | null; draftRevision?: number | null }): Promise<{ [key: string]: JsonValue }> {
     const offered = options.requests ? [...WORKFLOW_HUMAN_OPERATIONS, ...WORKFLOW_HUMAN_MILESTONE_OPERATIONS] : [...WORKFLOW_HUMAN_OPERATIONS];
     const [lineage, run] = await Promise.all([store.readWorkflowLineage(workflowSessionId), options.runId ? store.readRun(options.runId) : null]);
     const root = lineage?.agentRoot ?? null;
     const operations = root ? WORKFLOW_HUMAN_BRAKE_OPERATIONS.filter(operation => offered.includes(operation)) : offered;
     const shown = run !== null && run.workflowSessionId === workflowSessionId ? run : null;
+    const draftRevision = options.draftRevision ?? null;
+    const revision = draftRevision !== null && operations.includes("replace_definition") ? await store.readRevision(workflowSessionId, draftRevision) : null;
     return {
         operations,
         restriction: root ? {
@@ -78,6 +86,7 @@ export async function workflowCommandsForPerson(store: Pick<WorkflowStore, "read
         } : null,
         run: shown ? { runId: shown.runId, stop: operations.includes("stop") && shown.controllerVersion !== null
             && WORKFLOW_V2_STOP_CONTROLLER_VERSIONS.includes(shown.controllerVersion) } : null,
+        ...(revision ? { draft: { revision: revision.revision, definitionHash: revision.yamlSha256, yaml: jsonbSafeText(revision.yaml) } } : {}),
     };
 }
 

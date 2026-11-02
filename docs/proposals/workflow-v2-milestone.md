@@ -471,6 +471,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, portal | the same `readWorkflowV2View`; with `workflowCommands` (INACTIVE) also `personCommands` | nothing |
 | Portal workflow view run controls (INACTIVE: only with `personCommands`) | `personCommands` and the shown run | a person's `pause`, `resume`, `stop`, `cancel` of the shown run, as `updateWorkflow` commands |
 | Portal workflow view variables panel (INACTIVE: only with `personCommands`) | the shown run's `kv` preview and `kvRevision` | a person's `set_vars` of one variable (set, or remove after confirming) at the revision shown |
+| Portal workflow view draft editor (INACTIVE: only with `personCommands.draft`) | the draft's current revision and YAML, for a caller who may change it | a person's `replace_definition` at the revision the edit started from |
 | Portal workflow view publication review (INACTIVE: only with `personCommands`) | the definition's state, revision, definition hash, validity and runs | a person's `publish`, `publish_and_start` (exact revision and hash) or `start` (published hash), with JSON inputs and optional initial variables |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
@@ -498,8 +499,8 @@ the same agent child, branch, stop, test and pin fields. The shared UI
 - **Human input.** A session whose access reports `canSendPrompt: false` has
   no composer; the note gives the reason and the controlling agent. The
   server refuses the input anyway.
-- **Run controls, variables and publication (R04, R05, R17, R18, R26; mocks
-  M03, M04, M15, M16; INACTIVE).** See below.
+- **Run controls, variables, the draft editor and publication (R03, R04,
+  R05, R17, R18, R26; mocks M01 to M04, M15, M16; INACTIVE).** See below.
 
 **A person's workflow command (`updateWorkflow`; design 04, R26; INACTIVE).**
 The direct management client takes a person's command to a workflow
@@ -620,6 +621,31 @@ KV), through the same `updateWorkflow` transport, with no new route.
   reads the workflow again, keeping what the person typed. A batch of
   several keys in one update goes through the API, MCP or the agent tool.
 
+**Editing a draft's YAML (R03, R17, R26; mocks M01, M02; INACTIVE).** The
+same view lets a person who may change a draft edit its YAML.
+
+- **The YAML read.** The human read omits the YAML: it holds the scripts and
+  prompts the graph does not show. A client created with `workflowCommands`
+  adds the current revision's number, definition hash and YAML as
+  `personCommands.draft`, only for a draft whose workflow takes
+  `replace_definition` from people (never a published definition, never in a
+  workflow agent state's subtree). The portal leaves it out for a caller who
+  may not command the workflow (the same `session:manage` decision as
+  `updateWorkflow`), so only the owner or an admin reads it.
+- **Editing.** An Edit draft button opens the YAML. An edit starts from the
+  revision shown and Save draft sends `replace_definition` at that revision
+  (`expected_revision`) with the whole YAML (at most 256 KiB, not empty, and
+  changed). Saving makes a new revision; it never overwrites one someone
+  else saved meanwhile: the server refuses it (409 `REVISION_CONFLICT`), the
+  notice says so, and the view reads the workflow again. When the draft has
+  moved on while it was edited, the editor says which revisions differ and
+  offers Load revision N (the edit is discarded) or Keep my edits on
+  revision N (an explicit choice to save on top of it); edits are kept until
+  then. The version cannot change: the editor says so, and a new
+  `metadata.version` is refused (409 `SEMVER_IMMUTABLE`). A revision saved
+  with compile errors is kept and reported; it cannot be published until
+  they are fixed.
+
 **Publishing and starting from the workflow view (R17, R18, R26; mocks M01,
 M03; INACTIVE).** The same view lets a person publish a draft and start its
 live run, through the same `updateWorkflow` transport.
@@ -657,12 +683,10 @@ Unfulfilled requirements (open, not waived; R26):
   design 04's separate `/test-runs` and `/inbox` paths, and the final path
   names, are API review item D11.
 - **The rest of the UI commands**: the portal sends the run controls,
-  one-variable updates and publication (above). Editing a draft's YAML
-  (`replace_definition` at the expected revision) has no screen yet: the
-  human read omits the YAML, so the editor first needs a read of the
-  revision's YAML. The test operations (start, answer an interception,
-  advance the virtual clock) have no screen yet, and the TUI has no workflow
-  command keys (it does not draw the workflow view).
+  one-variable updates, draft edits and publication (above). The test
+  operations (start, answer an interception, advance the virtual clock) have
+  no screen yet, and the TUI has no workflow command keys (it does not draw
+  the workflow view).
 
 **Responses and completions stay in process (owner scope, 2026-11-02).**
 External agents are not in scope: agents run only within PilotSwarm, as

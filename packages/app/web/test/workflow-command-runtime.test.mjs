@@ -184,11 +184,20 @@ for (const enforce of [true, false]) {
         assert.equal(shared.personCommands.viewer.allowed, false);
         assert.match(shared.personCommands.viewer.reason, /^Only the session owner \(Alice\)/);
         assert.deepEqual(shared.personCommands.operations, ["pause", "resume", "cancel"], "what the workflow takes is the server's, unchanged");
+        // A draft's YAML is for those who may change it: the owner and an admin get it, a reader does not.
+        const draft = { revision: 2, definitionHash: "h2", yaml: "apiVersion: pilotswarm.dev/v2-draft\n" };
+        personCommands = { operations: ["replace_definition", "publish"], restriction: null, run: null, draft };
+        assert.deepEqual((await runtime.call("readWorkflow", { sessionId: "s1" }, as("alice"))).personCommands.draft, draft);
+        assert.deepEqual((await runtime.call("readWorkflow", { sessionId: "s1" }, as("ada", "admin"))).personCommands.draft, draft);
+        const reader = (await runtime.call("readWorkflow", { sessionId: "shared" }, as("bob"))).personCommands;
+        assert.equal(Object.hasOwn(reader, "draft"), false, "a reader gets no YAML");
+        assert.deepEqual(reader.operations, ["replace_definition", "publish"]);
+        assert.equal(reader.viewer.allowed, false);
         // A read model without it (the deployment takes no person's commands) is returned as it is.
         personCommands = null;
         const plain = await runtime.call("readWorkflow", { sessionId: "s1" }, as("alice"));
         assert.deepEqual(plain, { workflowId: "s1", runs: [], run: null });
-        assert.equal(reads.length, 4);
+        assert.equal(reads.length, 7);
         assert.equal(calls.length, 0, "reading sends no command");
     });
 }

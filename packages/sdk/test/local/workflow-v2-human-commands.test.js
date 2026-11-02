@@ -19,8 +19,9 @@
  *   command.
  * - Reading: only a client that takes a person's commands reports which ones
  *   the workflow takes (personCommands: the operations, the subtree's
- *   restriction naming its controlling agent, and whether the shown run takes
- *   a graceful stop); without the option the view is unchanged.
+ *   restriction naming its controlling agent, whether the shown run takes a
+ *   graceful stop, and a draft's current YAML); without the option the view
+ *   is unchanged.
  * - A person's cancel without a reason ends the run as cancelled by a person,
  *   not by its parent.
  *
@@ -121,9 +122,10 @@ describe("workflow v2: a person's workflow command (direct management client, in
             const draft = await workflowOf(catalog, parent, YAML("person-draft"));
             // Reading: only a client that takes a person's commands says which ones the workflow takes.
             expect(Object.hasOwn(await plain.readWorkflow(draft.workflowSessionId), "personCommands")).toBe(false);
+            // A draft a person may change also comes with its current YAML, the text they edit.
             expect((await mgmt.readWorkflow(draft.workflowSessionId)).personCommands).toEqual({
                 operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"],
-                restriction: null, run: null });
+                restriction: null, run: null, draft: { revision: 1, definitionHash: draft.definitionHash, yaml: YAML("person-draft") } });
 
             // Inactive: refused, and nothing changes.
             await refused(() => plain.updateWorkflow(draft.workflowSessionId, { operation: "publish", operation_id: "p-0", expected_revision: 1,
@@ -143,8 +145,11 @@ describe("workflow v2: a person's workflow command (direct management client, in
                 definition_hash: replaced.definitionHash, inputs: {} }, { principal: PERSON });
             expect(started).toMatchObject({ operation: "start", run: { mode: "live", revision: 2 } });
             const runId = started.run.runId;
-            // The shown run: this host stops no run gracefully (controller 1.8.0), so it offers no stop.
-            expect((await mgmt.readWorkflow(draft.workflowSessionId)).personCommands.run).toEqual({ runId, stop: false });
+            // The shown run: this host stops no run gracefully (controller 1.8.0), so it offers no stop; a published
+            // definition has no draft to edit.
+            const published = (await mgmt.readWorkflow(draft.workflowSessionId)).personCommands;
+            expect(published.run).toEqual({ runId, stop: false });
+            expect(Object.hasOwn(published, "draft")).toBe(false);
             // A repeat of an operation id returns its receipt.
             expect(await mgmt.updateWorkflow(draft.workflowSessionId, { operation: "start", operation_id: "start-1",
                 definition_hash: replaced.definitionHash, inputs: {} }, { principal: PERSON })).toMatchObject({ replayed: true, run: { runId } });

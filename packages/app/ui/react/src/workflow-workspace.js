@@ -3,11 +3,12 @@ import { useControllerSelector } from "./use-controller-state.js";
 import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
 import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
 import {
-    workflowV2DefinitionControls, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
+    workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
 } from "../../core/src/workflow-v2-commands.js";
 import {
-    WorkflowV2Banners, WorkflowV2DefinitionPanel, WorkflowV2DefinitionToggle, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RunCommandNotice,
-    WorkflowV2RunControls, WorkflowV2RunPicker, WorkflowV2TestInterceptions, WorkflowV2Variables, WorkflowV2VariablesToggle,
+    WorkflowV2Banners, WorkflowV2DefinitionPanel, WorkflowV2DefinitionToggle, WorkflowV2DraftEditor, WorkflowV2DraftToggle, WorkflowV2NoGraph,
+    WorkflowV2NodeContent, WorkflowV2RunCommandNotice, WorkflowV2RunControls, WorkflowV2RunPicker, WorkflowV2TestInterceptions, WorkflowV2Variables,
+    WorkflowV2VariablesToggle,
 } from "./workflow-v2-panels.js";
 
 const EMPTY_EVENTS = [];
@@ -63,9 +64,11 @@ function useWorkflowView(controller) {
     // The definition is the workflow's, whichever run is selected: the last read model of any selection says it.
     const publication = React.useMemo(() => v2 ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null,
         [v2, readModel, workflowModel, runCommand]);
+    const draftEditor = React.useMemo(() => v2 ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null,
+        [v2, readModel, workflowModel, runCommand]);
     const runNotice = workflowV2RunCommandNotice(runCommand);
     return { sessionId, session, view, nodes, selected, select, live, status, v2, definition, readError,
-        workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, runNotice };
+        workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, draftEditor, runNotice };
 }
 
 /** The read model's last failure for the selected run, beside the graph, with a Retry that asks again now. */
@@ -152,11 +155,13 @@ function WorkflowGraph({ definition, nodes, selected, select, banners }) {
 
 export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
     const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded,
-        runControls, variables, publication, runNotice } = useWorkflowView(controller);
+        runControls, variables, publication, draftEditor, runNotice } = useWorkflowView(controller);
     const variablesId = `wf-vars-${React.useId().replace(/:/g, "")}`;
     const variablesOpen = Boolean(variables && view.variablesOpen);
     const publicationId = `wf-publish-${React.useId().replace(/:/g, "")}`;
     const publicationOpen = Boolean(publication?.controls.length && view.definitionOpen);
+    const draftId = `wf-draft-${React.useId().replace(/:/g, "")}`;
+    const draftOpen = Boolean(draftEditor && view.draftOpen);
     const splitRef = React.useRef(null);
     const dragRef = React.useRef(false);
     const [splitHeight, setSplitHeight] = React.useState(500);
@@ -183,11 +188,13 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
             v2 ? React.createElement(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
             runControls ? React.createElement(WorkflowV2RunControls, { controller, sessionId, model: runControls }) : null,
             variables ? React.createElement(WorkflowV2VariablesToggle, { controller, sessionId, open: variablesOpen, controls: variablesId }) : null,
+            React.createElement(WorkflowV2DraftToggle, { controller, sessionId, model: draftEditor, open: draftOpen, controls: draftId }),
             React.createElement(WorkflowV2DefinitionToggle, { controller, sessionId, model: publication, open: publicationOpen, controls: publicationId }),
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
                 onClick: () => selectNode(selected.id) }, "Node details")),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
+        draftOpen ? React.createElement(WorkflowV2DraftEditor, { controller, sessionId, model: draftEditor, id: draftId }) : null,
         publicationOpen ? React.createElement(WorkflowV2DefinitionPanel, { controller, sessionId, model: publication, id: publicationId }) : null,
         variablesOpen ? React.createElement(WorkflowV2Variables, { controller, sessionId, model: variables, id: variablesId }) : null,
         v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test }) : null,

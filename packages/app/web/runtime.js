@@ -752,11 +752,15 @@ export class PortalRuntime {
             // adapter's own validation unchanged. The run is looked up within the authorized workflow; nothing is changed.
             // When the deployment takes a person's workflow commands (INACTIVE), the view says which ones this workflow
             // takes, and this adds whether the caller may send them (updateWorkflow's own gate, decided on this read's access).
+            // A draft's YAML (personCommands.draft: the scripts and prompts the graph does not show) is for a caller who may
+            // change the draft; it is left out for anyone else.
             case "readWorkflow": {
                 const view = await this.transport.readWorkflow(safeParams.sessionId,
                     safeParams.runId === undefined || safeParams.runId === null ? {} : { runId: safeParams.runId });
                 if (!view || typeof view !== "object" || !view.personCommands || typeof view.personCommands !== "object") return view;
-                return { ...view, personCommands: { ...view.personCommands, viewer: this._workflowCommandViewer(gate.snapshot, isAdmin) } };
+                const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
+                const { draft, ...personCommands } = view.personCommands;
+                return { ...view, personCommands: { ...personCommands, ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
             }
             // Workflow v2 (INACTIVE unless the deployment enables it): a person's command, after the session:manage gate
             // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
