@@ -13,10 +13,11 @@ import type {
 } from "../types.js";
 import { cloneContextUsage, validClientMessageIds } from "./utils.js";
 import {
-    restoreIntakeArrivalPending, restoreIntakeRetryAttempt, restoreIntakeRetryInvocationId, restoreIntakeState,
-    type IntakeCarryingInput, type IntakeRetryAttempt, type IntakeState,
+    restoreIntakeArrivalPending, restoreIntakeRetryInvocationId, restoreIntakeState,
+    type IntakeCarryingInput, type IntakeState,
 } from "./intake-state.js";
 import type { IntakeAttemptDispatch, IntakeStimulus } from "./intake-machine.js";
+import { IntakeShapeError, intakeId, intakeObject } from "../workflow/v2/intake.js";
 
 export interface ActiveTimer {
     deadlineMs: number;
@@ -158,6 +159,11 @@ export interface DurableSessionState {
      * 1.0.81: the snapshot turnKey of a runTurn attempt that threw, kept for
      * the retry of that same turn (see `OrchestrationInput.thrownTurnKey`).
      * Cleared when any turn result arrives and on give-up paths.
+     *
+     * 1.0.83 (ordinary retry ownership): the retry's continue-as-new carries
+     * it in the owed retry (`ownedRetry`), and only that retry's dispatch
+     * sets it again, for its own attempt; every other attempt starts with
+     * none, and each attempt clears it once it has chosen its key.
      */
     thrownTurnKey: string | null;
     interruptedCronTimer: InterruptedCronTimer | null;
@@ -251,22 +257,25 @@ export interface DurableSessionState {
      */
     intake: IntakeState;
     /**
-     * The pending prompt's retry marker (design 5.5, I8; review D-W2-1): the
-     * sent invocation that rides the dispatch of the pending prompt, its
-     * turn's retry, and no other attempt. Set when an attempt that sent it
-     * decides its turn's retry, consumed only by decide's dispatch of the
-     * pending prompt, and carried by every continue-as-new with that prompt.
-     * Present exactly while a sent invocation awaits its retry.
+     * The retry marker (design 5.5, I8; reviews D-W2-1, Q-W2-7): the sent
+     * invocation that rides the owed retry of its turn (ownedRetry), and no
+     * other attempt. Set when an attempt that sent it decides its turn's
+     * retry, consumed only by decide's dispatch of the owed retry, and
+     * carried by every continue-as-new with that retry. Present exactly while
+     * a sent invocation awaits its retry, and never without an owed retry.
      */
     intakeRetryInvocationId: string | null;
     /**
-     * The retry count and thrown-turn key of that retry (review O-W2-3), as
-     * its own continue-as-new carried them: a turn that runs while the
-     * retry is held changes the session's count and key as 1.0.82 does, and
-     * the dispatch that takes the marker takes these back. Present exactly
-     * with the marker.
+     * 1.0.83 (ordinary retry ownership; review Q-W2-7, decision
+     * ordinary-retry-ownership-83): the owed retry of a turn that failed and
+     * retries, owned apart from the pending prompt and its fields, which stay
+     * the channel of ordinary follow-ups. It holds that turn's exact prompt
+     * contract, its retry count and the key of its thrown attempt. Every
+     * continue-as-new carries it; decide dispatches it before any unrelated
+     * turn, and only that dispatch takes its count and key and the intake's
+     * retry marker, which requires it.
      */
-    intakeRetryAttempt: IntakeRetryAttempt | null;
+    ownedRetry: OwnedRetry | null;
     /**
      * A newly claimed item that no attempt carrying the invocation has
      * answered yet (design 5.5, one attempt per arrival; review O-W2-5): it
@@ -274,6 +283,124 @@ export interface DurableSessionState {
      * every continue-as-new.
      */
     intakeArrivalPending: boolean;
+}
+
+/**
+ * The owed retry of a failed turn (DurableSessionState.ownedRetry): the
+ * turn's prompt with its bootstrap flag, required tool, cron origin, client
+ * message ids, sender and attachments; its retry count; the key of its
+ * thrown attempt, which the retry sends again to adopt that attempt's saved
+ * turn (null when the attempt returned an error); and `fresh` for a lossy
+ * handoff, whose retry never adopts (its count 0 and no key).
+ */
+export interface OwnedRetry {
+    prompt: string;
+    bootstrap: boolean;
+    requiredTool: string | null;
+    cycleOrigin: "cron" | "cron_at" | null;
+    clientMessageIds: string[];
+    sender: MessageSender | null;
+    attachments: PromptAttachmentRef[];
+    retryCount: number;
+    thrownTurnKey: string | null;
+    fresh: boolean;
+}
+
+const OWNED_RETRY_KEYS = [
+    "prompt", "bootstrap", "requiredTool", "cycleOrigin", "clientMessageIds", "sender", "attachments", "retryCount", "thrownTurnKey", "fresh",
+] as const;
+
+/**
+ * The owed retry that `raw` (an input's `ownedRetry`) carries, checked whole:
+ * absent is none; anything else that does not have its shape fails the
+ * execution with the field's path. A fresh retry has count 0 and no key.
+ */
+export function restoreOwnedRetry(raw: unknown, path = "$.ownedRetry"): OwnedRetry | null {
+    if (raw === undefined) return null;
+    const value = intakeObject(raw, path, OWNED_RETRY_KEYS);
+    const fail = (field: string, message: string): never => { throw new IntakeShapeError(`${path}.${field}`, message); };
+    if (typeof value.prompt !== "string" || value.prompt.length === 0) fail("prompt", "is not a prompt");
+    if (typeof value.bootstrap !== "boolean") fail("bootstrap", "is not a boolean");
+    if (value.requiredTool !== null && (typeof value.requiredTool !== "string" || value.requiredTool.length === 0)) fail("requiredTool", "is not a tool name or null");
+    if (value.cycleOrigin !== null && value.cycleOrigin !== "cron" && value.cycleOrigin !== "cron_at") fail("cycleOrigin", "is not cron, cron_at or null");
+    const ids = value.clientMessageIds;
+    if (!Array.isArray(ids) || validClientMessageIds(ids).length !== ids.length) fail("clientMessageIds", "is not a list of client message ids");
+    let sender: MessageSender | null = null;
+    if (value.sender !== null) sender = normalizeMessageSender(value.sender) ?? fail("sender", "is not a sender");
+    const attachments = value.attachments;
+    if (!Array.isArray(attachments) || sanitizePromptAttachmentRefs(attachments).length !== attachments.length) fail("attachments", "is not a list of attachment refs");
+    const retryCount = value.retryCount;
+    if (typeof retryCount !== "number" || !Number.isSafeInteger(retryCount) || retryCount < 0) fail("retryCount", "is not a count");
+    const key = value.thrownTurnKey;
+    const thrownTurnKey = key === null ? null : intakeId(key, `${path}.thrownTurnKey`);
+    if (typeof value.fresh !== "boolean") fail("fresh", "is not a boolean");
+    if (value.fresh === true && (retryCount !== 0 || thrownTurnKey !== null)) fail("fresh", "is set on a retry with a count or a key");
+    return {
+        prompt: value.prompt as string, bootstrap: value.bootstrap as boolean, requiredTool: value.requiredTool as string | null,
+        cycleOrigin: value.cycleOrigin as OwnedRetry["cycleOrigin"], clientMessageIds: [...(ids as string[])], sender,
+        attachments: sanitizePromptAttachmentRefs(attachments), retryCount: retryCount as number, thrownTurnKey, fresh: value.fresh as boolean,
+    };
+}
+
+/**
+ * 1.0.83 (ordinary retry ownership; review Q-W2-7): the continue-as-new
+ * overrides of a failed turn's retry, with that turn's prompt contract owned
+ * (`ownedRetry`) instead of overriding the pending prompt. `retry` is what
+ * 1.0.82 gives that retry (turn.ts retryContinueOverrides): the turn's
+ * prompt, the bootstrap flag of a system-only turn, its required tool, cron
+ * origin, client message ids, sender and attachments, its count and, for a
+ * thrown turn, the thrown attempt's key. The pending prompt's own fields are
+ * not read: they stay the follow-ups', and the input carries them as any
+ * continue-as-new does. `fresh`, a lossy handoff's retry, has count 0 and no
+ * key, so it never adopts a saved turn.
+ */
+export function ownedRetryOverrides(retry: Partial<OrchestrationInput>, fresh = false): Partial<OrchestrationInput> {
+    const { prompt, bootstrapPrompt, requiredTool, cycleOrigin, clientMessageIds, sender, attachments, retryCount, thrownTurnKey, ...rest } = retry;
+    const ownedRetry: OwnedRetry = {
+        prompt: prompt ?? "", bootstrap: bootstrapPrompt === true, requiredTool: requiredTool || null, cycleOrigin: cycleOrigin ?? null,
+        clientMessageIds: validClientMessageIds(clientMessageIds), sender: normalizeMessageSender(sender) ?? null,
+        attachments: sanitizePromptAttachmentRefs(attachments), retryCount: fresh ? 0 : retryCount ?? 0,
+        thrownTurnKey: fresh ? null : thrownTurnKey || null, fresh,
+    };
+    // Checked whole (an empty prompt fails the execution), as its continue-as-new checks it again.
+    return { ...rest, ownedRetry: restoreOwnedRetry(ownedRetry) } as Partial<OrchestrationInput>;
+}
+
+/**
+ * Whether `input` was written by 1.0.83 or later, whose continue-as-new
+ * carries an owed retry only as `ownedRetry` (or by a session start, which
+ * owes none): its source version. An input written by an older version, or
+ * with no readable version, carries a turn's retry as its prompt.
+ */
+function writtenWithOwnedRetry(input: OrchestrationInput): boolean {
+    const source = typeof input.sourceOrchestrationVersion === "string" ? input.sourceOrchestrationVersion : "";
+    const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(source);
+    if (match === null) return false;
+    const [major, minor, patch] = match.slice(1).map(Number);
+    return major > 1 || (major === 1 && (minor > 0 || patch >= 83));
+}
+
+/**
+ * The owed retry of a continue-as-new input (restoreOwnedRetry), or, for an
+ * input written by 1.0.82 or earlier (writtenWithOwnedRetry), the retry of a
+ * thrown turn that it carries as its prompt: a count above 0 and the thrown
+ * attempt's key, which the retry sends again to adopt that attempt's saved
+ * turn. That prompt and its fields are then owned and not a pending prompt.
+ * Any other such input keeps its prompt as the pending prompt, as 1.0.82
+ * does: a returned error's retry has no key to adopt, and a lossy handoff's
+ * (count 0) never adopts.
+ */
+function ownedRetryOfInput(input: OrchestrationInput): OwnedRetry | null {
+    const carried = (input as IntakeCarryingInput).ownedRetry;
+    if (carried !== undefined) return restoreOwnedRetry(carried);
+    if (writtenWithOwnedRetry(input) || !input.prompt || !((input.retryCount ?? 0) > 0)) return null;
+    if (typeof input.thrownTurnKey !== "string" || input.thrownTurnKey === "") return null;
+    return {
+        prompt: input.prompt, bootstrap: input.bootstrapPrompt === true, requiredTool: input.requiredTool || null,
+        cycleOrigin: input.cycleOrigin ?? null, clientMessageIds: validClientMessageIds(input.clientMessageIds),
+        sender: normalizeMessageSender(input.sender) ?? null, attachments: sanitizePromptAttachmentRefs(input.attachments),
+        retryCount: input.retryCount ?? 0, thrownTurnKey: input.thrownTurnKey, fresh: false,
+    };
 }
 
 
@@ -331,11 +458,14 @@ export interface DurableSessionRuntime {
      */
     intakeStimulus?: IntakeStimulus;
     /**
-     * 1.0.83 (design 5.5): the attempt about to run is decide's dispatch of
-     * the pending prompt, the only one that takes the retry marker (review
-     * D-W2-1).
+     * 1.0.83 (ordinary retry ownership; reviews D-W2-1, Q-W2-7): set only by
+     * decide's dispatch of the owed retry (state.ownedRetry), which it clears,
+     * and taken by that attempt's first step (intake-wiring.ts
+     * intakeBeforeAttempt): the retry's count and thrown-turn key. Only that
+     * attempt runs with them, sends that key again and takes the intake's
+     * retry marker; every other attempt sends no earlier key.
      */
-    intakePendingDispatch?: boolean;
+    ownedRetryAttempt?: { retryCount: number; thrownTurnKey: string | null };
     /** 1.0.83 (design 5.5): the attempt in flight that carries the invocation, and what it reported so far; null when it carries none. */
     intakeAttempt?: { invocationId: string; dispatch: IntakeAttemptDispatch | null } | null;
 }
@@ -558,9 +688,17 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
     if (input.agentId) {
         config.agentIdentity = input.agentId;
     }
-    // 1.0.83: the carried intake state, and the retry marker, the held retry's count and key and the arrival flag checked against it.
+    // 1.0.83: the carried intake state, and the retry marker and the arrival flag checked against it.
     const intake = restoreIntakeState((input as IntakeCarryingInput).intake);
     const intakeRetryInvocationId = restoreIntakeRetryInvocationId((input as IntakeCarryingInput).intakeRetryInvocationId, intake);
+    // 1.0.83 (ordinary retry ownership): the owed retry, apart from the pending prompt; the intake's marker requires it.
+    const ownedRetry = ownedRetryOfInput(input);
+    if (intakeRetryInvocationId !== null && ownedRetry === null) {
+        throw new IntakeShapeError("$.ownedRetry", `is missing while invocation ${intakeRetryInvocationId} awaits its turn's retry`);
+    }
+    // An input of 1.0.82 or earlier whose prompt is a thrown turn's retry: that prompt and its fields are owned, not pending.
+    const legacyRetry = ownedRetry !== null && (input as IntakeCarryingInput).ownedRetry === undefined;
+    const pendingPrompt = legacyRetry ? undefined : input.prompt;
 
     return {
         config,
@@ -576,18 +714,18 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         blobEnabled: input.blobEnabled ?? false,
         pendingRehydrationMessage: input.rehydrationMessage,
 
-        pendingPrompt: input.prompt,
-        pendingAttachments: sanitizePromptAttachmentRefs(input.attachments),
-        pendingClientMessageIds: input.prompt && validClientMessageIds(input.clientMessageIds).length > 0
+        pendingPrompt,
+        pendingAttachments: legacyRetry ? [] : sanitizePromptAttachmentRefs(input.attachments),
+        pendingClientMessageIds: pendingPrompt && validClientMessageIds(input.clientMessageIds).length > 0
             ? validClientMessageIds(input.clientMessageIds)
             : undefined,
-        pendingSender: input.prompt ? normalizeMessageSender(input.sender) : undefined,
-        pendingRequiredTool: input.requiredTool,
+        pendingSender: pendingPrompt ? normalizeMessageSender(input.sender) : undefined,
+        pendingRequiredTool: legacyRetry ? undefined : input.requiredTool,
         pendingSystemPrompt: input.systemPrompt,
         runtimeModelNotice: input.runtimeModelNotice,
         blockedError: input.blockedError ? { ...input.blockedError } : undefined,
-        pendingCycleOrigin: input.cycleOrigin,
-        bootstrapPrompt: input.bootstrapPrompt ?? false,
+        pendingCycleOrigin: legacyRetry ? undefined : input.cycleOrigin,
+        bootstrapPrompt: legacyRetry ? false : input.bootstrapPrompt ?? false,
 
         pendingToolActions: input.pendingToolActions ? [...input.pendingToolActions] : [],
         subAgents: input.subAgents ? [...input.subAgents] : [],
@@ -606,7 +744,8 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,
         carriedSteers: input.carriedSteers ? [...input.carriedSteers] : [],
-        thrownTurnKey: typeof input.thrownTurnKey === "string" && input.thrownTurnKey ? input.thrownTurnKey : null,
+        // 1.0.83: the key of a thrown attempt lives in the owed retry (ownedRetry), which its dispatch takes; no other turn reuses one.
+        thrownTurnKey: null,
         interruptedCronTimer: input.interruptedCronTimer ?? null,
 
         workspaceRevision: typeof input.workspaceRevision === "number" && input.workspaceRevision > 0 ? input.workspaceRevision : 0,
@@ -661,7 +800,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         intake,
         intakeRetryInvocationId,
-        intakeRetryAttempt: restoreIntakeRetryAttempt((input as IntakeCarryingInput).intakeRetryAttempt, intakeRetryInvocationId),
+        ownedRetry,
         intakeArrivalPending: restoreIntakeArrivalPending((input as IntakeCarryingInput).intakeArrivalPending),
     };
 }

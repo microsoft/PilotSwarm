@@ -608,6 +608,24 @@ export function turnsStarted(runtime: DurableSessionRuntime): number {
     return runtime.turnsStarted ?? 0;
 }
 
+/**
+ * 1.0.83 (ordinary retry ownership; review Q-W2-7): release the armed timer
+ * for the owed retry, which decide sends next, as for queued work
+ * (releaseTimerForQueuedWork: a due fire is queued after it, a wait's or a
+ * cron's remaining time resumes after its turn, a cron_at keeps its next
+ * fire, idle is armed again, and that turn asks a gate again), with one
+ * difference: an agent wait is kept. Its poll is queued after the retry and
+ * runs as a fired poll, which resolves the wait or arms its next poll.
+ */
+function* releaseTimerForOwnedRetry(runtime: DurableSessionRuntime, stash: any[]): Generator<any, void, any> {
+    const ownedRetryPoll = runtime.state.activeTimer?.type === "agent-poll" ? runtime.state.activeTimer : null;
+    if (ownedRetryPoll === null) return yield* releaseTimerForQueuedWork(runtime, stash);
+    const ownedRetryPollAt: number = yield runtime.ctx.utcNow();
+    stash.push({ kind: "timer", timer: { ...ownedRetryPoll }, firedAtMs: ownedRetryPollAt });
+    runtime.state.activeTimer = null;
+    runtime.ctx.traceInfo("[drain] ownedRetry: the owed retry goes first; the agent wait is kept, and its poll runs after it");
+}
+
 /** Timer items whose only effect is on the hold window; they run no turn. */
 const HOLD_TIMER_TYPES = new Set(["idle", "input-grace"]);
 
@@ -727,6 +745,18 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             const race: any = yield ctx.race(msgTask, timerTask);
             if (race.index === 1) break;
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
+
+        } else if (state.ownedRetry !== null && !state.pendingShutdown) {
+            // 1.0.83 (ordinary retry ownership; review Q-W2-7): decide sends
+            // the owed retry next, so drain never waits for an armed timer or
+            // the digest window: it sweeps the queue once, commands first,
+            // and yields at once when it is empty. The armed timer is released
+            // for it as for queued work, but an agent wait is kept, and its
+            // poll runs after the retry (releaseTimerForOwnedRetry).
+            yield* releaseTimerForOwnedRetry(runtime, stash);
+            const ownedRetrySweep: any = yield ctx.race(ctx.dequeueEvent("messages"), ctx.scheduleTimer(NON_BLOCKING_TIMER_MS));
+            if (ownedRetrySweep.index === 1) break;
+            msg = typeof ownedRetrySweep.value === "string" ? JSON.parse(ownedRetrySweep.value) : ownedRetrySweep.value;
 
         } else if (shouldRunQueuedWorkNow(runtime, stash)) {
             // 1.0.82 (R3, R4): queued work goes now; the armed timer is
@@ -1460,6 +1490,30 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         return true;
     }
 
+    // Priority 2a (1.0.83, ordinary retry ownership; reviews D-W2-1, Q-W2-7):
+    // the owed retry of a failed turn goes before any other turn, held by no
+    // agent wait (drain keeps the wait and queues its poll), but not during a
+    // graceful shutdown. Only this dispatch takes the retry's own prompt
+    // contract, its count and thrown-turn key and the intake's retry marker
+    // (intakeBeforeAttempt); the pending prompt and its fields stay the
+    // follow-ups', which go after it.
+    const ownedRetry = state.pendingShutdown ? null : state.ownedRetry;
+    if (ownedRetry !== null) {
+        state.ownedRetry = null;
+        runtime.ownedRetryAttempt = { retryCount: ownedRetry.retryCount, thrownTurnKey: ownedRetry.thrownTurnKey };
+        yield* processPrompt(
+            runtime,
+            ownedRetry.prompt,
+            ownedRetry.bootstrap,
+            ownedRetry.requiredTool ?? undefined,
+            ownedRetry.clientMessageIds,
+            ownedRetry.cycleOrigin ?? undefined,
+            ownedRetry.sender ?? undefined,
+            ownedRetry.attachments.length > 0 ? ownedRetry.attachments : undefined,
+        );
+        return true;
+    }
+
     // Priority 2: pending prompt (CAN carry-forward or queueFollowup).
     // Hold while waiting for agents — let confirmations accumulate and merge
     // with the agents-done summary for one combined LLM turn.
@@ -1478,8 +1532,6 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         state.pendingAttachments = undefined;
         state.pendingClientMessageIds = undefined;
         state.pendingSender = undefined;
-        // 1.0.83 (review D-W2-1): the pending prompt's dispatch, the only one that takes a turn's retry marker.
-        runtime.intakePendingDispatch = true;
         yield* processPrompt(
             runtime,
             prompt,

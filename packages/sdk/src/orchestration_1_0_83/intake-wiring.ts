@@ -506,16 +506,19 @@ function* formAndBind(runtime: DurableSessionRuntime): Generator<any, void, any>
 }
 
 /**
- * The first step of every turn attempt (processPrompt; design 5.5, 6.1): the
- * session's tombstones are latched, the next invocation is formed and bound
- * when none exists, and the carry rules say whether this attempt carries it.
- * Only decide's dispatch of the pending prompt takes the retry marker, and
- * so carries the sent invocation it names, as its turn's retry; any other
- * attempt starts new with its stimulus, and a sent invocation stays with its
- * held prompt (I8; review D-W2-1). An attempt that sends the key of the
- * thrown attempt it retries carries only what that attempt carried (review
- * W2-WIT3, intakeReusesThrownTurnKey). Returns the payload for the turn's
- * `intake` field, or null when the attempt carries none.
+ * The first step of every turn attempt (processPrompt; design 5.5, 6.1).
+ * Decide's dispatch of the owed retry (ordinary retry ownership; reviews
+ * D-W2-1, O-W2-3, Q-W2-7) gives the attempt that retry's count and
+ * thrown-turn key, and only that dispatch takes the retry marker, and so
+ * carries the sent invocation it names, as its turn's retry; every other
+ * attempt starts with no thrown-turn key and new with its stimulus, and none
+ * starts while a marker is set (decide dispatches the owed retry first).
+ * Then the session's tombstones are latched, the next invocation is formed
+ * and bound when none exists, and the carry rules say whether this attempt
+ * carries it. An attempt that sends the key of the thrown attempt it retries
+ * carries only what that attempt carried (review W2-WIT3,
+ * intakeReusesThrownTurnKey). Returns the payload for the turn's `intake`
+ * field, or null when the attempt carries none.
  */
 export function* intakeBeforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnField | null, any> {
     return yield* guarded(runtime, beforeAttempt(runtime));
@@ -524,31 +527,30 @@ export function* intakeBeforeAttempt(runtime: DurableSessionRuntime): Generator<
 function* beforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnField | null, any> {
     const { state } = runtime;
     const stimulus = runtime.intakeStimulus ?? "other";
-    const pendingDispatch = runtime.intakePendingDispatch === true;
+    const ownedRetry = runtime.ownedRetryAttempt ?? null;
     runtime.intakeStimulus = undefined;
-    runtime.intakePendingDispatch = undefined;
+    runtime.ownedRetryAttempt = undefined;
     const inFlight = runtime.intakeAttempt;
     if (inFlight) {
         throw new IntakeInvariantError(null, `an attempt starts before the outcome of the attempt that carried invocation ${inFlight.invocationId} is applied`);
     }
-    const marker = pendingDispatch ? state.intakeRetryInvocationId : null;
-    if (pendingDispatch) state.intakeRetryInvocationId = null;
+    if (ownedRetry !== null) {
+        state.retryCount = ownedRetry.retryCount;
+        state.thrownTurnKey = ownedRetry.thrownTurnKey;
+    } else {
+        state.thrownTurnKey = null;
+        if (state.intakeRetryInvocationId !== null) {
+            throw new IntakeInvariantError(null, `an attempt starts before the owed retry, which carries invocation ${state.intakeRetryInvocationId}`);
+        }
+    }
+    const marker = ownedRetry !== null ? state.intakeRetryInvocationId : null;
+    state.intakeRetryInvocationId = null;
     const awaiting = intakeAwaitingRetry(state.intake);
     if (marker !== null && awaiting?.invocationId !== marker) {
-        throw new IntakeInvariantError(null, `the pending prompt's retry names invocation ${marker}, which awaits no retry`);
+        throw new IntakeInvariantError(null, `the owed retry names invocation ${marker}, which awaits no retry`);
     }
-    if (awaiting !== null && marker === null && state.intakeRetryInvocationId !== awaiting.invocationId) {
-        throw new IntakeInvariantError(null, `invocation ${awaiting.invocationId} awaits its turn's retry, but no pending prompt carries it`);
-    }
-    if (marker !== null) {
-        // Review O-W2-3: the retry runs with its own retry count and thrown-turn key, as its continue-as-new carried them,
-        // whatever a turn that ran while it was held did to the session's (a success resets the count): it sends that
-        // key again, so a saved result of its thrown attempt is adopted, never run a second time.
-        const held = state.intakeRetryAttempt;
-        if (held === null) throw new IntakeInvariantError(null, `the retry of invocation ${marker} has no retry count and turn key`);
-        state.retryCount = held.retryCount;
-        state.thrownTurnKey = held.thrownTurnKey;
-        state.intakeRetryAttempt = null;
+    if (awaiting !== null && marker === null) {
+        throw new IntakeInvariantError(null, `invocation ${awaiting.invocationId} awaits its turn's retry, but the attempt that starts is not that retry`);
     }
     latchIntakeTombstones(runtime);
     if (marker === null && intakeReusesThrownTurnKey(state)) {
@@ -623,13 +625,14 @@ export function intakeResultEvent(type: string, gated: boolean): IntakeAttemptEv
  * How the turn of the attempt that carried the invocation went (the event
  * column of design 5.5's table), applied once per attempt: `sent` is updated
  * from its dispatch, then the first matching row decides. A retry of a sent
- * invocation becomes the pending prompt's retry marker, which every
- * continue-as-new carries with that prompt; an unsent one is ready again and
- * rides the next attempt. An attempt that carried none changes nothing, but
- * for one case: when its turn retries while a sent invocation awaits its own
- * retry, its retry's continue-as-new replaces the held pending prompt
- * (turn.ts retryContinueOverrides), so that retry never runs. The invocation
- * then ends interrupted, and this is recorded (review D-W2-1).
+ * invocation sets the retry marker, which the owed retry of that turn takes:
+ * the turn's retry continue-as-new owes it (turn.ts, state.ts
+ * ownedRetryOverrides), and every continue-as-new carries both (ordinary
+ * retry ownership; reviews D-W2-1, Q-W2-7). An unsent one is ready again and
+ * rides the next attempt. An attempt that carried none changes nothing; that
+ * one retries while an invocation awaits its own turn's retry is a broken
+ * invariant, since decide dispatches the owed retry, which carries that
+ * invocation, before any other turn.
  */
 export function* noteIntakeAttempt(runtime: DurableSessionRuntime, event: IntakeAttemptEvent | null): Generator<any, void, any> {
     if (event === null) return;
@@ -642,27 +645,18 @@ function* noteAttempt(runtime: DurableSessionRuntime, event: IntakeAttemptEvent)
     if (!record) {
         const awaiting = intakeAwaitingRetry(state.intake);
         if (event.kind !== "retrying" || awaiting === null) return;
-        if (state.intakeRetryInvocationId !== awaiting.invocationId) {
-            throw new IntakeInvariantError(null, `invocation ${awaiting.invocationId} awaits its turn's retry, but no pending prompt carries it`);
-        }
-        state.intake = applyIntakeAttempt(state.intake, awaiting.invocationId, { ran: false }, { kind: "stopped" }).state;
-        state.intakeRetryInvocationId = null;
-        state.intakeRetryAttempt = null;
-        runtime.ctx.traceInfo(`[intake] another turn's retry replaces the prompt held for invocation ${awaiting.invocationId}'s retry; it ends interrupted`);
-        yield* recordIntake(runtime, { outcome: "retry_replaced", invocationId: awaiting.invocationId });
-        return;
+        throw new IntakeInvariantError(null,
+            `an attempt that carried no invocation retries while invocation ${awaiting.invocationId} awaits its own turn's retry`);
     }
     if (state.intakeRetryInvocationId !== null) {
         throw new IntakeInvariantError(null,
-            `the attempt that carried invocation ${record.invocationId} ends while a pending prompt's retry names ${state.intakeRetryInvocationId}`);
+            `the attempt that carried invocation ${record.invocationId} ends while the retry marker names ${state.intakeRetryInvocationId}`);
     }
     runtime.intakeAttempt = null;
     const step = applyIntakeAttempt(state.intake, record.invocationId, record.dispatch ?? { ran: false }, event);
     state.intake = step.state;
     if (step.decision.next === "retry" && state.intake.invocation?.sent === true) {
         state.intakeRetryInvocationId = record.invocationId;
-        // Its count and key are taken from its own continue-as-new, which follows (lifecycle.ts versionedContinueAsNew).
-        state.intakeRetryAttempt = null;
     }
 }
 
@@ -672,9 +666,9 @@ function* noteAttempt(runtime: DurableSessionRuntime, event: IntakeAttemptEvent)
  * is formed and bound when none exists, and a turn starts for a ready
  * invocation, or for one parked for any cause but a gate that a newly
  * claimed item resumes; the attempt's stimulus is set for it. Never during a
- * graceful shutdown, nor while a thrown turn's retry is pending: that turn
- * would send the thrown attempt's key and could carry nothing (review
- * W2-WIT3). Returns whether decide starts that turn.
+ * graceful shutdown, nor while a turn's retry is owed: decide dispatches that
+ * retry first (ordinary retry ownership; reviews W2-WIT3, Q-W2-7). Returns
+ * whether decide starts that turn.
  */
 export function* intakeOwnTurn(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
     return yield* guarded(runtime, ownTurn(runtime));
@@ -682,7 +676,7 @@ export function* intakeOwnTurn(runtime: DurableSessionRuntime): Generator<any, b
 
 function* ownTurn(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
     const { state } = runtime;
-    if (state.pendingShutdown || intakeReusesThrownTurnKey(state)) return false;
+    if (state.pendingShutdown || state.ownedRetry !== null) return false;
     latchIntakeTombstones(runtime);
     if (intakeCanForm(state.intake)) yield* formAndBind(runtime);
     const stimulus = intakeOwnTurnStimulus(state.intake, state.intakeArrivalPending ? 1 : 0);
@@ -694,27 +688,27 @@ function* ownTurn(runtime: DurableSessionRuntime): Generator<any, boolean, any> 
 /**
  * Whether decide would start the intake's own turn now (intakeOwnTurn): drain
  * then neither blocks on the queue nor waits for an armed timer, as for
- * queued work. False during a graceful shutdown and while a thrown turn's
- * retry is pending, when decide starts none.
+ * queued work. False during a graceful shutdown and while a turn's retry is
+ * owed, when decide starts none (drain's own sweep yields to that retry).
  */
 export function intakeWantsTurn(runtime: DurableSessionRuntime): boolean {
     const { state } = runtime;
-    if (state.pendingShutdown || intakeReusesThrownTurnKey(state)) return false;
+    if (state.pendingShutdown || state.ownedRetry !== null) return false;
     return intakeCanForm(state.intake) || intakeOwnTurnStimulus(state.intake, state.intakeArrivalPending ? 1 : 0) !== null;
 }
 
 /**
- * Whether the next turn attempt sends the key of the thrown attempt it
+ * Whether the attempt about to run sends the key of the thrown attempt it
  * retries (turn.ts, which asks the same; 1.0.81): with snapshots, a retry
- * after a throw, and no sent invocation's retry held for the pending prompt
- * (review D-W2-1); the pending prompt's dispatch asks after taking that
- * marker. Such an attempt adopts the thrown attempt's saved result when that
- * attempt had committed, and so it carries only what that attempt carried
- * (review W2-WIT3).
+ * after a throw. Only decide's dispatch of the owed retry starts with such a
+ * key (intakeBeforeAttempt restores it; ordinary retry ownership, review
+ * Q-W2-7). Such an attempt adopts the thrown attempt's saved result when
+ * that attempt had committed, and so it carries only what that attempt
+ * carried (review W2-WIT3): with the retry marker, the invocation the thrown
+ * attempt carried; without it, none.
  */
 export function intakeReusesThrownTurnKey(state: DurableSessionRuntime["state"]): boolean {
-    return state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey !== null && state.thrownTurnKey !== ""
-        && state.intakeRetryInvocationId === null;
+    return state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey !== null && state.thrownTurnKey !== "";
 }
 
 /**

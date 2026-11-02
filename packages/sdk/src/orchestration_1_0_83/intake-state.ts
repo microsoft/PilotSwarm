@@ -183,14 +183,15 @@ export interface IntakeState {
 
 /**
  * The continue-as-new input as 1.0.83 writes and reads it: OrchestrationInput
- * with the carried intake and, while a sent invocation awaits its turn's
- * retry, the pending prompt's retry marker and the count and key of that
- * retry (review O-W2-3), and, while a newly claimed item is unanswered, the
- * arrival flag (review O-W2-5); all carried by every continue-as-new
- * (lifecycle.ts versionedContinueAsNew).
+ * with the carried intake; while a failed turn's retry is owed, that retry
+ * (state.ts OwnedRetry; ordinary retry ownership, review Q-W2-7), and with it,
+ * while a sent invocation awaits that retry, the retry marker (review
+ * D-W2-1); and, while a newly claimed item is unanswered, the arrival flag
+ * (review O-W2-5); all carried by every continue-as-new (lifecycle.ts
+ * versionedContinueAsNew).
  */
 export type IntakeCarryingInput = OrchestrationInput & {
-    intake?: unknown; intakeRetryInvocationId?: unknown; intakeRetryAttempt?: unknown; intakeArrivalPending?: unknown;
+    intake?: unknown; intakeRetryInvocationId?: unknown; ownedRetry?: unknown; intakeArrivalPending?: unknown;
 };
 
 /** The carried form: what a continue-as-new input holds under `intake`. */
@@ -445,11 +446,12 @@ export function intakeAwaitingRetry(state: IntakeState): IntakeInvocation | null
 }
 
 /**
- * The pending prompt's retry marker that `raw` (an input's
- * `intakeRetryInvocationId`) carries, checked against the restored intake
- * state (review D-W2-1): present exactly while a sent invocation awaits its
- * turn's retry, and naming it. Anything else fails the execution with the
- * field's path.
+ * The retry marker that `raw` (an input's `intakeRetryInvocationId`)
+ * carries, checked against the restored intake state (review D-W2-1):
+ * present exactly while a sent invocation awaits its turn's retry, and
+ * naming it. The owed retry (state.ts OwnedRetry) carries that invocation,
+ * and its dispatch takes the marker. Anything else fails the execution with
+ * the field's path.
  */
 export function restoreIntakeRetryInvocationId(raw: unknown, intake: IntakeState, path = "$.intakeRetryInvocationId"): string | null {
     const awaiting = intakeAwaitingRetry(intake);
@@ -460,39 +462,6 @@ export function restoreIntakeRetryInvocationId(raw: unknown, intake: IntakeState
     const invocationId = intakeId(raw, path);
     if (awaiting === null || awaiting.invocationId !== invocationId) throw new IntakeShapeError(path, "names no sent invocation that awaits its turn's retry");
     return invocationId;
-}
-
-/**
- * The retry count and thrown-turn key of the turn's retry that a sent
- * invocation awaits (review O-W2-3): what that retry's own continue-as-new
- * carried, kept apart from the session's retry count and thrown-turn key,
- * which a turn that runs while the retry is held changes as 1.0.82 does
- * (its success resets the count). The pending prompt's dispatch, which takes
- * the retry marker, takes these back (intake-wiring.ts beforeAttempt).
- */
-export interface IntakeRetryAttempt {
-    retryCount: number;
-    thrownTurnKey: string | null;
-}
-
-/**
- * The held retry's count and key that `raw` (an input's
- * `intakeRetryAttempt`) carries: present exactly with the retry marker
- * `marker`. Anything else fails the execution with the field's path.
- */
-export function restoreIntakeRetryAttempt(raw: unknown, marker: string | null, path = "$.intakeRetryAttempt"): IntakeRetryAttempt | null {
-    if (raw === undefined) {
-        if (marker !== null) throw new IntakeShapeError(path, `is missing while invocation ${marker} awaits its turn's retry`);
-        return null;
-    }
-    if (marker === null) throw new IntakeShapeError(path, "is present while no invocation awaits its turn's retry");
-    const value = intakeObject(raw, path, ["retryCount", "thrownTurnKey"]);
-    const retryCount = value.retryCount;
-    if (typeof retryCount !== "number" || !Number.isSafeInteger(retryCount) || retryCount < 0) {
-        throw new IntakeShapeError(`${path}.retryCount`, "is not a count");
-    }
-    const key = value.thrownTurnKey;
-    return { retryCount, thrownTurnKey: key === null ? null : intakeId(key, `${path}.thrownTurnKey`) };
 }
 
 /**

@@ -35,6 +35,7 @@ import {
     extraFoldersChangedNote,
     addCancelledMessageIds,
     touchRecentClientMessageIds,
+    restoreOwnedRetry,
     type DurableSessionRuntime,
     type PendingChildDigest,
 } from "./state.js";
@@ -45,6 +46,7 @@ import {
     validClientMessageIds,
 } from "./utils.js";
 import { assertIntakeContinueAsNewTarget, carryIntakeState, type IntakeCarryingInput } from "./intake-state.js";
+import { IntakeInvariantError } from "./intake-machine.js";
 
 // ─── Custom status / KV helpers ─────────────────────────────
 
@@ -711,13 +713,13 @@ export function buildContinueInputWithPrompt(
  * nothing else calls the context's continue-as-new). So here, before any
  * yield, it refuses an older target (the floor) and carries the intake
  * state: present only when not empty, so a session with no intake continues
- * as new with exactly the input 1.0.82 builds. The pending prompt's retry
- * marker rides with that prompt in the same way, present only while set
- * (review D-W2-1): every continue-as-new carries the pending prompt, merged
- * or as a retry's own. With the marker ride its retry's count and thrown-turn
- * key, taken from that retry's own continue-as-new, the first after the
- * marker is set (review O-W2-3); and an unanswered arrival's flag rides
- * while set (review O-W2-5).
+ * as new with exactly the input 1.0.82 builds. The owed retry rides every
+ * continue-as-new apart from the pending prompt and its fields, which stay
+ * the follow-ups' (ordinary retry ownership; review Q-W2-7): the one a failed
+ * turn's retry gives in its input (turn.ts ownedRetryOverrides), else the
+ * session's; two at once is a broken invariant. The retry marker rides with
+ * it while set (review D-W2-1), and never without it; and an unanswered
+ * arrival's flag rides while set (review O-W2-5).
  */
 export function* versionedContinueAsNew(
     runtime: DurableSessionRuntime,
@@ -728,13 +730,21 @@ export function* versionedContinueAsNew(
     const carriedIntake = carryIntakeState(state.intake);
     if (carriedIntake !== undefined) (canInput as IntakeCarryingInput).intake = carriedIntake;
     else delete (canInput as IntakeCarryingInput).intake;
+    const givenOwnedRetry = (canInput as IntakeCarryingInput).ownedRetry;
+    if (givenOwnedRetry !== undefined && state.ownedRetry !== null) {
+        throw new IntakeInvariantError(null, "a failed turn's retry continues as new while another turn's retry is still owed");
+    }
+    // Checked whole, and a copy that shares nothing with the state.
+    const ownedRetry = restoreOwnedRetry(givenOwnedRetry !== undefined ? givenOwnedRetry : state.ownedRetry ?? undefined);
+    if (ownedRetry !== null) (canInput as IntakeCarryingInput).ownedRetry = ownedRetry;
+    else delete (canInput as IntakeCarryingInput).ownedRetry;
     if (state.intakeRetryInvocationId !== null) {
+        if (ownedRetry === null) {
+            throw new IntakeInvariantError(null, `invocation ${state.intakeRetryInvocationId} awaits its turn's retry, but no retry is owed`);
+        }
         (canInput as IntakeCarryingInput).intakeRetryInvocationId = state.intakeRetryInvocationId;
-        state.intakeRetryAttempt ??= { retryCount: canInput.retryCount ?? 0, thrownTurnKey: canInput.thrownTurnKey || null };
-        (canInput as IntakeCarryingInput).intakeRetryAttempt = { ...state.intakeRetryAttempt };
     } else {
         delete (canInput as IntakeCarryingInput).intakeRetryInvocationId;
-        delete (canInput as IntakeCarryingInput).intakeRetryAttempt;
     }
     if (state.intakeArrivalPending) (canInput as IntakeCarryingInput).intakeArrivalPending = true;
     else delete (canInput as IntakeCarryingInput).intakeArrivalPending;

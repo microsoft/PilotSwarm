@@ -52,6 +52,7 @@ import {
     workspaceChangedNote,
     extraFoldersChangedNote,
     workspaceRetryDelayMs,
+    ownedRetryOverrides,
     type DurableSessionRuntime,
 } from "./state.js";
 import {
@@ -155,7 +156,7 @@ function* handleConnectionClosedRetry(
         }
 
         yield runtime.ctx.scheduleTimer(COPILOT_CONNECTION_CLOSED_RETRY_DELAY_SECONDS * 1000);
-        yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));
+        yield* versionedContinueAsNew(runtime, continueInput(runtime, ownedRetryOverrides(retryContinueOverrides(state, rc))));
         return;
     }
 
@@ -190,7 +191,7 @@ function* handleConnectionClosedRetry(
             nextStep: "release_affinity_and_resume_on_any_worker",
         });
         yield* versionedContinueAsNew(runtime, continueInput(runtime, {
-            ...retryContinueOverrides(state, rc),
+            ...ownedRetryOverrides(retryContinueOverrides(state, rc), true),
             retryCount: 0,
             rehydrationMessage: buildLossyHandoffRehydrationMessage(errorMessage),
         }));
@@ -219,6 +220,9 @@ function promptEnvelope(rc: RetryContext): Partial<OrchestrationInput> {
     };
 }
 
+// 1.0.83 (ordinary retry ownership; review Q-W2-7): every retry passes these
+// overrides through state.ts ownedRetryOverrides, so the retry is owed apart
+// from the pending prompt, which keeps the follow-ups and their own fields.
 function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: RetryContext): Partial<OrchestrationInput> {
     if (rc.phase === "turn.result.error") {
         return {
@@ -357,7 +361,7 @@ function* handleGenericRetry(
         });
     }
     yield runtime.ctx.scheduleTimer(retryDelay * 1000);
-    yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));
+    yield* versionedContinueAsNew(runtime, continueInput(runtime, ownedRetryOverrides(retryContinueOverrides(state, rc))));
 }
 
 // ─── processPrompt: hydrate → runTurn → handleTurnResult ────
@@ -377,7 +381,8 @@ export function* processPrompt(
     // settleQueuedWorkAfterDecide never re-arms a timer behind an attempt the
     // turn path already handled (a gate refusal, an error, a thrown failure).
     runtime.turnsStarted = (runtime.turnsStarted ?? 0) + 1;
-    // 1.0.83 (design 5.5): latch, form and bind, and whether this attempt carries the invocation.
+    // 1.0.83 (design 5.5): latch, form and bind, and whether this attempt carries the invocation; for decide's dispatch of
+    // the owed retry, also that retry's count and thrown-turn key (ordinary retry ownership, review Q-W2-7).
     const intakePayload = yield* intakeBeforeAttempt(runtime);
     // A provider-budget refusal stashes the whole pending turn contract, not
     // just its text. Any wake or interrupt that finally reaches the model must
@@ -527,20 +532,20 @@ export function* processPrompt(
         // second commit. Otherwise the retry runs the turn normally. The key
         // came from the earlier ctx.newGuid(), so nothing new is generated.
         //
-        // 1.0.83 (review D-W2-1): while a sent invocation's retry is held with
-        // the pending prompt, any other turn neither takes nor clears that
-        // retry's key: it would adopt the held retry's saved result, witness
-        // included. Only decide's dispatch of the pending prompt takes it. The
-        // intake asks the same before the attempt: an attempt that sends a
-        // thrown attempt's key carries only what that attempt carried (W2-WIT3).
-        const intakeRetryHeld = state.intakeRetryInvocationId !== null;
+        // 1.0.83 (ordinary retry ownership; reviews D-W2-1, Q-W2-7): only
+        // decide's dispatch of the owed retry starts with a thrown attempt's
+        // key (its first step, intakeBeforeAttempt, restores it); every other
+        // attempt starts with none, so no other turn can adopt that retry's
+        // saved result, witness included. The intake asks the same before the
+        // attempt: an attempt that sends a thrown attempt's key carries only
+        // what that attempt carried (W2-WIT3).
         const reusedTurnKey = intakeReusesThrownTurnKey(state)
             ? state.thrownTurnKey
             : null;
         if (reusedTurnKey) ctx.traceInfo(`[orch] retrying a thrown turn with its earlier turnKey ${reusedTurnKey}`);
         const snapshotTurnKey: string = reusedTurnKey ?? (state.blobEnabled ? yield ctx.newGuid() : "");
         attemptTurnKey = snapshotTurnKey;
-        if (!intakeRetryHeld) state.thrownTurnKey = null;
+        state.thrownTurnKey = null;
         const heldAttachments = sanitizePromptAttachmentRefs(
             (state.budgetStash ?? []).flatMap((entry) => entry.attachments ?? []));
         const turnTask = runtime.session.runTurn(prompt, promptIsBootstrap, state.iteration, {
