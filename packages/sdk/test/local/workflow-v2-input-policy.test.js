@@ -239,6 +239,9 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
                 seen.at(-1).invalid = JSON.parse(await bridge.completeWorkflowNode({ outcome: "accepted", output: { verdict: 7 }, operation_id: "op-0" }));
                 seen.at(-1).result = JSON.parse(await bridge.completeWorkflowNode({ outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }));
             }
+            // The completion commits before the call returns (it then wakes the controller), so the test waits for this mark,
+            // not only for the stored state, before it reads what the calls returned.
+            seen.at(-1).finished = true;
             return { type: "completed", content: "done", events: [] };
         };
         await intakeNativeCase(getEnv(), "agent state child turn", script, { testOptions: { workflowRequests: true } }, async h => {
@@ -249,7 +252,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             await h.start();
             await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
             await h.say("start the review", "cm-agent-1");
-            await h.until(async () => seen.length >= 1 && (await h.store.readNodeExecution(nodeExecutionId))?.state === "completed",
+            await h.until(async () => seen[0]?.finished === true && (await h.store.readNodeExecution(nodeExecutionId))?.state === "completed",
                 "the turn completes the state");
             // A live run's child is not under a test: its tools are its own.
             expect(seen[0]).toMatchObject({ subtree: true, complete: true, milestone: true, test: false,
@@ -274,6 +277,8 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
                 try { await bridge.workflowTestToolCall("read_build", { buildId: 7 }); entry.after = "ran"; }
                 catch (error) { entry.after = error?.code ?? String(error?.message ?? error); }
             }
+            // As above: the state is stored before the calls return, so the test waits for the script to finish.
+            entry.finished = true;
             return { type: "completed", content: "done", events: [] };
         };
         await intakeNativeCase(getEnv(), "real-agent test child turn", script, { testOptions: { workflowRequests: true } }, async h => {
@@ -283,7 +288,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             await h.start();
             await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
             await h.say("start the review", "cm-real-agent-1");
-            await h.until(async () => seen.length >= 1 && (await h.store.readNodeExecution(nodeExecutionId))?.state === "completed",
+            await h.until(async () => seen[0]?.finished === true && (await h.store.readNodeExecution(nodeExecutionId))?.state === "completed",
                 "the turn completes the state");
             expect(seen[0]).toMatchObject({ subtree: true, complete: true, test: true, answer: { state: "green" },
                 result: { ok: true, nodeExecutionId, runId, outcome: "accepted", kind: "result" }, after: "NODE_CLOSED" });
