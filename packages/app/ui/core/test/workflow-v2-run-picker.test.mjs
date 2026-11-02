@@ -9,7 +9,8 @@ import { PilotSwarmUiController, appReducer, createInitialState, createStore } f
 import { workflowDefinition, workflowReadModelView } from "../src/workflow-view.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
 import { selectWorkflowV2Run, workflowV2RunPickerModel } from "../../react/src/workflow-v2-panels.js";
-import { startedData, legacyStartedData, row, done, readModel } from "./workflow-v2-fixtures.mjs";
+import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
+import { startedData, legacyStartedData, ev, row, done, readModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-picker";
 const run = (runId, mode = "live", status = "running", extra = {}) => ({ runId, mode, status, revision: 1, outcome: null, ...extra });
@@ -54,7 +55,7 @@ test("several live and test runs are listed with kind, status, outcome, revision
 test("a selected id that is not listed, or whose list is not loaded, stays visible instead of falling back", () => {
     const unlisted = workflowV2RunPickerModel({ workflowModel: MODEL, selectedRunId: "run-from-link-0123456789", ownModelLoaded: false });
     assert.equal(unlisted.value, "run-from-link-0123456789");
-    assert.equal(unlisted.options.at(-1).label, "Selected run run-from… · not in the run list that was read");
+    assert.equal(unlisted.options.at(-1).label, "Selected run run-fr…6789 · not in the run list that was read");
     assert.equal(unlisted.options.at(-1).title, "run-from-link-0123456789");
     assert.deepEqual(unlisted.notes.map(note => note.text), ["This run is not in the run list that was read; only what is loaded for it is shown.", "Reading this run…"]);
     const notLoaded = workflowV2RunPickerModel({ workflowModel: null, selectedRunId: "run-x", ownModelLoaded: false });
@@ -132,10 +133,10 @@ test("run ids, outcomes and long text render escaped and bounded", () => {
     assert.ok(!html.includes("<img src=x"));
     assert.ok(!html.includes("<b>done"));
     assert.ok(html.includes("&lt;img src=x onerror=alert(1)&gt;"));
-    assert.ok(html.includes(`title="&lt;img src=x onerror=alert(1)&gt;${"z".repeat(300)}"`), "the title carries the full id as text");
+    assert.ok(html.includes(`title="&lt;img src=x onerror=alert(1)&gt;${"z".repeat(300)} · test run · completed · revision 1 · outcome `), "the title carries the full id as text");
     const label = workflowV2RunPickerModel({ workflowModel: model, selectedRunId: null, ownModelLoaded: true }).options[1].label;
-    assert.ok(label.length <= 100 && label.endsWith("…"));
-    assert.ok(workflowV2RunPickerModel({ workflowModel: MODEL, selectedRunId: hostile }).options.at(-1).label.length <= 100);
+    assert.ok(label.length <= 120 && label.includes(" · revision 1 · ") && label.endsWith("zzzz"), label);
+    assert.ok(workflowV2RunPickerModel({ workflowModel: MODEL, selectedRunId: hostile }).options.at(-1).label.length <= 120);
 });
 
 test("while the selected run's model loads or fails, nothing of the previously read run is overlaid, and the selection is kept", () => {
@@ -227,4 +228,112 @@ test("a failed read keeps the chosen run, and choosing again is not blocked", as
     await h.controller.ensureWorkflowReadModel(SID);
     assert.equal(workflowReadModelView(h.view()).error, null);
     assert.equal(workflowReadModelView(h.view()).readModel.marker, "run-test-2");
+});
+
+test("run fields that are not plain data, and prototype keys, are read as unknown and never throw", () => {
+    const items = [
+        JSON.parse('{"runId":"a1","mode":{"toString":null},"status":{"toString":null},"outcome":{"toString":null},"revision":{"toString":null}}'),
+        { runId: "a2", mode: "constructor", status: "constructor", outcome: "x" },
+        { runId: "a3", mode: "__proto__", status: "toString" },
+        JSON.parse('{"runId":"a4","mode":"hasOwnProperty","__proto__":{"mode":"live"}}'),
+        Object.assign(Object.create({ mode: "live", status: "running", revision: 9, outcome: "inherited" }), { runId: "a5" }),
+        Object.create({ runId: "inherited", mode: "live" }),
+        JSON.parse('{"__proto__":{"runId":"zz"}}'),
+    ];
+    const workflowModel = readModel({ runs: items });
+    let model;
+    assert.doesNotThrow(() => { model = workflowV2RunPickerModel({ workflowModel, selectedRunId: "a2", ownModelLoaded: true }); });
+    assert.deepEqual(model.options.map(option => option.value), ["", "a1", "a2", "a3", "a4", "a5"]);
+    assert.equal(model.malformed, 2);
+    assert.deepEqual(model.options.slice(1).map(option => option.label), [
+        "Run (mode not recognized) · status unknown · a1",
+        "Run (mode not recognized) · status unknown (x) · a2",
+        "Run (mode not recognized) · status unknown · a3",
+        "Run (mode not recognized) · status unknown · a4",
+        "Run (mode not recognized) · status unknown · a5",
+    ]);
+    assert.equal(model.options[0].label, "Live run", "no listed run is a live run");
+    assert.deepEqual(model.options.slice(1).map(option => option.kind), ["other", "other", "other", "other", "other"]);
+    assert.ok(model.options.every(option => !/function|native code|\[object/.test(option.label + option.title)));
+    let html;
+    assert.doesNotThrow(() => { html = pane(seed({ view: { definition: def(), readModel: workflowModel, readModelRunId: null } }).controller); });
+    assert.ok(html.includes("Run (mode not recognized) · status unknown (x) · a2"));
+    assert.ok(!/native code|\[object/.test(html));
+});
+
+test("long outcomes cannot hide which run an option is: kind, status, revision and the id's start and end stay, and the tooltip names them all", () => {
+    const long = "needs-human-review-".repeat(20);
+    const workflowModel = readModel({ runs: [
+        run("run-0123456789-aaa1", "test", "completed", { outcome: long, revision: 3 }),
+        run("run-0123456789-bbb2", "test", "completed", { outcome: long, revision: 4 }),
+        run("run-9", "live", "failed", { outcome: "x".repeat(100000), revision: 12 }),
+    ] });
+    const [, a, b, c] = workflowV2RunPickerModel({ workflowModel, selectedRunId: null, ownModelLoaded: true }).options;
+    assert.equal(a.label, "Test · completed (needs-human-review-…) · revision 3 · run-01…aaa1");
+    assert.equal(b.label, "Test · completed (needs-human-review-…) · revision 4 · run-01…bbb2");
+    assert.notEqual(a.label, b.label);
+    assert.equal(a.title, `run-0123456789-aaa1 · test run · completed · revision 3 · outcome ${long.slice(0, 299)}…`);
+    assert.ok(b.title.startsWith("run-0123456789-bbb2 · test run · completed · revision 4 · outcome "));
+    assert.equal(c.label, "Live · failed (xxxxxxxxxxxxxxxxxxx…) · revision 12 · run-9");
+    assert.ok(c.label.length <= 120 && c.title.length <= 400);
+    const html = pane(seed({ view: { definition: def(), readModel: workflowModel, readModelRunId: null } }).controller);
+    assert.ok(html.includes("revision 3 · run-01…aaa1") && html.includes("revision 4 · run-01…bbb2"));
+    assert.ok(html.includes("title=\"run-0123456789-aaa1 · test run"));
+});
+
+const GHOST = "run-test-ghost";
+const ghostEvents = () => [
+    ev("workflow.state_started", { runId: GHOST, nodeExecutionId: "nx-ghost-1", stateId: "poll", scopeId: "root", ordinal: 1, step: 1, type: "script" }),
+    ev("workflow.state_completed", { runId: GHOST, nodeExecutionId: "nx-ghost-1", stateId: "poll", step: 1, outcome: "changed", resultKind: "business", outputPreview: '{"ghost":true}' }),
+];
+const listed = [run("run-live"), run("run-test-1", "test", "completed")];
+/** The model read for the ghost test run: neither listed in `runs` nor started in the loaded events. */
+const ghostModel = (mode = "test") => readModel({ runs: listed, run: { runId: GHOST, mode, status: "completed", outcome: "succeeded", terminalState: "done", output: '{"who":"ghost"}' } });
+const liveModel = readModel({ runs: listed, run: { runId: "run-live", mode: "live", status: "running", output: '{"who":"live"}', nodeExecutions: [done("poll", 1, "unchanged")] } });
+
+test("going back to live while its model loads or fails never draws the last test run's events, even when that run is neither listed nor started", async () => {
+    const events = ghostEvents();
+    // Pure projection: the live selection's own model is not here, the wide model was read for the ghost test run.
+    for (const mode of ["test", "mystery", undefined]) {
+        const projection = projectWorkflowV2({ definition: def(), workflowModel: ghostModel(mode), selectedRunId: null, events });
+        assert.equal(projection.runId, null, `mode ${String(mode)}`);
+        assert.ok(projection.nodes.every(node => node.state === "idle" && !node.current), `mode ${String(mode)}`);
+        assert.equal(projection.status.label, "No run yet");
+        assert.ok(projection.banners.every(banner => !/v2 shape/.test(banner.text)), "events of a left-out run are not called malformed");
+    }
+    // The live run's own model draws only its own rows, and its own output.
+    const ownLive = projectWorkflowV2({ definition: def(), readModel: liveModel, workflowModel: liveModel, selectedRunId: null, events });
+    assert.equal(ownLive.runId, "run-live");
+    assert.equal(ownLive.output, '{"who":"live"}');
+    assert.equal(ownLive.nodes.find(node => node.id === "poll").stateLabel, "Done · unchanged");
+    // Controls: a live wide model does not hide a newer live run's events, and an unmarked run is not excluded by mistake.
+    const newer = [ev("workflow.state_completed", { runId: "run-new", nodeExecutionId: "nx-new-1", stateId: "poll", step: 1, outcome: "unchanged", resultKind: "business" })];
+    assert.equal(projectWorkflowV2({ definition: def(), workflowModel: liveModel, selectedRunId: null, events: newer }).runId, "run-new");
+    assert.equal(projectWorkflowV2({ definition: def(), selectedRunId: null, events: newer }).runId, "run-new");
+
+    // The real controller and the rendered pane: test run, then back to live while its model loads, fails, and arrives.
+    const h = seed({ events });
+    h.transport.respond = async (_id, options) => (options.runId === GHOST ? ghostModel() : liveModel);
+    selectWorkflowV2Run(h.controller, SID, GHOST);
+    await h.controller.ensureWorkflowReadModel(SID);
+    assert.equal(h.view().readModelRunId, GHOST);
+    selectWorkflowV2Run(h.controller, SID, null);
+    const loading = pane(h.controller);
+    assert.ok(!loading.includes("Done · changed"), "loading: no ghost overlay");
+    assert.match(loading, /No run yet/);
+    assert.match(loading, /Reading the live run…/);
+    assert.ok(!loading.includes("Test run"));
+    h.transport.respond = async () => { throw Object.assign(new Error("live read failed"), { code: "INTERNAL_ERROR", status: 500 }); };
+    await h.controller.ensureWorkflowReadModel(SID);
+    const failed = pane(h.controller);
+    assert.ok(!failed.includes("Done · changed"), "failed: no ghost overlay");
+    assert.match(failed, /live read failed/);
+    assert.match(failed, /This run could not be read\. Your selection is kept\./);
+    h.transport.respond = async () => liveModel;
+    await h.controller.ensureWorkflowReadModel(SID, { force: true });
+    assert.equal(h.view().readModelRunId, null);
+    const arrived = pane(h.controller);
+    assert.match(arrived, /Done · unchanged/);
+    assert.ok(!arrived.includes("Done · changed"));
+    assert.ok(!arrived.includes("live read failed"));
 });
