@@ -26,10 +26,11 @@ import {
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const close = (actual, expected, label) => assert.ok(Math.abs(actual - expected) < 1e-6, `${label}: ${actual} != ${expected}`);
 
-test("theme sounds are off by default", () => {
+test("theme sounds are on by default at volume 40", () => {
     const state = createInitialState({ mode: "web" });
     assert.deepEqual(state.ui.themeSound, defaultThemeSound());
-    assert.equal(state.ui.themeSound.on, false);
+    assert.deepEqual(state.ui.themeSound, { on: true, volume: 40 });
+    assert.deepEqual(normalizeThemeSound({ on: false }), { on: false, volume: 40 }, "a missing volume takes the default");
 });
 
 test("the setting round-trips through the profile and a partial profile keeps it", () => {

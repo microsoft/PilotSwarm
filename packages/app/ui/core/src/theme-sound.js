@@ -8,10 +8,10 @@
 // The setting is desktop-only: the phone has no Appearance settings, and a
 // phone in a pocket should not crackle.
 
-export const THEME_SOUND_VOLUME_DEFAULT = 35;
+export const THEME_SOUND_VOLUME_DEFAULT = 40;
 
 export function defaultThemeSound() {
-    return { on: false, volume: THEME_SOUND_VOLUME_DEFAULT };
+    return { on: true, volume: THEME_SOUND_VOLUME_DEFAULT };
 }
 
 export function normalizeThemeSound(value) {
