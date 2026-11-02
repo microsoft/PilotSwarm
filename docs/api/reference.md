@@ -390,7 +390,9 @@ and report paths back from `hostPaths`; `invocation.compute` is absent for
 a session that runs on the worker, where the ordinary rules apply.
 
 The host component is run as `pilotswarm-compute-host --binding <id> --runtime
-<host:port|port> --listen <host:port>`. It serves the side channel by default
+<host:port|port> --listen <host:port>`. Its connection to the worker is not
+encrypted: listen only on a network the deployment controls, and let only the
+workers reach that port (see section 4.8 of the compute providers proposal). It serves the side channel by default
 — a session with any skill folder or any MCP server needs it — writing the
 copies and the relay under `--services-dir` (a folder of this binding's own
 under the system temporary folder by default). `--no-services` turns it off,

@@ -16,7 +16,7 @@ registered services; a target's own capabilities and models; leases and
 end-of-tree notices; personal targets; hosts that can only reach outwards;
 and target management from the CLI, the portal and MCP.
 
-**Date:** 2026-11-02, revision 5. Revision 1 restructured the proposal to
+**Date:** 2026-11-02, revision 6. Revision 1 restructured the proposal to
 match `docs/proposals/session-workspaces.md`: a high-level design for a
 human reader first, then numbered sections. Revision 2 records the built
 behaviour after the parts were brought together. Revision 3 defers clear
@@ -25,7 +25,9 @@ Revision 4 moves provider services and target capabilities/host models
 into Future work, so this change is only the provider seam, the connection
 and the targets. Revision 5 records skills and MCP servers as built, and
 brings the terms, the decisions and the implementation map in line with
-what is on the branch.
+what is on the branch. Revision 6 records that the worker-to-host connection
+is not encrypted in this change, what a deployment must do about it (section
+4.8) and how encryption will be added (section 12.8).
 
 A session's agent runs on a host chosen for that session, not inside the
 worker that serves the turn. The worker stays the trusted side: it keeps the
@@ -99,7 +101,9 @@ The main ideas:
   reached. PilotSwarm needs only a two-way, ordered, reliable connection and
   never learns what it is made of.
 - **Both ends prove who they are** before anything else crosses, with one
-  handshake PilotSwarm defines for every provider.
+  handshake PilotSwarm defines for every provider. The handshake does not
+  encrypt the connection, so **the network between workers and hosts must be
+  private** (section 4.5); encrypting it is future work (section 12.8).
 - **The worker keeps what must be trusted:** orchestration, PilotSwarm tools,
   PilotSwarm's model keys and the session's history.
 
@@ -582,6 +586,18 @@ by default, so an existing deployment and local development are unchanged.
 Whether a session has a target is read from its own record, never from
 anything the agent can set.
 
+**Before a deployment turns this on: a private network.** The connection
+between a worker and a host is not encrypted (section 4.5). Before any target
+is registered, the deployment makes sure that:
+
+- the hosts' addresses are reachable only on a network the deployment
+  controls, never across one it does not;
+- only the workers can reach the host component's port, for example with a
+  network policy that admits the worker pods and nothing else, including
+  other hosts;
+- a provider whose hosts are anywhere else protects the path itself, or waits
+  for section 12.8.
+
 **Rolling deploys.** Workers that can drive a runtime on another host declare
 a capability tag, `pilotswarm.compute.v1`, and the turns of a session in a
 compute tree are routed only to those. Without it, a worker from before this
@@ -1008,6 +1024,11 @@ breaks for a session rather than for itself.
   provider's, not inherited from the worker.
 - **A clean host for a new workload.** No files, logins, processes or
   secrets from an earlier one.
+- **A private path to the host.** The address a provider returns is reachable
+  from the workers over a network the deployment controls, and the host
+  component's port is reachable from the workers only. PilotSwarm does not
+  encrypt the connection (section 4.5) and cannot check the path; a provider
+  that cannot promise this is not ready to be used until section 12.8 exists.
 - **`release` is a hint.** It may never arrive — a worker can crash, a
   network can go away. The host component's idle shutdown is what actually
   frees a host nobody came back to.
@@ -1183,6 +1204,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | Clear failure reasons, provider services, target capabilities/host models, leases, personal targets, and CLI/portal/MCP target management left out of this change and designed in section 12 | One large change carrying all of it |
 | A deployment may name a target for sessions that choose none, and may refuse to run any agent on the worker. Both are off by default | Every deployment having to name a target on every session |
 | A remote session's skill folders are copied read-only to its host, named by content; a package's MCP server runs on the host out of that copy; a deployment's MCP server stays on the trusted side and is reached through the host component | Mounting the worker's file system on a host, or sending the deployment's own configuration to one |
+| The connection between worker and host is not encrypted in this change; the network between them must be private, and encrypting it is designed in section 12.8 (decided 2026-11-02) | Encrypting it now, before any provider needs to cross a network the deployment does not control |
 
 **Verified on the branch (with the `process` provider, real workers and PostgreSQL)**
 
@@ -1520,6 +1542,16 @@ not — is not built.
 
 ### 12.8 Encrypting the connection between worker and host
 
+**Left out on purpose.** This change does not encrypt the connection, to keep
+its most security-sensitive code small and reviewable. The first providers run
+hosts on a network the deployment controls (section 4.8 says what that
+requires), where the handshake's proof of who is at each end is enough.
+
+**When it becomes required.** With the first provider whose traffic leaves a
+network the deployment controls. That is usually a host that cannot be dialed
+directly or that registers itself, so this work fits with sections 12.5 and
+12.21.
+
 **Value.** The connection between a worker and a host stops needing a network
 that is already private. Today the handshake proves who is at each end and
 nothing more, so a party that can sit in the middle of that connection can
@@ -1527,10 +1559,17 @@ read and change the runtime's token, the prompts and the tool results. A
 deployment whose workers and hosts are not on a network it controls has no
 safe way to use this.
 
-**What it adds.** A session key derived from the handshake — HKDF over the
-secret, the binding id and both nonces — and the stream framed under an AEAD
-from then on; or the connection bound to TLS, with the handshake proving the
-same certificate both ends saw. Either makes relaying the exchange useless.
+**What it adds.** One of two designs. Either makes relaying the exchange
+useless.
+
+| Design | How | Trade-off |
+|---|---|---|
+| Standard TLS | The provider gives the host component a certificate; the worker connects with TLS and checks it, and the handshake runs inside the TLS connection, bound to it | Standard, well-understood protection; every provider must issue and rotate certificates |
+| Encryption keyed from the handshake | A session key derived from the handshake (HKDF over the secret, the binding id and both nonces), and the stream framed under an AEAD from then on | No certificates; a protocol of PilotSwarm's own that needs careful review |
+
+The handshake already carries a version, so either can be added later without
+breaking hosts that run this change: a worker and a host agree on a version or
+refuse each other.
 
 **Requirements when it is built.**
 

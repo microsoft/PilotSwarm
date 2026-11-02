@@ -26,7 +26,9 @@ runtime of its own. Both are off by default, so sessions without a compute
 target are unchanged. Every turn of every session in a tree that has a target —
 sub-agents and system sessions included — is routed only to workers that can
 drive a remote runtime, and the worker refuses to start a local runtime for
-such a session whatever route reached it.
+such a session whatever route reached it. The connection between a worker and
+a host is not encrypted: the network between them must be private, and only
+the workers should be able to reach a host.
 
 A session that runs on a host gets the same skill folders and the same MCP
 servers as one that runs on the worker.
