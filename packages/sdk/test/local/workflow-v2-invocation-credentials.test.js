@@ -10,11 +10,16 @@
  *   first; issuing again for the same binding revokes the earlier one.
  * - Verify: the audience and the effect must match (403 scope otherwise); an
  *   unknown or malformed token is invalid; an expired, rotated or revoked one
- *   is refused (401); after the effect is decided it is closed (409) and
+ *   is refused (403); after the effect is decided it is closed (409) and
  *   revoked.
  * - Use: a completion or a response with a valid credential is given as its
  *   holder by the in-process tools' own implementation; without a credential
  *   (a person's sign-in alone) nothing is decided.
+ * - The direct management client (the portal's and the TUI's transport): it
+ *   issues credentials and takes credentialed answers and completions only
+ *   with the test-only option workflowCredentials (else 501); a completion
+ *   must be for the session the call names (403 scope otherwise), and its
+ *   refusals carry their status and details (422 with the output's problems).
  *
  * No model runs and no controller runs here.
  */
@@ -28,6 +33,7 @@ import {
     completeWorkflowNodeWithCredential, issueWorkflowInvocationCredential, respondSessionRequestWithCredential, verifyWorkflowInvocationCredential,
 } from "../../src/workflow/v2/invocation-credentials.ts";
 import { REQUEST_TIMEOUT, requestFixture } from "../helpers/workflow-v2-request-fixture.js";
+import { createManagementClient, PilotSwarmManagementClient } from "../helpers/local-workers.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-invocation-credentials-test" };
@@ -116,26 +122,26 @@ describe("workflow v2 invocation credentials (inactive)", () => {
             await refusedWith(() => verifyWorkflowInvocationCredential(h.store, first.token, { audience: "workflow.respond" }), "CREDENTIAL_SCOPE", 403);
             await refusedWith(() => verifyWorkflowInvocationCredential(h.store, first.token, { audience: "workflow.complete", nodeExecutionId: "nx-other" }),
                 "CREDENTIAL_SCOPE", 403);
-            await refusedWith(() => verifyWorkflowInvocationCredential(h.store, `pswic_${"A".repeat(43)}`, { audience: "workflow.complete" }), "CREDENTIAL_INVALID", 401);
-            await refusedWith(() => verifyWorkflowInvocationCredential(h.store, "Bearer something", { audience: "workflow.complete" }), "CREDENTIAL_INVALID", 401);
+            await refusedWith(() => verifyWorkflowInvocationCredential(h.store, `pswic_${"A".repeat(43)}`, { audience: "workflow.complete" }), "CREDENTIAL_INVALID", 403);
+            await refusedWith(() => verifyWorkflowInvocationCredential(h.store, "Bearer something", { audience: "workflow.complete" }), "CREDENTIAL_INVALID", 403);
 
             // Issuing again rotates: the earlier one is revoked. An expired one is refused; an explicit revocation holds.
             const second = await issueWorkflowInvocationCredential(h.store, complete);
-            await refusedWith(() => verifyWorkflowInvocationCredential(h.store, first.token, { audience: "workflow.complete" }), "CREDENTIAL_REVOKED", 401);
+            await refusedWith(() => verifyWorkflowInvocationCredential(h.store, first.token, { audience: "workflow.complete" }), "CREDENTIAL_REVOKED", 403);
             expect((await h.store.listInvocationCredentials(state.nodeExecutionId)).map(item => item.revokedReason)).toEqual(["rotated", null]);
             await h.q(`UPDATE SCHEMA.workflow_invocation_credentials SET issued_at = now() - interval '2 hours', expires_at = now() - interval '1 hour'
                 WHERE credential_id = $1`, [second.credential.credentialId]);
-            await refusedWith(() => verifyWorkflowInvocationCredential(h.store, second.token, { audience: "workflow.complete" }), "CREDENTIAL_EXPIRED", 401);
+            await refusedWith(() => verifyWorkflowInvocationCredential(h.store, second.token, { audience: "workflow.complete" }), "CREDENTIAL_EXPIRED", 403);
             const third = await issueWorkflowInvocationCredential(h.store, complete);
             expect(await h.store.revokeInvocationCredentials({ credentialId: third.credential.credentialId, reason: "lost" })).toBe(1);
             expect(await h.store.revokeInvocationCredentials({ credentialId: third.credential.credentialId, reason: "again" })).toBe(0);
             const revoked = await refusedWith(() => verifyWorkflowInvocationCredential(h.store, third.token, { audience: "workflow.complete" }),
-                "CREDENTIAL_REVOKED", 401);
+                "CREDENTIAL_REVOKED", 403);
             expect(revoked.details).toEqual({ reason: "lost" });
 
             // A person's sign-in alone completes nothing; the holder's credential completes the state as its child.
             const done = { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" };
-            await refusedWith(() => completeWorkflowNodeWithCredential(done, { token: undefined, store: h.store }), "CREDENTIAL_REQUIRED", 401);
+            await refusedWith(() => completeWorkflowNodeWithCredential(done, { token: undefined, store: h.store }), "CREDENTIAL_REQUIRED", 403);
             expect((await h.store.readNodeExecution(state.nodeExecutionId)).state).toBe("pending");
             const fourth = await issueWorkflowInvocationCredential(h.store, complete);
             const answer = JSON.parse(await completeWorkflowNodeWithCredential({ ...done, node_execution_id: state.nodeExecutionId },
@@ -167,7 +173,7 @@ describe("workflow v2 invocation credentials (inactive)", () => {
             await refusedWith(() => respondSessionRequestWithCredential({ request_id: "nx-other", operation_id: "op-0", response: { approved: true } },
                 { token: issued.token, store: h.store }), "CREDENTIAL_SCOPE", 403);
             await refusedWith(() => respondSessionRequestWithCredential({ request_id: exchangeId, operation_id: "op-0", response: { approved: true } },
-                { token: null, store: h.store }), "CREDENTIAL_REQUIRED", 401);
+                { token: null, store: h.store }), "CREDENTIAL_REQUIRED", 403);
             const answer = JSON.parse(await respondSessionRequestWithCredential({ operation_id: "op-1", response: { approved: true } },
                 { token: issued.token, store: h.store }));
             expect(answer).toMatchObject({ ok: true, replayed: false });
@@ -176,6 +182,56 @@ describe("workflow v2 invocation credentials (inactive)", () => {
             expect(operations).toEqual([{ actor_session_id: h.parent }]);
             await refusedWith(() => verifyWorkflowInvocationCredential(h.store, issued.token, { audience: "workflow.respond" }), "CREDENTIAL_CLOSED", 409);
         } finally {
+            await h.stop();
+        }
+    });
+
+    it("through the management client: issued and taken only with the option, for the session the call names, refusals with their status", { timeout: REQUEST_TIMEOUT }, async () => {
+        const env = getEnv();
+        const h = await requestFixture(env);
+        const plain = await createManagementClient(env);
+        const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema,
+            factsSchema: env.factsSchema, workflowCredentials: true });
+        await mgmt.start();
+        try {
+            const state = await agentState(h);
+            const complete = { audience: "workflow.complete", nodeExecutionId: state.nodeExecutionId, holderSessionId: state.child };
+            // Inactive without the option: nothing is issued or taken.
+            await refusedWith(() => plain.issueWorkflowInvocationCredential(complete), "WORKFLOW_CREDENTIALS_UNAVAILABLE", 501);
+            await refusedWith(() => plain.completeWorkflowNode(state.child, { operationId: "op-0", outcome: "accepted", output: { verdict: "ok" },
+                credential: `pswic_${"A".repeat(43)}` }), "WORKFLOW_CREDENTIALS_UNAVAILABLE", 501);
+
+            const issued = await mgmt.issueWorkflowInvocationCredential({ ...complete, ttlSeconds: 600 });
+            expect(issued.token).toMatch(/^pswic_/);
+            expect(issued.credential).toMatchObject({ audience: "workflow.complete", nodeExecutionId: state.nodeExecutionId, holderSessionId: state.child });
+            expect(issued.credential.tokenSha256).toBeUndefined();
+            // A person's sign-in alone, another session in the path, an output the contract refuses.
+            await refusedWith(() => mgmt.completeWorkflowNode(state.child, { operationId: "op-1", outcome: "accepted", output: { verdict: "ok" } }),
+                "CREDENTIAL_REQUIRED", 403);
+            await refusedWith(() => mgmt.completeWorkflowNode(h.parent, { operationId: "op-1", outcome: "accepted", output: { verdict: "ok" },
+                credential: issued.token }), "CREDENTIAL_SCOPE", 403);
+            const invalid = await refusedWith(() => mgmt.completeWorkflowNode(state.child, { operationId: "op-2", outcome: "accepted", output: { verdict: 5 },
+                credential: issued.token }), "OUTPUT_INVALID", 422);
+            expect(invalid.exposeDetails).toBe(true);
+            expect(Array.isArray(invalid.details.problems)).toBe(true);
+            expect((await h.store.readNodeExecution(state.nodeExecutionId)).state).toBe("pending");
+            // The holder's credential completes the state as its child.
+            expect(await mgmt.completeWorkflowNode(state.child, { nodeExecutionId: state.nodeExecutionId, operationId: "op-3", outcome: "accepted",
+                output: { verdict: "ok" }, credential: issued.token })).toMatchObject({ replayed: false, nodeExecutionId: state.nodeExecutionId, outcome: "accepted" });
+            expect(await h.store.readNodeExecution(state.nodeExecutionId)).toMatchObject({ state: "completed", winner: "agent" });
+
+            // A request's responder answers with its credential; an absent decline is not sent as one.
+            const run = await h.workflow();
+            const exchangeId = await h.admit(run);
+            const respond = await mgmt.issueWorkflowInvocationCredential({ audience: "workflow.respond", nodeExecutionId: exchangeId, holderSessionId: h.parent });
+            expect(await mgmt.respondToSessionRequest(exchangeId, { operationId: "op-4", response: { approved: true }, credential: respond.token }))
+                .toMatchObject({ replayed: false });
+            expect(await h.store.readNodeExecution(exchangeId)).toMatchObject({ state: "completed", winner: "response" });
+            await refusedWith(() => mgmt.respondToSessionRequest(exchangeId, { operationId: "op-5", response: { approved: false }, credential: respond.token }),
+                "CREDENTIAL_CLOSED", 409);
+        } finally {
+            await mgmt.stop();
+            await plain.stop();
             await h.stop();
         }
     });

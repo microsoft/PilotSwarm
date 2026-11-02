@@ -36,3 +36,20 @@ test("passes the portal's caller as it is, or the TUI's own user when no caller 
     await anonymous.transport.updateWorkflow("wf-1", command);
     assert.deepEqual(anonymous.calls, [["wf-1", command, { principal: null }]]);
 });
+
+test("passes a credentialed answer and completion to the management client as they are", async () => {
+    const calls = [];
+    const transport = {
+        mgmt: {
+            respondToSessionRequest: async (...args) => { calls.push(["respond", ...args]); return { status: "responded" }; },
+            completeWorkflowNode: async (...args) => { calls.push(["complete", ...args]); return { outcome: "accepted" }; },
+        },
+        respondToSessionRequest: NodeSdkTransport.prototype.respondToSessionRequest,
+        completeWorkflowNode: NodeSdkTransport.prototype.completeWorkflowNode,
+    };
+    const answer = { operationId: "op-1", response: { approved: true }, credential: "pswic_x" };
+    const completion = { operationId: "op-2", outcome: "accepted", output: { verdict: "ok" }, credential: "pswic_y" };
+    assert.deepEqual(await transport.respondToSessionRequest("nx-9", answer), { status: "responded" });
+    assert.deepEqual(await transport.completeWorkflowNode("child-1", completion), { outcome: "accepted" });
+    assert.deepEqual(calls, [["respond", "nx-9", answer], ["complete", "child-1", completion]]);
+});

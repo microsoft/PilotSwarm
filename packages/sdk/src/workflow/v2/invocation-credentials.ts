@@ -37,13 +37,17 @@ export const WORKFLOW_INVOCATION_CREDENTIAL_PREFIX = "pswic_";
 export const WORKFLOW_V2_CREDENTIAL_DEFAULT_TTL_SECONDS = 3_600;
 const TOKEN_PATTERN = /^pswic_[A-Za-z0-9_-]{43}$/;
 
-/** A refused credential: its code and HTTP status. */
+/**
+ * A refused credential: its code and HTTP status. Every refusal is 403 (409
+ * once its effect was decided), never 401: a client reads a 401 as its own
+ * sign-in failing, and a credential is not the caller's sign-in.
+ */
 export class WorkflowCredentialError extends Error {
     readonly status: number;
     constructor(readonly code: string, message: string, readonly details: { [key: string]: string | null } | null = null) {
         super(message);
         this.name = "WorkflowCredentialError";
-        this.status = code === "CREDENTIAL_SCOPE" ? 403 : code === "CREDENTIAL_CLOSED" ? 409 : 401;
+        this.status = code === "CREDENTIAL_CLOSED" ? 409 : 403;
     }
 }
 
@@ -76,8 +80,8 @@ export async function issueWorkflowInvocationCredential(store: Pick<WorkflowStor
  * Check a token for one use of `expected.audience` (and, when named, on that
  * node execution and for that holder). Returns the credential; throws
  * WorkflowCredentialError: CREDENTIAL_REQUIRED (none given), CREDENTIAL_INVALID
- * (malformed or unknown), CREDENTIAL_REVOKED, CREDENTIAL_EXPIRED (401 each),
- * CREDENTIAL_SCOPE (403: another audience, effect or holder) or
+ * (malformed or unknown), CREDENTIAL_REVOKED, CREDENTIAL_EXPIRED,
+ * CREDENTIAL_SCOPE (another audience, effect or holder; 403 each) or
  * CREDENTIAL_CLOSED (409: its effect was decided or its run ended; the
  * credential is revoked).
  */
@@ -129,8 +133,11 @@ export async function respondSessionRequestWithCredential(args: Record<string, u
  */
 export async function completeWorkflowNodeWithCredential(args: Record<string, unknown>, context: {
     token: unknown; store: Pick<WorkflowStore, "verifyInvocationCredential" | "completeAgentNode">; client?: WorkflowAgentWakeClient | null;
+    /** The session the call is made for (a route's path): the credential must be its holder. */
+    holderSessionId?: string | null;
 }): Promise<string> {
     const named = typeof args.node_execution_id === "string" && args.node_execution_id ? args.node_execution_id : null;
-    const credential = await verifyWorkflowInvocationCredential(context.store, context.token, { audience: "workflow.complete", nodeExecutionId: named });
+    const credential = await verifyWorkflowInvocationCredential(context.store, context.token, { audience: "workflow.complete", nodeExecutionId: named,
+        holderSessionId: context.holderSessionId ?? null });
     return completeWorkflowNodeFromTool(args, { callerSessionId: credential.holderSessionId, store: context.store, client: context.client ?? null });
 }

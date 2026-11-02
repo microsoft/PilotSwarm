@@ -48,13 +48,13 @@ test("refuses a missing or malformed token without reading the store, and maps e
     const token = `pswic_${"a".repeat(43)}`;
     for (const missing of [undefined, null, ""]) {
         await assert.rejects(verifyWorkflowInvocationCredential(storeWith({ result: "valid", credential: CREDENTIAL }), missing, { audience: "workflow.complete" }),
-            error => error instanceof WorkflowCredentialError && error.code === "CREDENTIAL_REQUIRED" && error.status === 401);
+            error => error instanceof WorkflowCredentialError && error.code === "CREDENTIAL_REQUIRED" && error.status === 403);
     }
     await assert.rejects(verifyWorkflowInvocationCredential(storeWith({ result: "valid", credential: CREDENTIAL }), "not-a-token", { audience: "workflow.complete" }),
-        error => error.code === "CREDENTIAL_INVALID" && error.status === 401);
+        error => error.code === "CREDENTIAL_INVALID" && error.status === 403);
     assert.equal(reads, 0);
     assert.deepEqual(await verifyWorkflowInvocationCredential(storeWith({ result: "valid", credential: CREDENTIAL }), token, { audience: "workflow.complete" }), CREDENTIAL);
-    for (const [result, code, status] of [["invalid", "CREDENTIAL_INVALID", 401], ["revoked", "CREDENTIAL_REVOKED", 401], ["expired", "CREDENTIAL_EXPIRED", 401],
+    for (const [result, code, status] of [["invalid", "CREDENTIAL_INVALID", 403], ["revoked", "CREDENTIAL_REVOKED", 403], ["expired", "CREDENTIAL_EXPIRED", 403],
         ["scope", "CREDENTIAL_SCOPE", 403], ["closed", "CREDENTIAL_CLOSED", 409]]) {
         await assert.rejects(verifyWorkflowInvocationCredential(storeWith({ result, credential: { ...CREDENTIAL, revokedReason: "lost" } }), token,
             { audience: "workflow.complete" }), error => error.code === code && error.status === status, result);

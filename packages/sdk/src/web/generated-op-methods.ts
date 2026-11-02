@@ -17,6 +17,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "clearSystemSessionModel",
     "completeSession",
     "completeSessionGroup",
+    "completeWorkflowNode",
     "copyArtifact",
     "createMyProvider",
     "createProvider",
@@ -136,6 +137,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "republishAgentPackageVersion",
     "resetCanvasShareLink",
     "resetClusterFeatureFlag",
+    "respondToSessionRequest",
     "restartSystemSession",
     "retrySessionWorkspace",
     "revokeAgentPackageEditor",
@@ -285,6 +287,20 @@ export interface ManagementOps {
     completeSessionGroup(params: {
         groupId: string;
         options?: any;
+    }): Promise<any>;
+
+    /**
+     * Complete a workflow agent state with an invocation credential (INACTIVE: 501 WORKFLOW_CREDENTIALS_UNAVAILABLE unless the deployment enables it). The credential is the authority, never the caller's sign-in: a workflow.complete credential held by sessionId, the state's child (and for nodeExecutionId when given); the completion (outcome and output, or error, with operationId) is given as that child. 403 CREDENTIAL_REQUIRED, INVALID, EXPIRED, REVOKED or SCOPE (never 401, which a client reads as its sign-in failing); 409 CREDENTIAL_CLOSED; 422 an output its contract refuses.
+     * @remarks `POST /sessions/:sessionId/workflow-node/result` — access: `workflow:credential`
+     */
+    completeWorkflowNode(params: {
+        sessionId: string;
+        nodeExecutionId?: any;
+        operationId?: any;
+        outcome?: any;
+        output?: any;
+        error?: any;
+        credential?: any;
     }): Promise<any>;
 
     /**
@@ -1320,6 +1336,18 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Answer a workflow's request with an invocation credential (INACTIVE: 501 WORKFLOW_CREDENTIALS_UNAVAILABLE unless the deployment enables it). The credential is the authority, never the caller's sign-in: a workflow.respond credential for this request, issued by the host for its responder; the answer (response or decline, with operationId) is given as that responder. 403 CREDENTIAL_REQUIRED, INVALID, EXPIRED, REVOKED or SCOPE (never 401, which a client reads as its sign-in failing); 409 CREDENTIAL_CLOSED or a conflict of the request.
+     * @remarks `POST /session-requests/:requestId/responses` — access: `workflow:credential`
+     */
+    respondToSessionRequest(params: {
+        requestId: string;
+        operationId?: any;
+        response?: any;
+        decline?: any;
+        credential?: any;
+    }): Promise<any>;
+
+    /**
      * Restart a system session (complete | terminate | hard_delete). With startReplacement: false, remove it and start nothing; refused (409 SYSTEM_AGENT_LOADED) while a live worker loads the agent.
      * @remarks `POST /management/sessions/:agentIdOrSessionId/restart-system` — access: `fleet:admin`
      */
@@ -1841,6 +1869,7 @@ export function createManagementOps(
         clearSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("clearSystemSessionModel", params),
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
+        completeWorkflowNode: (params: Record<string, unknown> = {}) => callOp("completeWorkflowNode", params),
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
@@ -1960,6 +1989,7 @@ export function createManagementOps(
         republishAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("republishAgentPackageVersion", params),
         resetCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("resetCanvasShareLink", params),
         resetClusterFeatureFlag: (params: Record<string, unknown> = {}) => callOp("resetClusterFeatureFlag", params),
+        respondToSessionRequest: (params: Record<string, unknown> = {}) => callOp("respondToSessionRequest", params),
         restartSystemSession: (params: Record<string, unknown> = {}) => callOp("restartSystemSession", params),
         retrySessionWorkspace: (params: Record<string, unknown> = {}) => callOp("retrySessionWorkspace", params),
         revokeAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("revokeAgentPackageEditor", params),

@@ -548,12 +548,13 @@ Unfulfilled requirements (open, not waived; R26):
   design 04's separate `/test-runs` and `/inbox` paths, and the final path
   names, are API review item D11. No portal or TUI screen sends a command
   yet: the UI stays read-only.
-- **Response and completion routes** (REST/MCP for `respond_session_request`
-  and `complete_workflow_node`): the invocation credential they need exists
-  (below), but no route, MCP tool or TUI command accepts one yet, and nothing
-  issues one: the host's trigger that issues a credential for a holder and
-  hands it to the holder's external runtime is not built. Until then both
-  stay in-process tools.
+- **Credential hand-off, MCP and TUI commands** (design 04): the
+  credentialed REST routes exist (below), and a trusted host process
+  issues a credential through the direct management client; what does not
+  exist yet is the trigger that issues one when a holder's work runs
+  outside its in-process tools and hands the token to that runtime, and
+  the MCP tools and TUI commands that send a credentialed answer or
+  completion.
 
 **Invocation credentials (design 04; migration 0102; INACTIVE).** A
 credential lets one holder session act on one pending workflow effect from
@@ -578,11 +579,29 @@ agent state (audience `workflow.complete`; the holder is its child)
   same binding revokes the earlier one (`rotated`); the first use after the
   effect is decided or its run ended revokes it (`decided`); a revocation by
   id or by node execution holds (its reason is kept).
+- **Issue.** Only a trusted host process issues a credential: the direct
+  management client's `issueWorkflowInvocationCredential` (a process that
+  holds the database credential). The Web API has no issuing operation, so
+  a person's sign-in cannot obtain one (the web client refuses with
+  `WEB_MODE_UNSUPPORTED`).
+- **Routes.** `POST /api/v1/session-requests/:requestId/responses`
+  (`respondToSessionRequest`: `operationId`, `response` or `decline`,
+  `credential`) and `POST /api/v1/sessions/:sessionId/workflow-node/result`
+  (`completeWorkflowNode`: `nodeExecutionId`, `operationId`, `outcome` and
+  `output` or `error`, `credential`). Their access class
+  `workflow:credential` admits the caller and runs no session gate; the
+  caller's identity is not passed on, because the credential is the only
+  authority. A completion must be held by the session in the path. The
+  web client, `HttpApiTransport` and the portal's and TUI's transport carry
+  them; an absent field stays absent. Inactive: only the test-only option
+  `workflowCredentials` (portal runtime, transport, management client)
+  takes them; otherwise 501 `WORKFLOW_CREDENTIALS_UNAVAILABLE`.
 - **Use.** The action needs the token: a person's sign-in alone is
-  `CREDENTIAL_REQUIRED` (401). An unknown or malformed token is
+  `CREDENTIAL_REQUIRED`. An unknown or malformed token is
   `CREDENTIAL_INVALID`, an expired or revoked one `CREDENTIAL_EXPIRED` or
-  `CREDENTIAL_REVOKED` (401); another audience, request or node is
-  `CREDENTIAL_SCOPE` (403); a decided effect `CREDENTIAL_CLOSED` (409). A valid
+  `CREDENTIAL_REVOKED`; another audience, request or node is
+  `CREDENTIAL_SCOPE` (each 403, never 401: a client reads a 401 as its own
+  sign-in failing); a decided effect `CREDENTIAL_CLOSED` (409). A valid
   credential then acts as its holder, on its own effect, through the
   in-process tools' implementation (`respondSessionRequestWithCredential`,
   `completeWorkflowNodeWithCredential`), which decides again under its locks;

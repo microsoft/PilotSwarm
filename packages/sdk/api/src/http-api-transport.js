@@ -55,6 +55,13 @@ function unsupported(name, hint) {
     };
 }
 
+/** The fields of a credentialed workflow call that are present (an absent answer field is not sent as undefined). */
+function presentFields(input, names) {
+    const fields = {};
+    for (const name of names) if (input?.[name] !== undefined) fields[name] = input[name];
+    return fields;
+}
+
 /**
  * The shared-UI transport surface (what `pilotswarm/ui-core` consumes) over
  * the PilotSwarm Web API. Used by the browser portal and by the TUI's API
@@ -253,6 +260,17 @@ export class HttpApiTransport {
     /** Workflow v2: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
     async updateWorkflow(sessionId, command) {
         return this.api.call("updateWorkflow", { sessionId, command });
+    }
+
+    /** Workflow v2: answer a workflow's request with an invocation credential (respondToSessionRequest; inactive unless the deployment enables it). */
+    async respondToSessionRequest(requestId, input = {}) {
+        return this.api.call("respondToSessionRequest", { requestId, ...presentFields(input, ["operationId", "response", "decline", "credential"]) });
+    }
+
+    /** Workflow v2: complete an agent state with an invocation credential (completeWorkflowNode; inactive unless the deployment enables it). */
+    async completeWorkflowNode(sessionId, input = {}) {
+        return this.api.call("completeWorkflowNode", { sessionId,
+            ...presentFields(input, ["nodeExecutionId", "operationId", "outcome", "output", "error", "credential"]) });
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {

@@ -517,7 +517,7 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workflowCredentials } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
@@ -555,6 +555,8 @@ export class NodeSdkTransport {
             canvasCommands: canvasCommandsConfigFromEnv(),
             // Workflow v2 (INACTIVE; test-only): a person's workflow commands. Unset, they answer 501.
             ...(workflowCommands ? { workflowCommands } : {}),
+            // Workflow v2 (INACTIVE; test-only): credentialed responses and completions. Unset, they answer 501.
+            ...(workflowCredentials ? { workflowCredentials: true } : {}),
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -1140,6 +1142,20 @@ export class NodeSdkTransport {
         const principal = Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
             : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
         return this.mgmt.updateWorkflow(sessionId, command, { principal });
+    }
+
+    /**
+     * Workflow v2: a credentialed answer to a workflow's request and a
+     * credentialed completion of an agent state (INACTIVE unless this
+     * transport was created with workflowCredentials). The credential is the
+     * authority; the caller's identity grants nothing here.
+     */
+    async respondToSessionRequest(requestId, input = {}) {
+        return this.mgmt.respondToSessionRequest(requestId, input);
+    }
+
+    async completeWorkflowNode(sessionId, input = {}) {
+        return this.mgmt.completeWorkflowNode(sessionId, input);
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {
