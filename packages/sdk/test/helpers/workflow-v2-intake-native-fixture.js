@@ -8,13 +8,30 @@
  *   session name, with its continue-as-new target set to 1.0.83 itself (the
  *   production latest stays 1.0.82, which 1.0.83 refuses to continue to);
  * - the real activities of a worker (registerActivities, with the test
- *   option that registers runTurnV5) over the real CMS catalog, whose
- *   provider budget store is hidden (the budget gate is not under test
- *   here), and a fake session manager whose model session is scripted by
- *   the test: it calls the intake's send callback when it "sends";
+ *   option that registers runTurnV5) over the real CMS catalog;
  * - the real intake activities over the real workflow store
  *   (registerWorkflowIntakeActivities), and real outbox messages to the
  *   recipient session (intakeActivityFixture).
+ *
+ * Test doubles (TEST_DOUBLES, also in every evidence record): the model
+ * session is scripted by the test (it calls the intake's send callback when
+ * it "sends"); the session manager is a fake that hands out that model
+ * session; a workspace provider, when a case gives one, is the fake
+ * provider; the CMS catalog's provider budget store is hidden (the budget
+ * gate is not under test here). Everything else listed above is real.
+ *
+ * Evidence: a failure (a boundary that is not reached, an assertion after
+ * it, a fixture setup that fails once its stores exist) records, before the
+ * fixture closes its runtime and the suite drops its schemas, the boundary,
+ * the cause, the last observation, every execution's native history, the
+ * observed activity calls with their results or errors, the recipient's
+ * intake and invocation rows and its canonical transcript records, bounded
+ * and with no connection string, environment or credential. A boundary that
+ * is not reached throws an error naming it, its cause the original failure;
+ * any other failure is rethrown as itself. Either carries the evidence (or
+ * the error that kept it from being read) and any shutdown error; neither is
+ * turned into a success. A case that passes records a compact receipt of
+ * what it persisted.
  *
  * Nothing is registered in a production registry, and no session starts on
  * 1.0.83 outside the test's own provider schema.
@@ -35,6 +52,32 @@ const { PostgresProvider, Runtime, Client } = createRequire(import.meta.url)("du
 export const INTAKE_NATIVE_TIMEOUT = 180_000;
 const VERSION = "1.0.83";
 const TAGS = [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY];
+/** What in these cases is real and what is a double; recorded with every piece of evidence. */
+export const TEST_DOUBLES = Object.freeze({
+    real: ["orchestration 1.0.83 (registered by this test only)", "duroxide native runtime and PostgreSQL provider",
+        "worker activities (registerActivities, runTurnV5 by its test option)", "intake activities and workflow store", "CMS catalog"],
+    doubles: ["model session: scripted by the case", "session manager: fake", "workspace provider: fake, when the case gives one",
+        "CMS provider budget store: hidden"],
+});
+const EVIDENCE_LIMIT = 6_000;
+
+function errorDetails(error) {
+    return error instanceof Error
+        ? { name: error.name, message: error.message, ...(error.code !== undefined ? { code: error.code } : {}), stack: error.stack }
+        : { thrown: String(error) };
+}
+
+/** A value as bounded JSON: whole when short, otherwise its head and size. */
+function bounded(value, limit = EVIDENCE_LIMIT) {
+    let text;
+    try { text = JSON.stringify(value); } catch (error) { return { unserializable: String(error?.message ?? error) }; }
+    if (text === undefined) return null;
+    return text.length <= limit ? JSON.parse(text) : { truncated: true, chars: text.length, head: text.slice(0, limit) };
+}
+
+function readOutcome(result) {
+    return result.status === "fulfilled" ? { ok: true, value: result.value } : { ok: false, error: errorDetails(result.reason) };
+}
 
 /** 1.0.83 as this test registers it: the same code, with its continue-as-new target set to 1.0.83. */
 function* intakeOrchestration83(ctx, input) {
@@ -134,8 +177,16 @@ export async function intakeNativeFixture(env, script, options = {}) {
         const adapter = {
             registerActivity(name, handler) {
                 worker.registerActivity(name, async (ctx, input) => {
-                    calls.push({ name, tag: ctx.tag?.() ?? null, input });
-                    return (overrides[name] ?? handler)(ctx, input);
+                    const call = { name, tag: ctx.tag?.() ?? null, input };
+                    calls.push(call);
+                    try {
+                        const result = await (overrides[name] ?? handler)(ctx, input);
+                        call.result = result;
+                        return result;
+                    } catch (error) {
+                        call.error = errorDetails(error);
+                        throw error;
+                    }
                 });
             },
         };
@@ -161,39 +212,175 @@ export async function intakeNativeFixture(env, script, options = {}) {
             JSON.stringify({ prompt, clientMessageIds: [clientMessageId] }));
         /** The session's custom status, parsed. */
         const customStatus = status => (typeof status.customStatus === "string" ? JSON.parse(status.customStatus) : status.customStatus ?? {});
+        /** Every execution's history, oldest first, as the provider lists the executions. */
+        const histories = async () => {
+            const executions = await client.listExecutions(instanceId);
+            const all = [];
+            for (const executionId of executions) all.push(await client.readExecutionHistory(instanceId, executionId));
+            return all;
+        };
+        /** The recipient's intake rows, invocation rows and canonical transcript records (bounded), for evidence. */
+        const persisted = async () => {
+            const reads = await Promise.allSettled([
+                intake.q(`SELECT row_to_json(i)::text AS row FROM SCHEMA.workflow_intake i WHERE recipient_session_id = $1 ORDER BY exchange_id`,
+                    [sessionId]),
+                intake.q(`SELECT row_to_json(v)::text AS row FROM SCHEMA.workflow_intake_invocations v WHERE recipient_session_id = $1
+                    ORDER BY invocation_id`, [sessionId]),
+                intake.catalog.getSessionEvents(sessionId, 0, 1000),
+            ]);
+            const records = reads[2].status === "fulfilled"
+                ? { ok: true, value: reads[2].value
+                    .filter(event => Array.isArray(event.data?.clientMessageIds) || String(event.eventType).startsWith("session.workflow_intake"))
+                    .map(event => ({ seq: event.seq, eventType: event.eventType, data: bounded(event.data, 2_000) })) }
+                : readOutcome(reads[2]);
+            return {
+                intakeRows: reads[0].status === "fulfilled" ? { ok: true, value: reads[0].value.map(row => JSON.parse(row.row)) } : readOutcome(reads[0]),
+                invocationRows: reads[1].status === "fulfilled" ? { ok: true, value: reads[1].value.map(row => JSON.parse(row.row)) } : readOutcome(reads[1]),
+                transcriptRecords: records,
+            };
+        };
+        /**
+         * Record the evidence of a failure while the runtime and the schemas still exist, and return the error to throw:
+         * the original failure as its cause, with the evidence (or the error that kept it from being read) attached.
+         */
+        const failure = async (phase, label, cause, last = null) => {
+            const failed = new Error(`Native intake ${phase} "${label}" failed: ${String(cause?.message ?? cause)}`, { cause });
+            failed.name = "NativeIntakeError";
+            try {
+                const reads = await Promise.allSettled([client.getInstanceInfo(instanceId), client.getStatus(instanceId), histories()]);
+                const evidence = {
+                    phase, boundary: label, cause: errorDetails(cause), lastObservation: bounded(last), testDoubles: TEST_DOUBLES,
+                    finalReads: {
+                        info: readOutcome(reads[0]), status: readOutcome(reads[1]),
+                        histories: reads[2].status === "fulfilled"
+                            ? { ok: true, value: reads[2].value.map(history => history.map(event => ({ ...event, data: bounded(event.data, 2_000) }))) }
+                            : readOutcome(reads[2]),
+                    },
+                    calls: calls.map(call => bounded(call)),
+                    prompts: model.prompts.map(prompt => bounded(prompt, 2_000)),
+                    ...(await persisted()),
+                };
+                console.info("workflow intake native evidence", JSON.stringify(evidence));
+                // Kept on the error for a caller, but not enumerable: the line above is the record, printed once.
+                Object.defineProperty(failed, "intakeEvidence", { value: evidence, enumerable: false, configurable: true, writable: true });
+            } catch (evidenceError) {
+                failed.evidenceError = errorDetails(evidenceError);
+                console.info("workflow intake native evidence unreadable", JSON.stringify({ phase, boundary: label, cause: errorDetails(cause),
+                    evidenceError: failed.evidenceError }));
+            }
+            return failed;
+        };
         /** Wait for `check` on persisted native state (instance info, current execution's history, status, store rows). */
         const until = async (check, label, timeout = 120_000) => {
             let observed;
-            await vi.waitFor(async () => {
-                const info = await client.getInstanceInfo(instanceId);
-                const history = await client.readExecutionHistory(instanceId, info.currentExecutionId);
-                const status = await client.getStatus(instanceId);
-                expect(status.status, `${label}: ${JSON.stringify(status)}`).not.toBe("Failed");
-                const done = await check({ info, history, status });
-                expect(done, label).toBe(true);
-                observed = { info, history, status };
-            }, { timeout, interval: 50 });
+            const last = { attempts: 0, readPhase: "not started", info: null, status: null, historyLength: null, checked: null, readError: null };
+            try {
+                await vi.waitFor(async () => {
+                    last.attempts += 1;
+                    last.readError = null;
+                    try {
+                        last.readPhase = "getInstanceInfo";
+                        const info = await client.getInstanceInfo(instanceId);
+                        last.info = info;
+                        last.readPhase = "readExecutionHistory";
+                        const history = await client.readExecutionHistory(instanceId, info.currentExecutionId);
+                        last.historyLength = history.length;
+                        last.readPhase = "getStatus";
+                        const status = await client.getStatus(instanceId);
+                        last.status = status;
+                        expect(status.status, `${label}: ${JSON.stringify(status)}`).not.toBe("Failed");
+                        last.readPhase = "check";
+                        const done = await check({ info, history, status });
+                        last.checked = done;
+                        expect(done, label).toBe(true);
+                        observed = { info, history, status };
+                    } catch (error) {
+                        last.readError = errorDetails(error);
+                        throw error;
+                    }
+                }, { timeout, interval: 50 });
+            } catch (cause) {
+                throw await failure("boundary", label, cause, last);
+            }
             return observed;
         };
-        /** Every execution's history, oldest first. */
-        const histories = async () => {
-            const info = await client.getInstanceInfo(instanceId);
-            const all = [];
-            for (let execution = 1; execution <= Number(info.currentExecutionId); execution += 1) {
-                all.push(await client.readExecutionHistory(instanceId, execution));
+        /** A compact receipt of what a passing case persisted. Never throws: a receipt that cannot be read is recorded as such. */
+        const receipt = async label => {
+            try {
+                const [info, status, all, rows] = await Promise.all([client.getInstanceInfo(instanceId), client.getStatus(instanceId), histories(), persisted()]);
+                const scheduledNames = {};
+                for (const history of all) {
+                    for (const event of history) {
+                        if (event.kind !== "ActivityScheduled") continue;
+                        const name = /"name":"([^"]+)"/.exec(String(event.data))?.[1] ?? "?";
+                        scheduledNames[name] = (scheduledNames[name] ?? 0) + 1;
+                    }
+                }
+                console.info("workflow intake native receipt", JSON.stringify({
+                    case: label, testDoubles: TEST_DOUBLES, orchestrationVersion: info.orchestrationVersion, currentExecutionId: info.currentExecutionId,
+                    executions: all.length, status: status.status, scheduledNames, modelRuns: model.prompts.length,
+                    intakeRows: rows.intakeRows.ok ? rows.intakeRows.value.map(row => ({ exchange_id: row.exchange_id, state: row.state,
+                        processing: row.processing, invocation_id: row.invocation_id, cancel_requested: row.cancel_requested })) : rows.intakeRows,
+                    invocations: rows.invocationRows.ok ? rows.invocationRows.value.length : rows.invocationRows,
+                    transcriptRecords: rows.transcriptRecords.ok ? rows.transcriptRecords.value.length : rows.transcriptRecords,
+                }));
+            } catch (error) {
+                console.info("workflow intake native receipt unreadable", JSON.stringify({ case: label, error: errorDetails(error) }));
             }
-            return all;
         };
         return {
             ...intake, client, provider, worker, calls, prompts: model.prompts, sessionId, instanceId, start, deliver, say, customStatus, until,
-            histories,
+            histories, failure, receipt,
             async close() {
                 try { await worker.shutdown(3_000); } finally { await intake.close(); }
             },
         };
     } catch (error) {
-        if (worker) await worker.shutdown(3_000).catch(() => {});
-        await intake.close();
+        // A setup failure once the stores exist: recorded before they are closed; the original error is rethrown.
+        console.info("workflow intake native evidence", JSON.stringify({ phase: "setup", cause: errorDetails(error), testDoubles: TEST_DOUBLES }));
+        const attach = (key, value) => { if (error !== null && typeof error === "object" && Object.isExtensible(error)) error[key] = value; };
+        if (worker) await worker.shutdown(3_000).catch(shutdownError => attach("shutdownError", errorDetails(shutdownError)));
+        try { await intake.close(); } catch (closeError) { attach("closeError", errorDetails(closeError)); }
         throw error;
+    }
+}
+
+/**
+ * One native case: the fixture, the case's body, its receipt when it passes,
+ * and, when it fails anywhere after setup, its evidence recorded before the
+ * fixture closes. A boundary that is not reached throws the error that names
+ * it (its cause the original failure, its evidence attached); any other
+ * failure is rethrown as itself, its assertion intact, with the evidence
+ * attached. A shutdown error is attached to the failure, or thrown when the
+ * case passed.
+ */
+export async function intakeNativeCase(env, label, script, options, body) {
+    const h = await intakeNativeFixture(env, script, options);
+    let primary = null;
+    try {
+        await body(h);
+        await h.receipt(label);
+    } catch (error) {
+        if (error?.name === "NativeIntakeError") {
+            primary = error;
+        } else if (error !== null && typeof error === "object" && Object.isExtensible(error)) {
+            const recorded = await h.failure("case", label, error);
+            primary = error;
+            primary.intakeCase = label;
+            if (recorded.intakeEvidence !== undefined) {
+                Object.defineProperty(primary, "intakeEvidence", { value: recorded.intakeEvidence, enumerable: false, configurable: true, writable: true });
+            }
+            if (recorded.evidenceError !== undefined) primary.evidenceError = recorded.evidenceError;
+        } else {
+            primary = await h.failure("case", label, error);
+        }
+        throw primary;
+    } finally {
+        try {
+            await h.close();
+        } catch (closeError) {
+            if (primary === null) throw closeError;
+            primary.closeError = errorDetails(closeError);
+        }
     }
 }
