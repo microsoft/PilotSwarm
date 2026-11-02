@@ -159,6 +159,10 @@ describe("workflow v2 version fence: a run keeps its controller version (design 
             const newerRun = (await updateWorkflowV2(milestone, newer.workflowSessionId,
                 { operation: "publish_and_start", expectedRevision: 1, definitionHash: newer.definitionHash, inputs: {} }, context("go"))).receipt.run;
             milestone.duroxideClient.starts.length = 0;
+            // The 1.8.0 host's only start so far is the older run's own admission; the refusal below adds none.
+            expect(legacy.duroxideClient.starts).toEqual([{ instanceId: olderRun.controllerInstanceId, name: WORKFLOW_V2_CONTROLLER_NAME,
+                version: WORKFLOW_V2_CONTROLLER_VERSION }]);
+            legacy.duroxideClient.starts.length = 0;
             await expect(recoverWorkflowV2Run(legacy, newerRun.runId, { requestedBy: newer.parentSessionId, operationId: "recover-legacy" }))
                 .rejects.toMatchObject({ code: "CONTROLLER_UNAVAILABLE", details: { runId: newerRun.runId, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
                     hostControllerVersion: WORKFLOW_V2_CONTROLLER_VERSION } });
