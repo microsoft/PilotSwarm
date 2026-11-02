@@ -1943,15 +1943,6 @@ export class SessionManager {
         this.computeProviders.register(provider, opts);
     }
 
-    /**
-     * Compute providers: the adapters for the registered provider
-     * services, replaced as a set each time the worker re-reads the
-     * register. A kind the worker was built with is never taken over.
-     */
-    setComputeServiceProviders(providers: ComputeProvider[]): void {
-        this.computeProviders.setServiceProviders(providers);
-    }
-
     getComputeProviders(): ComputeProviderRegistry {
         return this.computeProviders;
     }
@@ -2968,7 +2959,7 @@ export class SessionManager {
                 { code: "GHCP_KEY_MISSING", status: 400 },
             );
         }
-        // Compute providers: where this session's GHCP runtime runs. Null for
+        // Compute providers: where this session's agent runtime runs. Null for
         // a session without a compute target: the worker's own child process.
         const compute = await this._prepareCompute(sessionId, config, workspaceAttach, catalogRow, turnIndex ?? 0);
         const remoteEndpoint = compute && compute.endpoint.transport !== "local" ? compute.endpoint : undefined;

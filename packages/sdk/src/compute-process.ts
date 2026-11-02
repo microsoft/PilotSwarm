@@ -1,5 +1,5 @@
 /**
- * The `process` compute provider: each session tree gets its own GHCP
+ * The `process` compute provider: each session tree gets its own agent
  * runtime, a separate `copilot --headless` process on this machine that
  * the worker reaches over TCP like any remote runtime.
  *

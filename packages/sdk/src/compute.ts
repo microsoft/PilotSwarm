@@ -2,14 +2,14 @@
  * Compute providers and compute targets (docs/proposals/compute-providers.md).
  *
  * Terms:
- *   compute type      a kind of place a session's GHCP runtime can run
+ *   compute type      a kind of place a session's agent runtime can run
  *   compute provider  the worker plug-in for one compute type (`kind`)
  *   compute target    a registered instance of a compute type, stored in the
  *                     CMS; users pick one per session
  *   host              the concrete runtime a session tree is bound to
  *
  * The worker stays trusted: it keeps the orchestration, PilotSwarm tools,
- * model credentials and session state. A provider only places the GHCP
+ * model credentials and session state. A provider only places the agent
  * runtime somewhere and tells the worker how to reach it. Nothing here knows
  * about any particular platform; the built-in `local` provider is today's
  * behaviour, a runtime the worker starts as its own child process.
@@ -67,16 +67,6 @@ export const COMPUTE_ERROR_CODES = {
      * prove it with. Nothing of the session crossed the connection.
      */
     HANDSHAKE_FAILED: COMPUTE_HANDSHAKE_FAILED,
-    /** The provider service a target's kind is served by could not be used. */
-    SERVICE_UNAVAILABLE: "COMPUTE_SERVICE_UNAVAILABLE",
-    /** The provider service did not present the identity its registration pins. */
-    SERVICE_IDENTITY: "COMPUTE_SERVICE_IDENTITY",
-    /** Refusals from the registered-services table (administrators only). */
-    SERVICE_INVALID: "COMPUTE_SERVICE_INVALID",
-    SERVICE_FORBIDDEN: "COMPUTE_SERVICE_FORBIDDEN",
-    SERVICE_NOT_FOUND: "COMPUTE_SERVICE_NOT_FOUND",
-    SERVICE_CONFLICT: "COMPUTE_SERVICE_CONFLICT",
-    SERVICE_IN_USE: "COMPUTE_SERVICE_IN_USE",
     /**
      * The session's model is one of the target's own, and the target no
      * longer offers it (or may not offer models at all).
@@ -222,7 +212,7 @@ export interface ComputeConnectRequest extends ComputeCall {
 }
 
 /**
- * How the worker reaches the GHCP runtime.
+ * How the worker reaches the agent runtime.
  *   local  the worker starts the runtime as its own child process (today)
  *   uri    a runtime already listening at `address` ("host:port" or a URL),
  *          reachable from the worker, with the token the runtime expects.
@@ -441,17 +431,12 @@ export function createLocalComputeProvider(): ComputeProvider {
 /**
  * The compute providers a worker has, by kind. `local` is always present.
  *
- * Two sorts live here. Providers built into the worker are registered once
- * at start and stay. Providers that stand for a registered provider
- * service come and go as an administrator changes the register, and are
- * replaced as a set (`setServiceProviders`) each time the worker re-reads
- * it. A service never shadows a provider the worker was built with: if
- * both offer a kind, the built-in one answers.
+ * A provider is a plug-in loaded into the worker: the application passes
+ * it in the worker options, or registers it later. They are registered
+ * once at start and stay.
  */
 export class ComputeProviderRegistry {
     private readonly providers = new Map<string, ComputeProvider>();
-    /** The kinds currently answered by a registered provider service. */
-    private readonly fromServices = new Set<string>();
 
     constructor(providers: ComputeProvider[] = []) {
         this.register(createLocalComputeProvider());
@@ -477,42 +462,10 @@ export class ComputeProviderRegistry {
         if (transport === "direct" && typeof provider.openConnection === "function") {
             throw new Error(`compute provider "${provider.kind}" is reached directly, so it must not have openConnection`);
         }
-        if (this.providers.has(provider.kind) && !opts.replace && !this.fromServices.has(provider.kind)) {
+        if (this.providers.has(provider.kind) && !opts.replace) {
             throw new Error(`compute provider "${provider.kind}" is registered twice`);
         }
-        // A provider built into the worker takes the kind back from a service.
-        this.fromServices.delete(provider.kind);
         this.providers.set(provider.kind, provider);
-    }
-
-    /**
-     * Replace every provider that stands for a registered service with
-     * this set. Kinds that have gone from the register stop being served
-     * at once, which is what makes disabling a service take effect; kinds
-     * the worker was built with are left alone.
-     */
-    setServiceProviders(providers: ComputeProvider[]): void {
-        const next = new Set<string>();
-        for (const provider of providers) {
-            // Held to the same rules as a built-in provider, but a
-            // malformed one is skipped rather than thrown: one bad service
-            // must not stop the worker reading the rest of the register.
-            if (!COMPUTE_KIND_PATTERN.test(provider?.kind ?? "")) continue;
-            if (typeof provider.bind !== "function" || typeof provider.connect !== "function") continue;
-            const transport = provider.transport ?? "direct";
-            if (transport === "pipe" && typeof provider.openConnection !== "function") continue;
-            if (transport === "direct" && typeof provider.openConnection === "function") continue;
-            // A built-in provider wins: a registered service cannot take
-            // over a kind this worker already answers itself.
-            if (this.providers.has(provider.kind) && !this.fromServices.has(provider.kind)) continue;
-            this.providers.set(provider.kind, provider);
-            next.add(provider.kind);
-        }
-        for (const kind of this.fromServices) {
-            if (!next.has(kind)) this.providers.delete(kind);
-        }
-        this.fromServices.clear();
-        for (const kind of next) this.fromServices.add(kind);
     }
 
     get(kind: string): ComputeProvider | undefined {
@@ -521,11 +474,6 @@ export class ComputeProviderRegistry {
 
     kinds(): string[] {
         return [...this.providers.keys()].sort();
-    }
-
-    /** Which kinds are answered by a registered service rather than built in. */
-    serviceKinds(): string[] {
-        return [...this.fromServices].sort();
     }
 }
 

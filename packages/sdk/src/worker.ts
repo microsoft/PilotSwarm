@@ -286,8 +286,6 @@ export class PilotSwarmWorker {
     private _modelProvidersReloader: ReturnType<typeof createModelProvidersReloader> | null = null;
     private _modelProvidersReloadTimer: ReturnType<typeof setInterval> | null = null;
     /** Compute providers: the registered-service refresh and the done sweep. */
-    private _computeServicesTimer: ReturnType<typeof setInterval> | null = null;
-    private _computeServicesRefreshing = false;
     private _computeDoneTimer: ReturnType<typeof setInterval> | null = null;
     private _computeDoneSweeping = false;
     /** Close admission when drain begins; _started stays true until teardown ends. */
@@ -461,49 +459,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setComputeOptions({ allowNonLoopbackEndpoints: options.computeAllowNonLoopbackEndpoints });
     }
 
-    /**
-     * Compute providers: re-read the registered provider services, ask
-     * each what it serves, and give the session manager one adapter per
-     * kind. Nothing is registered by hand: the kinds, transport and
-     * capabilities are what the service says about itself, recorded with
-     * the time it said it.
-     *
-     * Bounded and best effort, like the model-provider refresh it runs
-     * beside. A service that will not answer leaves refusing stand-ins for
-     * the kinds it last served, so a session on one of its targets gets a
-     * clear reason rather than "no provider of that kind".
-     */
-    private async _refreshComputeServices(): Promise<void> {
-        const store = this._catalog?.computeServices;
-        if (!store) return;
-        const { buildComputeServiceProviders } = await import("./compute-service.js");
-        const services = await store.enabled();
-        const providers = await buildComputeServiceProviders(services, {
-            credentials: this.config.computeServiceCredentials ?? null,
-            recordDescription: (serviceId, described) => store.recordDescription(serviceId, described),
-            onProblem: (service, error) => console.warn(
-                `[PilotSwarmWorker] compute provider service "${service.name}" is not usable: ${String(error?.message ?? error)}`),
-        });
-        this.sessionManager.setComputeServiceProviders(providers);
-    }
-
     private _startComputePolling(): void {
-        const refreshMs = this.config.computeServiceRefreshMs ?? 5 * 60_000;
-        if (this._catalog?.computeServices && refreshMs > 0 && !this._computeServicesTimer) {
-            // The first read happens now, so a worker starts knowing what
-            // is registered; the timer keeps it current afterwards.
-            void this._refreshComputeServices().catch((err) => console.warn(
-                `[PilotSwarmWorker] compute provider services could not be read: ${String((err as Error)?.message ?? err)}`));
-            this._computeServicesTimer = setInterval(() => {
-                if (this._computeServicesRefreshing) return;
-                this._computeServicesRefreshing = true;
-                void this._refreshComputeServices()
-                    .catch((err) => console.warn(
-                        `[PilotSwarmWorker] compute provider services could not be read: ${String((err as Error)?.message ?? err)}`))
-                    .finally(() => { this._computeServicesRefreshing = false; });
-            }, refreshMs);
-            this._computeServicesTimer.unref?.();
-        }
         this.sessionManager.startComputeLeases({
             leaseMs: this.config.computeLeaseMs,
             renewMs: this.config.computeLeaseRenewMs,
@@ -523,10 +479,6 @@ export class PilotSwarmWorker {
     }
 
     private _stopComputePolling(): void {
-        if (this._computeServicesTimer) {
-            clearInterval(this._computeServicesTimer);
-            this._computeServicesTimer = null;
-        }
         if (this._computeDoneTimer) {
             clearInterval(this._computeDoneTimer);
             this._computeDoneTimer = null;

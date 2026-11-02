@@ -1,11 +1,10 @@
 /**
- * Migration 0084 — compute targets, the provider services that serve them,
- * and the host bindings PilotSwarm holds.
+ * Migration 0084 — compute targets and the host bindings PilotSwarm holds.
  * See docs/proposals/compute-providers.md and migrations/0084_diff.md.
  *
- * A compute target is a registered place where a session's GHCP runtime can
- * run: one instance of a compute type (the worker's own process, a container on
- * separate machines, a sandbox, a user's machine, an existing build pool).
+ * A compute target is a registered place where a session's agent runtime
+ * can run: one instance of a compute type (the worker's own process, a
+ * separate host, a sandbox, a user's machine, an existing build pool).
  * The type is named by `kind`; the worker plug-in that understands it is a
  * compute provider. PilotSwarm stores the target and checks who may use it.
  * It never interprets `config`: that belongs to the provider of `kind`.
@@ -28,13 +27,6 @@
  * users see and is never used to decide who may do what. Only personal
  * targets may advertise models.
  *
- * A provider that is not built into the worker runs as its own service,
- * outside it. `compute_provider_services` is the list an administrator
- * registers: where each service is, what identity a worker must see from
- * it, and what it last said it serves. It holds nothing secret — the
- * credential a worker presents comes from a deployment hook, never from
- * here — and only administrators may read or change it.
- *
  * `compute_bindings` is what PilotSwarm is using right now: one row per
  * (session tree, target, host). A worker renews its lease while it holds
  * a binding, so renewals that stop mean nobody is using the host; and a
@@ -42,7 +34,7 @@
  * ended while no worker had them loaded, so the provider is told once.
  * Neither table ever holds a handshake secret.
  *
- * Additive: three tables and their procedures; no session column changes.
+ * Additive: two tables and their procedures; no session column changes.
  */
 /**
  * The most a stored advertisement may take. A migration's SQL must keep
@@ -337,200 +329,6 @@ BEGIN
                advertised_at = now()
          WHERE ct.target_id = p_target_id
         RETURNING ct.*;
-END;
-$$ LANGUAGE plpgsql VOLATILE;
-
--- ---------------------------------------------------------------------
--- Registered provider services
---
--- A provider that needs rights on whatever it makes hosts out of runs as
--- its own service. An administrator registers it here first: this row is
--- the trust anchor, and a worker will not talk to a service that is not in
--- it. Only administrators may see or change the list.
---
--- Nothing secret is stored. How a worker proves itself to a service comes
--- from a deployment hook at call time. How a worker recognizes the service
--- is what is stored: the TLS server name its certificate must be good for,
--- a SHA-256 fingerprint of that certificate, or both. A service that
--- answers without the registered identity is not that service.
---
--- The kinds, transport, capabilities and protocol version are not
--- registered by hand: they are what the service last said about itself in
--- its describe answer, with the time it said it.
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ${s}.compute_provider_services (
-    name             TEXT PRIMARY KEY,
-    service_id       UUID NOT NULL UNIQUE
-                     DEFAULT md5(random()::text || clock_timestamp()::text)::uuid,
-    base_url         TEXT NOT NULL,
-    expected_server_name TEXT,
-    certificate_sha256   TEXT,
-    enabled          BOOLEAN NOT NULL DEFAULT TRUE,
-    kinds            TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-    transport        TEXT NOT NULL DEFAULT 'direct'
-                     CHECK (transport IN ('direct','pipe')),
-    capabilities     JSONB,
-    protocol_version INTEGER,
-    described_at     TIMESTAMPTZ,
-    registered_by    BIGINT,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT compute_services_name_shape CHECK (
-        name ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$'),
-    -- https everywhere. Plain http is accepted only for a service on the
-    -- same machine, which is what the tests use and a deployment never is.
-    CONSTRAINT compute_services_url_shape CHECK (
-        base_url ~ '^https://[^ ]+$'
-        OR base_url ~ '^http://(localhost|127\\.[0-9.]+|\\[::1\\])(:[0-9]+)?(/.*)?$'),
-    CONSTRAINT compute_services_fingerprint_shape CHECK (
-        certificate_sha256 IS NULL OR certificate_sha256 ~ '^[0-9a-f]{64}$'),
-    CONSTRAINT compute_services_capabilities_object CHECK (
-        capabilities IS NULL OR jsonb_typeof(capabilities) = 'object')
-);
-
-CREATE INDEX IF NOT EXISTS compute_services_kinds
-    ON ${s}.compute_provider_services USING GIN (kinds);
-
--- Only an administrator sees or changes the register.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_assert_admin(p_is_admin BOOLEAN)
-RETURNS VOID AS $$
-BEGIN
-    IF NOT COALESCE(p_is_admin, FALSE) THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_FORBIDDEN: only an administrator can work with registered provider services';
-    END IF;
-END;
-$$ LANGUAGE plpgsql IMMUTABLE;
-
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_create(
-    p_name TEXT, p_base_url TEXT, p_server_name TEXT, p_certificate_sha256 TEXT,
-    p_actor BIGINT, p_is_admin BOOLEAN
-) RETURNS SETOF ${s}.compute_provider_services AS $$
-DECLARE
-    v_name TEXT := NULLIF(BTRIM(p_name), '');
-    v_url  TEXT := NULLIF(BTRIM(p_base_url), '');
-BEGIN
-    PERFORM ${s}.cms_compute_service_assert_admin(p_is_admin);
-    IF v_name IS NULL THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: a provider service needs a name';
-    END IF;
-    IF v_url IS NULL THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: a provider service needs a URL';
-    END IF;
-    -- An identity is what makes the registration a trust anchor; without
-    -- one the worker would believe whatever answered at the URL.
-    IF COALESCE(NULLIF(BTRIM(p_server_name), ''), NULLIF(BTRIM(lower(p_certificate_sha256)), '')) IS NULL THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: register the identity the worker must see from the service: its TLS server name, a certificate fingerprint, or both';
-    END IF;
-    IF EXISTS (SELECT 1 FROM ${s}.compute_provider_services cs WHERE cs.name = v_name) THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_CONFLICT: the name "%" is already taken', v_name;
-    END IF;
-    INSERT INTO ${s}.compute_provider_services
-        (name, base_url, expected_server_name, certificate_sha256, registered_by)
-    VALUES (v_name, v_url, NULLIF(BTRIM(p_server_name), ''),
-            NULLIF(BTRIM(lower(p_certificate_sha256)), ''), p_actor);
-    RETURN QUERY SELECT cs.* FROM ${s}.compute_provider_services cs WHERE cs.name = v_name;
-END;
-$$ LANGUAGE plpgsql VOLATILE;
-
--- NULL arguments keep the current value. Changing the URL or the identity
--- makes the service say again what it serves, from wherever it now
--- answers: the capabilities and protocol version it declared are cleared.
---
--- The kinds it last served are kept. They are not a permission and decide
--- nothing: they are what lets a worker say clearly why a target cannot
--- run — "the service that serves this kind is not usable, and here is
--- why" — instead of the useless "this worker has no provider of that
--- kind". The next successful describe replaces them.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_update(
-    p_name TEXT, p_base_url TEXT, p_server_name TEXT, p_certificate_sha256 TEXT,
-    p_enabled BOOLEAN, p_actor BIGINT, p_is_admin BOOLEAN
-) RETURNS SETOF ${s}.compute_provider_services AS $$
-DECLARE v_moved BOOLEAN;
-BEGIN
-    PERFORM ${s}.cms_compute_service_assert_admin(p_is_admin);
-    IF NOT EXISTS (SELECT 1 FROM ${s}.compute_provider_services cs WHERE cs.name = p_name) THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_NOT_FOUND: there is no provider service named "%"', p_name;
-    END IF;
-    v_moved := p_base_url IS NOT NULL OR p_server_name IS NOT NULL OR p_certificate_sha256 IS NOT NULL;
-    UPDATE ${s}.compute_provider_services cs
-       SET base_url = COALESCE(NULLIF(BTRIM(p_base_url), ''), cs.base_url),
-           expected_server_name = CASE WHEN p_server_name IS NULL THEN cs.expected_server_name
-                                       ELSE NULLIF(BTRIM(p_server_name), '') END,
-           certificate_sha256 = CASE WHEN p_certificate_sha256 IS NULL THEN cs.certificate_sha256
-                                     ELSE NULLIF(BTRIM(lower(p_certificate_sha256)), '') END,
-           enabled = COALESCE(p_enabled, cs.enabled),
-           capabilities = CASE WHEN v_moved THEN NULL ELSE cs.capabilities END,
-           protocol_version = CASE WHEN v_moved THEN NULL ELSE cs.protocol_version END,
-           described_at = CASE WHEN v_moved THEN NULL ELSE cs.described_at END,
-           updated_at = now()
-     WHERE cs.name = p_name;
-    IF (SELECT COALESCE(cs.expected_server_name, cs.certificate_sha256)
-          FROM ${s}.compute_provider_services cs WHERE cs.name = p_name) IS NULL THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: a provider service always keeps an identity the worker must see';
-    END IF;
-    RETURN QUERY SELECT cs.* FROM ${s}.compute_provider_services cs WHERE cs.name = p_name;
-END;
-$$ LANGUAGE plpgsql VOLATILE;
-
--- Refused while any target names one of the kinds this service serves:
--- deleting it would leave those targets with nowhere to run.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_delete(
-    p_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
-) RETURNS BOOLEAN AS $$
-DECLARE v_row ${s}.compute_provider_services;
-BEGIN
-    PERFORM ${s}.cms_compute_service_assert_admin(p_is_admin);
-    SELECT * INTO v_row FROM ${s}.compute_provider_services cs WHERE cs.name = p_name;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_NOT_FOUND: there is no provider service named "%"', p_name;
-    END IF;
-    IF EXISTS (SELECT 1 FROM ${s}.compute_targets ct WHERE ct.kind = ANY (v_row.kinds)) THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_IN_USE: compute targets still use "%"; remove them first', p_name;
-    END IF;
-    DELETE FROM ${s}.compute_provider_services cs WHERE cs.name = p_name;
-    RETURN TRUE;
-END;
-$$ LANGUAGE plpgsql VOLATILE;
-
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_list(p_is_admin BOOLEAN)
-RETURNS SETOF ${s}.compute_provider_services AS $$
-BEGIN
-    PERFORM ${s}.cms_compute_service_assert_admin(p_is_admin);
-    RETURN QUERY SELECT cs.* FROM ${s}.compute_provider_services cs ORDER BY cs.name;
-END;
-$$ LANGUAGE plpgsql STABLE;
-
--- Worker side: every enabled service, to build the adapters from. Trusted
--- caller; it is the same list an administrator sees, minus nothing,
--- because the register holds nothing secret.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_enabled()
-RETURNS SETOF ${s}.compute_provider_services AS $$
-    SELECT cs.* FROM ${s}.compute_provider_services cs
-     WHERE cs.enabled ORDER BY cs.name;
-$$ LANGUAGE sql STABLE;
-
--- Worker side: record what a service said about itself when asked.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_record_description(
-    p_service_id UUID, p_kinds TEXT[], p_transport TEXT,
-    p_capabilities JSONB, p_protocol_version INTEGER
-) RETURNS SETOF ${s}.compute_provider_services AS $$
-BEGIN
-    IF p_transport IS NOT NULL AND p_transport NOT IN ('direct','pipe') THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: a provider service is reached one way, direct or pipe';
-    END IF;
-    IF p_capabilities IS NOT NULL AND jsonb_typeof(p_capabilities) <> 'object' THEN
-        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: capabilities must be a JSON object';
-    END IF;
-    RETURN QUERY
-        UPDATE ${s}.compute_provider_services cs
-           SET kinds = COALESCE(p_kinds, ARRAY[]::TEXT[]),
-               transport = COALESCE(p_transport, cs.transport),
-               capabilities = p_capabilities,
-               protocol_version = p_protocol_version,
-               described_at = now(),
-               updated_at = now()
-         WHERE cs.service_id = p_service_id
-        RETURNING cs.*;
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 

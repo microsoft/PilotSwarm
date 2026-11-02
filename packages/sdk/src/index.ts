@@ -304,31 +304,8 @@ export type { ComputeHandshakeCredential } from "./compute-handshake.js";
 // The host component: the PilotSwarm end of the handshake, on the host.
 export { startComputeHost, COMPUTE_HOST_MAX_CONNECTIONS } from "./compute-host.js";
 export type { ComputeHostOptions, ComputeHostHandle } from "./compute-host.js";
-// Registered provider services: the protocol, the adapter and the helper
-// that serves an in-process provider as one.
-export {
-    COMPUTE_SERVICE_PROTOCOL_VERSION,
-    COMPUTE_SERVICE_PIPE_PATH,
-    COMPUTE_SERVICE_CALL_TIMEOUT_MS,
-    ComputeServiceClient,
-    ComputeServiceIdentityError,
-    checkComputeServiceUrl,
-    createRemoteComputeProvider,
-    createUnreachableComputeProvider,
-    buildComputeServiceProviders,
-    serveComputeProvider,
-} from "./compute-service.js";
-export type {
-    ComputeProviderService,
-    ComputeServiceIdentity,
-    ComputeServiceDescription,
-    ComputeServiceCredentials,
-    ServeComputeProviderOptions,
-    ComputeProviderServiceHandle,
-} from "./compute-service.js";
-export { ComputeServiceStore, ComputeBindingStore, ComputeServiceError } from "./compute-service-store.js";
-export type { ComputeBindingRow } from "./compute-service-store.js";
-export { openComputeWebSocket, serveComputeWebSocket, COMPUTE_WEBSOCKET_MAX_FRAME_BYTES } from "./compute-websocket.js";
+export { ComputeBindingStore, ComputeBindingError } from "./compute-binding-store.js";
+export type { ComputeBindingRow } from "./compute-binding-store.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,

@@ -1,5 +1,5 @@
 /**
- * Driving a GHCP runtime that runs outside the worker
+ * Driving an agent runtime that runs outside the worker
  * (docs/proposals/compute-providers.md, "One remote turn").
  *
  * The worker stays the trusted side. Three pieces keep secrets and state

@@ -601,7 +601,7 @@ export interface SerializableSessionConfig {
      */
     workspace?: SessionWorkspace;
     /**
-     * The compute target the session's GHCP runtime runs on (compute
+     * The compute target the session's agent runtime runs on (compute
      * providers, docs/proposals/compute-providers.md). Fixed at creation.
      * Absent: the worker runs the runtime itself, as before.
      */
@@ -1422,7 +1422,7 @@ export interface PilotSwarmWorkerOptions {
 
     /**
      * Compute providers: worker plug-ins, one per compute type, that place a
-     * session's GHCP runtime on a registered compute target. The built-in
+     * session's agent runtime on a registered compute target. The built-in
      * `local` provider (today's child-process runtime) is always present.
      * Can also be added later with `registerComputeProvider()`.
      */
@@ -1436,27 +1436,6 @@ export interface PilotSwarmWorkerOptions {
      * network between the worker and its hosts is already secured.
      */
     computeAllowNonLoopbackEndpoints?: boolean;
-
-    /**
-     * Compute providers: how this deployment proves PilotSwarm to a
-     * registered provider service. Called per service and per call, so a
-     * short-lived credential can be minted fresh, and it returns request
-     * headers the service checks however the two sides agreed.
-     *
-     * Nothing secret is stored in the CMS: the register says where a
-     * service is and what identity the worker must see from it, and this
-     * hook supplies everything else. A worker without the hook reaches
-     * only services that need no credential, which in practice means none.
-     */
-    computeServiceCredentials?: import("./compute-service.js").ComputeServiceCredentials;
-
-    /**
-     * Compute providers: how often the worker re-reads the registered
-     * provider services and asks each what it serves. Default 5 minutes.
-     * Follows the model-provider reconciliation: a service an
-     * administrator just registered starts serving without a restart.
-     */
-    computeServiceRefreshMs?: number;
 
     /**
      * Compute providers: how long a lease on a host is worth, and how
