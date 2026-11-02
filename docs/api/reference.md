@@ -316,21 +316,17 @@ data or reveals anyone else's grouping.
 
 Targets name an installed compute-provider kind and its provider-specific
 configuration. Personal targets belong to the caller; shared targets require
-an administrator. Probe operations run through a worker and store the target's
-latest advertisement.
+an administrator.
 
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
 | listComputeTargets | `GET /api/v1/compute-targets` | — | List shared targets and the caller's own targets. |
-| listComputeTargetModels | `GET /api/v1/compute-targets/models` | name (query) | List PilotSwarm runtime models and the selected target's advertised host model options. |
 | createMyComputeTarget | `POST /api/v1/me/compute-targets` | name or label, kind, displayName?, config? (body) | Create a target in the caller's personal namespace. |
 | updateMyComputeTarget | `PATCH /api/v1/me/compute-targets/:name` | name (path), displayName?, config?, enabled? (body) | Update or enable/disable one of the caller's personal targets. |
 | deleteMyComputeTarget | `DELETE /api/v1/me/compute-targets/:name` | name (path) | Delete one of the caller's personal targets. |
-| probeMyComputeTarget | `POST /api/v1/me/compute-targets/:name/probe` | name (path) | Check a personal target on a worker and record its advertised options. |
 | createComputeTarget **[admin]** | `POST /api/v1/management/compute-targets` | name or label, kind, displayName?, config? (body) | Create a target in the shared namespace. |
 | updateComputeTarget **[admin]** | `PATCH /api/v1/management/compute-targets/:name` | name (path), displayName?, config?, enabled? (body) | Update or enable/disable a shared target. |
 | deleteComputeTarget **[admin]** | `DELETE /api/v1/management/compute-targets/:name` | name (path) | Delete a shared target. |
-| probeComputeTarget **[admin]** | `POST /api/v1/management/compute-targets/:name/probe` | name (path) | Check a shared target on a worker and record its advertised options. |
 
 Trusted session creation resolves `explicit → user default → cluster default →
 first usable provider/model`, validates capabilities, and writes the exact
