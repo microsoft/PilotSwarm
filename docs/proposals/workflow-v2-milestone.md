@@ -325,3 +325,38 @@ are intercepted, with the test context inherited by its descendants) is not
 available; typed input's expiry (`ttl_seconds`) runs on real time; a test
 run's interceptions are not deleted by any retention policy yet (B11); the
 UI's test panel and mock editor are B9.
+
+## Publication pins and test evidence (design 02 publication record, 03 package agents; R18, R28)
+
+The draft and publication lifecycle (spawn a draft, replace it at an
+expected revision under the one-semver rule, publish an exact revision and
+hash, start one live run) was already in place. This milestone adds what
+binds a publication and a test to the exact versions they used
+(migration 0099):
+
+- **Agent pins.** On a host that resolves agents (`WorkflowV2Host.resolveAgent`,
+  set only by tests), publication resolves every agent state that names an
+  agent, for the workflow's parent, as its child would be bound. An agent
+  that is missing, a worker-managed system agent, or not at the package or
+  version the state names refuses the publication with `AGENT_UNAVAILABLE`
+  and nothing is published (a definition created as published refuses
+  before anything is written). Otherwise each pin (agent, package, package
+  version, package id) is frozen with the publication
+  (`workflow_definitions.published_agent_pins`), and `read_workflow` shows
+  `publishedAgentPins`. An inline prompt is not pinned.
+- **Live runs bind to the pins.** A live run's agent state asks for the
+  pinned package and version even when the definition names no version.
+  The agent host then binds the child only to that version: a package
+  republished after publication is never picked up silently (the state
+  fails `unavailable`), and a new workflow child published later pins the
+  new version explicitly.
+- **Test scenario labels.** `update_workflow` operation `test` takes an
+  optional `scenario` name, kept with the test run
+  (`workflow_runs.test_scenario`) and shown by `read_workflow` beside the
+  tested revision and the stale flag. Test results, publication receipts
+  and pins stay separate records; a test never stands in for publication.
+
+Not covered: resolving an older package revision that the registry still
+keeps (the host binds only what it sees now and refuses otherwise),
+package interface digests (`interface:` is refused at compile), and a
+publication gate on declared test scenarios (not in the YAML design).

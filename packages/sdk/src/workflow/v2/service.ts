@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
-import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowCompileResult } from "./compiler.js";
+import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowCompileResult, type WorkflowIR } from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
 import { schemaSetFor } from "./schema.js";
@@ -76,6 +76,64 @@ export interface WorkflowV2Host {
      * state keeps a definition an invalid draft, and runs start at 1.8.0.
      */
     requests?: boolean;
+    /**
+     * Resolve a named agent as an agent state's child would be bound to it
+     * (INACTIVE; design 03 package agents): the definition the caller's
+     * owner sees by that name, or null. When the host has it, publication
+     * pins every named agent state of the published revision to what it
+     * returns (WorkflowStore publication, migration 0099) and refuses one
+     * it cannot resolve (AGENT_UNAVAILABLE).
+     */
+    resolveAgent?: (name: string, callerSessionId: string) => Promise<WorkflowPublicationAgent | null>;
+}
+
+/** A named agent as the host resolves it at publication. */
+export interface WorkflowPublicationAgent {
+    name: string;
+    system?: boolean;
+    creatable?: boolean;
+    packageId?: string;
+    packageName?: string;
+    packageVersion?: string;
+}
+
+/**
+ * The agent pins of a revision to publish (design 03, 02 publication;
+ * T011, T018): for each agent state that names an agent, what the host
+ * resolves it to for the workflow's parent (the agent states' controlling
+ * agent), as the child's binding would: its agent, package, package version
+ * and package id. A named agent that the host cannot resolve, that is a
+ * worker-managed system agent, or that does not match the package or
+ * version the state names refuses the publication (AGENT_UNAVAILABLE); a
+ * generic agent is never substituted. Null when the revision has no named
+ * agent state or the host does not resolve agents (its children are then
+ * bound when they are created, as before).
+ */
+async function publicationAgentPins(host: Pick<WorkflowV2Host, "resolveAgent">, ir: WorkflowIR | null, callerSessionId: string): Promise<string | null> {
+    if (!ir || !host.resolveAgent) return null;
+    const pins: { [stateId: string]: JsonValue } = {};
+    for (const node of Object.values(ir.nodes)) {
+        if (node.type !== "agent" || !("agent" in node.invoke)) continue;
+        const named = node.invoke.agent;
+        const resolved = await host.resolveAgent(named.name, callerSessionId);
+        const refuse = (message: string): never => {
+            throw new WorkflowStoreError("AGENT_UNAVAILABLE", message, { stateId: node.id, agent: named.name, package: named.package, version: named.version });
+        };
+        if (!resolved) refuse(`Agent "${named.name}" of state '${node.id}' is not available to this workflow's owner; publication pins every named agent.`);
+        else {
+            if (resolved.system && resolved.creatable === false) refuse(`Agent "${named.name}" of state '${node.id}' is a worker-managed system agent; a workflow cannot run it.`);
+            if (named.package !== null && resolved.packageName !== named.package) {
+                refuse(`Agent "${named.name}" of state '${node.id}' is not available from package "${named.package}".`);
+            }
+            if (named.version !== null && resolved.packageVersion !== named.version) {
+                refuse(`Agent "${named.name}" of state '${node.id}' is not available at version ${named.version} (it is at ${resolved.packageVersion ?? "no version"}).`);
+            }
+            pins[node.id] = {
+                name: resolved.name, package: resolved.packageName ?? null, version: resolved.packageVersion ?? null, packageId: resolved.packageId ?? null,
+            };
+        }
+    }
+    return Object.keys(pins).length > 0 ? canonicalJson(pins) : null;
 }
 
 /** The controller version a host starts runs at (WorkflowV2Host.requests). */
@@ -433,6 +491,9 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     if (request.start) validateRunInputs(compiled, request.start.inputs);
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
     const admission = request.start ? liveAdmission(host, request.workflowSessionId, request.start.inputs, request.start.vars ?? null) : null;
+    // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
+    // before anything is written.
+    const agentPinsText = publish && compiled.valid ? await publicationAgentPins(host, compiled.ir, request.parentSessionId ?? request.workflowSessionId) : null;
     const fingerprints = createFingerprints(request, compiled.yamlSha256, publish, startInputs);
     const requestSha256 = fingerprints.v3;
     // Digests a stored receipt of this request may carry (receipts are never rewritten).
@@ -501,6 +562,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         publish,
         start: admission,
         title: `Workflow: ${compiled.name ?? "draft"}`,
+        ...(agentPinsText !== null ? { agentPinsText } : {}),
     });
     await dispatchWorkflowV2Run(host, stored.receipt);
     return stored;
@@ -535,17 +597,22 @@ export async function updateWorkflowV2(
     if (command.operation === "publish" || command.operation === "publish_and_start") {
         // The operation decides whether a run starts; any JSON input, null included, is a value.
         const startInputs: { value: JsonValue } | null = command.operation === "publish_and_start" ? { value: command.inputs } : null;
-        if (command.operation === "publish_and_start") {
-            const revision = await host.store.readRevision(workflowSessionId, command.expectedRevision);
-            if (revision?.valid && revision.irSha256) {
-                const ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host));
-                const problems = ir.inputsSchema ? schemaSetFor(revision.irSha256, ir.schemaDefs).validate(ir.inputsSchema, command.inputs) : [];
-                if (problems.length) {
-                    throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
-                        problems.map(problem => ({ path: problem.path, message: problem.message })));
-                }
+        // The revision to publish: its inputs are checked for a start, and on a host that resolves agents its named agents
+        // are pinned (a publication refused there writes nothing; the store decides the revision, hash and state again).
+        const readsIr = command.operation === "publish_and_start" || host.resolveAgent !== undefined;
+        const revision = readsIr ? await host.store.readRevision(workflowSessionId, command.expectedRevision) : null;
+        const revisionIr = revision?.valid && revision.irSha256
+            ? await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host)) : null;
+        if (command.operation === "publish_and_start" && revisionIr && revision?.irSha256) {
+            const problems = revisionIr.inputsSchema ? schemaSetFor(revision.irSha256, revisionIr.schemaDefs).validate(revisionIr.inputsSchema, command.inputs) : [];
+            if (problems.length) {
+                throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
+                    problems.map(problem => ({ path: problem.path, message: problem.message })));
             }
         }
+        const definition = revisionIr ? await host.store.readDefinition(workflowSessionId) : null;
+        const agentPinsText = revisionIr && definition?.state === "draft"
+            ? await publicationAgentPins(host, revisionIr, definition.parentSessionId ?? workflowSessionId) : null;
         stored = await host.store.publish({
             workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
             operationId: context.operationId,
@@ -553,6 +620,7 @@ export async function updateWorkflowV2(
                 ...(startInputs ? { inputs: canonicalJson(startInputs.value) } : {}),
                 ...(command.operation === "publish_and_start" ? varsDigestPart(command.vars) : {}) }),
             start: startInputs ? liveAdmission(host, workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null) : null,
+            ...(agentPinsText !== null ? { agentPinsText } : {}),
         });
     } else {
         const definition = await host.store.readDefinition(workflowSessionId);
@@ -901,6 +969,8 @@ export interface WorkflowV2TestCommand {
     vars?: { [key: string]: JsonValue };
     agentMode: "mocked" | "real";
     fixtures: WorkflowTestFixture[];
+    /** The scenario the test run is for (migration 0099), kept with its results as evidence; null for none. */
+    scenario?: string | null;
 }
 
 /** The operation a host that does not run tests refuses, as an unknown operation is refused. */
@@ -948,11 +1018,12 @@ export async function startWorkflowV2Test(host: WorkflowV2Host, workflowSessionI
     const stored = await host.store.startTest({
         workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash, operationId: context.operationId,
         requestSha256: jsonSha256({ kind: "test", expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
-            inputs: canonicalJson(command.inputs), agentMode: command.agentMode, fixtures: fixturesText, ...varsDigestPart(command.vars) }),
+            inputs: canonicalJson(command.inputs), agentMode: command.agentMode, fixtures: fixturesText, ...varsDigestPart(command.vars),
+            ...(command.scenario ? { scenario: command.scenario } : {}) }),
         start: {
             runId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(runId),
             inputsText: boundedCanonicalJson(command.inputs, "Workflow inputs"), kvText: checkedKvText(command.vars ?? {}), testAgentMode: "mocked",
-            controllerVersion: controllerVersionFor(host), fixturesText,
+            controllerVersion: controllerVersionFor(host), fixturesText, ...(command.scenario ? { testScenario: command.scenario } : {}),
         },
     });
     if (stored.receipt.run) await dispatchWorkflowV2Run(host, stored.receipt);

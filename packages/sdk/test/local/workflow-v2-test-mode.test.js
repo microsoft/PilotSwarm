@@ -454,7 +454,7 @@ describe("workflow v2 test runs: controller 1.9.0 (inactive, test-only registrat
         try {
             const draft = await draftOf(h, mockedDoc());
             // A fixture for the agent state's exact input answers it at once; the parent is not asked.
-            const fixed = await draft.test("test-1", { fixtures: [{ operation: "agent", state: "review", arguments: { head: "abc" },
+            const fixed = await draft.test("test-1", { scenario: "fixture-review", fixtures: [{ operation: "agent", state: "review", arguments: { head: "abc" },
                 response: { kind: "success", value: { outcome: "changes_required", output: { verdict: "redo" } } } }] });
             expect(await ended(h, fixed)).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "rework", terminalOutput: { verdict: "redo" } });
             expect(await h.store.readInterception(`${nodeExecutionIdFor(fixed, "root", "review", 1)}/agent`))
@@ -491,7 +491,8 @@ describe("workflow v2 test runs: controller 1.9.0 (inactive, test-only registrat
                 .toMatchObject({ ok: true, revision: 2 });
             expect(await draft.update({ operation: "test", operation_id: "test-5", expected_revision: 1, definition_hash: draft.definitionHash, inputs: {} }))
                 .toMatchObject({ ok: false, error: { code: "REVISION_CONFLICT" } });
-            expect((await draft.read({ run_id: fixed })).run.test).toMatchObject({ testedRevision: 1, stale: true });
+            expect((await draft.read({ run_id: fixed })).run.test).toMatchObject({ scenario: "fixture-review", testedRevision: 1, stale: true });
+            expect((await draft.read({ run_id: late })).run.test.scenario).toBeNull();
             expect((await draft.read()).runs.every(item => item.mode === "test")).toBe(true);
         } finally {
             await h.stop();

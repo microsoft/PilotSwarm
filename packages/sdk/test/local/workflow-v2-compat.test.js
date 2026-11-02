@@ -121,7 +121,7 @@ describe("workflow v2 data from an earlier build", () => {
         try {
             await catalog.initialize();
             const after = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-            expect(after).toEqual([...before, "0086", "0087", "0088", "0089", "0090", "0091", "0092", "0093", "0094", "0095", "0096", "0097", "0098"]);
+            expect(after).toEqual([...before, "0086", "0087", "0088", "0089", "0090", "0091", "0092", "0093", "0094", "0095", "0096", "0097", "0098", "0099"]);
             expect(await has()).toEqual({ fn: 1, trigger: 1 });
             const store = catalog.workflowStore();
             expect((await store.readDefinition(id)).state).toBe("published");

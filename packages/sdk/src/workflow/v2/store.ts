@@ -103,6 +103,11 @@ export interface WorkflowDefinitionRow {
     createdAt: Date;
     updatedAt: Date;
     publishedAt: Date | null;
+    /**
+     * What each named agent state of the published revision was resolved to at publication (migration 0099): state id ->
+     * { name, package, version, packageId }; null when there is none.
+     */
+    publishedAgentPins: JsonValue;
 }
 
 export interface WorkflowRevisionRow {
@@ -151,6 +156,8 @@ export interface WorkflowRunRow {
      * a test run's deadlines are counted from it. Null for a live run.
      */
     virtualNow: Date | null;
+    /** The scenario a test run was started for (migration 0099); null for a live run and a test run without one. */
+    testScenario: string | null;
 }
 
 /**
@@ -354,7 +361,7 @@ function definitionFrom(row: Row): WorkflowDefinitionRow {
         currentRevision: int(row, "current_revision"), publishedRevision: intOrNull(row, "published_revision"),
         publishedYamlSha256: strOrNull(row, "published_yaml_sha256"), publishedIrSha256: strOrNull(row, "published_ir_sha256"),
         notifyParent: bool(row, "notify_parent"), createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"),
-        publishedAt: dateOrNull(row, "published_at"),
+        publishedAt: dateOrNull(row, "published_at"), publishedAgentPins: jsonOrNull(row, "published_agent_pins"),
     };
 }
 
@@ -390,6 +397,7 @@ function runFrom(row: Row): WorkflowRunRow {
         createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"), finishedAt: dateOrNull(row, "finished_at"),
         kv: parseStoredJson(str(row, "kv"), "kv"), kvRevision: int(row, "kv_revision"), pausedFrom: pausedFromOf(row),
         controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row), virtualNow: dateOrNull(row, "virtual_now"),
+        testScenario: strOrNull(row, "test_scenario"),
     };
 }
 
@@ -2068,6 +2076,7 @@ export class WorkflowStore {
         const extra: Array<[string, unknown]> = [
             ...(versioned ? [["controller_version", start.controllerVersion] as [string, unknown]] : []),
             ...(test ? [["virtual_now", WORKFLOW_V2_TEST_EPOCH] as [string, unknown], ["test_fixtures", start.fixturesText ?? "[]"] as [string, unknown]] : []),
+            ...(test && typeof start.testScenario === "string" ? [["test_scenario", start.testScenario] as [string, unknown]] : []),
         ];
         await client.query(
             `INSERT INTO ${this.t.runs}
@@ -2114,6 +2123,8 @@ export class WorkflowStore {
         start: RunAdmission | null;
         /** Session title, written with the definition under the session lock. */
         title: string;
+        /** The published revision's agent pins as canonical JSON (migration 0099); null or absent when there are none. */
+        agentPinsText?: string | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         if ((input.publish || input.start) && !input.compiled.valid) {
             throw new WorkflowStoreError("DEFINITION_INVALID", "An invalid definition can be saved as a draft but not published or started.",
@@ -2140,12 +2151,14 @@ export class WorkflowStore {
             let definition = await this.lockDefinition(client, input.workflowSessionId);
             let run: WorkflowRunReceipt | null = null;
             if (input.publish) {
+                // The pins name the column of migration 0099 only when there are any.
+                const pinned = typeof input.agentPinsText === "string";
                 const { rows } = await client.query(
                     `UPDATE ${this.t.definitions}
                         SET state = 'published', published_revision = 1, published_yaml_sha256 = $2, published_ir_sha256 = $3,
-                            published_at = now(), updated_at = now()
+                            published_at = now(), updated_at = now() ${pinned ? ", published_agent_pins = $4" : ""}
                       WHERE workflow_session_id = $1 RETURNING *`,
-                    [input.workflowSessionId, input.compiled.yamlSha256, input.compiled.irSha256],
+                    [input.workflowSessionId, input.compiled.yamlSha256, input.compiled.irSha256, ...(pinned ? [input.agentPinsText] : [])],
                 );
                 definition = definitionFrom(rows[0]);
             }
@@ -2212,6 +2225,8 @@ export class WorkflowStore {
         operationId: string;
         requestSha256: string;
         start: RunAdmission | null;
+        /** The published revision's agent pins as canonical JSON (migration 0099); null or absent when there are none. */
+        agentPinsText?: string | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         const kind = input.start ? "publish_and_start" : "publish";
         return this.transaction(async client => {
@@ -2236,12 +2251,13 @@ export class WorkflowStore {
                 throw new WorkflowStoreError("DEFINITION_HASH_MISMATCH", "The definition hash does not match the reviewed revision.",
                     { revision: revision.revision, yamlSha256: revision.yamlSha256 });
             }
+            const pinned = typeof input.agentPinsText === "string";
             const { rows } = await client.query(
                 `UPDATE ${this.t.definitions}
                     SET state = 'published', published_revision = $2, published_yaml_sha256 = $3, published_ir_sha256 = $4,
-                        published_at = now(), updated_at = now()
+                        published_at = now(), updated_at = now() ${pinned ? ", published_agent_pins = $5" : ""}
                   WHERE workflow_session_id = $1 RETURNING *`,
-                [input.workflowSessionId, revision.revision, revision.yamlSha256, revision.irSha256],
+                [input.workflowSessionId, revision.revision, revision.yamlSha256, revision.irSha256, ...(pinned ? [input.agentPinsText] : [])],
             );
             const published = definitionFrom(rows[0]);
             const run = input.start ? await this.insertRun(client, published, revision, input.start, input.operationId) : null;
@@ -5895,6 +5911,8 @@ export interface RunAdmission {
     controllerVersion?: string | null;
     /** A test run's fixtures as canonical JSON (migration 0098); only a test admission names them. */
     fixturesText?: string | null;
+    /** The scenario a test run is started for (migration 0099); only a test admission names one. */
+    testScenario?: string | null;
 }
 
 /** The receipt of a run command (set_vars, pause, resume, cancel). */

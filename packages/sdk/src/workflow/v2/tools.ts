@@ -1,6 +1,6 @@
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
-import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, WorkflowJsonError, type JsonValue } from "./json.js";
+import { assertJsonValue, isJsonObject, isStorableText, jsonbSafeText, previewJson, WorkflowJsonError, type JsonValue } from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
 import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE } from "./test-mode.js";
@@ -281,11 +281,15 @@ async function testOperationFromTool(args: Record<string, unknown>, context: { c
         const vars = kvObjectArg(args, "vars");
         const agentMode = optionalString(args, "agent_mode") ?? "mocked";
         if (agentMode !== "mocked" && agentMode !== "real") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "agent_mode must be mocked or real.");
+        const scenario = optionalString(args, "scenario");
+        if (scenario !== null && (scenario.length > 128 || !isStorableText(scenario))) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "scenario must be a name of at most 128 characters.");
+        }
         const stored = await startWorkflowV2Test(context.host, workflowSessionId, {
             expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
-            ...(vars !== null ? { vars } : {}), agentMode, fixtures: parseTestFixtures(args.fixtures),
+            ...(vars !== null ? { vars } : {}), agentMode, fixtures: parseTestFixtures(args.fixtures), scenario,
         }, { actor, operationId });
-        return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, notice: WORKFLOW_V2_TEST_NOTICE } });
+        return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, scenario, notice: WORKFLOW_V2_TEST_NOTICE } });
     }
     const runId = requiredString(args, "run_id");
     if (args.operation === "test_advance") {
@@ -425,6 +429,8 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
         definition: {
             state: definition.state, semver: definition.semver, currentRevision: definition.currentRevision,
             publishedRevision: definition.publishedRevision, publishedDefinitionHash: definition.publishedYamlSha256,
+            // What publication pinned each named agent state to (migration 0099; R18, R28); only a definition with any shows it.
+            ...(definition.publishedAgentPins !== null ? { publishedAgentPins: definition.publishedAgentPins } : {}),
         },
         revision: {
             revision: revision.revision, definitionHash: revision.yamlSha256, valid: revision.valid, irSha256: revision.irSha256,
@@ -508,6 +514,7 @@ async function testViewOf(store: WorkflowStore, workflowSessionId: string, run: 
     return {
         notice: WORKFLOW_V2_TEST_NOTICE,
         agentMode: run.testAgentMode,
+        scenario: run.testScenario,
         testedRevision: run.revision,
         stale: run.revision !== currentRevision,
         virtualClock: run.virtualNow === null ? null : { now: run.virtualNow.toISOString(), elapsedSeconds: virtualSeconds },
