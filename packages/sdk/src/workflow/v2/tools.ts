@@ -342,10 +342,11 @@ function hostTests(host: Pick<WorkflowToolHost, "requests">): boolean {
     return host.requests === true;
 }
 
-async function testOperationFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }, actor: WorkflowActor): Promise<string> {
+async function testOperation(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor, authorize: (workflowSessionId: string) => Promise<void>)
+    : Promise<{ [key: string]: JsonValue }> {
     const workflowSessionId = requiredString(args, "workflow_id");
     const operationId = requiredString(args, "operation_id");
-    await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+    await authorize(workflowSessionId);
     if (args.operation === "test") {
         const vars = kvObjectArg(args, "vars");
         const agentMode = optionalString(args, "agent_mode") ?? "mocked";
@@ -354,12 +355,12 @@ async function testOperationFromTool(args: Record<string, unknown>, context: { c
         if (scenario !== null && (scenario.length > 128 || !isStorableText(scenario))) {
             throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "scenario must be a name of at most 128 characters.");
         }
-        const stored = await startWorkflowV2Test(context.host, workflowSessionId, {
+        const stored = await startWorkflowV2Test(host, workflowSessionId, {
             expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
             ...(vars !== null ? { vars } : {}), agentMode, fixtures: parseTestFixtures(args.fixtures), scenario,
         }, { actor, operationId });
-        return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, scenario, notice: WORKFLOW_V2_TEST_NOTICE,
-            ...(agentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } : {}) } });
+        return { ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, scenario, notice: WORKFLOW_V2_TEST_NOTICE,
+            ...(agentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } : {}) } };
     }
     const runId = requiredString(args, "run_id");
     if (args.operation === "test_advance") {
@@ -367,21 +368,21 @@ async function testOperationFromTool(args: Record<string, unknown>, context: { c
         if (typeof seconds !== "number" || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS) {
             throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `seconds must be an integer from 1 to ${WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS}.`);
         }
-        const stored = await advanceWorkflowV2Test(context.host, workflowSessionId, { runId, seconds }, { actor, operationId });
+        const stored = await advanceWorkflowV2Test(host, workflowSessionId, { runId, seconds }, { actor, operationId });
         const receipt = stored.receipt;
-        return payload({
-            ok: true, workflowId: workflowSessionId, operation: "test_advance", replayed: stored.replayed, runId: receipt.runId, seconds: receipt.seconds,
+        return {
+            workflowId: workflowSessionId, operation: "test_advance", replayed: stored.replayed, runId: receipt.runId, seconds: receipt.seconds,
             from: receipt.from, virtualNow: receipt.virtualNow, decided: receipt.decided,
-        });
+        };
     }
     const interceptionId = requiredString(args, "interception_id");
-    const answered = await respondWorkflowV2Test(context.host, workflowSessionId, { runId, interceptionId, response: parseTestResponse(args.response) },
+    const answered = await respondWorkflowV2Test(host, workflowSessionId, { runId, interceptionId, response: parseTestResponse(args.response) },
         { actor, operationId });
-    return payload({
-        ok: true, workflowId: workflowSessionId, operation: "test_respond", replayed: answered.replayed, runId, interceptionId,
+    return {
+        workflowId: workflowSessionId, operation: "test_respond", replayed: answered.replayed, runId, interceptionId,
         interception: { operation: answered.interception.operation, state: answered.interception.state },
         node: { nodeExecutionId: answered.node.nodeExecutionId, stateId: answered.node.nodeId, state: answered.node.state, outcome: answered.node.outcome },
-    });
+    };
 }
 
 function graceSecondsArg(args: Record<string, unknown>): number | null {
@@ -440,24 +441,42 @@ async function recoverWorkflowFromTool(args: Record<string, unknown>, context: {
     });
 }
 
+/**
+ * An update_workflow command once its caller is known (design 04: one
+ * implementation backs the agent tool and a person's command): the test
+ * operations (on a host that runs tests), a run command (set_vars, pause,
+ * resume, cancel, and stop on a host that stops), or a definition command
+ * (replace_definition, publish, publish_and_start, start). `authorize` is
+ * called with the workflow named, after its arguments are parsed as each
+ * command parses them, before anything changes; `actor` is the caller as
+ * its host stamped it, never an argument. Returns the receipt's JSON;
+ * throws the refusal.
+ */
+export async function runUpdateWorkflowCommand(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor,
+    authorize: (workflowSessionId: string) => Promise<void>): Promise<{ [key: string]: JsonValue }> {
+    if (typeof args.operation === "string" && TEST_OPERATIONS.has(args.operation) && hostTests(host)) {
+        return await testOperation(args, host, actor, authorize);
+    }
+    const stop = hostStops(host);
+    if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || (stop && args.operation === "stop"))) {
+        const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop });
+        await authorize(workflowSessionId);
+        const stored = await controlWorkflowV2Run(host, workflowSessionId, command, { actor, operationId });
+        return runCommandJson(stored.receipt, stored.replayed);
+    }
+    const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone: hostTests(host) });
+    await authorize(workflowSessionId);
+    const stored = await updateWorkflowV2(host, workflowSessionId, command, { actor, operationId });
+    return receiptJson(stored.receipt, stored.replayed);
+}
+
 export async function updateWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
-        if (typeof args.operation === "string" && TEST_OPERATIONS.has(args.operation) && hostTests(context.host)) {
-            return await testOperationFromTool(args, context, actor);
-        }
-        const stop = hostStops(context.host);
-        if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || (stop && args.operation === "stop"))) {
-            const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop });
-            await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
-            const stored = await controlWorkflowV2Run(context.host, workflowSessionId, command, { actor, operationId });
-            return payload({ ok: true, ...runCommandJson(stored.receipt, stored.replayed) });
-        }
-        const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone: hostTests(context.host) });
-        await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
-        const stored = await updateWorkflowV2(context.host, workflowSessionId, command, { actor, operationId });
-        return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed) });
+        const result = await runUpdateWorkflowCommand(args, context.host, actor,
+            workflowSessionId => authorizeParent(context.host, workflowSessionId, context.callerSessionId));
+        return payload({ ok: true, ...result });
     } catch (error) {
         return errorPayload(error);
     }

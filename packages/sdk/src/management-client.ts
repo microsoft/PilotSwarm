@@ -162,8 +162,10 @@ import {
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2View } from "./workflow/v2/tools.js";
+import { updateWorkflowForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
-import { WorkflowStoreError } from "./workflow/v2/store.js";
+import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
+import type { WorkflowV2Host } from "./workflow/v2/service.js";
 import {
     AgentPackageValidationError,
     deleteAgentPackageEverywhere,
@@ -813,6 +815,15 @@ export interface PilotSwarmManagementClientOptions {
     aadDbUser?: string;
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
+    /**
+     * Workflow v2 (INACTIVE; test-only): take a person's workflow commands
+     * (updateWorkflow). `requests: true` when the deployment's workers run
+     * controller 1.9.0 (their test option workflowRequests): the commands then
+     * take the milestone operations (stop, test, test_respond, test_advance)
+     * and start runs at 1.9.0, as that host's tools do. Unset: updateWorkflow
+     * answers WORKFLOW_COMMANDS_UNAVAILABLE (501) and changes nothing.
+     */
+    workflowCommands?: { requests?: boolean } | null;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -1901,6 +1912,51 @@ export class PilotSwarmManagementClient {
             if (error instanceof WorkflowStoreError && (error.code === "WORKFLOW_NOT_FOUND" || error.code === "RUN_NOT_FOUND")) {
                 throw failure(error.code, 404, error.message);
             }
+            throw error;
+        }
+    }
+
+    /**
+     * Workflow v2: a person's command to a workflow session (updateWorkflow;
+     * design 04, R26; INACTIVE: only a client created with the test-only
+     * option `workflowCommands` takes one, otherwise
+     * WORKFLOW_COMMANDS_UNAVAILABLE, 501, and nothing changes). The command is
+     * the update_workflow tool's: `operation`, `operation_id` and the
+     * operation's arguments (replace_definition, publish, publish_and_start,
+     * start, set_vars, pause, resume, cancel; stop and the test operations
+     * when the workers run controller 1.9.0), run by the same implementation
+     * (human-commands.ts). Authorization is the caller's (the portal gates
+     * the session before this runs; the direct client is trusted), and its
+     * actor is `options.principal` (a user) or, without one, this client as
+     * a system actor: never a field of the command. A workflow in a workflow
+     * agent state's subtree takes only pause, stop and cancel from a person
+     * (403 WORKFLOW_HUMAN_INPUT_DENIED). Returns the receipt; a refusal
+     * carries its code, its HTTP status and its details.
+     */
+    async updateWorkflow(sessionId: string, command: Record<string, unknown>,
+        options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
+        this._ensureStarted();
+        const failure = (code: string, status: number, message: string, details?: unknown): Error =>
+            Object.assign(new Error(message), { code, status, ...(details !== undefined ? { details } : {}) });
+        const enabled = this.config.workflowCommands;
+        if (!enabled) {
+            throw failure("WORKFLOW_COMMANDS_UNAVAILABLE", 501, "This deployment does not take workflow commands from people yet; "
+                + "the workflow's parent agent changes it with its update_workflow tool.");
+        }
+        const session = await this._catalog!.getSession(sessionId);
+        if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
+        const store = this._catalog!.workflowStore?.();
+        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
+        const provider = typeof options.principal?.provider === "string" ? options.principal.provider.trim() : "";
+        const subject = typeof options.principal?.subject === "string" ? options.principal.subject.trim() : "";
+        const actor: WorkflowActor = provider && subject ? { kind: "user", provider, subject } : { kind: "system", name: "management-client" };
+        const host: WorkflowV2Host = {
+            catalog: this._catalog!, store, duroxideClient: this._duroxideClient, ...(enabled.requests === true ? { requests: true } : {}),
+        };
+        try {
+            return await updateWorkflowForPerson(command, { host, workflowSessionId: sessionId, actor });
+        } catch (error) {
+            if (error instanceof WorkflowStoreError) throw failure(error.code, workflowCommandStatus(error.code), error.message, error.details);
             throw error;
         }
     }

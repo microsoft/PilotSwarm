@@ -470,6 +470,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | Agent tools (a request's responder, an agent state's child) | — | `respond_session_request`, `complete_workflow_node` (in-process, bound by the host) |
 | REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, portal | the same `readWorkflowV2View` | nothing |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
+| Management client (direct mode; INACTIVE, test-only option `workflowCommands`) | — | `updateWorkflow`: a person's `update_workflow` command (below) |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -495,12 +496,45 @@ the same agent child, branch, stop, test and pin fields. The shared UI
   no composer; the note gives the reason and the controlling agent. The
   server refuses the input anyway.
 
+**A person's workflow command (`updateWorkflow`; design 04, R26; INACTIVE).**
+The direct management client takes a person's command to a workflow
+session: the `update_workflow` tool's operations and arguments
+(`replace_definition`, `publish`, `publish_and_start`, `start`,
+`set_vars`, `pause`, `resume`, `cancel`; `stop` and the test operations
+when the workers run controller 1.9.0), run by the tool's own
+implementation (`runUpdateWorkflowCommand`, `human-commands.ts`), so the
+receipts and refusals are the tool's. It is taken only by a client created
+with the test-only option `workflowCommands`; otherwise it answers 501
+`WORKFLOW_COMMANDS_UNAVAILABLE` and changes nothing.
+
+- **Who.** The caller's access to the session is decided before the
+  command runs (the portal's gate, in the next slice; the direct client is
+  trusted). The recorded actor is the caller's principal (a user), or the
+  client itself (system) without one; a command never names its actor.
+- **What.** The command targets the session it is sent to (a `workflow_id`
+  naming another is refused), which must be a version 2 workflow (404
+  otherwise). `recover` stays the agent's. A refusal carries its code and
+  HTTP status: 404 for what does not exist, 403 forbidden, 400 an invalid
+  command, 422 a value its contract refuses, 429 a limit, 409 a conflict
+  with the workflow's state.
+- **Human input to an agent state's subtree (R13).** A workflow inside a
+  workflow agent state's subtree (for example, one that an agent state's
+  child created) takes only a person's brakes: `pause`, `stop` and
+  `cancel`. Anything else that changes or drives it (its definition, KV,
+  runs or tests, `resume` included) is refused with 403
+  `WORKFLOW_HUMAN_INPUT_DENIED`, naming its controlling agent. The workflow
+  container above it takes every command.
+- **Not over the Web API yet.** The web management client refuses
+  `updateWorkflow` with `WEB_MODE_UNSUPPORTED`.
+
 Unfulfilled requirements (open, not waived; R26):
 
-- **Human command routes** (REST/MCP `updateWorkflow`, test runs, typed
-  input): the human REST surface stays read-only. Design 04 proposes
-  `/sessions/{id}/workflow/commands`, `/test-runs` and `/inbox`; their
-  authority model for people and the path names are API review item D11.
+- **Human command routes over REST/MCP** (`updateWorkflow`, test runs,
+  typed input): the SDK command exists (above), but no REST operation, Web
+  client method, MCP tool or TUI command carries it yet, so the human REST
+  surface stays read-only. Design 04 proposes
+  `/sessions/{id}/workflow/commands`, `/test-runs` and `/inbox`; the path
+  names are API review item D11.
 - **Response and completion routes** (REST/MCP for `respond_session_request`
   and `complete_workflow_node`): design 04 requires scoped, service-issued
   invocation credentials (caller, audience, session/run/node binding, expiry,

@@ -30,12 +30,17 @@ import type { WorkflowLineage, WorkflowStore } from "./store.js";
 
 export const WORKFLOW_HUMAN_INPUT_DENIED = "WORKFLOW_HUMAN_INPUT_DENIED";
 
-/** The human input a workflow agent state's subtree refuses. */
-export type WorkflowHumanInputAction = "prompt" | "answer" | "steer" | "event" | "canvas" | "workspace";
+/**
+ * The human input a workflow agent state's subtree refuses. `workflow`: a person's command that changes or drives a
+ * workflow session in such a subtree (its definition, inputs, KV, runs or tests: human-commands.ts); its brakes (pause,
+ * stop, cancel) are lifecycle controls and stay allowed.
+ */
+export type WorkflowHumanInputAction = "prompt" | "answer" | "steer" | "event" | "canvas" | "workspace" | "workflow";
 
 const ACTION_WORDS: Record<WorkflowHumanInputAction, string> = {
     prompt: "send it prompts", answer: "answer its questions", steer: "steer its turns", event: "send it session events",
     canvas: "write its canvases", workspace: "change its workspace",
+    workflow: "change its definition, inputs, runs or tests (pause, stop and cancel stay available)",
 };
 
 /** The deepest level of a workflow agent state's subtree: parent 0, workflow 1, node agent 2 and its child 3 (R16, D02). */

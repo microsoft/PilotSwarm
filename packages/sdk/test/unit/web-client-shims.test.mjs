@@ -121,6 +121,8 @@ test("direct-only plumbing refuses loudly with WEB_MODE_UNSUPPORTED", () => {
         "listGroupSessions",
         "normalizeModel",
         "getModelCredentialStatus",
+        // A person's workflow command (INACTIVE) has no Web API operation yet.
+        "updateWorkflow",
     ]) {
         assert.throws(
             () => client[method](),

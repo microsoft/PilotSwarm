@@ -343,6 +343,15 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("readWorkflow", { sessionId, ...(runId === undefined || runId === null ? {} : { runId }) });
     }
 
+    /**
+     * Workflow v2: a person's workflow command (INACTIVE): direct mode only
+     * until its Web API operation exists; the workflow's parent agent changes
+     * a workflow with its update_workflow tool.
+     */
+    updateWorkflow(): never {
+        throw webModeUnsupported("updateWorkflow", "a person's workflow command has no Web API operation yet (inactive, direct mode only)");
+    }
+
     /** Session workspaces: set or clear the workspace (external flow). */
     async setSessionWorkspace(
         sessionId: string,
