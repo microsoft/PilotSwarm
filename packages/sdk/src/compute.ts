@@ -183,14 +183,6 @@ export type ComputeFailure = {
     code: string;
     message: string;
     retryAfterMs?: number;
-    /**
-     * Whether retrying this failure cannot help. A provider may set it on
-     * a failure of its own, and only on one: a built-in code's kind is
-     * decided by PilotSwarm, which is the only way a provider cannot talk
-     * a permanent failure into looking retryable or the other way round.
-     * compute-failures.ts holds the classification and the format.
-     */
-    permanent?: boolean;
 };
 
 /** Every provider call carries a deadline; a provider should stop work when it fires. */

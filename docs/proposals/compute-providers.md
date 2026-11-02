@@ -4,12 +4,14 @@
 whole of the design below is built on the branch: targets and names, the
 provider interface, capabilities and host models, the transport contract and
 the bridge, the handshake and the host component, provider services and their
-registration, leases and the end-of-session notice, clear failure reasons, and
-the management surfaces. What is deliberately left for later is listed in
-section 11. **Date:** 2026-11-02, revision 2. Revision 1 restructured the
-proposal to match `docs/proposals/session-workspaces.md`: a high-level design
-for a human reader first, then numbered sections. Revision 2 records the built
-behaviour after the parts were brought together.
+registration, leases and the end-of-session notice, and the management
+surfaces. Clear failure reasons were left out on purpose to keep the work
+small (section 4.9). What is deliberately left for later is listed in section
+11. **Date:** 2026-11-02, revision 3. Revision 1 restructured the proposal to
+match `docs/proposals/session-workspaces.md`: a high-level design for a human
+reader first, then numbered sections. Revision 2 records the built behaviour
+after the parts were brought together. Revision 3 defers clear failure
+reasons to a follow-up that needs no orchestration change.
 
 A session's agent runs on a host chosen for that session, not inside the
 worker that serves the turn. The worker stays the trusted side: it keeps the
@@ -114,9 +116,7 @@ a reason. The agent never falls back to running on the worker.
 
 - A session without a target runs exactly as today: same tools, same prompt,
   same steps. Only sessions that name a target see anything new.
-- No orchestration change in the built core. Migration 0084 is new and
-  additive. Clear failures (section 4.10) add one new orchestration version
-  when they land; ordinary sessions behave identically.
+- No orchestration change. Migration 0084 is new and additive.
 
 **Main choices**
 
@@ -213,8 +213,6 @@ Defined before use, in the order the rest of the document needs them.
 | Probe | A check at registration — bind, connect, ask the runtime, release — that validates a target and records what it offers. |
 | Placeholder credentials | Per-session, per-binding random stand-ins the runtime holds instead of real model keys. The worker swaps them for real keys on each request. |
 | SessionFs | The session-state file surface the runtime reads and writes. It is confined to the worker's folder for that session. |
-| Permanent failure | A compute failure that retrying cannot fix (target gone, disabled, access lost, unsupported, handshake failed). It stops the turn at once. |
-| Temporary failure | A compute failure that may pass (host offline, no capacity, provider unreachable). It keeps today's retries, with a clear message. |
 | Session tree | A root session and all of its sub-agents. It runs on one target, fixed at the root. |
 | CMS | The session catalog database: sessions, events, and the new `compute_targets` table. |
 
@@ -265,7 +263,7 @@ services and the network between workers and hosts.
 | Session-state files | SessionFs confined to the worker's session folder (**built**) | `files` capability says whether the host shares the worker's files | the SessionFs provider |
 | Keeping a host in use | A lease the worker renews on a timer (**built**) | An optional `renew`; the provider's own expiry as a backstop | `renew(req)` |
 | Finishing with a host | `release` per leaving session; a done notice when the tree ends, even unloaded (**built**) | An optional `done`; deciding the host's fate | `release(req)`, `done(req)` |
-| Clear failures | Classifying each failure permanent or temporary; stopping a turn at once on a permanent one (**built**) | A provider may mark its own failure permanent | the `ComputeFailure` shape |
+| Failures | One shape for every compute error (`CODE: message`); a failure goes through the ordinary turn retry (**built**). Clear reasons that stop a turn at once are deferred (section 4.9) | A code, a message and an optional retry hint | the `ComputeFailure` shape |
 | Management surfaces | List, create, update, enable/disable, delete, list a target's models, and a worker-run probe, across the client, Web API and MCP (**built**) | Nothing | the management client and API |
 
 How the two sides work together, end to end:
@@ -510,8 +508,7 @@ PilotSwarm defines — the same for every provider and every kind of connection.
   size-bounded, with a deadline; comparisons are constant-time; the host
   remembers the worker nonces it has answered and refuses a repeat, so a
   recorded exchange is worthless. Any failure closes the connection, and the
-  turn fails at once with a clear "handshake failed" reason, which is permanent
-  (section 4.9).
+  turn fails with a "handshake failed" reason (section 4.9).
 - **The host component.** A small PilotSwarm program runs on the host, in front
   of the runtime. It answers the handshake, then forwards the stream to the
   runtime's local port, and reaches nothing else. It serves exactly one binding
@@ -642,30 +639,22 @@ The bindings table records, per binding, the tree, target, provider kind, an
 opaque provider-private host reference, the binding id, the worker, and the
 lease, release and done timestamps. It never holds secrets.
 
-### 4.9 Failures and their reasons
+### 4.9 Failures
 
 Every compute failure carries a `code`, a human `message`, and an optional
-`retryAfterMs`, and is classified **permanent** or **temporary**. **(built)**
+`retryAfterMs`. The worker builds every compute error it raises through one
+helper, so the line a turn carries is always `CODE: message`. **(built)**
 
-| Kind | Meaning | Examples | What a turn does |
-|---|---|---|---|
-| Permanent | Retrying cannot help | target not found or gone, disabled, access lost, invalid, unsupported (including a model the target no longer offers), endpoint refused, no provider for the kind, handshake failed, a provider service whose identity is not the registered one, a registration that is wrong | Stops at once, no retries, with the clear reason; the session is ready for the next prompt |
-| Temporary | May pass later | host offline, no capacity, provider or provider service unreachable or slow | Keeps today's retries, with an accurate message such as "the host is offline: start it, then resend" |
+A compute failure then goes through the ordinary turn retry, like any failed
+turn: three attempts over about 45 seconds, then the session shows the error.
+That affects only sessions that use a compute target.
 
-One module maps each built-in code to its permanent flag, a clear message and
-what the person can do, and the worker builds every compute error it raises
-through that module, so the line a turn carries is always the same shape. A
-provider may mark a failure of **its own** permanent or temporary, and that
-travels with the failure — across the provider-service protocol and across the
-activity boundary, which carries only a string. A built-in code is classified
-by the module and never by a provider, so a provider cannot talk a permanent
-failure into looking retryable or the other way round. The permanent path is
-modelled on the existing non-retryable authentication-failure path, and the
-client surfaces a permanent compute failure at once instead of waiting for its
-timeout. Patient waiting for a host, and resuming on its own, may come later.
-Because it changes how a turn behaves, this adds one new orchestration version
-(1.0.83) and freezes the previous latest (1.0.82) for replay; ordinary sessions
-behave identically on both.
+**Deferred on purpose: clear reasons.** Separating failures that retrying
+cannot fix (a target removed, disabled or no longer available to its owner, a
+handshake that fails) from ones that may pass (a host offline, no capacity), and
+stopping the first kind at once with a clear reason, was left out to keep this
+work small. The follow-up does it inside the worker's turn activity, which
+already has a "do not retry" result, so it needs no orchestration change.
 
 ### 4.10 APIs, events and errors
 
@@ -691,9 +680,7 @@ reference docs are updated alongside; this proposal is not that reference.
 The design is additive. A session without a target runs exactly as today: the
 runtime runs in the worker, with the same tools, the same prompt and the same
 steps. Migration 0084 only adds a table and its procedures; it changes no
-existing row. The built core adds no orchestration version. The clear-failures
-work (section 4.9) adds one new version and freezes the current latest exactly,
-so replay of old sessions is unchanged. There is no feature flag: the new
+existing row. It adds no orchestration version. There is no feature flag: the new
 behaviour appears only for a session that names a target.
 
 ## 5. The `process` provider as the reference
@@ -807,8 +794,8 @@ Finish:   the user stops using the target; release; the machine is the user's,
 | K5 | A chosen model is withdrawn from a target | The turn fails with a clear reason and says to choose another; the previous advertisement stands if the host cannot answer a refresh. |
 | K6 | The connection breaks mid-turn | A fresh pipe replaces it. A pipe that cannot be opened, or is too slow, fails the turn with a clear reason rather than hanging. |
 | K7 | A session tree ends while not loaded anywhere | The done-notice sweep finds the binding and sends exactly one `done`, even when the tree's record is gone altogether. |
-| K8 | The handshake fails (wrong secret, a party in the middle, a replayed nonce, an oversized frame, a timeout) | The connection closes and the turn fails with a permanent "handshake failed" reason; the model is never called. |
-| K9 | A provider service is unreachable or its identity does not match | Its targets fail with that reason, naming the service. An unreachable service is temporary; a mismatched identity is permanent. |
+| K8 | The handshake fails (wrong secret, a party in the middle, a replayed nonce, an oversized frame, a timeout) | The connection closes and the turn fails with a "handshake failed" reason; the model is never called. |
+| K9 | A provider service is unreachable or its identity does not match | Its targets fail with that reason, naming the service. |
 | K10 | A remote runtime asks for a model it was not granted, or a different destination | The request handler refuses it; no placeholder is resolved and nothing is sent. |
 | K11 | A host shares no files with the worker | Artifact file tools that name worker files are refused for that session; only `worker-local` or `shared-mount` hosts allow them. |
 | K12 | A reused host carries state from before | Not allowed: the provider must hand over a clean host, and PilotSwarm uses a fresh secret per binding. |
@@ -838,7 +825,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | The handshake and host component (**built**) | U, L | Success; wrong secret either side; a replayed nonce; a truncated or oversized frame; a timeout; constant-time compare; the host component forwards to the runtime; a wrong secret fails the turn with no model request |
 | Provider services and registration (**built**) | U, L | The remote connector maps each call; a mismatched identity is refused; the `process` provider served as a registered service runs a full turn end to end |
 | Leases and done notices (**built**) | U, L | The lease timer math; a lease renewed and recorded; a tree that ends while unloaded gets exactly one done notice |
-| Clear failures (**built**) | U, L | Classification of each code; a deleted or unknown target makes the client reject within a few seconds with the clear reason and no retry; a temporary failure is retried with the clear message; existing orchestration and replay tests still pass |
+| Failures (**built**) | U | Every compute error is `CODE: message` with its code and retry hint, and is never prefixed twice |
 | Management surfaces (**built**) | U, L | List, create, update, enable/disable, delete, list models, and the worker-run probe across the client, Web API and MCP; every mutation audited; surface-parity tests updated |
 
 ## 9. Decisions, verified facts and open items
@@ -861,7 +848,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | Targets advertise capabilities (untrusted, for options only); target chosen before model | Capabilities granting access; model chosen first |
 | Only a personal target may offer its own models, under `@<target>:<model>` names | Any target offering models |
 | Target `config` holds no secrets; providers get credentials from the deployment | A secret reference in the config |
-| Clear failures: permanent stops the turn at once, temporary keeps retries; one new orchestration version | Every failure going through the ordinary turn retry |
+| Clear failure reasons deferred to a follow-up, built in the turn activity without an orchestration change | A new orchestration version in this work |
 
 **Verified on the branch (with the `process` provider, real workers and PostgreSQL)**
 
@@ -913,8 +900,7 @@ branch; section 11 lists what was deliberately left out.
 | `management-client.ts` | A target's model options (direct client today) | built |
 | `compute-handshake.ts`, `compute-host.ts`, `compute-host-cli.ts` | The handshake, the host component, and the command that runs it on a host | built |
 | `compute-service.ts`, `compute-websocket.ts`, `compute-service-store.ts` | The provider-service protocol and the generic connector; the WebSocket pipe; the registration and binding stores | built |
-| `compute-failures.ts` | Classifying a failure, and the one shape every compute error the worker raises takes | built |
-| `orchestration*`, `client.ts`, `web/web-client.ts` | Stopping a turn at once on a permanent compute failure; version 1.0.83 with 1.0.82 frozen; surfacing it to a waiting client | built |
+| `compute-failures.ts` | The one shape every compute error the worker raises takes | built |
 | `compute-target-probe.ts`, `management-client.ts`, `web/*`, `api/*`, `packages/app/mcp/*` | The management surfaces and the worker-run probe, as its own durable orchestration | built |
 
 ## 11. Delivery plan
@@ -925,7 +911,7 @@ branch; section 11 lists what was deliberately left out.
 | Provider services | The remote connector, the `/v1` protocol, registration and mutual identity, the in-process-as-service helper | **built** |
 | The handshake | The mutual handshake and the host component, run for real by the `process` provider | **built** |
 | Host lifecycle | Leases and renewals; the done notice for trees that end while unloaded | **built** |
-| Clear failures | Permanent vs temporary; stop the turn at once on a permanent one; client surfacing; one new orchestration version | **built** |
+| Clear failures | Permanent vs temporary; stop the turn at once on a permanent one, from the turn activity, with no orchestration change | **next** (left out to keep this work small) |
 | Management surfaces | Targets and the probe across the client, Web API and MCP; audit; API reference docs | **built** |
 | Later | Provider extras; demand hints; a secret reference; portal and TUI views; provisioning; multi-target trees; SessionFs quotas and remote SQL tools | **later** |
 
@@ -933,7 +919,6 @@ The whole of this is built and proved end to end on a laptop and in CI through
 the `process` provider: run as a registered provider service over the `/v1`
 protocol, reached through the bridge, with the real handshake answered by the
 real host component, a lease renewed and recorded, an end-of-session notice for
-a tree that ended while nothing held it, and a permanent failure that stops a
-turn at once while a temporary one is retried. What a real deployment still
+and a tree that ended while nothing held it. What a real deployment still
 needs is a provider service of its own; nothing in the worker has to change for
 one. The later items are known and deferred, not forgotten.

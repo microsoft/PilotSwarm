@@ -276,7 +276,7 @@ describe("orchestration version upgrades", () => {
         const turns = [];
         const ctx = createCtx(values, [], turns);
         const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
-        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.83");
+        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.82");
         const handler = await loadHandler(DURABLE_SESSION_LATEST_VERSION);
         const result = driveUntilParked(handler(ctx, inheritedInput("fifo-1.0.82")), ctx);
         expect(turns).toHaveLength(2);

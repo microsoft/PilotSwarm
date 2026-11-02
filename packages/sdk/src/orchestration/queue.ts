@@ -793,7 +793,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     error: state.blockedError.message,
                     retriesExhausted: true,
                     ...(state.blockedError.authFailure ? { authFailure: true } : {}),
-                    ...(state.blockedError.computeFailure ? { computeFailure: state.blockedError.computeFailure } : {}),
                 });
             } else {
                 publishStatus(runtime, "idle");

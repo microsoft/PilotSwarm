@@ -1314,8 +1314,8 @@ export class SessionManager {
         // Every compute failure leaves this method as one coded error in
         // the one format the rest of the worker reads, so a provider's own
         // sense of whether retrying can help is never lost on the way out.
-        const fail = (code: string, message: string, retryAfterMs?: number, permanent?: boolean): never => {
-            throw computeFailureError({ code, message, retryAfterMs, permanent });
+        const fail = (code: string, message: string, retryAfterMs?: number): never => {
+            throw computeFailureError({ code, message, retryAfterMs });
         };
         const catalog = this.sessionCatalog;
         if (!catalog?.computeTargets || !catalog.getSessionCreationConfig) return null;
@@ -1352,12 +1352,12 @@ export class SessionManager {
         if (provider.validateTarget) {
             const valid = await this._computeCall("validateTarget", COMPUTE_CONNECT_TIMEOUT_MS,
                 (signal) => provider.validateTarget!({ target, principal: owner, signal }));
-            if (!valid.ok) return fail(valid.code, valid.message, valid.retryAfterMs, valid.permanent);
+            if (!valid.ok) return fail(valid.code, valid.message, valid.retryAfterMs);
         }
         const previous = this.computeHosts.get(sessionId);
         const bound = await this._computeCall("bind", COMPUTE_BIND_TIMEOUT_MS,
             (signal) => provider.bind({ target, sessionId, rootSessionId, owner, workerNodeId, signal }));
-        if (!bound.ok) return fail(bound.code, bound.message, bound.retryAfterMs, bound.permanent);
+        if (!bound.ok) return fail(bound.code, bound.message, bound.retryAfterMs);
         if (previous && (previous.target.id !== target.id || previous.host.id !== bound.host.id || previous.host.incarnation !== bound.host.incarnation)) {
             // The session's host was replaced: leave the old one.
             this.computeHosts.delete(sessionId);
@@ -1388,7 +1388,7 @@ export class SessionManager {
             });
         if (!connected.ok) {
             await this.releaseCompute(sessionId, "failed");
-            return fail(connected.code, connected.message, connected.retryAfterMs, connected.permanent);
+            return fail(connected.code, connected.message, connected.retryAfterMs);
         }
         if (connected.endpoint.transport === "uri" && !this.computeAllowNonLoopbackEndpoints && !isLoopbackAddress(connected.endpoint.address)) {
             await this.releaseCompute(sessionId, "failed");
@@ -1408,9 +1408,9 @@ export class SessionManager {
                 endpoint = await this._bridgeEndpoint(binding, endpoint);
             } catch (error) {
                 await this.releaseCompute(sessionId, "failed");
-                const { code, permanent } = (error ?? {}) as { code?: string; permanent?: boolean };
+                const { code } = (error ?? {}) as { code?: string };
                 return typeof code === "string" && code.startsWith("COMPUTE_")
-                    ? fail(code, computeFailureMessage(code, error), undefined, permanent)
+                    ? fail(code, computeFailureMessage(code, error))
                     : fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
                         `the connection to the compute host could not be prepared: ${String((error as Error)?.message ?? error)}`, 5_000);
             }
@@ -1630,12 +1630,11 @@ export class SessionManager {
                     try {
                         endpoint = await this._bridgeEndpoint(probeBinding, endpoint);
                     } catch (error) {
-                        const { code: raw, permanent } = (error ?? {}) as { code?: string; permanent?: boolean };
+                        const { code: raw } = (error ?? {}) as { code?: string };
                         const code = typeof raw === "string" && raw.startsWith("COMPUTE_") ? raw : COMPUTE_ERROR_CODES.UNAVAILABLE;
                         return {
                             ok: false, code,
                             message: computeFailureMessage(code, error),
-                            ...(typeof permanent === "boolean" ? { permanent } : {}),
                         };
                     } finally {
                         probeBridge = probeBinding.bridge;
@@ -1660,12 +1659,11 @@ export class SessionManager {
                 }
             }
         } catch (error) {
-            const { code: raw, permanent } = (error ?? {}) as { code?: string; permanent?: boolean };
+            const { code: raw } = (error ?? {}) as { code?: string };
             const code = typeof raw === "string" && raw.startsWith("COMPUTE_") ? raw : COMPUTE_ERROR_CODES.UNAVAILABLE;
             return {
                 ok: false, code,
                 message: computeFailureMessage(code, error),
-                ...(typeof permanent === "boolean" ? { permanent } : {}),
             };
         }
     }

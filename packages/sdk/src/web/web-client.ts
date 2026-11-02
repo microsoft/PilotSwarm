@@ -335,11 +335,6 @@ export class WebPilotSwarmSession {
                     onIntermediateContent(customStatus.intermediateContent);
                 }
 
-                if (customStatus.status === "error" && customStatus.computeFailure?.permanent === true) {
-                    this.pendingTurn = false;
-                    throw new Error(String(customStatus.error ?? "Compute target refused the turn"));
-                }
-
                 if (customStatus.turnResult && customStatus.iteration > this.lastSeenIteration) {
                     this.lastSeenIteration = customStatus.iteration;
                     const result = customStatus.turnResult;

@@ -71,7 +71,6 @@ import {
     type ComputeTransport,
     type ComputeWorkspacePaths,
 } from "./compute.js";
-import { isBuiltInComputeCode } from "./compute-failures.js";
 import type { ComputeHandshakeCredential } from "./compute-handshake.js";
 import { openComputeWebSocket, serveComputeWebSocket } from "./compute-websocket.js";
 
@@ -379,12 +378,8 @@ function wirePrincipal(principal: ComputePrincipal | null): Record<string, unkno
     return principal ? { provider: principal.provider, subject: principal.subject, email: principal.email ?? null } : null;
 }
 
-function failure(code: string, message: string, retryAfterMs?: number, permanent?: boolean): ComputeFailure {
-    return {
-        ok: false, code, message,
-        ...(retryAfterMs ? { retryAfterMs } : {}),
-        ...(typeof permanent === "boolean" ? { permanent } : {}),
-    };
+function failure(code: string, message: string, retryAfterMs?: number): ComputeFailure {
+    return { ok: false, code, message, ...(retryAfterMs ? { retryAfterMs } : {}) };
 }
 
 /** Whatever a service answered, as a failure this worker can act on. */
@@ -399,10 +394,7 @@ function asFailure(answer: unknown, service: string, op: string): ComputeFailure
         ? value.message.trim()
         : `the provider service "${service}" refused ${op}`;
     const retryAfterMs = typeof value.retryAfterMs === "number" && value.retryAfterMs > 0 ? value.retryAfterMs : undefined;
-    // A service may say whether retrying one of its own failures can help.
-    // It travels with the failure, and PilotSwarm decides for its own codes.
-    const permanent = typeof value.permanent === "boolean" && !isBuiltInComputeCode(code) ? value.permanent : undefined;
-    return failure(code, message, retryAfterMs, permanent);
+    return failure(code, message, retryAfterMs);
 }
 
 function wireHandshake(value: unknown): ComputeHandshakeCredential | undefined {
