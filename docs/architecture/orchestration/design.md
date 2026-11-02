@@ -11,9 +11,9 @@ It does **not** own tool implementations or Copilot SDK session state. Those
 live in worker activities and the session manager.
 
 Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
-The current latest version is `1.0.82`. Frozen prior versions live as siblings
+The current latest version is `1.0.83`. Frozen prior versions live as siblings
 (single files `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then
-directories `orchestration_1_0_52/` … `orchestration_1_0_81/`) and run
+directories `orchestration_1_0_52/` … `orchestration_1_0_82/`) and run
 unchanged for any in-flight execution that started against them.
 
 In 1.0.81, Stop and Steer are handled inside the worker's turn activity through
@@ -815,8 +815,8 @@ src/orchestration_1_0_53/     │ frozen — replay only (directory form)
 src/orchestration_1_0_54/     │
 src/orchestration_1_0_55/     │
 ...                          │
-src/orchestration_1_0_81/     ┘
-src/orchestration/            ← current latest (1.0.82)
+src/orchestration_1_0_82/     ┘
+src/orchestration/            ← current latest (1.0.83)
 ```
 
 All registered versions are listed in
@@ -827,6 +827,25 @@ Older version files may remain for tests, but they are not registered.
 A frozen version is replay-only. New starts and every CAN target the current
 latest. The latest must accept `OrchestrationInput` produced by the oldest
 retained version (the `DURABLE_SESSION_COMPATIBILITY_FLOOR_VERSION`).
+
+### Compute failures (1.0.83)
+
+`compute-failures.ts` classifies coded errors before the authentication and
+transport checks. A permanent failure ends the current turn without a retry.
+It writes an error response and keeps the reason visible while the session
+waits for another prompt. The client and web client reject the wait at once.
+The session row stores the reason before the status signals the failure to
+waiting clients. A `session.compute_failure` event records the code,
+classification, reason and corrective action.
+A temporary failure keeps the existing 15 s and 30 s retry delays and
+three-attempt limit. Ordinary runtime errors use the same paths as before.
+
+Built-in compute codes have fixed classifications. Providers may set
+`ComputeFailure.permanent` only for their own codes. `formatComputeFailure`
+preserves that flag through the string-only activity error boundary with
+`CODE: [permanent] message` or `CODE: [temporary] message`. The classifier
+ignores those markers for built-in codes. Unknown compute codes default to
+temporary unless the provider marks them permanent.
 
 ---
 

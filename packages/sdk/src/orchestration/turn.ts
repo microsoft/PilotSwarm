@@ -1,5 +1,6 @@
 import type { MessageSender } from "../message-sender.js";
 import { PROVIDER_BUDGET_WAKE_PROMPT } from "../provider-budgets.js";
+import { classifyComputeFailure, type ClassifiedComputeFailure } from "../compute-failures.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "../prompt-system-context.js";
 import type { PromptAttachmentRef } from "../types.js";
@@ -266,6 +267,30 @@ export function* projectAuthFailure(
     const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", blockedDetail, null, { closeControls: true });
     yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
     runtime.state.carriedSteers = [];
+    runtime.state.retryCount = 0;
+}
+
+/** A failed compute turn ends, but the session can accept a corrected next prompt. */
+export function* projectComputeFailure(
+    runtime: DurableSessionRuntime,
+    failure: ClassifiedComputeFailure,
+): Generator<any, void, any> {
+    const computeFailure = { code: failure.code, permanent: failure.permanent };
+    runtime.state.blockedError = { message: failure.message, computeFailure };
+    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", failure.message, null, { closeControls: true });
+    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.compute_failure",
+        data: { ...computeFailure, message: failure.message, action: failure.action },
+    }]);
+    publishStatus(runtime, "error", { error: failure.message, retriesExhausted: true, computeFailure });
+    yield* writeLatestResponse(runtime, {
+        iteration: runtime.state.iteration,
+        type: "error",
+        content: failure.message,
+    });
+    runtime.state.carriedSteers = [];
+    runtime.state.thrownTurnKey = null;
     runtime.state.retryCount = 0;
 }
 
@@ -613,7 +638,7 @@ export function* processPrompt(
         state.config.turnSystemPrompt = undefined;
         // 1.0.81: keep this attempt's key for the retry of the same turn.
         state.thrownTurnKey = attemptTurnKey || null;
-        const errorMsg = err.message || String(err);
+        let errorMsg = err.message || String(err);
         const missingStateIndex = errorMsg.indexOf(SESSION_STATE_MISSING_PREFIX);
         if (missingStateIndex >= 0) {
             const fatalError = errorMsg.slice(missingStateIndex + SESSION_STATE_MISSING_PREFIX.length).trim();
@@ -625,7 +650,14 @@ export function* processPrompt(
             throw new Error(fatalError);
         }
 
-        if (isAuthFailureError(errorMsg)) {
+        const computeFailure = classifyComputeFailure(errorMsg);
+        if (computeFailure?.permanent) {
+            yield* projectComputeFailure(runtime, computeFailure);
+            return;
+        }
+        if (computeFailure) errorMsg = computeFailure.message;
+
+        if (!computeFailure && isAuthFailureError(errorMsg)) {
             state.thrownTurnKey = null;
             ctx.traceInfo(`[orch] runTurn FAILED with auth error; not retrying: ${errorMsg}`);
             yield* projectAuthFailure(runtime, errorMsg);
@@ -647,7 +679,7 @@ export function* processPrompt(
             phase: "runTurn.throw",
         };
 
-        if (isCopilotConnectionClosedError(errorMsg)) {
+        if (!computeFailure && isCopilotConnectionClosedError(errorMsg)) {
             yield* handleConnectionClosedRetry(runtime, errorMsg, rc);
             return;
         }
@@ -1603,16 +1635,23 @@ export function* handleTurnResult(
                 throw new Error(fatalError);
             }
 
+            const computeFailure = classifyComputeFailure(result.message);
+            if (computeFailure?.permanent) {
+                yield* projectComputeFailure(runtime, computeFailure);
+                return;
+            }
+            const errorMessage = computeFailure?.message ?? result.message;
+
             // The throw path short-circuits auth failures to an honest
             // "fix your key" stop; a 401 the activity RETURNED took the
             // generic retry loop instead. Same failure, same answer.
-            if (isAuthFailureError(result.message)) {
+            if (!computeFailure && isAuthFailureError(result.message)) {
                 ctx.traceInfo(`[orch] turn returned auth error; not retrying: ${result.message}`);
                 yield* projectAuthFailure(runtime, result.message);
                 return;
             }
 
-            if (result.retryable === false) {
+            if (!computeFailure && result.retryable === false) {
                 ctx.traceInfo(`[orch] turn returned non-retryable error: ${result.message}`);
                 yield* projectNonRetryableTurnFailure(runtime, result.message);
                 return;
@@ -1632,12 +1671,12 @@ export function* handleTurnResult(
                 phase: "turn.result.error",
             };
 
-            if (isCopilotConnectionClosedError(result.message)) {
+            if (!computeFailure && isCopilotConnectionClosedError(result.message)) {
                 yield* handleConnectionClosedRetry(runtime, result.message, rc);
                 return;
             }
 
-            yield* handleGenericRetry(runtime, result.message, rc);
+            yield* handleGenericRetry(runtime, errorMessage, rc);
             return;
         }
     }

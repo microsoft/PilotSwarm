@@ -14,35 +14,36 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { COMPUTE_ERROR_CODES } from "../../dist/compute.js";
 import {
-    COMPUTE_ERROR_CODES,
+    classifyComputeFailure,
     computeFailureError,
     computeFailureMessage,
     formatComputeFailure,
     isBuiltInComputeCode,
-} from "../../dist/compute.js";
+} from "../../dist/compute-failures.js";
 
 test("an ordinary failure is its code and its message", () => {
     assert.equal(
-        formatComputeFailure({ code: COMPUTE_ERROR_CODES.UNAVAILABLE, message: "no host is free" }),
+        formatComputeFailure({ ok: false, code: COMPUTE_ERROR_CODES.UNAVAILABLE, message: "no host is free" }),
         "COMPUTE_UNAVAILABLE: no host is free");
 });
 
 test("a provider's own code may say which kind it is", () => {
     assert.equal(
-        formatComputeFailure({ code: "ACME_QUOTA_SPENT", message: "this account has no capacity left", permanent: true }),
+        formatComputeFailure({ ok: false, code: "ACME_QUOTA_SPENT", message: "this account has no capacity left", permanent: true }),
         "ACME_QUOTA_SPENT: [permanent] this account has no capacity left");
     assert.equal(
-        formatComputeFailure({ code: "ACME_WARMING_UP", message: "the pool is still filling", permanent: false }),
+        formatComputeFailure({ ok: false, code: "ACME_WARMING_UP", message: "the pool is still filling", permanent: false }),
         "ACME_WARMING_UP: [temporary] the pool is still filling");
 });
 
 test("a provider cannot say which kind a built-in code is", () => {
     for (const code of Object.values(COMPUTE_ERROR_CODES)) {
-        assert.equal(isBuiltInComputeCode(code), true, `${code} is one PilotSwarm defines`);
+        assert.equal(isBuiltInComputeCode(code), true, `${code} must be classified in compute-failures.ts`);
         for (const permanent of [true, false]) {
             assert.equal(
-                formatComputeFailure({ code, message: "whatever the provider says", permanent }),
+                formatComputeFailure({ ok: false, code, message: "whatever the provider says", permanent }),
                 `${code}: whatever the provider says`,
                 `${code} must not carry a provider's marker`);
         }
@@ -52,7 +53,7 @@ test("a provider cannot say which kind a built-in code is", () => {
 
 test("a failure with no kind carries no marker at all", () => {
     assert.equal(
-        formatComputeFailure({ code: "ACME_SOMETHING", message: "it did not work" }),
+        formatComputeFailure({ ok: false, code: "ACME_SOMETHING", message: "it did not work" }),
         "ACME_SOMETHING: it did not work");
 });
 
@@ -88,4 +89,18 @@ test("a handshake failure uses the built-in code, and unreachability stays tempo
     assert.equal(COMPUTE_ERROR_CODES.HANDSHAKE_FAILED, "COMPUTE_HANDSHAKE_FAILED");
     assert.equal(COMPUTE_ERROR_CODES.UNAVAILABLE, "COMPUTE_UNAVAILABLE");
     assert.equal(isBuiltInComputeCode("COMPUTE_HANDSHAKE_FAILED"), true);
+});
+
+test("the codes the compute work added are classified the way the worker means them", () => {
+    const kinds = Object.fromEntries(
+        ["COMPUTE_HANDSHAKE_FAILED", "COMPUTE_SERVICE_IDENTITY", "COMPUTE_SERVICE_UNAVAILABLE", "COMPUTE_UNAVAILABLE"]
+            .map((code) => [code, classifyComputeFailure(`${code}: something happened`)]));
+    assert.equal(kinds.COMPUTE_HANDSHAKE_FAILED.permanent, true, "a host that cannot prove itself will not start proving itself");
+    assert.equal(kinds.COMPUTE_SERVICE_IDENTITY.permanent, true, "a service that is not the registered one will not become it");
+    assert.equal(kinds.COMPUTE_SERVICE_UNAVAILABLE.permanent, false, "a service that is not answering may answer later");
+    assert.equal(kinds.COMPUTE_UNAVAILABLE.permanent, false);
+    for (const [code, classified] of Object.entries(kinds)) {
+        assert.ok(classified.action.trim(), `${code} must tell the person what to do`);
+        assert.ok(classified.message.includes(code));
+    }
 });

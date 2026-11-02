@@ -1027,7 +1027,7 @@ export interface OrchestrationInput {
     /** Internal: one-shot current-model guidance attached to the next real prompt after a model switch. */
     runtimeModelNotice?: string;
     /** Internal: non-retryable turn error kept visible until the next user prompt. */
-    blockedError?: { message: string; authFailure?: boolean };
+    blockedError?: { message: string; authFailure?: boolean; computeFailure?: { code: string; permanent: boolean } };
     /** Internal: pending prompt is a bootstrap message, not a user-authored prompt. */
     bootstrapPrompt?: boolean;
     /** Internal: the pending prompt was produced by a recurring cron/cron_at timer fire. */
@@ -2086,6 +2086,7 @@ export interface SessionStatusSignal {
     cronFiresCompleted?: number;
     error?: string;
     retriesExhausted?: boolean;
+    computeFailure?: { code: string; permanent: boolean };
     contextUsage?: SessionContextUsage;
 }
 

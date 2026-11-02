@@ -251,10 +251,6 @@ export {
     computeHostKey,
     computeBindingKey,
     computeLeaseSchedule,
-    formatComputeFailure,
-    computeFailureError,
-    computeFailureMessage,
-    isBuiltInComputeCode,
     DEFAULT_COMPUTE_LEASE_MS,
     DEFAULT_COMPUTE_LEASE_RENEW_MS,
 } from "./compute.js";
@@ -288,6 +284,8 @@ export { ComputeRuntimeBridge, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_
 export { createProcessComputeProvider, PROCESS_COMPUTE_KIND } from "./compute-process.js";
 export type { ProcessComputeProviderOptions } from "./compute-process.js";
 export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
+export { classifyComputeFailure, formatComputeFailure, computeFailureError, computeFailureMessage, isBuiltInComputeCode } from "./compute-failures.js";
+export type { ClassifiedComputeFailure } from "./compute-failures.js";
 export type { ComputeTargetRow, ComputeTargetModel } from "./compute-target-store.js";
 // The mutual handshake every remote runtime connection starts with.
 export {

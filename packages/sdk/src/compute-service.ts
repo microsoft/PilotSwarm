@@ -60,7 +60,6 @@ import type { Duplex } from "node:stream";
 import type { TLSSocket } from "node:tls";
 import {
     COMPUTE_ERROR_CODES,
-    isBuiltInComputeCode,
     type ComputeAdvertisement,
     type ComputeCapabilities,
     type ComputeFailure,
@@ -72,6 +71,7 @@ import {
     type ComputeTransport,
     type ComputeWorkspacePaths,
 } from "./compute.js";
+import { isBuiltInComputeCode } from "./compute-failures.js";
 import type { ComputeHandshakeCredential } from "./compute-handshake.js";
 import { openComputeWebSocket, serveComputeWebSocket } from "./compute-websocket.js";
 

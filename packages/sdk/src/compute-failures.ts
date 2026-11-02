@@ -1,0 +1,95 @@
+import type { ComputeFailure } from "./compute.js";
+
+export interface ClassifiedComputeFailure {
+    code: string;
+    permanent: boolean;
+    message: string;
+    action: string;
+}
+
+const reasons: Readonly<Record<string, { permanent: boolean; reason: string; action: string }>> = {
+    COMPUTE_TARGET_NOT_FOUND: { permanent: true, reason: "The compute target is gone or cannot be found.", action: "Choose an available compute target, then resend your prompt." },
+    COMPUTE_TARGET_DISABLED: { permanent: true, reason: "The compute target is disabled.", action: "Ask its manager to enable it, or choose another target, then resend your prompt." },
+    COMPUTE_TARGET_FORBIDDEN: { permanent: true, reason: "This session no longer has access to the compute target.", action: "Ask its manager to restore access, or choose another target, then resend your prompt." },
+    COMPUTE_TARGET_INVALID: { permanent: true, reason: "The compute target configuration is invalid.", action: "Correct the target configuration, then resend your prompt." },
+    COMPUTE_TARGET_CONFLICT: { permanent: true, reason: "The compute target conflicts with an existing target.", action: "Choose a different target name or correct the configuration, then resend your prompt." },
+    COMPUTE_KIND_UNKNOWN: { permanent: true, reason: "This deployment has no provider for the compute target's kind.", action: "Ask an administrator to register a provider, or choose another target, then resend your prompt." },
+    COMPUTE_UNSUPPORTED: { permanent: true, reason: "The compute target does not support this session's configuration.", action: "Choose a supported model or compute target, then resend your prompt." },
+    COMPUTE_HOST_MODEL_UNAVAILABLE: { permanent: true, reason: "The compute target no longer offers this session's model.", action: "Choose a model the target offers, then resend your prompt." },
+    COMPUTE_ENDPOINT_REFUSED: { permanent: true, reason: "The worker refused the compute endpoint.", action: "Ask its manager to correct the endpoint configuration, then resend your prompt." },
+    COMPUTE_HANDSHAKE_FAILED: { permanent: true, reason: "The worker could not verify the compute host.", action: "Ask its manager to correct the host's identity and binding configuration, then resend your prompt." },
+    COMPUTE_SERVICE_IDENTITY: { permanent: true, reason: "The worker refused the provider service's identity.", action: "Ask an administrator to correct the registered service identity, then resend your prompt." },
+    COMPUTE_SERVICE_UNAVAILABLE: { permanent: false, reason: "The provider service is temporarily unreachable.", action: "Wait for the service to answer again, then resend your prompt if retries end." },
+    COMPUTE_SERVICE_INVALID: { permanent: true, reason: "The provider service registration is invalid.", action: "Ask an administrator to correct the registration, then resend your prompt." },
+    COMPUTE_SERVICE_FORBIDDEN: { permanent: true, reason: "Only an administrator can work with registered provider services.", action: "Ask an administrator to make the change." },
+    COMPUTE_SERVICE_NOT_FOUND: { permanent: true, reason: "There is no provider service registered under that name.", action: "Ask an administrator to register it, or choose another compute target, then resend your prompt." },
+    COMPUTE_SERVICE_CONFLICT: { permanent: true, reason: "That provider service name is already taken.", action: "Choose another name for the service." },
+    COMPUTE_SERVICE_IN_USE: { permanent: true, reason: "Compute targets still use that provider service.", action: "Remove those targets first, then remove the service." },
+    COMPUTE_BINDING_INVALID: { permanent: true, reason: "The compute binding is missing what it needs.", action: "Ask the provider's author to correct it, then resend your prompt." },
+    COMPUTE_UNAVAILABLE: { permanent: false, reason: "The compute host or provider is temporarily unavailable.", action: "If the host is offline, start it; otherwise wait for capacity or service recovery, then resend if retries end." },
+};
+
+/** Keep provider classifications across the activity's string-only error boundary. */
+export function formatComputeFailure(failure: ComputeFailure): string {
+    const marker = !Object.hasOwn(reasons, failure.code) && typeof failure.permanent === "boolean"
+        ? `[${failure.permanent ? "permanent" : "temporary"}] `
+        : "";
+    return `${failure.code}: ${marker}${failure.message}`;
+}
+
+/** Only a coded prefix is a compute failure; prose and ordinary runtime errors are not. */
+export function classifyComputeFailure(failure: string | ComputeFailure): ClassifiedComputeFailure | null {
+    const raw = typeof failure === "string" ? failure : formatComputeFailure(failure);
+    // Activity rejections preserve the coded message inside this runtime envelope.
+    const text = raw.replace(/^Activity '[^']+' JS execution failed: [^,\r\n]+, Error:\s*/, "");
+    const match = /^([A-Z][A-Z0-9_]*):\s*(?:\[(permanent|temporary)\]\s*)?([\s\S]*)$/.exec(text);
+    if (!match) return null;
+    const [, code, marker, detail] = match;
+    const builtIn = Object.hasOwn(reasons, code) ? reasons[code] : undefined;
+    if (!builtIn && !code.startsWith("COMPUTE_") && !marker) return null;
+    const permanent = builtIn?.permanent ?? marker === "permanent";
+    const action = builtIn?.action ?? (permanent
+        ? "Correct the provider's configuration, or choose another compute target, then resend your prompt."
+        : "Wait for the provider to recover, then resend your prompt if retries end.");
+    const reason = builtIn?.reason ?? (permanent ? "The compute provider refused this turn." : "The compute provider is temporarily unavailable.");
+    return { code, permanent, action, message: `${code}: ${reason}${detail.trim() ? ` ${detail.trim()}` : ""} ${action}` };
+}
+
+/** Whether a code is one PilotSwarm classifies, rather than a provider's own. */
+export function isBuiltInComputeCode(code: unknown): boolean {
+    return typeof code === "string" && Object.hasOwn(reasons, code);
+}
+
+/**
+ * The message of a failure being raised again from an error that already
+ * carries its own code, with that prefix (and any provider marker) taken
+ * off, so it is never formatted twice as `CODE: CODE: ...`.
+ */
+export function computeFailureMessage(code: string, raw: unknown): string {
+    const text = String((raw as Error)?.message ?? raw ?? "").trim();
+    const prefix = new RegExp(`^${code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*(\\[(?:permanent|temporary)\\]\\s*)?`);
+    return text.replace(prefix, "");
+}
+
+/**
+ * One compute failure as the Error the worker throws. Every compute error
+ * the worker raises is built here, so the line the orchestration reads is
+ * always `CODE: message` in the shape classifyComputeFailure expects, and
+ * a provider's own sense of whether retrying can help is never lost.
+ */
+export function computeFailureError(
+    failure: Pick<ComputeFailure, "code" | "message" | "retryAfterMs" | "permanent">,
+): Error {
+    const code = typeof failure?.code === "string" && failure.code.trim() ? failure.code.trim() : "COMPUTE_UNAVAILABLE";
+    const shaped: ComputeFailure = {
+        ok: false, code,
+        message: typeof failure?.message === "string" ? failure.message.trim() : "",
+        ...(failure?.retryAfterMs ? { retryAfterMs: failure.retryAfterMs } : {}),
+        ...(typeof failure?.permanent === "boolean" ? { permanent: failure.permanent } : {}),
+    };
+    return Object.assign(new Error(formatComputeFailure(shaped)), {
+        code,
+        ...(shaped.retryAfterMs ? { retryAfterMs: shaped.retryAfterMs } : {}),
+        ...(typeof shaped.permanent === "boolean" && !isBuiltInComputeCode(code) ? { permanent: shaped.permanent } : {}),
+    });
+}
