@@ -54,10 +54,13 @@ for (const zone of zones) test.describe(`MoTD viewer timezone ${zone.id}`, () =>
             expect(hit).toEqual({ inSummary: true, button: null, overlaps: false });
             await summary.tap();
             await expect(row).toHaveJSProperty("open", true);
+            // Tap feedback can clear keyboard activation between Space down and up.
+            await expect.poll(() => summary.evaluate(node => node.matches(":active"))).toBe(false);
             await summary.press("Space");
             await expect(row).toHaveJSProperty("open", false);
             await row.locator(".ps-motd-history-title").tap();
             await expect(row).toHaveJSProperty("open", true);
+            await expect.poll(() => summary.evaluate(node => node.matches(":active"))).toBe(false);
             await summary.press("Space");
             await expect(row).toHaveJSProperty("open", false);
             await summary.press("Space");
