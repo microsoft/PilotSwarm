@@ -7,7 +7,7 @@ const permanentCodes = [
     "COMPUTE_TARGET_NOT_FOUND", "COMPUTE_TARGET_DISABLED", "COMPUTE_TARGET_FORBIDDEN",
     "COMPUTE_TARGET_INVALID", "COMPUTE_TARGET_CONFLICT", "COMPUTE_KIND_UNKNOWN",
     "COMPUTE_UNSUPPORTED", "COMPUTE_HOST_MODEL_UNAVAILABLE", "COMPUTE_ENDPOINT_REFUSED",
-    "COMPUTE_HANDSHAKE_FAILED", "COMPUTE_SERVICE_IDENTITY_REFUSED",
+    "COMPUTE_HANDSHAKE_FAILED", "COMPUTE_SERVICE_IDENTITY",
 ];
 for (const code of permanentCodes) {
     test(`${code} stops retries and gives a reason and corrective action`, () => {
@@ -20,9 +20,15 @@ for (const code of permanentCodes) {
     });
 }
 
+// The only codes a worker may raise and retry are the ones that say the
+// host or the service might answer later; everything else is permanent.
+const temporaryCodes = new Set(["COMPUTE_UNAVAILABLE", "COMPUTE_SERVICE_UNAVAILABLE"]);
+
 test("every built-in code is classified", () => {
     for (const code of Object.values(COMPUTE_ERROR_CODES)) {
-        assert.equal(classifyComputeFailure(`${code}: detail`).permanent, code !== "COMPUTE_UNAVAILABLE");
+        const classified = classifyComputeFailure(`${code}: detail`);
+        assert.ok(classified, `${code} must be classified in compute-failures.ts`);
+        assert.equal(classified.permanent, !temporaryCodes.has(code), code);
     }
 });
 

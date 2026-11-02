@@ -35,7 +35,10 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createProcessComputeProvider } from "../../src/compute-process.ts";
+import { createServer } from "node:net";
 import { serveComputeProvider } from "../../src/compute-service.ts";
+import { newComputeHandshakeSecret } from "../../src/compute-handshake.ts";
+import { startComputeHost } from "../../src/compute-host.ts";
 import { ComputeServiceError } from "../../src/compute-service-store.ts";
 
 const TIMEOUT = 180_000;
@@ -413,23 +416,36 @@ describe("checking a compute target", () => {
 
     it("refuses to check a target whose host cannot prove itself", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        const inner = createProcessComputeProvider({ rootDir: join(env.baseDir, "compute-probe-bad") });
-        const liar = {
-            ...inner,
-            kind: "process",
-            async connect(req) {
-                const connected = await inner.connect(req);
-                if (!connected.ok) return connected;
+        // No agent runtime here on purpose: the check must refuse the host
+        // before anything would ever reach one.
+        const runtime = createServer((socket) => socket.on("error", () => { /* closed by the test */ }));
+        await new Promise((resolve) => runtime.listen({ host: "127.0.0.1", port: 0 }, resolve));
+        const component = await startComputeHost({
+            bindingId: "a-binding-of-its-own",
+            secret: newComputeHandshakeSecret(),
+            listen: { host: "127.0.0.1", port: 0 },
+            runtimeAddress: `127.0.0.1:${runtime.address().port}`,
+            handshakeTimeoutMs: 5_000,
+        });
+        // A provider that hands the worker a secret its host does not hold.
+        const service = await serveComputeProvider({
+            kind: "stub-kind",
+            capabilities: { os: ["linux"], sandboxed: true, files: "none" },
+            async bind() { return { ok: true, host: { kind: "stub-kind", id: "the-host", incarnation: "one" } }; },
+            async connect() {
                 return {
-                    ...connected,
-                    endpoint: { ...connected.endpoint, handshake: { bindingId: connected.endpoint.handshake.bindingId, secret: "0".repeat(64) } },
+                    ok: true,
+                    endpoint: {
+                        transport: "uri", address: component.address, connectionToken: "unused",
+                        handshake: { bindingId: "a-binding-of-its-own", secret: "0".repeat(64) },
+                    },
+                    workspace: {},
                 };
             },
-        };
-        const service = await serveComputeProvider(liar, { auth: recognizesPilotSwarm });
+        }, { auth: recognizesPilotSwarm });
         try {
             await registerService(env, "probe-bad-provider", service.baseUrl);
-            const target = await registerTarget(env, "probe-bad", "process");
+            const target = await registerTarget(env, "probe-bad", "stub-kind");
 
             await withScriptedModel(env, {
                 respond: () => ({ content: "nothing to say" }),
@@ -438,10 +454,12 @@ describe("checking a compute target", () => {
                 const checked = await worker.sessionManager.probeComputeTargetById(target.id, null);
                 expect(checked.ok).toBe(false);
                 expect(checked.code).toBe("COMPUTE_HANDSHAKE_FAILED");
+                expect(checked.message).toMatch(/did not prove/);
             });
         } finally {
             await service.close();
-            await inner.stopAll();
+            await component.close();
+            await new Promise((resolve) => runtime.close(resolve));
         }
     });
 });

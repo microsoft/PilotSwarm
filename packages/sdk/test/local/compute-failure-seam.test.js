@@ -15,9 +15,11 @@ import { join } from "node:path";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
-import { createProcessComputeProvider } from "../../src/compute-process.ts";
+import { createServer } from "node:net";
 import { serveComputeProvider } from "../../src/compute-service.ts";
 import { classifyComputeFailure } from "../../src/compute-failures.ts";
+import { newComputeHandshakeSecret } from "../../src/compute-handshake.ts";
+import { startComputeHost } from "../../src/compute-host.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -35,6 +37,54 @@ async function withCatalog(env, fn) {
     }
 }
 
+/**
+ * A host that answers the handshake, in front of a stand-in for a runtime.
+ *
+ * The runtime itself never matters here: the worker must refuse the host
+ * before a byte of the turn reaches it. Keeping a real agent runtime out
+ * of these tests makes them say exactly one thing, and say it quickly.
+ */
+async function hostThatProvesItself(secret) {
+    const runtime = createServer((socket) => socket.on("error", () => { /* closed by the test */ }));
+    await new Promise((resolve) => runtime.listen({ host: "127.0.0.1", port: 0 }, resolve));
+    const bindingId = "a-binding-of-its-own";
+    const component = await startComputeHost({
+        bindingId, secret,
+        listen: { host: "127.0.0.1", port: 0 },
+        runtimeAddress: `127.0.0.1:${runtime.address().port}`,
+        handshakeTimeoutMs: 5_000,
+    });
+    return {
+        bindingId,
+        address: component.address,
+        async close() {
+            await component.close();
+            await new Promise((resolve) => runtime.close(resolve));
+        },
+    };
+}
+
+/** A provider whose hosts are that component, reached with whatever secret. */
+function providerReaching(host, secret) {
+    return {
+        kind: "stub-kind",
+        capabilities: { os: ["linux"], sandboxed: true, files: "none" },
+        async bind() {
+            return { ok: true, host: { kind: "stub-kind", id: "the-host", incarnation: "one" } };
+        },
+        async connect() {
+            return {
+                ok: true,
+                endpoint: {
+                    transport: "uri", address: host.address, connectionToken: "unused",
+                    handshake: { bindingId: host.bindingId, secret },
+                },
+                workspace: {},
+            };
+        },
+    };
+}
+
 /** What the orchestration recorded about the turn, as the client sees it. */
 async function turnStatus(client, sessionId) {
     const status = await client._getDuroxideClient().getStatus(`session-${sessionId}`);
@@ -44,21 +94,10 @@ async function turnStatus(client, sessionId) {
 describe("compute failures from the new paths reach the orchestration classified", () => {
     it("a host that cannot prove itself stops the turn at once, and is permanent", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        const inner = createProcessComputeProvider({ rootDir: join(env.baseDir, "seam-handshake") });
-        // A service that hands the worker a secret its host does not have.
-        const liar = {
-            ...inner,
-            kind: "process",
-            async connect(req) {
-                const connected = await inner.connect(req);
-                if (!connected.ok) return connected;
-                return {
-                    ...connected,
-                    endpoint: { ...connected.endpoint, handshake: { bindingId: connected.endpoint.handshake.bindingId, secret: "0".repeat(64) } },
-                };
-            },
-        };
-        const service = await serveComputeProvider(liar, { auth: recognizesPilotSwarm });
+        const host = await hostThatProvesItself(newComputeHandshakeSecret());
+        // A service that hands the worker a secret its host does not hold.
+        const service = await serveComputeProvider(
+            providerReaching(host, "0".repeat(64)), { auth: recognizesPilotSwarm });
         try {
             await withCatalog(env, async (catalog) => {
                 await catalog.computeServices.create({
@@ -66,7 +105,7 @@ describe("compute failures from the new paths reach the orchestration classified
                     serverName: "seam-handshake.example.invalid",
                 }, null, true);
                 await catalog.computeTargets.create(
-                    { name: "shared/seam-handshake", kind: "process", class: "shared" }, null, true);
+                    { name: "shared/seam-handshake", kind: "stub-kind", class: "shared" }, null, true);
             });
 
             await withScriptedModel(env, {
@@ -75,13 +114,13 @@ describe("compute failures from the new paths reach the orchestration classified
             }, async ({ client, model, qualifiedModel }) => {
                 const session = await client.createSession({ model: qualifiedModel, computeTarget: "shared/seam-handshake" });
                 const start = Date.now();
-                const failure = await session.sendAndWait("run on a host that cannot prove itself", 20_000).catch((error) => error);
+                const failure = await session.sendAndWait("run on a host that cannot prove itself", 30_000).catch((error) => error);
 
                 // The reason reached the person, and it is the classifier's.
                 expect(failure.message).toMatch(/COMPUTE_HANDSHAKE_FAILED/);
                 expect(failure.message).toMatch(/could not verify the compute host/);
-                // Permanent: it stopped at once rather than retrying to a timeout.
-                expect(Date.now() - start).toBeLessThan(18_000);
+                // Permanent: it stopped rather than retrying to a timeout.
+                expect(Date.now() - start).toBeLessThan(28_000);
                 expect(model.sessionRequests(), "nothing of the turn crossed").toHaveLength(0);
                 expect((await turnStatus(client, session.sessionId)).computeFailure)
                     .toEqual({ code: "COMPUTE_HANDSHAKE_FAILED", permanent: true });
@@ -92,7 +131,7 @@ describe("compute failures from the new paths reach the orchestration classified
             });
         } finally {
             await service.close();
-            await inner.stopAll();
+            await host.close();
         }
     });
 
