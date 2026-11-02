@@ -80,7 +80,9 @@ test("acts only as the credential's holder, on the credential's effect", async (
         session_id: "X" }, { token, store: store(valid) }));
     assert.equal(done.ok, true);
     assert.deepEqual(completions, [{ childSessionId: "C", operationId: "op-1", call: { outcome: "accepted", output: { verdict: "ok" } } }]);
-    assert.deepEqual(verified.at(-1), { tokenSha256: invocationCredentialSha256(token), audience: "workflow.complete", nodeExecutionId: null });
+    // No holder named by the call (an in-process caller): the credential's own holder acts.
+    assert.deepEqual(verified.at(-1), { tokenSha256: invocationCredentialSha256(token), audience: "workflow.complete", nodeExecutionId: null,
+        holderSessionId: null });
 
     const responder = { result: "valid", credential: { ...CREDENTIAL, audience: "workflow.respond", nodeExecutionId: "nx-9", holderSessionId: "P" } };
     const answered = JSON.parse(await respondSessionRequestWithCredential({ operation_id: "op-2", response: { approved: true } }, { token, store: store(responder) }));
@@ -92,8 +94,14 @@ test("acts only as the credential's holder, on the credential's effect", async (
     await assert.rejects(completeWorkflowNodeWithCredential({ node_execution_id: "nx-2", outcome: "accepted", operation_id: "op-3" },
         { token, store: store({ result: "scope", credential: CREDENTIAL }) }), error => error.code === "CREDENTIAL_SCOPE");
     assert.equal(verified.at(-1).nodeExecutionId, "nx-2");
+    // A route names the session it is for: the credential must be held by it.
+    await completeWorkflowNodeWithCredential({ outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-6" },
+        { token, store: store(valid), holderSessionId: "C" });
+    assert.equal(verified.at(-1).holderSessionId, "C");
+    assert.equal(completions.at(-1).childSessionId, "C");
     await assert.rejects(respondSessionRequestWithCredential({ request_id: "nx-9", operation_id: "op-4", response: {} },
         { token: undefined, store: store(responder) }), error => error.code === "CREDENTIAL_REQUIRED");
-    assert.equal(completions.length, 1);
+    // Only the two valid completions and the one valid answer reached the store; the refused ones reached nothing.
+    assert.equal(completions.length, 2);
     assert.equal(responses.length, 1);
 });
