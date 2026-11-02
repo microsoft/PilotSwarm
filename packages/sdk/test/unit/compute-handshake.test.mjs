@@ -175,6 +175,38 @@ test("the host's proof and the worker's proof are different, so neither can be r
         computeHandshakeProof(secret, "host", { ...parts, bindingId: "other" }));
 });
 
+test("a connection proved for one purpose cannot be used as the other", async () => {
+    const secret = newComputeHandshakeSecret();
+    const parts = { bindingId: "b", workerNonce: "a".repeat(32), hostNonce: "c".repeat(32) };
+    // The purpose is signed in, so a proof for the side channel is not a
+    // proof for the session's own stream.
+    assert.notEqual(
+        computeHandshakeProof(secret, "worker", { ...parts, purpose: "control" }),
+        computeHandshakeProof(secret, "worker", { ...parts, purpose: "runtime" }));
+    // A hello that names no purpose means the runtime stream, which is
+    // what every hello meant before there was a second purpose.
+    assert.equal(
+        computeHandshakeProof(secret, "worker", parts),
+        computeHandshakeProof(secret, "worker", { ...parts, purpose: "runtime" }));
+
+    // A host that serves only the runtime stream refuses the other.
+    const { worker, host } = twoEnds();
+    const hostSide = runHostHandshake(host, { bindingId: "b", secret }, { timeoutMs: 1_000, purposes: ["runtime"] });
+    const workerSide = runWorkerHandshake(worker, { bindingId: "b", secret }, { timeoutMs: 1_000, purpose: "control" });
+    await assert.rejects(hostSide, (error) => /does not serve/.test(error.message));
+    await assert.rejects(workerSide);
+});
+
+test("a host that serves the side channel says which purpose was proved", async () => {
+    const secret = newComputeHandshakeSecret();
+    const { worker, host } = twoEnds();
+    const [, proved] = await Promise.all([
+        runWorkerHandshake(worker, { bindingId: "b", secret }, { timeoutMs: 5_000, purpose: "control" }),
+        runHostHandshake(host, { bindingId: "b", secret }, { timeoutMs: 5_000, purposes: ["runtime", "control"] }),
+    ]);
+    assert.deepEqual(proved, { purpose: "control" });
+});
+
 test("proofs are compared in constant time", () => {
     const source = readFileSync(fileURLToPath(new URL("../../src/compute-handshake.ts", import.meta.url)), "utf8");
     assert.match(source, /timingSafeEqual\(/,

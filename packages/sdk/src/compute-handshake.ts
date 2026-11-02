@@ -20,7 +20,7 @@
  *
  * The exchange, four frames, with a deadline over the whole of it:
  *
- *   worker -> host   hello    protocol version, binding id, worker nonce
+ *   worker -> host   hello    protocol version, binding id, purpose, worker nonce
  *   host   -> worker host     host nonce, proof over both nonces
  *   worker -> host   worker   proof over both nonces
  *   host   -> worker ok
@@ -46,6 +46,22 @@ import type { Duplex } from "node:stream";
 
 /** The protocol version this build speaks. */
 export const COMPUTE_HANDSHAKE_VERSION = 1;
+/**
+ * What a proved connection is for.
+ *
+ * `runtime` is the session's own stream, which is all a connection was
+ * ever for before. `control` is the side channel that carries the
+ * read-only copies of a session's folders and the MCP traffic of the
+ * servers that stay on the trusted side (see compute-channel.ts).
+ *
+ * The purpose is named in the hello and signed into both proofs, so a
+ * connection proved for one purpose can never be used as the other and
+ * neither end has to take the other's word for which it is. A hello with
+ * no purpose means `runtime`.
+ */
+export const COMPUTE_HANDSHAKE_PURPOSES = ["runtime", "control"] as const;
+export type ComputeHandshakePurpose = (typeof COMPUTE_HANDSHAKE_PURPOSES)[number];
+export const COMPUTE_HANDSHAKE_DEFAULT_PURPOSE: ComputeHandshakePurpose = "runtime";
 /** How long the whole exchange has, from the first byte. */
 export const COMPUTE_HANDSHAKE_TIMEOUT_MS = 15_000;
 /**
@@ -102,7 +118,7 @@ type HandshakeRole = "host" | "worker";
 export function computeHandshakeProof(
     secret: string,
     role: HandshakeRole,
-    parts: { bindingId: string; workerNonce: string; hostNonce: string },
+    parts: { bindingId: string; workerNonce: string; hostNonce: string; purpose?: string },
 ): string {
     const message = [
         "pilotswarm-compute-handshake",
@@ -111,6 +127,10 @@ export function computeHandshakeProof(
         parts.bindingId,
         parts.workerNonce,
         parts.hostNonce,
+        // What the connection is for. A hello that names none means the
+        // session's own runtime stream, which is what every hello meant
+        // before there was a second purpose.
+        parts.purpose || COMPUTE_HANDSHAKE_DEFAULT_PURPOSE,
     ].join(":");
     return createHmac("sha256", Buffer.from(secret, "utf8")).update(message, "utf8").digest("hex");
 }
@@ -292,9 +312,10 @@ function checkCredential(credential: ComputeHandshakeCredential): void {
 export async function runWorkerHandshake(
     stream: Duplex,
     credential: ComputeHandshakeCredential,
-    options: { timeoutMs?: number } = {},
+    options: { timeoutMs?: number; purpose?: ComputeHandshakePurpose } = {},
 ): Promise<void> {
     checkCredential(credential);
+    const purpose = options.purpose ?? COMPUTE_HANDSHAKE_DEFAULT_PURPOSE;
     const reader = new HandshakeFrameReader(stream);
     try {
         await withDeadline(options.timeoutMs ?? COMPUTE_HANDSHAKE_TIMEOUT_MS, async () => {
@@ -304,6 +325,7 @@ export async function runWorkerHandshake(
                 t: "hello",
                 bindingId: credential.bindingId,
                 nonce: workerNonce,
+                purpose,
                 // Reserved for evidence a provider or host may add later.
                 // This build sends nothing in it and ignores whatever comes back.
                 extra: null,
@@ -315,7 +337,7 @@ export async function runWorkerHandshake(
             }
             const hostNonce = text(answer.nonce);
             if (hostNonce.length < 16) throw new ComputeHandshakeError("the host sent no usable nonce");
-            const parts = { bindingId: credential.bindingId, workerNonce, hostNonce };
+            const parts = { bindingId: credential.bindingId, workerNonce, hostNonce, purpose };
             if (!proofsMatch(answer.proof, computeHandshakeProof(credential.secret, "host", parts))) {
                 throw new ComputeHandshakeError("the host did not prove it holds this binding's secret");
             }
@@ -343,12 +365,13 @@ export async function runWorkerHandshake(
 export async function runHostHandshake(
     stream: Duplex,
     credential: ComputeHandshakeCredential,
-    options: { timeoutMs?: number; seenNonces?: Set<string> } = {},
-): Promise<void> {
+    options: { timeoutMs?: number; seenNonces?: Set<string>; purposes?: readonly ComputeHandshakePurpose[] } = {},
+): Promise<{ purpose: ComputeHandshakePurpose }> {
     checkCredential(credential);
+    const offered = options.purposes ?? [COMPUTE_HANDSHAKE_DEFAULT_PURPOSE];
     const reader = new HandshakeFrameReader(stream);
     try {
-        await withDeadline(options.timeoutMs ?? COMPUTE_HANDSHAKE_TIMEOUT_MS, async () => {
+        return await withDeadline(options.timeoutMs ?? COMPUTE_HANDSHAKE_TIMEOUT_MS, async () => {
             const hello = await reader.next();
             if (hello.t !== "hello") throw new ComputeHandshakeError(`the worker opened with "${text(hello.t)}" instead of a hello`);
             if (hello.v !== COMPUTE_HANDSHAKE_VERSION) {
@@ -359,6 +382,12 @@ export async function runHostHandshake(
             }
             const workerNonce = text(hello.nonce);
             if (workerNonce.length < 16) throw new ComputeHandshakeError("the worker sent no usable nonce");
+            const purpose = (text(hello.purpose) || COMPUTE_HANDSHAKE_DEFAULT_PURPOSE) as ComputeHandshakePurpose;
+            if (!offered.includes(purpose)) {
+                await writeFrame(stream, { v: COMPUTE_HANDSHAKE_VERSION, t: "no", reason: "this host does not serve connections for that purpose" })
+                    .catch(() => { /* the refusal is the close */ });
+                throw new ComputeHandshakeError(`the worker asked for a "${purpose}" connection, which this host does not serve`);
+            }
             const seen = options.seenNonces;
             if (seen) {
                 if (seen.has(workerNonce)) {
@@ -375,7 +404,7 @@ export async function runHostHandshake(
                 seen.add(workerNonce);
             }
             const hostNonce = nonce();
-            const parts = { bindingId: credential.bindingId, workerNonce, hostNonce };
+            const parts = { bindingId: credential.bindingId, workerNonce, hostNonce, purpose };
             await writeFrame(stream, {
                 v: COMPUTE_HANDSHAKE_VERSION,
                 t: "host",
@@ -391,6 +420,7 @@ export async function runHostHandshake(
                 throw new ComputeHandshakeError("the worker did not prove it holds this binding's secret");
             }
             await writeFrame(stream, { v: COMPUTE_HANDSHAKE_VERSION, t: "ok" });
+            return { purpose };
         });
     } finally {
         reader.release();
