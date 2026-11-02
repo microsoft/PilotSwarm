@@ -154,3 +154,52 @@ test("a bridge with the wrong secret fails before any of the turn crosses", asyn
     await assert.rejects(bridge.verify(), (error) => error.code === "COMPUTE_HANDSHAKE_FAILED");
     assert.equal(runtime.connections(), 0);
 });
+
+test("a host component nobody connects to ends itself, so a host nobody came back to is freed", async (t) => {
+    const runtime = await echoRuntime(t);
+    let idle = 0;
+    const component = await startComputeHost({
+        bindingId: "binding-idle",
+        secret: newComputeHandshakeSecret(),
+        listen: { host: "127.0.0.1", port: 0 },
+        runtimeAddress: `127.0.0.1:${runtime.port}`,
+        idleTimeoutMs: 120,
+        onIdle: () => { idle++; },
+    });
+    t.after(() => component.close());
+
+    // Waiting on the callback rather than on a clock: the point is that it
+    // happens, not when to the millisecond.
+    await new Promise((resolve) => {
+        const poll = setInterval(() => { if (idle > 0) { clearInterval(poll); resolve(); } }, 10);
+    });
+    assert.equal(component.isClosed, true, "it stops listening when it ends itself");
+    await assert.rejects(connect(t, component.address), "and nothing can reach it afterwards");
+});
+
+test("an open connection keeps the host component alive, and the clock starts again when it ends", async (t) => {
+    const runtime = await echoRuntime(t);
+    const credential = { bindingId: "binding-busy", secret: newComputeHandshakeSecret() };
+    let idle = 0;
+    const component = await startComputeHost({
+        ...credential,
+        listen: { host: "127.0.0.1", port: 0 },
+        runtimeAddress: `127.0.0.1:${runtime.port}`,
+        idleTimeoutMs: 100,
+        onIdle: () => { idle++; },
+    });
+    t.after(() => component.close());
+
+    const socket = await connect(t, component.address);
+    await runWorkerHandshake(socket, credential);
+    // Several times the idle timeout, with the connection held open.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(idle, 0, "a session that is warm holds its connection, so its host is never taken away");
+    assert.equal(component.isClosed, false);
+
+    socket.destroy();
+    await new Promise((resolve) => {
+        const poll = setInterval(() => { if (idle > 0) { clearInterval(poll); resolve(); } }, 10);
+    });
+    assert.equal(component.isClosed, true, "once the last connection has gone, the clock runs again");
+});

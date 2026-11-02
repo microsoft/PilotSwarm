@@ -21,14 +21,14 @@
  * The worker re-checks before every turn that the target is still there and
  * still enabled.
  *
- * `compute_bindings` is what PilotSwarm is using right now: one row per
- * (session tree, target, host). A worker renews its lease while it holds
- * a binding, so renewals that stop mean nobody is using the host; and a
- * sweep finds bindings whose session tree has ended, including trees that
- * ended while no worker had them loaded, so the provider is told once.
- * Neither table ever holds a handshake secret.
+ * The table never holds a handshake secret.
  *
- * Additive: two tables and their procedures; no session column changes.
+ * PilotSwarm records no host bindings of its own: a host is held while a
+ * session uses it, and a host component ends itself after a set time with
+ * no connection, so nothing has to be written down to know a host is
+ * free.
+ *
+ * Additive: one table and its procedures; no session column changes.
  */
 export function computeTargetsMigration(schema: string): string {
     const s = `"${schema}"`;
@@ -202,167 +202,5 @@ RETURNS SETOF ${s}.compute_targets AS $$
     SELECT ct.* FROM ${s}.compute_targets ct WHERE ct.target_id = p_target_id;
 $$ LANGUAGE sql STABLE;
 
--- Worker side, with no session behind it: the target with this id. Used
--- where the worker is acting for PilotSwarm itself rather than for a user
--- — telling a provider a session tree it no longer knows about is
--- finished with a host.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_by_id(p_target_id UUID)
-RETURNS SETOF ${s}.compute_targets AS $$
-    SELECT ct.* FROM ${s}.compute_targets ct WHERE ct.target_id = p_target_id;
-$$ LANGUAGE sql STABLE;
-
--- ---------------------------------------------------------------------
--- Host bindings: what PilotSwarm is using, and what it has finished with
---
--- One row per (session tree, target, host). A worker writes it when it
--- binds and renews the lease while it holds the binding, so a provider can
--- read "renewals stopped" as "nobody is using this host". released_at
--- says a worker let go of it; done_at says the session tree is finished
--- with it for good, which is the notice a provider gets exactly once.
---
--- Release never means destroy, and neither does done: what happens to a
--- host nobody needs is the provider's decision alone. No handshake secret
--- is ever written here; host_ref is the provider's own handle and
--- PilotSwarm does not read inside it.
--- ---------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ${s}.compute_bindings (
-    binding_id      UUID PRIMARY KEY
-                    DEFAULT md5(random()::text || clock_timestamp()::text)::uuid,
-    root_session_id TEXT NOT NULL,
-    target_id       UUID NOT NULL,
-    kind            TEXT NOT NULL,
-    -- The provider's own name for the host and which incarnation of it,
-    -- so a replaced host is a different binding.
-    host_key        TEXT NOT NULL,
-    host_ref        JSONB NOT NULL,
-    worker_node_id  TEXT NOT NULL,
-    leased_until    TIMESTAMPTZ,
-    released_at     TIMESTAMPTZ,
-    done_at         TIMESTAMPTZ,
-    done_attempt_at TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT compute_bindings_host_ref_object CHECK (
-        jsonb_typeof(host_ref) = 'object'),
-    CONSTRAINT compute_bindings_one_per_host UNIQUE (root_session_id, target_id, host_key)
-);
-
-CREATE INDEX IF NOT EXISTS compute_bindings_unfinished
-    ON ${s}.compute_bindings (root_session_id) WHERE done_at IS NULL;
-
--- Worker side, at bind: write the binding and take a lease on it.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_record(
-    p_root_session_id TEXT, p_target_id UUID, p_kind TEXT, p_host_key TEXT,
-    p_host_ref JSONB, p_worker_node_id TEXT, p_lease_ms BIGINT
-) RETURNS SETOF ${s}.compute_bindings AS $$
-BEGIN
-    IF p_host_ref IS NULL OR jsonb_typeof(p_host_ref) <> 'object' THEN
-        RAISE EXCEPTION 'COMPUTE_BINDING_INVALID: a binding needs the provider''s handle for the host';
-    END IF;
-    RETURN QUERY
-    INSERT INTO ${s}.compute_bindings
-        (root_session_id, target_id, kind, host_key, host_ref, worker_node_id, leased_until)
-    VALUES (p_root_session_id, p_target_id, p_kind, p_host_key, p_host_ref, p_worker_node_id,
-            now() + make_interval(secs => GREATEST(COALESCE(p_lease_ms, 0), 0) / 1000.0))
-    ON CONFLICT (root_session_id, target_id, host_key) DO UPDATE
-        SET host_ref = EXCLUDED.host_ref,
-            worker_node_id = EXCLUDED.worker_node_id,
-            leased_until = EXCLUDED.leased_until,
-            released_at = NULL,
-            updated_at = now()
-    RETURNING ${s}.compute_bindings.*;
-END;
-$$ LANGUAGE plpgsql VOLATILE;
-
--- Worker side, on the lease timer. A binding already finished with is not
--- revived: a renewal after the done notice does nothing.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_renew(
-    p_binding_id UUID, p_worker_node_id TEXT, p_lease_ms BIGINT
-) RETURNS BOOLEAN AS $$
-DECLARE v_hit BOOLEAN;
-BEGIN
-    UPDATE ${s}.compute_bindings cb
-       SET leased_until = now() + make_interval(secs => GREATEST(COALESCE(p_lease_ms, 0), 0) / 1000.0),
-           worker_node_id = COALESCE(NULLIF(BTRIM(p_worker_node_id), ''), cb.worker_node_id),
-           released_at = NULL,
-           updated_at = now()
-     WHERE cb.binding_id = p_binding_id AND cb.done_at IS NULL
-    RETURNING TRUE INTO v_hit;
-    RETURN COALESCE(v_hit, FALSE);
-END;
-$$ LANGUAGE plpgsql VOLATILE;
-
--- Worker side, at release: this worker is no longer using the host. The
--- row stays, because the session tree may still come back to it; only the
--- done notice closes a binding.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_release(p_binding_id UUID)
-RETURNS BOOLEAN AS $$
-DECLARE v_hit BOOLEAN;
-BEGIN
-    UPDATE ${s}.compute_bindings cb
-       SET released_at = now(), leased_until = NULL, updated_at = now()
-     WHERE cb.binding_id = p_binding_id AND cb.done_at IS NULL
-    RETURNING TRUE INTO v_hit;
-    RETURN COALESCE(v_hit, FALSE);
-END;
-$$ LANGUAGE plpgsql VOLATILE;
-
--- The sweep. Bindings whose session tree has ended — a terminal state, a
--- deleted row, or no row at all — and that nobody has finished telling the
--- provider about. Claimed with FOR UPDATE SKIP LOCKED and stamped with the
--- attempt, so two workers never take the same row and a worker that dies
--- mid-notice leaves it to be retried after p_retry_after_ms.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_claim_done(
-    p_worker_node_id TEXT, p_limit INTEGER, p_retry_after_ms BIGINT
-) RETURNS TABLE(
-    binding_id UUID, root_session_id TEXT, target_id UUID, kind TEXT,
-    host_ref JSONB, reason TEXT
-) AS $$
-    WITH ready AS (
-        SELECT cb.binding_id,
-               CASE WHEN ss.session_id IS NULL OR ss.deleted_at IS NOT NULL
-                    THEN 'deleted' ELSE 'ended' END AS reason
-          FROM ${s}.compute_bindings cb
-          LEFT JOIN ${s}.sessions ss ON ss.session_id = cb.root_session_id
-         WHERE cb.done_at IS NULL
-           AND (cb.done_attempt_at IS NULL
-                OR cb.done_attempt_at < now() - make_interval(secs => GREATEST(COALESCE(p_retry_after_ms, 0), 0) / 1000.0))
-           AND (ss.session_id IS NULL
-                OR ss.deleted_at IS NOT NULL
-                OR ss.state IN ('completed', 'failed', 'error', 'cancelled'))
-         ORDER BY cb.updated_at
-         LIMIT GREATEST(COALESCE(p_limit, 1), 1)
-           FOR UPDATE OF cb SKIP LOCKED
-    )
-    UPDATE ${s}.compute_bindings cb
-       SET done_attempt_at = now(),
-           worker_node_id = COALESCE(NULLIF(BTRIM(p_worker_node_id), ''), cb.worker_node_id),
-           updated_at = now()
-      FROM ready
-     WHERE cb.binding_id = ready.binding_id
-    RETURNING cb.binding_id, cb.root_session_id, cb.target_id, cb.kind, cb.host_ref, ready.reason;
-$$ LANGUAGE sql VOLATILE;
-
--- The bindings of one session tree, newest last.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_list(p_root_session_id TEXT)
-RETURNS SETOF ${s}.compute_bindings AS $$
-    SELECT cb.* FROM ${s}.compute_bindings cb
-     WHERE cb.root_session_id = p_root_session_id
-     ORDER BY cb.created_at;
-$$ LANGUAGE sql STABLE;
-
--- The provider has been told. Idempotent: the first notice sets the time
--- and every later one leaves it alone, so a binding is reported once.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_mark_done(p_binding_id UUID)
-RETURNS BOOLEAN AS $$
-DECLARE v_hit BOOLEAN;
-BEGIN
-    UPDATE ${s}.compute_bindings cb
-       SET done_at = now(), leased_until = NULL, updated_at = now()
-     WHERE cb.binding_id = p_binding_id AND cb.done_at IS NULL
-    RETURNING TRUE INTO v_hit;
-    RETURN COALESCE(v_hit, FALSE);
-END;
-$$ LANGUAGE plpgsql VOLATILE;
 `;
 }

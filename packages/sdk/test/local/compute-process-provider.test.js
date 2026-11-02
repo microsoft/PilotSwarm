@@ -1,6 +1,6 @@
 /**
  * Compute providers without a cluster: the `process` provider runs each
- * session tree's GHCP runtime as a separate local `copilot --headless`
+ * session tree's agent runtime as a separate local `copilot --headless`
  * process, and the worker drives it over TCP exactly as it would drive a
  * runtime on another machine (docs/proposals/compute-providers.md).
  *
@@ -174,6 +174,43 @@ describe("process compute provider", () => {
             expect(released).toContain("failed");
             expect(model.sessionRequests()).toHaveLength(0);
         });
+    });
+
+    it("ends a host nobody connects to, and gives a returning session a fresh one", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        // Straight at the provider: no worker, so nothing holds a
+        // connection open. A warm session does hold one, which is why a
+        // host in use is never taken away — the clock only runs once the
+        // worker has let go, and that is the case this covers.
+        const provider = createProcessComputeProvider({ rootDir: join(env.baseDir, "compute-idle"), idleTimeoutMs: 2_000 });
+        const target = { id: "t-idle", name: "shared/idle", kind: "process", class: "shared", config: {}, enabled: true };
+        const req = { target, sessionId: "s-idle", rootSessionId: "s-idle", workerNodeId: "w1", turnIndex: 0, workspace: {}, signal: new AbortController().signal };
+        try {
+            const first = await provider.bind(req);
+            expect(first.ok).toBe(true);
+            expect(provider.hosts()).toHaveLength(1);
+            const firstPid = provider.hosts()[0].pid;
+            expect(isAlive(firstPid)).toBe(true);
+
+            // Nobody ever connects to this host's component, so it ends
+            // itself and takes the runtime with it.
+            for (let i = 0; i < 60 && provider.hosts().length > 0; i++) {
+                await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+            expect(provider.hosts(), "the host goes with its component").toHaveLength(0);
+            for (let i = 0; i < 20 && isAlive(firstPid); i++) {
+                await new Promise((resolve) => setTimeout(resolve, 250));
+            }
+            expect(isAlive(firstPid), "and the runtime goes with the host").toBe(false);
+
+            // A session that comes back simply gets a new host.
+            const second = await provider.bind(req);
+            expect(second.ok).toBe(true);
+            expect(provider.hosts()).toHaveLength(1);
+            expect(second.host.incarnation).not.toBe(first.host.incarnation);
+        } finally {
+            await provider.stopAll();
+        }
     });
 
     it("refuses an unknown target at create and an unknown kind at the turn", { timeout: TIMEOUT }, async () => {

@@ -3,12 +3,18 @@
 **Status:** exploration on a feature branch, draft PR for discussion. Built
 on the branch: targets and names, the provider interface and its connection
 contract, the bridge, the handshake and the host component, the remote turn
-and its trust boundary, leases and the end-of-session notice, and the
-management surfaces. Three pieces of the design were taken out of this change
+and its trust boundary, the host's idle shutdown, and the management
+surfaces. Three pieces of the design were taken out of this change
 to keep it easy to review — clear failure reasons, running providers as
 registered services, and a target's own capabilities and models. They are
 designed in section 12 (Future work) and the code for them is on the
-exploration branch history of this PR. **Date:** 2026-11-02, revision 4.
+exploration branch history of this PR.
+
+**Still to be built on this branch:** skills and MCP servers for a remote
+session. A session on a host does not yet get the skill folders and MCP
+servers a deployment configures, so it is not at parity with a session that
+runs on the worker. That gap is part of this change, not future work, and
+its design is being written separately. **Date:** 2026-11-02, revision 4.
 Revision 1 restructured the proposal to match
 `docs/proposals/session-workspaces.md`: a high-level design for a human
 reader first, then numbered sections. Revision 2 records the built behaviour
@@ -86,7 +92,7 @@ The main ideas:
 On the worker that runs the turn:
 1. Load the conversation (as today).
 2. Re-check that the session's owner may still use its target.
-3. Ask the provider for the tree's host. Keep a lease on it while in use.
+3. Ask the provider for the tree's host.
 4. Open the connection; worker and host prove who they are.
 5. Start or resume the agent on the host. Its model requests come back to
    the worker, which adds PilotSwarm's real keys; its session files are
@@ -175,8 +181,8 @@ Accepted, and stated here so nobody expects otherwise:
 - The agent runtime is untrusted: it runs model-chosen code. Everything it
   sends back to the worker is checked in the worker.
 - A worker can crash without telling a provider it is finished with a host, so
-  every provider still needs its own expiry. PilotSwarm's lease and done
-  notice reduce the cases, not remove them.
+  a host must be able to end itself. The PilotSwarm component on it does that
+  after a set time with no connection.
 - Today a connection is trusted because of where it goes and the runtime's own
   token. The mutual handshake (section 4.5) is what makes
   each end prove itself.
@@ -194,9 +200,8 @@ Defined before use, in the order the rest of the document needs them.
 | Compute target | A registered instance of a compute type, stored in the CMS. A session picks one. Named `shared/<label>`. |
 | Host | The concrete place a session tree's runtime is bound to. Has an `id` and an `incarnation` that changes when it is replaced. |
 | Host component | A small PilotSwarm program on the host. It answers the handshake, then forwards the connection to the runtime's local port. |
-| Binding | One (target, session tree) pairing to a host. It carries a per-binding secret and a lease. |
-| Lease | A short-lived claim the worker renews while it uses a host. Renewals stop when the worker stops using the host (or crashes). |
-| Done notice | A one-time message to the provider that a session tree is finished with a host, sent even when the tree ended while not loaded anywhere. |
+| Binding | One (target, session tree) pairing to a host. It carries a per-binding secret. |
+| Idle shutdown | The host component ending itself after a set time with no connection, which is what frees a host nobody came back to. |
 | Pipe | A two-way, ordered, reliable byte stream to one host's runtime. Everything above the provider sees only a pipe. |
 | Transport | How a provider's pipe is made: `direct` (the host is reachable at an address) or `pipe` (the provider opens the connection itself). Exactly one per provider. |
 | Bridge | A loopback listener the worker runs, one per binding. It turns a provider-opened pipe into an address the runtime connection can dial. |
@@ -249,8 +254,7 @@ is everything the operator runs: the network between workers and hosts.
 | Proving each end | One mutual handshake on every remote connection; a host component that answers it (**built**) | Putting the per-binding secret on the host; running the host component in front of the runtime | the handshake frames |
 | Model requests | Placeholder credentials in the runtime; a per-connection handler that swaps them for real keys and refuses anything else (**built**) | Nothing; the provider never sees a key | the request handler |
 | Session-state files | SessionFs confined to the worker's session folder (**built**) | `files` capability says whether the host shares the worker's files | the SessionFs provider |
-| Keeping a host in use | A lease the worker renews on a timer (**built**) | An optional `renew`; the provider's own expiry as a backstop | `renew(req)` |
-| Finishing with a host | `release` per leaving session; a done notice when the tree ends, even unloaded (**built**) | An optional `done`; deciding the host's fate | `release(req)`, `done(req)` |
+| Finishing with a host | `release` per leaving session, as a hint; the host component's idle shutdown as the backstop (**built**) | Running the runtime under the host component; deciding the host's fate | `release(req)`, the idle timeout |
 | Failures | One shape for every compute error (`CODE: message`); a failure goes through the ordinary turn retry (**built**). Clear reasons that stop a turn at once are future work (section 12) | A code, a message and an optional retry hint | the `ComputeFailure` shape |
 | Management surfaces | List, create, update, enable/disable and delete targets, across the client, Web API and MCP (**built**) | Nothing | the management client and API |
 
@@ -265,14 +269,14 @@ Create and run
  3. [user -> core]    Create a session naming the target. Core records the
                       target's id.
  4. [core -> provider]  Each turn: re-check the owner may use the target; bind
-                      (once per tree) and connect; keep a lease while in use.
+                      (once per tree) and connect.
  5. [core <-> host]   Open the connection through the host's bridge; the
                       handshake proves both ends; then the runtime runs the turn
                       and its model requests come back to the worker.
 Finish
- 6. [core -> provider]  The session leaves a worker: release. The tree ends: a
-                      done notice, even if it ended unloaded. The provider keeps,
-                      cleans or discards the host.
+ 6. [core -> provider]  The session leaves a worker: release, as a hint. A host
+                      nobody connects to ends itself. The provider keeps, cleans
+                      or discards it.
 ```
 
 ## 4. PilotSwarm design
@@ -321,8 +325,6 @@ interface ComputeProvider {
   validateTarget?(req): Promise<{ ok: true } | ComputeFailure>;           // before every bind
   bind(req): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>; // once per (target, tree)
   connect(req): Promise<ComputeConnectResult>;                             // every turn
-  renew?(req): Promise<...>;                                               // keep a lease alive
-  done?(req): Promise<...>;                                                // the tree is finished
   release?(req): Promise<void>;                                            // once per leaving session
 }
 ```
@@ -511,28 +513,34 @@ administrator, and be reached through one generic connector so the worker
 holds neither the code nor the rights. That is designed and was built on the
 exploration branch, and is **future work** — see section 12.
 
-### 4.8 Host lifecycle: leases, done, reuse
+### 4.8 Host lifecycle: idle shutdown and reuse
 
-PilotSwarm reports how it uses hosts, and nothing more. **(built)**
+PilotSwarm says when it is finished with a host, and the host looks after
+itself. **(built)**
 
-- **Lease.** The worker holds a lease on a host while it uses one and keeps
-  renewing it on a timer (by default renew every 60 s on a 3-minute lease),
-  calling the provider's optional `renew`. If the renewals stop — because a
-  worker crashed or was taken away, say — the host is no longer in use. A lease
-  always outlasts more than one renewal, so a single late renewal never reads
-  as an absent worker.
 - **Release.** `release` is called once per session that leaves a host:
   ended, moved (dehydrate), evicted, shutdown, or failed. Sessions of one tree
   share a host, so a host is free of PilotSwarm only once no session uses it.
   Release means PilotSwarm no longer needs the host for that session tree; it
   never means destroy.
-- **Done notice.** A periodic sweep on workers finds bindings whose session
-  tree has ended, failed, was cancelled or was deleted — including trees that
-  ended while not loaded in any worker, and trees whose record is gone
-  altogether — and sends the provider a one-time `done`. Rows are claimed one
-  worker at a time and stamped with the attempt, so two workers never take the
-  same binding and a worker that dies mid-notice leaves it to be retried
-  rather than lost. It is idempotent.
+- **Release is a hint.** It may never arrive. A worker can crash, a session can
+  move, a network can go away. A provider must never wait for it to know a host
+  is free.
+- **Idle shutdown.** The host component ends itself after a set time with no
+  connection at all — none proved, and none part-way through proving itself.
+  Thirty minutes by default; the clock starts when the component does, so a
+  host nobody ever reaches goes away too. That clock runs on the host, so it
+  keeps running whatever happens on the worker's side, which is what makes it
+  the backstop a hint cannot be. A warm session holds its connection open, so a
+  host in use is never touched.
+- **The runtime goes with the component.** A provider should run the runtime
+  under the host component — as its child, for example — so that the
+  component's exit ends the whole host rather than leaving a runtime behind
+  with nothing in front of it. The `process` test provider does exactly this.
+- **A session whose host has gone.** Nothing special happens: its next turn
+  binds again and the provider gives it a host. The conversation is in the
+  worker's own storage, so it carries on where it left off. What is lost is
+  anything that lived only on the old host — see section 12.
 - **The provider decides the host's fate.** Keep it, because some kinds are
   never taken away; clean it and hold it ready for the next workload; or
   discard it and make a fresh one, to keep spare capacity. Only the provider
@@ -542,9 +550,9 @@ PilotSwarm reports how it uses hosts, and nothing more. **(built)**
   provider guarantees that, and PilotSwarm does its part by using a fresh
   handshake secret for every new binding on a host.
 
-The bindings table records, per binding, the tree, target, provider kind, an
-opaque provider-private host reference, the binding id, the worker, and the
-lease, release and done timestamps. It never holds secrets.
+PilotSwarm records no host bindings of its own. Telling a provider exactly when
+a tree is finished, rather than letting a timeout do it, is designed in section
+12.
 
 ### 4.9 Failures
 
@@ -644,10 +652,11 @@ Turn:
  1. core re-checks the owner may use the target, binds a host from the pool,
     and connects. The host is reachable, so connect returns a uri endpoint.
  2. core dials the address; the host component answers the handshake; the
-    runtime runs the turn. core holds a lease and renews it.
+    runtime runs the turn.
  3. a sub-agent of the same tree reuses the same host.
-Finish:   the tree ends; core sends a done notice; the provider cleans the host
-          and returns it to the pool, with nothing left over.
+Finish:   the tree ends and core releases the host; the provider cleans it and
+          returns it to the pool, with nothing left over. A host nobody came
+          back to is ended by its component's idle shutdown.
 ```
 
 ### 6.2 A sandbox service
@@ -675,13 +684,13 @@ Finish:   the tree ends and core releases the host; the provider discards the
 
 | # | Case | Handling |
 |---|---|---|
-| K1 | A worker crashes mid-turn | The turn is redelivered and replayed. The lease stops being renewed, so the provider sees the host fall idle; the provider's own expiry is the backstop. |
+| K1 | A worker crashes mid-turn | The turn is redelivered and replayed. Nothing connects to the host meanwhile, so its component's idle shutdown ends it if the tree never comes back. |
 | K2 | A session moves to another worker | The next worker connects again — to the same host, or a fresh one the provider gives it — and resumes from the session folder. SessionFs lives in the worker's own storage, so hydrate is unchanged. |
 | K3 | A host is replaced | Its `incarnation` changes, so the worker builds a fresh connection and stops the old one once no session uses it. |
 | K4 | A target is deleted while sessions reference it | Those sessions are blocked with a clear reason. A new target with the same name is a different id and never takes them. |
 
 | K6 | The connection breaks mid-turn | A fresh pipe replaces it. A pipe that cannot be opened, or is too slow, fails the turn with a clear reason rather than hanging. |
-| K7 | A session tree ends while not loaded anywhere | The done-notice sweep finds the binding and sends exactly one `done`, even when the tree's record is gone altogether. |
+| K7 | A session tree ends while not loaded anywhere | No `release` is sent, because no worker has it. Nothing connects to the host, so its component's idle shutdown ends it. |
 | K8 | The handshake fails (wrong secret, a replayed nonce, an oversized frame, a timeout) | The connection closes and the turn fails with a "handshake failed" reason; the model is never called. |
 | K9 | A target names a kind this worker has no provider for | The turn fails with that reason, naming the kind. |
 | K10 | A remote runtime asks for a model it was not granted, or a different destination | The request handler refuses it; no placeholder is resolved and nothing is sent. |
@@ -710,7 +719,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | Remote turn and trust boundary (**built**) | L | A turn runs in a separate runtime with none of the worker's environment; every model request carries the real key while the runtime holds only placeholders; a request to any other destination is refused; session state round-trips and resumes on a new worker |
 | The bridge (**built**) | U, L | A full turn through the bridge; one bridge per binding on loopback; a broken pipe reconnects or fails clearly; concurrent turns of one tree share one bridge; a remote endpoint with no connection token is refused |
 | The handshake and host component (**built**) | U, L | Success; wrong secret either side; a replayed nonce; a truncated or oversized frame; a timeout; constant-time compare; the host component forwards to the runtime; a wrong secret fails the turn with no model request |
-| Leases and done notices (**built**) | U, L | The lease timer math; a lease renewed and recorded; a tree that ends while unloaded gets exactly one done notice |
+| Host lifecycle (**built**) | U, L | A component with no connection ends itself; an open connection keeps it alive and the clock starts again when that connection ends; the `process` provider's runtime goes with its component, and a returning session gets a fresh host |
 | Failures (**built**) | U | Every compute error is `CODE: message` with its code and retry hint, and is never prefixed twice |
 | Management surfaces (**built**) | U, L | List, create, update, enable/disable and delete across the management client and the Web API; every mutation audited; surface-parity tests updated |
 
@@ -773,8 +782,8 @@ branch; section 12 lists what was deliberately left out.
 |---|---|---|
 | `compute.ts` | Provider interface, registry, the always-available local provider, endpoint-to-connection, the rules a remote endpoint must meet | built |
 | `compute-bridge.ts` | The loopback bridge, one per host, in front of every remote runtime, plus the built-in pipe that opens a plain connection to an address | built |
-| `migrations/compute-targets-0084.ts`, `0084_diff.md` | `compute_targets`, `compute_bindings` and their procedures (extended in place; never edit 0083 or older) | built |
-| `compute-target-store.ts`, `compute-binding-store.ts`, `cms.ts` | The target and binding stores; the create-time check | built |
+| `migrations/compute-targets-0084.ts`, `0084_diff.md` | `compute_targets` and its procedures (extended in place; never edit 0083 or older) | built |
+| `compute-target-store.ts`, `cms.ts` | The target store; the create-time check | built |
 | `types.ts`, `client.ts` | `computeTarget` on the session config | built |
 | `compute-runtime.ts` | Placeholder credentials, the request handler, worker-backed SessionFs | built |
 | `compute-process.ts` | The `process` test provider, internal to the package | built |
@@ -789,19 +798,20 @@ branch; section 12 lists what was deliberately left out.
 |---|---|---|
 | Core | Targets and names; the provider interface and the connection; the remote turn and trust boundary; the bridge; the `process` test provider | **built** |
 | The handshake | The mutual handshake and the host component, run for real by the `process` provider | **built** |
-| Host lifecycle | Leases and renewals; the done notice for trees that end while unloaded | **built** |
+| Host lifecycle | `release` as a hint, and the host component's idle shutdown as the backstop | **built** |
 | Management surfaces | Targets across the management client and the Web API; audit; API reference docs | **built** |
 | Clear failures | Permanent vs temporary; stop the turn at once on a permanent one, from the turn activity, with no orchestration change | **future work** (section 12) |
 | Provider services | Running providers as registered services outside the worker, reached through one generic connector | **future work** (section 12) |
 | Capabilities and a target's own models | What a target says it offers, the check that records it, and models a host serves itself | **future work** (section 12) |
 | The remaining surfaces | Managing targets from MCP and the CLI, and choosing one in the portal and the TUI | **future work** (section 12) |
-| Later | Provider extras; demand hints; a secret reference; portal and TUI views; provisioning; multi-target trees; SessionFs quotas and remote SQL tools | **later** |
+| Leases and end-of-tree notices | Telling a provider exactly when a host is free, instead of after a timeout | **future work** (section 12) |
+| Later | Provider extras; demand hints; a secret reference; provisioning; multi-target trees; SessionFs quotas and remote SQL tools | **later** |
 
 What is built is proved end to end on a laptop and in CI through the `process`
 provider: loaded into the worker, reached through the bridge, with the real
-handshake answered by the real host component, a lease renewed and recorded,
-and an end-of-session notice for a tree that ended while nothing held it. What
-a real deployment still needs is a provider of its own. The later items are
+handshake answered by the real host component, and a host ending itself when
+no session came back to it. What a real deployment still needs is a provider of
+its own. The later items are
 known and deferred, not forgotten.
 
 ## 12. Future work
@@ -991,3 +1001,44 @@ connection.
   pipe per connection and a check connection must not consume the only one.
 - That component exits with a non-zero status when its handshake is refused,
   instead of ending quietly as a success.
+
+### 12.6 Leases and end-of-tree notices
+
+**Value.** A provider that keeps spare hosts ready learns exactly when a host
+is free, instead of waiting out the idle timeout. Today a host nobody came back
+to is ended by its own component after half an hour, which is correct but slow:
+capacity sits idle, and a provider cannot tell "finished with" from "quiet".
+
+**What it adds.** A lease the worker renews while it uses a host, so renewals
+that stop mean nobody is using it — which covers a worker that crashed as well
+as one that let go properly. And one notice when a session tree is finished,
+sent even if no worker has the tree loaded, so a provider hears about hosts no
+`release` would ever cover.
+
+**Requirements when it is built.**
+
+- "Ended" is decided from a session that really finished, never from a state
+  the session publishes while it is still alive and still accepting prompts.
+  A failed turn is not an ended tree, and telling a provider otherwise would
+  recycle a host a live tree still needs.
+- A tree that is bound again after a notice starts a new binding, rather than
+  reusing a row that has been closed.
+- Exactly one notice per tree, and it is never lost: a worker that dies
+  mid-notice leaves it to be retried, and a provider that cannot be reached
+  does not count as told.
+- Holders are tracked per worker, so one worker letting go does not clear a
+  lease another worker still holds.
+- Closed records are pruned, and a binding of a kind no worker serves does not
+  retry for ever.
+
+### 12.7 Long waits and host-local state
+
+**Value.** A session that comes back after a long gap behaves predictably, and
+a person knows what survives the wait.
+
+**What it adds.** Today a host whose component timed out is simply replaced at
+the next turn. The conversation resumes from the worker's saved history, so the
+turn itself is unaffected. What is lost is anything that lived only on the old
+host: files outside the session's folders, and background processes started
+there. Making those survive — or saying plainly in the session that they did
+not — is not built.

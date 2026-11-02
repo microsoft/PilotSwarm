@@ -35,6 +35,13 @@ export interface ProcessComputeProviderOptions {
     startTimeoutMs?: number;
     /** Extra variables for the runtime. The worker's own environment is never passed. */
     env?: Record<string, string>;
+    /**
+     * How long a host stays up with no connection before its component
+     * ends it, and the runtime with it. Default
+     * COMPUTE_HOST_IDLE_TIMEOUT_MS; 0 keeps it for ever. Tests use a
+     * short one.
+     */
+    idleTimeoutMs?: number;
 }
 
 interface ProcessHost {
@@ -53,10 +60,6 @@ interface ProcessHost {
     /** This binding's handshake secret. Fresh per host, never written down. */
     bindingId: string;
     secret: string;
-    /** When the lease the worker renews runs out, or 0 while nothing holds it. */
-    leaseUntil: number;
-    /** Set once the worker says this host's session tree is finished. */
-    doneAt: number;
 }
 
 /**
@@ -184,12 +187,19 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         // separate program (`startComputeHost`, or the bin entry).
         const bindingId = incarnation;
         const secret = newComputeHandshakeSecret();
+        // The host's life follows its component, the way a real host's
+        // should: when the component ends itself for want of a
+        // connection, the runtime goes with it and the next turn of a
+        // session that comes back gets a fresh host.
+        let self: ProcessHost | undefined;
         let component: ComputeHostHandle;
         try {
             component = await startComputeHost({
                 bindingId, secret,
                 listen: { host: "127.0.0.1", port: 0 },
                 runtimeAddress: `127.0.0.1:${port}`,
+                ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
+                onIdle: () => { if (self) void stop(self); },
             });
         } catch (error) {
             signalGroup(child, "SIGKILL");
@@ -200,8 +210,9 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
             key,
             ref: { kind: PROCESS_COMPUTE_KIND, id: `${targetId}/${rootSessionId}`, incarnation, data: { port } },
             child, port, token, hostDir, homeDir, workDir, sessions: new Set(), exited: false,
-            component, bindingId, secret, leaseUntil: 0, doneAt: 0,
+            component, bindingId, secret,
         };
+        self = host;
         child.once("exit", () => {
             host.exited = true;
             if (hosts.get(key) === host) hosts.delete(key);

@@ -278,9 +278,6 @@ export class PilotSwarmWorker {
     /** Mtime watcher that re-loads model_providers.json on file change. */
     private _modelProvidersReloader: ReturnType<typeof createModelProvidersReloader> | null = null;
     private _modelProvidersReloadTimer: ReturnType<typeof setInterval> | null = null;
-    /** Compute providers: the registered-service refresh and the done sweep. */
-    private _computeDoneTimer: ReturnType<typeof setInterval> | null = null;
-    private _computeDoneSweeping = false;
     /** Close admission when drain begins; _started stays true until teardown ends. */
     private _providerReconciliationEnabled = false;
     private _providerReconciliation: Promise<void> | null = null;
@@ -452,33 +449,6 @@ export class PilotSwarmWorker {
         this.sessionManager.setComputeOptions({ allowNonLoopbackEndpoints: options.computeAllowNonLoopbackEndpoints });
     }
 
-    private _startComputePolling(): void {
-        this.sessionManager.startComputeLeases({
-            leaseMs: this.config.computeLeaseMs,
-            renewMs: this.config.computeLeaseRenewMs,
-        });
-        const sweepMs = this.config.computeDoneSweepMs ?? 60_000;
-        if (this._catalog?.computeBindings && sweepMs > 0 && !this._computeDoneTimer) {
-            this._computeDoneTimer = setInterval(() => {
-                if (this._computeDoneSweeping) return;
-                this._computeDoneSweeping = true;
-                void this.sessionManager.sweepFinishedComputeBindings()
-                    .catch((err) => console.warn(
-                        `[PilotSwarmWorker] compute done sweep failed: ${String((err as Error)?.message ?? err)}`))
-                    .finally(() => { this._computeDoneSweeping = false; });
-            }, sweepMs);
-            this._computeDoneTimer.unref?.();
-        }
-    }
-
-    private _stopComputePolling(): void {
-        if (this._computeDoneTimer) {
-            clearInterval(this._computeDoneTimer);
-            this._computeDoneTimer = null;
-        }
-        this.sessionManager.stopComputeLeases();
-    }
-
     private _startProviderPolling(): void {
         this._providerReconciliationEnabled = true;
         // Poll for model_providers.json changes (30s, unref'd so it never
@@ -605,7 +575,7 @@ export class PilotSwarmWorker {
 
     /**
      * Compute providers: add the plug-in for one compute type. Sessions whose
-     * compute target has this `kind` run their GHCP runtime through it.
+     * compute target has this `kind` run their agent runtime through it.
      * Throws when the kind is already registered, unless `replace` is set.
      */
     registerComputeProvider(provider: ComputeProvider, opts: { replace?: boolean } = {}): void {
@@ -1067,7 +1037,6 @@ export class PilotSwarmWorker {
         if (this._stopRequested) return;
         this._started = true;
         this._startProviderPolling();
-        this._startComputePolling();
 
         // Autonomous eviction clock (lifecycle protocol §3.4): local session
         // state is a cache. Sessions idle past the hold window + margin are
@@ -1106,7 +1075,6 @@ export class PilotSwarmWorker {
     async stop(): Promise<void> {
         this._stopRequested = true;
         this._stopProviderPolling();
-        this._stopComputePolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
             this._evictionTimer = null;

@@ -1437,23 +1437,6 @@ export interface PilotSwarmWorkerOptions {
      */
     computeAllowNonLoopbackEndpoints?: boolean;
 
-    /**
-     * Compute providers: how long a lease on a host is worth, and how
-     * often the worker renews the ones it holds. Defaults: a lease of 3
-     * minutes, renewed every 60 seconds. Renewals that stop are how a
-     * provider learns nobody is using a host any more.
-     */
-    computeLeaseMs?: number;
-    computeLeaseRenewMs?: number;
-
-    /**
-     * Compute providers: how often this worker looks for bindings whose
-     * session tree has ended and tells their provider, including trees
-     * that ended while no worker had them loaded. Default 60 seconds; 0
-     * turns the sweep off on this worker.
-     */
-    computeDoneSweepMs?: number;
-
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
 

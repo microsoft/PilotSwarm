@@ -1,4 +1,4 @@
-import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, DEFAULT_COMPUTE_LEASE_MS, computeBindingKey, computeLeaseSchedule, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, computeBindingKey, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
 import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
 import { ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
 import { computeFailureError, computeFailureMessage } from "./compute-failures.js";
@@ -607,19 +607,6 @@ const COMPUTE_CLIENT_SEPARATOR = "\0compute:";
 const COMPUTE_BIND_TIMEOUT_MS = 5 * 60_000;
 const COMPUTE_CONNECT_TIMEOUT_MS = 2 * 60_000;
 const COMPUTE_RELEASE_TIMEOUT_MS = 30_000;
-/**
- * Host leases. A worker takes a lease when it binds and renews it while it
- * holds the binding, so a provider can read renewals that stop as "nobody
- * is using this host" — which covers a worker that crashed or was taken
- * away as well as one that let go properly. The lease is several times the
- * renewal, so one slow renewal does not look like an absent worker.
- */
-const COMPUTE_RENEW_TIMEOUT_MS = 15_000;
-/** The end-of-tree notice: its deadline, how many per sweep, and when to try again. */
-const COMPUTE_DONE_TIMEOUT_MS = 30_000;
-const COMPUTE_DONE_SWEEP_BATCH = 20;
-const COMPUTE_DONE_RETRY_MS = 5 * 60_000;
-
 /** A session's binding to a compute host on this worker. */
 interface ComputeBinding {
     provider: ComputeProvider;
@@ -639,19 +626,10 @@ interface ComputeBinding {
     hostKey: string;
     /**
      * The bridge on the worker's own machine in front of this host's
-     * runtime, whether the provider opened the connection or PilotSwarm
-     * did. One per host, not per session: the sessions of a tree share a
-     * host, so they must share its address and its pooled client, exactly
-     * as they did when the provider's own address was used directly.
+     * runtime. One per host, not per session: the sessions of a tree share
+     * a host, so they must share its address and its pooled client.
      */
     bridge?: ComputeRuntimeBridge;
-    /**
-     * The CMS row for this (tree, target, host), when the catalog keeps
-     * them. It is what the lease is renewed against and what the
-     * end-of-tree sweep later finds; several sessions of one tree share
-     * the same row.
-     */
-    bindingRowId?: string;
 }
 
 /**
@@ -880,10 +858,6 @@ export class SessionManager {
     }>();
     /** Whether a provider may hand back a runtime address that is not on this machine. */
     private computeAllowNonLoopbackEndpoints = false;
-    /** Host leases: how long one is worth, and the timer that renews them. */
-    private computeLeaseMs = DEFAULT_COMPUTE_LEASE_MS;
-    private computeLeaseTimer: ReturnType<typeof setInterval> | null = null;
-    private computeLeaseRenewing = false;
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -1362,11 +1336,6 @@ export class SessionManager {
             workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
         };
         this.computeHosts.set(sessionId, binding);
-        // Record the binding and take a lease on it. Several sessions of
-        // one tree share a host and so share one row; the row outlives
-        // this worker's memory of it, which is what lets a tree that ends
-        // while nothing has it loaded still be reported to its provider.
-        await this._recordComputeBinding(binding);
         const connected = await this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
             (signal) => provider.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, signal, workspace })).catch(async (error) => {
                 await this.releaseCompute(sessionId, "failed");
@@ -1474,158 +1443,6 @@ export class SessionManager {
         };
     }
 
-    /**
-     * Write this binding to the CMS and take a lease on it. Best effort:
-     * a catalog that does not keep bindings, or a write that fails, must
-     * never stop a turn — the binding still works, it is only the report
-     * of it that is missing, and the next turn writes it again.
-     */
-    private async _recordComputeBinding(binding: ComputeBinding): Promise<void> {
-        const store = this.sessionCatalog?.computeBindings;
-        if (!store) return;
-        try {
-            const row = await store.record({
-                rootSessionId: binding.rootSessionId,
-                targetId: binding.target.id,
-                kind: binding.provider.kind,
-                host: binding.host,
-                workerNodeId: binding.workerNodeId,
-                leaseMs: this.computeLeaseMs,
-            });
-            binding.bindingRowId = row.bindingId;
-        } catch (error) {
-            emitSessionManagerTrace(binding.target.id,
-                `the compute binding for ${binding.rootSessionId} could not be recorded: ${String((error as Error)?.message ?? error)}`);
-        }
-    }
-
-    /**
-     * Compute providers: start renewing the leases this worker holds.
-     *
-     * One pass per timer, over the distinct bindings in memory. Each one
-     * tells its provider PilotSwarm is still using the host and pushes the
-     * lease out in the CMS. Bounded and best effort, and never inside a
-     * turn: a renewal that fails is a renewal that did not happen, which
-     * is exactly what the provider is meant to read it as.
-     */
-    startComputeLeases(options: { leaseMs?: number; renewMs?: number } = {}): void {
-        const schedule = computeLeaseSchedule(options);
-        this.computeLeaseMs = schedule.leaseMs;
-        const renewMs = schedule.renewMs;
-        if (this.computeLeaseTimer) return;
-        this.computeLeaseTimer = setInterval(() => {
-            if (this.computeLeaseRenewing) return;
-            this.computeLeaseRenewing = true;
-            void this.renewComputeLeases()
-                .catch(() => { /* best effort */ })
-                .finally(() => { this.computeLeaseRenewing = false; });
-        }, renewMs);
-        this.computeLeaseTimer.unref?.();
-    }
-
-    stopComputeLeases(): void {
-        if (this.computeLeaseTimer) {
-            clearInterval(this.computeLeaseTimer);
-            this.computeLeaseTimer = null;
-        }
-    }
-
-    /** One renewal pass. Exposed so a test can run it without waiting for the timer. */
-    async renewComputeLeases(): Promise<number> {
-        const store = this.sessionCatalog?.computeBindings;
-        const seen = new Set<string>();
-        const work: Array<Promise<boolean>> = [];
-        for (const binding of this.computeHosts.values()) {
-            const key = binding.bindingRowId ?? `${binding.rootSessionId}\0${binding.target.id}\0${binding.host.id}\0${binding.host.incarnation}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            work.push((async () => {
-                try {
-                    if (binding.provider.renew) {
-                        const answer = await this._computeCall("renew", COMPUTE_RENEW_TIMEOUT_MS,
-                            (signal) => binding.provider.renew!({
-                                target: binding.target, host: binding.host,
-                                rootSessionId: binding.rootSessionId, workerNodeId: binding.workerNodeId,
-                                leaseMs: this.computeLeaseMs, signal,
-                            }));
-                        if (!answer.ok) {
-                            emitSessionManagerTrace(binding.target.id,
-                                `the compute provider "${binding.provider.kind}" would not renew the lease on ${binding.host.id}: ${answer.message}`);
-                            return false;
-                        }
-                    }
-                    if (store && binding.bindingRowId) {
-                        await store.renew(binding.bindingRowId, binding.workerNodeId, this.computeLeaseMs);
-                    }
-                    return true;
-                } catch (error) {
-                    emitSessionManagerTrace(binding.target.id,
-                        `the lease on compute host ${binding.host.id} could not be renewed: ${String((error as Error)?.message ?? error)}`);
-                    return false;
-                }
-            })());
-        }
-        const results = await Promise.all(work);
-        return results.filter(Boolean).length;
-    }
-
-    /**
-     * Compute providers: tell providers about session trees that are
-     * finished with their hosts.
-     *
-     * Release covers a session leaving a host on a worker that is awake.
-     * This covers everything else — a tree that ended, failed or was
-     * deleted while no worker had it loaded, and one whose worker never
-     * came back. Rows are claimed one worker at a time
-     * (`FOR UPDATE SKIP LOCKED`) and stamped with the attempt, so a
-     * binding gets exactly one notice and a worker that dies mid-notice
-     * leaves it to be retried rather than lost.
-     *
-     * Exposed so a test can run a sweep without waiting for the timer.
-     */
-    async sweepFinishedComputeBindings(limit = COMPUTE_DONE_SWEEP_BATCH): Promise<number> {
-        const store = this.sessionCatalog?.computeBindings;
-        if (!store) return 0;
-        const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
-        const claimed = await store.claimDone(workerNodeId, limit, COMPUTE_DONE_RETRY_MS);
-        let told = 0;
-        for (const row of claimed) {
-            const provider = this.computeProviders.get(row.kind);
-            if (!provider) {
-                // No provider for the kind on this worker: leave the row
-                // for a worker that has one rather than closing it here.
-                continue;
-            }
-            // The target may be gone — a deleted target is one of the ways
-            // a tree ends up here — so the provider gets what is left of
-            // it rather than nothing.
-            const target = await this.sessionCatalog?.computeTargets?.getById(row.targetId).catch(() => null)
-                ?? {
-                    id: row.targetId, name: "", kind: row.kind, class: "shared" as const,
-                    ownerUserId: null, displayName: null, config: {}, enabled: false,
-                };
-            try {
-                if (provider.done) {
-                    const answer = await this._computeCall("done", COMPUTE_DONE_TIMEOUT_MS,
-                        (signal) => provider.done!({
-                            target, host: row.hostRef, rootSessionId: row.rootSessionId,
-                            workerNodeId, reason: row.reason, signal,
-                        }));
-                    if (!answer.ok) {
-                        emitSessionManagerTrace(row.targetId,
-                            `the compute provider "${row.kind}" would not take the end-of-session notice for ${row.rootSessionId}: ${answer.message}`);
-                        continue;
-                    }
-                }
-                if (await store.markDone(row.bindingId)) told++;
-            } catch (error) {
-                emitSessionManagerTrace(row.targetId,
-                    `the end-of-session notice for ${row.rootSessionId} could not be given: ${String((error as Error)?.message ?? error)}`);
-            }
-        }
-        return told;
-    }
-
     /** Run one provider call with a deadline; a provider that does not answer fails the call. */
     private async _computeCall<T>(name: string, timeoutMs: number, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
         const controller = new AbortController();
@@ -1679,13 +1496,6 @@ export class SessionManager {
         if (binding.bridge && ![...this.computeHosts.values()].some((other) => other.hostKey === binding.hostKey)) {
             this.computeBridges.delete(binding.hostKey);
             try { await binding.bridge.close(); } catch { /* best effort */ }
-        }
-        // The lease goes when the last session of the tree on this worker
-        // lets go of the host. The row stays: the tree may come back to
-        // the host, and only the end-of-tree notice closes a binding.
-        if (binding.bindingRowId
-            && ![...this.computeHosts.values()].some((other) => other.bindingRowId === binding.bindingRowId)) {
-            await this.sessionCatalog?.computeBindings?.release(binding.bindingRowId).catch(() => { /* best effort */ });
         }
         if (!binding.provider.release) return;
         try {

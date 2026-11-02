@@ -243,9 +243,6 @@ export {
     isLoopbackAddress,
     computeHostKey,
     computeBindingKey,
-    computeLeaseSchedule,
-    DEFAULT_COMPUTE_LEASE_MS,
-    DEFAULT_COMPUTE_LEASE_RENEW_MS,
 } from "./compute.js";
 export type {
     ComputeProvider,
@@ -263,8 +260,6 @@ export type {
     ComputeRuntimeEndpoint,
     ComputeWorkspacePaths,
     ComputeReleaseReason,
-    ComputeRenewRequest,
-    ComputeDoneRequest,
 } from "./compute.js";
 export { ComputeRuntimeBridge, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_CONNECTIONS, openTcpPipe } from "./compute-bridge.js";
 export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
@@ -288,8 +283,6 @@ export type { ComputeHandshakeCredential } from "./compute-handshake.js";
 // The host component: the PilotSwarm end of the handshake, on the host.
 export { startComputeHost, COMPUTE_HOST_MAX_CONNECTIONS } from "./compute-host.js";
 export type { ComputeHostOptions, ComputeHostHandle } from "./compute-host.js";
-export { ComputeBindingStore, ComputeBindingError } from "./compute-binding-store.js";
-export type { ComputeBindingRow } from "./compute-binding-store.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,

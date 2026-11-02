@@ -7,13 +7,18 @@
  * It answers the worker's handshake for one binding and then carries bytes
  * to the runtime's local port. Nothing else.
  *
+ * It stops after `--idle-timeout` milliseconds with no connection (30
+ * minutes by default, 0 to stay up for ever). Run it so that the runtime
+ * goes with it — as its parent, for example — because that timeout is
+ * what frees a host nobody came back to.
+ *
  *   pilotswarm-compute-host --binding <id> --runtime 127.0.0.1:4100 --listen 0.0.0.0:7000
  *
  * The binding's secret is read from PILOTSWARM_COMPUTE_HANDSHAKE_SECRET
  * and never taken from the command line, where anything on the host could
  * read it out of the process list.
  */
-import { startComputeHost } from "./compute-host.js";
+import { COMPUTE_HOST_IDLE_TIMEOUT_MS, startComputeHost } from "./compute-host.js";
 
 function argument(argv: string[], name: string): string | undefined {
     const at = argv.indexOf(`--${name}`);
@@ -36,9 +41,10 @@ async function main(): Promise<void> {
     const bindingId = argument(argv, "binding") ?? "";
     const runtimeAddress = argument(argv, "runtime") ?? "";
     const listen = argument(argv, "listen");
+    const idle = argument(argv, "idle-timeout");
     const secret = process.env.PILOTSWARM_COMPUTE_HANDSHAKE_SECRET ?? "";
     if (!bindingId || !runtimeAddress || !listen) {
-        console.error("usage: pilotswarm-compute-host --binding <id> --runtime <host:port|port> --listen <host:port>");
+        console.error("usage: pilotswarm-compute-host --binding <id> --runtime <host:port|port> --listen <host:port> [--idle-timeout <ms>]");
         process.exitCode = 2;
         return;
     }
@@ -52,6 +58,11 @@ async function main(): Promise<void> {
         secret,
         runtimeAddress,
         listen: endpoint(listen, "listen"),
+        idleTimeoutMs: idle === undefined ? COMPUTE_HOST_IDLE_TIMEOUT_MS : Number(idle),
+        onIdle: () => {
+            console.log(`[compute-host] binding ${bindingId} had no connection for ${idle ?? COMPUTE_HOST_IDLE_TIMEOUT_MS} ms; stopping`);
+            process.exit(0);
+        },
         onConnectionClosed: ({ ok, error }) => {
             if (!ok) console.error(`[compute-host] a connection was refused: ${error?.message ?? "no reason given"}`);
         },

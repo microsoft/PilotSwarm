@@ -121,18 +121,6 @@ export class ComputeTargetStore {
     }
 
     /**
-     * Worker side, with no session behind it: the target with this id,
-     * whoever owns it. Only for work PilotSwarm does for itself — telling
-     * a provider that a session tree is finished with a host — never for
-     * anything that answers a user. Trusted caller.
-     */
-    async getById(targetId: string): Promise<ComputeTarget | null> {
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetId)) return null;
-        const rows = await this.call(`SELECT * FROM ${this.fn("cms_compute_target_by_id")}($1)`, [targetId]);
-        return rows[0] ? toTarget(rows[0]) : null;
-    }
-
-    /**
      * Worker side, before every turn: the target with this id, or null when
      * it is gone. Trusted caller.
      */

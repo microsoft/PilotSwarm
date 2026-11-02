@@ -1,5 +1,5 @@
 /**
- * Driving a remote GHCP runtime (docs/proposals/compute-providers.md): the
+ * Driving a remote agent runtime (docs/proposals/compute-providers.md): the
  * runtime gets credential placeholders, the worker's request handler swaps
  * them back, and session state stays in the worker's directory.
  */

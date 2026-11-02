@@ -229,8 +229,15 @@ export interface ComputeReleaseRequest extends ComputeCall {
  * the next workload, or discard it and make a fresh one. It is best effort
  * and called once per session that leaves a host on this worker, and
  * several sessions of a tree share a host, so a host is only free of
- * PilotSwarm once no session uses it. A worker can crash without
- * releasing, so a provider also needs its own expiry.
+ * PilotSwarm once no session uses it.
+ *
+ * A provider must not rely on PilotSwarm to clean up a host. `release` is
+ * a hint and may never arrive: a worker can crash, a session can move, a
+ * network can go away. What does arrive is the host component's idle
+ * shutdown — it ends itself after a set time with no connection — so the
+ * runtime should run under that component, as its child for example, and
+ * the component's exit should end the whole host. A provider that cannot
+ * arrange that needs an expiry of its own.
  *
  * A host may take a new workload only with nothing left over from an
  * earlier one — files, logins, running processes, secrets. That is the
@@ -247,54 +254,6 @@ export interface ComputeProvider {
     bind(req: ComputeBindRequest): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>;
     connect(req: ComputeConnectRequest): Promise<ComputeConnectResult>;
     release?(req: ComputeReleaseRequest): Promise<void>;
-    /**
-     * PilotSwarm is still using this host, and asks for it to be held for
-     * `leaseMs` longer. Called on a timer, bounded and best effort, for as
-     * long as a worker holds the binding; renewals that stop mean nobody
-     * is using the host any more, whether a worker released it, crashed or
-     * was taken away. A provider that does not need the signal may leave
-     * it out, and a provider that refuses a renewal is saying the host is
-     * gone — the next turn will find that out through `connect`.
-     */
-    renew?(req: ComputeRenewRequest): Promise<{ ok: true } | ComputeFailure>;
-    /**
-     * This session tree is finished with the host. Exactly one notice is
-     * sent per binding, from whichever worker notices the tree has ended,
-     * including a tree that ended while no worker had it loaded, so a
-     * provider learns about hosts that no `release` would ever cover.
-     *
-     * It still does not mean destroy: what happens to a host nobody needs
-     * is the provider's decision alone. It must be safe to receive twice,
-     * since a worker can record the notice and then fail.
-     */
-    done?(req: ComputeDoneRequest): Promise<{ ok: true } | ComputeFailure>;
-}
-
-/**
- * PilotSwarm is still using this host. Sent on a timer for as long as a
- * worker holds the binding; when the renewals stop, nobody is using it.
- */
-export interface ComputeRenewRequest extends ComputeCall {
-    target: ComputeTarget;
-    host: ComputeHostRef;
-    /** Hosts are bound per (target, session tree). */
-    rootSessionId: string;
-    workerNodeId: string;
-    /** How long PilotSwarm is asking the host to be held for, from now. */
-    leaseMs: number;
-}
-
-/**
- * This session tree is finished with the host: it ended, or it was
- * deleted. Sent once per binding, from whichever worker notices, including
- * for trees that ended while no worker had them loaded.
- */
-export interface ComputeDoneRequest extends ComputeCall {
-    target: ComputeTarget;
-    host: ComputeHostRef;
-    rootSessionId: string;
-    workerNodeId: string;
-    reason: "ended" | "deleted";
 }
 
 /** The built-in provider: the runtime runs as the worker's child process, as today. */
@@ -472,36 +431,6 @@ export function computeHostKey(host: Pick<ComputeHostRef, "id" | "incarnation">)
  */
 export function computeBindingKey(targetId: string, host: Pick<ComputeHostRef, "id" | "incarnation">): string {
     return `${targetId}\u001f${computeHostKey(host)}`;
-}
-
-/**
- * Host leases: how long one is worth and how often it is renewed.
- *
- * A worker renews while it holds a binding, so a provider reads renewals
- * that stop as "nobody is using this host" — which covers a worker that
- * crashed or was taken away as well as one that let go properly. The
- * lease must therefore outlast more than one renewal: a single slow or
- * failed renewal is not an absent worker. This clamps a caller's numbers
- * to that rule rather than trusting them.
- */
-export const DEFAULT_COMPUTE_LEASE_MS = 3 * 60_000;
-export const DEFAULT_COMPUTE_LEASE_RENEW_MS = 60_000;
-/** The shortest lease and renewal worth having; anything under is a mistake. */
-export const MIN_COMPUTE_LEASE_MS = 5_000;
-export const MIN_COMPUTE_LEASE_RENEW_MS = 1_000;
-
-export function computeLeaseSchedule(
-    options: { leaseMs?: number; renewMs?: number } = {},
-): { leaseMs: number; renewMs: number } {
-    const wantedLease = Number(options.leaseMs);
-    const leaseMs = Math.max(MIN_COMPUTE_LEASE_MS,
-        Number.isFinite(wantedLease) && wantedLease > 0 ? Math.trunc(wantedLease) : DEFAULT_COMPUTE_LEASE_MS);
-    const wantedRenew = Number(options.renewMs);
-    const asked = Math.max(MIN_COMPUTE_LEASE_RENEW_MS,
-        Number.isFinite(wantedRenew) && wantedRenew > 0 ? Math.trunc(wantedRenew) : DEFAULT_COMPUTE_LEASE_RENEW_MS);
-    // At least two renewals inside a lease, so one that is late or fails
-    // never reads as a worker that has gone.
-    return { leaseMs, renewMs: Math.max(MIN_COMPUTE_LEASE_RENEW_MS, Math.min(asked, Math.floor(leaseMs / 2))) };
 }
 
 /** Whether an endpoint address names this machine (localhost, 127.0.0.0/8 or ::1). */
