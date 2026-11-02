@@ -14,6 +14,7 @@ import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
+import { isPinnedAgentPackageId } from "./agent-package-pins.js";
 import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
 import { workspaceReleaseReason, prepareWorkspace, prepareWorkspaceExtras } from "./workspace.js";
@@ -140,6 +141,13 @@ export interface AgentCopyEntry {
     packageId?: string;
     packageScope?: "shared" | "user";
     packageOwner?: { provider: string; subject: string } | null;
+    /**
+     * Set on the copy of an exact earlier package revision that a worker
+     * installed for sessions pinned to it (workflow package pins, R18;
+     * agent-package-pins.ts): its content hash. Such a copy is never a
+     * default: only a binding to its own `packageId` selects it.
+     */
+    pinnedRevision?: string;
 }
 
 /**
@@ -201,7 +209,8 @@ export function pickAgentCopyForOwner(
     ownerKey: string | null,
 ): AgentCopyEntry | undefined {
     if (!entry) return undefined;
-    const copies = entry.copies?.length ? entry.copies : [entry];
+    const all: AgentCopyEntry[] = entry.copies?.length ? entry.copies : [entry];
+    const copies = all.filter((copy) => !copy.pinnedRevision);
     if (ownerKey) {
         const own = copies.find(
             (copy) => copy.packageScope === "user" && agentOwnerKey(copy.packageOwner) === ownerKey,
@@ -237,6 +246,13 @@ export function pickAgentCopyByPackageIdForOwner(
 
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
+    /**
+     * Workflow package pins (R18, INACTIVE): install the exact earlier package
+     * revision a pinned bound package id names (agent-package-pins.ts) on this
+     * worker, before such a session's copy is resolved; false when it cannot
+     * be served.
+     */
+    ensurePinnedAgentPackageRevision?: (packageId: string) => Promise<boolean>;
     getCapabilitySources?: () => CapabilitySource[];
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
@@ -1879,6 +1895,12 @@ export class SessionManager {
         options?: { turnIndex?: number; trace?: SessionTraceWriter; lockHeld?: boolean; transcriptEpoch?: number; epochStart?: boolean; workflowTools?: WorkflowToolBinding },
     ): Promise<ManagedSession> {
         this.sessionLastTouchedAt.set(sessionId, Date.now());
+        // Workflow package pins (R18, INACTIVE: only a workflow agent state's child is bound so): the exact earlier package
+        // revision this session runs is installed here before its copy is resolved. One that cannot be served leaves the
+        // binding unresolved, and the session fails as any unavailable bound package does.
+        if (isPinnedAgentPackageId(serializableConfig.boundAgentPackageId)) {
+            await this.workerDefaults.ensurePinnedAgentPackageRevision?.(serializableConfig.boundAgentPackageId!);
+        }
         const turnIndex = options?.turnIndex;
         const trace = options?.trace;
         const transcriptEpoch = options?.transcriptEpoch ?? 0;

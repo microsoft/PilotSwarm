@@ -13,7 +13,7 @@ import {
 } from "./orchestration-registry.js";
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
-import type { SessionCatalog } from "./cms.js";
+import type { AgentPackageInstallEntry, SessionCatalog } from "./cms.js";
 import { TurnControlHub } from "./turn-control.js";
 import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
@@ -38,7 +38,8 @@ import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider } from "./types.js";
 import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
-import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
+import { installAgentPackageEntry, installAgentPackages, loadAgentPackageTools, type InstalledAgentPackage } from "./agent-package-installer.js";
+import { parsePinnedAgentPackageId } from "./agent-package-pins.js";
 import {
     createWorkflowCanvasPublisher,
     registerWorkflowActivities,
@@ -226,6 +227,16 @@ export async function resolveSpawnTreeSessionIds(
     return lineage;
 }
 
+/** Where an installed package directory came from (PilotSwarmWorker._packageDirOwners). */
+interface PackageDirProvenance {
+    packageId: string;
+    revision: string;
+    scope: "shared" | "user";
+    owner: { provider: string; subject: string } | null;
+    /** Set for an exact earlier revision installed for pinned sessions (agent-package-pins.ts): the package it is a revision of. */
+    pinnedOf?: string;
+}
+
 export class PilotSwarmWorker {
     private config: PilotSwarmWorkerOptions & { waitThreshold: number };
     private sessionManager: SessionManager;
@@ -333,7 +344,14 @@ export class PilotSwarmWorker {
      * agent packages. Empty for plugin dirs the deployment configured itself.
      */
     private _capabilitySources: CapabilitySource[] = [];
-    private _packageDirOwners = new Map<string, { packageId: string; revision: string; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
+    private _packageDirOwners = new Map<string, PackageDirProvenance>();
+    /**
+     * Exact earlier package revisions that sessions on this worker are bound
+     * to (workflow package pins, R18; INACTIVE), by pinned id. Installed with
+     * every refresh beside the active versions; their agents serve only the
+     * sessions bound to that id (ensurePinnedAgentPackageRevision).
+     */
+    private _retainedPackageRevisions = new Map<string, AgentPackageInstallEntry & { pinnedOf: string }>();
     /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
@@ -432,6 +450,8 @@ export class PilotSwarmWorker {
                 appDefaultToolNames: this._appDefaultToolNames,
                 systemMessage: this._frameworkBasePrompt ?? undefined,
                 agentPromptLookup: this._agentPromptLookup,
+                // Workflow package pins (R18, INACTIVE): an exact earlier package revision, installed on demand.
+                ensurePinnedAgentPackageRevision: (packageId: string) => this.ensurePinnedAgentPackageRevision(packageId),
                 frameworkBaseDescriptor: this._frameworkBaseDescriptor ?? undefined,
                 appDefaultDescriptor: this._appDefaultDescriptor ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
@@ -1442,6 +1462,18 @@ export class PilotSwarmWorker {
                 artifactStore: this.artifactStore,
                 cacheDir: this._agentPackagesCacheDir,
             });
+            // Workflow package pins (R18, INACTIVE): the exact earlier revisions that sessions here are bound to, each in a
+            // cache of its own beside the active versions (ensurePinnedAgentPackageRevision). None unless one was asked for.
+            const pinnedRevisions: Array<InstalledAgentPackage & { pinnedOf: string }> = [];
+            const livePackages = new Map<string, InstalledAgentPackage>(result.packages.map((p): [string, InstalledAgentPackage] => [p.packageId, p]));
+            for (const entry of this._retainedPackageRevisions.values()) {
+                // A disabled or deleted package serves no revision; a served one has its package's current scope and owner.
+                const live = livePackages.get(entry.pinnedOf);
+                if (!live) continue;
+                const installed = await installAgentPackageEntry({ ...entry, scope: live.scope, owner: live.owner },
+                    `${this._agentPackagesCacheDir}-pinned`, this.artifactStore);
+                pinnedRevisions.push({ ...installed, pinnedOf: entry.pinnedOf });
+            }
 
             // Import worker modules BEFORE the swap; an import failure
             // quarantines the whole package (prompts included) so a package
@@ -1483,7 +1515,36 @@ export class PilotSwarmWorker {
                     pkg.error = `worker-module import failed: ${String(error?.message ?? error)}`;
                 }
             }
-            const okDirs = result.packages.filter((p) => p.status === "ok").map((p) => p.dir);
+            // A pinned revision's handlers go only to the sessions bound to it (its pinned id), never to the flat map.
+            for (const pkg of pinnedRevisions) {
+                if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
+                try {
+                    const tools = await loadAgentPackageTools(pkg, { workerNodeId: this.config.workerNodeId });
+                    const collision = findReservedPackageToolName(
+                        tools.map((tool: any) => String(tool?.name || "")),
+                        [
+                            ...ManagedSession.systemToolDefs().map((tool: any) => String(tool.name)),
+                            ...ManagedSession.subAgentToolDefs().map((tool: any) => String(tool.name)),
+                            ...this._frameworkBaseToolNames,
+                            ...this._appDefaultToolNames,
+                        ],
+                        this.toolRegistry.keys(),
+                    );
+                    if (collision) {
+                        throw new Error(`package tool "${collision}" conflicts with a reserved platform or deployment tool`);
+                    }
+                    const ownMap = new Map<string, Tool<any>>(tools.map((tool: any): [string, Tool<any>] => [String(tool.name), tool]));
+                    if (ownMap.size > 0) packageToolsByPackage.set(pkg.packageId, ownMap);
+                } catch (error: any) {
+                    pkg.status = "error";
+                    pkg.error = `worker-module import failed: ${String(error?.message ?? error)}`;
+                }
+            }
+            for (const pkg of pinnedRevisions) {
+                if (pkg.status !== "ok") console.warn(`[PilotSwarmWorker] pinned agent package revision "${pkg.name}@${pkg.semver}" is not served: ${pkg.error}`);
+            }
+            // The active versions first: a pinned revision never wins a load-order tie.
+            const okDirs = [...result.packages, ...pinnedRevisions].filter((p) => p.status === "ok").map((p) => p.dir);
 
             // Which installed dir came from which package OWNER.
             //
@@ -1498,11 +1559,15 @@ export class PilotSwarmWorker {
             // miss whenever the cache dir is relative — silently demoting every
             // package agent to a deployment agent and disabling fail-closed
             // privacy, MCP qualification, and skill scoping all at once.
-            this._packageDirOwners = new Map(
-                result.packages
-                    .filter((p) => p.status === "ok")
-                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, revision: p.sha256, scope: p.scope, owner: p.owner }]),
-            );
+            const packageDirOwners = new Map<string, PackageDirProvenance>();
+            for (const p of result.packages) {
+                if (p.status === "ok") packageDirOwners.set(path.resolve(p.dir), { packageId: p.packageId, revision: p.sha256, scope: p.scope, owner: p.owner });
+            }
+            for (const p of pinnedRevisions) {
+                if (p.status !== "ok") continue;
+                packageDirOwners.set(path.resolve(p.dir), { packageId: p.packageId, revision: p.sha256, scope: p.scope, owner: p.owner, pinnedOf: p.pinnedOf });
+            }
+            this._packageDirOwners = packageDirOwners;
 
             // Synchronous swap — no await between reset and reload, so no
             // turn can observe the intermediate empty state.
@@ -1552,6 +1617,58 @@ export class PilotSwarmWorker {
             await this._reportAgentWorkerState();
             this._agentPackagesRefreshing = false;
         }
+    }
+
+    /**
+     * Workflow package pins (R18; design 03 package agents, test plan T070),
+     * INACTIVE: make the exact earlier revision that `pinnedPackageId` names
+     * (agent-package-pins.ts) servable on this worker, and say whether it is.
+     *
+     * The revision must still be in the registry, and its package must still
+     * be installable (enabled and not deleted): its current install entry
+     * gives the scope and owner, and the registry's version list the exact
+     * version by content hash. It is installed into a cache of its own, beside
+     * the active version and never in its place, and kept for every later
+     * refresh. Its agents serve only sessions bound to the pinned id: they are
+     * nobody's default copy, discovery does not list them, and their tools,
+     * skills and MCP servers stay with the revision. A revision that is gone,
+     * or a package that is disabled or deleted, is not served (false), and a
+     * session bound to it fails as any unavailable bound package does.
+     */
+    async ensurePinnedAgentPackageRevision(pinnedPackageId: string): Promise<boolean> {
+        const pinned = parsePinnedAgentPackageId(pinnedPackageId);
+        if (!pinned) return false;
+        if (this._pinnedRevisionLoaded(pinnedPackageId)) return true;
+        if (!this._agentPackagesCacheDir || !this._catalog || !this.artifactStore) return false;
+        if (!this._retainedPackageRevisions.has(pinnedPackageId)) {
+            const manifest = await this._catalog.getAgentPackagesInstallManifest();
+            const active = manifest.find((entry) => entry.packageId === pinned.packageId);
+            if (!active) return false;
+            const detail = await this._catalog.getAgentPackage(active.name, null, true,
+                { scope: active.scope, owner: active.scope === "user" ? active.owner : null });
+            const version = detail?.packageId === pinned.packageId
+                ? detail.versions.find((candidate) => candidate.sha256 === pinned.sha256)
+                : undefined;
+            if (!version) return false;
+            this._retainedPackageRevisions.set(pinnedPackageId, {
+                packageId: pinnedPackageId, pinnedOf: pinned.packageId, name: active.name, scope: active.scope, owner: active.owner,
+                semver: version.semver, sha256: version.sha256, sizeBytes: version.sizeBytes, artifactFilename: version.artifactFilename,
+                manifest: version.manifest,
+            });
+        }
+        // One refresh at a time: wait out one in flight (bounded), then reload with the revision.
+        for (let waited = 0; this._agentPackagesRefreshing && waited < 60_000; waited += 25) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        await this.refreshAgentPackages({ force: true });
+        return this._pinnedRevisionLoaded(pinnedPackageId);
+    }
+
+    private _pinnedRevisionLoaded(pinnedPackageId: string): boolean {
+        for (const provenance of this._packageDirOwners.values()) {
+            if (provenance.packageId === pinnedPackageId && provenance.pinnedOf !== undefined) return true;
+        }
+        return false;
     }
 
     /** Stable registry identity: configured workerNodeId, else host#pid. */
@@ -1743,7 +1860,8 @@ export class PilotSwarmWorker {
         // workerDefaults.customAgents — reassigning would strand it on the
         // constructor-time snapshot after an agent-package refresh.
         this._loadedAgents.length = 0;
-        this._loadedAgents.push(...this._rawLoadedAgents.map((agent) => {
+        // A pinned earlier revision's agent (R18) is not discoverable or spawnable by name: only its exact binding serves it.
+        this._loadedAgents.push(...this._rawLoadedAgents.filter((agent) => !(agent as any).pinnedRevision).map((agent) => {
             // Replace the frontmatter's named MCP references with the
             // resolved server map (and drop the inherit flag) so the SDK's
             // CustomAgentConfig.mcpServers receives real server configs.
@@ -1952,13 +2070,16 @@ export class PilotSwarmWorker {
      * The package a loaded skill belongs to, or null for a deployment skill.
      * Matched by directory prefix against the installed package dirs.
      */
-    private _skillPackageOwner(skill: Skill): { scope: "shared" | "user"; owner: { provider: string; subject: string } | null } | null {
+    private _skillPackageOwner(skill: Skill): {
+        scope: "shared" | "user"; owner: { provider: string; subject: string } | null; packageId: string; pinnedOf?: string;
+    } | null {
         if (!skill.dir) return null;
         // Resolve the skill dir once; the map keys are already resolved.
         const skillDir = path.resolve(skill.dir);
         for (const [dir, prov] of this._packageDirOwners) {
             if (skillDir === dir || skillDir.startsWith(dir + path.sep)) {
-                return { scope: prov.scope, owner: prov.owner };
+                return { scope: prov.scope, owner: prov.owner, packageId: prov.packageId,
+                    ...(prov.pinnedOf !== undefined ? { pinnedOf: prov.pinnedOf } : {}) };
             }
         }
         return null;
@@ -1993,6 +2114,8 @@ export class PilotSwarmWorker {
         for (const skill of this._loadedSkillsAll) {
             if (!skill?.name) continue;
             const prov = this._skillPackageOwner(skill);
+            // A pinned earlier revision's skills belong to its own agents only: never indexed or loadable.
+            if (prov?.pinnedOf !== undefined) continue;
             if (prov && prov.scope === "user") {
                 // Private to its owner: never in the fleet-wide catalog, but
                 // loadable by that person's own sessions. session-manager
@@ -2028,6 +2151,9 @@ export class PilotSwarmWorker {
                 ? path.resolve((agent as any).packageDir as string)
                 : undefined;
             const ownOwnerKey = agentOwnerKey((agent as any).packageOwner);
+            // Workflow package pins (R18): an exact earlier revision's agent composes its own revision's skills, never those
+            // of its package's active version; no other agent composes a pinned revision's skills.
+            const ownPinnedOf: string | undefined = (agent as any).pinnedOf;
             // Build THIS agent's skill pool. Deployment and shared-package
             // skills are public by construction. A user-scope package's skills
             // are PRIVATE to its owner — the worker holds every tenant's
@@ -2045,6 +2171,8 @@ export class PilotSwarmWorker {
                 const skillDir = skill.dir ? path.resolve(skill.dir) : null;
                 const isOwn = Boolean(ownDir && skillDir && skillDir.startsWith(ownDir + path.sep));
                 if (isOwn) { ownSkills.push(skill); continue; }
+                if (prov?.pinnedOf !== undefined) continue;
+                if (ownPinnedOf !== undefined && prov?.packageId === ownPinnedOf) continue;
                 if (!prov || prov.scope !== "user") { pool.push(skill); continue; }
                 // Foreign user-scope skill: include only if same owner (another
                 // copy the same person owns); otherwise exclude.
@@ -2090,7 +2218,8 @@ export class PilotSwarmWorker {
             list.push(agent);
             byName.set(agent.name, list);
         }
-        const rank = (agent: any) => agent.packageId == null ? 0 : (agent.packageScope !== "user" ? 1 : 2);
+        // A pinned earlier revision (workflow package pins, R18) is never the default copy: only its exact binding selects it.
+        const rank = (agent: any) => agent.pinnedRevision ? 3 : agent.packageId == null ? 0 : (agent.packageScope !== "user" ? 1 : 2);
         for (const [name, agents] of byName) {
             const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
             const copyOf = (agent: any): AgentCopyEntry => ({
@@ -2106,10 +2235,11 @@ export class PilotSwarmWorker {
                     packageScope: agent.packageScope ?? "shared",
                     packageOwner: agent.packageOwner ?? null,
                 } : {}),
+                ...(agent.pinnedRevision ? { pinnedRevision: agent.pinnedRevision } : {}),
             });
             this._agentPromptLookup[name] = {
                 ...copyOf(winner),
-                ...(agents.length > 1 ? { copies: agents.map(copyOf) } : {}),
+                ...(agents.length > 1 || winner.pinnedRevision ? { copies: agents.map(copyOf) } : {}),
             };
             // Persisted static bindings use this exact namespace key. The
             // alias carries the composed prompt, declarations and descriptor
@@ -2122,7 +2252,7 @@ export class PilotSwarmWorker {
                 assignedAliases.add(key);
                 this._agentPromptLookup[key] = copyOf(agent);
             }
-            if (agents.length > 1) {
+            if (agents.filter((agent: any) => !agent.pinnedRevision).length > 1) {
                 console.warn(
                     `[PilotSwarmWorker] agent name "${name}" is served by ${agents.length} loaded copies `
                     + `(${agents.map((a: any) => a.packageId ? `${a.packageScope ?? "shared"} package` : "deployment").join(", ")}); `
@@ -2216,6 +2346,10 @@ export class PilotSwarmWorker {
         }
 
         const provenance = this._packageDirOwners.get(absDir);
+        // Workflow package pins (R18, INACTIVE): an exact earlier revision installed for the sessions bound to it. It adds
+        // nothing to the worker's shared state (no skill directory or flat skill, no catalog MCP server, no capability
+        // source, no session policy, no base or system agent); its named agents serve only those sessions.
+        const pinnedRevision = provenance?.pinnedOf !== undefined ? provenance.revision : null;
         const source: CapabilitySource = { id: provenance?.packageId ?? `static:${capabilityHash(absDir).slice(0, 20)}`,
             name: namespace, source: provenance ? "published" : "static", revision: provenance?.revision ?? "",
             scope: provenance?.scope ?? "shared", owner: provenance?.owner, packageId: provenance?.packageId,
@@ -2223,10 +2357,10 @@ export class PilotSwarmWorker {
         // Skills
         const skillsDir = path.join(absDir, "skills");
         if (fs.existsSync(skillsDir)) {
-            this._loadedSkillDirs.push(skillsDir);
+            if (!pinnedRevision) this._loadedSkillDirs.push(skillsDir);
             for (const skill of loadSkillsSync(skillsDir)) {
                 source.artifacts.push({ kind: "skill", name: skill.name, description: skill.description, body: skill.prompt, tools: skill.toolNames });
-                this._loadedSkills.set(skill.name, skill);
+                if (!pinnedRevision) this._loadedSkills.set(skill.name, skill);
                 // Keep every copy with provenance: same-named skills from two
                 // package copies must not collapse before per-agent compose.
                 this._loadedSkillsAll.push(skill);
@@ -2238,6 +2372,7 @@ export class PilotSwarmWorker {
         if (fs.existsSync(agentsDir)) {
             const agents = loadAgentFiles(agentsDir);
             for (const agent of agents) {
+                if (pinnedRevision && (agent.name === "default" || agent.system)) continue;
                 agent.namespace = namespace;
                 if (agent.name !== "default" && !agent.system) source.artifacts.push({ kind: "agent", name: agent.name,
                     description: agent.description ?? "", body: agent.prompt, skills: agent.skills, tools: agent.tools ?? undefined,
@@ -2283,7 +2418,7 @@ export class PilotSwarmWorker {
                 } else {
                     agent.promptLayerKind = "app-agent";
                     (agent as any).layerDescriptor = descriptor;
-                    this._agentPromptLookup[agent.name] = {
+                    if (!pinnedRevision) this._agentPromptLookup[agent.name] = {
                         prompt: agent.prompt,
                         kind: "app-agent",
                         descriptor,
@@ -2296,6 +2431,10 @@ export class PilotSwarmWorker {
                     if (provenance) {
                         (agent as any).packageId = provenance.packageId;
                         (agent as any).packageDir = absDir;
+                    }
+                    if (pinnedRevision) {
+                        (agent as any).pinnedRevision = pinnedRevision;
+                        (agent as any).pinnedOf = provenance!.pinnedOf;
                     }
                     if (provenance && provenance.scope === "user" && provenance.owner) {
                         (agent as any).packageScope = "user";
@@ -2335,18 +2474,18 @@ export class PilotSwarmWorker {
             }
             source.mcpServers[name] = structuredClone(cfg);
             source.artifacts.push({ kind: "mcp", name, description: `MCP server exported by ${namespace}` });
-            this._loadedMcpServers[name] = cfg;
+            if (!pinnedRevision) this._loadedMcpServers[name] = cfg;
         }
         if (mcpPackageProvenance && Object.keys(source.mcpServers).length > 0) {
             this._agentPackageMcpServersByPackage.set(mcpPackageProvenance.packageId, source.mcpServers);
         }
 
         if (!source.revision) source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
-        this._capabilitySources.push(source);
+        if (!pinnedRevision) this._capabilitySources.push(source);
 
         // Session policy — last one wins
         const policyPath = path.join(absDir, "session-policy.json");
-        if (fs.existsSync(policyPath)) {
+        if (!pinnedRevision && fs.existsSync(policyPath)) {
             try {
                 this._sessionPolicy = JSON.parse(fs.readFileSync(policyPath, "utf-8"));
             } catch (err: any) {

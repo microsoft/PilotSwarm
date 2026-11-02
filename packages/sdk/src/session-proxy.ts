@@ -120,6 +120,15 @@ async function resolveCallerAgentOwnerKey(catalog: SessionCatalog | null | undef
 }
 
 /**
+ * The loaded agents a name may resolve to: every one but an exact earlier
+ * package revision installed for pinned sessions (workflow package pins,
+ * R18; agent-package-pins.ts), which answers only a binding to its own id.
+ */
+export function unpinnedAgents<T>(agents?: T[]): T[] | undefined {
+    return agents?.filter((agent) => !(agent as any)?.pinnedRevision);
+}
+
+/**
  * THE agent-name resolver: FQN parsing, fuzzy matching, package privacy, and
  * owner shadowing in one place.
  *
@@ -2522,7 +2531,7 @@ export function registerActivities(
         const resolveAgentConfigInline = (agentName: string) =>
             resolveAgentDefinitionForCaller({
                 agentName,
-                userAgents,
+                userAgents: unpinnedAgents(userAgents),
                 systemAgents,
                 getCallerOwnerKey: getCallerOwnerKeyInline,
             });
@@ -5815,6 +5824,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         // An unavailable pin yields no definition; it never falls back by name.
         const pinnedCandidates = (agents?: any[]) => agents?.filter(agent =>
             (!input.binding?.packageId || agent.packageId === input.binding.packageId)
+            // An exact earlier package revision (workflow package pins, R18) answers only its own binding.
+            && (!agent.pinnedRevision || agent.packageId === input.binding?.packageId)
             && (input.binding?.source !== "deployment" || (!agent.packageId && agent.packageScope == null)));
         return resolveAgentDefinitionForCaller({
             agentName: input.agentName,
@@ -5846,7 +5857,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     ): Promise<RequiredToolAgentResolution> => {
         return resolveAgentDefinitionForRequiredToolForCaller({
             requiredTool: input.requiredTool,
-            userAgents,
+            userAgents: unpinnedAgents(userAgents),
             systemAgents,
             getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, input.callerSessionId),
         });
@@ -5999,7 +6010,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     ? agents?.filter(a => a.packageId === packageId)
                     : input.config.boundAgentSource === "deployment"
                         ? agents?.filter(a => !a.packageId && a.packageScope == null)
-                        : agents;
+                        : unpinnedAgents(agents);
                 const agentDef = await resolveAgentDefinitionForCaller({
                     agentName: input.config.boundAgentName ?? input.agentId,
                     userAgents: fromBoundCopy(userAgents),
