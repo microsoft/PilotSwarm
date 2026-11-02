@@ -34,6 +34,13 @@ for (const zone of zones) test.describe(`MoTD viewer timezone ${zone.id}`, () =>
             await page.setViewportSize({ width: 390, height: 800 });
             await expect(preview.locator(".ps-motd-window")).toHaveText(zone.live);
             await preview.getByRole("button", { name: "Close preview", exact: true }).click();
+            await expect(page.locator(".ps-admin-console.is-mobile [data-level='0']")).toBeVisible();
+            await page.getByRole("button", { name: "Message of the day", exact: true }).click();
+            await expect(panel).toBeVisible();
+            await expect(panel.locator(".ps-motd-admin-card").first()).toContainText(zone.live);
+            await expect(panel.locator(".ps-motd-editor")).toHaveCount(0);
+            await expect(panel.getByRole("button", { name: /Duplicate|Phone view/ })).toHaveCount(0);
+            await expect(panel.getByRole("button", { name: "Delete message 9", exact: true })).toHaveCount(admin ? 1 : 0);
             const row = panel.locator(".ps-motd-history-entry").last();
             const summary = row.locator("summary");
             await summary.scrollIntoViewIfNeeded();
@@ -49,9 +56,11 @@ for (const zone of zones) test.describe(`MoTD viewer timezone ${zone.id}`, () =>
                             && control.top < box.bottom && control.bottom > box.top;
                     });
                 });
-                return { inSummary: node.contains(target), button: target?.closest("button")?.getAttribute("aria-label") || null, overlaps };
+                const actions = node.querySelector(".ps-motd-history-actions")?.getBoundingClientRect();
+                return { inSummary: node.contains(target), button: target?.closest("button")?.getAttribute("aria-label") || null, overlaps,
+                    actionsBelowText: !actions || text.every(element => element.getBoundingClientRect().bottom <= actions.top) };
             });
-            expect(hit).toEqual({ inSummary: true, button: null, overlaps: false });
+            expect(hit).toEqual({ inSummary: true, button: null, overlaps: false, actionsBelowText: true });
             await summary.tap();
             await expect(row).toHaveJSProperty("open", true);
             // Tap feedback can clear keyboard activation between Space down and up.
@@ -65,7 +74,7 @@ for (const zone of zones) test.describe(`MoTD viewer timezone ${zone.id}`, () =>
             await expect(row).toHaveJSProperty("open", false);
             await summary.press("Space");
             await expect(row).toHaveJSProperty("open", true);
-            await row.getByRole("button", { name: "Phone view", exact: true }).click();
+            await row.getByRole("button", { name: "Show splash again", exact: true }).click();
             await expect(preview.locator(".ps-motd-window")).toHaveText(zone.previous);
             await preview.getByRole("button", { name: "Close preview", exact: true }).click();
             expect(f.state.calls.filter(call => call.path.endsWith("/dismiss"))).toHaveLength(1);

@@ -15,7 +15,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
                 const label = splash.locator(".ps-motd-markdown span").filter({ hasText: text });
                 await expect(label).toHaveText(text);
                 await expect(splash.getByRole("link", { name: text, exact: true })).toHaveCount(0);
-                expect(await label.evaluate(node => getComputedStyle(node).textDecorationLine)).toBe("none");
+                await expect(label).toHaveCSS("text-decoration-line", "none");
             }
             await expect(splash.locator("span > strong").filter({ hasText: "Bold neutral" })).toHaveCount(1);
             for (const [text, href] of [["Markdown web", "https://example.invalid/guide"],
@@ -27,6 +27,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
                 await expect(link).toHaveAttribute("rel", "noopener noreferrer");
             }
             await expect(splash.locator("a")).toHaveCount(4);
+            const neutral = await splash.locator(".ps-motd-markdown span").filter({ hasText: "Relative label" }).elementHandle();
+            await page.setViewportSize({ width: viewport.width === 390 ? 1440 : 390, height: 844 });
+            if (viewport.width === 390) await expect(splash).not.toHaveClass(/is-phone-preview/);
+            else await expect(splash).toHaveClass(/is-phone-preview/);
+            expect(await neutral.evaluate(node => node.isConnected)).toBe(true);
+            await neutral.dispose();
             const [popup] = await Promise.all([page.waitForEvent("popup"), splash.getByRole("link", { name: "Markdown web", exact: true }).click()]);
             await popup.close();
             await expect(splash).toBeVisible();

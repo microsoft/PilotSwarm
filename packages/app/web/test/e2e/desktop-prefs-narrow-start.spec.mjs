@@ -61,10 +61,14 @@ test("Appearance at phone width shows the desktop settings read-only", async ({ 
     const pane = page.getByRole("region", { name: "Appearance" });
     const sound = pane.getByRole("switch", { name: "Theme sounds" });
     await expect(sound).toBeEnabled();
-    await expect(pane.locator("[data-appearance-desktop-only]")).toHaveCount(0);
 
+    // At phone width the console becomes the phone console. Its Appearance
+    // page shows the stored desktop values read-only.
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(pane.locator("[data-appearance-desktop-only]")).toBeVisible();
-    await expect(sound).toBeDisabled();
-    await expect(sound).not.toBeChecked();
+    const phone = page.locator(".ps-admin-console.is-mobile");
+    await expect(phone).toBeVisible();
+    await phone.getByRole("button", { name: "Appearance", exact: true }).click();
+    const phoneSound = page.getByRole("region", { name: "Appearance" }).getByRole("switch", { name: /Theme sounds/ });
+    await expect(phoneSound).toBeDisabled();
+    await expect(phoneSound).not.toBeChecked();
 });

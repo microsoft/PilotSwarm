@@ -11639,6 +11639,76 @@ textarea.ps-link-input {
   color: var(--w95-dark);
 }
 
+[data-mobile-settings] { display: none; }
+@media (max-width: 920px) {
+  [data-mobile-settings] {
+    display: inline-flex; position: relative; overflow: visible; cursor: pointer;
+  }
+  /* Expand into the header's free space, not the adjacent Sign out button. */
+  [data-mobile-settings]::before {
+    content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: max(100%, 44px); height: max(100%, 44px);
+  }
+  .portal-header-user > .portal-secondary-button.is-icon > svg { width: 16px; height: 16px; }
+  .ps-budget-sheet.is-phone-fullscreen { position: fixed; inset: 0; width: 100%; height: 100dvh; max-width: none; max-height: none; padding-top: env(safe-area-inset-top, 0px); border-radius: 0; box-sizing: border-box; overflow: hidden; }
+  .ps-budget-sheet.is-phone-fullscreen .ps-budget-sheet-body { flex: 1; min-height: 0; overflow: auto; }
+  .ps-budget-sheet.is-phone-fullscreen .ps-budget-sheet-foot { padding-bottom: max(16px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
+  [data-mobile-settings][aria-expanded="true"] { background: var(--ps-selection-background); color: var(--ps-selection-foreground); }
+  .ps-admin-console.is-mobile { overflow: hidden; min-height: 0; padding: 0; gap: 0; border: 0; border-radius: 0; }
+  .ps-admin-mobile-header {
+    display: flex; align-items: center; gap: 12px; flex: 0 0 auto;
+    padding: 6px 10px; border-bottom: 1px solid var(--ps-border);
+  }
+  .ps-admin-mobile-header h2 { margin: 0; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ps-admin-back { min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--ps-accent); font: inherit; cursor: pointer; }
+  .ps-admin-mobile-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  .ps-admin-mobile-settings, .ps-admin-mobile-files, .ps-admin-mobile-danger { padding: 12px; }
+  .ps-mobile-setting-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    width: 100%; min-height: 52px; padding: 10px 12px; box-sizing: border-box;
+    border: 0; border-bottom: 1px solid var(--ps-border); background: transparent; color: var(--ps-foreground);
+    font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere;
+  }
+  .ps-mobile-setting-row strong, .ps-mobile-setting-row small { display: block; }
+  .ps-mobile-setting-row small { margin-top: 3px; color: var(--ps-muted); }
+  .ps-admin-mobile-body .ps-admin-detail { width: 100%; max-width: none; padding: 14px; overflow: visible; box-sizing: border-box; }
+  .ps-admin-mobile-body .ps-admin-detail__meta { grid-template-columns: auto minmax(0, 1fr); }
+  .ps-admin-mobile-body .ps-admin-detail__meta dd { overflow-wrap: anywhere; }
+  .ps-admin-mobile-body .ps-admin-tree { display: block; padding: 0; }
+  .ps-admin-mobile-body .ps-admin-pkg-search { position: sticky; top: 0; z-index: 1; padding: 12px; background: var(--ps-background); }
+  .ps-admin-mobile-body .ps-admin-pkg-search__box input { font-size: 16px; min-height: 44px; }
+  .ps-admin-mobile-body .ps-admin-pkg-search__fields { flex-wrap: nowrap; overflow-x: auto; }
+  .ps-admin-mobile-body .ps-admin-pkg-search__fields button { flex-shrink: 0; min-height: 44px; }
+  .ps-admin-mobile-body .ps-admin-pkg-scroll { overflow: visible; min-height: 0; }
+  .ps-admin-mobile-body .ps-admin-tree__row { min-height: 52px; padding: 10px 14px; }
+  .ps-admin-mobile-body .ps-admin-tree__group { padding: 12px 14px; }
+  .ps-admin-mobile-danger { margin: 12px; border: 1px solid var(--ps-danger); border-radius: 8px; }
+  .ps-admin-mobile-danger h3 { margin-top: 0; }
+  .ps-admin-mobile-files .ps-admin-ws__preview { overflow-x: auto; }
+  .ps-admin-mobile-body :is(.ps-mini-button, .ps-primary-button, .ps-chip-remove, select, .ps-budget-seg-btn) { min-height: 44px; }
+  .ps-admin-mobile-body .ps-budget-seg-btn, .ps-budget-sheet.is-phone-fullscreen .ps-budget-seg-btn { min-height: 44px; font-size: 16px; }
+  .ps-admin-mobile-body :is(input:not([type="checkbox"]):not([type="range"]), select) { max-width: 100%; font-size: 16px; box-sizing: border-box; }
+  .ps-admin-mobile-body .ps-appearance { padding: 14px; }
+  .ps-mobile-desktop-only { min-width: 0; margin: 16px 0; padding: 0; border: 0; color: var(--ps-muted); }
+  .ps-mobile-desktop-only :is(input, label) { opacity: 0.65; cursor: not-allowed; }
+  .ps-admin-mobile-body .ps-admin-provider-block { overflow: visible; }
+  .ps-admin-mobile-body .ps-admin-provider-row { display: flex; flex-direction: column; align-items: stretch; margin: 10px 0; padding: 12px; border: 1px solid var(--ps-border); border-radius: 8px; }
+  .ps-admin-mobile-body .ps-admin-provider-row__actions { flex-wrap: wrap; gap: 8px; }
+  .ps-admin-mobile-body :is(.ps-admin-provider-default, .ps-admin-override-row) { grid-template-columns: minmax(0, 1fr); }
+  .ps-admin-mobile-body .ps-admin-provider-default .ps-admin-console__hint { grid-column: 1; }
+  .ps-admin-worker-cards { display: flex; flex-direction: column; gap: 10px; }
+  .ps-admin-worker-card { padding: 12px; border: 1px solid var(--ps-border); border-radius: 8px; }
+  .ps-admin-worker-card summary { min-height: 52px; cursor: pointer; overflow-wrap: anywhere; }
+  .ps-admin-worker-card summary > span:last-child { display: block; margin-top: 6px; color: var(--ps-muted); }
+  .ps-admin-worker-card dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
+  .ps-admin-worker-card dd { margin: 0; overflow-wrap: anywhere; }
+  .ps-admin-mobile-body .ps-motd-admin-grid { grid-template-columns: minmax(0, 1fr); }
+  .ps-admin-mobile-body .ps-motd-history-scroll { overflow: visible; max-height: none; }
+}
+@media (max-width: 359px) {
+  .portal-header-user .portal-header-version { display: none; }
+}
+
 /* Phone toolbar: all eight buttons on one row at any phone width. Each one
    gives up a few pixels (never under 34px) instead of the last action sliding
    under the view-mode group, where only a sideways swipe found it. */

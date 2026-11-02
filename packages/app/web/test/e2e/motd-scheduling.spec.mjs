@@ -83,15 +83,30 @@ test("each relative preset sends the exact length and Duplicate preserves it", a
         expect(f.state.calls).toHaveLength(3);
     } finally { await f.stop(); }
 });
-test("Duplicate open-ended messages stays Now and Never, including on a phone", async ({ page }) => {
+test("Duplicate open-ended messages stays Now and Never on desktop; phones read the message without an editor", async ({ page }) => {
     const f = await open(page, { history: [message({ toAt: null, endsAt: null })] });
     try {
         await page.getByRole("button", { name: "Duplicate message 1", exact: true }).click();
         await expect(starts(page).getByRole("radio", { name: "Now", exact: true })).toBeChecked();
         await expect(ends(page).getByRole("radio", { name: "Never - until replaced or deleted", exact: true })).toBeChecked();
-        await page.setViewportSize({ width: 390, height: 800 });
         await expect(page.locator(".ps-motd-schedule-summary")).toHaveText("Shows now until replaced or deleted.");
         expect(await page.locator(".ps-motd-editor").evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+        await page.setViewportSize({ width: 390, height: 800 });
+        await expect(page.locator(".ps-admin-console.is-mobile [data-level='0']")).toBeVisible();
+        await page.getByRole("button", { name: "Message of the day", exact: true }).click();
+        const panel = page.getByRole("region", { name: "Message of the day settings", exact: true });
+        await expect(panel).toBeVisible();
+        await expect(panel.locator(".ps-motd-editor,.ps-motd-schedule-summary")).toHaveCount(0);
+        await expect(panel.getByRole("button", { name: /Duplicate|Phone view|Publish/ })).toHaveCount(0);
+        const row = panel.locator(".ps-motd-history-entry").first();
+        await expect(row).toContainText("until replaced");
+        await expect(row.getByRole("button", { name: "Delete message 1", exact: true })).toBeVisible();
+        await row.locator("summary").click();
+        await row.getByRole("button", { name: "Show splash again", exact: true }).click();
+        const preview = page.getByRole("dialog", { name: "Message of the day preview", exact: true });
+        await expect(preview.locator(".ps-motd-window")).toContainText("until replaced");
+        await preview.getByRole("button", { name: "Close preview", exact: true }).click();
+        expect(f.state.calls).toHaveLength(0);
     } finally { await f.stop(); }
 });
 for (const theme of ["gruvbox-dark", "github-light"]) {

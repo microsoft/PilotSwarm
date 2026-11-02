@@ -3,6 +3,7 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { MotdOverlay, MotdAdminPanel } from "./motd.js";
+import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-navigation.js";
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { themeSoundPlayer } from "./theme-sound-player.js";
@@ -6588,7 +6589,7 @@ function CollapseGlyph() {
     React.createElement("path", { d: "M3 16h3a2 2 0 0 1 2 2v3" }));
 }
 
-function CogGlyph() {
+export function CogGlyph() {
     return React.createElement(Glyph, null,
     React.createElement("circle", { cx: "12", cy: "12", r: "3" }),
     React.createElement("path", { d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" }));
@@ -11731,7 +11732,7 @@ function budgetNormalizeModels(raw) {
  * refused write is READ where the person is looking rather than dismissed, and
  * the sheet stays open so the value that was refused is still on screen.
  */
-function BudgetSheet({ title, subtitle, children, footNote, confirmLabel, danger = false, busy = false,
+function BudgetSheet({ title, subtitle, children, footNote, confirmLabel, danger = false, busy = false, fullScreen = false,
     disabled = false, error = null, onCancel, onConfirm = null, cancelLabel = "Cancel" }) {
     // aria-modal promises focus stays inside. Keep the promise: Tab cycles
     // within the sheet, and a sheet with no input (Delete, Remove) takes focus
@@ -11782,7 +11783,7 @@ function BudgetSheet({ title, subtitle, children, footNote, confirmLabel, danger
         },
     },
     React.createElement("div", {
-        className: "ps-budget-sheet", role: "dialog", "aria-modal": "true", "aria-label": title,
+        className: `ps-budget-sheet${fullScreen ? " is-phone-fullscreen" : ""}`, role: "dialog", "aria-modal": "true", "aria-label": title,
         ref: sheetRef, tabIndex: -1,
     },
     React.createElement("div", { className: "ps-budget-sheet-top" },
@@ -12547,7 +12548,7 @@ function EditProviderSheet({
  */
 function CreateProviderSheet({
     types, existingNames, isAdmin, busy, error, onDirty, onCancel, onConfirm,
-    initialName = "", initialShared = false, initialType = "", updateProvider = null,
+    initialName = "", initialShared = false, initialType = "", updateProvider = null, mobile = false,
 }) {
     const updating = Boolean(updateProvider);
     const [name, setName] = React.useState(initialName);
@@ -12601,6 +12602,7 @@ function CreateProviderSheet({
 
     return React.createElement(BudgetSheet, {
         title: updating ? `Update key for ${trimmed}` : (isGithub ? "Add GitHub Copilot provider" : "Add model provider"),
+        fullScreen: mobile,
         subtitle: effectiveShared ? "Shared" : "Personal",
         confirmLabel: updating ? "Update key" : "Add provider", busy, disabled: !valid, error, onCancel: cancel, onConfirm: submit,
         // The whole point of an update is what does NOT change. Saying so is
@@ -14622,15 +14624,27 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
     const reading = useControllerSelector(controller, (state) => state.ui.chatReading);
     const themeSound = useControllerSelector(controller, (state) => state.ui.themeSound);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
-    // Both settings apply to the desktop portal only. A phone shows the stored
-    // values read-only, so nothing here looks like it works and does not.
+    const touchScale = useControllerSelector(controller, state => state.ui.touchScale);
+    if (mobile) return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
+        React.createElement("h3", null, "Appearance"),
+        React.createElement("label", { className: "ps-mobile-setting-row" },
+            React.createElement("span", null, "Touch-size controls"),
+            React.createElement("input", { type: "checkbox", role: "switch", checked: Boolean(touchScale),
+                onChange: event => controller.dispatch({ type: "ui/touchScale", enabled: event.target.checked }) })),
+        React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
+            onClick: () => controller.openThemePicker() },
+            React.createElement("span", null, "Theme"), React.createElement("span", null, getTheme(themeId)?.label || themeId, " ›")),
+        React.createElement("fieldset", { disabled: true, className: "ps-mobile-desktop-only" },
+            React.createElement("label", { className: "ps-mobile-setting-row" },
+                React.createElement("span", null, "Reading column", React.createElement("small", null, "desktop only")),
+                React.createElement("input", { type: "checkbox", role: "switch", checked: Boolean(reading?.on), readOnly: true }))),
+        React.createElement("fieldset", { disabled: true, className: "ps-mobile-desktop-only" },
+            React.createElement("label", { className: "ps-mobile-setting-row" },
+                React.createElement("span", null, "Theme sounds", React.createElement("small", null, "desktop only")),
+                React.createElement("input", { type: "checkbox", role: "switch", checked: Boolean(themeSound?.on), readOnly: true }))));
     return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
         React.createElement("h3", null, "Appearance"),
-        mobile
-            ? React.createElement("p", { className: "ps-admin-console__hint", "data-appearance-desktop-only": "" },
-                "The reading column and theme sounds apply to the desktop portal. Change them on a desktop.")
-            : null,
-        React.createElement("fieldset", { className: "ps-appearance__desktop", disabled: mobile },
+        React.createElement("fieldset", { className: "ps-appearance__desktop" },
             React.createElement(ChatReadingControl, {
                 reading,
                 onChange: (next) => controller.dispatch({ type: "ui/chatReading", reading: next }),
@@ -14642,7 +14656,7 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
             })));
 }
 
-function AdminConsolePanel({ controller, mobile = false }) {
+function AdminConsolePanel({ controller, mobile = false, navigation = null }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
     const features = useControllerSelector(controller, state => state.admin.features);
     const motds = useControllerSelector(controller, state => state.admin.motds);
@@ -14651,6 +14665,18 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const featureWorkers = useControllerSelector(controller, state => state.admin.workers);
     const featureRole = useControllerSelector(controller, state => state.auth?.authorization?.role);
     const packages = view.packages || {};
+    const mobileScrollRef = React.useRef(null);
+    const mobileScrollPositions = React.useRef(new Map());
+    const mobilePath = (navigation?.path || []).filter(step => step.kind !== "overlay");
+    const mobilePage = mobilePath.at(-1);
+    const mobilePageKey = JSON.stringify(mobilePath);
+    React.useLayoutEffect(() => {
+        const node = mobileScrollRef.current;
+        if (!node) return;
+        node.scrollTop = mobileScrollPositions.current.get(mobilePageKey) || 0;
+        if (mobilePath.length && navigation.path.at(-1)?.kind !== "overlay")
+            node.parentElement.querySelector(".ps-admin-mobile-header h2")?.focus({ preventScroll: true });
+    }, [mobilePageKey]);
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
     const showFeatures = view.section === "features";
@@ -14658,7 +14684,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const showMotd = view.section === "motd";
     const motdSection = React.createElement(MotdAdminPanel, { controller, state: motds, images: motdImages, canRead: motdReadable, mobile,
         isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
-    const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
+    const featureSection = React.createElement(FeatureFlagsPanel, { controller, features, mobile,
         workers: featureWorkers?.list || [], workersError: featureWorkers?.error,
         isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
     const [providerSheet, setProviderSheet] = React.useState(null);
@@ -14716,6 +14742,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
         // left a red band describing a change that was abandoned.
         controller.dismissAdminModelProviderMutationError();
     }, [controller]);
+    useMobileAdminOverlay(navigation || { path: [] }, mobile, Boolean(providerSheet), "provider-sheet", closeProviderSheet);
     const submitProvider = React.useCallback(async (input) => {
         setProviderSheetBusy(true);
         setProviderSheetError(null);
@@ -14742,6 +14769,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const providerSection = React.createElement(AdminModelProvidersSection, {
         controller,
         view,
+        mobile,
         // One failure should say itself once. While a sheet is open it shows
         // the message itself, and the pane printed the SAME text behind it.
         sheetOpen: Boolean(providerSheet),
@@ -14758,8 +14786,8 @@ function AdminConsolePanel({ controller, mobile = false }) {
         },
     });
 
-    const tree = React.createElement(AdminSettingsTree, { controller, view });
-    const detail = React.createElement(AdminPackageDetailPane, { controller, view });
+    const tree = React.createElement(AdminSettingsTree, { controller, view, mobile, navigation });
+    const detail = React.createElement(AdminPackageDetailPane, { controller, view, mobile });
     const workspacePane = showPackages && packages.selectedName
         ? React.createElement(AdminPackageWorkspacePane, { controller, view, layout: wsLayout, onLayout: updateWsLayout })
         : null;
@@ -14768,6 +14796,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
         : null;
     const createProviderDialog = providerSheet
         ? React.createElement(CreateProviderSheet, {
+            mobile,
             types: view.modelProviders?.providerTypes || [],
             existingNames: [
                 ...(view.modelProviders?.sharedProviders || []),
@@ -14792,33 +14821,52 @@ function AdminConsolePanel({ controller, mobile = false }) {
         : null;
 
     if (mobile) {
-        // Drill-in stack: settings list → section content; a selected package
-        // stacks detail + files + preview in one scroll with a back action.
+        const section = mobilePath[1]?.section;
+        const sectionTitles = { appearance: "Appearance", providers: "Model Providers", features: "Feature flags",
+            packages: "Packages", workers: "Workers", motd: "Message of the day" };
+        const title = mobilePage?.kind === "file" ? mobilePage.path
+            : mobilePage?.kind === "package" ? packages.selectedName
+            : mobilePath.length > 1 ? sectionTitles[section] : view.isAdmin ? "Admin Console" : "Settings";
+        const parentTitle = mobilePage?.kind === "file" ? packages.selectedName
+            : mobilePage?.kind === "package" ? "Packages" : mobilePath.length > 1 ? "Settings" : "Sessions";
         let body;
-        if (showPackages && packages.selectedName) {
+        if (mobilePath.length <= 1) {
+            body = React.createElement(AdminMobileSettingsList, { controller, view, navigation });
+        } else if (mobilePage?.kind === "file") {
+            body = React.createElement(AdminPackageWorkspacePane, { controller, view, mobile: true, previewOnly: true });
+        } else if (mobilePage?.kind === "package") {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" },
-                React.createElement("button", {
-                    type: "button", className: "ps-mini-button ps-admin-back",
-                    onClick: () => controller.selectAdminPackage(null),
-                }, "← All packages"),
-                detail,
-                workspacePane);
-        } else if (showPackages) {
+                detail);
+        } else if (section === "packages") {
             body = tree;
-        } else if (showWorkers) {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
-                React.createElement(AdminWorkersPane, { controller, view }));
+        } else if (section === "workers") {
+            body = React.createElement(AdminWorkersPane, { controller, view, mobile: true });
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
-                showAppearance
-                    ? React.createElement(AppearanceSettingsPane, { controller, mobile: true })
-                    : showMotd ? motdSection : showFeatures ? featureSection : providerSection);
+            body = section === "appearance" ? React.createElement(AppearanceSettingsPane, { controller, mobile: true })
+                : section === "motd" ? motdSection : section === "features" ? featureSection : providerSection;
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
-            header,
+            React.createElement("header", { className: "ps-admin-mobile-header" },
+                React.createElement("button", { type: "button", className: "ps-admin-back", onClick: navigation?.back,
+                    "aria-label": `Back to ${parentTitle}` }, `‹ ${parentTitle}`),
+                React.createElement("h2", { tabIndex: -1 }, title)),
             view.loadError ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError) : null,
-            body,
-            dialog,
+            React.createElement("div", { ref: mobileScrollRef, className: "ps-admin-mobile-body", "data-level": Math.max(0, mobilePath.length - 1),
+                onScroll: event => mobileScrollPositions.current.set(mobilePageKey, event.currentTarget.scrollTop) },
+                body,
+                mobilePage?.kind === "package"
+                    ? React.createElement(AdminPackageWorkspacePane, { controller, view, mobile: true,
+                        onFile: path => navigation.drill({ kind: "file", path }) })
+                    : null,
+                mobilePage?.kind === "package" && packages.detail?.canManage
+                    ? React.createElement("section", { className: "ps-admin-mobile-danger", "aria-label": "Package danger area" },
+                        React.createElement("h3", null, "Danger area"),
+                        React.createElement("p", null, "Delete this package and every version. This cannot be undone."),
+                        React.createElement("button", { type: "button", className: "ps-mini-button is-danger",
+                            disabled: Boolean(packages.detail.actionPending),
+                            onClick: () => confirmAdminPackageDelete(controller, packages.detail,
+                                () => navigation.back(navigation.path)) }, "Delete"))
+                    : null),
             createProviderDialog);
     }
 
@@ -14853,7 +14901,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
         createProviderDialog);
 }
 
-function AdminWorkersPane({ controller, view }) {
+function AdminWorkersPane({ controller, view, mobile = false }) {
     const workers = view.workers || {};
     const rows = workers.rows || [];
     const counts = workers.counts || {};
@@ -14889,6 +14937,18 @@ function AdminWorkersPane({ controller, view }) {
         workers.empty
             ? React.createElement("p", { className: "ps-admin-console__hint" },
                 "No workers registered. Workers appear here on their first heartbeat and self-prune after an hour of silence.")
+            : mobile ? React.createElement("div", { className: "ps-admin-worker-cards" },
+                [...rows].sort((left, right) => Number(right.live) - Number(left.live)).map(row =>
+                    React.createElement("details", { key: row.id, className: "ps-admin-worker-card" },
+                        React.createElement("summary", null,
+                            React.createElement("span", { className: `ps-worker-dot${row.live ? " is-live" : ""}` }),
+                            React.createElement("strong", null, row.id),
+                            React.createElement("span", null, `${row.phase} · ${row.agoText}`)),
+                        React.createElement("dl", null,
+                            [["Pool", row.pool], ["Uptime", row.uptimeText], ["RSS", row.rssText], ["Sessions", row.sessions],
+                                ["Loop p99", row.eventLoopText], ["Packages", row.pkgText], ["SDK", row.sdkVersion], ["Substrate", row.substrate]]
+                                .map(([label, value]) => React.createElement(React.Fragment, { key: label },
+                                    React.createElement("dt", null, label), React.createElement("dd", null, value ?? "—")))))))
             : React.createElement("div", { className: "ps-admin-workers__scroll" },
                 React.createElement("table", { className: "ps-admin-workers__table" },
                     React.createElement("thead", null, React.createElement("tr", null,
@@ -14932,7 +14992,28 @@ function highlightPackageQuery(text, query) {
     ];
 }
 
-function AdminSettingsTree({ controller, view }) {
+function AdminMobileSettingsList({ controller, view, navigation }) {
+    const summaries = { appearance: "Touch size and theme", providers: "Your model connections and defaults",
+        features: "Deployment capabilities", agents: "Browse and manage published packages",
+        motd: "Read announcements", workers: "Live workers and health" };
+    const rows = (view.settingsTree || []).filter(row => row.kind === "section");
+    const deployment = row => view.isAdmin && ["features", "workers"].includes(row.id);
+    const render = row => React.createElement("button", { key: row.id, type: "button", className: "ps-mobile-setting-row",
+        "aria-label": row.label, onClick: () => {
+            const section = row.id === "agents" ? "packages" : row.id;
+            navigation.drill({ kind: "section", section });
+            if (section === "providers") controller.setAdminModelProviderPage("mine");
+        } },
+        React.createElement("span", null, React.createElement("strong", null, row.label),
+            React.createElement("small", null, summaries[row.id])),
+        React.createElement("span", { "aria-hidden": true }, "›"));
+    return React.createElement("nav", { className: "ps-admin-mobile-settings", "aria-label": "Settings sections" },
+        rows.filter(row => !deployment(row)).map(render),
+        rows.some(deployment) ? React.createElement("h3", null, "Deployment") : null,
+        rows.filter(deployment).map(render));
+}
+
+function AdminSettingsTree({ controller, view, mobile = false, navigation = null }) {
     const packages = view.packages || {};
     const query = packages.query || "";
     const field = packages.queryField || "all";
@@ -14947,12 +15028,15 @@ function AdminSettingsTree({ controller, view }) {
         const onClick = row.kind === "package"
             // The selector says WHICH copy this row is — one name can be a
             // shared package and a user copy at once (scope shadowing).
-            ? () => controller.selectAdminPackage(row.name, {
-                scope: row.scope === "shared" ? "shared" : "user",
-                ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
-                    ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
-                    : {}),
-            })
+            ? () => {
+                const selector = {
+                    scope: row.scope === "shared" ? "shared" : "user",
+                    ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
+                        ? { owner: { provider: row.owner.provider, subject: row.owner.subject } } : {}),
+                };
+                if (mobile) navigation.drill({ kind: "package", name: row.name, selector });
+                else void controller.selectAdminPackage(row.name, selector);
+            }
             : () => {
                 if (row.id === "providers" || row.id === "myProviders") {
                     controller.setAdminSection("providers");
@@ -15015,8 +15099,8 @@ function AdminSettingsTree({ controller, view }) {
         ["contributor", "Contributor"],
     ];
     return React.createElement("nav", { className: "ps-admin-tree" },
-        React.createElement("div", { className: "ps-admin-tree__label" }, "Settings"),
-        tree.slice(0, headEnd).map(renderRow),
+        !mobile ? React.createElement("div", { className: "ps-admin-tree__label" }, "Settings") : null,
+        !mobile ? tree.slice(0, headEnd).map(renderRow) : null,
         React.createElement("div", { className: "ps-admin-pkg-search" },
             React.createElement("label", { className: "ps-admin-pkg-search__box" },
                 React.createElement("span", { className: "ps-admin-pkg-search__kicker" }, "Find"),
@@ -15058,19 +15142,26 @@ function AdminSettingsTree({ controller, view }) {
                 : null),
         packages.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading packages…") : null,
         packages.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, packages.error) : null,
-        view.section === "packages" ? React.createElement("button", {
+        !mobile && view.section === "packages" ? React.createElement("button", {
             type: "button",
             className: "ps-admin-tree__add",
             onClick: () => controller.openAdminAddPackage(),
         }, "+ Add package") : null,
-        tree.slice(tailStart).map(renderRow));
+        !mobile ? tree.slice(tailStart).map(renderRow) : null);
 }
 
 function listRows(tree, headEnd, tailStart, renderRow) {
     return tree.slice(headEnd, tailStart).map(renderRow);
 }
 
-function AdminPackageDetailPane({ controller, view }) {
+async function confirmAdminPackageDelete(controller, detail, onDeleted) {
+    if (window.confirm(`Delete ${detail.name}? Every version and its artifacts are removed. Live sessions using its agents will fail on their next turn.`)) {
+        await controller.runAdminPackageAction("delete");
+        if (!controller.getState().admin.packages.selectedName) onDeleted?.();
+    }
+}
+
+function AdminPackageDetailPane({ controller, view, mobile = false }) {
     const packages = view.packages || {};
     const detail = packages.detail;
     if (!packages.selectedName) {
@@ -15081,12 +15172,7 @@ function AdminPackageDetailPane({ controller, view }) {
                     ? "No packages yet. Add reusable skills, tools, MCP integrations, or authored agent workflows from a repo or folder — or use `pilotswarm agents push ./my-kit`."
                     : "Select a package from the tree to see its detail, versions, and files."));
     }
-    const confirmDelete = () => {
-        const ok = window.confirm(
-            `Delete ${detail.name}? Every version and its artifacts are removed. Live sessions using its agents will fail on their next turn.`,
-        );
-        if (ok) controller.runAdminPackageAction("delete");
-    };
+    const confirmDelete = () => confirmAdminPackageDelete(controller, detail);
     const act = (kind, arg) => () => controller.runAdminPackageAction(kind, arg);
     const pending = detail.actionPending;
     // Download is a pure read that streams to the browser, so it does not go
@@ -15146,7 +15232,7 @@ function AdminPackageDetailPane({ controller, view }) {
                         React.createElement("span", null, version.dateText),
                         version.active
                             ? React.createElement("span", { className: "is-ok" }, "● active")
-                            : (detail.canEdit
+                            : (detail.canEdit && !mobile
                                 ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act("pin", version.semver), disabled: Boolean(pending) }, "Pin")
                                 : null)))))
             : null,
@@ -15157,24 +15243,24 @@ function AdminPackageDetailPane({ controller, view }) {
             : null,
         detail.canEdit
             ? React.createElement("div", { className: "ps-admin-detail__actions" },
-                detail.source && detail.canManage
+                detail.source && detail.canManage && !mobile
                     ? React.createElement("button", { type: "button", className: "ps-primary-button", onClick: act("sync"), disabled: Boolean(pending) },
                         pending === "sync" ? "Syncing…" : "Sync now")
                     : null,
                 // Publishing a new version is the same job as adding one, so it
                 // is the same dialog with the destination already chosen.
-                React.createElement("button", {
+                !mobile ? React.createElement("button", {
                     type: "button",
                     className: "ps-primary-button",
                     onClick: () => controller.openAdminUpdatePackage(detail.name, detail.scope),
                     disabled: Boolean(pending),
                     title: `Publish a new version of ${detail.name} from a repo folder`,
-                }, "Update"),
+                }, "Update") : null,
                 // Promote MOVES this row to shared scope, so it only works
                 // while the shared name is free. Once a shared copy exists,
                 // the update path is republish: this version's exact bytes
                 // become a new version of the existing shared package.
-                detail.scope === "user" && detail.hasSharedCounterpart
+                !mobile && detail.scope === "user" && detail.hasSharedCounterpart
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-mini-button",
@@ -15182,12 +15268,12 @@ function AdminPackageDetailPane({ controller, view }) {
                         disabled: Boolean(pending) || !detail.activeSemver,
                         title: `Publish ${detail.name}@${detail.activeSemver ?? "?"} into the existing shared package`,
                     }, pending === "republish" ? "Publishing…" : `Publish ${detail.activeSemver ?? ""} to shared`)
-                    : (detail.canManage
+                    : (detail.canManage && !mobile
                         ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "demote" : "promote"), disabled: Boolean(pending),
                             title: detail.scope === "shared" && detail.editors.length ? "Demoting revokes every editor grant" : undefined },
                             detail.scope === "shared" ? "Demote to user" : "Promote to shared")
                         : null),
-                detail.scope === "shared" && !detail.hasOwnUserCounterpart
+                !mobile && detail.scope === "shared" && !detail.hasOwnUserCounterpart
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-mini-button",
@@ -15212,7 +15298,7 @@ function AdminPackageDetailPane({ controller, view }) {
                     : null,
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.enabled ? "disable" : "enable"), disabled: Boolean(pending) },
                     detail.enabled ? "Disable" : "Enable"),
-                detail.canManage
+                detail.canManage && !mobile
                     ? React.createElement("button", { type: "button", className: "ps-mini-button is-danger", onClick: confirmDelete, disabled: Boolean(pending) }, "Delete")
                     : null)
             : React.createElement("p", { className: "ps-admin-console__hint" },
@@ -15316,7 +15402,7 @@ function AdminPackageEditorsSection({ controller, detail, pending }) {
             : null);
 }
 
-function AdminPackageWorkspacePane({ controller, view, layout = null, onLayout = null }) {
+function AdminPackageWorkspacePane({ controller, view, layout = null, onLayout = null, mobile = false, previewOnly = false, onFile = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const workspace = view.packages?.workspace;
@@ -15349,6 +15435,22 @@ function AdminPackageWorkspacePane({ controller, view, layout = null, onLayout =
         startDrag(event, (start, _dx, dy) => onLayout({ treePct: start.treePct + (dy / height) * 100 }));
     }, [startDrag, onLayout]);
     if (!workspace) return null;
+    if (mobile) return React.createElement("section", { className: "ps-admin-mobile-files", "aria-label": previewOnly ? "File preview" : "Package files" },
+        previewOnly ? React.createElement("div", { className: "ps-admin-ws__preview" },
+            workspace.fileLoading ? React.createElement("p", null, "Loading…") : null,
+            workspace.fileError ? React.createElement("p", { role: "alert" }, workspace.fileError) : null,
+            workspace.file ? workspace.file.isBinary
+                ? React.createElement("p", null, `Binary file · ${workspace.file.sizeText}`)
+                : React.createElement(AdminWorkspacePreviewBody, { file: workspace.file, theme }) : null)
+            : React.createElement(React.Fragment, null,
+                React.createElement("h3", null, "Files"),
+                workspace.loading ? React.createElement("p", null, "Loading files…") : null,
+                workspace.error ? React.createElement("p", { role: "alert" }, workspace.error) : null,
+                workspace.treeRows.map(row => React.createElement("button", { key: `${row.type}:${row.path}`, type: "button",
+                    className: "ps-mobile-setting-row", style: { paddingLeft: `${12 + (row.depth || 0) * 16}px` },
+                    onClick: row.type === "dir" ? () => controller.toggleAdminPackageDir(row.path) : () => onFile(row.path) },
+                    React.createElement("span", null, row.type === "dir" ? row.expanded ? "▾ " : "▸ " : "", row.label),
+                    React.createElement("small", null, row.sizeText || "›")))));
     return React.createElement("div", {
         className: "ps-admin-ws",
         ref: paneRef,
@@ -15692,7 +15794,7 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
             })))));
 }
 
-function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal, sheetOpen = false }) {
+function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal, sheetOpen = false, mobile = false }) {
     const providers = view.modelProviders || {};
     const pending = Boolean(providers.mutation?.pending);
     const systemConfigured = adminDefaultModel(providers.systemSessionDefault);
@@ -15847,6 +15949,9 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
 
     return React.createElement("section", { className: "ps-admin-detail ps-admin-model-providers" },
         pageHeader,
+        mobile && view.isAdmin ? React.createElement(Segmented, { value: sharedPage ? "shared" : "mine",
+            label: "Provider scope", onChange: page => controller.setAdminModelProviderPage(page),
+            options: [{ value: "mine", label: "My" }, { value: "shared", label: "Shared" }] }) : null,
         // A mutation error belongs to the sheet that raised it while that sheet
         // is up. `providers.error` is different — it is the LOAD failing, which
         // is about the pane itself, so it still shows.
@@ -16070,6 +16175,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         // reducer keeps the two apart — opening either closes the other — so
         // this only decides which one is drawn.
         budgetOpen: Boolean(rootState.ui?.budgetOpen),
+        modalType: rootState.ui.modal?.type,
+        motdPreview: Boolean(rootState.motd.preview),
     }), shallowEqualObject);
     const profileSettingsHydratedRef = React.useRef(false);
     const lastProfileSettingsJsonRef = React.useRef(null);
@@ -16095,6 +16202,11 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // Match the CSS and MoA breakpoint. The padded shell is narrower than
     // the browser and otherwise flips to mobile while the header is desktop.
     const mobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
+    const mobileAdminNavigation = useMobileAdminNavigation(controller, mobile, state.adminVisible);
+    useMobileAdminOverlay(mobileAdminNavigation, mobile && state.adminVisible, Boolean(state.modalType),
+        "modal", () => controller.closeModal());
+    useMobileAdminOverlay(mobileAdminNavigation, mobile && state.adminVisible, state.motdPreview,
+        "motd-preview", () => { void controller.dismissCurrentMotd(); });
     const readOnlyChatPane = state.activeSessionIsGroup;
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
@@ -16170,6 +16282,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         return () => document.body.classList.remove("ps-canvas-lock");
     }, [mobile, mobileCanvasOpen]);
     const openMobileCanvas = React.useCallback(() => {
+        controller.closeAdminConsole();
+        controller.closeBudget();
         if (mobilePane !== "canvas") paneBeforeCanvasRef.current = mobilePane;
         setMobilePane("canvas");
         setMobileCanvasEverOpened(true);
@@ -16183,12 +16297,16 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         // transcript, and reopening clears the opt-out.
         controller.dispatch({ type: "ui/rightPaneMode", mode: "panes", sessionId: canvasShellView.sessionId, manual: true });
     }, [controller, canvasShellView.sessionId]);
+    React.useLayoutEffect(() => {
+        if (mobile && state.adminVisible && mobileCanvasOpen)
+            setMobilePane(paneBeforeCanvasRef.current || "workspace");
+    }, [mobile, state.adminVisible, mobileCanvasOpen]);
     const canvasFlipSeqRef = React.useRef(canvasShellView.flipSeq);
     React.useEffect(() => {
         if (canvasShellView.flipSeq === canvasFlipSeqRef.current) return;
         canvasFlipSeqRef.current = canvasShellView.flipSeq;
-        if (mobile) openMobileCanvas();
-    }, [canvasShellView.flipSeq, mobile, openMobileCanvas]);
+        if (mobile && !state.adminVisible) openMobileCanvas();
+    }, [canvasShellView.flipSeq, mobile, state.adminVisible, openMobileCanvas]);
     const toggleMobileCanvas = React.useCallback(() => {
         if (mobileCanvasOpen) { closeMobileCanvas(); return; }
         openMobileCanvas();
@@ -16792,20 +16910,21 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 // look dead. Picking a pane puts it away. Already closed, the
                 // reducer returns the same state and nothing re-renders.
                 controller.closeBudget();
+                controller.closeAdminConsole();
                 setMobilePane(paneId);
                 if (focus) controller.setFocus(focus);
             },
         }),
         React.createElement("div", { className: "ps-workspace" },
             state.adminVisible
-                ? React.createElement(AdminConsolePanel, { controller, mobile })
+                ? React.createElement(AdminConsolePanel, { controller, mobile, navigation: mobileAdminNavigation })
                 : state.budgetOpen
                     ? React.createElement(ProviderBudgetView, { controller })
                     : (filesFullscreenActive
                         ? fullscreenWorkspace
                         : (mobile ? mobileContent : desktopWorkspace)),
             mobileCanvasLayer),
-        mobile && filesFullscreenActive
+        mobile && filesFullscreenActive && !state.adminVisible
             ? React.createElement(MobileArtifactOverlay, { controller })
             : null,
         React.createElement(ModalLayer, { controller }),
