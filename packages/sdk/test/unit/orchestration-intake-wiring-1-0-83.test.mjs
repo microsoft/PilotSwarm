@@ -672,15 +672,19 @@ test("exposure r2: an unsent invocation's cancel answered exposed is recorded as
         items: [{ exchangeId: exchange(1), claimId: "claim-1", cancelRequested: true }, { exchangeId: exchange(2), claimId: "claim-2", cancelRequested: false }],
     });
     assert.equal(runtime.state.intake.invocation, null);
-    // An answer exposed for an item the write did not name, or on a sent invocation's request_cancel, fails visibly.
+    // An answer exposed for an item the write did not name, or on a sent invocation's request_cancel, fails visibly. The sent
+    // invocation is a legitimate one: possibly sent and ending interrupted, its latched cancel's write (request_cancel) due
+    // before its end.
     for (const [sent, answer] of [
         [false, ok({ items: [{ exchangeId: exchange(1), exposed: false }] })],
         [true, ok({ items: [{ exchangeId: exchange(1), exposed: true }] })],
     ]) {
-        const wrong = makeRuntime({ intake: carried({ invocation: { ...invocation, sent } }) });
+        const restored = sent ? { ...invocation, sent: true, settle: { outcome: "interrupted", retry: null } } : invocation;
+        const wrong = makeRuntime({ intake: carried({ invocation: restored }) });
         const wrongOps = [];
         assert.throws(() => drive(runIntakeWake(wrong, NOW), responder({ activity: () => answer }), wrongOps),
             error => error.code === "WORKFLOW_INTAKE_INVALID" || error.code === "WORKFLOW_INTAKE_BROKEN", JSON.stringify([sent, answer]));
+        assert.equal(kinds(wrongOps)[0], sent ? "settleWorkflowIntake:request_cancel" : "settleWorkflowIntake:cancel_unsent", JSON.stringify([sent, answer]));
         assert.equal(wrongOps.at(-1).op, "cms");
     }
 });
