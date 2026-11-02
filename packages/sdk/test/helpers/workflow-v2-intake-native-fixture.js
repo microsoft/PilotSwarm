@@ -78,7 +78,8 @@ const TAGS = [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPAB
 export const TEST_DOUBLES = Object.freeze({
     real: ["orchestration 1.0.83 (registered by this test only)", "duroxide native runtime and PostgreSQL provider",
         "worker activities (registerActivities, runTurnV5 by its test option)", "intake activities and workflow store", "CMS catalog"],
-    doubles: ["model session: scripted by the case (it asks the real store's admission when it sends)", "session manager: fake",
+    doubles: ["model session: scripted by the case (it asks the real store's admission when it sends)",
+        "session manager: fake (it records the config each turn gives it and declares no tools to a model)",
         "workspace provider: fake, when the case gives one", "CMS provider budget store: hidden"],
 });
 
@@ -242,9 +243,13 @@ export async function intakeNativeFixture(env, script, options = {}) {
         const ownSession = sessionId => {
             if (sessionId !== intake.recipientSessionId) throw new Error(`session ${sessionId} is not this test's`);
         };
+        // The config each turn gives the session manager, as given (a shallow copy): the session manager declares the model's
+        // tools from it (a 1.9.0 turn's workflowMilestoneTurn and an agent state's own child's workflowAgentChild), and this
+        // double does not declare anything, so a case reads it here.
+        const sessionConfigs = [];
         const sessionManager = {
             withRunTurnLock: async (sessionId, _operation, fn) => { ownSession(sessionId); return await fn(); },
-            getOrCreate: async sessionId => { ownSession(sessionId); return model.session; },
+            getOrCreate: async (sessionId, config) => { ownSession(sessionId); sessionConfigs.push({ ...config }); return model.session; },
             getModelSummary: () => undefined,
             getWorkspaceProvider: () => options.workspaceProvider ?? null,
             getFeatureFlagCache: () => null,
@@ -259,8 +264,9 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 dropWarmSession: async sessionId => { ownSession(sessionId); snapshots.dropped.push(sessionId); },
                 // As the SDK writes its layout when it creates a session: only when the directory has none (the preamble
                 // removed it, or nothing was there yet); a warm or hydrated one is resumed as it is.
-                getOrCreate: async sessionId => {
+                getOrCreate: async (sessionId, config) => {
                     ownSession(sessionId);
+                    sessionConfigs.push({ ...config });
                     if (!fs.existsSync(path.join(sessionDir, "workspace.yaml"))) makeSessionLayout(snapshots.stateDir, sessionId, "created");
                     return model.session;
                 },
@@ -482,6 +488,8 @@ export async function intakeNativeFixture(env, script, options = {}) {
         return {
             ...intake, client, provider, calls, prompts: model.prompts, sessionId, instanceId, start, deliver, say, customStatus, until,
             histories, failure, receipt, restart,
+            /** The config each turn gave the session manager (a shallow copy each), oldest first; not with managerExtras.getOrCreate. */
+            sessionConfigs,
             /**
              * Snapshot mode only (else null): the real store, the session's state directory, the store's tip (its probe),
              * the local marker, and the model runs the local conversation holds (events.jsonl lines, oldest first).

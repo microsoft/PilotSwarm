@@ -17,7 +17,10 @@
  * - A real 1.0.83 turn of a worker that runs agent states (runTurnV5 with
  *   the test-only switch): an agent state's child gets the completion bridge
  *   and the ask_user refusal flag and completes its state through the real
- *   tool path; a session outside every agent state gets neither. The child
+ *   tool path; a session outside every agent state gets neither. The session
+ *   manager is given the flags it declares the model's tools from (every
+ *   turn workflowMilestoneTurn; only an agent state's own child
+ *   workflowAgentChild, which declares complete_workflow_node). The child
  *   of a real-agent test run's agent state also gets the test's tool
  *   interception (design 05 agent mode real): its framework tool call is
  *   recorded and answered by the test's fixture, and a call after its state
@@ -261,6 +264,11 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "ok" } });
             const turns = h.calls.filter(call => call.name === "runTurnV5" && call.input?.sessionId === h.sessionId);
             expect(turns.length).toBeGreaterThanOrEqual(1);
+            // The model is declared its tools from the config each turn gives the session manager (session-manager.ts): a 1.9.0
+            // turn's milestone tools and respond_session_request, and an agent state's own child's complete_workflow_node. The
+            // bridge alone is invisible to the model; the first real-worker run had it without the declaration.
+            expect(h.sessionConfigs.length).toBeGreaterThanOrEqual(1);
+            for (const config of h.sessionConfigs) expect(config).toMatchObject({ workflowMilestoneTurn: true, workflowAgentChild: true });
         });
     });
 
@@ -296,6 +304,9 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
                 state: "responded", response: { disposition: "fixture", value: { state: "green" } } });
             expect(await h.store.readInterception(`${nodeExecutionId}/call-2`)).toBeNull();
             expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "ok" } });
+            // A test run's agent state's own child is declared complete_workflow_node too (as above).
+            expect(h.sessionConfigs.length).toBeGreaterThanOrEqual(1);
+            for (const config of h.sessionConfigs) expect(config).toMatchObject({ workflowMilestoneTurn: true, workflowAgentChild: true });
         });
     });
 
@@ -316,6 +327,12 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             // A turn of a worker that runs 1.9.0: its workflow tools describe and take the milestone (R26).
             expect(seen[0]).toEqual({ subtree: false, complete: false, respond: true, milestone: true, test: false });
             expect(canonicalJson(seen)).not.toContain("true,\"complete\":true");
+            // Its turns are declared the milestone tools and respond_session_request, never complete_workflow_node.
+            expect(h.sessionConfigs.length).toBeGreaterThanOrEqual(1);
+            for (const config of h.sessionConfigs) {
+                expect(config).toMatchObject({ workflowMilestoneTurn: true });
+                expect(Object.hasOwn(config, "workflowAgentChild")).toBe(false);
+            }
         });
     });
 });

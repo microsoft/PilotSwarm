@@ -849,9 +849,13 @@ refuses without the turn's bridge. A turn whose flags differ from the
 handle's gets a new handle at the turn boundary, as any declaration change
 does. Every other session's declarations are unchanged. Unit tests check
 the declarations of each flag and the handles a session gets as its flags
-change. The first full-worker run found this gap: the child's model request
-had no `complete_workflow_node`, because only its turn's handlers had it;
-the native-fixture tests call the bridge directly, so they did not see it.
+change; the native agent-state cases check that each turn gives the session
+manager those flags (an agent state's own child `workflowAgentChild`, a
+session outside every agent state never). The first full-worker run found
+this gap: the child's model request had no `complete_workflow_node`,
+because only its turn's handlers had it; the native-fixture tests call the
+bridge directly and their session manager declares nothing, so they did not
+see it.
 
 Residual: neither `respond_session_request` nor `complete_workflow_node` is
 a reserved package tool name, so a package that exports a tool of that name
