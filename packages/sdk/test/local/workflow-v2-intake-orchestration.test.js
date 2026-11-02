@@ -204,7 +204,7 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
                 expect(turns.map(turn => turn.input.intake?.invocationId ?? null)).toEqual([invocationId, invocationId]);
                 expect(h.prompts).toHaveLength(1);
                 expect(h.prompts[0].startsWith(`${expected.text}\n\nhello`)).toBe(true);
-                expect(workspaceProvider.callsFor({ method: "ensureAttached" }).length).toBeGreaterThanOrEqual(2);
+                expect(workspaceProvider.callsFor("ensureAttached").length).toBeGreaterThanOrEqual(2);
                 expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.input.outcome ?? null])).toEqual([
                     ["bind", null], ["end", "completed"],
                 ]);
