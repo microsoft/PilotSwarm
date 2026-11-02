@@ -491,7 +491,13 @@ for (const admin of [true, false]) {
             await expect(flag).toBeVisible();
             if (admin) {
                 await expect(flag).toBeEnabled();
-                await flag.check();
+                const wasOn = await flag.isChecked();
+                await flag.setChecked(!wasOn);
+                await expect(consoleRoot(page).getByRole("button", { name: "Save changes" })).toBeEnabled();
+                // Back to the saved state: no personal override is pending.
+                await flag.setChecked(wasOn);
+                await expect(consoleRoot(page).getByRole("button", { name: "Save changes" })).toBeDisabled();
+                await flag.setChecked(!wasOn);
                 await expect(consoleRoot(page).getByRole("button", { name: "Save changes" })).toBeEnabled();
             } else {
                 await expect(flag).toBeDisabled();

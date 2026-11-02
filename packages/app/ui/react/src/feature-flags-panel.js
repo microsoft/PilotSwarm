@@ -98,8 +98,16 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
             h("input", { type: "checkbox", role: "switch",
                 checked: mode === "cluster" ? Boolean(clusterDraft.enabled) : choice === "inherit" ? Boolean(storedEnabled) : choice === "true",
                 disabled: !isAdmin || editDisabled,
-                onChange: event => controller.setFeatureDraft(flag.featureKey, mode === "cluster"
-                    ? { ...clusterDraft, enabled: event.target.checked } : { enabled: event.target.checked }) })),
+                onChange: event => {
+                    const checked = event.target.checked;
+                    if (mode === "cluster") return controller.setFeatureDraft(flag.featureKey, { ...clusterDraft, enabled: checked });
+                    // A switch has no "follow the cluster" position. Toggling back to
+                    // the saved state drops the draft instead of saving a personal
+                    // override that only looks the same.
+                    const backToSaved = savedChoice === "inherit" ? checked === Boolean(storedEnabled) : String(checked) === savedChoice;
+                    if (backToSaved) return controller.discardFeatureDraft(flag.featureKey);
+                    return controller.setFeatureDraft(flag.featureKey, { enabled: checked });
+                } })),
         h("p", { className: "ps-feature-explanation" }, `${savedValue}. ${reason}${!isAdmin ? " Read only on a phone." : ""}`),
         flag.reason === "requires_native_tasks" ? h("p", { role: "status" }, "Base Agent V2 requires Native Copilot tasks. Its preference is saved.") : null,
         knownBlocked ? h("p", { role: "status" }, "The saved setting is On, but no reporting worker is configured for native tasks.") : null,
