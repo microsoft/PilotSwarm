@@ -4,7 +4,7 @@
  *
  * A compute target is a registered place where a session's agent runtime
  * can run: one instance of a compute type (the worker's own process, a
- * separate host, a sandbox, a user's machine, an existing build pool).
+ * separate host, a sandbox, an existing pool of hosts).
  * The type is named by `kind`; the worker plug-in that understands it is a
  * compute provider. PilotSwarm stores the target and checks who may use it.
  * It never interprets `config`: that belongs to the provider of `kind`.

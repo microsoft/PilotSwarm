@@ -25,8 +25,8 @@ whose two ends prove who they are. A **compute provider** supplies the hosts:
 today it is a plug-in loaded into the worker, and running providers as
 registered services outside the worker is future work (section 12). Nothing
 in the design names a cloud, a platform, a network product or a kind of
-machine; a provider can front a shared pool, a managed sandbox service, or a
-user's own machine.
+kind of host; a provider can front a pool of hosts, a sandbox service, or
+hosts that only connect out.
 
 ## High-level design
 
