@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import {
-    activationFixture, nativeBoundary, scheduledActivities, ACTIVATION_SLICE_TIMEOUT,
+    activationFixture, nativeBoundary, scheduledActivities, messageQueueSubscriptions, ACTIVATION_SLICE_TIMEOUT,
     ACTIVITY_FENCE_ORCHESTRATION, UNTAGGED_CONTROL_ORCHESTRATION,
 } from "../helpers/workflow-v2-activation-fixture.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -12,6 +12,19 @@ import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-regi
 const getEnv = useSuiteEnv(import.meta.url);
 
 describe("workflow v2 activation first native slice (no activation)", () => {
+    it("decodes only the messages QueueSubscribed boundary and rejects malformed subscription data", () => {
+        const messages = { eventId: 5, kind: "QueueSubscribed", data: '{"name":"messages"}' };
+        expect(messageQueueSubscriptions([
+            { eventId: 1, kind: "QueueSubscribed", data: '{"name":"another-queue"}' },
+            { eventId: 2, kind: "ExternalSubscribed", data: '{"name":"messages"}' },
+            { eventId: 3, kind: "ActivityCompleted", data: "not subscription JSON" },
+            messages,
+        ])).toEqual([messages]);
+        for (const data of [undefined, null, { name: "messages" }, '{"name":', "null", "[]", "{}", '{"name":1}']) {
+            expect(() => messageQueueSubscriptions([{ eventId: 9, kind: "QueueSubscribed", data }])).toThrow("QueueSubscribed event 9");
+        }
+    });
+
     it("activity fence only: old traps cannot claim tagged intake work, which completes when a capable worker joins", { timeout: ACTIVATION_SLICE_TIMEOUT }, async () => {
         const h = await activationFixture(getEnv());
         try {
@@ -20,8 +33,9 @@ describe("workflow v2 activation first native slice (no activation)", () => {
             const old = h.activityWorker("old", false);
             await old.start();
             await h.client.startOrchestration("protected-intake", ACTIVITY_FENCE_ORCHESTRATION, input);
-            const pending = await nativeBoundary(h.client, "protected-intake", ({ history }) =>
-                scheduledActivities(history, WORKFLOW_INTAKE_ACTIVITIES.claim).length === 1);
+            const pending = await nativeBoundary(h, "protected-intake", "activity claim scheduled before capable worker", ({ history }) => ({
+                exactlyOneClaimScheduled: scheduledActivities(history, WORKFLOW_INTAKE_ACTIVITIES.claim).length === 1,
+            }));
             expect(pending.status.status).toBe("Running");
             // A completed untagged operation proves the old native worker is serving this same queue, without sleeping as evidence.
             await h.client.startOrchestration("old-positive-control", UNTAGGED_CONTROL_ORCHESTRATION, {});
@@ -70,17 +84,23 @@ describe("workflow v2 activation first native slice (no activation)", () => {
                 iteration: 0, blobEnabled: false, idleTimeout: -1, inputGracePeriod: -1,
                 pendingInputQuestion: { question: "Retained question", iteration: 0, allowFreeform: true },
             }, "1.0.82");
-            const parked = await nativeBoundary(h.client, instanceId, ({ info, history }) =>
-                info.orchestrationVersion === "1.0.82" && history.some(event => event.kind === "ExternalSubscribed")
-                && history.some(event => event.kind === "ActivityCompleted"));
+            const parked = await nativeBoundary(h, instanceId, "frozen82 initial persisted park", ({ info, history }) => ({
+                instanceVersionIs82: info.orchestrationVersion === "1.0.82",
+                hasMessagesQueueSubscribed: messageQueueSubscriptions(history).length > 0,
+                hasActivityCompleted: history.some(event => event.kind === "ActivityCompleted"),
+            }), sessionId);
             const command1 = "before-native-replacement";
             await h.client.enqueueEvent(instanceId, "messages", JSON.stringify({ type: "cmd", cmd: "get_info", id: command1 }));
-            const committed = await nativeBoundary(h.client, instanceId, ({ history }) => {
+            const committed = await nativeBoundary(h, instanceId, "frozen82 first command committed before replacement", ({ history }) => {
                 const done = history.filter(event => event.kind === "ActivityCompleted");
-                const subscribed = history.filter(event => event.kind === "ExternalSubscribed");
-                return done.length >= 3 && subscribed.length > parked.history.filter(event => event.kind === "ExternalSubscribed").length
-                    && Number(subscribed.at(-1).eventId) > Number(done.at(-1).eventId);
-            });
+                const subscribed = messageQueueSubscriptions(history);
+                return {
+                    atLeastThreeActivitiesCompleted: done.length >= 3,
+                    messagesSubscriptionCountAdvanced: subscribed.length > messageQueueSubscriptions(parked.history).length,
+                    subscriptionFollowsLastCompletion: subscribed.length > 0 && done.length > 0
+                        && Number(subscribed.at(-1).eventId) > Number(done.at(-1).eventId),
+                };
+            }, sessionId);
             expect(committed.info.orchestrationVersion).toBe("1.0.82");
             expect(committed.info.currentExecutionId).toBe(parked.info.currentExecutionId);
             const originalEvents = await h.catalog.getSessionEvents(sessionId, 0, 1000);
@@ -96,12 +116,16 @@ describe("workflow v2 activation first native slice (no activation)", () => {
             await replacement.start();
             const command2 = "after-native-replacement";
             await h.client.enqueueEvent(instanceId, "messages", JSON.stringify({ type: "cmd", cmd: "get_info", id: command2 }));
-            const replayed = await nativeBoundary(h.client, instanceId, ({ history }) => {
+            const replayed = await nativeBoundary(h, instanceId, "frozen82 second command replayed after replacement", ({ history }) => {
                 const done = history.filter(event => event.kind === "ActivityCompleted");
-                const subscribed = history.filter(event => event.kind === "ExternalSubscribed");
-                return done.length >= 5 && subscribed.length > committed.history.filter(event => event.kind === "ExternalSubscribed").length
-                    && Number(subscribed.at(-1).eventId) > Number(done.at(-1).eventId);
-            });
+                const subscribed = messageQueueSubscriptions(history);
+                return {
+                    atLeastFiveActivitiesCompleted: done.length >= 5,
+                    messagesSubscriptionCountAdvanced: subscribed.length > messageQueueSubscriptions(committed.history).length,
+                    subscriptionFollowsLastCompletion: subscribed.length > 0 && done.length > 0
+                        && Number(subscribed.at(-1).eventId) > Number(done.at(-1).eventId),
+                };
+            }, sessionId);
             expect(replayed.info.orchestrationVersion).toBe("1.0.82");
             expect(replayed.info.currentExecutionId).toBe(committed.info.currentExecutionId);
             expect(replayed.history.slice(0, committed.history.length)).toEqual(committed.history);

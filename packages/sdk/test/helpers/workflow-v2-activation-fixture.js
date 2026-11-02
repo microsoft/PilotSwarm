@@ -31,21 +31,92 @@ export function scheduledActivities(history, name) {
     return history.filter(event => event.kind === "ActivityScheduled" && String(event.data).startsWith(prefix));
 }
 
-/** Condition on persisted native history, not on callback entry or an arbitrary elapsed interval. */
-export async function nativeBoundary(client, instanceId, check, timeout = 45_000) {
-    let observed;
-    await vi.waitFor(async () => {
-        let info;
-        try { info = await client.getInstanceInfo(instanceId); } catch (error) {
-            if (String(error.message).includes("Instance not found")) throw new Error("The native instance has not been created yet.");
-            throw error;
+/** Native dequeueEvent("messages") persists this queue subscription, not waitForEvent's ExternalSubscribed. */
+export function messageQueueSubscriptions(history) {
+    return history.filter(event => {
+        if (event.kind !== "QueueSubscribed") return false;
+        if (typeof event.data !== "string") throw new Error(`QueueSubscribed event ${event.eventId} has no JSON text.`);
+        let payload;
+        try { payload = JSON.parse(event.data); } catch (cause) {
+            throw new Error(`QueueSubscribed event ${event.eventId} has invalid JSON data.`, { cause });
         }
-        const history = await client.readExecutionHistory(instanceId, info.currentExecutionId);
-        const status = await client.getStatus(instanceId);
-        expect(status.status, JSON.stringify(status)).not.toBe("Failed");
-        expect(check({ info, history, status })).toBe(true);
-        observed = { info, history, status };
-    }, { timeout, interval: 50 });
+        if (payload === null || typeof payload !== "object" || Array.isArray(payload) || typeof payload.name !== "string") {
+            throw new Error(`QueueSubscribed event ${event.eventId} has no string queue name.`);
+        }
+        return payload.name === "messages";
+    });
+}
+
+function errorDetails(error) {
+    return error instanceof Error ? { name: error.name, message: error.message, code: error.code, stack: error.stack }
+        : { thrown: String(error) };
+}
+
+function readOutcome(result) {
+    return result.status === "fulfilled" ? { ok: true, value: result.value } : { ok: false, error: errorDetails(result.reason) };
+}
+
+/** Capture only this fixture's history and events while its clients and randomized schemas still exist. */
+async function boundaryFailure(h, instanceId, label, sessionId, last, cause) {
+    const sessionIds = [...new Set([sessionId, h.workflowSessionId, h.recipientSessionId])];
+    const reads = await Promise.allSettled([
+        h.client.getInstanceInfo(instanceId), h.client.getStatus(instanceId), h.client.listExecutions(instanceId),
+        ...sessionIds.map(id => h.catalog.getSessionEvents(id, 0, 1000)),
+    ]);
+    const executions = reads[2];
+    let histories;
+    if (executions.status === "fulfilled" && Array.isArray(executions.value)) {
+        const results = await Promise.allSettled(executions.value.map(id => h.client.readExecutionHistory(instanceId, id)));
+        histories = results.map((result, index) => ({ executionId: executions.value[index], ...readOutcome(result) }));
+    } else {
+        histories = { notRead: "listExecutions did not return an execution list", executions: readOutcome(executions) };
+    }
+    const snapshot = {
+        boundary: label, instanceId, cause: errorDetails(cause), lastObservation: last,
+        finalReads: { info: readOutcome(reads[0]), status: readOutcome(reads[1]), executions: readOutcome(executions), histories },
+        calls: [...h.calls],
+        cmsEvents: sessionIds.map((id, index) => ({ sessionId: id, ...readOutcome(reads[index + 3]) })),
+    };
+    console.info("workflow activation native boundary failure", JSON.stringify(snapshot));
+    const failure = new Error(`Native boundary "${label}" failed: ${String(cause.message ?? cause)}`, { cause });
+    failure.name = "NativeBoundaryError";
+    failure.boundarySnapshot = snapshot;
+    return failure;
+}
+
+/** Condition on persisted native history, not on callback entry or an arbitrary elapsed interval. */
+export async function nativeBoundary(h, instanceId, label, check, sessionId = h.workflowSessionId, timeout = 45_000) {
+    let observed;
+    const last = { attempts: 0, readPhase: "not started", info: null, status: null, history: null, historyExecutionId: null,
+        predicateParts: null, readError: null };
+    try {
+        await vi.waitFor(async () => {
+            last.attempts += 1;
+            last.readError = null;
+            try {
+                last.readPhase = "getInstanceInfo";
+                const info = await h.client.getInstanceInfo(instanceId);
+                last.info = info;
+                last.readPhase = "readExecutionHistory";
+                const history = await h.client.readExecutionHistory(instanceId, info.currentExecutionId);
+                last.history = history;
+                last.historyExecutionId = info.currentExecutionId;
+                last.readPhase = "getStatus";
+                const status = await h.client.getStatus(instanceId);
+                last.status = status;
+                last.readPhase = "predicate";
+                last.predicateParts = check({ info, history, status });
+                expect(status.status, `${label}: ${JSON.stringify(status)}`).not.toBe("Failed");
+                expect(Object.values(last.predicateParts).every(part => part === true), `${label}: ${JSON.stringify(last.predicateParts)}`).toBe(true);
+                observed = { info, history, status };
+            } catch (error) {
+                last.readError = errorDetails(error);
+                throw error;
+            }
+        }, { timeout, interval: 50 });
+    } catch (cause) {
+        throw await boundaryFailure(h, instanceId, label, sessionId, last, cause);
+    }
     return observed;
 }
 
