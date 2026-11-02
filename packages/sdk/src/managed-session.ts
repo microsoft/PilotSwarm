@@ -22,6 +22,7 @@ import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
 import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
+import { AGENT_CRON_MIN_INTERVAL_SECONDS, agentCronIntervalAllowed } from "./wait-rules.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -1834,8 +1835,8 @@ export class ManagedSession {
                 if (!Number.isFinite(intervalSeconds)) {
                     return "Error: cron requires seconds or action='cancel'.";
                 }
-                if (intervalSeconds < 15) {
-                    return "Error: cron interval must be at least 15 seconds.";
+                if (!agentCronIntervalAllowed(intervalSeconds)) {
+                    return `Error: cron interval must be at least ${AGENT_CRON_MIN_INTERVAL_SECONDS} seconds.`;
                 }
 
                 const reason = typeof args.reason === "string" ? args.reason.trim() : "";

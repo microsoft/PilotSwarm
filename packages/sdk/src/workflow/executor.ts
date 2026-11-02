@@ -1,4 +1,5 @@
 import { computeCronAtNextFire } from "../cron-at.js";
+import { waitUntil, type WaitTiming } from "../wait-rules.js";
 import {
     resolveWorkflowTemplate,
     WORKFLOW_WAIT_OUTCOME,
@@ -16,18 +17,13 @@ import {
 export const WORKFLOW_MAX_SCRIPT_RUNS_BETWEEN_WAITS = 1_000;
 
 /** When a wait that starts at `afterMs` ends. */
-export interface WorkflowWaitTiming {
-    until: number;
-    /** For a clock wait: which occurrence it waits for (keeps a DST fall-back hour from firing twice). */
-    occurrenceKey?: string;
-    /** For a clock wait: the local wall-clock time it ends, with its zone. */
-    localTime?: string;
-}
+export type WorkflowWaitTiming = WaitTiming;
 
 /**
- * The end of a wait that starts at `afterMs`: `seconds` later, or the next
- * clock time `at` strictly after it (the `cron_at` rules, DST included).
- * Call it from an activity, so a replay reuses the recorded answer.
+ * The end of a wait state that starts at `afterMs`: `seconds` later, or the
+ * next clock time `at` strictly after it (the `cron_at` rules, DST
+ * included). The shared wait rules compute it, as for the agent's wait and
+ * cron_at. Call it from an activity, so a replay reuses the recorded answer.
  */
 export function workflowWaitUntil(
     state: WorkflowWaitState,
@@ -35,9 +31,7 @@ export function workflowWaitUntil(
     lastOccurrenceKey?: string,
     nextFire: typeof computeCronAtNextFire = computeCronAtNextFire,
 ): WorkflowWaitTiming {
-    if (!state.at) return { until: afterMs + (state.seconds ?? 0) * 1000 };
-    const fire = nextFire(state.at, afterMs, lastOccurrenceKey);
-    return { until: fire.nextFireAtMs, occurrenceKey: fire.occurrenceKey, localTime: fire.localTime };
+    return waitUntil(state, afterMs, lastOccurrenceKey, nextFire);
 }
 
 /** The failure for a run that ran too many script states without a wait. */

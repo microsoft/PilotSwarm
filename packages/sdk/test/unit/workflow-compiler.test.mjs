@@ -90,6 +90,23 @@ test("state types and transition forms from later versions are refused, not misr
     rejects(VALID.replace("initial: collect", "identity: { primaryKey: [inputs.pattern] }\ninitial: collect"), /identity is not supported yet/);
 });
 
+test("one way to pause: a delay on a transition is refused; a wait state is the pause", () => {
+    rejects(VALID.replace("      next: { found: done, empty: nothing }", "      next: { found: done, empty: nothing }\n      delaySeconds: { empty: 30 }"),
+        /^states\.collect\.transition\.delaySeconds is not supported; pause with a wait state \(type: wait, with seconds or at\) and route through it\.$/,
+        "WORKFLOW_TRANSITION_DELAY_UNSUPPORTED");
+    const waitYaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: w, version: 1.0.0 }
+initial: sleep
+states:
+  sleep: { type: wait, seconds: 60, transition: { next: done, delaySeconds: 5 } }
+  done: { type: terminal, outcome: succeeded }
+`;
+    rejects(waitYaml, /states\.sleep\.transition\.delaySeconds is not supported/, "WORKFLOW_TRANSITION_DELAY_UNSUPPORTED");
+    assert.equal(compileWorkflow(waitYaml.replace(", delaySeconds: 5", "")).states.sleep.seconds, 60);
+});
+
 test("every declared outcome has exactly one known target", () => {
     rejects(VALID.replace("{ found: done, empty: nothing }", "{ found: done }"), /no target for outcome 'empty'/);
     rejects(VALID.replace("{ found: done, empty: nothing }", "{ found: done, empty: nothing, extra: done }"), /next\.extra is not a declared outcome/);

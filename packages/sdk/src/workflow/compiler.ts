@@ -1,5 +1,6 @@
 import { parseDocument } from "yaml";
 import { describeCronAt, normalizeCronAtInput } from "../cron-at.js";
+import { WORKFLOW_WAIT_MAX_SECONDS, workflowMinWaitSeconds, workflowWaitSecondsAllowed } from "../wait-rules.js";
 
 /**
  * Workflow definitions.
@@ -21,9 +22,8 @@ export const SCRIPT_STATE_DEFAULT_TIMEOUT_SECONDS = 300;
 export const SCRIPT_STATE_MAX_TIMEOUT_SECONDS = 3_600;
 export const WORKFLOW_MAX_YAML_BYTES = 256 * 1024;
 export const WORKFLOW_TERMINAL_OUTCOMES = ["succeeded", "blocked", "failed", "cancelled"] as const;
-/** The shortest wait a document may declare, unless PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS lowers it. */
-export const WORKFLOW_WAIT_MIN_SECONDS = 60;
-export const WORKFLOW_WAIT_MAX_SECONDS = 7 * 24 * 60 * 60;
+// The wait limits are shared with the agent's wait and cron tools.
+export { WORKFLOW_WAIT_MIN_SECONDS, WORKFLOW_WAIT_MAX_SECONDS, workflowMinWaitSeconds } from "../wait-rules.js";
 /** The one outcome a wait state has: its time passed. */
 export const WORKFLOW_WAIT_OUTCOME = "elapsed";
 
@@ -109,18 +109,6 @@ export interface CompiledWorkflow {
 export interface CompileWorkflowOptions {
     /** The shortest wait allowed. Default: workflowMinWaitSeconds(). */
     minWaitSeconds?: number;
-}
-
-/**
- * The shortest wait a document may declare: 60 seconds, or a lower whole
- * number of seconds (at least 1) set in PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS
- * for development and tests.
- */
-export function workflowMinWaitSeconds(env: Record<string, string | undefined> = process.env): number {
-    const raw = env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS;
-    if (raw === undefined || raw.trim() === "") return WORKFLOW_WAIT_MIN_SECONDS;
-    const value = Number(raw);
-    return Number.isInteger(value) && value >= 1 ? Math.min(value, WORKFLOW_WAIT_MAX_SECONDS) : WORKFLOW_WAIT_MIN_SECONDS;
 }
 
 export class WorkflowCompileError extends Error {
@@ -294,6 +282,21 @@ export function validateWorkflowInputs(workflow: CompiledWorkflow, inputs: Recor
     }
 }
 
+/**
+ * One way to pause: a wait state. A delay on a transition
+ * (`transition.delaySeconds`) is refused, so every pause is a node the
+ * graph and the live view show.
+ */
+function refuseUnsupportedTransition(transition: JsonObject, path: string): void {
+    if (transition.handler !== undefined) {
+        fail(`${path}.transition.handler is not supported yet; declare transition.next instead.`, "WORKFLOW_TRANSITION_HANDLER_UNSUPPORTED");
+    }
+    if (transition.delaySeconds !== undefined) {
+        fail(`${path}.transition.delaySeconds is not supported; pause with a wait state (type: wait, with seconds or at) and route through it.`,
+            "WORKFLOW_TRANSITION_DELAY_UNSUPPORTED");
+    }
+}
+
 function compileScriptState(id: string, state: JsonObject, stateIds: ReadonlySet<string>): WorkflowScriptState {
     const path = `states.${id}`;
     const runtime = requireText(state.runtime, `${path}.runtime`);
@@ -303,9 +306,7 @@ function compileScriptState(id: string, state: JsonObject, stateIds: ReadonlySet
     const completion = requireObject(state.completion, `${path}.completion`);
     const outcomes = requireOutcomes(completion.outcomes, `${path}.completion.outcomes`);
     const transition = requireObject(state.transition, `${path}.transition`);
-    if (transition.handler !== undefined) {
-        fail(`${path}.transition.handler is not supported yet; declare transition.next instead.`, "WORKFLOW_TRANSITION_HANDLER_UNSUPPORTED");
-    }
+    refuseUnsupportedTransition(transition, path);
     const rawNext = requireObject(transition.next, `${path}.transition.next`);
     const next: Record<string, string> = {};
     for (const outcome of outcomes) {
@@ -377,16 +378,14 @@ function compileWaitState(id: string, state: JsonObject, stateIds: ReadonlySet<s
         timing = { at: compileWaitAt(state.at, `${path}.at`) };
     } else {
         const seconds = state.seconds;
-        if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < minSeconds || seconds > WORKFLOW_WAIT_MAX_SECONDS) {
+        if (!workflowWaitSecondsAllowed(seconds, minSeconds)) {
             fail(`${path}.seconds must be an integer from ${minSeconds} to ${WORKFLOW_WAIT_MAX_SECONDS}.`);
         }
         timing = { seconds };
     }
     if (state.completion !== undefined) fail(`${path} is a wait state; it has no completion outcomes (its one outcome is '${WORKFLOW_WAIT_OUTCOME}').`);
     const transition = requireObject(state.transition, `${path}.transition`);
-    if (transition.handler !== undefined) {
-        fail(`${path}.transition.handler is not supported yet; declare transition.next instead.`, "WORKFLOW_TRANSITION_HANDLER_UNSUPPORTED");
-    }
+    refuseUnsupportedTransition(transition, path);
     let target: string;
     if (typeof transition.next === "string") {
         target = requireText(transition.next, `${path}.transition.next`);
