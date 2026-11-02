@@ -45,8 +45,17 @@ import { ComputeChannel } from "./compute-channel.js";
 import { ComputeHandshakeError, runHostHandshake, type ComputeHandshakeCredential, type ComputeHandshakePurpose } from "./compute-handshake.js";
 import { serveComputeHostControl, type ComputeHostServiceOptions, type ComputeHostServices } from "./compute-host-services.js";
 
-/** The most proved connections one host component carries at a time. */
+/** The most proved connections one host component carries at a time, unless the host is told otherwise. */
 export const COMPUTE_HOST_MAX_CONNECTIONS = 16;
+/**
+ * What a host says when it is full.
+ *
+ * Each worker holding a session of the tree uses a connection for the
+ * runtime and one for the side channel, so a wide tree spread over many
+ * workers can reach the limit while every one of them is working
+ * correctly.
+ */
+export const COMPUTE_HOST_AT_CAPACITY = "COMPUTE_HOST_AT_CAPACITY";
 /**
  * The most connections that may be part-way through proving themselves.
  *
@@ -292,7 +301,13 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
                 throw new Error("this host component already has as many connections proving themselves as it will");
             }
             if (live.size >= maxConnections) {
-                throw new Error("this host component already carries as many connections as it will");
+                // Coded, because this one is a limit and not a fault: a
+                // tree wide enough to need more connections than the host
+                // allows should say so, not read as a host that broke.
+                throw Object.assign(
+                    new Error(`this host component already carries the ${maxConnections} connections it allows`
+                        + " (raise --max-connections on the host)"),
+                    { code: COMPUTE_HOST_AT_CAPACITY });
             }
             const proved = await runHostHandshake(socket, credential, { timeoutMs: handshakeTimeoutMs, seenNonces, purposes });
             pending.delete(socket);

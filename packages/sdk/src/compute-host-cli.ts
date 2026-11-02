@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     const secret = readHandshakeSecret(process.env);
     if (!bindingId || !runtimeAddress || !listen) {
         console.error("usage: pilotswarm-compute-host --binding <id> --runtime <host:port|port> --listen <host:port>"
-            + " [--idle-timeout <ms>] [--services-dir <folder>] [--no-services]"
+            + " [--idle-timeout <ms>] [--max-connections <n>] [--services-dir <folder>] [--no-services]"
             + " [--copy-max-bytes <n>] [--copy-max-files <n>]");
         process.exitCode = 2;
         return;
@@ -93,6 +93,7 @@ async function main(): Promise<void> {
         return;
     }
     const idleTimeoutMs = wholeMilliseconds(argument(argv, "idle-timeout"), "idle-timeout", COMPUTE_HOST_IDLE_TIMEOUT_MS);
+    const maxConnections = positiveWhole(argument(argv, "max-connections"), "max-connections");
     const maxBytes = positiveWhole(argument(argv, "copy-max-bytes"), "copy-max-bytes");
     const maxFiles = positiveWhole(argument(argv, "copy-max-files"), "copy-max-files");
     // On by default: a session with any skill folder or any MCP server
@@ -107,6 +108,7 @@ async function main(): Promise<void> {
         runtimeAddress,
         listen: endpoint(listen, "listen"),
         idleTimeoutMs,
+        ...(maxConnections !== undefined ? { maxConnections } : {}),
         ...(servesControl ? {
             services: {
                 directory: servicesDirectory,

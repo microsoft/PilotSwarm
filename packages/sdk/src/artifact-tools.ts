@@ -34,6 +34,7 @@ import { extractCanvasAppManifest, normalizeCanvasResponseContract } from "./can
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { ArtifactStore } from "./session-store.js";
+import type { ComputeFolderMap } from "./compute.js";
 
 const INLINE_READ_DEFAULT_BYTES = 65_536;
 const INLINE_READ_MAX_BYTES = 262_144;

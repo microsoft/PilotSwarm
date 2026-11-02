@@ -1590,6 +1590,17 @@ export class SessionManager {
             await this.releaseCompute(sessionId, "failed");
             return fail(connected.code, connected.message, connected.retryAfterMs);
         }
+        if (connected.endpoint.transport === "local" && provider.kind !== LOCAL_COMPUTE_KIND) {
+            // Only the built-in `local` provider runs a runtime as the
+            // worker's own child process. A third-party provider that
+            // answers `connect` with a local transport has returned
+            // something this worker will not act on — said plainly here,
+            // rather than as the deployment-policy refusal below, which
+            // would be about the wrong thing.
+            await this.releaseCompute(sessionId, "failed");
+            return fail(COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
+                `the compute provider "${provider.kind}" asked the worker to run this session's runtime as its own child process; only the built-in "${LOCAL_COMPUTE_KIND}" provider may do that, and every other provider must return an address`);
+        }
         if (this.computeRequired && connected.endpoint.transport === "local") {
             // A target whose provider runs the runtime here is still the
             // worker's own child process, which is the thing this
@@ -1963,8 +1974,29 @@ export class SessionManager {
             if (!oldest.done) this.computeTargetBySession.delete(oldest.value);
         }
         this.computeTargetBySession.set(sessionId, recorded);
-        if (recorded.name || recorded.id) this.computeRemoteSessions.add(sessionId);
+        if (recorded.name || recorded.id) this._rememberRemoteSession(sessionId);
         return recorded;
+    }
+
+    /**
+     * Remember that a session runs its agent elsewhere, within a bound.
+     *
+     * This set is what keeps a remote session from falling back to the
+     * worker's own folders and from having its agent started here, so a
+     * session is never forgotten while this worker is holding it: only
+     * sessions with no binding and no warm handle are dropped to make
+     * room. A worker that is somehow holding more than the bound is left
+     * to grow rather than made unsafe.
+     */
+    private _rememberRemoteSession(sessionId: string): void {
+        this.computeRemoteSessions.add(sessionId);
+        if (this.computeRemoteSessions.size <= COMPUTE_TARGET_MEMORY) return;
+        for (const candidate of this.computeRemoteSessions) {
+            if (this.computeRemoteSessions.size <= COMPUTE_TARGET_MEMORY) return;
+            if (candidate === sessionId || this.computeHosts.has(candidate) || this.sessions.has(candidate)) continue;
+            this.computeRemoteSessions.delete(candidate);
+            this.computeTargetBySession.delete(candidate);
+        }
     }
 
     /** Run one provider call with a deadline; a provider that does not answer fails the call. */
@@ -2123,11 +2155,16 @@ export class SessionManager {
      */
     computeLocalPathRoots(sessionId: string | undefined): string[] | undefined {
         if (!sessionId) {
-            // Which session is asking could not be told. On a worker that
-            // is running sessions elsewhere, that is not a question to
-            // answer with the worker's own folders; on one that is not,
-            // nothing about this has changed.
-            return this.computeRemoteSessions.size > 0 ? [] : undefined;
+            // Which session is asking could not be told, so this is not a
+            // question about any session's folders. It used to be answered
+            // with none as soon as this worker ran a single remote
+            // session, which took the worker's folders away from every
+            // ordinary session sharing the worker with it.
+            //
+            // The file tools refuse a file mode they cannot name a session
+            // for, so nothing reaches here on a session's behalf and the
+            // ordinary rules apply.
+            return undefined;
         }
         const binding = this.computeHosts.get(sessionId);
         if (!binding || !binding.endpointKey) {
