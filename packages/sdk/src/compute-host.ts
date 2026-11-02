@@ -14,6 +14,14 @@
  * write one: it places this component and the binding's secret on the
  * host, and hands the worker the same secret.
  *
+ * A connection says in its hello what it is for. `runtime` is the
+ * session's own stream and is all a connection was ever for. `control` is
+ * the side channel (compute-host-services.ts) that carries the read-only
+ * copies of a session's folders and the traffic of the MCP servers that
+ * stay on the trusted side; it never touches the runtime's port. The
+ * purpose is signed into both proofs, so neither connection can be used
+ * as the other.
+ *
  * The component listens and the worker's side connects in, so the host
  * must be one the worker can reach at an address. A host that can only
  * reach outwards is left for later (the proposal's future work).
@@ -33,7 +41,9 @@
  * host must be private or otherwise protected.
  */
 import { connect as netConnect, createServer, type AddressInfo, type Server, type Socket } from "node:net";
-import { ComputeHandshakeError, runHostHandshake, type ComputeHandshakeCredential } from "./compute-handshake.js";
+import { ComputeChannel } from "./compute-channel.js";
+import { ComputeHandshakeError, runHostHandshake, type ComputeHandshakeCredential, type ComputeHandshakePurpose } from "./compute-handshake.js";
+import { serveComputeHostControl, type ComputeHostServiceOptions, type ComputeHostServices } from "./compute-host-services.js";
 
 /** The most proved connections one host component carries at a time. */
 export const COMPUTE_HOST_MAX_CONNECTIONS = 16;
@@ -109,11 +119,22 @@ export interface ComputeHostOptions extends ComputeHandshakeCredential {
     onIdle?: () => void;
     /** Told about every connection that ends, so a caller can log or count. */
     onConnectionClosed?: (info: { ok: boolean; error?: Error }) => void;
+    /**
+     * Serve the side channel as well as the runtime stream: the read-only
+     * copies of a session's folders, and the way a runtime reaches the
+     * servers that stay on the trusted side
+     * (compute-host-services.ts). Left out, this component serves the
+     * runtime stream alone and refuses a connection that asks for
+     * anything else.
+     */
+    services?: Omit<ComputeHostServiceOptions, "directory"> & { directory: string };
 }
 
 export interface ComputeHostHandle {
     /** Whether it has stopped, by `close()` or by going idle. */
     readonly isClosed: boolean;
+    /** The side channel's local listeners, once a worker has opened one. */
+    readonly services: ComputeHostServices | null;
     /** Where the worker's side connects, `host:port`. */
     readonly address: string;
     /** How many connections are carried right now. */
@@ -172,6 +193,9 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
     // One memory of worker nonces for the whole component: a hello this
     // host has already answered is refused however it arrives.
     const seenNonces = new Set<string>();
+    const purposes: ComputeHandshakePurpose[] = options.services ? ["runtime", "control"] : ["runtime"];
+    /** The side channel's listeners, made when the first control connection is proved. */
+    let services: ComputeHostServices | null = null;
     /** Connections that have proved themselves and reach the runtime. */
     const live = new Set<Socket>();
     /** Connections part-way through the handshake; they prove nothing yet. */
@@ -227,9 +251,20 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
             if (live.size >= maxConnections) {
                 throw new Error("this host component already carries as many connections as it will");
             }
-            await runHostHandshake(socket, credential, { timeoutMs: handshakeTimeoutMs, seenNonces });
+            const proved = await runHostHandshake(socket, credential, { timeoutMs: handshakeTimeoutMs, seenNonces, purposes });
             pending.delete(socket);
             live.add(socket);
+            if (proved.purpose === "control") {
+                // The side channel: copies in, and the servers that stay
+                // on the trusted side reached back out. It never touches
+                // the runtime's port.
+                const channel = new ComputeChannel(socket, { side: "host" });
+                socket.on("close", () => { forget(socket); options.onConnectionClosed?.({ ok: true }); });
+                const made = await serveComputeHostControl(channel, options.services!);
+                services = made;
+                channel.on("close", () => { if (services === made) services = null; });
+                return;
+            }
             // Only after both sides have proved themselves does anything
             // reach the runtime.
             runtimeSocket = await dial(runtime.host, runtime.port, COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS);
@@ -270,6 +305,7 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
     armIdle();
     return {
         get isClosed() { return closed; },
+        get services() { return services; },
         get address() { return `${bound.address}:${bound.port}`; },
         get connections() { return live.size; },
         get refused() { return refused; },

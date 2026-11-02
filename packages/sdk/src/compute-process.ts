@@ -42,6 +42,8 @@ export interface ProcessComputeProviderOptions {
      * short one.
      */
     idleTimeoutMs?: number;
+    /** How much of a session's folders one of these hosts holds. */
+    copyLimits?: { maxBytes?: number; maxFiles?: number };
 }
 
 interface ProcessHost {
@@ -53,6 +55,7 @@ interface ProcessHost {
     hostDir: string;
     homeDir: string;
     workDir: string;
+    sharedDir: string;
     sessions: Set<string>;
     exited: boolean;
     /** The PilotSwarm host component in front of this runtime. */
@@ -109,7 +112,7 @@ function removeHostDir(dir: string): void {
 
 export function createProcessComputeProvider(options: ProcessComputeProviderOptions = {}): ComputeProvider & {
     /** Test and diagnostic view: the live hosts. */
-    hosts(): Array<{ targetId: string; rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sessions: string[] }>;
+    hosts(): Array<{ targetId: string; rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sharedDir: string; sessions: string[] }>;
     /** Stop every host. */
     stopAll(): Promise<void>;
 } {
@@ -133,9 +136,14 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         const hostDir = path.join(rootDir, incarnation);
         const homeDir = path.join(hostDir, "home");
         const workDir = path.join(hostDir, "work");
+        // Where the host component keeps what the worker sends it: the
+        // read-only copies of this session's folders, and the relay the
+        // runtime starts for a server that stayed on the trusted side.
+        const sharedDir = path.join(hostDir, "shared");
         fs.mkdirSync(rootDir, { recursive: true, mode: 0o700 });
         fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
         fs.mkdirSync(workDir, { recursive: true, mode: 0o700 });
+        fs.mkdirSync(sharedDir, { recursive: true, mode: 0o700 });
         const token = randomBytes(24).toString("hex");
         const env = { ...baseRuntimeEnv(homeDir), ...(options.env ?? {}), COPILOT_CONNECTION_TOKEN: token };
         const args = ["--headless", "--no-auto-update", "--no-auto-login"];
@@ -198,6 +206,7 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
                 bindingId, secret,
                 listen: { host: "127.0.0.1", port: 0 },
                 runtimeAddress: `127.0.0.1:${port}`,
+                services: { directory: sharedDir, ...(options.copyLimits ? { limits: options.copyLimits } : {}) },
                 ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
                 onIdle: () => { if (self) void stop(self); },
             });
@@ -209,7 +218,7 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         const host: ProcessHost = {
             key,
             ref: { kind: PROCESS_COMPUTE_KIND, id: `${targetId}/${rootSessionId}`, incarnation, data: { port } },
-            child, port, token, hostDir, homeDir, workDir, sessions: new Set(), exited: false,
+            child, port, token, hostDir, homeDir, workDir, sharedDir, sessions: new Set(), exited: false,
             component, bindingId, secret,
         };
         self = host;
@@ -295,7 +304,7 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         hosts() {
             return [...hosts.values()].map((host) => {
                 const [targetId, rootSessionId] = host.key.split("\0");
-                return { targetId, rootSessionId, pid: host.child.pid, port: host.port, homeDir: host.homeDir, workDir: host.workDir, sessions: [...host.sessions] };
+                return { targetId, rootSessionId, pid: host.child.pid, port: host.port, homeDir: host.homeDir, workDir: host.workDir, sharedDir: host.sharedDir, sessions: [...host.sessions] };
             });
         },
 

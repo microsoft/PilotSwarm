@@ -279,11 +279,16 @@ export {
     computeHandshakeProof,
     runWorkerHandshake,
     runHostHandshake,
+    COMPUTE_HANDSHAKE_PURPOSES,
 } from "./compute-handshake.js";
-export type { ComputeHandshakeCredential } from "./compute-handshake.js";
-// The host component: the PilotSwarm end of the handshake, on the host.
+export type { ComputeHandshakeCredential, ComputeHandshakePurpose } from "./compute-handshake.js";
+// The host component: the PilotSwarm end of the handshake, on the host,
+// and the side channel it serves beside the session's runtime stream.
 export { startComputeHost, COMPUTE_HOST_MAX_CONNECTIONS } from "./compute-host.js";
 export type { ComputeHostOptions, ComputeHostHandle } from "./compute-host.js";
+export type { ComputeHostServiceOptions, ComputeHostServices } from "./compute-host-services.js";
+export { COMPUTE_COPY_MAX_BYTES, COMPUTE_COPY_MAX_FILES } from "./compute-assets.js";
+export type { ComputeCopyLimits } from "./compute-assets.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,
