@@ -583,7 +583,7 @@ compute target on a build that already understands compute, so no history
 written by an older build takes that branch — the same shape as the
 workspace tag. The argument against is that an older worker may execute
 the next step of a *new* session's orchestration while both builds are
-registered. The worker-side refusal above is what holds in the meantime.
+registered. The worker-side refusal above does **not** hold in the meantime for this case: it is code in the new build, and the worker at risk is the old one. Until this is decided, the operational rule is to register no target and set no default target until the rollout has finished, so no session with a target exists while two builds are registered (corner case K13).
 Whether to add a version is being decided separately from this change.
 
 **The two stages.** With require-compute off, the deployment is in mixed mode:
@@ -635,6 +635,21 @@ itself. **(built)**
   under the host component — as its child, for example — so that the
   component's exit ends the whole host rather than leaving a runtime behind
   with nothing in front of it. The `process` test provider does exactly this.
+- **How long a host actually lives.** Three clocks decide it, and they are
+  not the same clock. The worker keeps a session warm for its hold window
+  (`dehydrateOnIdle`, 30 minutes by default) and then evicts it a little
+  later; a session's host is let go when the session leaves its worker, and
+  a session evicted on a worker lets go there too. A warm, busy session
+  holds its connection open and the host's idle timer never starts. A warm
+  but *quiet* session is a third case: a session with no skills and no MCP
+  servers has no side channel, so nothing heartbeats, and its host can end
+  itself after its idle timeout while the worker still believes it is
+  there. The next turn then rebinds — correctly, provided the provider
+  changes the incarnation (section 4.15). Set a target's idle timeout
+  against the deployment's hold window and eviction, not independently of
+  them: a wait or a cron interval longer than the two together gets a fresh
+  host, a fresh copy, and none of the processes or files that lived outside
+  the session's folders.
 - **A session whose host has gone.** Nothing special happens: its next turn
   binds again and the provider gives it a host. The conversation is in the
   worker's own storage, so it carries on where it left off. What is lost is
@@ -869,6 +884,92 @@ the session's events, and the rest of the session's map is unaffected.
   network as the runtime stream and carries the same requirement
   (section 4.5, and section 12).
 
+### 4.14 Orthogonality with existing features
+
+A session that runs its agent somewhere else is still a PilotSwarm session:
+its orchestration, its tools, its state and its model keys are where they
+have always been. What changes is that three things stopped being true at
+once — the runtime is no longer the worker's own child process, it can
+outlive the worker, and it is no longer trusted code.
+
+This is what that does to the features a session already has. **Changed
+here** means this change made it behave correctly for a remote session;
+**works differently** means it is correct but not what a reader would
+assume; **not yet** means the feature is unavailable to a remote session
+and future work says what it would take.
+
+| Feature | Remote session | What a reader should know |
+|---|---|---|
+| Stop and Steer, abort, permission prompts, `ask_user`, PilotSwarm tools, tool refresh, reasoning effort, context tiers, title generation | works | All of it already goes through the runtime connection, so the bridge carries it unchanged. |
+| Durable sub-agents, nesting, messaging, `complete_agent`, `cancel_agent` | works | A child runs on its tree's host, so one host runs the whole tree. Capacity is the tree's, not the session's. |
+| Inline artifacts, `fromArtifact`, metadata, links, `show_artifact`, image prompt attachments | works | None of these name a filesystem path; images cross as bytes on the runtime connection. |
+| Facts, transcript, checkpoints, dehydrate and hydrate, regeneration | works | Session state is written through SessionFs into the worker's own folder, so none of it depends on where the agent runs. |
+| Background shells and the busy guards | changed here | The task list is taken at the runtime's word and stopped only by asking the runtime; the worker never inspects or signals a process id a host reported. A stop the host will not confirm leaves the session busy. |
+| PilotSwarm's own files in the session folder | changed here | `.ps-*` names are the worker's alone: refused, unlisted, and reported absent. The folder is closed to the runtime while the worker saves or restores it. |
+| Moving between workers | changed here | The worker a session leaves lets go of the host, so two workers never drive one runtime. A provider counts its users per (worker, session). |
+| A connection that breaks | changed here | The bridge tells the worker when the last connection to a host has gone and the clients reaching it are dropped, so the next turn connects afresh. Keepalive stops a half-open pipe looking healthy. |
+| Session events | changed here | An event a remote runtime sends under a type PilotSwarm emits is recorded under `unverified.<type>` and nothing acts on it. Bind, connect and host replacement are recorded. |
+| Models | changed here | GitHub Copilot models are refused at creation and at a model switch, left out of the list a remote session is offered, and reported at worker start when a default target meets a GitHub Copilot system model. |
+| Workspace paths: `get_session_workspace`, `set_session_workspace`, path loads, artifact file modes | changed here | Paths the agent sees are paths on its host; a path it names is translated back before any file is read. Attached on the worker and available on the host are reported separately. |
+| An extra folder added mid-turn | changed here | Nothing puts it on the host during the turn, so the session is told it arrives next turn rather than being given a path that is not there. |
+| A deployment's own worker-module tools | changed here | A tool is told the agent runs elsewhere and which worker folders, if any, that session may name. Confining a path is the tool's to do; PilotSwarm's own tools already do it. |
+| Waits, cron, the hold window, eviction | works differently | A host lives while any worker keeps a live connection to it, and ends itself after its idle timeout once nothing is connected. A wait or interval longer than the hold window and the worker's eviction together gets a fresh host, a fresh copy, and none of the processes or files outside the session's folders. `wait_on_worker` pins the worker, not the host. |
+| Native tasks | works differently | The forbidden-tool and model rules are enforced through hooks the runtime chooses to call, so on a remote host they are advice, not a fence. This costs correctness only: the parent could call those tools itself. |
+| Usage and budgets | works differently | Admission is decided on the worker; what was spent is what the host reported. The worker sees every model response and does not yet meter from it (12.16). |
+| Regeneration's distiller | works differently | It is a service session under the tree root, so it runs on the tree's host, with no tools and a permission handler that refuses everything. Its model must not be a GitHub Copilot one. |
+| System and management agents with a default target | works differently | Each system tree holds its own host for as long as it lives, and cron keeps it warm. Their principal is null, so a provider that refuses a null principal blocks every system session. |
+| Model transport | works differently | Model requests come back through the worker over the runtime connection. A provider or wire format the runtime would drive over a WebSocket is refused; `wireApi: responses` has not been exercised remotely. |
+| Portal Workspace tab, canvas files and declared commands, portal git | works differently | These use the portal's own storage and executables, as they always have. With a host that shares the session's folders they describe the same bytes; with one that does not they describe the worker's copy, and a change made there never reaches the host. Nothing in this change alters them (12.10). |
+| A worker crash or shutdown mid-turn | works differently | The host and the commands it is running survive. The turn is redelivered and replayed into the same host, so a side-effecting command can run twice or alongside itself. Fencing is 12.6. |
+| Host-local state: scratch files, processes, the runtime's logs | not yet | None of it is in a snapshot, none of it is rolled back by a reset or a lineage jump, and nothing collects the runtime's logs from the host. A replaced host loses all of it with no notice to the session (12.7, 12.17). |
+| Artifact file modes on a host that shares no folders | not yet | `fromFile` and `toFile` are refused with the reason, and the session's instructions say so. Moving bytes over the side channel is 12.16. |
+| The SQL tools and SQLite-backed todos | not yet | SessionFs carries text file calls; SQLite's needs are not among them. A remote session should not be promised them (12.9). |
+
+### 4.15 What a provider must guarantee
+
+The provider interface says this in its own words; this is the same list in
+one place, because every entry is something a provider that gets it wrong
+breaks for a session rather than for itself.
+
+- **A fresh incarnation whenever the runtime restarts.** The worker uses
+  `(id, incarnation)` to decide whether it is still talking to the same
+  host. A provider that restarts a runtime and reports the same
+  incarnation leaves the session reaching a runtime that has lost its
+  conversation, until the worker evicts it.
+- **A connection token that is stable for an incarnation.** The pooled
+  client is keyed on the address, the token and the incarnation. A
+  provider that mints a new token on every `connect` makes every turn a
+  cold resume and retires the client each time.
+- **One host, more than one worker.** `bind` and `release` are per
+  (worker, session). A session moving between workers is held by both for
+  a moment, and sub-agents of one tree run on whichever worker takes their
+  turn. A provider that counts its users by session id alone will have one
+  worker's release take a host away from another that is still using it.
+- **Room for the tree.** Each worker holding a session of the tree uses a
+  connection for the runtime and, when the session has skills or MCP
+  servers, one for the side channel. The host component's limit
+  (`--max-connections`, 16 by default) must be set for the widest tree the
+  target is meant to serve; a host that is full answers
+  `COMPUTE_HOST_AT_CAPACITY`.
+- **A host's environment is the provider's to set.** The worker sends no
+  environment and no GitHub token. Proxy settings, CA bundles, telemetry
+  variables and anything a runtime needs to reach the network are the
+  provider's, not inherited from the worker.
+- **A clean host for a new workload.** No files, logins, processes or
+  secrets from an earlier one.
+- **`release` is a hint.** It may never arrive — a worker can crash, a
+  network can go away. The host component's idle shutdown is what actually
+  frees a host nobody came back to.
+
+### 4.16 When a Stop arrives during preparation
+
+A turn of a remote session is registered for turn control only after the
+runtime is ready, and getting ready means a bind (up to 5 minutes), a
+connect (2 minutes) and, when the session has skills or servers, a copy (3
+minutes). A Stop sent in that window is held and applied when preparation
+finishes; it does not cancel the provider call. Letting a held Stop cancel
+preparation is 12.18.
+
 ## 5. The `process` provider: the test provider
 
 `createProcessComputeProvider()` (kind `process`) runs each session tree's
@@ -971,7 +1072,9 @@ Finish:   the tree ends and core releases the host; the provider discards the
 | K10 | A remote runtime asks for a model it was not granted, or a different destination | The request handler refuses it; no placeholder is resolved and nothing is sent. |
 | K11 | A host shares no files with the worker | Artifact file tools that name worker files are refused for that session; only `worker-local` or `shared-mount` hosts allow them. |
 | K12 | A reused host carries state from before | Not allowed: the provider must hand over a clean host, and PilotSwarm uses a fresh secret per binding. |
-| K13 | A worker too old to drive remote runtimes | Such a worker does not declare the compute capability tag, and the turns of a session that has a target are routed only to workers that do, so it never picks one up. |
+| K13 | A worker too old to drive remote runtimes | A new worker that somehow reaches a remote session's turn refuses to start a runtime of its own, whatever route got it there. That refusal is in the new build, so it is not what keeps an *old* worker away: the routing tag is chosen inside the orchestration, and a worker running an older build of the orchestration does not choose it. During a rolling deploy an old worker can therefore run the next step of a new session's orchestration and schedule its turn without the tag, and then run that turn locally. What closes that gap is being decided separately (section 4.8, "Open: whether the orchestration version should be bumped"); until it is decided, register no target and set no default until the rollout has finished. |
+| K14 | The worker crashes or shuts down mid-turn | The host and the shells it is running survive the worker. The model request fails because the request handler went with the worker, but commands already started keep running until the host's idle shutdown. The turn is redelivered, reaches the same host with a provider that keeps it, and replays the prompt in the same folder — so a side-effecting command can run a second time, or alongside the first. Ending the previous runtime session on the first connect from a new worker is section 12.6. |
+| K15 | A host is full | A tree wide enough to spread over many workers can reach the host component's connection limit while every worker is behaving correctly. The host answers `COMPUTE_HOST_AT_CAPACITY` and the limit is configurable (`--max-connections`); see 4.15. |
 
 ## 8. Test plan
 
@@ -1002,6 +1105,12 @@ and Windows, so nothing may assume a path separator or a shell.
 | The copies (**built**) | U | A folder is carried whole and recognised again unchanged; only changed files are sent; a folder of links to folders is carried and a link out of a folder is not; the byte and file limits refuse with the reason; a manifest cannot make the host write outside its store; a file is kept only under the digest its own bytes have; nothing that crosses carries a worker path |
 | Where servers run (**built**) | U | A package's server is rebuilt for the host out of the copy, with only what its entry states; one asking for a worker value, or naming a path outside its package folder, is unavailable with the reason; a deployment's server becomes a ticket and its command, environment, headers and address never cross; a deployment can keep a server away; `default`, `allowedAgents` and `remote` never reach a runtime; nested custom-agent maps are transformed too |
 | Forwarding (**built**) | U | A ticket this worker did not mint reaches nothing, and a session's tickets go when it leaves the host; a session keeps one ticket per server so a warm runtime keeps working; the caller's own credentials pass through unchanged, the configuration fills in what the caller did not send, and the worker's statement cannot be forged from the host; a conversation past its ceiling is cut off |
+| Processes on a host (**built**) | U | A remote session's shell whose reported id is a live worker process is never signalled, and the stop that could not be proved is recorded; an ordinary session still kills its own; a reported id that exists nowhere on the worker still counts as running; a host that will not answer leaves the session busy |
+| PilotSwarm's own files (**built**) | U | Every operation on a `.ps-*` name is refused, including under a reserved directory and as the target of a rename; they are not listed and report as absent; the session's own folder cannot be removed or renamed; ordinary session files are unaffected; the folder is closed to the runtime while it is saved and opens again |
+| Moving between workers (**built**) | L | A compute session's worker lets go when the session moves, with reason `moved`, and holds nothing afterwards; the next worker resumes the same conversation; one worker's release does not take a host from another worker still holding it, and the host goes when the last one lets go |
+| A host that dies (**built**) | U, L | The bridge tells the worker when the last connection to a host has gone, and not when one of two closes or when the worker closes the bridge itself; keepalive is set on the worker's side of the pipe; killing a host under a warm session gives the next turn a fresh host with the conversation whole |
+| What the worker takes from a host (**built**) | U | An event under a type PilotSwarm emits is recorded as `unverified.<type>` and only for a remote session; the runtime's own events are untouched; the compute lifecycle events are the worker's |
+| Paths on both sides (**built**) | U | A path translates in each direction inside the session's folders and nowhere else; folders pair by position and an unplaced one is left out; `get_session_workspace` reports host paths and reports attachment apart from availability; a session on the worker is unchanged; a worker-side tool is told where the agent runs and which folders it may name; the session's instructions say where its shell is |
 | Parity, end to end (**built**) | L | One remote turn reads a file out of a copied skill folder at a host path, calls a tool on a deployment server that ran in the worker's own process with its configured value (which never appears anywhere the host can see), and calls a tool on a package server that ran on the host out of the copy with none of the worker's environment; a second turn copies nothing again; an edited skill is read as it now stands; a server kept away is absent and the session's events say why |
 
 ## 9. Decisions, verified facts and open items
@@ -1323,7 +1432,15 @@ sent even if no worker has the tree loaded, so a provider hears about hosts no
   mid-notice leaves it to be retried, and a provider that cannot be reached
   does not count as told.
 - Holders are tracked per worker, so one worker letting go does not clear a
-  lease another worker still holds.
+  lease another worker still holds. (The release half of this is built: a
+  session that leaves a worker lets go of its host there, and a provider
+  counts its users per (worker, session). What is left is the fence.)
+- A fence per (tree, worker): on the first connect after the worker
+  changed, the previous worker's runtime session — or the whole process
+  group it started — is ended on the host, so a turn replayed after a
+  worker crash cannot run a side-effecting command alongside the one
+  already running there (corner case K14). `bind` already carries
+  `workerNodeId`, which is what a fence would be keyed on.
 - Closed records are pruned, and a binding of a kind no worker serves does not
   retry for ever.
 
@@ -1517,3 +1634,104 @@ reason.
   conversation stays unread.
 - A stream it cannot make sense of leaves the server unavailable with a
   reason, never a half-working one.
+
+### 12.16 Moving artifact bytes, and metering from the responses
+
+**Value.** Two things the worker already handles for every other session
+work for a remote one too: the byte channel every agent is told to use, and
+an honest account of what a turn spent.
+
+**What it adds.** `write_artifact({fromFile})` and `read_artifact({toFile})`
+are the one byte channel the base prompt tells every agent to use, and on a
+host that shares no folders with the worker they are refused. The side
+channel already carries files in one direction for the skill copies; a
+bounded, session-scoped transfer in both would give those modes back.
+
+Usage is the second half. Admission is decided on the worker, but what a
+turn is recorded as having spent is whatever the host's `assistant.usage`
+events said, and the grant is looked up by the session id the runtime
+supplies — so a runtime can under-report its own spend, or bill a sibling
+session of the same owner. The worker sees every model response in its own
+request handler, which is where the count could be taken instead.
+
+**Requirements when it is built.**
+
+- A transfer is scoped to one session's artifacts and bounded in bytes and
+  files, like the copies are, and a host cannot name a worker path through
+  it.
+- Metering comes from the responses the worker handled, and a runtime's own
+  usage events are observability rather than the account.
+- The session a request is billed to is the one the worker granted, not the
+  one the request says it is.
+
+### 12.17 Collecting a host's logs
+
+**Value.** When a remote turn goes wrong, the runtime's own diagnostics are
+on the host and nothing brings them back; the existing log views read the
+deployment's side and show nothing of it.
+
+**What it adds.** A bounded, redacted read of the runtime's logs for one
+binding, over the side channel, so the same views can show them.
+
+**Requirements when it is built.**
+
+- Scoped to one binding and bounded in bytes, like every other side-channel
+  call.
+- Redacted on the host, so a log line cannot carry a credential back.
+- A host that does not serve it leaves the view empty with a reason, never
+  a view that looks complete.
+
+### 12.18 Letting a held Stop cancel preparation
+
+**Value.** A Stop sent while a turn is getting its host ready — a bind, a
+connect and a copy, up to ten minutes between them — is held until
+preparation finishes (section 4.16). A person who has asked a session to
+stop watches it carry on getting ready.
+
+**What it adds.** Registering the turn for control before preparation, so a
+Stop arriving in that window cancels the provider call through its deadline
+signal and settles the turn.
+
+**Requirements when it is built.**
+
+- Cancelling preparation releases whatever it had already taken, so a
+  cancelled bind does not leave a host nobody will release.
+- A Stop that arrives after preparation finished behaves exactly as it does
+  today.
+
+### 12.19 Showing where a session is running
+
+**Value.** Nothing in the portal or the TUI says which target a session
+runs on or which host it is bound to, and the working directory a session
+view shows is a path on the host with nothing saying so.
+
+**What it adds.** The target and host on the session view, and a working
+directory labelled as the host's.
+
+**Requirements when it is built.**
+
+- A host identifier is shown as an opaque name; nothing of a provider's
+  private handle is exposed.
+- A session with no target reads exactly as it does today.
+
+### 12.20 The Workspace tab, canvas commands and git on the host
+
+**Value.** The portal's Workspace tab, the canvas's declared commands and
+the portal's git runner all use the portal's own storage and executables.
+For a session whose host shares the same folders that describes the same
+bytes; for one whose host does not, it describes the worker's copy, and a
+change made there never reaches the host (section 4.14, and 12.10 for the
+execution-isolation half).
+
+**What it adds.** Routing those operations to the session's host over the
+side channel, so what the tab shows and what a command changes are the
+files the agent is working in.
+
+**Requirements when it is built.**
+
+- Every operation is scoped to the session's own folders on the host and
+  bounded like the other side-channel calls.
+- A host that does not serve them leaves the tab explicitly unavailable for
+  that session, rather than quietly showing another tree.
+- Change notices carry where they came from, so a session is never told its
+  files changed when the change was made somewhere it cannot see.

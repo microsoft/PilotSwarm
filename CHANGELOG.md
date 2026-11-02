@@ -71,6 +71,34 @@ act as the caller:** one that uses its own standing credentials gives every
 remote agent whatever those credentials reach, which is the deployment's
 choice to make.
 
+A session whose agent runs on a host is treated as a session the worker does
+not own the inside of. The background shells it reports are taken at the
+runtime's word and stopped only by asking the runtime: the worker never
+inspects or signals a process id a host reported, and a stop the host will
+not confirm leaves the session busy rather than letting a folder be taken
+from under it. PilotSwarm's own files in the session folder — every name
+starting with `.ps-` — are refused to the runtime, left out of listings and
+reported absent, and the folder is closed to the runtime while the worker
+saves or restores it. An event a runtime sends under a type PilotSwarm
+emits is recorded as `unverified.<type>` and nothing acts on it; bind,
+connect and host replacement are recorded by the worker. Paths the agent is
+given are paths on its host, a path it names is translated back before any
+file is read, and a folder attached on the worker is reported apart from
+whether it is available on the host. The session's instructions say that
+its shell runs on its host and whether the artifact file modes work there.
+GitHub Copilot models are refused when a session is created and when its
+model is switched, left out of the list a remote session is offered, and
+reported at worker start when a default target meets a GitHub Copilot
+system model.
+
+A session that leaves a worker lets go of its host there, so two workers
+never drive one runtime; a provider's `bind` and `release` are per (worker,
+session). A connection that closes retires the clients that were reaching
+that host, so the next turn connects afresh, and the worker's side of the
+pipe keeps the connection checked. The host component's connection limit is
+configurable (`--max-connections`) and a full host answers
+`COMPUTE_HOST_AT_CAPACITY`.
+
 The exported interface is experimental and may change before release.
 
 **Provider request headers.** A provider type in the model catalog may set

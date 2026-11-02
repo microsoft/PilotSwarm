@@ -367,14 +367,39 @@ servers are unavailable with that reason and the turn runs without them. If
 the side channel is there and nothing can be delivered over it, the turn fails
 with `COMPUTE_UNAVAILABLE`.
 
+**What a session on a target sees of its own files.** Its shell runs on the
+host, and the paths `get_session_workspace` gives it are paths there; that
+tool also says which folders are attached on the worker and which are
+available on the host, which are not the same question. An extra folder
+added during a turn is prepared for the next one, not that one.
+`write_artifact({fromFile})` and `read_artifact({toFile})` work only when
+the target's provider shares the session's folders with the worker; the
+session's own instructions say which case it is in. PilotSwarm's own files
+in the session folder (every name starting with `.ps-`) are not the
+runtime's to read or change. GitHub Copilot models cannot run on a target:
+a session that names one is refused at creation, a switch to one is
+refused, and they are left out of the list the session is offered.
+
+**What a deployment's own worker-module tool is told.** A tool invocation
+for a session whose agent runs elsewhere carries `invocation.compute`:
+`runsRemotely`, the `target` name, `sharesWorkerFiles`, the
+`allowedWorkerPaths` that session may name (empty when its host shares
+none), and `hostPaths`, the same folders as the agent names them. A tool
+that takes a path from the model should confine it to `allowedWorkerPaths`
+and report paths back from `hostPaths`; `invocation.compute` is absent for
+a session that runs on the worker, where the ordinary rules apply.
+
 The host component is run as `pilotswarm-compute-host --binding <id> --runtime
 <host:port|port> --listen <host:port>`. It serves the side channel by default
 — a session with any skill folder or any MCP server needs it — writing the
 copies and the relay under `--services-dir` (a folder of this binding's own
 under the system temporary folder by default). `--no-services` turns it off,
 `--copy-max-bytes` and `--copy-max-files` bound what one session's copy may
-lay out, and `--idle-timeout` is a whole number of milliseconds (0 keeps the
-component up for ever).
+lay out, `--max-connections` bounds how many proved connections it carries at
+once (16 by default; a full host answers `COMPUTE_HOST_AT_CAPACITY`, and a
+tree spread over many workers needs one runtime connection and one side
+channel per worker holding a session), and `--idle-timeout` is a whole number
+of milliseconds (0 keeps the component up for ever).
 
 Trusted session creation resolves `explicit → user default → cluster default →
 first usable provider/model`, validates capabilities, and writes the exact
