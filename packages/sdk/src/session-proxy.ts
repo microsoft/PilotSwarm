@@ -2465,10 +2465,12 @@ export function registerActivities(
             }
         };
 
+        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests register one), the workflow tools take its
+        // request, agent and parallel states and its stop and test operations; every other turn's host is unchanged.
         const workflowV2Host = async (): Promise<WorkflowToolHost> => {
             if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
             const sdkClient = await getInlineClient();
-            return { catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient() };
+            return { catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(), ...(workflowRequestTurn ? { requests: true } : {}) };
         };
         // The request and agent-state bridges (INACTIVE) need only the workflow store and a duroxide client to wake the
         // controller: on this worker's own provider, as notifyParent does, with no inline PilotSwarmClient (so no storeUrl).
@@ -2871,6 +2873,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             } : {}),
             /** Workflow agent states (INACTIVE): a session in an agent state's subtree gets the ask_user refusal (R14). */
             ...(workflowLineage?.agentRoot ? { workflowAgentSubtree: true } : {}),
+            /** Controller 1.9.0's tool surface (INACTIVE): the workflow tools' descriptions match what their host takes (R26). */
+            ...(workflowRequestTurn ? { workflowMilestone: true } : {}),
             /** complete_workflow_node (agent states, INACTIVE): the calling session is the host-stamped child of the state. */
             ...(workflowAgentChild ? {
                 completeWorkflowNode: async (args: Record<string, unknown>) => {

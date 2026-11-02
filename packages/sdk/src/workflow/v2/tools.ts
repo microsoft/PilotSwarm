@@ -97,6 +97,66 @@ export const READ_WORKFLOW_TOOL_SPEC = {
     },
 } as const;
 
+/**
+ * The operations update_workflow takes only on a host that starts runs at
+ * controller 1.9.0 (WorkflowV2Host.requests; INACTIVE: only a turn of a worker
+ * that runs it, which only tests register).
+ */
+export const UPDATE_WORKFLOW_MILESTONE_OPERATIONS = ["stop", "test", "test_respond", "test_advance"] as const;
+
+/**
+ * update_workflow as such a turn shows it (R26, T125): the production
+ * description and parameters, which stay byte for byte as they are for every
+ * other turn, with the milestone operations and their arguments added.
+ */
+export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
+    description: UPDATE_WORKFLOW_TOOL_SPEC.description
+        + " This host also takes: stop (run_id optional, reason, grace_seconds 0 to 3600, default 60: the run admits no new state, "
+        + "the work it admitted may settle until the grace ends, then it ends stopped); "
+        + "test (expected_revision and definition_hash of the exact current revision, inputs, optional vars, agent_mode mocked, fixtures and "
+        + "scenario: a test run beside the live run whose tool calls, agents, sends and requests are intercepted and answered by you or a "
+        + "fixture, and whose deadlines run on a virtual clock; a script's own effects are real, and a test result is not a live result); "
+        + "test_respond (run_id of the test run, interception_id, response { kind: success, error or cancel, value }: answers one "
+        + "intercepted effect once); and test_advance (run_id of the test run, seconds 1 to 2592000: moves its virtual clock and decides "
+        + "what became due).",
+    parameters: {
+        type: "object",
+        properties: {
+            ...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties,
+            operation: { type: "string", enum: [...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum, ...UPDATE_WORKFLOW_MILESTONE_OPERATIONS] },
+            expected_revision: { type: "integer", description: "replace_definition/publish/test: the draft revision you reviewed." },
+            definition_hash: { type: "string", description: "publish/start/test: the yamlSha256 of the reviewed revision." },
+            inputs: { type: "object", description: "publish_and_start/start/test: static run inputs checked against inputs.schema." },
+            vars: { type: "object", description: "publish_and_start/start/test: the run's initial open KV map (any keys, JSON values)." },
+            reason: { type: "string", description: "pause/resume/cancel/stop: an optional short reason." },
+            run_id: { type: "string", description: "set_vars/pause/resume/cancel/recover/stop: the run, default the live run; test_respond/test_advance: the test run (required)." },
+            grace_seconds: { type: "integer", description: "stop: how long admitted work may settle, 0 to 3600. Default 60." },
+            agent_mode: { type: "string", enum: ["mocked", "real"], description: "test: mocked (default): you supply each agent state's typed result. real is not available." },
+            fixtures: {
+                type: "array", items: { type: "object" },
+                description: "test: answers given in advance, each { operation?: tool.call (default), agent, send or request, tool (tool calls) or state "
+                    + "(the others), arguments (the exact call arguments, or the state's exact input), response { kind, value } }.",
+            },
+            scenario: { type: "string", description: "test: an optional scenario name kept with the test run, at most 128 characters." },
+            interception_id: { type: "string", description: "test_respond: the intercepted effect, from read_workflow or the notice you received." },
+            response: { type: "object", description: "test_respond: { kind: success, error or cancel, value }; read_workflow shows the schema an answer must match." },
+            seconds: { type: "integer", description: "test_advance: whole seconds to move the virtual clock, 1 to 2592000." },
+        },
+        required: ["workflow_id", "operation", "operation_id"],
+    },
+} as const;
+
+/** read_workflow as a turn of a worker that runs controller 1.9.0 shows it (R26): the run's milestone fields are named too. */
+export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
+    description: READ_WORKFLOW_TOOL_SPEC.description
+        + " On this host a run also shows its stop (requestedAt, deadline, graceSeconds, reason and, while it runs, settled), each agent "
+        + "state's child session (agent.childSessionId, the chat to open) and its lifecycle, each parallel branch's states (scopeId, branch) and "
+        + "a parallel state's number of branches, and for a test run (give its run_id) run.test: the notice, the tested revision and whether "
+        + "it is stale, the virtual clock, every interception with its arguments, the schema its answer must match and its answer, and the "
+        + "coverage. definition.publishedAgentPins shows the agent versions a publication pinned.",
+    parameters: READ_WORKFLOW_TOOL_SPEC.parameters,
+} as const;
+
 export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {
     description:
         "Give a run of a version 2 workflow one typed input for its messaging receive states. "
@@ -225,7 +285,8 @@ function deleteKeysArg(args: Record<string, unknown>): string[] {
 }
 
 /** Parse update_workflow arguments into a typed command. */
-export function parseUpdateWorkflowArgs(args: Record<string, unknown>): { workflowSessionId: string; operationId: string; command: WorkflowV2Command } {
+export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: { milestone?: boolean } = {})
+    : { workflowSessionId: string; operationId: string; command: WorkflowV2Command } {
     const workflowSessionId = requiredString(args, "workflow_id");
     const operationId = requiredString(args, "operation_id");
     const operation = args.operation;
@@ -242,8 +303,10 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>): { workfl
     } else if (operation === "start") {
         command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args), ...(vars !== null ? { vars } : {}) };
     } else {
-        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
-            "operation must be replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel or recover.");
+        // A host that takes the milestone operations names them too, as its tool description does.
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", options.milestone === true
+            ? "operation must be replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel, recover, stop, test, test_respond or test_advance."
+            : "operation must be replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel or recover.");
     }
     return { workflowSessionId, operationId, command };
 }
@@ -384,7 +447,7 @@ export async function updateWorkflowFromTool(args: Record<string, unknown>, cont
             const stored = await controlWorkflowV2Run(context.host, workflowSessionId, command, { actor, operationId });
             return payload({ ok: true, ...runCommandJson(stored.receipt, stored.replayed) });
         }
-        const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args);
+        const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone: hostTests(context.host) });
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
         const stored = await updateWorkflowV2(context.host, workflowSessionId, command, { actor, operationId });
         return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed) });

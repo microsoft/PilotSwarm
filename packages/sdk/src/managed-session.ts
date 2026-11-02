@@ -22,8 +22,10 @@ import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } fro
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
-import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
-import { READ_WORKFLOW_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC } from "./workflow/v2/tools.js";
+import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
+import {
+    READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC,
+} from "./workflow/v2/tools.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "./workflow/v2/agent-node-service.js";
 import { WORKFLOW_ASK_USER_REFUSAL } from "./workflow/v2/input-policy.js";
@@ -3069,8 +3071,11 @@ export class ManagedSession {
         // spawn_workflow runs inline through the control bridge and does not
         // end the turn. Without a bridge it refuses rather than staying
         // silent: a declared tool with no answer hangs the turn.
+        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests), the workflow tools describe what their host
+        // takes there (R26); every other turn keeps the production descriptions byte for byte.
+        const workflowMilestone = controlBridge?.workflowMilestone === true;
         const spawnWorkflowTool = defineTool("spawn_workflow", {
-            ...SPAWN_WORKFLOW_TOOL_SPEC,
+            ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC),
             handler: async (args: SpawnWorkflowToolArgs, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
                 if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
@@ -3084,7 +3089,7 @@ export class ManagedSession {
 
         // update_workflow / read_workflow (workflow v2) also run inline through the bridge.
         const updateWorkflowTool = defineTool("update_workflow", {
-            ...UPDATE_WORKFLOW_TOOL_SPEC,
+            ...(workflowMilestone ? UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC : UPDATE_WORKFLOW_TOOL_SPEC),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_workflow");
                 if (!controlBridge?.updateWorkflow) return "Error: update_workflow is not available in this session.";
@@ -3092,7 +3097,7 @@ export class ManagedSession {
             },
         });
         const readWorkflowTool = defineTool("read_workflow", {
-            ...READ_WORKFLOW_TOOL_SPEC,
+            ...(workflowMilestone ? READ_WORKFLOW_MILESTONE_TOOL_SPEC : READ_WORKFLOW_TOOL_SPEC),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_workflow");
                 if (!controlBridge?.readWorkflow) return "Error: read_workflow is not available in this session.";

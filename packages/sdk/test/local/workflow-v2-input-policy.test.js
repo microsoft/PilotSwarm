@@ -197,7 +197,8 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
         const seen = [];
         const script = async (_call, _prompt, opts) => {
             const bridge = opts.controlToolBridge;
-            seen.push({ subtree: bridge?.workflowAgentSubtree === true, complete: typeof bridge?.completeWorkflowNode === "function" });
+            seen.push({ subtree: bridge?.workflowAgentSubtree === true, complete: typeof bridge?.completeWorkflowNode === "function",
+                milestone: bridge?.workflowMilestone === true });
             if (typeof bridge?.completeWorkflowNode === "function") {
                 seen.at(-1).invalid = JSON.parse(await bridge.completeWorkflowNode({ outcome: "accepted", output: { verdict: 7 }, operation_id: "op-0" }));
                 seen.at(-1).result = JSON.parse(await bridge.completeWorkflowNode({ outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }));
@@ -214,7 +215,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             await h.say("start the review", "cm-agent-1");
             await h.until(async () => seen.length >= 1 && (await h.store.readNodeExecution(nodeExecutionId))?.state === "completed",
                 "the turn completes the state");
-            expect(seen[0]).toMatchObject({ subtree: true, complete: true,
+            expect(seen[0]).toMatchObject({ subtree: true, complete: true, milestone: true,
                 invalid: { ok: false, error: { code: "OUTPUT_INVALID", attemptsLeft: 2 } },
                 result: { ok: true, replayed: false, nodeExecutionId, runId, outcome: "accepted", kind: "result" } });
             expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "ok" } });
@@ -228,7 +229,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
         const script = async (_call, _prompt, opts) => {
             const bridge = opts.controlToolBridge;
             seen.push({ subtree: bridge?.workflowAgentSubtree === true, complete: typeof bridge?.completeWorkflowNode === "function",
-                respond: typeof bridge?.respondSessionRequest === "function" });
+                respond: typeof bridge?.respondSessionRequest === "function", milestone: bridge?.workflowMilestone === true });
             return { type: "completed", content: "done", events: [] };
         };
         await intakeNativeCase(getEnv(), "ordinary session turn", script, { testOptions: { workflowRequests: true } }, async h => {
@@ -236,7 +237,8 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
             await h.say("hello", "cm-plain-1");
             await h.until(async () => seen.length >= 1, "the turn runs");
-            expect(seen[0]).toEqual({ subtree: false, complete: false, respond: true });
+            // A turn of a worker that runs 1.9.0: its workflow tools describe and take the milestone (R26).
+            expect(seen[0]).toEqual({ subtree: false, complete: false, respond: true, milestone: true });
             expect(canonicalJson(seen)).not.toContain("true,\"complete\":true");
         });
     });

@@ -432,7 +432,26 @@ it as a skill directory. The standard base adds a short discovery pointer
 worker loaded `workflow-authoring` from that directory, so every other prompt
 is unchanged. The agent state's wrapper reaches its child without the skill.
 
-Not yet covered: the update_workflow and read_workflow tool descriptions on
-a turn of a worker that runs controller 1.9.0 still list the production
-operations only (next change: milestone tool specs with the matching
-handler gate).
+## The agent tools on a turn of a 1.9.0 worker (R26, T125)
+
+A turn of a worker that runs controller 1.9.0 (the test-only switch) gets a
+workflow host that starts 1.9.0 runs (`requests`), so the parent's own
+tools take what that controller runs: `spawn_workflow` and
+`replace_definition` compile request, agent and parallel states, and
+`update_workflow` takes `stop`, `test`, `test_respond` and `test_advance`.
+The tool descriptions on such a turn say the same
+(`SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC`, `UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC`,
+`READ_WORKFLOW_MILESTONE_TOOL_SPEC`, chosen by the bridge's
+`workflowMilestone` flag), and an unknown operation's refusal names every
+operation that host takes. Every other turn keeps the production
+descriptions, parameters, refusals and host byte for byte. A unit test
+checks the descriptions against the handler: each added operation and
+argument is taken behind the same gate, refused elsewhere, and the
+reference skill's operation table names exactly the operations the
+description lists.
+
+Not wired on such a turn: agent resolution for publication pins
+(`resolveAgent`) and the agent host that creates agent states' children;
+both stay test-host only, so a named agent is not pinned there and an agent
+state there fails `unavailable`. No deployed worker enables controller
+1.9.0: that needs a worker switch, which is an activation decision.

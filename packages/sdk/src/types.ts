@@ -300,6 +300,13 @@ export interface TurnOptions {
          * that runs agent states (INACTIVE: only tests).
          */
         workflowAgentSubtree?: boolean;
+        /**
+         * Workflow v2: this turn runs on a worker that runs controller 1.9.0
+         * (INACTIVE: only tests register one). Its workflow tools take request,
+         * agent and parallel states and the stop and test operations, and
+         * their descriptions say so; every other turn's are unchanged.
+         */
+        workflowMilestone?: boolean;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;

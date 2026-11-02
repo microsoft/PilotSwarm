@@ -118,6 +118,27 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
     },
 } as const;
 
+/**
+ * spawn_workflow as a turn of a worker that runs controller 1.9.0 shows it
+ * (R26, T125; INACTIVE: only tests register such a worker): its definitions
+ * may also hold request, agent and parallel states, so the description says
+ * so instead of "mode request is not supported yet". Every other turn keeps
+ * SPAWN_WORKFLOW_TOOL_SPEC byte for byte.
+ */
+export const SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC = {
+    description: SPAWN_WORKFLOW_TOOL_SPEC.description.replace("; mode request is not supported yet)", ")")
+        + " This host also compiles and runs: messaging (mode: request; contract with response: {schema}; recipient; timeoutSeconds 1-86400 "
+        + "or one binding; the payload is the state's input): one typed request that its recipient answers with respond_session_request, "
+        + "routing 'responded' with the response or 'declined' with {reason}, and timed_out at its deadline (write input, not request, and "
+        + "timed_out, not timeout); agent (invoke: {prompt: <task>} or {agent: {name, package?, version?}}; timeoutSeconds; optional input, "
+        + "inputSchema, outputSchema, outcomes): an ordinary child agent session that finishes the state only with complete_workflow_node, "
+        + "routing one of its outcomes, needs_input, execution_failed or timed_out; and parallel (forEach: one binding or a list of at most 64 "
+        + "items; concurrency 1-16, default 1; join: all_required; failFast; body: {initial, states}): one branch per item through its body, "
+        + "whose states read ${branch.item} and ${branch.index}, routing 'joined' with the branch outputs in order or 'blocked' with every "
+        + "branch's result.",
+    parameters: SPAWN_WORKFLOW_TOOL_SPEC.parameters,
+} as const;
+
 export interface SpawnWorkflowToolArgs {
     yaml: string;
     inputs?: Record<string, unknown>;
