@@ -110,8 +110,9 @@ describe("MoTD declarations and artifact access in sessions", () => {
             expect(collision).not.toHaveBeenCalled();
         });
     });
-    it("does not let cluster administration bypass a private source session", async () => {
-        await sessionFixture(async ({ manager, id, configs, setRole, catalog }) => {
+    it.each([false, true])("does not let cluster administration bypass a private source session (system agent session: %s)", async systemAgent => {
+        await sessionFixture(async ({ manager, id, configs, setRole, setRow, catalog }) => {
+            if (systemAgent) setRow({ sessionId: id, owner: viewer.principal, isSystem: true });
             setRole("admin");
             manager.adminScope = "cluster";
             manager.artifactStore = { statArtifact: vi.fn(), downloadArtifact: vi.fn() };

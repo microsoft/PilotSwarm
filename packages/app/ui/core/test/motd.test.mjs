@@ -150,6 +150,16 @@ test("delete immediately clears the current splash, preview and pictures", async
     await controller.deleteAdminMotd("1");
     assert.equal(state().current, null); assert.equal(state().preview, null); assert.deepEqual(state().images, {});
 });
+test("delete waits while a Duplicate is filling the draft", async () => {
+    let deletes = 0;
+    const { controller, store } = setup({ deleteMotd: async () => { deletes += 1; }, listMotds: async () => [] });
+    store.dispatch({ type: "admin/motds", patch: { duplicatingId: "7" } });
+    await controller.deleteAdminMotd("1");
+    assert.equal(deletes, 0);
+    store.dispatch({ type: "admin/motds", patch: { duplicatingId: null } });
+    await controller.deleteAdminMotd("1");
+    assert.equal(deletes, 1);
+});
 test("request timeout releases reads and rejects late replies", async t => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     let resolve;

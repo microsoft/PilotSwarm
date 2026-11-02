@@ -4169,7 +4169,8 @@ export class PilotSwarmUiController {
         }
     }
     async deleteAdminMotd(motdId) {
-        if (!this._featureIsAdmin() || this.getState().admin.motds.saving) return;
+        // Not while a Duplicate is filling the draft: the two would race.
+        if (!this._featureIsAdmin() || this.getState().admin.motds.saving || this.getState().admin.motds.duplicatingId) return;
         const context = this._motdContext();
         this._motdAdminReadSerial = (this._motdAdminReadSerial || 0) + 1;
         this._motdCurrentReadSerial = (this._motdCurrentReadSerial || 0) + 1;

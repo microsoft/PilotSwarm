@@ -26,6 +26,8 @@ describe("message input validation without a database", () => {
         { image: { ...png, base64: "AAAA" } }, { image: { ...png, base64: "*invalid*" } },
         { image: { ...png, base64: Buffer.alloc(2097153).toString("base64") } },
         { mobileImage: { ...png, base64: Buffer.alloc(2097153).toString("base64") } },
+        { bodyMd: "Hello\u0000world" }, { mobileBodyMd: "\u0000" }, { requestId: "req\u0000" },
+        { image: { ...png, alt: "logo\u0000" } },
     ])("rejects invalid bodies, windows or pictures: %j", async extra => {
         await expect(disconnected.create(admin, input(extra))).rejects.toMatchObject({ code: "MOTD_INVALID" });
     });

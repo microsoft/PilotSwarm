@@ -33,7 +33,7 @@ async function decodePicture(input: MotdImageInput | undefined): Promise<Buffer 
     if (input === undefined) return null;
     if (!input || typeof input.base64 !== "string" || !input.base64.length || input.base64.length > Math.ceil(MOTD_IMAGE_MAX_BYTES / 3) * 4
         || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.base64)
-        || typeof input.alt !== "string" || !input.alt.trim() || input.alt.length > 1024
+        || typeof input.alt !== "string" || !input.alt.trim() || input.alt.length > 1024 || input.alt.includes("\u0000")
         || !MOTD_IMAGE_TYPES.some(type => type === input.contentType))
         throw new MotdError("MOTD_INVALID", "Pictures require PNG, JPEG, WebP or GIF, base64 and alt text");
     const bytes = Buffer.from(input.base64, "base64");
@@ -86,7 +86,10 @@ export class MotdStore {
         return this.call("cms_motd_list", viewer, [limit, before ?? null]);
     }
     async create(viewer: MotdViewer, input: MotdCreateInput): Promise<MotdMessage> {
-        const textValid = (value: unknown) => typeof value === "string" && value.trim().length > 0 && Buffer.byteLength(value, "utf8") <= MOTD_BODY_MAX_BYTES;
+        // PostgreSQL jsonb cannot hold U+0000, so reject it here as a 400
+        // rather than let the insert fail as a 500.
+        const textValid = (value: unknown) => typeof value === "string" && value.trim().length > 0
+            && !value.includes("\u0000") && Buffer.byteLength(value, "utf8") <= MOTD_BODY_MAX_BYTES;
         const timeValid = (value: unknown) => value === undefined
             || typeof value === "string" && /T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value) && Number.isFinite(Date.parse(value));
         const start = input?.startsAt ?? input?.fromAt, end = input?.endsAt ?? input?.toAt;
@@ -95,7 +98,7 @@ export class MotdStore {
             || start !== undefined && end !== undefined && Date.parse(end) <= Date.parse(start)
             || input.startsAt !== undefined && input.fromAt !== undefined && Date.parse(input.startsAt) !== Date.parse(input.fromAt)
             || input.endsAt !== undefined && input.toAt !== undefined && Date.parse(input.endsAt) !== Date.parse(input.toAt)
-            || typeof input.requestId !== "string" || !input.requestId.trim() || input.requestId.length > 128
+            || typeof input.requestId !== "string" || !input.requestId.trim() || input.requestId.length > 128 || input.requestId.includes("\u0000")
             || input.imagePlacement !== undefined && !["above", "beside", "background"].includes(input.imagePlacement))
             throw new MotdError("MOTD_INVALID", "Invalid message body, window, placement or request ID");
         const [image, mobileImage] = await Promise.all([decodePicture(input.image), decodePicture(input.mobileImage)]);

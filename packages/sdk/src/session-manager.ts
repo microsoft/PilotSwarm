@@ -2366,10 +2366,12 @@ export class SessionManager {
                 const source = image.sessionId ?? sessionId;
                 if (!image.filename || /[/\\]/.test(image.filename)) throw new MotdError("MOTD_INVALID", "Picture filename must be a single path segment");
                 const snapshot = await this.sessionCatalog!.getSessionAccess(source, viewer.principal);
-                const row = await this.sessionCatalog!.getSession(sessionId);
-                const scope = row?.isSystem ? "unrestricted" : this.adminScope;
+                // The deployment's admin scope, even for a system agent: a
+                // picture is published fleet-wide, so a cluster-scoped admin
+                // must not reach a private user session through it. System
+                // source sessions stay readable under either scope.
                 if (!snapshot || !evaluateSessionAccess("session:read", snapshot, {
-                    isAdmin: viewer.isAdmin, adminScope: scope, systemReadable: systemSessionsReadable(),
+                    isAdmin: viewer.isAdmin, adminScope: this.adminScope, systemReadable: systemSessionsReadable(),
                 }).allowed) throw new MotdError("MOTD_FORBIDDEN", "Picture source session is not readable", 403);
                 const metadata = await this.artifactStore.statArtifact(source, image.filename);
                 if (!metadata) throw new MotdError("MOTD_NOT_FOUND", "Picture artifact not found", 404);
