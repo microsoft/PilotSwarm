@@ -37,7 +37,7 @@ import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./ma
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
-import { approvePermissionForSession } from "./permissions.js";
+import { TOOL_FREE_HELPER_SESSION } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
@@ -5479,9 +5479,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry
-                const sessionOpts: any = {
-                    onPermissionRequest: approvePermissionForSession,
-                };
+                // A one-shot session that reads a transcript and writes a
+                // line. The transcript may carry anything a session's
+                // events carried, so the helper is given no tools at all
+                // (permissions.ts, TOOL_FREE_HELPER_SESSION).
+                const sessionOpts: any = { ...TOOL_FREE_HELPER_SESSION };
                 if (defaultProvider) {
                     sessionOpts.model = defaultProvider.modelName;
                     sessionOpts.provider = defaultProvider.sdkProvider;

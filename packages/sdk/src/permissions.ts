@@ -70,6 +70,42 @@ export function sessionApprovalForPermissionRequest(request?: PermissionRequestL
     }
 }
 
+/**
+ * The session configuration of a helper that runs a model over a
+ * session's own content and must be able to do nothing else.
+ *
+ * Title generation and context distillation both hand a model the
+ * transcript of a session whose events may have come from somewhere this
+ * worker does not trust. They need no tool to do their job — one reads a
+ * conversation and writes a line, the other reads it and writes a summary
+ * — so they are given none: no built-in tools, no MCP servers, no skills,
+ * and a permission handler that refuses whatever is asked for anyway.
+ *
+ * That holds whether or not the deployment uses compute targets: a helper
+ * that cannot run anything cannot be talked into running anything.
+ */
+export const TOOL_FREE_HELPER_SESSION = {
+    availableTools: [] as string[],
+    excludedTools: ["*"],
+    mcpServers: {} as Record<string, never>,
+    skillDirectories: [] as string[],
+    onPermissionRequest: refuseAllPermissions,
+};
+
+/**
+ * Refuse every permission a session asks for.
+ *
+ * Used by the helpers above. A helper has no tools, so nothing should
+ * ever ask; if something does, the answer is no, and the attempt is
+ * visible rather than quietly approved.
+ */
+export function refuseAllPermissions(_request?: PermissionRequestLike): PermissionRequestResult {
+    return {
+        kind: "reject",
+        feedback: "this helper session runs a model over a transcript and may use no tools",
+    } as PermissionRequestResult;
+}
+
 export function approvePermissionForSession(request?: PermissionRequestLike): PermissionRequestResult {
     const approval = sessionApprovalForPermissionRequest(request);
     if (!approval) return { kind: "approve-once" } as PermissionRequestResult;
