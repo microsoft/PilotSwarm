@@ -51,6 +51,20 @@ const waiting = ({ history }) => history.some(event => event.kind === "QueueSubs
 const turnsOf = h => h.calls.filter(call => call.name === "runTurnV5" && call.input?.sessionId === h.sessionId);
 const settlesOf = h => h.calls.filter(call => call.name === WORKFLOW_INTAKE_ACTIVITIES.settle && call.input?.recipientSessionId === h.sessionId);
 const rowOf = (h, input) => h.store.readWorkflowIntake(input.envelope.exchangeId);
+/**
+ * Whether the end settle's activity has returned its answer (the fixture records it as the activity returns). Its row
+ * commits inside the activity, so a row read can see the end before the answer is recorded.
+ */
+const endAnswered = h => settlesOf(h).some(call => call.input.op === "end" && call.result !== undefined);
+/**
+ * Whether the recipient recorded that the store applied another end outcome to invocation `invocationId`: the
+ * orchestration records it only after it applied the end's answer (intake-wiring.ts endInvocation), after the row commits.
+ */
+async function endAppliedRecorded(h, invocationId) {
+    const events = await h.catalog.getSessionEvents(h.sessionId, 0, 1000);
+    return events.some(event => event.eventType === INTAKE_RECORDED_EVENT && event.data?.outcome === "end_applied"
+        && event.data?.invocationId === invocationId);
+}
 
 /** A promise the test resolves. */
 function deferred() {
@@ -125,7 +139,9 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
                 expect(await acceptedWitnesses(h)).toEqual([{ invocationId, sent: false }]);
                 // The crashed execution's admission recorded the exposure under the scheduled attempt id.
                 expect(await h.store.readWorkflowIntakeExposure(invocationId)).toMatchObject({ attemptId, recipientSessionId: h.sessionId });
-                // The end asked for not_dispatched; the store applied interrupted, and the orchestration recorded that.
+                // The end asked for not_dispatched; the store applied interrupted, and the orchestration recorded that once it
+                // applied the end's answer, after the row committed.
+                await h.until(() => endAppliedRecorded(h, invocationId), "the applied end is recorded");
                 const settles = settlesOf(h);
                 expect(settles.map(call => [call.input.op, call.input.outcome ?? null])).toEqual([["bind", null], ["end", "not_dispatched"]]);
                 expect(settles[1].result).toEqual({ ok: true, result: { ended: true, outcome: "interrupted" } });
@@ -168,6 +184,8 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
                 expect(await acceptedWitnesses(h)).toEqual([{ invocationId, sent: true }]);
                 // One record, the first admission's; the redelivery was the same attempt to the store.
                 expect(await h.store.readWorkflowIntakeExposure(invocationId)).toMatchObject({ attemptId });
+                // The row commits inside the end's activity: its answer is recorded as the activity returns.
+                await h.until(() => endAnswered(h), "the end's answer is returned");
                 const settles = settlesOf(h);
                 expect(settles.map(call => [call.input.op, call.input.outcome ?? null])).toEqual([["bind", null], ["end", "completed"]]);
                 expect(settles[1].result).toEqual({ ok: true, result: { ended: true } });
@@ -224,10 +242,12 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
                         expect(await h.store.readWorkflowIntakeExposure(invocationId)).toMatchObject({ attemptId });
                         endGate.resolve();
                         await h.until(async () => (await rowOf(h, input))?.processing === "interrupted", "the end is applied interrupted");
+                        await h.until(() => endAnswered(h), "the end's answer is returned");
                         expect(settlesOf(h)[1].result).toEqual({ ok: true, result: { ended: true, outcome: "interrupted" } });
                     } else {
                         endGate.resolve();
                         await h.until(async () => (await rowOf(h, input))?.processing === "not_dispatched", "the end stands not_dispatched");
+                        await h.until(() => endAnswered(h), "the end's answer is returned");
                         expect(await late()).toEqual({ allowed: false, reason: "settled" });
                         expect(await h.store.readWorkflowIntakeExposure(invocationId)).toBeNull();
                         expect(settlesOf(h)[1].result).toEqual({ ok: true, result: { ended: true } });
