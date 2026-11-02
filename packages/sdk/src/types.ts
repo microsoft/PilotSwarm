@@ -1314,8 +1314,9 @@ export interface PilotSwarmWorkerOptions {
      * `wait` and `terminal` states run nothing and are never listed. Script
      * states run as child processes on the worker (without the worker's
      * environment), so an operator opts in. `executables` overrides the
-     * program per runtime (env `PILOTSWARM_WORKFLOW_PYTHON`,
-     * `PILOTSWARM_WORKFLOW_PWSH`). Set the same list on every worker.
+     * python and powershell programs (env `PILOTSWARM_WORKFLOW_PYTHON`,
+     * `PILOTSWARM_WORKFLOW_PWSH`); node scripts always run on the worker's
+     * own Node, under its permission model. Set the same list on every worker.
      */
     workflows?: {
         stateTypes?: string[];

@@ -59,8 +59,46 @@ export interface RunScriptNodeResult {
 }
 
 export interface ScriptRunnerOptions {
-    /** Executable per runtime. Defaults: node = this Node binary, python = python3, powershell = pwsh. */
+    /**
+     * Executable per runtime. Defaults: python = python3, powershell = pwsh.
+     * Node scripts always run on this worker's own Node (process.execPath)
+     * so its permission model applies; a node entry is ignored.
+     */
     executables?: Partial<Record<ScriptRuntime, string>>;
+}
+
+/**
+ * The Node releases a node script state runs on: the SDK's engines range,
+ * whose releases have the permission model the guard relies on.
+ */
+export const WORKFLOW_NODE_MIN_VERSION = "24.22.1";
+export const WORKFLOW_NODE_VERSION_RANGE = "^24.22.1 || >=26.12.1";
+
+function atLeast(have: number[], need: number[]): boolean {
+    for (let i = 0; i < 3; i++) {
+        const a = Number.isFinite(have[i]) ? have[i] : 0;
+        if (a !== need[i]) return a > need[i];
+    }
+    return true;
+}
+
+/** Whether `version` (e.g. process.versions.node) is in WORKFLOW_NODE_VERSION_RANGE. */
+export function workflowNodeVersionSupported(version: string): boolean {
+    const have = version.replace(/^v/, "").split(/[.-]/).slice(0, 3).map(Number);
+    if (have[0] === 24) return atLeast(have, [24, 22, 1]);
+    return atLeast(have, [26, 12, 1]);
+}
+
+/**
+ * The Node arguments for a node script state: Node's permission model,
+ * with file reads and writes allowed only in the state's scratch folder.
+ * Child processes, worker threads, native addons and WASI are not
+ * allowed (none is granted). This guards against a script reaching the
+ * worker's files by accident; it is not a sandbox for hostile code, and it
+ * does not limit the network.
+ */
+export function workflowNodeArgs(scratchDir: string, scriptPath: string): string[] {
+    return ["--permission", `--allow-fs-read=${scratchDir}`, `--allow-fs-write=${scratchDir}`, scriptPath];
 }
 
 const NODE_PRELUDE = `import { readFileSync as __psReadFileSync } from "node:fs";
@@ -117,7 +155,7 @@ function Set-PilotSwarmResult([string]$Outcome, $Output = $null) { [void](__PsPo
 `;
 
 const RUNTIME_FILES: Record<ScriptRuntime, { file: string; prelude: string; args: (file: string) => string[] }> = {
-    node: { file: "script.mjs", prelude: NODE_PRELUDE, args: (file) => [file] },
+    node: { file: "script.mjs", prelude: NODE_PRELUDE, args: (file) => workflowNodeArgs(path.dirname(file), file) },
     python: { file: "script.py", prelude: PYTHON_PRELUDE, args: (file) => ["-u", file] },
     powershell: {
         file: "script.ps1",
@@ -281,7 +319,14 @@ export async function runScriptNode(
     const { node } = request;
     const runtime = RUNTIME_FILES[node.runtime];
     if (!runtime) throw new WorkflowExecutionError(`Script state '${node.id}' uses unsupported runtime '${node.runtime}'.`);
-    const executable = options.executables?.[node.runtime] ?? defaultExecutable(node.runtime);
+    const executable = node.runtime === "node"
+        ? process.execPath
+        : options.executables?.[node.runtime] ?? defaultExecutable(node.runtime);
+    if (node.runtime === "node" && !workflowNodeVersionSupported(process.versions.node)) {
+        throw new WorkflowExecutionError(
+            `Script state '${node.id}' needs Node ${WORKFLOW_NODE_VERSION_RANGE} on the worker for its permission model; this worker runs Node ${process.versions.node}.`,
+        );
+    }
     const startedAt = Date.now();
     const token = randomBytes(32).toString("hex");
     const toolCalls: ScriptToolCallRecord[] = [];
@@ -341,7 +386,8 @@ export async function runScriptNode(
         server.listen(0, "127.0.0.1", () => resolve());
     });
     const port = (server.address() as AddressInfo).port;
-    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-script-"));
+    // The real path: Node's permission model compares real paths.
+    const workDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-script-")));
 
     try {
         const scriptPath = path.join(workDir, runtime.file);

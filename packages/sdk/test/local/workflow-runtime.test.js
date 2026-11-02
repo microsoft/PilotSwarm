@@ -156,16 +156,16 @@ describe("script runner", () => {
         expect(result.output).toEqual({ ok: 500, refused: 1 });
     });
 
-    it.skipIf(process.platform === "win32")("a background process the script leaves holding its output cannot keep the state running, and is killed", async () => {
+    // Node scripts cannot start processes (Node's permission model), so this uses python.
+    it.skipIf(process.platform === "win32" || !hasPython)("a background process the script leaves holding its output cannot keep the state running, and is killed", async () => {
         const marker = `pilotswarm-orphan-${Math.random().toString(36).slice(2)}`;
         const started = Date.now();
         // The script starts a child that inherits stdout and outlives it, then exits.
-        const result = await run(node("n", "node", `
-            const { spawn } = await import("node:child_process");
-            const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", "${marker}"], { stdio: "inherit" });
-            child.unref();
-            await setResult("success", { pid: child.pid });
-        `, { success: "done" }, 30));
+        const result = await run(node("n", "python", [
+            "import subprocess, sys",
+            `child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "${marker}"])`,
+            'set_result("success", {"pid": child.pid})',
+        ].join("\n"), { success: "done" }, 30));
         expect(result.outcome).toBe("success");
         expect(Date.now() - started).toBeLessThan(10_000);
         await new Promise((r) => setTimeout(r, 300));
@@ -182,11 +182,11 @@ describe("script runner", () => {
 
         // The same on timeout: the script is stuck and its child holds the output.
         const stuckStarted = Date.now();
-        const stuck = await run(node("n", "node", `
-            const { spawn } = await import("node:child_process");
-            spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" });
-            await new Promise(() => setInterval(() => {}, 1000));
-        `, { success: "done" }, 1));
+        const stuck = await run(node("n", "python", [
+            "import subprocess, sys, time",
+            'subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])',
+            "while True: time.sleep(1)",
+        ].join("\n"), { success: "done" }, 1));
         expect(stuck).toMatchObject({ outcome: "timeout", resultSource: "timeout" });
         expect(Date.now() - stuckStarted).toBeLessThan(10_000);
     });
