@@ -62,7 +62,6 @@ import {
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
-    selectWorkflowCreateModal,
     selectSessionAgentPickerModal,
     selectSessionGroupNameModal,
     selectSessionWorkspaceModal,
@@ -13420,69 +13419,6 @@ function ProviderBudgetView({ controller }) {
         sheetEl);
 }
 
-/**
- * The new-workflow editor: the same place a person starts an agent session,
- * with the workflow's YAML and inputs instead of a model. Text stays local
- * until Create, and a refusal comes back as the error line without losing it.
- */
-function WorkflowCreateEditor({ controller, view, theme, close }) {
-    const [yaml, setYaml] = React.useState(view.yaml);
-    const [inputs, setInputs] = React.useState(view.inputs);
-    const submit = () => {
-        if (view.busy) return;
-        controller.createWorkflowSession({ yaml, inputs }).catch(() => {});
-    };
-    // Keys typed into the editor belong to the editor: the global shortcuts
-    // (Enter confirms, Esc closes, arrows navigate) must not fire from here.
-    const editorKeys = (event) => {
-        event.stopPropagation();
-        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-            event.preventDefault();
-            submit();
-        }
-    };
-    return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-        React.createElement("div", { className: "ps-modal is-wide ps-workflow-modal", onClick: (event) => event.stopPropagation() },
-            React.createElement("div", { className: "ps-modal-header" },
-                React.createElement("div", { className: "ps-modal-title" }, view.title),
-                React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
-            ),
-            React.createElement("div", { className: "ps-modal-details" },
-                normalizeLines(view.noteLines.slice(0, 2)).map((line, index) => React.createElement(Line, { key: `note:${index}`, line, theme, className: "ps-modal-detail-line" })),
-            ),
-            React.createElement("label", { className: "ps-workflow-label", htmlFor: "ps-workflow-yaml" }, "Workflow YAML"),
-            React.createElement("textarea", {
-                id: "ps-workflow-yaml",
-                className: "ps-modal-input ps-workflow-yaml",
-                value: yaml,
-                rows: 18,
-                spellCheck: false,
-                autoFocus: true,
-                onChange: (event) => setYaml(event.currentTarget.value),
-                onKeyDown: editorKeys,
-            }),
-            React.createElement("label", { className: "ps-workflow-label", htmlFor: "ps-workflow-inputs" }, "Inputs (JSON object, read by scripts as context.inputs)"),
-            React.createElement("textarea", {
-                id: "ps-workflow-inputs",
-                className: "ps-modal-input ps-workflow-inputs",
-                value: inputs,
-                rows: 3,
-                spellCheck: false,
-                onChange: (event) => setInputs(event.currentTarget.value),
-                onKeyDown: editorKeys,
-            }),
-            view.error ? React.createElement("div", { className: "ps-share-error", role: "alert" }, view.error) : null,
-            React.createElement("div", { className: "ps-modal-footer" },
-                React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, "Cancel"),
-                React.createElement("button", {
-                    type: "button",
-                    className: "ps-modal-button is-primary",
-                    disabled: view.busy,
-                    onClick: submit,
-                }, view.busy ? "Creating…" : "Create workflow")),
-        ));
-}
-
 function ModalLayer({ controller }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, (state) => Boolean(state.ui.touchScale));
@@ -13502,7 +13438,6 @@ function ModalLayer({ controller }) {
         filesFilter: selectFilesFilterModal(state),
         historyFormat: selectHistoryFormatModal(state),
         renameSession: selectRenameSessionModal(state),
-        workflowCreate: selectWorkflowCreateModal(state),
         sessionOwnerFilter: selectSessionOwnerFilterModal(state),
         artifactUpload: selectArtifactUploadModal(state),
         confirm: selectConfirmModal(state),
@@ -13768,19 +13703,7 @@ function ModalLayer({ controller }) {
     // session, so the confirm action is "Switch Model", not "Create Session".
     const pickerConfirmLabel = modal.sessionOptions?.mode === "switchModel" ? "Switch Model" : "Create Session";
     if (modal.type === "modelPicker" && modalState.modelPicker) {
-        // A workflow session needs no model, so the first step of the
-        // new-session flow offers it directly, beside the agent route.
-        const offerWorkflow = modal.sessionOptions?.mode !== "switchModel"
-            && typeof controller.transport?.createWorkflowSession === "function";
-        const workflowFooter = offerWorkflow
-            ? React.createElement("button", {
-                type: "button",
-                className: "ps-modal-button ps-workflow-start",
-                title: "A durable state machine of script nodes that runs without an LLM",
-                onClick: () => controller.openWorkflowCreateModal({}, modal.previousFocus),
-            }, "⛓ Workflow instead")
-            : null;
-        return renderListModal(modalState.modelPicker, pickerConfirmLabel, workflowFooter);
+        return renderListModal(modalState.modelPicker, pickerConfirmLabel);
     }
     if (modal.type === "reasoningEffortPicker" && modalState.reasoningEffortPicker) {
         return renderListModal(modalState.reasoningEffortPicker, pickerConfirmLabel);
@@ -13894,9 +13817,6 @@ function ModalLayer({ controller }) {
                 React.createElement("div", { className: "ps-modal-footer" },
                     React.createElement("button", { type: "button", className: "ps-modal-button is-primary", onClick: close }, "Done")),
             ));
-    }
-    if (modal.type === "workflowCreate" && modalState.workflowCreate) {
-        return React.createElement(WorkflowCreateEditor, { controller, view: modalState.workflowCreate, theme, close });
     }
     if (modal.type === "renameSession" && modalState.renameSession) {
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },

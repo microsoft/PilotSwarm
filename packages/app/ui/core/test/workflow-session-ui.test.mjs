@@ -1,15 +1,15 @@
 // Workflow sessions in the UI:
 //   - the session list marks them apart from agent sessions
 //   - their transcript is an execution log built from workflow.* events
-//   - they are created from the same chooser as agent sessions
+//   - they are started only by agents (spawn_workflow), never from the chooser
 //   - they never take chat input or a regeneration
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as uiCore from "../src/index.js";
 import {
     PilotSwarmUiController,
     appReducer,
     appendEventToHistory,
-    buildAgentPickerItems,
     buildHistoryModel,
     canStopSessionTurn,
     describeWorkflowEvent,
@@ -21,11 +21,8 @@ import {
     selectSessionAgentPickerModal,
     selectSessionRows,
     selectTurnControlView,
-    selectWorkflowCreateModal,
-    UI_COMMANDS,
     WORKFLOW_EVENT_TYPES,
     WORKFLOW_SESSION_GLYPH,
-    WORKFLOW_YAML_TEMPLATE,
 } from "../src/index.js";
 
 let seq = 0;
@@ -137,7 +134,6 @@ test("the transcript of a workflow session is its execution log, in order, and s
 
 function makeController(transportOverrides = {}) {
     const sessions = [];
-    const calls = { createWorkflowSession: [] };
     const transport = {
         listSessions: async () => sessions,
         getSession: async (sessionId) => sessions.find((session) => session.sessionId === sessionId) || null,
@@ -145,17 +141,11 @@ function makeController(transportOverrides = {}) {
         createSession: async () => ({ sessionId: "generic-1", status: "idle" }),
         listCreatableAgents: async () => [{ name: "alpha", title: "Alpha" }],
         getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
-        createWorkflowSession: async (options) => {
-            calls.createWorkflowSession.push(options);
-            const session = { sessionId: "wf-1", sessionKind: "workflow", title: "Workflow: example-workflow", status: "running" };
-            sessions.push(session);
-            return { sessionId: "wf-1", sessionKind: "workflow", workflowName: "example-workflow" };
-        },
         ...transportOverrides,
     };
     const store = createStore(appReducer, createInitialState());
     const controller = new PilotSwarmUiController({ store, transport });
-    return { controller, store, calls, transport };
+    return { controller, store, transport };
 }
 
 test("the session list marks workflow sessions apart from agent sessions", () => {
@@ -177,63 +167,23 @@ test("the session list marks workflow sessions apart from agent sessions", () =>
     assert.equal(agent.chrome?.kind, "session");
 });
 
-test("the agent chooser offers a script workflow beside the generic session", async () => {
-    const { controller, store } = makeController();
+test("the new-session chooser offers no workflow: agents start workflows with spawn_workflow", async () => {
+    // Even a connection that still has a create method gets no entry for it.
+    const { controller, store } = makeController({ createWorkflowSession: async () => { throw new Error("must not be called"); } });
     await controller.openSessionAgentPicker();
     const modal = store.getState().ui.modal;
     assert.equal(modal.type, "sessionAgentPicker");
-    assert.deepEqual(modal.items.slice(0, 2).map((item) => item.kind), ["generic", "workflow"]);
+    assert.deepEqual(modal.items.map((item) => item.kind ?? "agent").filter((kind) => kind !== "agent"), ["generic"]);
+    assert.equal("workflowItem" in modal, false);
     const view = selectSessionAgentPickerModal(store.getState());
-    const workflowRow = view.rows[1];
-    const text = (Array.isArray(workflowRow) ? workflowRow : [workflowRow]).map((run) => run.text).join("");
-    assert.match(text, new RegExp(`${WORKFLOW_SESSION_GLYPH} Workflow`));
+    const text = view.rows.flat().map((run) => run?.text ?? "").join("");
+    assert.doesNotMatch(text, /Workflow/);
+    assert.doesNotMatch(text, new RegExp(WORKFLOW_SESSION_GLYPH));
 
-    // Choosing it opens the editor, prefilled with a working example.
-    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: 1 } });
-    await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
-    const editor = selectWorkflowCreateModal(store.getState());
-    assert.ok(editor);
-    assert.equal(editor.yaml, WORKFLOW_YAML_TEMPLATE);
-    assert.equal(editor.inputs, "{}");
-});
-
-test("a connection that cannot create workflows does not offer them", async () => {
-    const { controller, store } = makeController({ createWorkflowSession: undefined });
-    await controller.openSessionAgentPicker();
-    assert.ok(!store.getState().ui.modal.items.some((item) => item.kind === "workflow"));
-    assert.equal(buildAgentPickerItems([], { query: "zzz", workflowItem: { id: "w", kind: "workflow", title: "Workflow" } }).length, 0);
-});
-
-test("creating a workflow sends the YAML and parsed inputs, then opens the new session", async () => {
-    const { controller, store, calls } = makeController();
-    controller.openWorkflowCreateModal();
-    const created = await controller.createWorkflowSession({ yaml: WORKFLOW_YAML_TEMPLATE, inputs: "{\"keyPattern\":\"metrics/%\"}" });
-    assert.equal(created.sessionId, "wf-1");
-    assert.deepEqual(calls.createWorkflowSession, [{ yaml: WORKFLOW_YAML_TEMPLATE, inputs: { keyPattern: "metrics/%" } }]);
-    const state = store.getState();
-    assert.equal(state.ui.modal, null);
-    assert.equal(state.sessions.activeSessionId, "wf-1");
-    assert.equal(state.sessions.byId["wf-1"].sessionKind, "workflow");
-});
-
-test("a refused workflow keeps the editor open with the reason and the text", async () => {
-    const { controller, store, calls } = makeController({
-        createWorkflowSession: async () => { throw new Error("Invalid workflow: states.a.type 'agent' is not supported yet; this version runs script and terminal states."); },
-    });
-    controller.openWorkflowCreateModal();
-
-    await controller.createWorkflowSession({ yaml: "kind: Workflow", inputs: "[1]" });
-    assert.match(selectWorkflowCreateModal(store.getState()).error, /Inputs must be a JSON object/);
-    assert.equal(calls.createWorkflowSession.length, 0);
-
-    await controller.createWorkflowSession({ yaml: "kind: Workflow", inputs: "{" });
-    assert.match(selectWorkflowCreateModal(store.getState()).error, /Inputs are not valid JSON/);
-
-    await controller.createWorkflowSession({ yaml: "my: yaml", inputs: "{}" });
-    const editor = selectWorkflowCreateModal(store.getState());
-    assert.match(editor.error, /type 'agent' is not supported yet/);
-    assert.equal(editor.yaml, "my: yaml");
-    assert.equal(editor.busy, false);
+    assert.equal(typeof controller.createWorkflowSession, "undefined");
+    assert.equal(typeof controller.openWorkflowCreateModal, "undefined");
+    assert.equal("WORKFLOW_YAML_TEMPLATE" in uiCore, false);
+    assert.equal("selectWorkflowCreateModal" in uiCore, false);
 });
 
 test("a workflow session takes no steering, no Stop and no regeneration", async () => {

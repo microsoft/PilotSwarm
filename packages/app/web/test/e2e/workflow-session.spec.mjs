@@ -2,8 +2,9 @@
 //   - the session list marks a workflow session (⛓) beside agent sessions
 //   - its transcript is the execution log, and the composer says why there
 //     is no chat box
-//   - New → "Workflow instead" opens the YAML editor, Create sends the
-//     YAML and inputs and opens the new session, and a refusal keeps the text
+//   - a workflow session is always an agent's child (spawn_workflow): New
+//     offers no way to start one, neither at the model step nor in the
+//     agent chooser
 //
 // PS_E2E_SHOT_DIR, when set, receives screenshots of each state for review.
 import { test, expect } from "@playwright/test";
@@ -14,7 +15,6 @@ import { buildWorkflowCanvasHtml, compileWorkflow, foldWorkflowCanvasState } fro
 
 const AGENT_ID = "11111110-2222-3333-4444-555555555550";
 const WORKFLOW_ID = "77777777-2222-3333-4444-555555555555";
-const CREATED_ID = "88888888-2222-3333-4444-555555555555";
 const SHOTS = process.env.PS_E2E_SHOT_DIR || null;
 
 const now = Date.now();
@@ -64,7 +64,7 @@ async function shot(page, name) {
     await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: false });
 }
 
-async function routeApi(page, { onCreate } = {}) {
+async function routeApi(page, { agents = null } = {}) {
     await page.routeWebSocket("**/api/v1/ws", () => {});
     await page.route("**/api/v1/**", async (route) => {
         const req = route.request();
@@ -76,13 +76,9 @@ async function routeApi(page, { onCreate } = {}) {
         if (pathname.endsWith("/defaults")) return answer({});
         if (pathname.endsWith("/management/sessions")) return answer({ sessions: SESSIONS, hasMore: false, nextCursor: null });
         if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions: SESSIONS, hasMore: false });
-        if (pathname.endsWith("/sessions/workflow") && req.method() === "POST") return onCreate(route, req.postDataJSON());
+        if (agents && pathname.endsWith("/agents") && req.method() === "GET") return answer(agents);
         if (pathname.includes(`/sessions/${WORKFLOW_ID}/events`)) return answer(WORKFLOW_EVENTS);
-        if (pathname.includes(`/sessions/${CREATED_ID}/events`)) return answer([]);
         if (pathname.endsWith(`/sessions/${WORKFLOW_ID}`)) return answer({ ...SESSIONS[1], events: [], messages: [] });
-        if (pathname.endsWith(`/sessions/${CREATED_ID}`)) {
-            return answer({ sessionId: CREATED_ID, sessionKind: "workflow", title: "Workflow: example-workflow", status: "running", events: [], messages: [] });
-        }
         return route.fallback();
     });
 }
@@ -112,63 +108,32 @@ test("a workflow session is marked in the list, shows its execution log and has 
     expect(errors).toEqual([]);
 });
 
-test("New → Workflow opens the editor, creates the session and opens it", async ({ page }) => {
+test("New offers no way to start a workflow: agents start them with spawn_workflow", async ({ page }) => {
     const errors = [];
-    const created = [];
+    const workflowPosts = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await routeApi(page, {
-        onCreate: (route, body) => {
-            created.push(body);
-            return route.fulfill({ json: { ok: true, result: { sessionId: CREATED_ID, sessionKind: "workflow", workflowName: "example-workflow" } } });
-        },
+    page.on("request", (req) => {
+        if (req.method() === "POST" && /\/sessions\/workflow/.test(new URL(req.url()).pathname)) workflowPosts.push(req.url());
     });
+    await routeApi(page, { agents: [{ name: "alpha", title: "Alpha", description: "An ordinary agent." }] });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await expect(page.locator(".ps-prompt-input")).toBeVisible();
 
     await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Workflow/ })).toHaveCount(0);
     await shot(page, "2-new-session-model-step");
-    await page.getByRole("button", { name: "⛓ Workflow instead" }).click();
 
-    const yaml = page.locator("#ps-workflow-yaml");
-    await expect(yaml).toBeVisible();
-    await expect(yaml).toHaveValue(/kind: Workflow\n/);
-    await expect(yaml).toHaveValue(/runtime: python/);
-    // Typing in the editor must stay in the editor: "n" is the global
-    // new-session shortcut, and Enter confirms other dialogs.
-    await page.locator("#ps-workflow-inputs").fill("");
-    await page.locator("#ps-workflow-inputs").type("{\"keyPattern\": \"metrics/%\"}");
-    await yaml.press("End");
-    await yaml.press("Enter");
-    await expect(page.locator(".ps-workflow-modal")).toBeVisible();
-    await shot(page, "3-workflow-editor");
-
-    await page.getByRole("button", { name: "Create workflow" }).click();
-    await expect.poll(() => created.length).toBe(1);
-    expect(created[0].yaml).toMatch(/kind: Workflow\n/);
-    expect(created[0].inputs).toEqual({ keyPattern: "metrics/%" });
-    await expect(page.locator(".ps-workflow-modal")).toHaveCount(0);
-    await expect(page.locator(".ps-composer-readonly")).toContainText("Workflow session");
-    await shot(page, "4-created-workflow-session");
+    await page.getByRole("button", { name: "Create Session", exact: true }).click();
+    await expect(page.getByText("Select agent for new session", { exact: true })).toBeVisible();
+    const chooser = page.locator(".ps-modal");
+    await expect(chooser).toContainText("Alpha");
+    await expect(chooser).not.toContainText("Workflow");
+    await expect(chooser).not.toContainText("⛓");
+    await expect(page.locator("#ps-workflow-yaml")).toHaveCount(0);
+    await shot(page, "3-agent-chooser-without-workflow");
+    expect(workflowPosts).toEqual([]);
     expect(errors).toEqual([]);
-});
-
-test("a refused workflow keeps the editor open with the reason and the text", async ({ page }) => {
-    await routeApi(page, {
-        onCreate: (route) => route.fulfill({
-            status: 400,
-            json: { ok: false, error: { code: "WORKFLOW_INVALID", message: "Invalid workflow: states.collect.type 'agent' is not supported yet; this version runs script and terminal states." } },
-        }),
-    });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
-    await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
-    await page.getByRole("button", { name: "⛓ Workflow instead" }).click();
-    const yaml = page.locator("#ps-workflow-yaml");
-    await yaml.fill(String(await yaml.inputValue()).replace("type: script", "type: agent"));
-    await page.getByRole("button", { name: "Create workflow" }).click();
-    await expect(page.locator(".ps-workflow-modal [role=alert]")).toContainText("type 'agent' is not supported yet");
-    await expect(yaml).toHaveValue(/type: agent/);
-    await shot(page, "5-workflow-editor-refusal");
 });
 
 // ── The live canvas ────────────────────────────────────────────────
