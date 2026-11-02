@@ -5993,6 +5993,70 @@ export class WorkflowStore {
             return { receipt, replayed: false };
         });
     }
+
+    /**
+     * The test runs of a workflow that retention may delete (migration 0098;
+     * design 05 cleanup): its ended test runs beyond the newest `keep` (by
+     * admission), each ended at least `graceSeconds` ago by the store's
+     * clock. Never a live run, and never an active test run.
+     */
+    async listPrunableTestRuns(workflowSessionId: string, options: { keep: number; graceSeconds: number }): Promise<WorkflowRunRow[]> {
+        if (!Number.isSafeInteger(options.keep) || options.keep < 0 || !Number.isSafeInteger(options.graceSeconds) || options.graceSeconds < 0) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Test run retention needs whole, non-negative keep and grace values.");
+        }
+        const { rows } = await this.pool.query(
+            `SELECT * FROM (
+                SELECT run.*, row_number() OVER (ORDER BY run.created_at DESC, run.run_id DESC) AS newest
+                  FROM ${this.t.runs} AS run
+                 WHERE run.workflow_session_id = $1 AND run.mode = 'test' AND run.status IN ('completed', 'failed', 'cancelled', 'stopped')
+             ) AS ended
+             WHERE ended.newest > $2 AND ended.finished_at <= clock_timestamp() - $3::integer * interval '1 second'
+             ORDER BY ended.created_at, ended.run_id`,
+            [workflowSessionId, options.keep, options.graceSeconds]);
+        return rows.map(runFrom);
+    }
+
+    /**
+     * Delete one ended test run and the records it owns (migration 0098
+     * retention; design 05 cleanup: only test-created scratch): its
+     * interceptions, the typed input given to it, its node executions, its
+     * KV revisions and its run row, in one transaction under the session and
+     * run locks. Nothing is deleted unless it is a test run that ended at
+     * least `graceSeconds` ago and owns no live record (an outbox message, a
+     * request or an agent invocation, which a test run never has). Operation
+     * receipts and the session's events stay as the audit trail: a repeated
+     * test operation still returns its receipt, and the run reads as not
+     * found.
+     */
+    async pruneTestRun(runId: string, options: { graceSeconds: number; projection?: (run: WorkflowRunRow) => SessionProjection }): Promise<
+        { pruned: true; run: WorkflowRunRow; deleted: { interceptions: number; inbox: number; nodes: number; kvRevisions: number } }
+        | { pruned: false; reason: "not_found" | "not_test" | "active" | "grace" | "live_records" }> {
+        return this.transaction(async client => {
+            const { rows: found } = await client.query(`SELECT workflow_session_id FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
+            // A deleted workflow keeps its runs as they are.
+            if (!found[0] || !await this.lockLiveSession(client, str(found[0], "workflow_session_id"))) return { pruned: false as const, reason: "not_found" as const };
+            const run = await this.lockRun(client, runId);
+            if (run.mode !== "test") return { pruned: false as const, reason: "not_test" as const };
+            if (ACTIVE_RUN_STATUSES.includes(run.status) || run.finishedAt === null) return { pruned: false as const, reason: "active" as const };
+            const { rows: clock } = await client.query(
+                `SELECT finished_at <= clock_timestamp() - $2::integer * interval '1 second' AS due FROM ${this.t.runs} WHERE run_id = $1`,
+                [runId, options.graceSeconds]);
+            if (clock[0]?.due !== true) return { pruned: false as const, reason: "grace" as const };
+            const { rows: live } = await client.query(
+                `SELECT (SELECT count(*) FROM ${this.t.outbox} WHERE run_id = $1)
+                      + (SELECT count(*) FROM ${this.t.requests} WHERE run_id = $1)
+                      + (SELECT count(*) FROM ${this.t.agentInvocations} WHERE run_id = $1) AS n`, [runId]);
+            if (int(live[0], "n") > 0) return { pruned: false as const, reason: "live_records" as const };
+            const count = async (sql: string): Promise<number> => (await client.query(sql, [runId])).rowCount ?? 0;
+            const interceptions = await count(`DELETE FROM ${this.t.testInterceptions} WHERE run_id = $1`);
+            const inbox = await count(`DELETE FROM ${this.t.inbox} WHERE run_id = $1`);
+            const nodes = await count(`DELETE FROM ${this.t.nodes} WHERE run_id = $1`);
+            const kvRevisions = await count(`DELETE FROM ${this.t.kvRevisions} WHERE run_id = $1`);
+            await client.query(`DELETE FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
+            await this.project(client, options.projection?.(run));
+            return { pruned: true as const, run, deleted: { interceptions, inbox, nodes, kvRevisions } };
+        });
+    }
 }
 
 /** The identity of a test response: its kind and value (canonical JSON). */

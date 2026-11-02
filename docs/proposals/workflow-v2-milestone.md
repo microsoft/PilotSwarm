@@ -324,8 +324,24 @@ Unfulfilled requirements (open, not waived): `agent_mode: real` (R19,
 R20: a real agent child whose tools are intercepted, with the test context
 inherited by its descendants) is refused with `TEST_AGENT_MODE_UNSUPPORTED`.
 Deviations still open: typed input's expiry (`ttl_seconds`) runs on real
-time; a test run's interceptions are not deleted by any retention policy yet
-(B11).
+time.
+
+**Retention (design 05 cleanup; D07 configurable defaults).** After each new
+test admission, the workflow's ended test runs beyond the newest `keep`
+(default 20) that ended at least `graceSeconds` ago (default 300) and whose
+controller instance has finished are deleted, each in one transaction
+(`WorkflowStore.pruneTestRun`): its interceptions, the typed input given to
+it, its node executions, its KV revisions and its run row. A live run, an
+active test run, a run within the grace, a run of a deleted workflow and a
+run that owns a live record (an outbox message, a request or an agent
+invocation, which a test run never has) are never deleted. Operation
+receipts and the session's events stay as the audit trail
+(`workflow.test_run_deleted`); a repeated test operation returns its
+receipt and starts nothing. Retention is best effort: a failure is recorded
+(`workflow.test_retention_failed`) and never refuses the admitted test. A
+host sets other values with `WorkflowV2Host.testRetention`. Not deleted:
+the finished controller orchestration's own history, which duroxide
+keeps.
 
 ## Publication pins and test evidence (design 02 publication record, 03 package agents; R18, R28)
 

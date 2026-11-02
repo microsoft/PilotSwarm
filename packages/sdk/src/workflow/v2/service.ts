@@ -85,7 +85,21 @@ export interface WorkflowV2Host {
      * it cannot resolve (AGENT_UNAVAILABLE).
      */
     resolveAgent?: (name: string, callerSessionId: string) => Promise<WorkflowPublicationAgent | null>;
+    /**
+     * The test-run retention policy (design 05 cleanup; INACTIVE: only a host
+     * that runs tests applies it): after each test admission, the workflow's
+     * ended test runs beyond the newest `keep` that ended at least
+     * `graceSeconds` ago, and whose controller has finished, are deleted
+     * (WorkflowStore.pruneTestRun). Defaults: WORKFLOW_V2_TEST_RUNS_RETAINED
+     * and WORKFLOW_V2_TEST_RUN_RETENTION_GRACE_SECONDS.
+     */
+    testRetention?: { keep?: number; graceSeconds?: number };
 }
+
+/** How many ended test runs a workflow keeps by default (design 05 cleanup; D07: a configurable default). */
+export const WORKFLOW_V2_TEST_RUNS_RETAINED = 20;
+/** How long an ended test run is kept at least, so that its controller's notice and its effects settle first. */
+export const WORKFLOW_V2_TEST_RUN_RETENTION_GRACE_SECONDS = 300;
 
 /** A named agent as the host resolves it at publication. */
 export interface WorkflowPublicationAgent {
@@ -1027,7 +1041,38 @@ export async function startWorkflowV2Test(host: WorkflowV2Host, workflowSessionI
         },
     });
     if (stored.receipt.run) await dispatchWorkflowV2Run(host, stored.receipt);
+    if (!stored.replayed) await retainTestRuns(host, workflowSessionId);
     return stored;
+}
+
+/**
+ * Apply the test-run retention policy (WorkflowV2Host.testRetention) after a
+ * test admission: delete the ended test runs beyond the newest `keep` that
+ * ended at least the grace ago and whose controller instance has finished
+ * (an ended run's controller may still be telling its parent). Best effort:
+ * a failure never refuses the test that was admitted; it is recorded as
+ * workflow.test_retention_failed, and the next admission tries again.
+ */
+async function retainTestRuns(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "testRetention">, workflowSessionId: string): Promise<void> {
+    const keep = host.testRetention?.keep ?? WORKFLOW_V2_TEST_RUNS_RETAINED;
+    const graceSeconds = host.testRetention?.graceSeconds ?? WORKFLOW_V2_TEST_RUN_RETENTION_GRACE_SECONDS;
+    try {
+        for (const run of await host.store.listPrunableTestRuns(workflowSessionId, { keep, graceSeconds })) {
+            const controller = await host.duroxideClient.getStatus(run.controllerInstanceId);
+            if (!["Completed", "Failed", "Terminated", "NotFound"].includes(controller.status)) continue;
+            await host.store.pruneTestRun(run.runId, {
+                graceSeconds,
+                projection: pruned => ({ sessionId: workflowSessionId, events: [{ eventType: "workflow.test_run_deleted", data: {
+                    runId: pruned.runId, revision: pruned.revision, status: pruned.status, scenario: pruned.testScenario,
+                    reason: "retention", keep, graceSeconds,
+                } }] }),
+            });
+        }
+    } catch (error) {
+        await host.store.recordSessionEvents(workflowSessionId, [{ eventType: "workflow.test_retention_failed", data: {
+            error: jsonbSafeText(error instanceof Error ? error.message : String(error), 1_000),
+        } }]).catch(() => undefined);
+    }
 }
 
 /** The test run a test command names (run_id is required: a test command never defaults to the live run). */

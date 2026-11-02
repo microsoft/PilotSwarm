@@ -499,3 +499,90 @@ describe("workflow v2 test runs: controller 1.9.0 (inactive, test-only registrat
         }
     });
 });
+
+/** A script whose one tool call a fixture answers, then done: a test run that ends at once. */
+function retainedDoc() {
+    return {
+        ...head("retained"),
+        initial: "work",
+        states: {
+            work: {
+                type: "script", source: "const build = await callTool(\"read_build\", { buildId: 7 });\nawait setResult(\"ok\", build);\n",
+                transition: { next: { ok: "done", failure: "failed" } },
+            },
+            done: { type: "terminal", outcome: "succeeded", output: "${input}" },
+            failed: { type: "terminal", outcome: "failed", output: "${runtime.error}" },
+        },
+    };
+}
+const RETAINED_FIXTURES = [{ tool: "read_build", arguments: { buildId: 7 }, response: { kind: "success", value: { state: "green" } } }];
+
+describe("workflow v2 test runs: retention (design 05 cleanup)", () => {
+    it("deletes the ended test runs beyond the newest kept once their controllers finished, and keeps receipts, the grace and active runs", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            h.host.testRetention = { keep: 1, graceSeconds: 0 };
+            const draft = await draftOf(h, retainedDoc());
+            const finished = async runId => {
+                const run = await ended(h, runId);
+                await until(async () => (await h.client.getStatus(workflowTestControllerInstanceId(runId))).status === "Completed", `the controller of ${runId}`);
+                return run;
+            };
+            const first = await draft.test("test-1", { fixtures: RETAINED_FIXTURES });
+            expect(await finished(first)).toMatchObject({ status: "completed" });
+            expect(await h.store.listInterceptions(first)).toHaveLength(1);
+            const second = await draft.test("test-2", { fixtures: RETAINED_FIXTURES });
+            await finished(second);
+            // Before this admission's retention, both ended runs exist; after it, only the newest ended one (and this one).
+            const third = await draft.test("test-3", { fixtures: RETAINED_FIXTURES });
+            expect(await h.store.readRun(first)).toBeNull();
+            expect(await h.store.listNodeExecutions(first, 200)).toEqual([]);
+            expect(await h.store.listInterceptions(first)).toEqual([]);
+            expect(await h.store.readRun(second)).toMatchObject({ status: "completed" });
+            expect(await h.store.readRun(third)).not.toBeNull();
+            const deleted = await h.catalog.getSessionEvents(draft.workflowId, 0, 500, ["workflow.test_run_deleted"]);
+            expect(deleted.map(event => event.data)).toEqual([expect.objectContaining({ runId: first, status: "completed", reason: "retention", keep: 1 })]);
+            // The deleted run's test operation still replays its receipt (nothing is started again), and reading the run finds nothing.
+            expect(await draft.update({ operation: "test", operation_id: "test-1", expected_revision: 1, definition_hash: draft.definitionHash,
+                inputs: {}, fixtures: RETAINED_FIXTURES })).toMatchObject({ ok: true, replayed: true, run: { runId: first } });
+            expect(await draft.read({ run_id: first })).toMatchObject({ ok: false, error: { code: "RUN_NOT_FOUND" } });
+
+            // Within the grace nothing is deleted, however many ended runs there are.
+            await finished(third);
+            h.host.testRetention = { keep: 0, graceSeconds: 3_600 };
+            // No fixture: its tool call waits for an answer, so the run stays active.
+            const fourth = await draft.test("test-4");
+            for (const runId of [second, third, fourth]) expect(await h.store.readRun(runId), runId).not.toBeNull();
+            // The store refuses what retention must never delete: an active run, a run within the grace, a live run.
+            expect(await h.store.pruneTestRun(fourth, { graceSeconds: 0 })).toEqual({ pruned: false, reason: "active" });
+            const call = `${nodeExecutionIdFor(fourth, "root", "work", 1)}/call-1`;
+            await awaiting(h, call);
+            expect(await draft.respond(fourth, call, { kind: "success", value: { state: "green" } }, "answer-1")).toMatchObject({ ok: true });
+            await finished(fourth);
+            expect(await h.store.pruneTestRun(fourth, { graceSeconds: 3_600 })).toEqual({ pruned: false, reason: "grace" });
+            expect(await h.store.pruneTestRun(randomUUID(), { graceSeconds: 0 })).toEqual({ pruned: false, reason: "not_found" });
+            const pruned = await h.store.pruneTestRun(fourth, { graceSeconds: 0 });
+            expect(pruned).toMatchObject({ pruned: true, run: { runId: fourth }, deleted: { interceptions: 1, inbox: 0, kvRevisions: 1 } });
+            expect(pruned.deleted.nodes).toBeGreaterThanOrEqual(2);
+            expect(await h.store.readRun(fourth)).toBeNull();
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("never deletes a live run", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const draft = await draftOf(h, retainedDoc());
+            const started = await draft.update({ operation: "publish_and_start", operation_id: "go", expected_revision: 1, definition_hash: draft.definitionHash, inputs: {} });
+            expect(started, JSON.stringify(started)).toMatchObject({ ok: true, run: { mode: "live" } });
+            // A live run's script calls the live tool executor, which this harness refuses: the run fails and ends.
+            await ended(h, started.run.runId);
+            expect(await h.store.pruneTestRun(started.run.runId, { graceSeconds: 0 })).toEqual({ pruned: false, reason: "not_test" });
+            expect(await h.store.listPrunableTestRuns(draft.workflowId, { keep: 0, graceSeconds: 0 })).toEqual([]);
+            expect(await h.store.readRun(started.run.runId)).not.toBeNull();
+        } finally {
+            await h.stop();
+        }
+    });
+});

@@ -127,6 +127,12 @@ Report the tested revision and hash, the scenario, the routes covered and
 not covered, and which effects you mocked and how. Say that script effects
 were real.
 
+Read the evidence soon after the run ends. When a new test run starts, the
+host deletes the oldest ended test runs beyond the newest it keeps (20 by
+default, each at least 5 minutes after it ended), with their interceptions.
+The test operation's receipt stays; `read_workflow` then answers
+`RUN_NOT_FOUND` for that run.
+
 ## 7. Plan the scenarios
 
 - The success path, then one test for each route that matters: each business
