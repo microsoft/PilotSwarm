@@ -1409,17 +1409,16 @@ export class SessionManager {
     }
 
     /**
-     * The local address standing in for a host's runtime, for every
-     * transport. The binding's bridge is made once and kept: the same host
-     * keeps the same address, so its pooled client survives the turn. A
-     * replaced host arrives here with no bridge and gets a new one, and
-     * the new address gives it a fresh client.
+     * The local address standing in for a host's runtime. The binding's
+     * bridge is made once and kept: the same host keeps the same address,
+     * so its pooled client survives the turn. A replaced host arrives here
+     * with no bridge and gets a new one, and the new address gives it a
+     * fresh client.
      *
-     * The bridge opens a pipe per connection — the provider's own code for
-     * a `pipe` provider, a TCP connection PilotSwarm makes for a `direct`
-     * one — so a broken connection is replaced by a fresh pipe rather than
-     * a dead one, and a connection that cannot be opened fails where it is
-     * seen. Over every pipe the worker and the host prove to each other
+     * The bridge opens a connection to the host's address per connection,
+     * so a broken connection is replaced by a fresh one rather than a dead
+     * one, and a connection that cannot be opened fails where it is seen.
+     * Over every one of them the worker and the host prove to each other
      * that they hold this binding's secret before anything else crosses.
      *
      * A binding with no secret cannot be used: a remote runtime that
@@ -1429,10 +1428,7 @@ export class SessionManager {
         binding: ComputeBinding,
         endpoint: Exclude<ComputeRuntimeEndpoint, { transport: "local" }>,
     ): Promise<ComputeRuntimeEndpoint> {
-        const { provider, target, host } = binding;
-        if (endpoint.transport === "pipe" && typeof provider.openConnection !== "function") {
-            throw new Error(`the compute provider "${provider.kind}" returned a connection it has no code to open`);
-        }
+        const { provider } = binding;
         if (!endpoint.handshake) {
             throw computeFailureError({
                 code: COMPUTE_ERROR_CODES.HANDSHAKE_FAILED,
@@ -1453,9 +1449,7 @@ export class SessionManager {
         } else {
             const held = { reach: endpoint } as { bridge: ComputeRuntimeBridge; reach: typeof endpoint };
             const bridge = new ComputeRuntimeBridge(
-                (signal) => held.reach.transport === "pipe"
-                    ? provider.openConnection!({ target, host, details: held.reach.details ?? {}, signal })
-                    : openTcpPipe((held.reach as Extract<ComputeRuntimeEndpoint, { transport: "uri" }>).address, signal),
+                (signal) => openTcpPipe(held.reach.address, signal),
                 { handshake: () => held.reach.handshake },
             );
             held.bridge = bridge;

@@ -263,9 +263,6 @@ export type {
     ComputeRuntimeEndpoint,
     ComputeWorkspacePaths,
     ComputeReleaseReason,
-    ComputeTransport,
-    ComputePipe,
-    ComputeOpenConnectionRequest,
     ComputeRenewRequest,
     ComputeDoneRequest,
 } from "./compute.js";

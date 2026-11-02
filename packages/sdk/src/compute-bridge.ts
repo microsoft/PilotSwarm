@@ -3,12 +3,11 @@
  * process (docs/proposals/compute-providers.md, "Transport contract").
  *
  * PilotSwarm's control plane sees a pipe and nothing else: a two-way byte
- * stream to one host's runtime. It does not know, and must never need to
- * know, what the pipe is made of. For a provider that opens its own
- * connections the code that makes one lives in the provider and arrives
- * with the installed provider — never with a registered target. For a
- * provider whose hosts are reachable at an address, PilotSwarm supplies
- * that code itself (`openTcpPipe`), so there is one path and not two.
+ * stream to one host's runtime. Every host this build reaches is reached
+ * at an address, and PilotSwarm opens the connection itself
+ * (`openTcpPipe`), so there is one path and not two. The opener is
+ * injected rather than called directly only so the tests can stand in a
+ * stream of their own.
  *
  * Every remote connection goes through the bridge, which is what makes the
  * handshake uniform: the bridge opens a pipe, proves to the host that it
@@ -25,10 +24,17 @@
  * goes to that one binding's host and no other, and it closes with the
  * binding.
  *
- * Past the handshake the bridge carries bytes and judges none of them. The
- * runtime's own connection token still travels inside the pipe and is
- * still checked at the far end, so reaching the bridge grants nothing —
- * exactly as reaching a runtime's own loopback port grants nothing today.
+ * Past the handshake the bridge carries bytes and judges none of them. It
+ * serves whoever connects to it on this machine, so what keeps reaching it
+ * worthless is the runtime's own connection token, which travels inside
+ * the pipe and is still checked at the far end. That token is required of
+ * every remote endpoint (`checkRemoteEndpoint`), because a session that
+ * runs on the worker is model-chosen code on this same machine.
+ *
+ * The handshake proves who is at each end of a connection. It does not
+ * protect what crosses it: past `ok` the stream is a plain pass-through,
+ * so the network between the worker and the host must be private or
+ * otherwise protected.
  */
 import { connect as netConnect, createServer, type AddressInfo, type Server, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
@@ -44,11 +50,10 @@ export const COMPUTE_PIPE_OPEN_TIMEOUT_MS = 30_000;
 export const COMPUTE_BRIDGE_MAX_CONNECTIONS = 8;
 
 /**
- * The built-in way to open a pipe: a TCP connection to an address. It is
- * what a provider whose hosts are reachable supplies instead of code —
- * the provider returns an address and PilotSwarm connects to it — so that
- * a reachable host and a host behind a provider's own connection travel
- * exactly the same path from here on.
+ * The way a pipe is opened: a connection to the host's address. The
+ * provider returns an address and PilotSwarm connects to it, so no
+ * provider carries transport code and every host travels the same path
+ * from here on.
  */
 export function openTcpPipe(address: string, signal: AbortSignal, timeoutMs = COMPUTE_PIPE_OPEN_TIMEOUT_MS): Promise<Duplex> {
     const raw = String(address ?? "").trim();
@@ -80,10 +85,10 @@ export function openTcpPipe(address: string, signal: AbortSignal, timeoutMs = CO
 /**
  * A listener on this machine standing in for one host's runtime.
  *
- * `openPipe` is the provider's own `openConnection`, already bound to its
- * host: the bridge calls it once per accepted connection, so two
- * connections to the same host never share one pipe, and a connection that
- * breaks is replaced by a fresh pipe rather than a dead one.
+ * `openPipe` opens one connection to this host's address: the bridge calls
+ * it once per accepted connection, so two connections to the same host
+ * never share one pipe, and a connection that breaks is replaced by a
+ * fresh pipe rather than a dead one.
  */
 export class ComputeRuntimeBridge {
     private server: Server | null = null;
@@ -188,7 +193,7 @@ export class ComputeRuntimeBridge {
         const pipe = await this.openWithDeadline();
         if (!pipe || typeof pipe.pipe !== "function" || typeof pipe.write !== "function") {
             try { (pipe as Duplex | undefined)?.destroy(); } catch { /* nothing to destroy */ }
-            throw new Error("the compute provider did not return a two-way stream");
+            throw new Error("opening the connection to the compute host did not give a two-way stream");
         }
         const handshake = typeof this.options.handshake === "function"
             ? this.options.handshake()
@@ -207,11 +212,11 @@ export class ComputeRuntimeBridge {
     }
 
     /**
-     * Ask the provider for a pipe, and give up on it when its deadline
-     * passes. The deadline is the bridge's own: a provider is told through
-     * the signal, but a provider that ignores it still cannot leave a
-     * connection waiting for ever. A pipe that turns up after that is
-     * thrown away rather than used.
+     * Open a pipe, and give up on it when its deadline passes. The
+     * deadline is the bridge's own: the opener is told through the signal,
+     * but one that ignores it still cannot leave a connection waiting for
+     * ever. A pipe that turns up after that is thrown away rather than
+     * used.
      */
     private openWithDeadline(): Promise<Duplex> {
         const controller = new AbortController();
@@ -227,7 +232,7 @@ export class ComputeRuntimeBridge {
             timer = setTimeout(() => {
                 settled = true;
                 controller.abort();
-                reject(new Error(`the compute provider did not open a connection within ${timeoutMs} ms`));
+                reject(new Error(`the connection to the compute host did not open within ${timeoutMs} ms`));
             }, timeoutMs);
             attempt.then(
                 (pipe) => { if (!settled) { settled = true; clearTimeout(timer); resolve(pipe); } },

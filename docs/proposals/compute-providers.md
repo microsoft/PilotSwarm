@@ -1,7 +1,7 @@
 # Compute providers: run a session's agent somewhere other than the worker
 
 **Status:** exploration on a feature branch, draft PR for discussion. Built
-on the branch: targets and names, the provider interface and its transport
+on the branch: targets and names, the provider interface and its connection
 contract, the bridge, the handshake and the host component, the remote turn
 and its trust boundary, leases and the end-of-session notice, and the
 management surfaces. Three pieces of the design were taken out of this change
@@ -25,8 +25,7 @@ whose two ends prove who they are. A **compute provider** supplies the hosts:
 today it is a plug-in loaded into the worker, and running providers as
 registered services outside the worker is future work (section 12). Nothing
 in the design names a cloud, a platform, a network product or a kind of
-kind of host; a provider can front a pool of hosts, a sandbox service, or
-hosts that only connect out.
+kind of host; a provider can front a pool of hosts or a sandbox service.
 
 ## High-level design
 
@@ -124,7 +123,7 @@ a reason. The agent never falls back to running on the worker.
 
 | Chosen | Instead of | Why |
 |---|---|---|
-| A provider-opened pipe | Fixed transports built into PilotSwarm | Any medium works without PilotSwarm knowing it. |
+| Everything above the provider sees only a pipe | Core knowing the medium | The connection can change without the control plane changing. |
 | One handshake defined by PilotSwarm | Each provider's own trust scheme | The worker checks every host the same way itself. |
 | The provider decides a host's fate | PilotSwarm deleting hosts | Some hosts are never removed; others are cleaned and reused. Only the provider knows. |
 | Names that include the owner | Free-form global names | Names never collide between people, and nobody can take a name administrators need. |
@@ -225,8 +224,8 @@ flowchart LR
     HCOMP --- RT
   end
   CP -- "creates or pairs" --> HOST
-  BR == "handshake, then pass-through (pipe transport)" ==> HCOMP
-  CP -- "dial address (direct transport)" --> HCOMP
+  BR == "handshake, then pass-through" ==> HCOMP
+  CP -- "says where to reach the host" --> BR
   HCOMP -- "forward to local port" --> RT
   RT -- "model requests, tool calls,<br/>session-state reads/writes" --> ORCH
 ```
@@ -243,10 +242,10 @@ is everything the operator runs: the network between workers and hosts.
 
 | Concern | Core supplies | The provider / deployment supplies | Where they meet |
 |---|---|---|---|
-| Adding a kind of compute | A provider interface and a registry the worker loads plug-ins into (**built**). Registering providers as services outside the worker is future work (section 12) | A provider object with a `kind`, a transport and capabilities | `computeProviders` / `registerComputeProvider` |
+| Adding a kind of compute | A provider interface and a registry the worker loads plug-ins into (**built**). Registering providers as services outside the worker is future work (section 12) | A provider object with a `kind` and capabilities | `computeProviders` / `registerComputeProvider` |
 | Registering a place to run | The `compute_targets` table, owner-qualified names, create/update/enable/disable/delete, resolve (**built**) | A `config` object the provider understands (no secrets) | `cms_compute_target_*` procedures |
 | Getting a host for a tree | `bind` once per (target, tree), `connect` every turn, with deadlines (**built**) | Readying a host and saying how to reach it | `bind(req)`, `connect(req)` |
-| Reaching the host | A bridge per host on the worker's machine, in front of every remote runtime: PilotSwarm's own connection for a `direct` provider, the provider's for a `pipe` one (**built**) | `direct`: a reachable address. `pipe`: `openConnection(host, signal)` | the endpoint `connect` returns |
+| Reaching the host | A bridge per host on the worker's machine, in front of every remote runtime; PilotSwarm opens every connection itself (**built**) | An address the worker can reach | the endpoint `connect` returns |
 | Proving each end | One mutual handshake on every remote connection; a host component that answers it (**built**) | Putting the per-binding secret on the host; running the host component in front of the runtime | the handshake frames |
 | Model requests | Placeholder credentials in the runtime; a per-connection handler that swaps them for real keys and refuses anything else (**built**) | Nothing; the provider never sees a key | the request handler |
 | Session-state files | SessionFs confined to the worker's session folder (**built**) | `files` capability says whether the host shares the worker's files | the SessionFs provider |
@@ -260,7 +259,7 @@ How the two sides work together, end to end:
 ```text
 Register
  1. [operator -> worker]  Load a compute provider into the worker, which
-                      declares its kind, transport and capabilities.
+                      declares its kind and capabilities.
  2. [admin/user -> core]  Register a target of that kind.
 Create and run
  3. [user -> core]    Create a session naming the target. Core records the
@@ -319,8 +318,6 @@ interface ComputeProvider {
   readonly capabilities: {
     files: "worker-local" | "shared-mount" | "provider-api" | "none";
   };
-  readonly transport?: "direct" | "pipe";                                  // default: direct
-  openConnection?(req): Promise<Duplex>;                                   // pipe providers only
   validateTarget?(req): Promise<{ ok: true } | ComputeFailure>;           // before every bind
   bind(req): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>; // once per (target, tree)
   connect(req): Promise<ComputeConnectResult>;                             // every turn
@@ -376,31 +373,24 @@ refreshed as the worker reaches it — and a target offering models of its own
 are future work (section 12). Until then a target carries no advertisement,
 and every session picks a model from PilotSwarm's own catalog.
 
-### 4.4 The transport contract and the bridge
+### 4.4 The connection contract and the bridge
 
-Each provider has exactly one way of being reached, declared in its own code. A
-host never chooses, and a registered target never carries transport code. **(built)**
+Every host is reached at an address. `connect` returns a `uri` endpoint and
+PilotSwarm opens the connection itself, so no provider carries transport code
+and a registered target never carries any either. **(built)**
 
-| `transport` | What the provider does |
-|---|---|
-| `direct` (default) | Its hosts are reachable at an address. `connect` returns a `uri` endpoint, and PilotSwarm opens the pipe itself with a plain connection to that address. The provider writes no transport code. |
-| `pipe` | The provider opens the connection itself, in `openConnection(host, signal)`. `connect` returns a `pipe` endpoint: the host's folders and whatever opaque details opening the connection needs — never an address. |
+A provider written against an earlier interface, where it could open the
+connection in its own code, is refused where it is registered rather than
+accepted and then never asked to open one.
 
-The two differ only in **who supplies the code that opens a pipe**. Everything
-after that is one path: a `direct` provider's address is opened by a built-in
-pipe, and from there a reachable host and a host behind a provider's own
-connection are treated identically. That is what lets the handshake in section
-4.5 be the same everywhere, with nothing to opt out of.
-
-A `pipe` provider must have `openConnection`; a `direct` provider must not. The
-registry refuses anything else, so a provider whose declaration and code
-disagree never reaches a turn.
+Hosts that cannot be dialled — a host that can only reach outwards — are left
+for later (section 12).
 
 Everything above the provider sees only a pipe: a two-way byte stream to one
 host's runtime. It does not know, and must never need to know, what the pipe is
 made of.
 
-**What the pipe must guarantee** (the provider's side):
+**What the connection must guarantee** (the provider's side):
 
 | | |
 |---|---|
@@ -409,16 +399,16 @@ made of.
 | Interactive | Many round trips per turn, output arriving as it is produced |
 | Visibly broken | A broken pipe closes or errors; it never goes quiet and leaves a turn waiting |
 | Pointed at one host | It reaches that host's runtime and nothing else |
-| Protected end to end | Private and tamper-proof whenever what it crosses cannot be trusted. The worker cannot check this; it is the provider's work |
+| Protected end to end | Private and tamper-proof whenever what it crosses cannot be trusted. PilotSwarm does not encrypt this connection and cannot check that anything else does; it is the provider's and the deployment's work. See section 4.5 and section 12 |
 
 **What PilotSwarm guarantees** (the worker's side):
 
 | | |
 |---|---|
-| One bridge per host | Each host gets one bridge, on the worker's own machine, on a port the operating system picks and nothing outside the worker is told. The sessions of a tree share a host, so they share its bridge, its address and its pooled runtime connection — a bridge per session would open a second control connection into one runtime |
+| One bridge per host | Each host of a session tree gets one bridge, on the worker's own machine, on a port the operating system picks and nothing outside the worker is told. The sessions of a tree share a host, so they share its bridge, its address and its pooled runtime connection — a bridge per session would open a second control connection into one runtime |
 | Nothing unproven passes | Every pipe the bridge opens is handshaken (section 4.5) before it is joined to anything. A host that cannot prove itself never sees a byte of the turn |
 | Local only | The bridge listens on this machine alone, so a bridged connection meets the loopback rule by construction |
-| The token still counts | The runtime's own connection token still travels inside the pipe and is still checked at the far end. Reaching the bridge grants nothing |
+| The token is required | The bridge serves whoever connects to it on this machine, so the runtime's own connection token is what makes reaching it worth nothing. A remote endpoint without a token is refused: a session that runs on the worker is model-chosen code on the same machine, and without a token it could drive another session's runtime |
 | One pipe per connection | A pipe serves its own host's runtime only, never shared between connections |
 | Reconnect or fail clearly | A broken connection is replaced by a fresh pipe. A pipe that cannot be opened, or that takes too long, fails the turn with a clear reason rather than hanging |
 | Closed on release | The bridge and every pipe through it close when the session leaves the host and when the worker shuts down |
@@ -426,9 +416,7 @@ made of.
 The runtime connection can only dial an address, so the bridge is the smallest
 thing that turns a pipe into one: a loopback listener that asks for a fresh
 pipe per connection, proves both ends, and joins the two. Every runtime that is
-not the worker's own child process goes through it. Reusable transport code —
-anything that knows how a particular kind of connection is built — belongs in a
-package of its own, outside this core. None is built yet; only the seam is here.
+not the worker's own child process goes through it.
 
 ### 4.5 The handshake and the host component
 
@@ -456,11 +444,11 @@ PilotSwarm defines — the same for every provider and every kind of connection.
 - **The host component.** A small PilotSwarm program runs on the host, in front
   of the runtime. It answers the handshake, then forwards the stream to the
   runtime's local port, and reaches nothing else. It serves exactly one binding
-  and refuses any other. It either listens for the worker's side or dials out,
-  for a host that can only reach outwards. It ships in the SDK as a function and
+  and refuses any other. It listens for the worker's side, so a host must be
+  one the worker can reach at an address. It ships in the SDK as a function and
   as a command, and the `process` test provider runs it in front of its
-  runtime, so the tests do the real handshake. A `direct` provider's `connect`
-  therefore returns the host component's address, never the runtime's own port.
+  runtime, so the tests do the real handshake. A provider's `connect` therefore
+  returns the host component's address, never the runtime's own port.
 - **The runtime token still counts.** Inside the tunnel, the runtime's own
   connection token is still used. The handshake proves the two ends; the token
   still guards the runtime.
@@ -482,9 +470,9 @@ handshake and never replace it.
 2. The session's folders are made ready as today (worker paths).
 3. The compute provider binds the host (once per tree) and connects: an
    endpoint plus the host's folder paths.
-4. The connection is opened through the host's bridge — a built-in pipe to the
-   address for `direct`, the provider's own `openConnection` for `pipe` — and
-   the handshake proves both ends before anything of the turn crosses. The
+4. The connection is opened through the host's bridge — a connection to the
+   host's address — and the handshake proves both ends before anything of the
+   turn crosses. The
    first connection of a binding is proved before a prompt or a model request
    is sent, so a host that cannot be reached or cannot be recognized fails the
    turn where compute failures are named.
@@ -641,10 +629,10 @@ What the runs showed, carried here so later work does not relearn it:
 
 ## 6. Walkthroughs
 
-Three generic shapes, to show the one design covers them all. Each arrow is a
-call from section 3 or 4.
+Two generic shapes, to show the one design covers them. Each arrow is a call
+from section 3 or 4.
 
-### 6.1 A shared pool (direct transport)
+### 6.1 A shared pool
 
 An administrator registers `shared/build-pool`. Its hosts sit in a pool the
 provider owns, each reachable at an address the worker can dial.
@@ -662,42 +650,25 @@ Finish:   the tree ends; core sends a done notice; the provider cleans the host
           and returns it to the pool, with nothing left over.
 ```
 
-### 6.2 A sandbox service (pipe transport)
+### 6.2 A sandbox service
 
-A sandbox provider creates a fresh sandbox per tree. The sandbox is not
-directly reachable; the provider opens the connection itself.
+A sandbox provider creates a fresh sandbox per tree, each reachable at an
+address the worker can dial.
 
 ```text
 Create:   the worker loads the sandbox provider; an admin registers a target
           of its kind.
 Turn:
- 1. core binds; the provider creates a sandbox and returns an opaque host
-    reference. connect returns a pipe endpoint and a per-binding secret.
- 2. core runs a bridge on loopback and asks the provider to openConnection;
-    the provider joins the bridge to the sandbox. The host component answers
-    the handshake over the pipe; the runtime runs the turn.
- 3. core keeps a lease; the provider keeps the sandbox while the lease holds.
-Finish:   the tree ends; done notice; the provider discards the sandbox and, to
-          keep a buffer, may start a fresh one.
-```
-
-### 6.3 A host that connects out (pipe transport)
-
-An administrator registers `shared/field-hosts`. Its hosts sit behind a
-firewall and cannot be dialed; each connects out to the provider, which
-bridges the connection in.
-
-```text
-Create:   the worker loads the provider; an admin registers
-          shared/field-hosts.
-Turn:
- 1. core binds and connects; because the host dials out, connect returns a
-    pipe endpoint.
- 2. core runs a bridge and openConnection pairs it with the host's outbound
-    link; the host component answers the handshake; the runtime runs the turn.
+ 1. core binds; the provider creates a sandbox, starts the host component in
+    front of its runtime, and connect returns that component's address and a
+    per-binding secret.
+ 2. core runs a bridge on loopback and connects to the address; the host
+    component answers the handshake; the runtime runs the turn.
  3. the session runs on a model from PilotSwarm's own catalog; the runtime
     holds placeholders and every model request comes back to the worker.
-Finish:   the tree ends; done notice; the provider decides the host's fate.
+Finish:   the tree ends and core releases the host; the provider discards the
+          sandbox and, to keep a buffer, may start a fresh one. A sandbox
+          nobody came back to is ended by the host component's idle shutdown.
 ```
 
 ## 7. Corner cases
@@ -735,9 +706,9 @@ and Windows, so nothing may assume a path separator or a shell.
 | Area | Level | Checks |
 |---|---|---|
 | Targets and names (**built**) | U, L | Owner-qualified names; a bare label resolves to the shared target; a deleted target blocks its sessions; a reused name is a new target; admin-only registration enforced in SQL |
-| Provider interface and transport (**built**) | U | `direct` vs `pipe` validated; a declaration that disagrees with the code is refused; deadlines enforced |
+| Provider interface and the connection (**built**) | U | A provider that opens its own connections is refused where it is registered; deadlines enforced |
 | Remote turn and trust boundary (**built**) | L | A turn runs in a separate runtime with none of the worker's environment; every model request carries the real key while the runtime holds only placeholders; a request to any other destination is refused; session state round-trips and resumes on a new worker |
-| The bridge (**built**) | U, L | A full turn through a provider-opened pipe; one bridge per binding on loopback; a broken pipe reconnects or fails clearly |
+| The bridge (**built**) | U, L | A full turn through the bridge; one bridge per binding on loopback; a broken pipe reconnects or fails clearly; concurrent turns of one tree share one bridge; a remote endpoint with no connection token is refused |
 | The handshake and host component (**built**) | U, L | Success; wrong secret either side; a replayed nonce; a truncated or oversized frame; a timeout; constant-time compare; the host component forwards to the runtime; a wrong secret fails the turn with no model request |
 | Leases and done notices (**built**) | U, L | The lease timer math; a lease renewed and recorded; a tree that ends while unloaded gets exactly one done notice |
 | Failures (**built**) | U | Every compute error is `CODE: message` with its code and retry hint, and is never prefixed twice |
@@ -751,7 +722,7 @@ and Windows, so nothing may assume a path separator or a shell.
 |---|---|
 | The runtime runs on a host, never where the CMS or orchestration can be reached | Running the runtime next to the worker's credentials |
 | One host per session tree, fixed at the root session | A session picking compute per turn, or sub-agents on different hosts |
-| One transport per provider: `direct` or `pipe` | A provider mixing transports, or PilotSwarm choosing |
+| Every host is reached at an address; the worker opens the connection | A provider carrying transport code of its own |
 | Everything above the provider sees only a pipe | Core knowing the medium |
 | One mutual handshake PilotSwarm defines for every connection, answered by a host component | Each provider inventing its own trust scheme |
 | A per-binding secret, fresh for every binding, never stored in the CMS | A per-host or per-target secret |
@@ -800,7 +771,7 @@ branch; section 12 lists what was deliberately left out.
 
 | File / area | Change | State |
 |---|---|---|
-| `compute.ts` | Provider interface, registry, the always-available local provider, endpoint-to-connection, transport rules | built |
+| `compute.ts` | Provider interface, registry, the always-available local provider, endpoint-to-connection, the rules a remote endpoint must meet | built |
 | `compute-bridge.ts` | The loopback bridge, one per host, in front of every remote runtime, plus the built-in pipe that opens a plain connection to an address | built |
 | `migrations/compute-targets-0084.ts`, `0084_diff.md` | `compute_targets`, `compute_bindings` and their procedures (extended in place; never edit 0083 or older) | built |
 | `compute-target-store.ts`, `compute-binding-store.ts`, `cms.ts` | The target and binding stores; the create-time check | built |
@@ -816,7 +787,7 @@ branch; section 12 lists what was deliberately left out.
 
 | Stage | Scope | State |
 |---|---|---|
-| Core | Targets and names; the provider interface and transport; the remote turn and trust boundary; the bridge; the `process` test provider | **built** |
+| Core | Targets and names; the provider interface and the connection; the remote turn and trust boundary; the bridge; the `process` test provider | **built** |
 | The handshake | The mutual handshake and the host component, run for real by the `process` provider | **built** |
 | Host lifecycle | Leases and renewals; the done notice for trees that end while unloaded | **built** |
 | Management surfaces | Targets across the management client and the Web API; audit; API reference docs | **built** |
@@ -835,7 +806,7 @@ known and deferred, not forgotten.
 
 ## 12. Future work
 
-Three pieces of this design were taken out of the change so it stays easy to
+Pieces of this design were taken out of the change so it stays easy to
 review. Each was built and exercised first, so none of this is speculative:
 **the built code is on the exploration branch history of PR 244.** The
 requirements under each entry are what review found in that code, written as
@@ -882,7 +853,7 @@ each one is, and the identity a worker must see from it. One generic connector
 in the worker forwards every provider call — `describe`, `validate`, `bind`,
 `connect`, `release`, `renew`, `done` — over a versioned HTTPS/JSON protocol,
 so a new kind of compute needs no new worker code. What a service serves is
-never typed in by hand: its kinds, transport and capabilities are what it said
+never typed in by hand: its kinds and capabilities are what it said
 about itself when asked. A service whose hosts cannot be reached answers
 `connect` with a URL the worker opens as a WebSocket and treats as a pipe. The
 credential a worker presents comes from a deployment hook at call time, so
@@ -989,3 +960,34 @@ caller of operations that already exist.
 - A target the caller cannot use looks the same as one that does not exist.
 - Session creation on every surface takes a target name in the same form, and
   a name the caller cannot use is refused at creation, not at the first turn.
+
+### 12.5 Hosts that cannot be dialed directly
+
+**Value.** Reach hosts that can only connect out — a person's own machine, or
+a service with no inbound address — without the provider shipping networking
+code into the worker. Today every host must be reachable at an address, which
+leaves those places out.
+
+**What it adds.** One transport per provider, declared in provider code and
+fixed for every host it makes: either `direct`, which is what this change
+built, or a pipe the provider opens itself through the worker's bridge. The
+bridge, the handshake and everything above them stay exactly as they are — the
+only difference is who supplies the code that opens one connection. The host
+component gains a mode that connects out and plays the host's part on that
+connection.
+
+**Requirements when it is built.**
+
+- The pipe contract holds whoever opens it: two-way, ordered and reliable,
+  quick enough for a conversation, visibly broken when it breaks rather than
+  going quiet, reaching only that host's runtime, and protected whenever what
+  it crosses cannot be trusted.
+- A pipe URL is tied to the service it was registered against and never
+  carries a credential in the clear off the machine.
+- Backpressure is honoured in both directions, so a slow reader cannot make
+  the worker buffer without limit.
+- A host component that connects out reconnects after a connection ends and
+  keeps a spare outward connection ready, because the bridge asks for a fresh
+  pipe per connection and a check connection must not consume the only one.
+- That component exits with a non-zero status when its handshake is refused,
+  instead of ending quietly as a success.

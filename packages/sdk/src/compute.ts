@@ -15,7 +15,6 @@
  * behaviour, a runtime the worker starts as its own child process.
  */
 import { createHash } from "node:crypto";
-import type { Duplex } from "node:stream";
 import { RuntimeConnection } from "@github/copilot-sdk";
 import { COMPUTE_HANDSHAKE_FAILED, type ComputeHandshakeCredential } from "./compute-handshake.js";
 
@@ -162,30 +161,28 @@ export interface ComputeConnectRequest extends ComputeCall {
  *   local  the worker starts the runtime as its own child process (today)
  *   uri    a runtime already listening at `address` ("host:port" or a URL),
  *          reachable from the worker, with the token the runtime expects.
- *   pipe   the provider opens the connection itself (`openConnection`); the
- *          worker puts a bridge on this machine in front of it and talks to
- *          that. `details` is whatever the provider needs to open it again,
- *          and the worker never reads it.
+ *
+ * Every host is reached at an address: the worker opens the connection
+ * itself. Hosts that cannot be dialled — a host that can only reach
+ * outwards — are left for later (the proposal's future work).
  *
  * The worker sends prompts, tool results and the token over this
- * connection, so for `uri` it accepts only loopback addresses by default: a
- * provider that reaches a host elsewhere secures that path itself and hands
- * back a local address. A worker can opt in to other addresses
- * (`computeAllowNonLoopbackEndpoints`) when its network secures them. A
- * `pipe` endpoint satisfies that rule by construction — its bridge only
- * ever listens on this machine.
+ * connection, so it accepts only loopback addresses by default: a provider
+ * that reaches a host elsewhere secures that path itself and hands back a
+ * local address. A worker can opt in to other addresses
+ * (`computeAllowNonLoopbackEndpoints`) when its network secures them.
  *
- * Both remote transports carry `handshake`: this binding's id and secret,
+ * A remote endpoint carries `handshake`: this binding's id and secret,
  * which the worker uses to prove itself to the host component and to make
  * the host prove itself back, over every connection, before anything of
  * the session crosses. The secret is fresh for every new binding, held
  * only in the worker's memory, and never stored or logged. A remote
- * endpoint without one cannot be used (COMPUTE_HANDSHAKE_FAILED).
+ * endpoint without one cannot be used (COMPUTE_HANDSHAKE_FAILED), and so
+ * cannot one without a `connectionToken`: see `checkRemoteEndpoint`.
  */
 export type ComputeRuntimeEndpoint =
     | { transport: "local" }
-    | { transport: "uri"; address: string; connectionToken?: string; handshake?: ComputeHandshakeCredential }
-    | { transport: "pipe"; connectionToken?: string; details?: Record<string, unknown>; handshake?: ComputeHandshakeCredential };
+    | { transport: "uri"; address: string; connectionToken?: string; handshake?: ComputeHandshakeCredential };
 
 export type ComputeConnectResult =
     | {
@@ -196,28 +193,6 @@ export type ComputeConnectResult =
     }
     | ComputeFailure;
 
-/**
- * How a provider's hosts are reached. One per provider, fixed in provider
- * code: a host never chooses, and a target never carries transport code.
- *
- *   direct  the host is reachable at an address and the worker connects to
- *           it itself. The provider writes no transport code; `connect`
- *           returns a `uri` endpoint.
- *   pipe    the provider opens the connection itself, in `openConnection`.
- *           `connect` returns a `pipe` endpoint: the host's folders and
- *           whatever opaque details opening it needs, never an address.
- */
-export type ComputeTransport = "direct" | "pipe";
-
-/** What `openConnection` must hand back: a two-way byte stream to one host's runtime. */
-export type ComputePipe = Duplex;
-
-export interface ComputeOpenConnectionRequest extends ComputeCall {
-    target: ComputeTarget;
-    host: ComputeHostRef;
-    /** Exactly what this host's `connect` put on its endpoint. */
-    details: Record<string, unknown>;
-}
 
 /**
  * Why a session leaves its host:
@@ -268,32 +243,6 @@ export interface ComputeReleaseRequest extends ComputeCall {
 export interface ComputeProvider {
     readonly kind: string;
     readonly capabilities: ComputeCapabilities;
-    /**
-     * How this provider's hosts are reached. One way, for every host it
-     * ever makes. Absent means `direct`, which is what the built-in
-     * providers do. A provider that says `pipe` must have
-     * `openConnection`, and one that says `direct` must not: the registry
-     * refuses anything else, so the worker never has to guess.
-     */
-    readonly transport?: ComputeTransport;
-    /**
-     * Open a connection to one host's runtime. Only for a `pipe` provider,
-     * and the only place transport code lives — it arrives with the
-     * installed provider, never from a registered target.
-     *
-     * What the pipe must be: a two-way byte stream; reliable and ordered,
-     * losing, reordering and duplicating nothing; quick enough for a
-     * conversation, which is many round trips per turn with output arriving
-     * as it is produced; visibly broken when it breaks, by closing or
-     * erroring rather than going quiet; connected to this host's runtime and
-     * nothing else; and, whenever what it crosses cannot be trusted, private
-     * and tamper-proof from end to end. That last one is the provider's
-     * work: the worker cannot check it.
-     *
-     * The worker calls it again when a connection breaks, and may hold
-     * several at once. It must honour the deadline on `signal`.
-     */
-    openConnection?(req: ComputeOpenConnectionRequest): Promise<ComputePipe>;
     validateTarget?(req: ComputeValidateRequest): Promise<{ ok: true } | ComputeFailure>;
     bind(req: ComputeBindRequest): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>;
     connect(req: ComputeConnectRequest): Promise<ComputeConnectResult>;
@@ -384,17 +333,15 @@ export class ComputeProviderRegistry {
         if (typeof provider.bind !== "function" || typeof provider.connect !== "function") {
             throw new Error(`compute provider "${provider.kind}" must implement bind and connect`);
         }
-        // One transport per provider, and no doubt about which it is. A
-        // provider whose declaration and code disagree never reaches a turn.
-        const transport = provider.transport ?? "direct";
-        if (transport !== "direct" && transport !== "pipe") {
-            throw new Error(`compute provider "${provider.kind}" declares an unknown transport "${transport}"`);
-        }
-        if (transport === "pipe" && typeof provider.openConnection !== "function") {
-            throw new Error(`compute provider "${provider.kind}" says it opens its own connections but has no openConnection`);
-        }
-        if (transport === "direct" && typeof provider.openConnection === "function") {
-            throw new Error(`compute provider "${provider.kind}" is reached directly, so it must not have openConnection`);
+        // Every host this build reaches is reached at an address, and the
+        // worker opens the connection itself. A provider written against
+        // the older interface, where a provider could open its own
+        // connections, is refused here rather than registered and then
+        // never asked to open one.
+        const legacy = provider as { transport?: unknown; openConnection?: unknown };
+        if (legacy.transport !== undefined || typeof legacy.openConnection === "function") {
+            throw new Error(
+                `compute provider "${provider.kind}" opens its own connections; this build reaches every host at an address, so connect must return one`);
         }
         if (this.providers.has(provider.kind) && !opts.replace) {
             throw new Error(`compute provider "${provider.kind}" is registered twice`);
@@ -476,11 +423,6 @@ export function resolveComputeTargetName(name: unknown): string[] {
 /** The Copilot SDK connection for an endpoint. */
 export function runtimeConnectionFor(endpoint: ComputeRuntimeEndpoint | undefined): RuntimeConnection {
     if (!endpoint || endpoint.transport === "local") return RuntimeConnection.forStdio();
-    if (endpoint.transport === "pipe") {
-        // A pipe is reached through its bridge; the worker replaces it with
-        // that bridge's address before anything tries to connect.
-        throw new Error("a pipe compute endpoint must be bridged before it is connected to");
-    }
     if (endpoint.transport === "uri") {
         if (typeof endpoint.address !== "string" || !endpoint.address.trim()) {
             throw new Error("a uri compute endpoint needs an address");
@@ -497,13 +439,13 @@ export function runtimeConnectionFor(endpoint: ComputeRuntimeEndpoint | undefine
  * replaced host or a rotated token gets a fresh client. The token itself is
  * never part of the key.
  *
- * A pipe endpoint is bridged before it gets here, and its bridge's address
- * is what the key covers — so a replaced bridge is a different connection
- * and gets a client of its own.
+ * A remote endpoint is bridged before it gets here, and its bridge's
+ * address is what the key covers — so a replaced bridge is a different
+ * connection and gets a client of its own.
  */
 export function runtimeEndpointKey(endpoint: ComputeRuntimeEndpoint | undefined, host?: ComputeHostRef): string {
     if (!endpoint || endpoint.transport === "local") return "";
-    const address = endpoint.transport === "uri" ? endpoint.address : "";
+    const address = endpoint.address;
     const digest = createHash("sha256")
         .update(JSON.stringify([address, endpoint.connectionToken ?? "", host?.kind ?? "", host?.id ?? "", host?.incarnation ?? ""]))
         .digest("hex")

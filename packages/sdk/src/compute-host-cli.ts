@@ -8,7 +8,6 @@
  * to the runtime's local port. Nothing else.
  *
  *   pilotswarm-compute-host --binding <id> --runtime 127.0.0.1:4100 --listen 0.0.0.0:7000
- *   pilotswarm-compute-host --binding <id> --runtime 4100 --connect gateway.example.invalid:7000
  *
  * The binding's secret is read from PILOTSWARM_COMPUTE_HANDSHAKE_SECRET
  * and never taken from the command line, where anything on the host could
@@ -37,10 +36,9 @@ async function main(): Promise<void> {
     const bindingId = argument(argv, "binding") ?? "";
     const runtimeAddress = argument(argv, "runtime") ?? "";
     const listen = argument(argv, "listen");
-    const connect = argument(argv, "connect");
     const secret = process.env.PILOTSWARM_COMPUTE_HANDSHAKE_SECRET ?? "";
-    if (!bindingId || !runtimeAddress || Boolean(listen) === Boolean(connect)) {
-        console.error("usage: pilotswarm-compute-host --binding <id> --runtime <host:port|port> (--listen <host:port> | --connect <host:port>)");
+    if (!bindingId || !runtimeAddress || !listen) {
+        console.error("usage: pilotswarm-compute-host --binding <id> --runtime <host:port|port> --listen <host:port>");
         process.exitCode = 2;
         return;
     }
@@ -53,12 +51,12 @@ async function main(): Promise<void> {
         bindingId,
         secret,
         runtimeAddress,
-        ...(listen ? { listen: endpoint(listen, "listen") } : { connect: endpoint(connect!, "connect") }),
+        listen: endpoint(listen, "listen"),
         onConnectionClosed: ({ ok, error }) => {
             if (!ok) console.error(`[compute-host] a connection was refused: ${error?.message ?? "no reason given"}`);
         },
     });
-    if (host.address) console.log(`[compute-host] binding ${bindingId} listening on ${host.address}`);
+    console.log(`[compute-host] binding ${bindingId} listening on ${host.address}`);
     const stop = () => { void host.close().finally(() => process.exit(0)); };
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);

@@ -14,17 +14,17 @@
  * write one: it places this component and the binding's secret on the
  * host, and hands the worker the same secret.
  *
- * Two ways round, because hosts differ:
+ * The component listens and the worker's side connects in, so the host
+ * must be one the worker can reach at an address. A host that can only
+ * reach outwards is left for later (the proposal's future work).
  *
- *   listen   the component listens and the worker's side connects in. For
- *            a host something can reach.
- *   connect  the component dials out to an address the provider gave it
- *            and plays the host's part on that connection. For a host that
- *            can only reach outwards.
+ * The component is the host's end of exactly one binding: it refuses a
+ * hello that names another, and it never reaches anything but the one
+ * runtime address it was given.
  *
- * Either way the component is the host's end of exactly one binding: it
- * refuses a hello that names another, and it never reaches anything but
- * the one runtime address it was given.
+ * The handshake proves who is at each end of a connection. It does not
+ * protect what crosses it, so the network between the worker and this
+ * host must be private or otherwise protected.
  */
 import { connect as netConnect, createServer, type AddressInfo, type Server, type Socket } from "node:net";
 import { COMPUTE_HANDSHAKE_TIMEOUT_MS, ComputeHandshakeError, runHostHandshake, type ComputeHandshakeCredential } from "./compute-handshake.js";
@@ -36,9 +36,7 @@ export const COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS = 15_000;
 
 export interface ComputeHostOptions extends ComputeHandshakeCredential {
     /** Listen for the worker's side. `port` 0 asks the operating system for one. */
-    listen?: { host?: string; port: number };
-    /** Or dial out and play the host's part on that connection. */
-    connect?: { host: string; port: number };
+    listen: { host?: string; port: number };
     /** The runtime's own address on this host, `host:port` or just a port. */
     runtimeAddress: string;
     handshakeTimeoutMs?: number;
@@ -48,7 +46,7 @@ export interface ComputeHostOptions extends ComputeHandshakeCredential {
 }
 
 export interface ComputeHostHandle {
-    /** Where the worker's side connects, `host:port`. Empty when dialling out. */
+    /** Where the worker's side connects, `host:port`. */
     readonly address: string;
     /** How many connections are carried right now. */
     readonly connections: number;
@@ -93,13 +91,11 @@ function join(a: Socket, b: Socket): void {
 }
 
 /**
- * Start the host component. Resolves once it is ready: listening, or with
- * its outward connection made and handshaken.
+ * Start the host component. Resolves once it is listening and ready for
+ * the worker's side.
  */
 export async function startComputeHost(options: ComputeHostOptions): Promise<ComputeHostHandle> {
-    if (Boolean(options.listen) === Boolean(options.connect)) {
-        throw new Error("a host component either listens for the worker's side or dials out, not both and not neither");
-    }
+    if (!options.listen) throw new Error("a host component needs the address to listen on");
     const runtime = parseAddress(options.runtimeAddress);
     const credential: ComputeHandshakeCredential = { bindingId: options.bindingId, secret: options.secret };
     const handshakeTimeoutMs = options.handshakeTimeoutMs ?? COMPUTE_HANDSHAKE_TIMEOUT_MS;
@@ -137,41 +133,26 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
         }
     }
 
-    if (options.listen) {
-        const server: Server = createServer({ noDelay: true });
-        server.on("connection", (socket) => { void serve(socket); });
-        await new Promise<void>((resolve, reject) => {
-            const onError = (error: Error) => reject(error);
-            server.once("error", onError);
-            server.listen({ host: options.listen!.host ?? "127.0.0.1", port: options.listen!.port }, () => {
-                server.removeListener("error", onError);
-                resolve();
-            });
+    const server: Server = createServer({ noDelay: true });
+    server.on("connection", (socket) => { void serve(socket); });
+    await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => reject(error);
+        server.once("error", onError);
+        server.listen({ host: options.listen.host ?? "127.0.0.1", port: options.listen.port }, () => {
+            server.removeListener("error", onError);
+            resolve();
         });
-        server.on("error", () => { /* surfaced through the connections */ });
-        const bound = server.address() as AddressInfo;
-        return {
-            get address() { return `${bound.address}:${bound.port}`; },
-            get connections() { return live.size; },
-            get refused() { return refused; },
-            async close() {
-                closed = true;
-                for (const socket of [...live]) { live.delete(socket); try { socket.destroy(); } catch { /* already gone */ } }
-                await new Promise<void>((resolve) => server.close(() => resolve()));
-            },
-        };
-    }
-
-    const outward = await dial(options.connect!.host, options.connect!.port, COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS);
-    await serve(outward);
+    });
+    server.on("error", () => { /* surfaced through the connections */ });
+    const bound = server.address() as AddressInfo;
     return {
-        get address() { return ""; },
+        get address() { return `${bound.address}:${bound.port}`; },
         get connections() { return live.size; },
         get refused() { return refused; },
         async close() {
             closed = true;
             for (const socket of [...live]) { live.delete(socket); try { socket.destroy(); } catch { /* already gone */ } }
-            try { outward.destroy(); } catch { /* already gone */ }
+            await new Promise<void>((resolve) => server.close(() => resolve()));
         },
     };
 }

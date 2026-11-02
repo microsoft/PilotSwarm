@@ -1,14 +1,12 @@
 /**
  * The transport contract (docs/proposals/compute-providers.md).
  *
- * A provider is reached one way and one way only. Either its hosts are at
- * an address and PilotSwarm connects to them itself, or the provider opens
- * the connection in its own code and PilotSwarm puts a bridge on this
- * machine in front of it. These tests hold the bridge to what PilotSwarm
- * promises: it stays on this machine, it carries bytes both ways in order,
- * a connection that cannot be opened fails where it can be seen rather
- * than hanging, a broken connection is replaced rather than reused, and
- * closing it closes everything it was carrying.
+ * Every host is reached at an address, and PilotSwarm opens the connection
+ * itself, through a bridge on this machine. These tests hold the bridge to
+ * what PilotSwarm promises: it stays on this machine, it carries bytes
+ * both ways in order, a connection that cannot be opened fails where it
+ * can be seen rather than hanging, a broken connection is replaced rather
+ * than reused, and closing it closes everything it was carrying.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -204,31 +202,26 @@ test("the bridge will not carry more connections than it said", async (t) => {
     assert.match(String(bridge.lastOpenError?.message), /as many connections as it will/);
 });
 
-test("a provider declares one transport, and the registry holds it to it", () => {
+test("a provider that opens its own connections is refused, because every host is reached at an address", () => {
     const base = {
         capabilities: { files: "none" },
         async bind() { return { ok: true, host: { kind: "k", id: "h", incarnation: "1" } }; },
-        async connect() { return { ok: true, endpoint: { transport: "pipe" }, workspace: {} }; },
+        async connect() { return { ok: true, endpoint: { transport: "uri", address: "127.0.0.1:1" }, workspace: {} }; },
     };
     const registry = new ComputeProviderRegistry();
 
-    // Saying nothing means reached directly, which is what the built-ins do.
-    registry.register({ ...base, kind: "plain", connect: async () => ({ ok: true, endpoint: { transport: "uri", address: "127.0.0.1:1" }, workspace: {} }) });
-    assert.equal(registry.get("plain").transport, undefined);
+    registry.register({ ...base, kind: "plain" });
+    assert.equal(registry.get("plain").kind, "plain");
 
-    registry.register({ ...base, kind: "opens-its-own", transport: "pipe", openConnection: async () => new Duplex({ read() {}, write(_c, _e, cb) { cb(); } }) });
-    assert.equal(registry.get("opens-its-own").transport, "pipe");
-
+    // Written against the older interface, where a provider could open the
+    // connection itself. Refused where it is registered, rather than
+    // accepted and then never asked to open one.
     assert.throws(
-        () => registry.register({ ...base, kind: "says-pipe-has-none", transport: "pipe" }),
-        /says it opens its own connections but has no openConnection/,
+        () => registry.register({ ...base, kind: "opens-its-own", openConnection: async () => new Duplex({ read() {}, write(_c, _e, cb) { cb(); } }) }),
+        /opens its own connections/,
     );
     assert.throws(
-        () => registry.register({ ...base, kind: "says-direct-has-code", transport: "direct", openConnection: async () => null }),
-        /reached directly, so it must not have openConnection/,
-    );
-    assert.throws(
-        () => registry.register({ ...base, kind: "made-up", transport: "carrier-pigeon" }),
-        /unknown transport/,
+        () => registry.register({ ...base, kind: "declares-a-transport", transport: "direct" }),
+        /opens its own connections/,
     );
 });
