@@ -541,6 +541,22 @@ by default, so an existing deployment and local development are unchanged.
 Whether a session has a target is read from its own record, never from
 anything the agent can set.
 
+**Rolling deploys.** Workers that can drive a runtime on another host declare
+a capability tag, `pilotswarm.compute.v1`, and the turns of a session that has
+a compute target are routed only to those. Without it, a worker from before
+this change would pick such a turn up and run the session's agent as its own
+child process, beside the CMS, the orchestration and the model keys — which is
+the one thing the design exists to prevent, and it would happen silently.
+Routing fails closed: a turn like that is never scheduled untagged, because an
+untagged turn is exactly the one an older worker would take.
+
+This needs no new orchestration version. The tag is chosen from the session's
+own compute target, and a session can only have one on a build that already
+understands compute, so no history written by an older build can take that
+branch and every existing history replays exactly as it did. It is the same
+shape as the workspace tag, which was added for the turns of sessions that
+have a workspace without versioning the contracts it applied to.
+
 **The two stages.** With require-compute off, the deployment is in mixed mode:
 some sessions run on hosts, some on the worker, and the gaps in section 12.10
 apply. With it on, every session's agent runs where the CMS and the
@@ -740,7 +756,7 @@ Finish:   the tree ends and core releases the host; the provider discards the
 | K10 | A remote runtime asks for a model it was not granted, or a different destination | The request handler refuses it; no placeholder is resolved and nothing is sent. |
 | K11 | A host shares no files with the worker | Artifact file tools that name worker files are refused for that session; only `worker-local` or `shared-mount` hosts allow them. |
 | K12 | A reused host carries state from before | Not allowed: the provider must hand over a clean host, and PilotSwarm uses a fresh secret per binding. |
-| K13 | A worker too old to drive remote runtimes | It should carry a capability tag so it never runs a remote session locally. (**open, section 9**) |
+| K13 | A worker too old to drive remote runtimes | Such a worker does not declare the compute capability tag, and the turns of a session that has a target are routed only to workers that do, so it never picks one up. |
 
 ## 8. Test plan
 
@@ -766,6 +782,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | Host lifecycle (**built**) | U, L | A component with no connection ends itself; an open connection keeps it alive and the clock starts again when that connection ends; the `process` provider's runtime goes with its component, and a returning session gets a fresh host |
 | Failures (**built**) | U | Every compute error is `CODE: message` with its code and retry hint, and is never prefixed twice |
 | Management surfaces (**built**) | U, L | List, create, update, enable/disable and delete across the management client and the Web API; every mutation audited; surface-parity tests updated |
+| Turning it on (**built**) | U, L | A default target is recorded at creation and sub-agents still inherit; requiring compute fails a session with nowhere to run before any runtime starts, and leaves a deployment that has not turned it on unchanged; a session with a compute target is routed only to workers that declare the compute tag |
 
 ## 9. Decisions, verified facts and open items
 
@@ -812,7 +829,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | A secret reference for a provider that needs per-user credentials | Deferred (secrets option A for now: none in the config). |
 | A tree spanning more than one target | An open question; today a tree runs on exactly one. |
 | Personal compute targets | A later change. |
-| A routing capability tag so older workers never run remote sessions locally | To do. |
+
 | Portal and TUI views for compute | Future work (section 12). |
 | Provisioning (creating hosts on demand) | Out of scope; a compute provisioner can come later. |
 | SessionFs quotas (total size and file count per session), and SQL tools on remote sessions | To do. |

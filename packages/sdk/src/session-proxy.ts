@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeComputeActivity, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -787,6 +787,12 @@ export function createSessionProxy(
                 },
                 affinityKey,
             );
+            // Compute providers: the turn of a session that runs its agent
+            // on a host goes only to workers that can drive one. An older
+            // worker would run it as its own child process, beside the CMS
+            // and the model keys. Those workers declare the turn-control,
+            // workspace and handoff tags too.
+            if ((config as { computeTarget?: unknown }).computeTarget) return routeComputeActivity(task);
             // Session turn control (1.0.81): every turn goes only to workers
             // that listen for controls. Those workers also declare the
             // handoff and workspace tags.

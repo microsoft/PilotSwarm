@@ -85,3 +85,39 @@ export function routeTurnControlActivity(task: any): any {
 export function registerTurnControlActivity(runtime: any, name: keyof typeof TURN_CONTROL_ACTIVITY_NAMES, handler: any): void {
     runtime.registerActivity(TURN_CONTROL_ACTIVITY_NAMES[name], handler);
 }
+
+/**
+ * Compute providers (1.0.83): the turns of a session that has a compute
+ * target go only to workers that can drive a runtime on another host. An
+ * older worker would run such a session's agent as its own child process,
+ * next to the CMS, the orchestration and the model keys — which is the one
+ * thing the whole design exists to prevent. During a rolling deploy there
+ * are workers of both kinds, and the tag is what keeps those turns away
+ * from the old ones.
+ *
+ * Every worker that declares it also declares AGENT_HANDOFF_CAPABILITY,
+ * WORKSPACE_CAPABILITY and TURN_CONTROL_CAPABILITY, so routing a turn with
+ * this tag alone loses none of those guarantees.
+ *
+ * No new orchestration version: the tag is chosen from the session's own
+ * compute target, and a session can only have one on a build that already
+ * understands compute. No history written by an older build can take this
+ * branch, so every existing history replays exactly as it did. This is the
+ * same shape as the workspace tag, which was added for the turns of
+ * sessions that have a workspace without versioning the contracts it
+ * applied to.
+ */
+export const COMPUTE_CAPABILITY = "pilotswarm.compute.v1";
+
+/**
+ * Route a turn that must run on a worker that can drive a remote runtime.
+ * Fail closed when the runtime cannot express the tag; never schedule such
+ * a turn untagged, since an untagged turn is exactly the one an older
+ * worker would pick up.
+ */
+export function routeComputeActivity(task: any): any {
+    if (typeof task.withTag !== "function") {
+        throw new Error("Compute providers require Duroxide activity tag routing support");
+    }
+    return task.withTag(COMPUTE_CAPABILITY);
+}
