@@ -66,9 +66,9 @@ export function isPlainShortcutKey(key = {}) {
 /**
  * The workflow view's run controls for the run it shows (p pause · r resume · s stop · c cancel; stop and cancel ask
  * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, e, which
- * opens the draft editor, and P, which opens the publication review (publish, publish and start, or start; each asks
- * first). INACTIVE: only a deployment that takes a person's workflow commands offers them; otherwise the status line
- * says why nothing was sent.
+ * opens the draft editor, P, which opens the publication review (publish, publish and start, or start; each asks
+ * first), and t, which opens the test review (a test run of the current revision; it asks first). INACTIVE: only a
+ * deployment that takes a person's workflow commands offers them; otherwise the status line says why nothing was sent.
  */
 const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     p: UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN,
@@ -79,6 +79,7 @@ const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     v: UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES,
     e: UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT,
     P: UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW,
+    t: UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW,
 });
 
 export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
@@ -312,8 +313,8 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             && controller.giveUpTurnControl()) {
             return;
         }
-        // The workflow variables form, the draft editor and the publication review take typed text, q included.
-        const typingInForm = modal?.type === "workflowVariable" || modal?.type === "workflowDraft" || modal?.type === "workflowPublish";
+        // The workflow variables form, the draft editor and the publication and test reviews take typed text, q included.
+        const typingInForm = ["workflowVariable", "workflowDraft", "workflowPublish", "workflowTest"].includes(modal?.type);
         if (focus !== "prompt" && !typingInForm && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();
@@ -633,6 +634,46 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     return;
                 }
                 if (!key.ctrl && !key.meta && input) controller.editWorkflowPublicationField({ type: "insert", text: input });
+                return;
+            }
+            // The test review: three text fields, the run's inputs and initial variables (JSON objects) and a scenario name;
+            // Tab moves through them. ctrl-t starts the test after the confirm dialog, ctrl-a switches its agent states between
+            // mocked and real, ctrl-l reviews a workflow that changed meanwhile again; Enter sends nothing; Esc goes back.
+            if (modal.type === "workflowTest") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("t", "\u0014")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_START).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("a", "\u0001")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_AGENTS).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("l", "\u000c")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_RELOAD).catch(() => {});
+                    return;
+                }
+                if (key.return) return;
+                if (key.tab) {
+                    controller.editWorkflowTestField({ type: "switch" });
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowTestField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowTestField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowTestField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowTestField({ type: "insert", text: input });
                 return;
             }
             // The workflow variables form: two text fields, a name and a JSON value. Tab switches them, ↑↓ copy a listed

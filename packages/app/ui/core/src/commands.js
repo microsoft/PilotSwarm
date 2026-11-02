@@ -76,6 +76,12 @@ export const UI_COMMANDS = {
     WORKFLOW_PUBLICATION_PUBLISH: "workflowPublicationPublish",
     WORKFLOW_PUBLICATION_RUN: "workflowPublicationRun",
     WORKFLOW_PUBLICATION_RELOAD: "workflowPublicationReload",
+    // A test of the definition's current revision (INACTIVE likewise): open its review, start it after the confirm dialog,
+    // switch its agent states between mocked and real, or review a workflow that changed meanwhile again.
+    WORKFLOW_VIEW_TEST_REVIEW: "workflowViewTestReview",
+    WORKFLOW_TEST_START: "workflowTestStart",
+    WORKFLOW_TEST_AGENTS: "workflowTestAgents",
+    WORKFLOW_TEST_RELOAD: "workflowTestReload",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

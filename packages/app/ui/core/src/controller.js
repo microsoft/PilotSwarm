@@ -3,12 +3,13 @@ import { workflowDefinition } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
-    workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS, workflowPublicationChange,
-    workflowPublicationConfirm, workflowPublicationPin,
+    workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewTestRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS,
+    workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
 } from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
-    workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2VariableDraft, workflowV2VariableRemoval,
+    workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableDraft,
+    workflowV2VariableRemoval,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -6787,26 +6788,27 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: `${publication.state === "draft" ? "Publish review" : "Start review"} — ${actions.join(" · ")} (each asks first) · Esc back` });
     }
 
-    /** The publication review: change its own state (what is typed, the field, its pin, its message). */
-    updateWorkflowPublicationReview(patch) {
+    /** A workflow review modal of `type` (the publication or test review): change its own state. */
+    updateWorkflowModal(type, patch) {
         const modal = this.getState().ui.modal;
-        if (!modal || modal.type !== "workflowPublish") return;
+        if (!modal || modal.type !== type) return;
         this.dispatch({ type: "ui/modal", modal: { ...modal, ...patch } });
     }
 
     /**
-     * The publication review's two fields, the live run's inputs and its
-     * initial variables (JSON objects, kept as typed until sent): type at the
-     * cursor (`insert`; a pasted line break is a space), delete backward
+     * A workflow review modal's text fields (`fields`, in Tab order; each
+     * kept as typed until sent, with its own cursor): type at the cursor
+     * (`insert`; a pasted line break is a space), delete backward
      * (`backspace`), move the cursor (`move`: `chars`; `edge`: the start or
-     * the end), or go to the other field (`switch`, Tab).
+     * the end), or go to the next field (`switch`, Tab). What changes the text
+     * clears the review's own message.
      */
-    editWorkflowPublicationField(action = {}) {
+    editWorkflowModalField(type, fields, action = {}) {
         const modal = this.getState().ui.modal;
-        if (!modal || modal.type !== "workflowPublish") return;
-        const field = modal.field === "vars" ? "vars" : "inputs";
+        if (!modal || modal.type !== type) return;
+        const field = fields.includes(modal.field) ? modal.field : fields[0];
         if (action.type === "switch") {
-            this.updateWorkflowPublicationReview({ field: field === "inputs" ? "vars" : "inputs" });
+            this.updateWorkflowModal(type, { field: fields[(fields.indexOf(field) + 1) % fields.length] });
             return;
         }
         const text = String(modal[field] ?? "");
@@ -6817,7 +6819,17 @@ export class PilotSwarmUiController {
         else if (action.type === "move") next = { prompt: text, cursor: clampPromptCursor(text, cursor + (Number(action.chars) || 0)) };
         else if (action.type === "edge") next = { prompt: text, cursor: action.edge === "start" ? 0 : text.length };
         else return;
-        this.updateWorkflowPublicationReview({ [field]: next.prompt, [`${field}Cursor`]: next.cursor, ...(next.prompt !== text ? { error: null } : {}) });
+        this.updateWorkflowModal(type, { [field]: next.prompt, [`${field}Cursor`]: next.cursor, ...(next.prompt !== text ? { error: null } : {}) });
+    }
+
+    /** The publication review: change its own state (what is typed, the field, its pin, its message). */
+    updateWorkflowPublicationReview(patch) {
+        this.updateWorkflowModal("workflowPublish", patch);
+    }
+
+    /** The publication review's two fields, the live run's inputs and its initial variables (JSON objects; editWorkflowModalField). */
+    editWorkflowPublicationField(action = {}) {
+        this.editWorkflowModalField("workflowPublish", ["inputs", "vars"], action);
     }
 
     /**
@@ -6907,6 +6919,142 @@ export class PilotSwarmUiController {
         }
         if (result?.reason === "failed" || result?.reason === "unconfirmed") {
             if (open && current.error) this.updateWorkflowPublicationReview({ error: null });
+            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[review.sessionId]?.runCommand);
+            if (notice) this.dispatch({ type: "ui/status", text: notice.text });
+        }
+    }
+
+    /**
+     * The TUI's workflow view: open the test review (t; design 05 test; mocks
+     * M18 to M20; R19, R20, R26, R28; INACTIVE: only where the portal's test
+     * review offers a person a test, workflowV2TestControls) of exactly the
+     * current revision and definition hash the view shows now (its pin), with
+     * mocked agents to start with; otherwise the status line says why. It
+     * returns to the view. Nothing is sent.
+     */
+    openWorkflowTestReview() {
+        const state = this.getState();
+        const selection = selectWorkflowViewSelection(state);
+        if (!selection) return;
+        const refusal = workflowViewTestRefusal(selection);
+        if (refusal) {
+            this.dispatch({ type: "ui/status", text: refusal });
+            return;
+        }
+        this.dispatch({ type: "ui/modal", modal: { type: "workflowTest", sessionId: selection.modal.sessionId,
+            pin: workflowTestPin(selection.projection.testControls), agentMode: "mocked", field: "inputs", inputs: "{}", inputsCursor: 2, vars: "",
+            varsCursor: 0, scenario: "", scenarioCursor: 0, error: null, returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
+        this.dispatch({ type: "ui/status", text: "Test review — ctrl-t start the test (asks first) · ctrl-a agents mocked/real · Esc back" });
+    }
+
+    /** The test review: change its own state (what is typed, the field, the agent mode, its pin, its message). */
+    updateWorkflowTestReview(patch) {
+        this.updateWorkflowModal("workflowTest", patch);
+    }
+
+    /** The test review's three fields: the run's inputs and initial variables (JSON objects) and a scenario name (editWorkflowModalField). */
+    editWorkflowTestField(action = {}) {
+        this.editWorkflowModalField("workflowTest", ["inputs", "vars", "scenario"], action);
+    }
+
+    /** The test review: switch its agent states between mocked (the parent answers each) and real agents, which spend model tokens (ctrl-a). */
+    toggleWorkflowTestAgents() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "workflowTest") return;
+        const agentMode = modal.agentMode === "real" ? "mocked" : "real";
+        this.updateWorkflowTestReview({ agentMode, error: null });
+        this.dispatch({ type: "ui/status", text: agentMode === "real"
+            ? "Agent states: real agents. They spend model tokens; their framework tool calls are mocked"
+            : "Agent states: mocked. The parent answers each agent state" });
+    }
+
+    /**
+     * The test review: ask to start the test (ctrl-t) of exactly the revision
+     * and definition hash the review is of, with its agent mode, inputs,
+     * optional initial variables and scenario name, as the portal's test
+     * review starts it (sendWorkflowRunCommand, operation test). Nothing is
+     * sent for a review whose workflow changed meanwhile (ctrl-l reviews it
+     * again), when the portal's test review would not start it now (compile
+     * errors, a viewer the portal refuses, an unknown revision or hash, a
+     * command being sent), or for inputs or variables that are not JSON
+     * objects or a scenario name over 128 characters: the review says why and
+     * keeps what was typed. Otherwise the confirm dialog says exactly what is
+     * tested and how, with the test notices, and returns to the review;
+     * confirmed, the test is sent. Started: the view shows the new test run;
+     * refused (a stale revision or hash reads the workflow again; inputs the
+     * definition's schema refuses list their problems) or unanswered (ctrl-t,
+     * once confirmed, sends the same test again), the review stays with what
+     * was typed. The server decides every test again. Never throws.
+     */
+    requestWorkflowTest() {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowTest") return { ok: false, reason: "closed" };
+        const refuse = error => {
+            this.updateWorkflowTestReview({ error });
+            this.dispatch({ type: "ui/status", text: error });
+            return { ok: false, reason: "invalid" };
+        };
+        const tests = workflowViewProjectionFor(state, modal.sessionId).testControls;
+        const change = workflowTestChange(modal.pin, tests);
+        if (change) return refuse(change);
+        if (!tests.control.enabled) return refuse(`The test cannot start now. ${tests.control.title}`);
+        const inputs = workflowV2JsonObjectDraft(modal.inputs, { label: "Inputs" });
+        const vars = workflowV2JsonObjectDraft(modal.vars, { label: "Initial variables", optional: true });
+        const scenario = workflowV2ScenarioDraft(modal.scenario);
+        const refused = [inputs, vars, scenario].find(item => !item.ok);
+        if (refused) return refuse(refused.error);
+        const args = { expectedRevision: modal.pin.revision, definitionHash: modal.pin.definitionHash, inputs: inputs.value,
+            agentMode: modal.agentMode === "real" ? "real" : "mocked",
+            ...(vars.value !== undefined ? { vars: vars.value } : {}), ...(scenario.value !== undefined ? { scenario: scenario.value } : {}) };
+        if (!workflowV2RunCommandArgs("test", args).ok) return refuse("The revision or its definition hash is not known; read the workflow again.");
+        this.updateWorkflowTestReview({ error: null });
+        this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...workflowTestConfirm({ ...modal.pin, state: tests.state }, tests, args),
+            action: "workflowRunCommand", workflowRunCommand: { sessionId: modal.sessionId, operation: "test", runId: null, ...args },
+            returnModal: this.getState().ui.modal, previousFocus: state.ui.focusRegion } });
+        return { ok: false, reason: "confirming" };
+    }
+
+    /** The test review of a workflow that changed meanwhile: review its current revision (ctrl-l); what was typed and the agent mode stay. */
+    reviewWorkflowTestAgain() {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowTest") return;
+        const tests = workflowViewProjectionFor(state, modal.sessionId).testControls;
+        if (!workflowTestChange(modal.pin, tests)) {
+            this.dispatch({ type: "ui/status", text: "This review already shows the workflow as it is now" });
+            return;
+        }
+        const pin = workflowTestPin(tests);
+        if (!pin) {
+            this.dispatch({ type: "ui/status", text: "The workflow can no longer be tested here" });
+            return;
+        }
+        this.updateWorkflowTestReview({ pin, error: null });
+        this.dispatch({ type: "ui/status", text: `Reviewing revision ${pin.revision ?? "not known"} as it is now` });
+    }
+
+    /**
+     * After a test started from the test review `review`: started, back to
+     * the workflow view, which now shows the new test run (as the portal's
+     * review does); refused or unanswered, the review stays with what was
+     * typed (its own earlier message gives way to the command's notice) and
+     * the status line says so too.
+     */
+    afterWorkflowTest(review, result) {
+        const current = this.getState().ui.modal;
+        const open = current?.type === "workflowTest" && current.sessionId === review.sessionId;
+        if (result?.ok) {
+            if (!open) return;
+            const runId = typeof result.receipt?.run?.runId === "string" && result.receipt.run.runId ? result.receipt.run.runId : null;
+            const view = current.returnModal ?? null;
+            if (runId) this.dispatch({ type: "ui/workflowView", sessionId: review.sessionId, view: { selectedRunId: runId } });
+            this.dispatch({ type: "ui/modal", modal: view && runId ? { ...view, occurrenceIndex: 0, detailsScroll: 0 } : view });
+            if (runId) this.ensureWorkflowReadModel(review.sessionId).catch(() => {});
+            return;
+        }
+        if (result?.reason === "failed" || result?.reason === "unconfirmed") {
+            if (open && current.error) this.updateWorkflowTestReview({ error: null });
             const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[review.sessionId]?.runCommand);
             if (notice) this.dispatch({ type: "ui/status", text: notice.text });
         }
@@ -9880,19 +10028,21 @@ export class PilotSwarmUiController {
     closeModal() {
         const modal = this.getState().ui.modal;
         if (!modal) return;
-        // A confirm opened from the TUI's workflow view, its variables form, its draft editor or its publication review
-        // returns to it, and what it asked about was not done; the variables form, the draft editor and the publication
-        // review return to the view (the draft's edit is kept).
-        if (modal.returnModal && ["confirm", "workflowVariable", "workflowDraft", "workflowPublish"].includes(modal.type)) {
+        // A confirm opened from the TUI's workflow view, its variables form, its draft editor, its publication review or its
+        // test review returns to it, and what it asked about was not done; the variables form, the draft editor and the two
+        // reviews return to the view (the draft's edit is kept).
+        if (modal.returnModal && ["confirm", "workflowVariable", "workflowDraft", "workflowPublish", "workflowTest"].includes(modal.type)) {
             this.dispatch({ type: "ui/modal", modal: modal.returnModal });
             const operation = modal.type === "confirm" ? modal.workflowRunCommand?.operation : null;
-            const labels = { stop: "Stop", cancel: "Cancel", set_vars: "The removal", publish: "Publish", publish_and_start: "Publish and start", start: "Start" };
+            const labels = { stop: "Stop", cancel: "Cancel", set_vars: "The removal", publish: "Publish", publish_and_start: "Publish and start", start: "Start",
+                test: "The test" };
             const label = Object.hasOwn(labels, operation ?? "") ? labels[operation] : "The command";
             const unsaved = modal.type === "workflowDraft" && workflowViewProjectionFor(this.getState(), modal.sessionId).draftEdit?.changed;
             this.dispatch({ type: "ui/status", text: modal.type === "workflowVariable" ? "Back to the workflow view"
                 : modal.type === "workflowDraft" ? (unsaved ? "Closed the draft editor; your unsaved edits are kept (e shows them)" : "Closed the draft editor")
                     : modal.type === "workflowPublish" ? "Closed the publication review"
-                        : modal.action === "discardWorkflowDraftEdits" ? "Your edits are kept" : `${label} was not sent` });
+                        : modal.type === "workflowTest" ? "Closed the test review"
+                            : modal.action === "discardWorkflowDraftEdits" ? "Your edits are kept" : `${label} was not sent` });
             return;
         }
         this.dispatch({ type: "ui/modal", modal: null });
@@ -10138,6 +10288,8 @@ export class PilotSwarmUiController {
                     this.afterWorkflowVariableUpdate(modal.returnModal, result);
                 } else if (modal.returnModal?.type === "workflowPublish") {
                     this.afterWorkflowPublication(modal.returnModal, result);
+                } else if (modal.returnModal?.type === "workflowTest") {
+                    this.afterWorkflowTest(modal.returnModal, result);
                 } else if (modal.returnModal && !result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
                     const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
                     if (notice) this.dispatch({ type: "ui/status", text: notice.text });
@@ -13040,6 +13192,18 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_PUBLICATION_RELOAD:
                 this.reviewWorkflowPublicationAgain();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW:
+                this.openWorkflowTestReview();
+                return;
+            case UI_COMMANDS.WORKFLOW_TEST_START:
+                this.requestWorkflowTest();
+                return;
+            case UI_COMMANDS.WORKFLOW_TEST_AGENTS:
+                this.toggleWorkflowTestAgents();
+                return;
+            case UI_COMMANDS.WORKFLOW_TEST_RELOAD:
+                this.reviewWorkflowTestAgain();
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

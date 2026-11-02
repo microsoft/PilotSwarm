@@ -650,7 +650,7 @@ per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from) and `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first) as `updateWorkflow` commands; it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first) and `test` of the current revision and hash (t: the review, mocked or real agents; it asks first) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -931,8 +931,8 @@ Unfulfilled requirements (open, not waived; R26):
 - **The rest of the UI commands**: the portal sends every person's command
   (above). Test fixtures and a several-key variables update go through the
   API, MCP or the agent tool. The TUI's workflow view (below) sends only a
-  person's run controls, variable changes, draft saves and publication
-  commands.
+  person's run controls, variable changes, draft saves, publication
+  commands and test starts.
 
 **The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
 state, read-only child chats"; T115).** On a workflow session, `w` (outside
@@ -1100,6 +1100,44 @@ T018 to T020) has no review of the definition's inputs schema; the review
 does not show it, as the portal's does not, and the server's refusal names
 the problems.
 
+**The TUI's test review (design 05 test; mocks M18 to M20; R19, R20, R26,
+R28; INACTIVE likewise).** The workflow view's details say that a test of
+the current revision can start, where the portal's test review would offer
+it (`workflowV2TestControls`: a host with controller 1.9.0, outside an
+agent state's subtree). `t` opens the review of exactly the current revision
+and its definition hash (its pin), draft or published. It shows the test
+notice first (scripts run normally and their direct effects are real;
+framework tools are mocked; a test result is not evidence that the
+definition is safe to run live), then the definition, the revision, its
+full hash and its validity, and the agent states: mocked to start with (the
+parent answers each agent state); ctrl-a switches to real agents and back,
+and real agents bring their own notice (they spend model tokens; their
+framework tool calls are mocked; MCP tools are refused). Three fields
+follow (Tab moves through them): the run's inputs (a JSON object, `{}` to
+start with), its optional initial variables (a JSON object) and an optional
+scenario name (1 to 128 characters). ctrl-t asks first: the confirm dialog
+names the revision, the definition hash, the agent mode, the inputs,
+variables and scenario quoted, and repeats the notices; it returns to the
+review. Confirmed, the test is sent for that revision and hash as the
+portal sends it (`sendWorkflowRunCommand`, `test`); started, the view shows
+the new test run and reads its own model, as the portal's review does. A
+test the portal's review would not start now (a revision with compile
+errors, a viewer the portal refuses, a command being sent), and inputs,
+variables or a scenario name it would refuse, are not sent: the review says
+why and keeps what was typed. A workflow whose current revision changes
+while the review is open is shown as changed and nothing is sent for the old
+pin; ctrl-l reviews the current revision, keeping the fields and the agent
+mode. Publishing the revision under review changes nothing that is tested.
+A refusal (a stale revision or hash, read again; inputs the definition's
+schema refuses, with their problems) and an answer that never came stay in
+the review with what was typed; after an answer that never came, ctrl-t,
+once confirmed, sends the same test again (the same operation id). While a
+command is sent nothing else is. Enter sends nothing; Esc goes back; q is
+text. The review is not opened in an agent state's subtree (with the
+controlling agent named), by a host that takes no test from people, or
+without a person's commands; the status line says why. Test semantics are
+unchanged: the server decides every test again.
+
 **The TUI composer of a session in an agent state's subtree (design 03
 human-input denial; T115 "no human composer", T116 in the TUI).** It is
 read-only, as the portal's is: it shows the server's reason and the
@@ -1118,10 +1156,11 @@ fails, the composer stays as it is and the server refuses the input
 reads the same policy through its session access), are unchanged.
 
 Not in the TUI yet (open, not waived):
-- a person's other workflow commands (test start, test answers and the
-  virtual clock): the portal, the API, MCP and the agent tools take them; a
-  several-key variables update (the form sends one name at a time, as the
-  portal's panel does);
+- a test run's answers to its intercepted effects and its virtual clock
+  (`test_respond`, `test_advance`): the portal, the API, MCP and the agent
+  tools take them, and the view lists the effects read-only; a several-key
+  variables update (the form sends one name at a time, as the portal's
+  panel does);
 - each execution's own output: the view shows the state's latest output or
   error (bounded), as the portal's Output tab does;
 - the TUI refuses a person's prompt, answer and steer to an agent state's

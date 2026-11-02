@@ -9651,6 +9651,7 @@ const KEYBINDING_HELP = [
         ["v", "workflow view: the shown run's variables — set a name to a JSON value or remove one (Tab name/value · ↑↓ copy a listed one · Enter set · ctrl-r remove · Esc back)"],
         ["e", "workflow view: edit the draft's YAML (ctrl-o save as a new revision · ctrl-r discard edits · ctrl-k keep edits on a newer revision · Esc close, edits kept)"],
         ["P", "workflow view: publication review of the exact revision and hash shown (ctrl-p publish only · ctrl-r publish and start, or start a published one's live run, with its JSON inputs and variables · each asks first · ctrl-l review it again after a change · Esc back)"],
+        ["t", "workflow view: test review of the current revision and hash, not a sandbox (ctrl-t start the test, asks first · ctrl-a agents mocked/real, real ones spend model tokens · Tab inputs/variables/scenario · ctrl-l review it again after a change · Esc back)"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],

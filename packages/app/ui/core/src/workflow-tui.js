@@ -4,8 +4,8 @@ import {
     compactWorkflowV2Executions, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
 } from "./workflow-v2-view.js";
 import {
-    workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2RestrictionText, workflowV2RunCommandNotice,
-    workflowV2RunControls, workflowV2RunVariables,
+    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor,
+    workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
 } from "./workflow-v2-commands.js";
 
 /**
@@ -39,10 +39,14 @@ import {
  * and definition hash shown: publish only, publish and start its live run,
  * or start a published definition's live run, with the run's inputs and
  * initial variables, each after the confirm dialog; the portal's
- * workflowV2DefinitionControls). A workflow in an agent state's subtree takes
- * only pause, stop and cancel from people. The server decides every command
- * again. Tests and their answers are not part of it, and the server keeps
- * refusing human input to an agent state's subtree.
+ * workflowV2DefinitionControls), and a test run of the exact current
+ * revision (t opens its review: the test notice, mocked or real agents with
+ * the real-agent notice, the run's inputs, initial variables and scenario
+ * name, started after the confirm dialog; the portal's
+ * workflowV2TestControls). A workflow in an agent state's subtree takes only
+ * pause, stop and cancel from people. The server decides every command
+ * again. A test run's answers and its virtual clock are not part of it, and
+ * the server keeps refusing human input to an agent state's subtree.
  *
  * For an agent state it also shows the agent, the workflow interface the
  * state names and what the shown run pins it to (the package revision and
@@ -117,11 +121,13 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const draftBuffer = workflowDraftBuffer(safeView.draftEdit, draftEditor);
     const draftEdit = draftBuffer ? workflowV2DraftEdit(draftBuffer.base, draftBuffer.text,
         draftBuffer.base.revision > draftEditor.revision ? { ...draftEditor, revision: draftBuffer.base.revision } : draftEditor) : null;
-    // The definition's publication as the portal's publication panel offers it (publish, publish and start, start).
+    // The definition's publication as the portal's publication panel offers it (publish, publish and start, start), and a
+    // test of its current revision as the portal's test review offers it.
     const publication = v2 ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null;
+    const testControls = v2 ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null;
     return {
         definition, nodes, v2, status, live, runPicker, runControls, runNotice, runVariables, runReadModel: v2 ? readModel ?? null : null,
-        draftEditor, draftBuffer, draftEdit, publication, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
+        draftEditor, draftBuffer, draftEdit, publication, testControls, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -726,6 +732,137 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
     };
 }
 
+/** At most this many characters of a scenario name are quoted in a confirm dialog; the review shows it whole. */
+const CONFIRM_SCENARIO_LIMIT = 60;
+
+/**
+ * What a test review is of (its `pin`): the definition's current revision (a draft's, or a published one's) and that
+ * revision's definition hash, from the portal's test model (workflowV2TestControls). Null without one. Pure.
+ */
+export function workflowTestPin(tests) {
+    if (!isPlainRecord(tests)) return null;
+    return { state: tests.state, revision: tests.revision ?? null, definitionHash: tests.definitionHash ?? null };
+}
+
+/**
+ * Why a test review of `pin` sends nothing now that the workflow shows `tests`, as a sentence: its current revision or
+ * hash moved on (publishing the same revision does not change what is tested), or it can no longer be tested here;
+ * null while the workflow still shows exactly the revision and hash the review is of. Pure.
+ */
+export function workflowTestChange(pin, tests) {
+    const current = workflowTestPin(tests);
+    if (current && isPlainRecord(pin) && current.revision === pin.revision && current.definitionHash === pin.definitionHash) return null;
+    if (!current) return "The workflow can no longer be tested here, so nothing is sent. Esc goes back.";
+    return `The workflow now shows revision ${current.revision ?? "not known"} (definition hash ${shortHash(current.definitionHash)}); this review is of `
+        + `revision ${pin?.revision ?? "not known"}, so nothing is sent for it. ctrl-l reviews revision ${current.revision ?? "not known"}.`;
+}
+
+/**
+ * The confirm dialog of a test review's start: exactly what is tested (the pinned revision of the named definition and
+ * its definition hash), with mocked or real agents, which inputs, initial variables and scenario name, and the test
+ * notices (scripts run normally and their direct effects are real; framework tools are mocked; real agents spend model
+ * tokens), and that the live run is not changed. Pure.
+ */
+export function workflowTestConfirm(pin, tests, args = {}) {
+    const name = [tests?.name, tests?.semver].filter(Boolean).join(" ") || "this workflow";
+    const real = args?.agentMode === "real";
+    const what = `${pin?.state === "draft" ? "draft " : ""}revision ${pin?.revision ?? "not known"} of ${name} (definition hash ${shortHash(pin?.definitionHash)})`;
+    const scenario = typeof args?.scenario === "string"
+        ? `, scenario '${args.scenario.length > CONFIRM_SCENARIO_LIMIT ? `${args.scenario.slice(0, CONFIRM_SCENARIO_LIMIT - 1)}…` : args.scenario}'` : "";
+    const given = `inputs ${jsonPreview(args?.inputs ?? {})}${args?.vars !== undefined ? `, initial variables ${jsonPreview(args.vars)}` : ""}${scenario}`;
+    return { title: "Start Test Run", confirmLabel: "Start Test",
+        message: `Start a test run of ${what} with ${real ? "real agents, which spend model tokens" : "mocked agents (the parent answers each agent state)"}; `
+            + `${given}? ${WORKFLOW_V2_TEST_NOTICE_TEXT}${real ? ` ${WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT}` : ""} The live run is not changed.` };
+}
+
+/**
+ * Why the open workflow view has no test review, as a sentence; null when it has one (the portal's test review would
+ * offer a test of the current revision). Pure.
+ */
+export function workflowViewTestRefusal(selection) {
+    const projection = selection?.projection ?? null;
+    if (projection?.testControls) return null;
+    const model = projection?.definitionModel ?? null;
+    const commands = isPlainRecord(model?.personCommands) ? model.personCommands : null;
+    const offered = Array.isArray(commands?.operations) && commands.operations.includes("test");
+    const why = !isPlainRecord(model) ? "The workflow is not loaded yet."
+        : !commands ? "This deployment takes no workflow commands from people."
+            : !offered ? workflowV2RestrictionText(commands) ?? "This workflow takes no test from people."
+                : `The definition is ${typeof model.definition?.state === "string" && model.definition.state ? model.definition.state : "in no known state"}.`;
+    return `A test cannot be started here. ${why}`;
+}
+
+/** A test of the definition in the view's details: what t reviews, when the workflow takes a test from people. */
+function testLines(projection) {
+    const tests = projection.testControls;
+    if (!tests) return [];
+    return [{ text: `Test: ${tests.state === "draft" ? "draft " : ""}revision ${tests.revision ?? "not known"}${tests.valid ? "" : " (it has errors)"}`
+        + " — t reviews a test run beside the live run", color: tests.busy ? "yellow" : "cyan", indent: "" }];
+}
+
+/**
+ * The test review (TUI modal "workflowTest"; the portal's test review, mocks M18 to M20): the test notice (scripts run
+ * normally and their direct effects are real; framework tools are mocked; a test result is not evidence that the
+ * definition is safe to run live), exactly what is tested (the definition, the revision and full definition hash the
+ * review was opened for, its validity), whether agent states are mocked or real (with the real-agent notice), the start
+ * with its key or why not now, a review whose workflow changed meanwhile (nothing is sent for it until it is reviewed
+ * again), the last test start's refusal or lost answer, the review's own check of what was typed, and three fields: the
+ * run's inputs and initial variables (JSON objects) and a scenario name. Null unless the review is open. Pure.
+ */
+export function selectWorkflowTestModal(state, maxWidth = 100, viewportHeight = null) {
+    const modal = state?.ui?.modal;
+    if (!modal || modal.type !== "workflowTest") return null;
+    const projection = workflowViewProjectionFor(state, modal.sessionId);
+    const tests = projection.testControls;
+    const pin = isPlainRecord(modal.pin) ? modal.pin : null;
+    const change = workflowTestChange(pin, tests);
+    const changed = change !== null;
+    // Publishing the revision under review changes its state, not what is tested.
+    const draft = (changed ? pin?.state : tests?.state) === "draft";
+    const real = modal.agentMode === "real";
+    const width = Math.max(40, Number(maxWidth) || 100);
+    const contentWidth = width - 4;
+    const lines = [];
+    const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
+    add(WORKFLOW_V2_TEST_NOTICE_TEXT, "yellow");
+    add(`Definition: ${[tests?.name, tests?.semver].filter(Boolean).join(" ") || "Not named"}`);
+    add(`${draft ? "Draft revision" : "Revision"}: ${pin?.revision ?? "Not known"}`);
+    add(`Definition hash: ${pin?.definitionHash ?? "Not known"}`);
+    if (!changed && tests) {
+        add(`Validity: ${tests.valid ? "Valid" : `${tests.errors || "Unlisted"} error${tests.errors === 1 ? "" : "s"}: it cannot be tested`}`, tests.valid ? "white" : "red");
+    }
+    add(real ? "Agent states: real agents, which spend model tokens (ctrl-a: mocked)" : "Agent states: mocked; the parent answers each agent state (ctrl-a: real agents)",
+        real ? "yellow" : "cyan");
+    if (real) add(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, "yellow");
+    if (changed) add(change, "yellow");
+    else if (tests) {
+        add(`ctrl-t ${tests.control.label}${tests.control.enabled || tests.control.pending ? "" : ` — not now: ${tests.control.title}`}`,
+            tests.control.enabled ? "cyan" : "gray");
+    }
+    const notice = projection.runNotice?.operation === "test" ? projection.runNotice : null;
+    if (notice) {
+        add(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
+        if (notice.retry) add("ctrl-t sends the same test again once you confirm it; the server starts it once.", "gray", "  ");
+    }
+    if (typeof modal.error === "string" && modal.error) add(modal.error, "red");
+    const fields = !changed && Boolean(tests);
+    const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
+    const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - (fields ? 22 : 10))));
+    const hint = changed ? "ctrl-l review it as it is now · Esc back"
+        : "ctrl-t start the test (asks first) · ctrl-a agents mocked/real · Tab inputs/variables/scenario · Esc back";
+    const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
+    return {
+        title: `Test review · ${draft ? "draft " : ""}revision ${pin?.revision ?? "not known"} · not a sandbox`,
+        lines, listHeight, scrollOffset: 0, changed, fields, agentMode: real ? "real" : "mocked",
+        field: ["vars", "scenario"].includes(modal.field) ? modal.field : "inputs",
+        inputs: String(modal.inputs ?? ""), inputsCursor: Number(modal.inputsCursor) || 0,
+        vars: String(modal.vars ?? ""), varsCursor: Number(modal.varsCursor) || 0,
+        scenario: String(modal.scenario ?? ""), scenarioCursor: Number(modal.scenarioCursor) || 0,
+        busy: Boolean(tests?.busy),
+        hint, hintLines, hintHeight: hintLines.length + 2, idealWidth: width,
+    };
+}
+
 /** `text` in lines of at most `limit` characters, broken at spaces; each starts with `indent`, a continuation with two more. */
 function wrapped(text, limit, indent = "") {
     const out = [];
@@ -826,7 +963,8 @@ function detailLines(selection, width) {
     }
     // The run controls, their notice and the variables are wrapped, not cut (a reason or a refusal is read whole); a
     // variable's value is cut to one line.
-    for (const line of [...runControlLines(projection), ...runVariableLines(projection), ...draftLines(projection), ...publicationLines(projection)]) {
+    for (const line of [...runControlLines(projection), ...runVariableLines(projection), ...draftLines(projection), ...publicationLines(projection),
+        ...testLines(projection)]) {
         if (line.clip) add(`${line.indent}${line.text}`, line.color);
         else for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }
