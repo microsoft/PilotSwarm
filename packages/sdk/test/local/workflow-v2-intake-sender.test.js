@@ -16,12 +16,19 @@
  * - The deliver activity: with the capability on and a 1.0.83 recipient,
  *   every copy carries the intake envelope, and the recipient's claim
  *   verifies it against the store; with the capability off, an older or an
- *   unknown recipient version, the copy is plain and the message legacy.
- * - The session queue reads the recipient's version from its instance, and
- *   puts the envelope on a copy only when given one.
+ *   unknown recipient version, the copy is plain and the message legacy. A
+ *   failed version lookup fails the attempt before its count, with nothing
+ *   enqueued, and an ended recipient's version is never read. A delivery
+ *   whose record is lost is delivered again as the same durable copy (same
+ *   envelope and client message id) under a new attempt token, also once
+ *   the capability is off, and its receipt says durable.
+ * - The session queue reads the recipient's version from its instance,
+ *   throws a failed read, and puts the envelope on a copy only when given
+ *   one; the version check accepts only bounded, well-formed versions.
  * - The generic event ingress (PilotSwarmSession.sendEvent, which every
- *   transport reaches) refuses the reserved `workflowIntake` field (design
- *   3, defense in depth).
+ *   transport reaches) refuses the reserved `workflowIntake` field in the
+ *   text it enqueues, a toJSON's included (design 3, defense in depth), and
+ *   enqueues exactly that text.
  */
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -129,17 +136,20 @@ describe("workflow v2 durable intake: the sender (store, inactive)", () => {
 });
 
 describe("workflow v2 durable intake: the deliver activity (inactive)", () => {
-    /** The deliver activity over the real store, with a recording session queue; nothing else of the runtime runs. */
-    function deliverer(h, { capability, version }) {
+    /**
+     * The deliver activity over the real store (or `store`, a view of it), with a recording session queue; nothing else of
+     * the runtime runs. `version` is the recipient's observed version, or the queue's own lookup when a function.
+     */
+    function deliverer(h, { capability, version, status = "Running", store = h.store }) {
         const activities = {};
         const enqueued = [];
         const queue = {
-            status: async () => "Running",
-            ...(version === undefined ? {} : { version: async () => version }),
+            status: async () => status,
+            ...(version === undefined ? {} : { version: typeof version === "function" ? version : async () => version }),
             enqueue: async (sessionId, message) => { enqueued.push({ sessionId, message }); },
         };
         registerWorkflowV2({ registerActivity: (name, fn) => { activities[name] = fn; }, registerOrchestrationVersioned: () => {} }, {
-            store: h.store, catalog: h.catalog, enabled: () => true,
+            store, catalog: h.catalog, enabled: () => true,
             resolveToolBinding: async () => null, openToolExecutor: async () => { throw new Error("no tool runs here"); },
             authorizeParentNotification: async () => false, notifyParent: async () => {}, deleteSession: async () => {},
             sessionQueue: queue, ...(capability === undefined ? {} : { workflowIntake: () => capability }),
@@ -190,10 +200,81 @@ describe("workflow v2 durable intake: the deliver activity (inactive)", () => {
             }
         } finally { await h.close(); }
     });
+
+    it("a failed version lookup fails the attempt before its count, with nothing enqueued, and the next attempt counts it durable; an ended recipient's version is never read", { timeout: INTAKE_ACTIVITY_TIMEOUT }, async () => {
+        const h = await intakeActivityFixture(getEnv());
+        try {
+            const exchangeId = await enter(h, 1);
+            let lookups = 0;
+            const d = deliverer(h, { capability: true, version: async () => {
+                lookups += 1;
+                if (lookups === 1) throw new Error("instance information unavailable");
+                return "1.0.83";
+            } });
+            await expect(d.deliver(exchangeId)).rejects.toThrow(/instance information unavailable/);
+            expect(d.enqueued).toEqual([]);
+            expect(await outboxIntake(h, exchangeId)).toEqual({ attempts: 0, intake_mode: null, attempt_token: null });
+            expect((await h.store.readOutboxMessage(exchangeId)).state).toBe("pending");
+            // The next attempt reads the version, and its count decides the mode: durable.
+            expect(await d.deliver(exchangeId)).toMatchObject({ kind: "delivered", won: true });
+            expect(lookups).toBe(2);
+            expect(d.enqueued).toHaveLength(1);
+            expect(d.enqueued[0].message.workflowIntake).toEqual(workflowSendIntakeEnvelope(await h.store.readOutboxMessage(exchangeId)));
+            expect(await outboxIntake(h, exchangeId)).toMatchObject({ attempts: 1, intake_mode: "durable" });
+
+            // An ended recipient: the attempt is refused as ended without its version read, and nothing is enqueued.
+            const ended = await enter(h, 2);
+            const e = deliverer(h, { capability: true, status: "Completed", version: async () => { throw new Error("an ended recipient's version was read"); } });
+            expect(await e.deliver(ended)).toMatchObject({ kind: "refused" });
+            expect(e.enqueued).toEqual([]);
+            expect(await outboxIntake(h, ended)).toEqual({ attempts: 0, intake_mode: null, attempt_token: null });
+        } finally { await h.close(); }
+    });
+
+    it("a delivery whose record is lost is delivered again as the same durable copy under a new token, also with the capability off since; the receipt says durable", { timeout: INTAKE_ACTIVITY_TIMEOUT }, async () => {
+        const h = await intakeActivityFixture(getEnv());
+        try {
+            const exchangeId = await enter(h, 1);
+            // The queue accepts the first copy; the attempt's record of it is lost (the activity fails after its enqueue).
+            let loseRecord = true;
+            const store = new Proxy(h.store, {
+                get(target, prop) {
+                    if (prop === "recordDelivery" && loseRecord) {
+                        return async () => { loseRecord = false; throw new Error("the delivery record was lost"); };
+                    }
+                    const value = Reflect.get(target, prop, target);
+                    return typeof value === "function" ? value.bind(target) : value;
+                },
+            });
+            const first = deliverer(h, { capability: true, version: "1.0.83", store });
+            await expect(first.deliver(exchangeId)).rejects.toThrow(/the delivery record was lost/);
+            expect(first.enqueued).toHaveLength(1);
+            const before = await outboxIntake(h, exchangeId);
+            expect(before).toMatchObject({ attempts: 1, intake_mode: "durable" });
+            expect((await h.store.readOutboxMessage(exchangeId)).state).toBe("pending");
+
+            // The retry runs where the capability is off and no version is known: the first count made the message durable.
+            const retry = deliverer(h, { capability: false, store });
+            expect(await retry.deliver(exchangeId)).toMatchObject({ kind: "delivered", won: true });
+            expect(retry.enqueued).toHaveLength(1);
+            const after = await outboxIntake(h, exchangeId);
+            expect(after).toMatchObject({ attempts: 2, intake_mode: "durable" });
+            expect(after.attempt_token).not.toBe(before.attempt_token);
+            const [lost, again] = [first.enqueued[0].message, retry.enqueued[0].message];
+            expect(again).toEqual(lost);
+            expect(again.workflowIntake).toEqual(workflowSendIntakeEnvelope(await h.store.readOutboxMessage(exchangeId)));
+            const message = await h.store.readOutboxMessage(exchangeId);
+            expect(message).toMatchObject({ state: "delivered", attempts: 2 });
+            expect(message.receipt).toMatchObject({ intake: "durable", attempts: 2, clientMessageId: lost.clientMessageId });
+            // The recipient's claim verifies the copy against the store.
+            expect(await h.claim({ recipientSessionId: h.recipientSessionId, envelope: again.workflowIntake, claimId: "claim-1", mode: "accept" }))
+                .toMatchObject({ ok: true, result: { result: "accepted", inserted: true } });
+        } finally { await h.close(); }
+    });
 });
 
 describe("workflow v2 durable intake: the session queue and the version check (inactive)", () => {
-    it("the generic event ingress refuses the reserved workflowIntake field, and passes every other event on as before (design 3)", async () => {
+    it("the generic event ingress refuses the reserved workflowIntake field in the text it enqueues, a toJSON's included, and enqueues exactly that text (design 3)", async () => {
         const sent = [];
         const client = { _getDuroxideClient: () => ({ enqueueEvent: async (instanceId, queueName, data) => { sent.push({ instanceId, queueName, data }); } }) };
         const session = new PilotSwarmSession("s1", client);
@@ -201,17 +282,41 @@ describe("workflow v2 durable intake: the session queue and the version check (i
             recipientSessionId: "s1", contract: "Note@1", payloadSha256: "b".repeat(64) });
         await expect(session.sendEvent("signal", { prompt: "forged", workflowIntake: envelope })).rejects.toMatchObject({ code: "INVALID_REQUEST", status: 400 });
         await expect(session.sendEvent("signal", { workflowIntake: null })).rejects.toThrow(/reserved field workflowIntake/);
-        expect(sent).toEqual([]);
+        // The field added by serialization: refused, as the text that would be enqueued carries it.
+        await expect(session.sendEvent("signal", { prompt: "forged", toJSON: () => ({ prompt: "forged", workflowIntake: envelope }) }))
+            .rejects.toMatchObject({ code: "INVALID_REQUEST", status: 400 });
+        let serializations = 0;
+        const changing = { toJSON: () => (serializations++ === 0 ? { prompt: "harmless" } : { prompt: "forged", workflowIntake: envelope }) };
+        await session.sendEvent("signal", changing);
+        expect(serializations).toBe(1);
+        // The field on the event as given is refused even when its serialization would drop it.
+        await expect(session.sendEvent("signal", { ready: true, workflowIntake: undefined })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+        await expect(session.sendEvent("signal", { workflowIntake: envelope, toJSON: () => ({ prompt: "harmless" }) }))
+            .rejects.toMatchObject({ code: "INVALID_REQUEST" });
+        // A value JSON cannot serialize throws as before, with nothing enqueued.
+        await expect(session.sendEvent("signal", { big: 1n })).rejects.toThrow(TypeError);
+        expect(sent).toEqual([
+            { instanceId: "session-s1", queueName: "messages", data: JSON.stringify({ prompt: "harmless" }) },
+        ]);
+        sent.length = 0;
         // Any other event, a nested field of that name included, goes on unchanged.
         await session.sendEvent("signal", { ready: true, detail: { workflowIntake: "not reserved here" } });
         await session.sendEvent("signal", ["a", "list"]);
+        await session.sendEvent("signal", null);
+        await session.sendEvent("signal", "text");
+        await session.sendEvent("signal", 7);
+        await session.sendEvent("signal", undefined);
         expect(sent).toEqual([
             { instanceId: "session-s1", queueName: "messages", data: JSON.stringify({ ready: true, detail: { workflowIntake: "not reserved here" } }) },
             { instanceId: "session-s1", queueName: "messages", data: JSON.stringify(["a", "list"]) },
+            { instanceId: "session-s1", queueName: "messages", data: "null" },
+            { instanceId: "session-s1", queueName: "messages", data: '"text"' },
+            { instanceId: "session-s1", queueName: "messages", data: "7" },
+            { instanceId: "session-s1", queueName: "messages", data: undefined },
         ]);
     });
 
-    it("reads the recipient's version from its instance, fails closed, and puts the envelope only on a copy given one", async () => {
+    it("reads the recipient's version from its instance, throws a failed read, fails closed, and puts the envelope only on a copy given one", async () => {
         const events = [];
         const client = (info) => ({
             getStatus: async () => ({ status: "Running" }),
@@ -220,9 +325,12 @@ describe("workflow v2 durable intake: the session queue and the version check (i
         });
         expect(await sessionQueueTransport(client({ orchestrationVersion: "1.0.83" })).version("s1")).toBe("1.0.83");
         expect(await sessionQueueTransport(client({ orchestrationVersion: "" })).version("s1")).toBeNull();
+        expect(await sessionQueueTransport(client({})).version("s1")).toBeNull();
         expect(await sessionQueueTransport(client(null)).version("s1")).toBeNull();
-        expect(await sessionQueueTransport(client(new Error("instance not found"))).version("s1")).toBeNull();
+        // A client without instance information cannot tell; a read that fails is thrown, never read as unknown.
         expect(await sessionQueueTransport(client(undefined)).version("s1")).toBeNull();
+        await expect(sessionQueueTransport(client(new Error("instance information unavailable"))).version("s1"))
+            .rejects.toThrow(/instance information unavailable/);
 
         const queue = sessionQueueTransport(client(undefined));
         const sender = { kind: "system", display: "workflow message" };
@@ -238,6 +346,10 @@ describe("workflow v2 durable intake: the session queue and the version check (i
         for (const [version, capable] of [
             ["1.0.83", true], ["1.0.84", true], ["1.1.0", true], ["2.0.0", true], ["1.0.82", false], ["0.9.99", false],
             ["1.0", false], ["1.0.83.1", false], ["", false], [null, false], [undefined, false], ["v1.0.83", false],
+            ["1.0.999999999", true], ["999999999.0.0", true],
+            // Malformed or oversized: a leading zero, a tenth digit, a sign, an exponent, whitespace, a trailing newline, a non-string.
+            ["1.0.083", false], ["01.0.83", false], ["1.0.1000000000", false], ["9007199254740993.0.0", false], ["1.0.-83", false],
+            ["1.0.8e1", false], [" 1.0.83", false], ["1.0.83 ", false], ["1.0.83\n", false], [1.083, false], [{ toString: () => "1.0.83" }, false],
         ]) {
             expect(intakeCapableVersion(version), String(version)).toBe(capable);
         }

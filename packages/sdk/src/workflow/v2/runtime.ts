@@ -845,10 +845,11 @@ export interface WorkflowSessionQueue {
     status(sessionId: string): Promise<string>;
     /**
      * The orchestration version the session's current execution runs, as last
-     * observed; null when unknown. Durable intake (design
-     * workflow-durable-intake.md section 4) reads it before an attempt's
-     * transaction: an observation, not a fence. A queue without it is never
-     * durable.
+     * observed; null when the queue cannot tell (no instance information, or
+     * none recorded). Durable intake (design workflow-durable-intake.md
+     * section 4) reads it before an attempt's transaction, for a live session
+     * only: an observation, not a fence. A failed read is thrown, never read
+     * as unknown. A queue without it is never durable.
      */
     version?(sessionId: string): Promise<string | null>;
     /** `workflowIntake`: the intake envelope, on every copy of a durable exchange and on no other. */
@@ -869,14 +870,11 @@ export function sessionQueueTransport(client: {
 }): WorkflowSessionQueue {
     return {
         status: async sessionId => (await client.getStatus(`session-${sessionId}`)).status,
+        // A client without instance information cannot tell (null); a failed read is the activity's failure.
         version: async sessionId => {
             if (typeof client.getInstanceInfo !== "function") return null;
-            try {
-                const version = (await client.getInstanceInfo(`session-${sessionId}`))?.orchestrationVersion;
-                return typeof version === "string" && version ? version : null;
-            } catch {
-                return null;
-            }
+            const version = (await client.getInstanceInfo(`session-${sessionId}`))?.orchestrationVersion;
+            return typeof version === "string" && version !== "" ? version : null;
         },
         enqueue: (sessionId, message) => client.enqueueEvent(`session-${sessionId}`, "messages",
             JSON.stringify({
@@ -889,9 +887,15 @@ export function sessionQueueTransport(client: {
 /** The first session orchestration version with the durable recipient intake (design workflow-durable-intake.md section 8). */
 export const WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION = "1.0.83";
 
-/** Whether an observed session orchestration version has the durable intake; a missing or unparseable one has not (fail closed). */
+/** A version of three decimal components, each without a leading zero and at most nine digits (a safe integer). */
+const INTAKE_VERSION_PATTERN = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/;
+
+/** Whether an observed session orchestration version has the durable intake; a missing, malformed or oversized one has not (fail closed). */
 export function intakeCapableVersion(version: string | null | undefined): boolean {
-    const numbers = (value: string) => (/^\d+\.\d+\.\d+$/.test(value) ? value.split(".").map(Number) : null);
+    const numbers = (value: string) => {
+        const match = INTAKE_VERSION_PATTERN.exec(value);
+        return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+    };
     const observed = typeof version === "string" ? numbers(version) : null;
     const minimum = numbers(WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION)!;
     if (observed === null) return false;
@@ -2019,17 +2023,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             { sessionId: recipient, attempts: message.attempts }), "disabled");
         }
         const status = message.recipientKind === "agent" ? await queue.status(recipient) : null;
+        const ended = status !== null && ENDED_SESSION_STATUSES.includes(status);
         // Durable recipient intake (design workflow-durable-intake.md section 4; INACTIVE unless the deployment capability
-        // is on): an agent recipient whose session orchestration was observed at 1.0.83 or later. Read before the
-        // transaction: an observation, not a fence; the count decides the mode once, under the outbox lock.
-        const durable = message.recipientKind === "agent" && deps.workflowIntake?.() === true
+        // is on): an agent recipient whose live session orchestration was observed at 1.0.83 or later. Read before the
+        // transaction, for a live session only: an observation, not a fence; the count decides the mode once, under the
+        // outbox lock. A failed read fails this attempt before its count, with nothing enqueued.
+        const durable = message.recipientKind === "agent" && !ended && deps.workflowIntake?.() === true
             && intakeCapableVersion(await queue.version?.(recipient) ?? null);
         const begun = await store.beginDelivery(input.nodeExecutionId, {
             refused: {
                 unavailable: atDelivery(recipientRefusalResult("unavailable", recipient)),
                 forbidden: atDelivery(recipientRefusalResult("forbidden", recipient)),
             },
-            ended: status !== null && ENDED_SESSION_STATUSES.includes(status) ? atDelivery(endedRecipientResult(recipient, status)) : null,
+            ended: ended ? atDelivery(endedRecipientResult(recipient, status!)) : null,
             delivered,
         }, { durable, attemptToken: randomUUID() });
         if (begun.kind !== "deliver") return { kind: begun.kind, outcome: begun.node.outcome };

@@ -1631,17 +1631,22 @@ export class PilotSwarmSession {
         // Durable workflow intake (design workflow-durable-intake.md section 3): `workflowIntake` is reserved on a
         // session's message queue, where only a workflow's delivery puts it on a copy. This is the generic event
         // ingress every transport reaches; it refuses the field (defense in depth: the recipient's claim verifies every
-        // envelope against the store).
-        if (data !== null && typeof data === "object" && !Array.isArray(data) && Object.hasOwn(data, "workflowIntake")) {
-            throw Object.assign(new Error("A session event cannot carry the reserved field workflowIntake."), { code: "INVALID_REQUEST", status: 400 });
-        }
+        // envelope against the store), on the event as given and in its text: the event is serialized once, and that
+        // text, the one enqueued, is checked, so a toJSON cannot add the field after the check. A value JSON cannot
+        // serialize throws as before.
+        const reserved = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value)
+            && Object.hasOwn(value, "workflowIntake");
+        const refusal = () => Object.assign(new Error("A session event cannot carry the reserved field workflowIntake."), { code: "INVALID_REQUEST", status: 400 });
+        if (reserved(data)) throw refusal();
+        const serialized = JSON.stringify(data);
+        if (serialized !== undefined && reserved(JSON.parse(serialized))) throw refusal();
         const duroxideClient = this.client._getDuroxideClient();
         const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
         if (duroxideClient) {
             await duroxideClient.enqueueEvent(
                 orchestrationId,
                 "messages",
-                JSON.stringify(data),
+                serialized,
             );
         }
     }
