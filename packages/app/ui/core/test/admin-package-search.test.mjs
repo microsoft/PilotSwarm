@@ -112,6 +112,8 @@ test("Find highlights matches inline in package rows only", async () => {
         "the label and its mark share one inline span inside the column");
     assert.match(css, /\.ps-admin-tree__text, \.ps-admin-tree__match \{[^}]*white-space: nowrap;/);
     assert.match(css, /\.ps-admin-tree__mark \{ display: inline;/);
+    assert.match(css, /\.ps-admin-tree__ver \{ flex: none;/, "the version never shrinks behind a long match line");
+    assert.match(css, /\.ps-admin-pkg-search input\[type="search"\]::-webkit-search-cancel-button \{[^}]*display: none;/, "one clear button, not two");
     const html = renderToStaticMarkup(React.createElement("span", { className: "ps-admin-tree__text" }, ["", React.createElement("mark", { key: "hit" }, "a"), "gent-manager"]));
     assert.equal(html, "<span class=\"ps-admin-tree__text\"><mark>a</mark>gent-manager</span>");
 });

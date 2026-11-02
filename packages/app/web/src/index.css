@@ -6735,7 +6735,9 @@ body.is-resizing-pane-y iframe {
 .ps-admin-tree__text, .ps-admin-tree__match { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-admin-tree__match { color: var(--ps-muted); font-size: 11px; }
 .ps-admin-tree__row.is-selected .ps-admin-tree__match { color: var(--ps-modal-selected-foreground); }
-.ps-admin-tree__ver { margin-left: auto; color: var(--ps-muted); font-size: 11px; }
+.ps-admin-tree__ver { flex: none; margin-left: auto; color: var(--ps-muted); font-size: 11px; }
+/* The Find box draws its own clear button; hide the browser's duplicate. */
+.ps-admin-pkg-search input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
 
 /* On a SELECTED row the whole line sits on the selection fill, so every part
    of it has to take the selection foreground — not just the label.
