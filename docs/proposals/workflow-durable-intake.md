@@ -185,7 +185,11 @@ a read.
   3 and 4 do not depend on it. The other reserved queue fields (sender,
   bootstrap, required tool, commands) are the security contract's queue-
   shape item and the human-input slice, tracked there; this design does
-  not claim to close them.
+  not claim to close them. (Implementation.) The generic event ingress is
+  `PilotSwarmSession.sendEvent`, which the web API's `sendSessionEvent`, the
+  MCP tool and the node transport all reach; it refuses an event whose
+  payload carries `workflowIntake` at its top level (`INVALID_REQUEST`, 400),
+  where the session's drain would read it.
 
 ## 4. Sender: the capability boundary
 

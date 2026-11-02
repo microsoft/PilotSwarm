@@ -1628,6 +1628,13 @@ export class PilotSwarmSession {
     }
 
     async sendEvent(eventName: string, data: unknown): Promise<void> {
+        // Durable workflow intake (design workflow-durable-intake.md section 3): `workflowIntake` is reserved on a
+        // session's message queue, where only a workflow's delivery puts it on a copy. This is the generic event
+        // ingress every transport reaches; it refuses the field (defense in depth: the recipient's claim verifies every
+        // envelope against the store).
+        if (data !== null && typeof data === "object" && !Array.isArray(data) && Object.hasOwn(data, "workflowIntake")) {
+            throw Object.assign(new Error("A session event cannot carry the reserved field workflowIntake."), { code: "INVALID_REQUEST", status: 400 });
+        }
         const duroxideClient = this.client._getDuroxideClient();
         const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
         if (duroxideClient) {

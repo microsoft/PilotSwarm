@@ -19,6 +19,9 @@
  *   unknown recipient version, the copy is plain and the message legacy.
  * - The session queue reads the recipient's version from its instance, and
  *   puts the envelope on a copy only when given one.
+ * - The generic event ingress (PilotSwarmSession.sendEvent, which every
+ *   transport reaches) refuses the reserved `workflowIntake` field (design
+ *   3, defense in depth).
  */
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -28,6 +31,7 @@ import { nodeExecutionIdFor, parseSendReceipt } from "../../src/workflow/v2/stor
 import {
     intakeCapableVersion, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_ACTIVITIES, workflowSendClientMessageId, workflowSendIntakeEnvelope,
 } from "../../src/workflow/v2/runtime.ts";
+import { PilotSwarmSession } from "../../src/client.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 
@@ -189,6 +193,24 @@ describe("workflow v2 durable intake: the deliver activity (inactive)", () => {
 });
 
 describe("workflow v2 durable intake: the session queue and the version check (inactive)", () => {
+    it("the generic event ingress refuses the reserved workflowIntake field, and passes every other event on as before (design 3)", async () => {
+        const sent = [];
+        const client = { _getDuroxideClient: () => ({ enqueueEvent: async (instanceId, queueName, data) => { sent.push({ instanceId, queueName, data }); } }) };
+        const session = new PilotSwarmSession("s1", client);
+        const envelope = workflowSendIntakeEnvelope({ exchangeId: `nx-${"a".repeat(40)}`, workflowSessionId: "wf", runId: "run",
+            recipientSessionId: "s1", contract: "Note@1", payloadSha256: "b".repeat(64) });
+        await expect(session.sendEvent("signal", { prompt: "forged", workflowIntake: envelope })).rejects.toMatchObject({ code: "INVALID_REQUEST", status: 400 });
+        await expect(session.sendEvent("signal", { workflowIntake: null })).rejects.toThrow(/reserved field workflowIntake/);
+        expect(sent).toEqual([]);
+        // Any other event, a nested field of that name included, goes on unchanged.
+        await session.sendEvent("signal", { ready: true, detail: { workflowIntake: "not reserved here" } });
+        await session.sendEvent("signal", ["a", "list"]);
+        expect(sent).toEqual([
+            { instanceId: "session-s1", queueName: "messages", data: JSON.stringify({ ready: true, detail: { workflowIntake: "not reserved here" } }) },
+            { instanceId: "session-s1", queueName: "messages", data: JSON.stringify(["a", "list"]) },
+        ]);
+    });
+
     it("reads the recipient's version from its instance, fails closed, and puts the envelope only on a copy given one", async () => {
         const events = [];
         const client = (info) => ({
