@@ -31,6 +31,25 @@ test("a terminal controller does not poll or expose the browser-only MoTD tab", 
     assert.equal(reads, 0);
     assert.ok(!selectAdminConsole(store.getState()).settingsTree.some(row => row.id === "motd"));
 });
+test("dismissing fleet-current does not refetch immediately or use hidden history as a replacement", async () => {
+    let reads = 0, dismissed = false;
+    const { controller, store, state } = setup({
+        getCurrentMotd: async () => { reads++; return dismissed ? null : message("2"); },
+        dismissMotd: async id => { assert.equal(id, "2"); dismissed = true; },
+        listMotds: async () => [message("2", { status: "live" }), message("1", { status: "hidden" })],
+    });
+    await controller.refreshMotd();
+    await controller.refreshAdminMotds();
+    await controller.dismissCurrentMotd();
+    assert.equal(reads, 1);
+    assert.equal(selectMotd(store.getState()).message, null);
+    store.dispatch({ type: "motd/patch", patch: { readAt: Date.now() - 30_001 } });
+    await controller.refreshMotd();
+    assert.equal(reads, 2);
+    assert.equal(state().current, null);
+    assert.equal(selectMotd(store.getState()).message, null);
+    assert.equal(store.getState().admin.motds.history[1].status, "hidden");
+});
 test("dismissal hides immediately, retries failure and never writes profile settings", async () => {
     let dismissals = 0, profileWrites = 0;
     let release;

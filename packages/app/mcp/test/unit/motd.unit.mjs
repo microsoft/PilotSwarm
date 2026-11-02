@@ -5,13 +5,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerMotdTools } from "../../dist/src/tools/motd.js";
 
-async function fixture(run, { webMode = false, grant = true } = {}) {
+async function fixture(run, { webMode = false, grant = true, currentResult = { motdId: "1" } } = {}) {
     const keys = ["PILOTSWARM_MCP_ACTOR_PROVIDER", "PILOTSWARM_MCP_ACTOR_SUBJECT", "PILOTSWARM_MCP_MOTD_ADMIN"];
     const prior = keys.map(k => process.env[k]);
     process.env[keys[0]] = "test"; process.env[keys[1]] = "admin";
     if (grant) process.env[keys[2]] = "true"; else delete process.env[keys[2]];
     const calls = [];
-    const mgmt = new Proxy({}, { get: (_, method) => async (...args) => { calls.push({ method, args }); return { motdId: "1" }; } });
+    const mgmt = new Proxy({}, { get: (_, method) => async (...args) => { calls.push({ method, args }); return method === "getCurrentMotd" ? currentResult : { motdId: "1" }; } });
     const server = new McpServer({ name: "motd-test", version: "1.0.0" });
     registerMotdTools(server, { mgmt, admin: true, webMode });
     const client = new Client({ name: "motd-client", version: "1.0.0" });
@@ -54,6 +54,14 @@ test("MCP web mode does not invent viewer privilege", async () => {
         await client.callTool({ name: "list_motds", arguments: {} });
         assert.equal(calls[0].args[0].isAdmin, false);
     }, { webMode: true });
+});
+test("MCP current tool preserves a dismissed fleet-current null response", async () => {
+    await fixture(async (client, calls) => {
+        const response = await client.callTool({ name: "get_current_motd", arguments: {} });
+        assert.ok(!response.isError);
+        assert.equal(JSON.parse(response.content[0].text), null);
+        assert.equal(calls[0].method, "getCurrentMotd");
+    }, { currentResult: null });
 });
 test("MCP creation accepts omitted times and documents open-ended delivery", async () => {
     await fixture(async (client, calls) => {

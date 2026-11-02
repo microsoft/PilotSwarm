@@ -440,11 +440,15 @@ future; when both times are supplied, end must follow start. Legacy `fromAt`
 and `toAt` aliases remain accepted. Reuse the same request ID and unchanged
 input to retry an uncertain response.
 
-Among active messages not dismissed by that viewer, the latest to become
+Among all active messages, the latest to become
 active wins: `GREATEST(start, created_at)` descending, then message ID
 descending. A newly created active message takes over at once. An
 earlier-created schedule takes over when its start arrives. Open-ended
 messages do not expire. Readers still cannot see future schedules.
+Current selection happens before the viewer's dismissal is checked. If the
+viewer dismissed that message, current returns null; an older active message
+does not resurface. Deleting the current row is different: the next-newest
+active row becomes current again, subject to its own saved dismissal.
 
 Optional `image` and `mobileImage` each contain `{base64, contentType, alt}`.
 PNG, JPEG, WebP and GIF are allowed. Each picture is at most 2 MB of decoded

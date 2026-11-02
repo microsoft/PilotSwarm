@@ -39,10 +39,16 @@ describe.skipIf(!url)("authenticated MoTD history through HTTP and the real CMS 
             const client = actor => new ApiClient({ apiUrl: base, fetchImpl: (uri, options) => fetch(uri, { ...options,
                 headers: { ...options.headers, "x-test-actor": actor } }) });
             const reader = client("reader"), privileged = client("admin");
+            const running = await privileged.call("createMotd", { bodyMd: "Still active, superseded", requestId: randomUUID() });
             const open = await privileged.call("createMotd", { bodyMd: "Optional times", requestId: randomUUID() });
             expect(open.startsAt).toBe(open.createdAt); expect(open.endsAt).toBeNull();
             expect((await reader.call("getCurrentMotd")).endsAt).toBeNull();
+            await reader.call("dismissMotd", { motdId: open.motdId });
+            expect(await reader.call("getCurrentMotd")).toBeNull();
+            expect((await reader.call("listMotds")).find(row => row.motdId === running.motdId).status).toBe("hidden");
             await privileged.call("deleteMotd", { motdId: open.motdId });
+            expect((await reader.call("getCurrentMotd")).motdId).toBe(running.motdId);
+            await privileged.call("deleteMotd", { motdId: running.motdId });
             const history = await reader.call("listMotds");
             expect(history).toHaveLength(1);
             expect(history[0]).toMatchObject({ motdId: previous.motdId, status: "ended", bodyMd: "Previous announcement" });

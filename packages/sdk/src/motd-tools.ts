@@ -2,7 +2,7 @@ import { defineTool } from "@github/copilot-sdk";
 import { MotdError, MOTD_IMAGE_MAX_BYTES, type MotdCreateInput, type MotdImageInput, type MotdStore, type MotdViewer } from "./motd-store.js";
 
 export const MOTD_OPERATION_SPECS = [
-    { method: "getCurrentMotd", name: "get_current_motd", kind: "current", access: "authed", description: "Read the current deployment message, excluding your dismissals." },
+    { method: "getCurrentMotd", name: "get_current_motd", kind: "current", access: "authed", description: "Read the newest active deployment message. Returns null if you dismissed it; older messages do not resurface." },
     { method: "dismissMotd", name: "dismiss_motd", kind: "dismiss", access: "authed", description: "Dismiss a message for yourself permanently. Later messages still show." },
     { method: "getMotdImage", name: "get_motd_image", kind: "image", access: "authed", description: "Read a message picture. Mobile falls back to the main picture." },
     { method: "listMotds", name: "list_motds", kind: "list", access: "authed", description: "Read message history, windows and overlap status. Use before for older messages. Creator identity and dismissal counts are admin-only." },

@@ -16,6 +16,28 @@ test("desktop splash renders markdown, blocks background and records one click d
         expect(f.state.calls.filter(c => c.path.endsWith("/dismiss"))).toHaveLength(1);
     } finally { await f.stop(); }
 });
+test("dismissed fleet-current stays absent after a null refresh, not replaced from hidden history", async ({ page }) => {
+    const newest = message({ motdId: "2", bodyMd: "Newest announcement", toAt: null });
+    const older = message({ bodyMd: "Superseded announcement", status: "hidden" });
+    const f = await fixture(page, { current: newest, history: [newest, older] });
+    try {
+        await expect(splash(page)).toContainText("Newest announcement");
+        const reads = f.state.reads;
+        await splash(page).getByRole("button", { name: "Got it", exact: true }).click();
+        await expect(splash(page)).toHaveCount(0);
+        expect(f.state.current).toBeNull();
+        expect(f.state.reads).toBe(reads);
+        await page.reload();
+        await expect.poll(() => f.state.reads).toBeGreaterThan(reads);
+        await expect(splash(page)).toHaveCount(0);
+        await openAdmin(page);
+        const panel = page.getByRole("region", { name: "Message of the day settings", exact: true });
+        await expect(panel).toContainText("Superseded announcement");
+        await expect(panel).toContainText("Hidden by later message");
+        await expect(splash(page)).toHaveCount(0);
+        expect(f.state.calls.filter(call => call.path.endsWith("/dismiss"))).toHaveLength(1);
+    } finally { await f.stop(); }
+});
 test("raw HTML is escaped, body pictures stay placeholders and links do not dismiss", async ({ page }) => {
     const f = await fixture(page, { current: message({ bodyMd: '---\n**Maintenance tonight**\n---\n\n## Safe\n<strong data-raw="yes">literal</strong>\n\n![remote](https://example.invalid/pic.png)\n\n[Guide](https://example.invalid/guide)' }) });
     try {

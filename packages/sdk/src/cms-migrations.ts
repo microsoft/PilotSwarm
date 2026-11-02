@@ -17,6 +17,7 @@ import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
 import { motdMigration } from "./migrations/motd-0084.js";
 import { motdHistoryMigration } from "./migrations/motd-history-0085.js";
 import { motdSchedulingMigration } from "./migrations/motd-scheduling-0086.js";
+import { motdSupersessionMigration } from "./migrations/motd-supersession-0087.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -414,6 +415,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0084", name: "motd", sql: motdMigration(schema) },
         { version: "0085", name: "motd_history", sql: motdHistoryMigration(schema) },
         { version: "0086", name: "motd_scheduling", sql: motdSchedulingMigration(schema) },
+        { version: "0087", name: "motd_supersession", sql: motdSupersessionMigration(schema) },
     ];
 }
 
