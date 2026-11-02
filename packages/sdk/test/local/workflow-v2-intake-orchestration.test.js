@@ -1,0 +1,214 @@
+/**
+ * Durable recipient intake, inactive: orchestration 1.0.83 on the native
+ * duroxide runtime and PostgreSQL (design docs/proposals/workflow-durable-
+ * intake.md 3, 5.5, 6.2 and section 8). The orchestration, its continue-as-
+ * new, the real worker activities (runTurnV5 included) over the real CMS,
+ * and the real intake activities over the real workflow store run as a
+ * worker runs them; only the model session is scripted, and 1.0.83 is
+ * registered by this test alone (workflow-v2-intake-native-fixture.js).
+ *
+ * - An enveloped copy is claimed and held; decide binds it and starts a turn
+ *   of its own that carries it in runTurnV5's `intake` field under the
+ *   workflow-request tag; the model gets the item's canonical text before
+ *   the turn's prompt; sent, the invocation ends completed in the store; the
+ *   transcript records the item once, as its plain copy would be; the
+ *   session then continues as new on 1.0.83 with nothing of the intake.
+ * - An attempt that sends and fails retries across a continue-as-new that
+ *   carries the retry marker and the retry's count; the retry carries the
+ *   same invocation, completes it, and turn start records the item no
+ *   second time.
+ * - A run that ends before its send leaves the invocation not dispatched,
+ *   settled so in the store.
+ * - Decision A1: a closed workspace gate refuses the first attempt before
+ *   any model run, and the invocation is parked for the gate; a person's
+ *   message ends the gate's wait, and its turn, past the gate this time,
+ *   carries the same invocation to completion.
+ *
+ * These cover the orchestration's own boundaries natively; they are not an
+ * activation, a mixed-version, a crash-redelivery or a model qualification.
+ */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, it, expect, vi } from "vitest";
+import { useSuiteEnv } from "../helpers/local-env.js";
+import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
+import { intakeNativeFixture, scheduled, eventText, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
+import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
+import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
+import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_83/state.ts";
+
+const getEnv = useSuiteEnv(import.meta.url);
+const WORKFLOW_SENDER = { kind: "system", display: "workflow message" };
+
+const sends = result => (_call, _prompt, opts) => {
+    opts.onBeforeInitialSend?.();
+    return { events: [], ...result };
+};
+const callsOf = (h, name) => h.calls.filter(call => call.name === name
+    && (call.input?.sessionId === h.sessionId || call.input?.recipientSessionId === h.sessionId));
+const waiting = ({ history }) => history.some(event => event.kind === "QueueSubscribed");
+
+/** The recipient's transcript records of one client message id. */
+async function recordsOf(h, clientMessageId) {
+    const events = await h.catalog.getSessionEvents(h.sessionId, 0, 1000);
+    return events.filter(event => Array.isArray(event.data?.clientMessageIds) && event.data.clientMessageIds.includes(clientMessageId));
+}
+
+describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime (inactive)", () => {
+    it("a claimed copy is bound and carried by a turn of its own; sent, it ends completed, recorded once; the session continues as new on 1.0.83", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        const h = await intakeNativeFixture(getEnv(), sends({ type: "completed", content: "noted" }));
+        try {
+            const input = await h.send(1);
+            const expected = await h.expectedItem(input);
+            await h.start();
+            await h.until(waiting, "the session waits for its messages");
+            await h.deliver(input);
+            const done = await h.until(async ({ info }) => {
+                const row = await h.store.readWorkflowIntake(input.envelope.exchangeId);
+                return row?.processing === "completed" && Number(info.currentExecutionId) >= 2;
+            }, "the invocation ends completed and the session continues as new");
+            const row = await h.store.readWorkflowIntake(input.envelope.exchangeId);
+            expect(row).toMatchObject({ state: "admitted", processing: "completed" });
+
+            // One model run: the item's canonical text, then the intake's own-turn prompt.
+            expect(h.prompts).toHaveLength(1);
+            expect(h.prompts[0].startsWith(`${expected.text}\n\n`)).toBe(true);
+            expect(h.prompts[0]).toContain(INTERNAL_SYSTEM_TURN_PROMPT);
+            // The turn ran as runTurnV5 under the workflow-request tag with the bound invocation in its own field.
+            const turns = callsOf(h, "runTurnV5");
+            expect(turns.map(turn => turn.tag)).toEqual([WORKFLOW_REQUEST_CAPABILITY]);
+            expect(turns[0].input.intake).toEqual({
+                invocationId: row.invocationId, items: [{ exchangeId: input.envelope.exchangeId, clientMessageId: expected.clientMessageId, text: expected.text }],
+            });
+            expect(h.calls.some(call => /^runTurn(2|V3|V4|EpochV4)?$/.test(call.name))).toBe(false);
+            // The store writes, each under the workflow-request tag: the claim, the bind, then the end.
+            expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.claim).map(call => call.tag)).toEqual([WORKFLOW_REQUEST_CAPABILITY]);
+            expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.tag])).toEqual([
+                ["bind", WORKFLOW_REQUEST_CAPABILITY], ["end", WORKFLOW_REQUEST_CAPABILITY],
+            ]);
+            expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle)[1].input).toMatchObject({ invocationId: row.invocationId, outcome: "completed" });
+
+            // The transcript records the item once, as its plain copy would be; the plain copy itself is never read.
+            const records = await recordsOf(h, expected.clientMessageId);
+            expect(records.map(event => [event.eventType, event.data.content, event.data.sender])).toEqual([["system.message", expected.text, WORKFLOW_SENDER]]);
+            const events = await h.catalog.getSessionEvents(h.sessionId, 0, 1000);
+            expect(events.some(event => JSON.stringify(event.data ?? {}).includes(`plain-${input.envelope.exchangeId}`))).toBe(false);
+
+            // Natively: one turn scheduled in the first execution; the continue-as-new stays on 1.0.83 and carries no intake.
+            const [first, ...later] = await h.histories();
+            expect(scheduled(first, "runTurnV5")).toHaveLength(1);
+            expect(done.info.orchestrationVersion).toBe("1.0.83");
+            const started = later.at(-1)[0];
+            expect(started.kind).toBe("OrchestrationStarted");
+            expect(eventText(started)).not.toContain('"intake":');
+            expect(eventText(started)).not.toContain("intakeRetryInvocationId");
+            expect(done.status.status).toBe("Running");
+        } finally { await h.close(); }
+    });
+
+    it("an attempt that sends and fails retries across a continue-as-new carrying the marker; the retry carries the same invocation to completion, recorded once", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        const h = await intakeNativeFixture(getEnv(), (call, _prompt, opts) => {
+            opts.onBeforeInitialSend?.();
+            return call === 1 ? { type: "error", message: "the model call failed", events: [] } : { type: "completed", content: "noted", events: [] };
+        });
+        try {
+            const input = await h.send(1);
+            const expected = await h.expectedItem(input);
+            await h.start();
+            await h.until(waiting, "the session waits for its messages");
+            await h.deliver(input);
+            // The retry waits 15 s on a durable timer, continues as new, and its execution completes the invocation.
+            await h.until(async ({ info }) => {
+                const row = await h.store.readWorkflowIntake(input.envelope.exchangeId);
+                return row?.processing === "completed" && Number(info.currentExecutionId) >= 3;
+            }, "the retry completes the invocation", 150_000);
+            const row = await h.store.readWorkflowIntake(input.envelope.exchangeId);
+
+            // Two model runs, each with the item's text first; two turns of the same invocation, the second its retry.
+            expect(h.prompts).toHaveLength(2);
+            for (const prompt of h.prompts) expect(prompt.startsWith(`${expected.text}\n\n`)).toBe(true);
+            const turns = callsOf(h, "runTurnV5");
+            expect(turns.map(turn => [turn.input.intake.invocationId, turn.input.retryCount ?? 0])).toEqual([[row.invocationId, 0], [row.invocationId, 1]]);
+            // One bind; one end, completed.
+            expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.input.outcome ?? null])).toEqual([
+                ["bind", null], ["end", "completed"],
+            ]);
+
+            // Natively: the first execution schedules the failed attempt; its continue-as-new carries the invocation, the
+            // pending prompt's retry marker and the retry's count; the next execution schedules the retry.
+            const [first, second] = await h.histories();
+            expect(scheduled(first, "runTurnV5")).toHaveLength(1);
+            expect(scheduled(second, "runTurnV5")).toHaveLength(1);
+            const restarted = eventText(second[0]);
+            expect(second[0].kind).toBe("OrchestrationStarted");
+            expect(restarted).toContain(`"intakeRetryInvocationId":"${row.invocationId}"`);
+            expect(restarted).toContain('"intakeRetryAttempt":{"retryCount":1,"thrownTurnKey":null}');
+
+            // Turn start recorded the item on the first attempt and found it recorded on the retry.
+            const records = await recordsOf(h, expected.clientMessageId);
+            expect(records.map(event => [event.eventType, event.data.sender])).toEqual([["system.message", WORKFLOW_SENDER]]);
+        } finally { await h.close(); }
+    });
+
+    it("a run that ends before its send leaves the invocation not dispatched, and the store settles it so", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        // As ManagedSession answers a held Stop: before its send, so without the intake's callback.
+        const h = await intakeNativeFixture(getEnv(), () => ({ type: "stopped", reason: "Stopped by user", events: [] }));
+        try {
+            const input = await h.send(1);
+            await h.start();
+            await h.until(waiting, "the session waits for its messages");
+            await h.deliver(input);
+            await h.until(async () => (await h.store.readWorkflowIntake(input.envelope.exchangeId))?.processing === "not_dispatched",
+                "the invocation ends not dispatched");
+            const row = await h.store.readWorkflowIntake(input.envelope.exchangeId);
+            expect(row).toMatchObject({ state: "admitted", processing: "not_dispatched" });
+            expect(callsOf(h, "runTurnV5")).toHaveLength(1);
+            expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.input.outcome ?? null])).toEqual([
+                ["bind", null], ["end", "not_dispatched"],
+            ]);
+        } finally { await h.close(); }
+    });
+
+    it("decision A1: a closed workspace gate refuses the first attempt before any model run; a person's message ends the gate's wait and its turn carries the same invocation to completion", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-intake-native-ws-"));
+        fs.mkdirSync(path.join(root, "repo"), { recursive: true });
+        const workspaceProvider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        workspaceProvider.script({ type: "fail", code: "WORKSPACE_IN_USE", message: "held elsewhere", times: 1 });
+        const h = await intakeNativeFixture(getEnv(), sends({ type: "completed", content: "noted" }), {
+            workspaceProvider,
+            managerExtras: { holdWorkspaceFolders: vi.fn(), noteWorkspaceAttached: vi.fn(), releaseWorkspace: vi.fn(async () => ({ released: true })) },
+        });
+        try {
+            const input = await h.send(1);
+            const expected = await h.expectedItem(input);
+            await h.start({ config: { workspace: { schema: 1, root: "a", folder: "repo" } } });
+            await h.until(waiting, "the session waits for its messages");
+            await h.deliver(input);
+            // The first attempt is refused at the workspace check: the session waits for the gate's retry.
+            await h.until(({ status }) => {
+                const custom = h.customStatus(status);
+                return custom.status === "waiting" && custom.gate === "workspace";
+            }, "the workspace gate refused the first attempt");
+            expect(h.prompts).toHaveLength(0);
+            expect(callsOf(h, "runTurnV5")).toHaveLength(1);
+            const invocationId = callsOf(h, "runTurnV5")[0].input.intake.invocationId;
+
+            await h.say("hello", "person-1");
+            await h.until(async () => (await h.store.readWorkflowIntake(input.envelope.exchangeId))?.processing === "completed",
+                "the message's turn completes the invocation");
+            // The message's turn passed the gate this time and carried the same invocation; the model got the item first.
+            const turns = callsOf(h, "runTurnV5");
+            expect(turns.map(turn => turn.input.intake?.invocationId ?? null)).toEqual([invocationId, invocationId]);
+            expect(h.prompts).toHaveLength(1);
+            expect(h.prompts[0].startsWith(`${expected.text}\n\nhello`)).toBe(true);
+            expect(workspaceProvider.callsFor({ method: "ensureAttached" }).length).toBeGreaterThanOrEqual(2);
+            expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.input.outcome ?? null])).toEqual([
+                ["bind", null], ["end", "completed"],
+            ]);
+        } finally {
+            await h.close();
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+});
