@@ -20,3 +20,12 @@ export const DURABLE_SESSION_COMPATIBILITY_FLOOR_VERSION = "1.0.47";
  * results of set_session_workspace and the spawn `workspace` parameter.
  */
 export const WORKSPACE_ORCHESTRATION_MIN_VERSION = "1.0.80";
+
+/**
+ * The durable workflow intake's session orchestration (orchestration_1_0_83;
+ * INACTIVE): not in the registry and never the latest version. Only a worker
+ * created with the test option `workflowRequests` serves it, and starts the
+ * children of workflow agent states at it (their turns can complete their
+ * state). See PilotSwarmWorkerOptions.testOptions.
+ */
+export const DURABLE_SESSION_INTAKE_VERSION = "1.0.83";

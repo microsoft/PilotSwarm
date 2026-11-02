@@ -4,10 +4,13 @@
  * 5.2, 5.4 and section 8, amendment 2), driven over a recording fake store
  * with recorded waits.
  *
- * - Only a test registers them, under their design names; no production
+ * - Only a test registers them, under their design names, and the test-only
+ *   milestone worker module (workflow/v2/milestone-worker.ts, which a worker
+ *   loads only behind its test option workflowRequests); no other production
  *   source imports their module or registers them, their names are written
- *   once in the shared intake definition, and no worker declares the
- *   workflow-request capability that routes them.
+ *   once in the shared intake definition, and only that module declares the
+ *   workflow-request capability for a worker (controller 1.9.0 routes its own
+ *   activities with it).
  * - The claim renders with the sender's own renderer; every settlement goes
  *   to its one store write with exactly the fields given.
  * - A transient store error is retried after 1 s, 5 s and 15 s, then thrown;
@@ -101,7 +104,7 @@ async function refused(promise, code) {
 
 // ─── Registration ────────────────────────────────────────────
 
-test("only a test registers the intake activities; no production source imports their module or registers them, their names live in the shared definition, and no worker declares the capability that routes them", async () => {
+test("only a test or the test-only milestone worker registers the intake activities; no other production source imports their module or registers them, their names live in the shared definition, and only that worker module declares the capability that routes them", async () => {
     assert.deepEqual({ ...WORKFLOW_INTAKE_ACTIVITIES }, { claim: "claimWorkflowIntake", settle: "settleWorkflowIntake" });
     const registered = new Map();
     const h = harness({ claimWorkflowIntake: { result: "duplicate", state: "holding" } });
@@ -112,28 +115,40 @@ test("only a test registers the intake activities; no production source imports 
     assert.deepEqual(await registered.get("claimWorkflowIntake")(actx, CLAIM), { ok: true, result: { result: "duplicate", state: "holding" } });
     assert.deepEqual(await registered.get("settleWorkflowIntake")(actx, { op: "refuse", recipientSessionId: "me", exchangeId: X1, claimId: "claim-1",
         outcome: "refused_full" }), { ok: true, result: { method: "refuseHeldWorkflowIntake" } });
+    const MILESTONE = "workflow/v2/milestone-worker.ts";
     const namedIn = [];
     for (const path of allSourceFiles()) {
         if (path === "workflow/v2/intake-activities.ts") continue;
         const text = readFileSync(new URL(path, SRC), "utf8");
         const code = withoutComments(text);
-        // The activities' module (their handlers over the store) is imported by no production source.
-        assert.ok(!importsOf(text).some(specifier => /(?:^|\/)intake-activities(?:\.js)?$/.test(specifier)), `${path} imports the intake activities`);
-        assert.ok(!code.includes("registerWorkflowIntakeActivities"), `${path} registers the intake activities`);
+        // The activities' module (their handlers over the store) is imported, and the activities registered, only by the
+        // test-only milestone worker module.
+        assert.equal(importsOf(text).some(specifier => /(?:^|\/)intake-activities(?:\.js)?$/.test(specifier)), path === MILESTONE,
+            `${path} imports the intake activities`);
+        assert.equal(code.includes("registerWorkflowIntakeActivities"), path === MILESTONE, `${path} registers the intake activities`);
         // Their names are written once, in the shared intake definition; the inactive 1.0.83 tree schedules them by that constant.
         if (/["'`](?:claimWorkflowIntake|settleWorkflowIntake)["'`]/.test(code)) namedIn.push(path);
-        // The capability that routes them is defined once; only the inactive 1.0.83 tree routes with it, and the session
-        // proxy for the turns of its workflow-intake contract, which only 1.0.83 uses; no worker declares it.
-        if (path !== "activity-routing.ts") {
+        // The capability that routes them is defined once. Controller 1.9.0 routes its own activities with it
+        // (workflow/v2/runtime.ts), and only the milestone worker module declares it for a worker; the inactive 1.0.83 tree,
+        // and the session proxy for the turns of its workflow-intake contract, route with routeWorkflowRequestActivity.
+        if (!["activity-routing.ts", "workflow/v2/runtime.ts", MILESTONE].includes(path)) {
             assert.ok(!code.includes("WORKFLOW_REQUEST_CAPABILITY") && !code.includes("pilotswarm.workflow-request.v1"), `${path} names the workflow-request capability`);
-            if (!path.startsWith("orchestration_1_0_83/") && path !== "session-proxy.ts") {
-                assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
-            }
+        }
+        if (path !== "activity-routing.ts" && !path.startsWith("orchestration_1_0_83/") && path !== "session-proxy.ts") {
+            assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
+        }
+        // Only the worker loads the milestone worker module.
+        if (path !== "worker.ts") {
+            assert.ok(!importsOf(text).some(specifier => /milestone-worker(?:\.js)?$/.test(specifier)), `${path} imports the milestone worker module`);
         }
     }
     assert.deepEqual(namedIn, ["workflow/v2/intake.ts"]);
-    const worker = withoutComments(readFileSync(new URL("worker.ts", SRC), "utf8"));
-    assert.ok(!/workflow-request|WORKFLOW_REQUEST|WorkflowIntake|workflowIntake/.test(worker), "worker.ts registers, routes or declares nothing of the intake");
+    const workerText = readFileSync(new URL("worker.ts", SRC), "utf8");
+    const worker = withoutComments(workerText);
+    assert.ok(!/workflow-request|WORKFLOW_REQUEST|WorkflowIntake|workflowIntake/.test(worker), "worker.ts registers, routes or declares nothing of the intake itself");
+    // It loads the milestone worker module once, dynamically, and only behind its test option.
+    assert.deepEqual(importsOf(workerText).filter(specifier => specifier.includes("milestone-worker")), ["./workflow/v2/milestone-worker.js"]);
+    assert.match(worker, /this\.config\.testOptions\?\.workflowRequests === true \? await import\("\.\/workflow\/v2\/milestone-worker\.js"\) : null/);
 });
 
 // ─── The claim ───────────────────────────────────────────────

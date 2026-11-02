@@ -1271,8 +1271,9 @@ export function registerActivities(
      * carry an invocation's `intake` field; `intakeAdmissionRetryDelaysMs`
      * replaces the in-place waits of their admission's transient retries
      * (intake-admission.ts); `workflowRequests` gives those turns the
-     * respond_session_request tool (workflow request states). INACTIVE: no
-     * worker passes them.
+     * respond_session_request tool (workflow request states). INACTIVE: only
+     * tests pass them, and a worker created with the test option
+     * workflowRequests (milestone-worker.ts).
      */
     testOptions?: { workflowIntakeTurns?: boolean; intakeAdmissionRetryDelaysMs?: readonly number[]; workflowRequests?: boolean },
 ) {
@@ -2479,7 +2480,7 @@ export function registerActivities(
             }
         };
 
-        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests register one), the workflow tools take its
+        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests run one), the workflow tools take its
         // request, agent and parallel states and its stop and test operations, and a publication pins its named agents:
         // package agents at the registry's exact revision, this worker's deployment and system agents by name
         // (agent-resolver.ts). Every other turn's host is unchanged.
@@ -5313,7 +5314,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     registerTurnControlActivity(runtime, "runTurn2", runTurnV4Handler);
     // Workflow intake (1.0.83, INACTIVE): the V5 names run the turn-control
     // path with the invocation the input's `intake` field carries, checked
-    // whole first. Only a test registers them.
+    // whole first. Only a test registers them, and the test-only milestone worker.
     if (testOptions?.workflowIntakeTurns === true) {
         const runTurnV5Handler = async (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
             runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake), testOptions.workflowRequests === true);

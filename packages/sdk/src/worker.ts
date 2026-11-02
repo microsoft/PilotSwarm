@@ -915,8 +915,14 @@ export class PilotSwarmWorker {
         const inspectClient = new Client(this._provider);
         this.sessionManager.setDuroxideClient(inspectClient);
 
+        // Workflow v2 milestone (INACTIVE): only the test option loads what such a worker serves (milestone-worker.ts).
+        const milestone = this.config.testOptions?.workflowRequests === true ? await import("./workflow/v2/milestone-worker.js") : null;
+        if (milestone && !this._catalog?.workflowStore) {
+            throw new Error("PilotSwarmWorker testOptions.workflowRequests needs the workflow store (a CMS catalog).");
+        }
+
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, ...(milestone?.WORKFLOW_MILESTONE_WORKER_TAGS ?? [])] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -955,6 +961,19 @@ export class PilotSwarmWorker {
             );
         }
 
+        // The store the activities' own clients use; a workflow agent state's child is created through one (milestone).
+        const internalClientConfig: NonNullable<Parameters<typeof registerActivities>[8]> = {
+            storageConfig: storage,
+            duroxideSchema: storage.duroxide.schema,
+            factsSchema: storage.runtime.factsSchema,
+            cmsFactsDatabaseUrl: storage.runtime.sessionCatalogUrl ?? storage.runtime.url,
+            enhancedFactsDatabaseUrl: storage.runtime.factStoreUrl,
+            factsProvider: storage.runtime.provider === "horizondb" ? "horizon" : "pg",
+            enhancedFactsSchema: storage.runtime.provider === "horizondb" ? storage.runtime.factsSchema : undefined,
+            useManagedIdentity: storage.runtime.useManagedIdentity,
+            aadDbUser: storage.runtime.aadDbUser,
+            ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
+        };
         registerActivities(
             this.runtime,
             this.sessionManager,
@@ -964,18 +983,7 @@ export class PilotSwarmWorker {
             this._provider,
             storage.duroxide.url,
             storage.runtime.cmsSchema,
-            {
-                storageConfig: storage,
-                duroxideSchema: storage.duroxide.schema,
-                factsSchema: storage.runtime.factsSchema,
-                cmsFactsDatabaseUrl: storage.runtime.sessionCatalogUrl ?? storage.runtime.url,
-                enhancedFactsDatabaseUrl: storage.runtime.factStoreUrl,
-                factsProvider: storage.runtime.provider === "horizondb" ? "horizon" : "pg",
-                enhancedFactsSchema: storage.runtime.provider === "horizondb" ? storage.runtime.factsSchema : undefined,
-                useManagedIdentity: storage.runtime.useManagedIdentity,
-                aadDbUser: storage.runtime.aadDbUser,
-                ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
-            },
+            internalClientConfig,
             this._loadedSystemAgents,
             this._sessionPolicy,
             this._allowedAgentNamesLive,
@@ -983,6 +991,7 @@ export class PilotSwarmWorker {
             this.factStore,
             this.config.workerNodeId,
             this.artifactStore,
+            milestone ? milestone.workflowMilestoneActivityOptions() : undefined,
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
@@ -992,6 +1001,8 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
+        // After the registry's versions (duroxide takes them in ascending order).
+        milestone?.registerWorkflowMilestoneSessions(this.runtime, { store: this._catalog?.workflowStore?.() ?? null });
 
         // Workflow sessions: a sibling controller orchestration. It is
         // registered on every worker so that a workflow started where scripts
@@ -1070,6 +1081,15 @@ export class PilotSwarmWorker {
                     await this.factStore?.deleteSessionFactsForSession(sessionId);
                 },
                 runnerOptions: { executables: workflowScriptSettings.executables },
+                // Controller 1.9.0 with this worker's agent host (INACTIVE: the test option only).
+                ...(milestone ? {
+                    workflowRequests: true,
+                    agentNodes: milestone.workflowMilestoneAgentNodes({
+                        catalog: this._catalog,
+                        deploymentAgents: () => ({ userAgents: [...this._rawLoadedAgents], systemAgents: [...this._loadedSystemAgents] }),
+                        clientOptions: { store: storage.duroxide.url, cmsSchema: storage.runtime.cmsSchema, ...internalClientConfig },
+                    }),
+                } : {}),
             });
         }
         trace(`[worker] workflow scripts ${workflowScriptSettings.enabled ? "enabled" : "disabled"}`);

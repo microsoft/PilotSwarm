@@ -143,7 +143,8 @@ export const WORKFLOW_V2_SEND_NAME = "workflow-v2-send";
 export const WORKFLOW_V2_SEND_VERSION = "1.0.0";
 /**
  * Controller 1.9.0 (design workflow-messaging-request.md 8.1, 8.2;
- * INACTIVE: only tests register it and start runs at it). It runs request
+ * INACTIVE: only tests, and a worker created with the test option
+ * workflowRequests, register it and start runs at it). It runs request
  * states as well, and every activity it schedules, and every activity of an
  * orchestration it starts, goes under a name of its own
  * (WORKFLOW_V2_REQUEST_ACTIVITIES) with the workflow-request capability tag,
@@ -1833,7 +1834,8 @@ export interface WorkflowV2RuntimeDeps {
     workflowIntake?: () => boolean;
     /**
      * Request states (design workflow-messaging-request.md 8; INACTIVE: only
-     * a test sets it): controller 1.9.0, the orchestrations it starts at
+     * a test sets it, and a worker created with the test option
+     * workflowRequests): controller 1.9.0, the orchestrations it starts at
      * WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION, a request's delivery, and
      * their tagged activities are registered. Absent or false: none is, and
      * nothing reads IR 7.
@@ -1847,7 +1849,9 @@ export interface WorkflowV2RuntimeDeps {
     respondToolAvailable?: (sessionId: string) => Promise<boolean>;
     /**
      * Agent states (IR 8; INACTIVE: only a test passes it, with
-     * workflowRequests): what creates an agent state's child agent session.
+     * workflowRequests, and a worker created with that test option, whose
+     * host is milestone-worker.ts's): what creates an agent state's child
+     * agent session.
      * Absent: an agent state fails unavailable when its child would be
      * created, and nothing else runs.
      */
@@ -2198,7 +2202,7 @@ function unsupportedController(version: string) {
 
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {
     const { store } = deps;
-    // Request states (design workflow-messaging-request.md 8; INACTIVE): only a test sets workflowRequests.
+    // Request states (design workflow-messaging-request.md 8; INACTIVE): only a test, or the test-only milestone worker, sets workflowRequests.
     const requestsEnabled = deps.workflowRequests === true;
     // duroxide accepts an orchestration's versions only in ascending order:
     // the fenced pre-release versions first, the version new runs use last.

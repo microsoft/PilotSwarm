@@ -7,6 +7,7 @@ import {
     DURABLE_SESSION_LATEST_VERSION,
     DURABLE_SESSION_ORCHESTRATION_NAME,
 } from "./orchestration-registry.js";
+import { DURABLE_SESSION_INTAKE_VERSION } from "./orchestration-version.js";
 import type {
     PilotSwarmClientOptions,
     ManagedSessionConfig,
@@ -152,6 +153,8 @@ export class PilotSwarmClient {
     /** System session flag. */
     systemSessions = new Set<string>();
     private activeOrchestrations = new Map<string, string>();
+    /** The orchestration version new sessions start at (_startSessionsAt). */
+    private sessionStartVersion: string = DURABLE_SESSION_LATEST_VERSION;
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();
     private lastSeenResponseVersion = new Map<string, number>();
@@ -1018,7 +1021,7 @@ export class PilotSwarmClient {
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,
-                sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
+                sourceOrchestrationVersion: this.sessionStartVersion,
                 iteration: 0,
                 // Client-created sessions are always durable. The worker's
                 // configured session store determines how that durability is
@@ -1043,7 +1046,7 @@ export class PilotSwarmClient {
                 orchestrationId,
                 DURABLE_SESSION_ORCHESTRATION_NAME,
                 input,
-                DURABLE_SESSION_LATEST_VERSION,
+                this.sessionStartVersion,
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
             trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
@@ -1127,6 +1130,22 @@ export class PilotSwarmClient {
     /** @internal */
     _getDuroxideClient() {
         return this.duroxideClient;
+    }
+
+    /**
+     * @internal INACTIVE (workflow v2 milestone; test-only): start this
+     * client's new sessions at the durable intake's orchestration
+     * (DURABLE_SESSION_INTAKE_VERSION) instead of the latest version. Only
+     * the agent host of a worker created with the test option
+     * `workflowRequests`, which serves that version, calls it for the
+     * children of workflow agent states. A started session keeps its version.
+     */
+    _startSessionsAt(version: string): void {
+        if (version !== DURABLE_SESSION_LATEST_VERSION && version !== DURABLE_SESSION_INTAKE_VERSION) {
+            throw new Error(`New sessions start at ${DURABLE_SESSION_LATEST_VERSION}, or at ${DURABLE_SESSION_INTAKE_VERSION} on a worker that serves it; `
+                + `not at ${version}.`);
+        }
+        this.sessionStartVersion = version;
     }
 
     /** @internal */

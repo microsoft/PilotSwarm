@@ -3,7 +3,9 @@
  * state (design docs/proposals/workflow-durable-intake.md 5.4, 5.5, 5.7 and
  * section 8, amendment 2; decision intake-inactive-implementation).
  *
- * - 1.0.83 is not registered and nothing outside its tree imports it; its
+ * - 1.0.83 is not registered, and nothing outside its tree imports it but
+ *   the test-only milestone worker module (workflow/v2/milestone-worker.ts,
+ *   which a worker loads only behind its test option workflowRequests); its
  *   tree is the frozen 1.0.82 plus the intake files.
  * - Every continue-as-new of 1.0.83 goes through versionedContinueAsNew:
  *   each call site is listed below, and nothing else calls the context's
@@ -123,13 +125,15 @@ const VALID = carried({ queue: [unclaimed(1), held(2, TEXT_A)], invocation: boun
 
 // ─── Inactive ────────────────────────────────────────────────
 
-test("1.0.83 is not registered, and nothing outside its tree imports it", () => {
+test("1.0.83 is not registered, and nothing outside its tree imports it but the test-only milestone worker module", () => {
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.filter(entry => entry.version === "1.0.83").length, 0);
     for (const path of allSourceFiles()) {
         if (path.startsWith("orchestration_1_0_83/")) continue;
-        for (const specifier of importsOf(read(path))) {
-            assert.ok(!specifier.includes("orchestration_1_0_83"), `${path} imports ${specifier}`);
-        }
+        // A worker created with the test option workflowRequests serves 1.0.83, continuing as new to itself, through that
+        // module only (workflow-v2-intake-activities.test.mjs checks that only the worker loads it, behind the option).
+        const specifiers = importsOf(read(path)).filter(specifier => specifier.includes("orchestration_1_0_83"));
+        assert.deepEqual(specifiers, path === "workflow/v2/milestone-worker.ts" ? ["../../orchestration_1_0_83/runtime.js"] : [],
+            `${path} imports ${specifiers.join(", ")}`);
     }
     assert.match(read("orchestration_1_0_83/runtime.ts"), /^export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.83";$/m);
     assert.match(read("orchestration_1_0_83/index.ts"), /export function\* durableSessionOrchestration_1_0_83\(/);

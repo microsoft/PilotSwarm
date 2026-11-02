@@ -130,8 +130,11 @@ review:
   lifecycle (spawned, end, end sent).
 
 Not yet covered here: human-input denial and the depth allowance for the
-node agent's own child (B5), the UI read model and click-through (B9), a
-real-model run of an agent state, and package workflow interfaces.
+node agent's own child (B5), the UI read model and click-through (B9), and
+package workflow interfaces. A worker created with the test-only option
+`testOptions.workflowRequests` runs agent states with its own agent host
+("A worker that runs the milestone" below); an agent state has run there
+with a scripted model, not yet with a live provider.
 
 ## Human input and depth in an agent state's subtree (design 03; R12 to R14, R16)
 
@@ -384,8 +387,9 @@ default.
 
 Deviations still open: typed input's expiry (`ttl_seconds`) runs on real
 time. A tool call the parent answers after its wait ended is recorded and
-changes nothing. Deployed enablement still needs the agent host's
-production connection (see "Publication pins" below).
+changes nothing. Deployed enablement is an activation decision: the agent
+host runs on a worker only behind a test-only option ("A worker that runs
+the milestone" below).
 
 **Retention (design 05 cleanup; D07 configurable defaults).** After each new
 test admission, the workflow's ended test runs beyond the newest `keep`
@@ -479,14 +483,14 @@ binds a publication and a test to the exact versions they used
   tested revision and the stale flag. Test results, publication receipts
   and pins stay separate records; a test never stands in for publication.
 
-Still open (not waived): the agent host's production connection. The
-publication hosts above pin with the registry, but no worker registers an
-agent host yet (`registerWorkflowV2` in `worker.ts` takes no `agentNodes`),
-so only test hosts create agent states' children. The next slice builds the
-worker's agent host from the same resolver and
-`clientWorkflowAgentChildCreator`, behind the worker's controller 1.9.0
-switch. A person's publication pins package agents only (the management
-client does not see a worker's deployment agents). A real-agent test run of a draft
+Still open (not waived): a worker builds its agent host (the same
+resolver, so a run binds what its publication pinned) only behind the
+test-only option `testOptions.workflowRequests` ("A worker that runs the
+milestone" below); no deployment sets it. A child bound to an exact earlier
+package revision on such a worker is not yet proven end to end (the
+worker's install of that revision is proven on its own, R18). A person's
+publication pins package agents only (the management client does not see a
+worker's deployment agents). A real-agent test run of a draft
 revision is pinned when it is admitted, as its publication would be
 (migration 0101; see "Real agents" above). Also not covered:
 package interface digests (`interface:` is refused at compile) and a
@@ -833,10 +837,48 @@ reference skill's operation table names exactly the operations the
 description lists.
 
 Such a turn's publications pin their named agents from the agent registry
-(`resolveAgent`, `agent-resolver.ts`). Not wired on it: the agent host that
-creates agent states' children; it stays test-host only, so an agent state
-there fails `unavailable`. No deployed worker enables controller
-1.9.0: that needs a worker switch, which is an activation decision.
+(`resolveAgent`, `agent-resolver.ts`). A worker created with the test-only
+option `testOptions.workflowRequests` also creates agent states' children
+(below); on any other host an agent state fails `unavailable`. No deployed
+worker enables controller 1.9.0: that is an activation decision.
+
+## A worker that runs the milestone (test-only option; R09 to R11, R18)
+
+`PilotSwarmWorkerOptions.testOptions.workflowRequests` (default off; no
+deployment or environment variable sets it) makes a `PilotSwarmWorker` run
+controller 1.9.0. The worker then loads `workflow/v2/milestone-worker.ts`,
+which nothing else imports, and:
+
+- registers 1.9.0 with request, agent and parallel states
+  (`registerWorkflowV2` `workflowRequests`), and declares the
+  workflow-request activity tag those activities are routed with;
+- builds the agent host of agent states: `createWorkflowAgentNodeHost` with
+  the registry-backed resolver over the agent registry and this worker's
+  own deployment and system agents (`agent-resolver.ts`, as its
+  publications pin), and `clientWorkflowAgentChildCreator` over a
+  `PilotSwarmClient` of the worker's own store;
+- serves the durable intake's session orchestration (1.0.83, continuing as
+  new to itself) with its turn activities (`runTurnV5`, which give an agent
+  state's child `complete_workflow_node`) and its intake activities, and
+  starts agent states' children at 1.0.83
+  (`PilotSwarmClient._startSessionsAt`, internal; its default stays the
+  latest version). Sessions started at the latest version (1.0.82) run and
+  continue as new as before, and 1.0.83 stays out of the registry.
+
+A full worker test (`workflow-v2-agent-worker.test.js`, the Copilot CLI with
+a scripted model) runs a published workflow's agent state that names the
+worker's deployment agent: the child is created under the workflow, owned as
+its owner, bound to that agent, at 1.0.83; its real turn completes the state
+through `complete_workflow_node`; the run completes; the controller ends the
+child. The unit guards that keep the durable intake inactive now allow
+exactly this module: only it imports 1.0.83 and the intake activities, and
+only it declares the tag for a worker (controller 1.9.0 routes its own
+activities with it); the worker loads it once, dynamically, behind the
+option.
+
+Not an activation: duroxide cannot route orchestration items by version, so
+every worker that can fetch 1.9.0 or 1.0.83 work must run the same option
+(the request design's activation gate, 8.4, stays required).
 
 ## Run deadline (design 02 run lifecycle, D03; canonical `limits`)
 

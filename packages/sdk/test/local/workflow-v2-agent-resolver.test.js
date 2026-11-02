@@ -25,9 +25,8 @@
  *
  * Test doubles: the scripted model session of the native fixture
  * (workflow-v2-intake-native-fixture.js), and one injected registry read
- * failure. No agent state runs here: no worker registers an agent host yet
- * (the agent host's production connection is a later slice). Not an
- * activation proof.
+ * failure. No agent state runs here (a worker's agent host runs one in
+ * workflow-v2-agent-worker.test.js). Not an activation proof.
  */
 import { describe, it, expect } from "vitest";
 import { randomBytes, randomUUID } from "node:crypto";

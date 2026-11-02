@@ -8,7 +8,8 @@ import { pinnedAgentPackageId } from "../../agent-package-pins.js";
 /**
  * Workflow v2 agent states (IR 8; design 03 agent node, R09 to R11, R16):
  * the host that creates an agent state's child, an ordinary agent session.
- * INACTIVE: no worker builds one; only tests do.
+ * INACTIVE: only tests build one, and a worker created with the test option
+ * workflowRequests (milestone-worker.ts).
  *
  * The child:
  * - is a child session of the workflow (its parent in the session tree), at
@@ -91,9 +92,9 @@ export interface WorkflowAgentHostDeps {
     /**
      * The agent definition the workflow's owner sees by this name (as
      * spawn_agent resolves it for a session of that owner), among the agents
-     * of `packageName` when the state names one, or null. The registry-backed
-     * resolver that 1.9.0 hosts pin publications with (agent-resolver.ts) has
-     * this shape; no worker builds this host yet.
+     * of `packageName` when the state names one, or null. A worker's host
+     * (milestone-worker.ts) resolves with the registry-backed resolver that
+     * its publications pin with (agent-resolver.ts).
      */
     resolveAgent(name: string, callerSessionId: string, packageName?: string | null): Promise<WorkflowAgentDefinition | null>;
     /**
