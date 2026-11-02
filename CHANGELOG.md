@@ -13,7 +13,7 @@ holds placeholder credentials, never PilotSwarm's model keys, and its session
 state stays in the worker's own folder. PilotSwarm keeps a lease while it uses
 a host and sends one notice when a session tree is finished with it; what
 happens to a host nobody needs is the provider's decision. Compute targets are
-managed through the management client, the Web API and MCP. Sessions without a
+managed through the management client and the Web API. Sessions without a
 compute target are unchanged. The exported interface is experimental and may
 change before release.
 

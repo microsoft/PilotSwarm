@@ -590,22 +590,21 @@ clear reason, was left out to keep this work small. See section 12.
 
 ### 4.10 APIs, events and errors
 
-Compute targets are exposed through every management surface the layering rule
-requires, the way model providers are, so a person manages targets from the
-client, the Web API and MCP alike. **(built)**
+Compute targets are managed through the management client and the Web API,
+the way model providers are. **(built)**
 
 | Surface area | Operations |
 |---|---|
 | List and manage targets | List the viewer's targets; create shared (admin) or personal (owner); update; enable/disable; delete |
-| Create a session | Every surface accepts `computeTarget` (a full `<owner>/<label>` or `shared/<label>`, or the documented shorthand) |
+| Create a session | The management client and the Web API accept `computeTarget` |
 | Audit | Every mutation is audited the way provider mutations are |
 
 Admin operations live under the admin path and need the fleet-admin right; a
-user's own operations live under the self path. Checking a target on a worker,
-and listing the models a target offers itself, come with the capabilities work
-(section 12). Portal and TUI views for compute are out of scope for this work;
-that divergence is noted. The API reference docs are updated alongside; this
-proposal is not that reference.
+user's own operations live under the self path. Managing targets from MCP and
+the CLI, and choosing one in the portal and the TUI, are future work (section
+12), as are checking a target on a worker and listing the models a target
+offers itself. The API reference docs are updated alongside; this proposal is
+not that reference.
 
 ### 4.11 Compatibility
 
@@ -754,7 +753,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | The handshake and host component (**built**) | U, L | Success; wrong secret either side; a replayed nonce; a truncated or oversized frame; a timeout; constant-time compare; the host component forwards to the runtime; a wrong secret fails the turn with no model request |
 | Leases and done notices (**built**) | U, L | The lease timer math; a lease renewed and recorded; a tree that ends while unloaded gets exactly one done notice |
 | Failures (**built**) | U | Every compute error is `CODE: message` with its code and retry hint, and is never prefixed twice |
-| Management surfaces (**built**) | U, L | List, create, update, enable/disable and delete across the client, Web API and MCP; every mutation audited; surface-parity tests updated |
+| Management surfaces (**built**) | U, L | List, create, update, enable/disable and delete across the management client and the Web API; every mutation audited; surface-parity tests updated |
 
 ## 9. Decisions, verified facts and open items
 
@@ -801,7 +800,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | A secret reference for a provider that needs per-user credentials | Deferred (secrets option A for now: none in the config). |
 | A tree spanning more than one target | An open question; today a tree runs on exactly one. |
 | A routing capability tag so older workers never run remote sessions locally | To do. |
-| Portal and TUI views for compute | Out of scope for this work; noted as a divergence from the other surfaces. |
+| Portal and TUI views for compute | Future work (section 12). |
 | Provisioning (creating hosts on demand) | Out of scope; a compute provisioner can come later. |
 | SessionFs quotas (total size and file count per session), and SQL tools on remote sessions | To do. |
 
@@ -831,10 +830,11 @@ branch; section 12 lists what was deliberately left out.
 | Core | Targets and names; the provider interface and transport; the remote turn and trust boundary; the bridge; the `process` reference provider | **built** |
 | The handshake | The mutual handshake and the host component, run for real by the `process` provider | **built** |
 | Host lifecycle | Leases and renewals; the done notice for trees that end while unloaded | **built** |
-| Management surfaces | Targets across the client, Web API and MCP; audit; API reference docs | **built** |
+| Management surfaces | Targets across the management client and the Web API; audit; API reference docs | **built** |
 | Clear failures | Permanent vs temporary; stop the turn at once on a permanent one, from the turn activity, with no orchestration change | **future work** (section 12) |
 | Provider services | Running providers as registered services outside the worker, reached through one generic connector | **future work** (section 12) |
 | Capabilities and a target's own models | What a target says it offers, the check that records it, and models a host serves itself | **future work** (section 12) |
+| The remaining surfaces | Managing targets from MCP and the CLI, and choosing one in the portal and the TUI | **future work** (section 12) |
 | Later | Provider extras; demand hints; a secret reference; portal and TUI views; provisioning; multi-target trees; SessionFs quotas and remote SQL tools | **later** |
 
 What is built is proved end to end on a laptop and in CI through the `process`
@@ -978,3 +978,25 @@ target's models".
 - A connection that carries a host's own model calls never carries
   PilotSwarm's credentials, and is never the same pooled connection as one
   that does.
+
+### 12.4 Managing targets from MCP and the CLI, and choosing one in the portal and TUI
+
+**Value.** A person who works through MCP, the command line, the portal or the
+TUI can see which compute targets exist and pick one, instead of being able to
+do it only through the management client or a raw API call. Agents that create
+sessions through MCP can place a session on a target.
+
+**What it adds.** MCP tools that list and manage targets and a `compute_target`
+option on MCP session creation; the same target operations on the CLI's direct
+transport; and a place in the portal and the TUI to see the targets available
+and choose one when creating a session. No new API: every one of these is a
+caller of operations that already exist.
+
+**Requirements when it is built.**
+
+- Every surface goes through the management client or the Web API, never a
+  database handle of its own, and the surface-parity tests cover it the way
+  they cover model providers.
+- A target the caller cannot use looks the same as one that does not exist.
+- Session creation on every surface takes a target name in the same form, and
+  a name the caller cannot use is refused at creation, not at the first turn.

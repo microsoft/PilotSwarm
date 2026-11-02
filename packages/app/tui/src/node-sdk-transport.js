@@ -1594,34 +1594,6 @@ export class NodeSdkTransport {
         return this.mgmt.listProviders(await this._modelProviderViewer());
     }
 
-    async listComputeTargets() {
-        return this.mgmt.listComputeTargets(await this._modelProviderViewer());
-    }
-
-    async createComputeTarget(input) {
-        return this.mgmt.createComputeTarget(await this._modelProviderViewer(), input || {});
-    }
-
-    async createMyComputeTarget(input) {
-        return this.mgmt.createMyComputeTarget(await this._modelProviderViewer(), input || {});
-    }
-
-    async updateComputeTarget(input) {
-        return this.mgmt.updateComputeTarget(await this._modelProviderViewer(), input || {});
-    }
-
-    async updateMyComputeTarget(input) {
-        return this.mgmt.updateMyComputeTarget(await this._modelProviderViewer(), input || {});
-    }
-
-    async deleteComputeTarget(name) {
-        return this.mgmt.deleteComputeTarget(await this._modelProviderViewer(), name);
-    }
-
-    async deleteMyComputeTarget(name) {
-        return this.mgmt.deleteMyComputeTarget(await this._modelProviderViewer(), name);
-    }
-
     async listFeatureFlags() { return this.mgmt.listFeatureFlags(await this._modelProviderViewer()); }
     async getClusterFeatureFlags() { return this.mgmt.getClusterFeatureFlags(await this._modelProviderViewer()); }
     async getMyFeatureFlags() { return this.mgmt.getMyFeatureFlags(await this._modelProviderViewer()); }
