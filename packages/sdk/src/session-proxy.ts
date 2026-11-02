@@ -1649,14 +1649,22 @@ export function registerActivities(
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
         let finalTurnResult: TurnResult | null = null;
         // Workflow intake (runTurnV5, design 5.5): whether this attempt issued
-        // the model request that included the carried items (runTurnWithPrompt
-        // sets it just before the request). Every result names the invocation
-        // with it, except a saved result a retry adopts: that one keeps the
-        // witness of the attempt that ran.
+        // the model request that included the carried items: set only by the
+        // model session's callback right before an initial send, after every
+        // check that ends a run without one (a missing required tool, a held
+        // Stop), and never false again within the attempt (recovery re-runs).
+        // Every result this attempt produces names the invocation with it. A
+        // saved result that this attempt adopts (the preamble's
+        // already-committed turn, or the racing winner of the commit) keeps
+        // the witness it was saved with, or none: evidence of another attempt
+        // is never made up from this one's; the orchestration reads a missing
+        // witness as possibly sent and fails visibly on a foreign or
+        // malformed one (review W2-WIT1, W2-WIT2).
         let intakeSent = false;
+        let adoptedSavedResult = false;
         const withIntakeWitness = (result: TurnResult): TurnResult => {
-            if (turnIntake === null || (result as any).intakeDispatch !== undefined) return result;
-            return { ...result, intakeDispatch: { invocationId: turnIntake.invocationId, sent: intakeSent } } as TurnResult;
+            if (turnIntake === null || adoptedSavedResult) return result;
+            return { ...result, intakeDispatch: { invocationId: turnIntake.invocationId, sent: intakeSent } };
         };
 
         // ── Session turn control (runTurnV4, design 4.7) ───────────────
@@ -1728,7 +1736,7 @@ export function registerActivities(
                         ...((result as any).snapshotVersion != null ? { snapshotVersion: (result as any).snapshotVersion } : {}),
                         ...((result as any).workspaceAttached ? { workspaceAttached: true } : {}),
                         // Workflow intake (runTurnV5): the witness of the attempt that ran stays with the stopped turn.
-                        ...((result as any).intakeDispatch !== undefined ? { intakeDispatch: (result as any).intakeDispatch } : {}),
+                        ...(result.intakeDispatch !== undefined ? { intakeDispatch: result.intakeDispatch } : {}),
                     } as TurnResult;
                 } else if (end.late.length > 0) {
                     out = { ...result, lateSteers: end.late } as TurnResult;
@@ -1812,6 +1820,8 @@ export function registerActivities(
                     snapshotVersion: pre.version,
                     ...(runConfig.workspace ? { workspaceAttached: true } : {}),
                 };
+                // Workflow intake: the saved turn's own witness, or none.
+                adoptedSavedResult = true;
                 if (tc) {
                     // An earlier attempt with this same input saved the turn:
                     // no model run, only T8 with the saved cursor.
@@ -4554,11 +4564,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // Workflow intake (runTurnV5, design 5.5): the carried items
                 // come before whatever prompt this attempt finally sends, after
                 // any stash or bootstrap replacement: the first run's and each
-                // recovery re-run's alike. From here on the request may have
-                // been issued, so the witness says sent.
+                // recovery re-run's alike. The model session says when the
+                // request is about to be issued (review W2-WIT1).
                 const modelPrompt = turnIntake ? composeIntakePrompt(prompt, turnIntake) : prompt;
-                if (turnIntake) intakeSent = true;
                 return await targetSession.runTurn(modelPrompt, {
+                    ...(turnIntake ? { onBeforeInitialSend: () => { intakeSent = true; } } : {}),
                     onEvent,
                     trace: traceWarn,
                     liveTurn: liveTurnEnabled,
@@ -4977,6 +4987,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     snapshotVersion: committed.version,
                     ...((runConfig as ManagedSessionConfig).workspaceAttach ? { workspaceAttached: true } : {}),
                 };
+                // Workflow intake: the winner's own witness, or none; never this losing attempt's.
+                adoptedSavedResult = true;
                 // The winner's result and cursor; T8 writes the same outcomes.
                 return tc ? await finishTurnControl(adopted, savedControlCursor(committed.storedResult, tc.turn), { alwaysEnd: true }) : adopted;
             }

@@ -3955,6 +3955,9 @@ export class ManagedSession {
             // ready-to-send base64 blobs (fetched + vision-gated by the runTurn
             // activity host); the Copilot runtime packs them into the
             // provider-specific multimodal content.
+            // Workflow intake (runTurnV5): every check that ends this run
+            // without a send is behind us; from here the request may be issued.
+            opts?.onBeforeInitialSend?.();
             await this.copilotSession.send({
                 prompt: effectivePrompt,
                 ...(effectivePrompt !== prompt ? { displayPrompt: prompt } : {}),

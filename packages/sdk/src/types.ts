@@ -102,8 +102,25 @@ type CarriedSteersConsumedCarrier = {
     carriedSteersConsumed?: true;
 };
 
+/**
+ * Workflow intake (1.0.83, runTurnV5, INACTIVE; design
+ * workflow-durable-intake.md 5.5): the dispatch witness of the attempt that
+ * carried an invocation, on every result of that attempt. `sent` is true
+ * only once the model request that included its items was about to be
+ * issued. A saved result that a later attempt adopts keeps the witness it
+ * was saved with, or none, which the orchestration reads as possibly sent.
+ */
+export interface IntakeDispatchWitness {
+    invocationId: string;
+    sent: boolean;
+}
+
+type IntakeDispatchCarrier = {
+    intakeDispatch?: IntakeDispatchWitness;
+};
+
 export type TurnResult = TurnResultVariant & SnapshotCommitCarrier & WorkspaceAttachCarrier
-    & LateSteersCarrier & ControlCursorCarrier & CarriedSteersConsumedCarrier;
+    & LateSteersCarrier & ControlCursorCarrier & CarriedSteersConsumedCarrier & IntakeDispatchCarrier;
 
 type TurnResultVariant =
     | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
@@ -163,6 +180,14 @@ export interface TurnOptions {
      * is sent are held, and a held Stop skips the send (plan P21).
      */
     turnControl?: import("./turn-control.js").TurnControlBinding;
+    /**
+     * Workflow intake (runTurnV5, INACTIVE): called once per run, right
+     * before its initial prompt is sent to the model, after every check that
+     * ends the run without a send (a missing required tool, a held Stop). The
+     * worker's dispatch witness says sent only once it was called. Absent on
+     * every other turn.
+     */
+    onBeforeInitialSend?: () => void;
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */

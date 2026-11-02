@@ -1040,6 +1040,18 @@ test("an attempt that carried no invocation and returns a witness is a broken in
     assert.equal(ops.find(op => op.op === "cms").status, "failed");
 });
 
+test("a carrying attempt whose result (an adopted saved one included) names another invocation, or has a malformed witness, fails the execution visibly; nothing is settled", () => {
+    for (const [witness, code] of [[{ invocationId: "inv-9", sent: true }, "WORKFLOW_INTAKE_BROKEN"], ["not a witness", "WORKFLOW_INTAKE_INVALID"]]) {
+        const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+        const ops = [];
+        assert.throws(() => drive(runLoop(runtime), turnResponder({ guids: ["inv-1"], activity: storeAnswers([1]), turn: () => completed(witness) }), ops),
+            error => error.code === code, JSON.stringify(witness));
+        assert.equal(turnsOf(ops).length, 1);
+        assert.equal(ops.find(op => op.op === "cms").status, "failed");
+        assert.equal(endOf(ops), undefined);
+    }
+});
+
 test("a turn stopped before its send ends the invocation it carried not_dispatched", () => {
     const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
     const { ops } = drive(runLoop(runtime), turnResponder({
