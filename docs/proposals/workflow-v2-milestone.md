@@ -250,3 +250,78 @@ Not covered here: explicit `join` states, quorum or any-of joins (refused,
 D10), per-branch attempt/head/round identity (a definition carries that in
 its items and outputs), the UI's branch view (B9) and the formal model of
 the join.
+
+## Test runs: intercepted tools, mocked agents and a virtual clock (design 05; R19, R20, R28)
+
+A test run executes the exact current revision of a definition, draft or
+published, with its scripts running normally and every framework effect
+intercepted. It runs at controller 1.9.0 under its own controller instance
+(`wft-<run id>`), with its own KV, inbox and outbox, beside the live run,
+which it never changes. Any number of test runs may exist. Migration 0098
+adds the run's virtual clock and fixtures and the interception records.
+
+`update_workflow` operations (taken only by a host that starts 1.9.0 runs;
+the tool's published description and operation enum are unchanged):
+
+| Operation | Arguments | Effect |
+|---|---|---|
+| `test` | `expected_revision`, `definition_hash`, `inputs`, optional `vars`, `agent_mode` (`mocked`, the default), `fixtures` | Starts a test run of exactly that revision. `agent_mode: real` is refused (`TEST_AGENT_MODE_UNSUPPORTED`). |
+| `test_respond` | `run_id`, `interception_id`, `response: { kind: success \| error \| cancel, value }` | Answers one intercepted effect, once. |
+| `test_advance` | `run_id`, `seconds` (1 to 30 days) | Moves the run's virtual clock and decides what became due. |
+
+- **Scripts run normally.** Their direct effects (network, files,
+  processes, the clock, randomness) are real; a test run is not a sandbox,
+  and `read_workflow` shows a permanent notice saying so. `context.mode`
+  is `test`.
+- **Tool calls are intercepted.** A script's n-th tool call becomes the
+  interception `<node execution>/call-<n>`. The tool grant still decides
+  which tools a script may call (`admittedWorkflowToolGrant`), and the live
+  tool executor never opens: there is no live fallback. A fixture that
+  names the tool and the exact hash of the arguments' canonical JSON
+  answers the call at once; otherwise the parent is told (a system message
+  with a stable client message id) and the script waits for the answer,
+  within its own timeout. A retried attempt that reaches the same call
+  with the same arguments gets the same answer; with other arguments it
+  fails (`mismatch`), never answered from the earlier call.
+- **Agent, send and request states are intercepted.** No child session is
+  created, no message is delivered, and no request exchange starts; the
+  interception (`<node execution>/agent`, `/send`, `/request`) records
+  what the live effect would have used: the agent's input, task, outcomes
+  and output schema; the message's recipient, contract, correlation and
+  payload. The answer decides the state as the live effect would: an
+  agent's `{ outcome, output }` must name one of its outcomes and match its
+  output schema; a request's `{ response }` must match the contract's
+  response schema, or `{ decline: { reason } }`; a send's success is
+  `sent`; an error needs a runtime error code; a cancel is `cancelled`. The
+  winner is `test`. A fixture for an agent, send or request names the
+  state and the exact hash of its input or message.
+- **Answers.** An invalid answer is refused with its field errors and the
+  effect stays open. The same answer again is idempotent; a different one
+  is `TEST_RESPONSE_CONFLICT`. An answer to an effect whose state was
+  decided otherwise, or of a run that ended, is refused. The answer path
+  is out of band: it is never itself intercepted.
+- **The virtual clock.** A test run's clock starts at 9000-01-01T00:00:00Z,
+  after any real time, so no decision by the store's clock ever finds a
+  test run's deadline due. Every deadline of a test run (a wait, a
+  receive's wait, a request's and an agent state's timeout) is counted
+  from it. `test_advance` moves it monotonically, once per operation id,
+  and in the same transaction decides what became due, in deadline order:
+  a wait or a receive's wait elapses, a request or an agent state times
+  out. A result that won first (typed input, an answer, a cancel) stands.
+  Real time never races a virtual deadline. Typed input to a test run's
+  receive (`send_workflow_input` with its `run_id`) is taken while the
+  receive waits, so a message before the virtual deadline wins and one
+  after it stays unclaimed.
+- **Evidence.** `read_workflow` for a test run (`run_id`) shows the notice,
+  its agent mode, the tested revision and whether a newer revision makes
+  it stale, the virtual clock, every interception with its arguments, the
+  schema an answer must match and its answer (kind, disposition, value,
+  hash), and the coverage: the states entered and not entered, the routes
+  taken, the outcomes seen, and the interceptions still unanswered. The
+  run row keeps the revision and hashes, inputs and every KV revision.
+
+Deviations and gaps: `agent_mode: real` (a real agent child whose tools
+are intercepted, with the test context inherited by its descendants) is not
+available; typed input's expiry (`ttl_seconds`) runs on real time; a test
+run's interceptions are not deleted by any retention policy yet (B11); the
+UI's test panel and mock editor are B9.

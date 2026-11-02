@@ -3,12 +3,16 @@ import type { WorkflowToolBinding } from "../tool-policy.js";
 import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, WorkflowJsonError, type JsonValue } from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
 import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
+import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE } from "./test-mode.js";
 import {
+    advanceWorkflowV2Test,
     controlWorkflowV2Run,
     createWorkflowV2,
     inspectWorkflowV2Controller,
     recoverWorkflowV2Run,
+    respondWorkflowV2Test,
     sendWorkflowInputV2,
+    startWorkflowV2Test,
     updateWorkflowV2,
     type WorkflowV2Command,
     type WorkflowV2Host,
@@ -18,12 +22,17 @@ import {
     ACTIVE_RUN_STATUSES,
     diagnosticsJson,
     WORKFLOW_V2_STOP_MAX_GRACE_SECONDS,
+    WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS,
+    WORKFLOW_V2_TEST_EPOCH,
     WorkflowStoreError,
     type WorkflowActor,
     type WorkflowDefinitionReceipt,
     type WorkflowRunCommandReceipt,
     type WorkflowStore,
     type WorkflowAgentInvocation,
+    type WorkflowNodeExecutionRow,
+    type WorkflowRunRow,
+    type WorkflowTestInterception,
 } from "./store.js";
 
 /**
@@ -250,6 +259,57 @@ function hostStops(host: Pick<WorkflowToolHost, "requests">): boolean {
     return host.requests === true;
 }
 
+/**
+ * The test operations of update_workflow (design 05; INACTIVE): test (start a
+ * test run of the exact current revision), test_respond (answer an
+ * intercepted effect by its interception id) and test_advance (move a test
+ * run's virtual clock). Taken only by a host that starts runs at controller
+ * 1.9.0 (WorkflowV2Host.requests); elsewhere they are refused exactly as
+ * before. The tool's published description and operation enum are unchanged.
+ */
+const TEST_OPERATIONS: ReadonlySet<string> = new Set(["test", "test_respond", "test_advance"]);
+
+function hostTests(host: Pick<WorkflowToolHost, "requests">): boolean {
+    return host.requests === true;
+}
+
+async function testOperationFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }, actor: WorkflowActor): Promise<string> {
+    const workflowSessionId = requiredString(args, "workflow_id");
+    const operationId = requiredString(args, "operation_id");
+    await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+    if (args.operation === "test") {
+        const vars = kvObjectArg(args, "vars");
+        const agentMode = optionalString(args, "agent_mode") ?? "mocked";
+        if (agentMode !== "mocked" && agentMode !== "real") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "agent_mode must be mocked or real.");
+        const stored = await startWorkflowV2Test(context.host, workflowSessionId, {
+            expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
+            ...(vars !== null ? { vars } : {}), agentMode, fixtures: parseTestFixtures(args.fixtures),
+        }, { actor, operationId });
+        return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, notice: WORKFLOW_V2_TEST_NOTICE } });
+    }
+    const runId = requiredString(args, "run_id");
+    if (args.operation === "test_advance") {
+        const seconds = args.seconds;
+        if (typeof seconds !== "number" || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `seconds must be an integer from 1 to ${WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS}.`);
+        }
+        const stored = await advanceWorkflowV2Test(context.host, workflowSessionId, { runId, seconds }, { actor, operationId });
+        const receipt = stored.receipt;
+        return payload({
+            ok: true, workflowId: workflowSessionId, operation: "test_advance", replayed: stored.replayed, runId: receipt.runId, seconds: receipt.seconds,
+            from: receipt.from, virtualNow: receipt.virtualNow, decided: receipt.decided,
+        });
+    }
+    const interceptionId = requiredString(args, "interception_id");
+    const answered = await respondWorkflowV2Test(context.host, workflowSessionId, { runId, interceptionId, response: parseTestResponse(args.response) },
+        { actor, operationId });
+    return payload({
+        ok: true, workflowId: workflowSessionId, operation: "test_respond", replayed: answered.replayed, runId, interceptionId,
+        interception: { operation: answered.interception.operation, state: answered.interception.state },
+        node: { nodeExecutionId: answered.node.nodeExecutionId, stateId: answered.node.nodeId, state: answered.node.state, outcome: answered.node.outcome },
+    });
+}
+
 function graceSecondsArg(args: Record<string, unknown>): number | null {
     const value = args.grace_seconds;
     if (value === undefined || value === null) return null;
@@ -310,6 +370,9 @@ export async function updateWorkflowFromTool(args: Record<string, unknown>, cont
     try {
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
+        if (typeof args.operation === "string" && TEST_OPERATIONS.has(args.operation) && hostTests(context.host)) {
+            return await testOperationFromTool(args, context, actor);
+        }
         const stop = hostStops(context.host);
         if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || (stop && args.operation === "stop"))) {
             const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop });
@@ -355,6 +418,8 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     const stopping = selected?.stop && ACTIVE_RUN_STATUSES.includes(selected.status) ? selected.stop : null;
     const stopSettled = stopping !== null ? !await store.hasPendingNodes(selected!.runId) : null;
+    // A test run (migration 0098, INACTIVE): its notice, virtual clock, interceptions and coverage.
+    const test = selected?.mode === "test" ? await testViewOf(store, workflowSessionId, selected, definition.currentRevision, nodes) : null;
     return {
         workflowId: workflowSessionId,
         definition: {
@@ -378,6 +443,7 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 graceSeconds: selected.stop.graceSeconds, reason: selected.stop.reason,
                 ...(stopping !== null ? { settled: stopSettled } : {}),
             } } : {}),
+            ...(test !== null ? { test } : {}),
             terminalState: selected.terminalNodeId,
             output: selected.terminalOutput === null ? null : previewJson(selected.terminalOutput, 2_000),
             error: selected.terminalError === null ? null : previewJson(selected.terminalError, 2_000),
@@ -409,6 +475,68 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 ...(intakeOutcomes.has(message.exchangeId) ? { ...intakeOutcomes.get(message.exchangeId) } : {}),
             })),
         } : null,
+    };
+}
+
+/**
+ * A test run as read_workflow shows it (design 05; R28): the permanent notice
+ * (scripts run normally; framework tools are mocked), its agent mode, the
+ * revision it tested and whether a newer one makes its result stale, its
+ * virtual clock, each intercepted effect with its arguments, the schema an
+ * answer must match and its answer (kind, disposition, value), and its
+ * coverage: the states it entered and did not, the routes it took, and the
+ * effects still waiting for an answer. Bounded; reading changes nothing.
+ */
+async function testViewOf(store: WorkflowStore, workflowSessionId: string, run: WorkflowRunRow, currentRevision: number,
+    nodes: WorkflowNodeExecutionRow[]): Promise<{ [key: string]: JsonValue }> {
+    const interceptions = await store.listInterceptions(run.runId, 200);
+    const ir = await store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
+    const byId = new Map(nodes.map(node => [node.nodeExecutionId, node] as const));
+    const visited = new Set(nodes.map(node => node.nodeId));
+    const edges = new Map<string, { from: string; route: string; to: string; count: number }>();
+    const outcomes = new Map<string, Set<string>>();
+    for (const node of nodes) {
+        if (node.outcome !== null) outcomes.set(node.nodeId, (outcomes.get(node.nodeId) ?? new Set<string>()).add(node.outcome));
+        const from = node.predecessorId === null ? undefined : byId.get(node.predecessorId);
+        if (from === undefined || node.arrivalRoute === null) continue;
+        const key = canonicalKey(from.nodeId, node.arrivalRoute, node.nodeId);
+        const edge = edges.get(key) ?? { from: from.nodeId, route: node.arrivalRoute, to: node.nodeId, count: 0 };
+        edge.count += 1;
+        edges.set(key, edge);
+    }
+    const virtualSeconds = run.virtualNow === null ? null : Math.round((run.virtualNow.getTime() - Date.parse(WORKFLOW_V2_TEST_EPOCH)) / 1000);
+    return {
+        notice: WORKFLOW_V2_TEST_NOTICE,
+        agentMode: run.testAgentMode,
+        testedRevision: run.revision,
+        stale: run.revision !== currentRevision,
+        virtualClock: run.virtualNow === null ? null : { now: run.virtualNow.toISOString(), elapsedSeconds: virtualSeconds },
+        interceptions: interceptions.map(item => interceptionViewOf(item, byId.get(item.nodeExecutionId))),
+        coverage: {
+            complete: nodes.length < 200,
+            entered: [...visited].sort(),
+            notEntered: Object.keys(ir.nodes).filter(id => !visited.has(id)).sort(),
+            routes: [...edges.values()].sort((a, b) => canonicalKey(a.from, a.route, a.to).localeCompare(canonicalKey(b.from, b.route, b.to))),
+            outcomes: Object.fromEntries([...outcomes.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, seen]) => [id, [...seen].sort()])),
+            unanswered: interceptions.filter(item => item.state === "awaiting_parent").map(item => item.interceptionId),
+        },
+    };
+}
+
+function canonicalKey(...parts: string[]): string {
+    return JSON.stringify(parts);
+}
+
+/** One intercepted effect of a test run, as read_workflow shows it. */
+function interceptionViewOf(item: WorkflowTestInterception, node: WorkflowNodeExecutionRow | undefined): { [key: string]: JsonValue } {
+    return {
+        interceptionId: item.interceptionId, operation: item.operation, tool: item.tool, nodeExecutionId: item.nodeExecutionId,
+        stateId: node?.nodeId ?? null, state: item.state, arguments: previewJson(item.arguments, 1_000), argumentsSha256: item.argumentsSha256,
+        responseSchema: item.responseSchema, virtualAt: item.virtualAt.toISOString(),
+        response: item.response === null ? null : {
+            kind: item.response.kind, disposition: item.response.disposition, value: previewJson(item.response.value, 1_000),
+            sha256: item.response.sha256, respondedAt: item.response.respondedAt.toISOString(),
+        },
     };
 }
 

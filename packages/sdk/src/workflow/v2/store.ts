@@ -146,6 +146,11 @@ export interface WorkflowRunRow {
     controllerVersion: string | null;
     /** The run's accepted stop (migration 0096), written once; null when none was requested. */
     stop: WorkflowRunStop | null;
+    /**
+     * A test run's virtual clock (migration 0098): it starts at WORKFLOW_V2_TEST_EPOCH and moves only by advanceTestClock;
+     * a test run's deadlines are counted from it. Null for a live run.
+     */
+    virtualNow: Date | null;
 }
 
 /**
@@ -384,7 +389,7 @@ function runFrom(row: Row): WorkflowRunRow {
         terminalOutput: jsonOrNull(row, "terminal_output"), terminalError: jsonOrNull(row, "terminal_error"),
         createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"), finishedAt: dateOrNull(row, "finished_at"),
         kv: parseStoredJson(str(row, "kv"), "kv"), kvRevision: int(row, "kv_revision"), pausedFrom: pausedFromOf(row),
-        controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row),
+        controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row), virtualNow: dateOrNull(row, "virtual_now"),
     };
 }
 
@@ -739,6 +744,98 @@ export const WORKFLOW_V2_DECLINE_SCHEMA: JsonValue = {
     properties: { reason: { type: "string", minLength: 1, maxLength: 2_000 } },
 };
 const REQUEST_FAILURE_CODES: readonly string[] = ["unavailable", "forbidden", "delivery_failed", "unsupported_contract", "invalid_input"];
+
+/**
+ * Where a test run's virtual clock starts (migration 0098; design 05): after any real time, so no decision by the store's
+ * clock ever finds a test run's deadline due. Only advanceTestClock moves it.
+ */
+export const WORKFLOW_V2_TEST_EPOCH = "9000-01-01T00:00:00.000Z";
+/** The most seconds one advance of a test run's virtual clock moves it. */
+export const WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS = 30 * 86_400;
+/** The most intercepted effects one test run records; a script that reaches more fails its call. */
+export const WORKFLOW_V2_TEST_MAX_INTERCEPTIONS = 1_000;
+/** The operations a test run intercepts (design 05): a script's tool call, an agent state's agent, a send's delivery, a request. */
+export const WORKFLOW_V2_TEST_OPERATIONS = ["tool.call", "agent", "send", "request"] as const;
+export type WorkflowTestOperation = typeof WORKFLOW_V2_TEST_OPERATIONS[number];
+export type WorkflowTestResponseKind = "success" | "error" | "cancel";
+
+/** The stable id of an intercepted effect: `<node execution>/<operation>`, or `<node execution>/call-<n>` for a script's n-th tool call. */
+export function workflowTestInterceptionId(nodeExecutionId: string, operation: Exclude<WorkflowTestOperation, "tool.call"> | { call: number }): string {
+    return typeof operation === "string" ? `${nodeExecutionId}/${operation}` : `${nodeExecutionId}/call-${operation.call}`;
+}
+
+/**
+ * An intercepted effect of a test run (migration 0098): what was reached (its operation, tool and arguments, and the schema
+ * a response must match) and, once answered, the response (by the parent or a fixture). An answered record never changes.
+ */
+export interface WorkflowTestInterception {
+    interceptionId: string;
+    seq: number;
+    runId: string;
+    nodeExecutionId: string;
+    operation: WorkflowTestOperation;
+    tool: string | null;
+    arguments: JsonValue;
+    argumentsSha256: string;
+    responseSchema: string | null;
+    state: "awaiting_parent" | "responded";
+    response: {
+        kind: WorkflowTestResponseKind;
+        value: JsonValue;
+        sha256: string;
+        disposition: "parent" | "fixture";
+        operationId: string | null;
+        respondedBy: JsonValue;
+        respondedAt: Date;
+    } | null;
+    /** The test run's virtual clock when the effect was reached. */
+    virtualAt: Date;
+    createdAt: Date;
+}
+
+function interceptionFrom(row: Row): WorkflowTestInterception {
+    const operation = str(row, "operation");
+    const state = str(row, "state");
+    const corrupt = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test interception ${String(row.interception_id)} has an invalid shape.`);
+    if (!(WORKFLOW_V2_TEST_OPERATIONS as readonly string[]).includes(operation) || (state !== "awaiting_parent" && state !== "responded")) throw corrupt();
+    const seq = Number(row.seq);
+    if (!Number.isSafeInteger(seq)) throw corrupt();
+    let response: WorkflowTestInterception["response"] = null;
+    if (state === "responded") {
+        const kind = str(row, "response_kind");
+        const disposition = str(row, "disposition");
+        if ((kind !== "success" && kind !== "error" && kind !== "cancel") || (disposition !== "parent" && disposition !== "fixture")) throw corrupt();
+        response = {
+            kind, value: parseStoredJson(str(row, "response"), "response"), sha256: str(row, "response_sha256"), disposition,
+            operationId: strOrNull(row, "response_operation_id"), respondedBy: jsonOrNull(row, "responded_by"), respondedAt: date(row, "responded_at"),
+        };
+    }
+    return {
+        interceptionId: str(row, "interception_id"), seq, runId: str(row, "run_id"), nodeExecutionId: str(row, "node_execution_id"),
+        operation: operation as WorkflowTestOperation, tool: strOrNull(row, "tool"), arguments: parseStoredJson(str(row, "arguments"), "arguments"),
+        argumentsSha256: str(row, "arguments_sha256"), responseSchema: strOrNull(row, "response_schema"), state, response,
+        virtualAt: date(row, "virtual_at"), createdAt: date(row, "created_at"),
+    };
+}
+
+/** The receipt of a test run's clock advance (advanceTestClock): the virtual times before and after, and what became due. */
+export interface WorkflowTestAdvanceReceipt {
+    workflowSessionId: string;
+    runId: string;
+    operation: "test_advance";
+    seconds: number;
+    from: string;
+    virtualNow: string;
+    decided: Array<{ nodeExecutionId: string; stateId: string; outcome: string }>;
+}
+
+function parseTestAdvanceReceipt(value: JsonValue): WorkflowTestAdvanceReceipt {
+    if (!isJsonObject(value) || value.operation !== "test_advance" || typeof value.workflowSessionId !== "string" || typeof value.runId !== "string"
+        || typeof value.seconds !== "number" || typeof value.from !== "string" || typeof value.virtualNow !== "string" || !Array.isArray(value.decided)) {
+        throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored test clock receipt has an invalid shape.");
+    }
+    return value as unknown as WorkflowTestAdvanceReceipt;
+}
 
 let declineSchemas: WorkflowSchemaSet | null = null;
 function declineProblems(value: JsonValue): SchemaProblem[] {
@@ -1480,7 +1577,7 @@ export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
-        intakeExposures: string; agentInvocations: string; agentCompletions: string;
+        intakeExposures: string; agentInvocations: string; agentCompletions: string; testInterceptions: string;
         sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
@@ -1494,6 +1591,7 @@ export class WorkflowStore {
             requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`, intake: `${s}.workflow_intake`,
             intakeInvocations: `${s}.workflow_intake_invocations`, intakeExposures: `${s}.workflow_intake_exposures`,
             agentInvocations: `${s}.workflow_agent_invocations`, agentCompletions: `${s}.workflow_agent_completions`,
+            testInterceptions: `${s}.workflow_test_interceptions`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
@@ -1963,16 +2061,22 @@ export class WorkflowStore {
             }
         }
         // A run admitted without a controller version records none and names no column of migration 0096, so a schema
-        // before it (an upgrade test's populated one) admits it as before.
+        // before it (an upgrade test's populated one) admits it as before. Only a test run names the columns of 0098: its
+        // virtual clock, which starts at the test epoch, and its fixtures.
         const versioned = typeof start.controllerVersion === "string";
+        const test = start.mode === "test";
+        const extra: Array<[string, unknown]> = [
+            ...(versioned ? [["controller_version", start.controllerVersion] as [string, unknown]] : []),
+            ...(test ? [["virtual_now", WORKFLOW_V2_TEST_EPOCH] as [string, unknown], ["test_fixtures", start.fixturesText ?? "[]"] as [string, unknown]] : []),
+        ];
         await client.query(
             `INSERT INTO ${this.t.runs}
                 (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, test_agent_mode, start_operation_id, kv, kv_revision
-                 ${versioned ? ", controller_version" : ""})
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, 1 ${versioned ? ", $12" : ""})`,
+                 ${extra.map(([column]) => `, ${column}`).join("")})
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, 1 ${extra.map((_, index) => `, $${12 + index}`).join("")})`,
             [start.runId, definition.workflowSessionId, start.mode, revision.revision, revision.yamlSha256, revision.irSha256,
-                start.inputsText, start.controllerInstanceId, start.mode === "test" ? start.testAgentMode : null, operationId, start.kvText,
-                ...(versioned ? [start.controllerVersion] : [])],
+                start.inputsText, start.controllerInstanceId, test ? start.testAgentMode : null, operationId, start.kvText,
+                ...extra.map(([, value]) => value)],
         );
         await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, 1, $2, $3)`,
             [start.runId, start.kvText, operationId]);
@@ -2756,6 +2860,17 @@ export class WorkflowStore {
          * seconds, as a wait's; waitSeconds is null with it.
          */
         agent?: AgentSpecInput | null;
+        /**
+         * A test run's intercepted effect (migration 0098; design 05): an
+         * agent, send or request state admitted pending without its live
+         * record (no child session, outbox message or request record); its
+         * interception record is written in this transaction, awaiting the
+         * parent. An agent's or a request's deadline is waitSeconds, counted
+         * from the run's virtual clock as every deadline of a test run is.
+         * Only a test run's admission passes one; null otherwise and for a
+         * state that failed at admission.
+         */
+        intercept?: { operation: "agent" | "send" | "request"; argumentsText: string; responseSchema: string | null } | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
@@ -2789,11 +2904,20 @@ export class WorkflowStore {
             let receive = input.receive ?? null;
             let send = input.send ?? null;
             let request = input.request ?? null;
+            // A test run's interception replaces the live record of its agent, send or request state (migration 0098), and
+            // every deadline of a test run is counted from its virtual clock.
+            const intercept = input.intercept ?? null;
+            if (intercept !== null && (run.mode !== "test" || immediate !== null || input.nodeType !== (intercept.operation === "agent" ? "agent" : "messaging"))) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid test interception.`);
+            }
+            if (run.mode === "test" && run.virtualNow === null) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test run ${run.runId} has no virtual clock.`);
+            }
             // A receive spec belongs to a receive state admitted without an
             // immediate result, and has refusals exactly when it names a sender;
             // a send spec belongs to a send state admitted without one, and a
-            // request spec to a request state admitted without one.
-            if ((receive !== null || send !== null || request !== null) !== (input.nodeType === "messaging" && immediate === null)
+            // request spec to a request state admitted without one (unless a test run intercepts it).
+            if ((receive !== null || send !== null || request !== null) !== (input.nodeType === "messaging" && immediate === null && intercept === null)
                 || [receive, send, request].filter(spec => spec !== null).length > 1
                 || (receive !== null && (receive.from === null) !== (receive.refused === null))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid messaging spec.`);
@@ -2804,7 +2928,7 @@ export class WorkflowStore {
             // An agent spec belongs to an agent state admitted without an immediate result; its deadline is a whole number
             // of seconds, and its output contract is the one its state declares in the run's pinned definition.
             const agent = input.agent ?? null;
-            if ((agent !== null) !== (input.nodeType === "agent" && immediate === null)
+            if ((agent !== null) !== (input.nodeType === "agent" && immediate === null && intercept === null)
                 || (agent !== null && !(Number.isSafeInteger(agent.timeoutSeconds) && agent.timeoutSeconds >= 1 && agent.timeoutSeconds <= WAIT_MAX_SECONDS))
                 || (agent !== null && !storableId(agent.childSessionId))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid agent spec.`);
@@ -2828,10 +2952,11 @@ export class WorkflowStore {
                 }
             }
             // A wait admitted pending has a whole number of seconds; a receive may
-            // race a wait (then it has them too); nothing else has any.
+            // race a wait (then it has them too); an intercepted agent or request has its deadline's; nothing else has any.
             const waits = input.nodeType === "wait" && immediate === null;
-            const mayWait = waits || receive !== null;
-            if ((waits && input.waitSeconds === null) || (!mayWait && input.waitSeconds !== null)
+            const deadlined = intercept !== null && intercept.operation !== "send";
+            const mayWait = waits || receive !== null || deadlined;
+            if (((waits || deadlined) && input.waitSeconds === null) || (!mayWait && input.waitSeconds !== null)
                 || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
             }
@@ -2914,7 +3039,7 @@ export class WorkflowStore {
                      receive_contract, receive_from, receive_correlation)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                          (SELECT at FROM accepted), CASE WHEN $11 = 'completed' THEN (SELECT at FROM accepted) END, $17,
-                         (SELECT at FROM accepted) + $18::integer * interval '1 second', $19, $20, $21)
+                         COALESCE($23::timestamptz, (SELECT at FROM accepted)) + $18::integer * interval '1 second', $19, $20, $21)
                  RETURNING *`,
                 [input.nodeExecutionId, input.runId, input.scopeId, input.nodeId, input.ordinal, input.nodeType, input.predecessorId,
                     input.arrivalRoute, input.inputText, inputSha256, result ? "completed" : "pending",
@@ -2922,9 +3047,19 @@ export class WorkflowStore {
                     result?.resultKind === "business" ? result.valueText : null,
                     result?.resultKind === "runtime_error" ? result.valueText : null,
                     result?.winner ?? null, input.kvRevision, claim ? null : waitSeconds,
-                    receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null, decidedAt],
+                    receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null, decidedAt,
+                    run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null],
             );
             const node = nodeFrom(rows[0]);
+            // A test run's intercepted effect: its record, awaiting the parent, at the run's virtual time.
+            if (intercept !== null && node.state === "pending") {
+                await client.query(
+                    `INSERT INTO ${this.t.testInterceptions}
+                        (interception_id, run_id, node_execution_id, operation, tool, arguments, arguments_sha256, response_schema, state, virtual_at, created_at)
+                     SELECT $1, $2, $3, $4, NULL, $5, $6, $7, 'awaiting_parent', virtual_now, clock_timestamp() FROM ${this.t.runs} WHERE run_id = $2`,
+                    [workflowTestInterceptionId(node.nodeExecutionId, intercept.operation), input.runId, node.nodeExecutionId, intercept.operation,
+                        intercept.argumentsText, sha256Hex(intercept.argumentsText), intercept.responseSchema]);
+            }
             // A send admitted pending: its message's intent, before any delivery.
             if (send !== null) {
                 if (recipientKind === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has no recipient decision.`);
@@ -5461,6 +5596,288 @@ export class WorkflowStore {
             return { active, cancelled: rows.map(row => ({ nodeExecutionId: str(row, "node_execution_id"), nodeType: str(row, "node_type") })) };
         });
     }
+
+    // ─── Test runs (migration 0098; design 05 tool-mocked testing; INACTIVE) ───
+
+    /**
+     * Admit a test run (mode test) of the definition's current revision, once
+     * per operation id: exactly the revision and hash the request names,
+     * valid, draft or published. It has its own KV, inbox and outbox, runs at
+     * controller 1.9.0 under its own controller instance, and its virtual
+     * clock starts at WORKFLOW_V2_TEST_EPOCH. Any number of test runs may
+     * exist beside the live run, which they never change.
+     */
+    async startTest(input: {
+        workflowSessionId: string;
+        expectedRevision: number;
+        definitionHash: string;
+        operationId: string;
+        requestSha256: string;
+        start: RunAdmission;
+    }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
+        if (input.start.mode !== "test") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A test admission must be a test run.");
+        return this.transaction(async client => {
+            await this.requireLiveSession(client, input.workflowSessionId);
+            const definition = await this.lockDefinition(client, input.workflowSessionId);
+            const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "test", input.requestSha256);
+            if (prior) return { receipt: prior, replayed: true };
+            assertNotDeleted(definition);
+            if (definition.currentRevision !== input.expectedRevision) {
+                throw new WorkflowStoreError("REVISION_CONFLICT", `The definition is at revision ${definition.currentRevision}, not ${input.expectedRevision}.`,
+                    { currentRevision: definition.currentRevision });
+            }
+            const revision = await this.readRevisionRow(client, input.workflowSessionId, input.expectedRevision);
+            if (!revision.valid || !revision.irSha256) {
+                throw new WorkflowStoreError("DEFINITION_INVALID", "Revision has compile errors; fix them before testing it.",
+                    { diagnostics: diagnosticsJson(revision.diagnostics) });
+            }
+            if (revision.yamlSha256 !== input.definitionHash) {
+                throw new WorkflowStoreError("DEFINITION_HASH_MISMATCH", "The definition hash does not match the revision to test.",
+                    { revision: revision.revision, yamlSha256: revision.yamlSha256 });
+            }
+            const run = await this.insertRun(client, definition, revision, input.start, input.operationId);
+            const receipt = this.receiptFor("test", definition, revision, run);
+            await this.recordReceipt(client, input.workflowSessionId, input.operationId, "test", input.requestSha256, receipt);
+            return { receipt, replayed: false };
+        });
+    }
+
+    /** A test run's fixtures (migration 0098), as admitted; an empty list for a test run without any. */
+    async readTestFixtures(runId: string): Promise<JsonValue> {
+        const { rows } = await this.pool.query(`SELECT mode, test_fixtures FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
+        if (!rows[0]) throw new WorkflowStoreError("RUN_NOT_FOUND", `Workflow run ${runId} does not exist.`);
+        if (str(rows[0], "mode") !== "test") throw new WorkflowStoreError("RUN_NOT_TEST", `Run ${runId} is not a test run.`);
+        return jsonOrNull(rows[0], "test_fixtures") ?? [];
+    }
+
+    async readInterception(interceptionId: string): Promise<WorkflowTestInterception | null> {
+        const { rows } = await this.pool.query(`SELECT * FROM ${this.t.testInterceptions} WHERE interception_id = $1`, [interceptionId]);
+        return rows[0] ? interceptionFrom(rows[0]) : null;
+    }
+
+    /** A test run's intercepted effects in the order they were reached (bounded). */
+    async listInterceptions(runId: string, limit = 200): Promise<WorkflowTestInterception[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.testInterceptions} WHERE run_id = $1 ORDER BY seq LIMIT $2`, [runId, Math.min(Math.max(limit, 1), 1_000)]);
+        return rows.map(interceptionFrom);
+    }
+
+    /**
+     * Record a script's tool call in a test run (design 05): the call's record
+     * is written once, by its stable id (the script's n-th call in its node
+     * execution); a fixture's response answers it in the same transaction.
+     * A repeat (a retried attempt reaching the same call) returns the record
+     * as it is; one with other arguments is reported as a mismatch and never
+     * answered from the earlier one. The call is refused when the node is no
+     * longer pending or the run's limit of interceptions is reached.
+     */
+    async interceptToolCall(input: {
+        runId: string;
+        nodeExecutionId: string;
+        call: number;
+        tool: string;
+        argumentsText: string;
+        fixture: { kind: WorkflowTestResponseKind; valueText: string } | null;
+        projection?: (record: WorkflowTestInterception) => SessionProjection;
+    }): Promise<{ record: WorkflowTestInterception; inserted: boolean; mismatch: boolean }> {
+        const interceptionId = workflowTestInterceptionId(input.nodeExecutionId, { call: input.call });
+        const argumentsSha256 = sha256Hex(input.argumentsText);
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
+            const run = await this.lockRun(client, input.runId);
+            if (run.mode !== "test") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is not a test run.`);
+            const { rows: found } = await client.query(`SELECT * FROM ${this.t.testInterceptions} WHERE interception_id = $1`, [interceptionId]);
+            if (found[0]) {
+                const record = interceptionFrom(found[0]);
+                return { record, inserted: false, mismatch: record.argumentsSha256 !== argumentsSha256 || record.tool !== input.tool };
+            }
+            const { rows: nodes } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1`, [input.nodeExecutionId]);
+            const node = nodes[0] ? nodeFrom(nodes[0]) : null;
+            if (!node || node.runId !== run.runId || node.nodeType !== "script") {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} is not a script state of run ${run.runId}.`);
+            }
+            if (!live || node.state !== "pending" || !ACTIVE_RUN_STATUSES.includes(run.status)) {
+                throw new WorkflowStoreError("NODE_CLOSED", `The script's state ${input.nodeExecutionId} was decided; its tool call is not recorded.`);
+            }
+            const { rows: counted } = await client.query(`SELECT count(*)::int AS n FROM ${this.t.testInterceptions} WHERE run_id = $1`, [run.runId]);
+            if (int(counted[0], "n") >= WORKFLOW_V2_TEST_MAX_INTERCEPTIONS) {
+                throw new WorkflowStoreError("TEST_INTERCEPTION_LIMIT", `This test run reached its limit of ${WORKFLOW_V2_TEST_MAX_INTERCEPTIONS} intercepted calls.`);
+            }
+            const fixture = input.fixture;
+            const { rows } = await client.query(
+                `INSERT INTO ${this.t.testInterceptions}
+                    (interception_id, run_id, node_execution_id, operation, tool, arguments, arguments_sha256, response_schema, state,
+                     response_kind, response, response_sha256, disposition, virtual_at, created_at, responded_at)
+                 SELECT $1, $2, $3, 'tool.call', $4, $5, $6, NULL, $7, $8, $9, $10, $11, virtual_now, clock_timestamp(),
+                        CASE WHEN $7 = 'responded' THEN clock_timestamp() END
+                   FROM ${this.t.runs} WHERE run_id = $2
+                 RETURNING *`,
+                [interceptionId, run.runId, input.nodeExecutionId, input.tool, input.argumentsText, argumentsSha256,
+                    fixture ? "responded" : "awaiting_parent", fixture?.kind ?? null, fixture?.valueText ?? null,
+                    fixture ? testResponseSha256(fixture.kind, fixture.valueText) : null, fixture ? "fixture" : null]);
+            const record = interceptionFrom(rows[0]);
+            await this.project(client, input.projection?.(record));
+            return { record, inserted: true, mismatch: false };
+        });
+    }
+
+    /**
+     * Answer an intercepted effect of a test run, once (design 05): the same
+     * response again is idempotent (replayed), another is TEST_RESPONSE_CONFLICT.
+     * An answer to an effect whose state is no longer pending, or of a run
+     * that ended, is refused (NODE_CLOSED, RUN_ENDED) and changes nothing.
+     * For an agent, send or request, `decide` is the state's result, stored
+     * by the node's compare-and-swap in this same transaction.
+     */
+    async respondInterception(input: {
+        workflowSessionId: string;
+        runId: string;
+        interceptionId: string;
+        kind: WorkflowTestResponseKind;
+        valueText: string;
+        disposition: "parent" | "fixture";
+        operationId: string | null;
+        actor: WorkflowActor | null;
+        decide: NodeResultInput | null;
+        projection?: (record: WorkflowTestInterception) => SessionProjection;
+    }): Promise<{ replayed: boolean; record: WorkflowTestInterception; node: WorkflowNodeExecutionRow }> {
+        if (input.disposition === "parent" && input.actor === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A parent response names its actor.");
+        const responseSha256 = testResponseSha256(input.kind, input.valueText);
+        return this.transaction(async client => {
+            if (!await this.lockLiveSession(client, input.workflowSessionId)) {
+                throw new WorkflowStoreError("WORKFLOW_DELETED", `Workflow session ${input.workflowSessionId} was deleted or does not exist.`);
+            }
+            const run = await this.lockRun(client, input.runId);
+            const { rows: found } = await client.query(`SELECT * FROM ${this.t.testInterceptions} WHERE interception_id = $1 FOR UPDATE`, [input.interceptionId]);
+            if (!found[0] || run.workflowSessionId !== input.workflowSessionId || str(found[0], "run_id") !== run.runId) {
+                throw new WorkflowStoreError("INTERCEPTION_NOT_FOUND", `Interception ${input.interceptionId} is not one of test run ${input.runId}.`);
+            }
+            const record = interceptionFrom(found[0]);
+            const node = await this.nodeIn(client, record.nodeExecutionId);
+            if (record.response !== null) {
+                if (record.response.sha256 === responseSha256) return { replayed: true, record, node };
+                throw new WorkflowStoreError("TEST_RESPONSE_CONFLICT", `Interception ${input.interceptionId} was already answered with another response.`,
+                    { responseSha256: record.response.sha256, disposition: record.response.disposition });
+            }
+            if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
+                throw new WorkflowStoreError("RUN_ENDED", `Test run ${run.runId} ended (${run.status}); its open interceptions stay unanswered.`, { status: run.status });
+            }
+            if (node.state !== "pending") {
+                throw new WorkflowStoreError("NODE_CLOSED", `The state of interception ${input.interceptionId} was already decided (${node.outcome}).`,
+                    { outcome: node.outcome, winner: node.winner });
+            }
+            let decided = node;
+            if (input.decide !== null) {
+                const result = input.decide;
+                const { rows: completed } = await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = $2, result_kind = $3,
+                            output = CASE WHEN $3 = 'business' THEN $4 END,
+                            error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
+                            winner = $5, completed_at = clock_timestamp()
+                      WHERE node_execution_id = $1 AND state = 'pending'
+                      RETURNING *`,
+                    [record.nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]);
+                if (!completed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${record.nodeExecutionId} changed under its lock.`);
+                decided = nodeFrom(completed[0]);
+            }
+            const { rows } = await client.query(
+                `UPDATE ${this.t.testInterceptions}
+                    SET state = 'responded', response_kind = $2, response = $3, response_sha256 = $4, disposition = $5,
+                        response_operation_id = $6, responded_by = $7, responded_at = clock_timestamp()
+                  WHERE interception_id = $1 AND state = 'awaiting_parent' RETURNING *`,
+                [input.interceptionId, input.kind, input.valueText, responseSha256, input.disposition, input.operationId,
+                    input.actor === null ? null : canonicalJson(input.actor)]);
+            if (!rows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Interception ${input.interceptionId} changed under its lock.`);
+            const answered = interceptionFrom(rows[0]);
+            await this.project(client, input.projection?.(answered));
+            return { replayed: false, record: answered, node: decided };
+        });
+    }
+
+    /**
+     * Advance a test run's virtual clock (design 05 timer simulation), once
+     * per operation id: monotonically, by whole seconds. In the same
+     * transaction every pending state of the run whose deadline the new
+     * virtual time reached is decided, in deadline order: a wait or a
+     * receive's wait elapsed (with the value it was given), an intercepted
+     * request or agent timed_out; a result that won first (an injected
+     * message, a response, a cancel) stands. Only a test run, while it is
+     * active, has a clock to advance.
+     */
+    async advanceTestClock(input: {
+        workflowSessionId: string;
+        runId: string;
+        seconds: number;
+        operationId: string;
+        requestSha256: string;
+        projection: (advanced: WorkflowTestAdvanceReceipt) => SessionProjection;
+    }): Promise<{ receipt: WorkflowTestAdvanceReceipt; replayed: boolean }> {
+        if (!Number.isSafeInteger(input.seconds) || input.seconds < 1 || input.seconds > WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `seconds must be an integer from 1 to ${WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS}.`);
+        }
+        return this.transaction(async client => {
+            await this.requireLiveSession(client, input.workflowSessionId);
+            const { rows: priorRows } = await client.query(
+                `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
+                [input.workflowSessionId, input.operationId]);
+            if (priorRows[0]) {
+                if (str(priorRows[0], "kind") !== "test_advance" || str(priorRows[0], "request_sha256") !== input.requestSha256) {
+                    throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${input.operationId} was already used for a different request.`,
+                        { operationId: input.operationId, storedKind: str(priorRows[0], "kind") });
+                }
+                return { receipt: parseTestAdvanceReceipt(parseStoredJson(str(priorRows[0], "receipt"), "receipt")), replayed: true };
+            }
+            const run = await this.lockRun(client, input.runId);
+            if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
+            if (run.mode !== "test" || run.virtualNow === null) throw new WorkflowStoreError("RUN_NOT_TEST", `Run ${run.runId} is not a test run; only a test run has a virtual clock.`);
+            if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
+                throw new WorkflowStoreError("RUN_ENDED", `Test run ${run.runId} ended (${run.status}).`, { status: run.status });
+            }
+            const { rows: moved } = await client.query(
+                `UPDATE ${this.t.runs} SET virtual_now = virtual_now + $2::integer * interval '1 second', updated_at = now() WHERE run_id = $1
+                 RETURNING virtual_now::text AS now_text, ${isoUtc("virtual_now")} AS now_iso,
+                           ${isoUtc("(virtual_now - $2::integer * interval '1 second')")} AS from_iso`,
+                [run.runId, input.seconds]);
+            const nowText = str(moved[0], "now_text");
+            const { rows: due } = await client.query(
+                `SELECT * FROM ${this.t.nodes}
+                  WHERE run_id = $1 AND state = 'pending' AND deadline_at IS NOT NULL AND deadline_at <= $2::timestamptz
+                  ORDER BY deadline_at, node_execution_id FOR UPDATE`, [run.runId, nowText]);
+            const decided: WorkflowTestAdvanceReceipt["decided"] = [];
+            for (const row of due) {
+                const node = nodeFrom(row);
+                const waits = node.nodeType === "wait" || (node.nodeType === "messaging" && node.receive !== null);
+                if (!waits && node.nodeType !== "agent" && node.nodeType !== "messaging") {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${node.nodeExecutionId} has a deadline but no timer.`);
+                }
+                const timedOut = canonicalJson({ code: "timed_out", message: node.nodeType === "agent"
+                    ? "The agent did not complete the state before its deadline."
+                    : "No response or refusal was accepted before the request's deadline." });
+                await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = $2, result_kind = $3,
+                            output = CASE WHEN $3 = 'business' THEN input END,
+                            error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
+                            winner = 'controller', completed_at = clock_timestamp()
+                      WHERE node_execution_id = $1 AND state = 'pending'`,
+                    [node.nodeExecutionId, waits ? WAIT_ELAPSED : "timed_out", waits ? "business" : "runtime_error", timedOut]);
+                decided.push({ nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, outcome: waits ? WAIT_ELAPSED : "timed_out" });
+            }
+            const receipt: WorkflowTestAdvanceReceipt = {
+                workflowSessionId: input.workflowSessionId, runId: run.runId, operation: "test_advance", seconds: input.seconds,
+                from: str(moved[0], "from_iso"), virtualNow: str(moved[0], "now_iso"), decided,
+            };
+            await this.recordReceipt(client, input.workflowSessionId, input.operationId, "test_advance", input.requestSha256, receipt);
+            await this.project(client, input.projection(receipt));
+            return { receipt, replayed: false };
+        });
+    }
+}
+
+/** The identity of a test response: its kind and value (canonical JSON). */
+export function testResponseSha256(kind: WorkflowTestResponseKind, valueText: string): string {
+    return sha256Hex(canonicalJson({ kind, value: parseStoredJson(valueText, "response") }));
 }
 
 export interface RunAdmission {
@@ -5476,6 +5893,8 @@ export interface RunAdmission {
      * names it; omitted (or null), the run records none, as a run admitted before 0096 (only a store test does that).
      */
     controllerVersion?: string | null;
+    /** A test run's fixtures as canonical JSON (migration 0098); only a test admission names them. */
+    fixturesText?: string | null;
 }
 
 /** The receipt of a run command (set_vars, pause, resume, cancel). */

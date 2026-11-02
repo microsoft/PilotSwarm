@@ -18,8 +18,10 @@ import {
     WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION,
     workflowLiveControllerInstanceId,
     workflowNotifyInstanceId,
+    workflowTestControllerInstanceId,
     type ControllerInput,
 } from "./runtime.js";
+import { testResultFor, workflowTestAnsweredProjection, type WorkflowTestFixture, type WorkflowTestResponse } from "./test-mode.js";
 import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
 import {
     ACTIVE_RUN_STATUSES,
@@ -43,6 +45,9 @@ import {
     type WorkflowRunStatus,
     type WorkflowSessionCommandReceipt,
     type WorkflowStore,
+    type WorkflowNodeExecutionRow,
+    type WorkflowTestAdvanceReceipt,
+    type WorkflowTestInterception,
 } from "./store.js";
 
 export { WORKFLOW_V2_INPUT_TTL_SECONDS } from "./store.js";
@@ -884,4 +889,145 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
             JSON.stringify({ type: "workflow-wake", runId: stored.run.runId, reason: "input" }));
     }
     return { receipt: stored.receipt, replayed: stored.replayed };
+}
+
+// ─── Test runs (migration 0098; design 05 tool-mocked testing; INACTIVE) ───
+
+/** update_workflow operation test: a test run of the exact current revision (INACTIVE: only a host that starts 1.9.0 runs takes it). */
+export interface WorkflowV2TestCommand {
+    expectedRevision: number;
+    definitionHash: string;
+    inputs: JsonValue;
+    vars?: { [key: string]: JsonValue };
+    agentMode: "mocked" | "real";
+    fixtures: WorkflowTestFixture[];
+}
+
+/** The operation a host that does not run tests refuses, as an unknown operation is refused. */
+function requireTestHost(host: Pick<WorkflowV2Host, "requests">): void {
+    if (host.requests !== true) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "This build does not run workflow tests.");
+}
+
+/** Tell a run's controller to collect at once (a hint; its backstop finds the change too). */
+async function wakeRun(host: Pick<WorkflowV2Host, "duroxideClient">, run: Pick<WorkflowRunRow, "controllerInstanceId" | "runId">, reason: string): Promise<void> {
+    await host.duroxideClient.enqueueEvent(run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE, JSON.stringify({ type: "workflow-wake", runId: run.runId, reason }));
+}
+
+/**
+ * Start a test run (design 05; R19, R20; INACTIVE): the exact current
+ * revision the request names (expected_revision and definition_hash), draft
+ * or published, with its inputs (checked against inputs.schema), its own
+ * initial KV, and the fixtures it answers intercepted effects from. Agent
+ * mode mocked only: a real agent with intercepted tools is not available
+ * yet (TEST_AGENT_MODE_UNSUPPORTED), and nothing falls back to a live agent.
+ * The run runs at controller 1.9.0 under its own controller instance; its
+ * scripts run normally, its framework effects are intercepted, and its
+ * deadlines run on its virtual clock. It never changes the live run, and it
+ * is never evidence that the definition is safe to run live.
+ */
+export async function startWorkflowV2Test(host: WorkflowV2Host, workflowSessionId: string, command: WorkflowV2TestCommand,
+    context: { actor: WorkflowActor; operationId: string }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
+    requireOperationId(context.operationId);
+    requireTestHost(host);
+    if (command.agentMode !== "mocked") {
+        throw new WorkflowStoreError("TEST_AGENT_MODE_UNSUPPORTED",
+            "agent_mode real (a real agent child whose tools are intercepted) is not available in this build; use agent_mode mocked, "
+            + "where the parent supplies each agent state's typed result.");
+    }
+    const revision = await host.store.readRevision(workflowSessionId, command.expectedRevision);
+    if (revision?.valid && revision.irSha256) {
+        const ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host));
+        const problems = ir.inputsSchema ? schemaSetFor(revision.irSha256, ir.schemaDefs).validate(ir.inputsSchema, command.inputs) : [];
+        if (problems.length) {
+            throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
+                problems.map(problem => ({ path: problem.path, message: problem.message })));
+        }
+    }
+    const fixturesText = canonicalJson(command.fixtures);
+    const runId = randomUUID();
+    const stored = await host.store.startTest({
+        workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash, operationId: context.operationId,
+        requestSha256: jsonSha256({ kind: "test", expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
+            inputs: canonicalJson(command.inputs), agentMode: command.agentMode, fixtures: fixturesText, ...varsDigestPart(command.vars) }),
+        start: {
+            runId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(runId),
+            inputsText: boundedCanonicalJson(command.inputs, "Workflow inputs"), kvText: checkedKvText(command.vars ?? {}), testAgentMode: "mocked",
+            controllerVersion: controllerVersionFor(host), fixturesText,
+        },
+    });
+    if (stored.receipt.run) await dispatchWorkflowV2Run(host, stored.receipt);
+    return stored;
+}
+
+/** The test run a test command names (run_id is required: a test command never defaults to the live run). */
+async function testRun(host: Pick<WorkflowV2Host, "store">, workflowSessionId: string, runId: string): Promise<WorkflowRunRow> {
+    const run = await commandRun(host, workflowSessionId, runId);
+    if (run.mode !== "test") throw new WorkflowStoreError("RUN_NOT_TEST", `Run ${run.runId} is not a test run.`);
+    return run;
+}
+
+/**
+ * Answer an intercepted effect of a test run by its interception id (design
+ * 05; out of band: this answer is never itself intercepted): a tool call's
+ * script receives it; an agent's, send's or request's state is decided by
+ * it, checked as the live effect's result would be (testResultFor). An
+ * invalid answer is refused with its field errors and the effect stays
+ * open; the same answer again is idempotent, another is
+ * TEST_RESPONSE_CONFLICT; an answer to an effect whose state was decided
+ * otherwise (a virtual deadline, a cancel) is refused.
+ */
+export async function respondWorkflowV2Test(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, workflowSessionId: string,
+    command: { runId: string; interceptionId: string; response: WorkflowTestResponse }, context: { actor: WorkflowActor; operationId: string })
+    : Promise<{ replayed: boolean; interception: WorkflowTestInterception; node: WorkflowNodeExecutionRow }> {
+    requireOperationId(context.operationId);
+    requireTestHost(host);
+    const run = await testRun(host, workflowSessionId, command.runId);
+    const intercepted = await host.store.readInterception(command.interceptionId);
+    if (!intercepted || intercepted.runId !== run.runId) {
+        throw new WorkflowStoreError("INTERCEPTION_NOT_FOUND", `Interception ${command.interceptionId} is not one of test run ${run.runId}.`);
+    }
+    const executed = await host.store.readNodeExecution(intercepted.nodeExecutionId);
+    if (!executed) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Interception ${command.interceptionId} names no node execution.`);
+    const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
+    const node = ir.nodes[executed.nodeId];
+    if (!node) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `The pinned definition has no state ${executed.nodeId}.`);
+    const decide = testResultFor(intercepted, node, ir, run.irSha256, command.response);
+    const answered = await host.store.respondInterception({
+        workflowSessionId, runId: run.runId, interceptionId: command.interceptionId, kind: command.response.kind,
+        valueText: canonicalJson(command.response.value), disposition: "parent", operationId: context.operationId, actor: context.actor, decide,
+        projection: record => workflowTestAnsweredProjection(run, executed, record, decide),
+    });
+    if (decide !== null) await wakeRun(host, run, "test");
+    return { replayed: answered.replayed, interception: answered.record, node: answered.node };
+}
+
+/**
+ * Advance a test run's virtual clock (design 05 timer simulation), once per
+ * operation id: what became due is decided in the same transaction, in
+ * deadline order (store.advanceTestClock), and the controller is told.
+ */
+export async function advanceWorkflowV2Test(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, workflowSessionId: string,
+    command: { runId: string; seconds: number }, context: { actor: WorkflowActor; operationId: string }): Promise<StoredOperation<WorkflowTestAdvanceReceipt>> {
+    requireOperationId(context.operationId);
+    requireTestHost(host);
+    const run = await testRun(host, workflowSessionId, command.runId);
+    const stored = await host.store.advanceTestClock({
+        workflowSessionId, runId: run.runId, seconds: command.seconds, operationId: context.operationId,
+        requestSha256: jsonSha256({ kind: "test_advance", runId: run.runId, seconds: command.seconds }),
+        projection: receipt => ({
+            sessionId: workflowSessionId,
+            events: [
+                { eventType: "workflow.test_clock_advanced", data: { runId: run.runId, seconds: receipt.seconds, from: receipt.from,
+                    virtualNow: receipt.virtualNow, decidedCount: receipt.decided.length } },
+                ...receipt.decided.slice(0, 100).map(item => ({
+                    eventType: item.outcome === "timed_out" ? "workflow.state_failed" : "workflow.state_completed",
+                    data: { runId: run.runId, nodeExecutionId: item.nodeExecutionId, stateId: item.stateId, outcome: item.outcome,
+                        resultKind: item.outcome === "timed_out" ? "runtime_error" : "business", virtualNow: receipt.virtualNow },
+                })),
+            ],
+            update: { touch: true },
+        }),
+    });
+    await wakeRun(host, run, "test");
+    return stored;
 }

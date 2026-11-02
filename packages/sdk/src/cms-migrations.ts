@@ -27,6 +27,7 @@ import { workflowV2IntakeMigration } from "./migrations/workflow-v2-0094.js";
 import { workflowV2IntakeExposuresMigration } from "./migrations/workflow-v2-0095.js";
 import { workflowV2StopMigration } from "./migrations/workflow-v2-0096.js";
 import { workflowV2AgentStatesMigration } from "./migrations/workflow-v2-0097.js";
+import { workflowV2TestRunsMigration } from "./migrations/workflow-v2-0098.js";
 
 function workflowSessionKindMigration(schema: string): string {
     const s = `"${schema}"`;
@@ -457,6 +458,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0095", name: "workflow_v2_intake_exposures", sql: workflowV2IntakeExposuresMigration(schema) },
         { version: "0096", name: "workflow_v2_stop", sql: workflowV2StopMigration(schema) },
         { version: "0097", name: "workflow_v2_agent_states", sql: workflowV2AgentStatesMigration(schema) },
+        { version: "0098", name: "workflow_v2_test_runs", sql: workflowV2TestRunsMigration(schema) },
     ];
 }
 

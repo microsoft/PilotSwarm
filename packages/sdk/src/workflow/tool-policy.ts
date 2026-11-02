@@ -129,6 +129,18 @@ export function resolveWorkflowTool(
     return matches[0];
 }
 
+/**
+ * The grant a workflow script's call of `name` uses, judged by the grants alone, for a call that reaches no live tool
+ * catalog (a workflow v2 test run's intercepted call; INACTIVE): a workflow control tool is never admitted, and the name
+ * must match exactly one admitted grant, as resolveWorkflowTool decides before it reads the catalog.
+ */
+export function admittedWorkflowToolGrant(name: string, grants: WorkflowToolGrant[], exclusions: readonly string[] = []): WorkflowToolGrant {
+    if (isWorkflowControlTool(name)) throw new Error(`Workflow control tool '${name}' is not permitted.`);
+    const admitted = grants.filter(grant => allowedWorkflowTool(grant) && !isExcluded(grant, exclusions) && workflowToolAliases(grant).includes(name));
+    if (admitted.length !== 1) throw new Error(`Tool '${name}' is not uniquely admitted for this workflow.`);
+    return admitted[0];
+}
+
 export function validateWorkflowToolArguments(name: string, args: Record<string, unknown>): void {
     if (["bash", "powershell"].includes(name) && args.detach === true) {
         throw new Error("Workflow shells must remain attached to the state that owns them.");
