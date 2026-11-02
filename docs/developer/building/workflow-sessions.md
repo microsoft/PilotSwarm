@@ -88,6 +88,19 @@ states:
 
 ## Polling and repeating work
 
+**One way to pause: the wait state.** A wait state with `seconds` is the
+workflow form of the agent `wait` tool; with `at` it follows the agent
+`cron_at` rules; a loop through a wait state is the workflow form of
+`cron`. There is no other pause syntax: a delay on a transition
+(`transition.delaySeconds`) is refused with
+`WORKFLOW_TRANSITION_DELAY_UNSUPPORTED`, so every pause is a node the graph
+and the live view show. Both sides sleep on the same duroxide timer, compute
+clock times with the same `cron_at` code, and take their limits from one
+shared module (`wait-rules.ts`): a `seconds` wait is at least 60 seconds and
+at most 7 days; agent `cron` is at least 15 seconds. The 60-second minimum
+is kept because each script state after a wait may start a Copilot CLI tool
+session; it will be revisited with real scenarios.
+
 Put the schedule in the graph. "Every 10 minutes, check for failed builds and
 handle them" is one workflow whose check loops back through a wait:
 
