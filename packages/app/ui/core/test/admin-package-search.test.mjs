@@ -99,3 +99,19 @@ test("only package rows scroll; a section after the packages stays outside the s
     assert.match(webApp, /const nextSection = tree\.findIndex\(\(row, index\) => index >= headEnd && row\.kind !== "group" && row\.kind !== "package"\);/);
     assert.doesNotMatch(webApp, /const tailStart = workersIndex >= 0/, "the scroller no longer ends at Workers by name");
 });
+
+test("Find highlights matches inline in package rows only", async () => {
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { readFileSync } = await import("node:fs");
+    const webApp = readFileSync(new URL("../../react/src/web-app.js", import.meta.url), "utf8");
+    const css = readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
+    assert.match(webApp, /row\.kind === "package" \? highlightPackageQuery\(row\.label, query\) : row\.label/,
+        "section rows such as Appearance are never highlighted");
+    assert.match(webApp, /React\.createElement\("span", \{ className: "ps-admin-tree__text" \},/,
+        "the label and its mark share one inline span inside the column");
+    assert.match(css, /\.ps-admin-tree__text, \.ps-admin-tree__match \{[^}]*white-space: nowrap;/);
+    assert.match(css, /\.ps-admin-tree__mark \{ display: inline;/);
+    const html = renderToStaticMarkup(React.createElement("span", { className: "ps-admin-tree__text" }, ["", React.createElement("mark", { key: "hit" }, "a"), "gent-manager"]));
+    assert.equal(html, "<span class=\"ps-admin-tree__text\"><mark>a</mark>gent-manager</span>");
+});

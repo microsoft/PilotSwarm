@@ -14910,6 +14910,9 @@ function AdminWorkersPane({ controller, view }) {
                         React.createElement("td", null, row.sdkVersion ?? "—")))))));
 }
 
+// The Find box searches packages only, so only package rows show a match.
+// The text sits in its own inline span: the name column is a flex column, and
+// a bare <mark> beside bare text would become its own line.
 function highlightPackageQuery(text, query) {
     const value = String(text || "");
     const needle = String(query || "").trim();
@@ -14978,8 +14981,9 @@ function AdminSettingsTree({ controller, view }) {
                     }, "S"))
                 : null,
             React.createElement("span", { className: "ps-admin-tree__name" },
-                highlightPackageQuery(row.label, query),
-                row.matchText
+                React.createElement("span", { className: "ps-admin-tree__text" },
+                    row.kind === "package" ? highlightPackageQuery(row.label, query) : row.label),
+                row.kind === "package" && row.matchText
                     ? React.createElement("span", { className: "ps-admin-tree__match" },
                         highlightPackageQuery(`${row.matchField} · ${row.matchText}${row.matchExtra ? ` · +${row.matchExtra}` : ""}`, query))
                     : null),
