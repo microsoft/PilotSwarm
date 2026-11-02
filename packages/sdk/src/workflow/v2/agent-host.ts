@@ -3,6 +3,7 @@ import type { SessionOwnerInfo } from "../../types.js";
 import type { MessageSender } from "../../message-sender.js";
 import type { WorkflowAgentNodeHost, WorkflowAgentSpawnRequest } from "./runtime.js";
 import { WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "./input-policy.js";
+import { pinnedAgentPackageId } from "../../agent-package-pins.js";
 
 /**
  * Workflow v2 agent states (IR 8; design 03 agent node, R09 to R11, R16):
@@ -21,7 +22,11 @@ import { WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "./input-policy.js";
  *   named agent, is bound to the definition the workflow's owner sees by
  *   that name (an unknown or invisible one is refused unavailable, a
  *   worker-managed system agent forbidden; a pinned package or version
- *   that does not match is refused unavailable);
+ *   that does not match is refused unavailable). A task pinned to an exact
+ *   package revision (R18) is bound to that revision (agent-package-pins.ts)
+ *   whatever version the package is at now, as long as the owner still sees
+ *   the agent in that same package; a worker installs the revision when the
+ *   child's turn runs;
  * - gets one first prompt, the host-generated wrapper, sent as the
  *   workflow (never as a human), with the state's stable client message id.
  *
@@ -58,6 +63,8 @@ export interface WorkflowAgentDefinition {
     /** The package's name and version, when the definition came from a package and they are known. */
     packageName?: string;
     packageVersion?: string;
+    /** The content hash of the package's active version, when known. */
+    packageRevision?: string;
 }
 
 /** What the host asks its client to create: the child session and its first prompt. */
@@ -142,14 +149,31 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
                 if (task.package !== null && definition.packageName !== task.package) {
                     return { refused: { code: "unavailable" as const, message: `Agent "${task.name}" is not available from package "${task.package}".` } };
                 }
-                if (task.version !== null && definition.packageVersion !== task.version) {
+                // R18 (T070): a task pinned to an exact revision runs that revision, also after its package is republished,
+                // when the owner still sees the agent in that same package. Without a revision, only the pinned version.
+                const pinnedRevision = task.packageId !== undefined && task.revision !== undefined;
+                if (pinnedRevision && definition.packageId !== task.packageId) {
+                    return { refused: { code: "unavailable" as const, message: `Agent "${task.name}" is no longer available from the package `
+                        + `its workflow's publication pinned${task.package ? ` ("${task.package}")` : ""}.` } };
+                }
+                if (!pinnedRevision && task.version !== null && definition.packageVersion !== task.version) {
                     return { refused: { code: "unavailable" as const, message: `Agent "${task.name}" from package "${task.package}" is not available at version ${task.version}.` } };
                 }
+                let pinnedId: string | null = null;
+                if (pinnedRevision) {
+                    try {
+                        pinnedId = pinnedAgentPackageId(task.packageId!, task.revision!);
+                    } catch {
+                        return { refused: { code: "unavailable" as const, message: `The pinned revision of agent "${task.name}" does not name a package version.` } };
+                    }
+                }
                 spec.boundAgentName = !definition.packageId && definition.namespace ? `${definition.namespace}:${definition.name}` : definition.name;
-                if (definition.packageId) spec.boundAgentPackageId = definition.packageId;
+                if (pinnedId !== null) spec.boundAgentPackageId = pinnedId;
+                else if (definition.packageId) spec.boundAgentPackageId = definition.packageId;
                 spec.agentId = definition.id ?? definition.name;
-                // As spawn_agent binds a named definition: its own tools only, never the parent's package tools.
-                spec.toolNames = definition.tools ?? [];
+                // As spawn_agent binds a named definition: its own tools only, never the parent's package tools. A pinned
+                // revision's own declarations come with its copy; the active version's are not its own.
+                spec.toolNames = pinnedRevision ? [] : definition.tools ?? [];
                 if (definition.title) spec.title = `${definition.title} (workflow node: ${request.stateId})`;
             }
             await deps.createChild(spec);

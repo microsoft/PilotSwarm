@@ -334,14 +334,22 @@ export function workflowAgentClientMessageId(workflowSessionId: string, runId: s
 }
 
 /** The package and version a publication pinned an agent state's named agent to (migration 0099); null when it pinned none. */
-function agentPinOf(pins: JsonValue, stateId: string): { package: string | null; version: string | null } | null {
+function agentPinOf(pins: JsonValue, stateId: string): { package: string | null; version: string | null; packageId: string | null; revision: string | null } | null {
     if (pins === null) return null;
     const pin = isJsonObject(pins) ? pins[stateId] : undefined;
     if (pin === undefined) return null;
-    if (!isJsonObject(pin) || (pin.package !== null && typeof pin.package !== "string") || (pin.version !== null && typeof pin.version !== "string")) {
+    const optionalText = (value: JsonValue | undefined) => value === undefined || value === null || typeof value === "string";
+    if (!isJsonObject(pin) || (pin.package !== null && typeof pin.package !== "string") || (pin.version !== null && typeof pin.version !== "string")
+        || !optionalText(pin.packageId) || !optionalText(pin.revision)) {
         throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `The publication's pin of state '${stateId}' has an invalid shape.`);
     }
-    return { package: pin.package as string | null, version: pin.version as string | null };
+    // A publication made before revisions were pinned has no revision: its run binds by version alone (and is refused
+    // once that version is gone).
+    return {
+        package: pin.package as string | null, version: pin.version as string | null,
+        packageId: typeof pin.packageId === "string" && pin.packageId.length > 0 ? pin.packageId : null,
+        revision: typeof pin.revision === "string" && pin.revision.length > 0 ? pin.revision : null,
+    };
 }
 
 export function workflowRequestInstanceId(nodeExecutionId: string): string {
@@ -2707,16 +2715,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     if (typeof seconds !== "number") immediate = seconds;
                     else {
                         const definition = await store.readDefinition(current.workflowSessionId);
-                        // A live run of a published revision binds a named agent to what its publication pinned (migration 0099;
-                        // T018, T070): a package republished since is never picked up silently, and the host refuses a pin it
-                        // can no longer resolve.
-                        const pin = "agent" in node.invoke && current.mode === "live" && definition?.publishedRevision === current.revision
+                        // A run of a published revision, live or test (design 05: a test pins as a live run would), binds a
+                        // named agent to what its publication pinned (migration 0099; T018, T070): a package republished since
+                        // is never picked up silently. A pin with the exact package revision (R18) runs that revision after a
+                        // republish; one without (a publication made before revisions were pinned) is refused once its version
+                        // is gone.
+                        const pin = "agent" in node.invoke && definition?.publishedRevision === current.revision
                             ? agentPinOf(definition.publishedAgentPins, nodeId) : null;
                         agent = {
                             childSessionId: workflowAgentChildSessionId(nodeExecutionId), controllingSessionId: definition?.parentSessionId ?? null,
                             task: "prompt" in node.invoke ? { source: "prompt", prompt: node.invoke.prompt }
                                 : { source: "agent", name: node.invoke.agent.name, package: pin?.package ?? node.invoke.agent.package,
-                                    version: pin?.version ?? node.invoke.agent.version },
+                                    version: pin?.version ?? node.invoke.agent.version,
+                                    ...(pin?.packageId && pin.revision ? { packageId: pin.packageId, revision: pin.revision } : {}) },
                             outcomes: node.outcomes, outputSchema: node.outputSchema, timeoutSeconds: seconds,
                         };
                     }

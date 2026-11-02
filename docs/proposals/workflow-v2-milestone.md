@@ -361,24 +361,45 @@ binds a publication and a test to the exact versions they used
   version, package id) is frozen with the publication
   (`workflow_definitions.published_agent_pins`), and `read_workflow` shows
   `publishedAgentPins`. An inline prompt is not pinned.
-- **Live runs bind to the pins.** A live run's agent state asks for the
-  pinned package and version even when the definition names no version.
-  The agent host then binds the child only to that version: a package
-  republished after publication is never picked up silently (the state
-  fails `unavailable`), and a new workflow child published later pins the
-  new version explicitly.
+- **Live runs bind to the pins.** A run of the published revision (a live
+  run, or a test run of that revision: design 05 pins a test as a live run)
+  asks for the pinned package and version even when the definition names
+  no version, so a package republished after publication is never picked
+  up silently, and a new workflow child published later pins the new
+  version explicitly.
+- **A pinned revision keeps running after a republish (R18, T070).** When
+  the agent resolver reports the content hash of the package version it
+  resolved (`packageRevision`), publication pins it with the package id
+  (`revision`), and the run's agent state asks for exactly that revision.
+  The agent host binds the child to it (`<packageId>@<sha256>`,
+  `agent-package-pins.ts`) whatever version the package is at now, as long
+  as the workflow's owner still sees the agent in that same package
+  (another package by that name, a disabled package or revoked access
+  fails the state `unavailable`). The worker that runs the child's turn
+  installs that exact version from the registry beside the active one, in
+  a cache of its own (`PilotSwarmWorker.ensurePinnedAgentPackageRevision`),
+  and serves it only to sessions bound to that id: the child gets that
+  version's prompt, its own skills composed in, its own tool handlers and
+  MCP servers. Nobody else sees it: it is no one's default copy, discovery
+  and name resolution skip it, and it adds nothing to the shared skill
+  catalog, the flat tool registry or the capability sources. The read view
+  shows the revision on the agent state's task. A publication made before
+  revisions were pinned keeps the earlier rule (its run is refused once its
+  version is gone).
 - **Test scenario labels.** `update_workflow` operation `test` takes an
   optional `scenario` name, kept with the test run
   (`workflow_runs.test_scenario`) and shown by `read_workflow` beside the
   tested revision and the stale flag. Test results, publication receipts
   and pins stay separate records; a test never stands in for publication.
 
-Unfulfilled requirement (open, not waived): resolving the pinned package
-revision when the registry has a newer one (R18). The host binds only what
-it sees now and refuses a mismatch, so a republished package fails the
-state `unavailable` instead of running the pinned revision. Also not
-covered: package interface digests (`interface:` is refused at compile) and
-a publication gate on declared test scenarios (not in the YAML design).
+Still open (not waived): the resolver that reports `packageRevision` is a
+test-only host hook, as the agent host itself is, so a deployed worker pins
+revisions only once the agent host is enabled with a registry-backed
+resolver (the deployed enablement gap). A test run of a draft revision has
+no publication pins: its named agents are resolved when the child is
+created, which matters once real-agent test mode exists. Also not covered:
+package interface digests (`interface:` is refused at compile) and a
+publication gate on declared test scenarios (not in the YAML design).
 
 ## Surfaces: what each one shows and takes (design 04, 07; R13, R23, R26)
 

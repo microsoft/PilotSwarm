@@ -624,7 +624,9 @@ function agentViewOf(invocation: WorkflowAgentInvocation): { [key: string]: Json
     return {
         childSessionId: invocation.childSessionId,
         task: invocation.task.source === "prompt" ? { source: "prompt" }
-            : { source: "agent", name: invocation.task.name, package: invocation.task.package, version: invocation.task.version },
+            : { source: "agent", name: invocation.task.name, package: invocation.task.package, version: invocation.task.version,
+                // The exact package revision the child runs (R18), when the publication pinned one.
+                ...(invocation.task.packageId && invocation.task.revision ? { packageId: invocation.task.packageId, revision: invocation.task.revision } : {}) },
         controllingSessionId: invocation.controllingSessionId,
         spawned: invocation.spawnedAt !== null,
         spawnAttempts: invocation.spawnAttempts,

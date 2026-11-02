@@ -542,10 +542,15 @@ export interface RequestSpecInput extends SendSpecInput {
 
 // ─── Agent states (IR 8, migration 0097; INACTIVE: only controller 1.9.0 admits them) ──
 
-/** An agent state's task: its inline prompt, or the named agent definition it runs. */
+/**
+ * An agent state's task: its inline prompt, or the named agent definition it
+ * runs. A run of a published revision that pinned the exact package revision
+ * (R18) also carries that revision's package id and content hash, and its
+ * child runs that revision even after the package is republished.
+ */
 export type WorkflowAgentTask =
     | { source: "prompt"; prompt: string }
-    | { source: "agent"; name: string; package: string | null; version: string | null };
+    | { source: "agent"; name: string; package: string | null; version: string | null; packageId?: string; revision?: string };
 
 /**
  * What an agent state admitted pending records (enterNode): its child agent
@@ -655,6 +660,12 @@ function agentTaskOf(value: JsonValue): WorkflowAgentTask {
     if (value.source === "agent" && typeof value.name === "string" && (value.package === null || typeof value.package === "string")
         && (value.version === null || typeof value.version === "string") && Object.keys(value).length === 4) {
         return { source: "agent", name: value.name, package: value.package, version: value.version };
+    }
+    // A pinned package revision (R18): its package id and content hash, both or neither.
+    if (value.source === "agent" && typeof value.name === "string" && (value.package === null || typeof value.package === "string")
+        && (value.version === null || typeof value.version === "string") && typeof value.packageId === "string" && value.packageId.length > 0
+        && typeof value.revision === "string" && value.revision.length > 0 && Object.keys(value).length === 6) {
+        return { source: "agent", name: value.name, package: value.package, version: value.version, packageId: value.packageId, revision: value.revision };
     }
     throw corrupt();
 }

@@ -186,7 +186,7 @@ and the route `timeout`, and text around a binding.
 | Operation | Arguments | Effect |
 |---|---|---|
 | `replace_definition` | `yaml`, `expected_revision` | New draft revision; drafts only; same `metadata.version`. |
-| `publish` | `expected_revision`, `definition_hash` | Publishes that exact revision; does not start. |
+| `publish` | `expected_revision`, `definition_hash` | Publishes that exact revision and pins the exact version of every named agent; does not start. A run keeps the pinned agent version after its package is republished; publish a new workflow child to move to the new version. |
 | `publish_and_start` | publish arguments, `inputs`, `vars?` | Publishes and starts the live run. |
 | `start` | `definition_hash`, `inputs`, `vars?` | Starts the one live run of the published revision. |
 | `set_vars` | `set?`, `delete?`, `expected_kv_revision`, `run_id?` | One atomic KV change. |

@@ -236,4 +236,39 @@ describe("workflow v2 publication pins (inactive, test-only host hook)", () => {
             await h.stop();
         }
     });
+
+    it("R18 (T070): a publication that pinned the exact package revision keeps running it after the package is republished; a later publication pins the new revision", { timeout: TIMEOUT }, async () => {
+        const OLD = "a".repeat(64);
+        const NEW = "b".repeat(64);
+        const h = await harness(getEnv());
+        try {
+            h.visible.set("code-reviewer", { ...REVIEW_KIT, packageRevision: OLD });
+            const first = await h.workflow({ name: "code-reviewer" }, { publish: true });
+            expect((await h.store.readDefinition(first.workflowSessionId)).publishedAgentPins)
+                .toEqual({ review: { name: "code-reviewer", package: "review-kit", version: "1.2.0", packageId: "pkg-1", revision: OLD } });
+
+            // The package is republished: the same package (its id is kept) is at 1.3.0 now.
+            h.visible.set("code-reviewer", { ...REVIEW_KIT, packageVersion: "1.3.0", packageRevision: NEW });
+            const runId = await h.start(first);
+            const review = nodeExecutionIdFor(runId, "root", "review", 1);
+            const invocation = await until(async () => {
+                const found = await h.store.readAgentInvocation(review);
+                return found?.spawnedAt ? found : null;
+            }, "the child bound to the pinned revision");
+            // The run asks for the exact revision its publication pinned, and its child is bound to it, not to 1.3.0.
+            expect(invocation.task).toEqual({ source: "agent", name: "code-reviewer", package: "review-kit", version: "1.2.0", packageId: "pkg-1", revision: OLD });
+            expect(h.children).toHaveLength(1);
+            expect(h.children[0]).toMatchObject({ boundAgentName: "code-reviewer", boundAgentPackageId: `pkg-1@${OLD}`, toolNames: [] });
+            expect(JSON.parse(await completeWorkflowNodeFromTool({ outcome: "accepted", output: { verdict: "ok" }, operation_id: "done-1" },
+                { callerSessionId: invocation.childSessionId, store: h.store, client: h.client }))).toMatchObject({ ok: true });
+            expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalOutput: { verdict: "ok" } });
+
+            // A new workflow child published now pins the new revision explicitly.
+            const renewed = await h.workflow({ name: "code-reviewer" }, { publish: true });
+            expect((await h.store.readDefinition(renewed.workflowSessionId)).publishedAgentPins)
+                .toEqual({ review: { name: "code-reviewer", package: "review-kit", version: "1.3.0", packageId: "pkg-1", revision: NEW } });
+        } finally {
+            await h.stop();
+        }
+    });
 });

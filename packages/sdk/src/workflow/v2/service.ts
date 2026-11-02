@@ -112,6 +112,8 @@ export interface WorkflowPublicationAgent {
     packageId?: string;
     packageName?: string;
     packageVersion?: string;
+    /** The content hash of the exact package version (R18): pinned with it, so a run keeps that revision after a republish. */
+    packageRevision?: string;
 }
 
 /**
@@ -147,6 +149,8 @@ async function publicationAgentPins(host: Pick<WorkflowV2Host, "resolveAgent">, 
             }
             pins[node.id] = {
                 name: resolved.name, package: resolved.packageName ?? null, version: resolved.packageVersion ?? null, packageId: resolved.packageId ?? null,
+                // The exact revision (R18), when the host knows it; a run of this publication then keeps it after a republish.
+                ...(resolved.packageId && resolved.packageRevision ? { revision: resolved.packageRevision } : {}),
             };
         }
     }

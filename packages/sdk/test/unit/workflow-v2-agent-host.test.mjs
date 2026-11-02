@@ -131,6 +131,36 @@ test("a named agent is bound to the definition its owner sees, with its own tool
     assert.equal(resolved.at(-1).caller, "W");
 });
 
+test("R18: a task pinned to an exact package revision is bound to that revision after a republish; another package, or a malformed revision, is refused", async () => {
+    const OLD = "a".repeat(64);
+    // The package was republished: the owner now sees 1.3.0 of the same package.
+    const definitions = {
+        packaged: { name: "packaged", tools: ["new_tool"], packageId: "pkg-1", packageName: "review-kit", packageVersion: "1.3.0", packageRevision: "b".repeat(64),
+            id: "packaged-id" },
+        shadowed: { name: "shadowed", tools: [], packageId: "pkg-9", packageName: "review-kit", packageVersion: "1.2.0" },
+    };
+    const { host, created } = hostOver(rows(), definitions);
+    const pinned = { source: "agent", name: "packaged", package: "review-kit", version: "1.2.0", packageId: "pkg-1", revision: OLD };
+    assert.deepEqual(await host.spawn(request({ task: pinned })), { spawned: true });
+    // Bound to the pinned revision (agent-package-pins.ts), not to the package's active version, with no tools of that version.
+    assert.deepEqual([created[0].boundAgentName, created[0].boundAgentPackageId, created[0].agentId, created[0].toolNames],
+        ["packaged", `pkg-1@${OLD}`, "packaged-id", []]);
+    for (const task of [
+        // The name now resolves to another package (the owner's own copy, say): the pinned package is not confirmed.
+        { ...pinned, name: "shadowed", packageId: "pkg-1" },
+        // Not a package revision.
+        { ...pinned, revision: "not-a-sha" },
+        // Not visible at all.
+        { ...pinned, name: "missing" },
+    ]) {
+        assert.equal((await host.spawn(request({ task }))).refused?.code, "unavailable", JSON.stringify(task));
+    }
+    // A pin without a revision (a publication made before revisions were pinned) is still held to its version.
+    assert.equal((await host.spawn(request({ task: { source: "agent", name: "packaged", package: "review-kit", version: "1.2.0" } }))).refused?.code,
+        "unavailable");
+    assert.equal(created.length, 1);
+});
+
 test("the client-based creator starts a client, creates the child, titles it and sends the first prompt once, and always stops the client", async () => {
     const calls = [];
     const client = (failSend = false) => ({
