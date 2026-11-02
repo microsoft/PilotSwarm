@@ -1608,7 +1608,7 @@ export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
-        intakeExposures: string; agentInvocations: string; agentCompletions: string; testInterceptions: string;
+        intakeExposures: string; agentInvocations: string; agentCompletions: string; testInterceptions: string; credentials: string;
         sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
@@ -1622,7 +1622,7 @@ export class WorkflowStore {
             requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`, intake: `${s}.workflow_intake`,
             intakeInvocations: `${s}.workflow_intake_invocations`, intakeExposures: `${s}.workflow_intake_exposures`,
             agentInvocations: `${s}.workflow_agent_invocations`, agentCompletions: `${s}.workflow_agent_completions`,
-            testInterceptions: `${s}.workflow_test_interceptions`,
+            testInterceptions: `${s}.workflow_test_interceptions`, credentials: `${s}.workflow_invocation_credentials`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
@@ -6162,6 +6162,182 @@ export class WorkflowStore {
             return { pruned: true as const, run, deleted: { interceptions, inbox, nodes, kvRevisions } };
         });
     }
+
+    // ─── Invocation credentials (migration 0102; design 04 scoped invocation credentials; INACTIVE) ───
+
+    /**
+     * Record a credential the host issues for `holderSessionId` to act on one
+     * pending workflow effect (design 04): answer the request of node
+     * execution `nodeExecutionId` (audience workflow.respond: the holder must
+     * be its responder) or complete the agent state `nodeExecutionId`
+     * (audience workflow.complete: the holder must be its child). Only the
+     * SHA-256 of the opaque token is stored. It expires `ttlSeconds` from now,
+     * or at the effect's deadline when that is sooner; issuing another
+     * credential for the same binding revokes the earlier one (rotated). A
+     * binding that is not the effect's, an effect already decided, a run that
+     * ended, a deleted workflow and a deadline already passed are refused
+     * (CREDENTIAL_BINDING_INVALID, CREDENTIAL_BINDING_CLOSED) and nothing is
+     * written.
+     */
+    async issueInvocationCredential(input: {
+        credentialId: string;
+        tokenSha256: string;
+        audience: WorkflowCredentialAudience;
+        nodeExecutionId: string;
+        holderSessionId: string;
+        ttlSeconds: number;
+    }): Promise<WorkflowInvocationCredential> {
+        if (!(WORKFLOW_V2_CREDENTIAL_AUDIENCES as readonly string[]).includes(input.audience)) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `Unknown credential audience ${String(input.audience)}.`);
+        }
+        if (!Number.isSafeInteger(input.ttlSeconds) || input.ttlSeconds < 1 || input.ttlSeconds > WORKFLOW_V2_CREDENTIAL_MAX_TTL_SECONDS) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `A credential lives 1 to ${WORKFLOW_V2_CREDENTIAL_MAX_TTL_SECONDS} seconds.`);
+        }
+        if (!/^[0-9a-f]{64}$/.test(input.tokenSha256) || !storableId(input.credentialId) || !storableId(input.nodeExecutionId)
+            || !storableId(input.holderSessionId)) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "A credential needs its token hash, its id, its node execution and its holder.");
+        }
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfNode(client, input.nodeExecutionId));
+            const node = await this.nodeIn(client, input.nodeExecutionId);
+            const run = await this.lockRun(client, node.runId);
+            if (!live || node.state !== "pending" || !ACTIVE_RUN_STATUSES.includes(run.status)) {
+                throw new WorkflowStoreError("CREDENTIAL_BINDING_CLOSED", `The effect ${input.nodeExecutionId} was decided or its run ended; no credential is issued.`);
+            }
+            const bound = input.audience === "workflow.respond"
+                ? await client.query(`SELECT responder_session_id AS holder, deadline_at FROM ${this.t.requests} WHERE exchange_id = $1`, [input.nodeExecutionId])
+                : await client.query(`SELECT child_session_id AS holder, deadline_at FROM ${this.t.agentInvocations} WHERE node_execution_id = $1`, [input.nodeExecutionId]);
+            if (!bound.rows[0] || str(bound.rows[0], "holder") !== input.holderSessionId) {
+                throw new WorkflowStoreError("CREDENTIAL_BINDING_INVALID", input.audience === "workflow.respond"
+                    ? `Session ${input.holderSessionId} is not the responder of request ${input.nodeExecutionId}.`
+                    : `Session ${input.holderSessionId} is not the child of agent state ${input.nodeExecutionId}.`);
+            }
+            const deadline = date(bound.rows[0], "deadline_at");
+            const { rows: open } = await client.query(`SELECT $1::timestamptz > clock_timestamp() AS open`, [deadline.toISOString()]);
+            if (open[0]?.open !== true) {
+                throw new WorkflowStoreError("CREDENTIAL_BINDING_CLOSED", `The deadline of ${input.nodeExecutionId} passed; no credential is issued.`);
+            }
+            await client.query(
+                `UPDATE ${this.t.credentials} SET revoked_at = clock_timestamp(), revoked_reason = 'rotated'
+                  WHERE audience = $1 AND node_execution_id = $2 AND holder_session_id = $3 AND revoked_at IS NULL`,
+                [input.audience, input.nodeExecutionId, input.holderSessionId]);
+            const { rows } = await client.query(
+                `WITH issued AS (SELECT clock_timestamp() AS at)
+                 INSERT INTO ${this.t.credentials}
+                    (credential_id, token_sha256, audience, workflow_session_id, run_id, node_execution_id, holder_session_id, issued_at, expires_at)
+                 SELECT $1, $2, $3, $4, $5, $6, $7, at, LEAST($8::timestamptz, at + $9::integer * interval '1 second') FROM issued
+                 RETURNING *`,
+                [input.credentialId, input.tokenSha256, input.audience, run.workflowSessionId, run.runId, input.nodeExecutionId, input.holderSessionId,
+                    deadline.toISOString(), input.ttlSeconds]);
+            return credentialFrom(rows[0]);
+        });
+    }
+
+    /**
+     * Check a credential by its token's hash for one use (design 04): it must
+     * exist (else invalid), not be revoked (revoked, with its reason) or
+     * expired by the store's clock (expired), carry the audience asked for
+     * and, when they are named, the node execution and holder asked for
+     * (scope), and its effect must still be pending in an active run (closed:
+     * the credential is then revoked, reason decided). A valid use is
+     * recorded (last_used_at). The action it authorizes decides again under
+     * its own locks.
+     */
+    async verifyInvocationCredential(input: {
+        tokenSha256: string;
+        audience: WorkflowCredentialAudience;
+        nodeExecutionId?: string | null;
+        holderSessionId?: string | null;
+    }): Promise<{ result: "valid"; credential: WorkflowInvocationCredential }
+        | { result: "invalid" | "revoked" | "expired" | "scope" | "closed"; credential: WorkflowInvocationCredential | null }> {
+        if (!/^[0-9a-f]{64}$/.test(input.tokenSha256)) return { result: "invalid", credential: null };
+        const { rows } = await this.pool.query(
+            `SELECT credential.*, clock_timestamp() < credential.expires_at AS unexpired, node.state AS node_state, run.status AS run_status,
+                    session.deleted_at IS NULL AS workflow_live
+               FROM ${this.t.credentials} credential
+               JOIN ${this.t.nodes} node ON node.node_execution_id = credential.node_execution_id
+               JOIN ${this.t.runs} run ON run.run_id = credential.run_id
+               LEFT JOIN ${this.t.sessions} session ON session.session_id = credential.workflow_session_id
+              WHERE credential.token_sha256 = $1`, [input.tokenSha256]);
+        if (!rows[0]) return { result: "invalid", credential: null };
+        const credential = credentialFrom(rows[0]);
+        if (credential.revokedAt !== null) return { result: "revoked", credential };
+        if (rows[0].unexpired !== true) return { result: "expired", credential };
+        if (credential.audience !== input.audience
+            || (input.nodeExecutionId != null && credential.nodeExecutionId !== input.nodeExecutionId)
+            || (input.holderSessionId != null && credential.holderSessionId !== input.holderSessionId)) {
+            return { result: "scope", credential };
+        }
+        if (str(rows[0], "node_state") !== "pending" || !ACTIVE_RUN_STATUSES.includes(str(rows[0], "run_status") as WorkflowRunStatus)
+            || rows[0].workflow_live !== true) {
+            const { rows: revoked } = await this.pool.query(
+                `UPDATE ${this.t.credentials} SET revoked_at = clock_timestamp(), revoked_reason = 'decided'
+                  WHERE credential_id = $1 AND revoked_at IS NULL RETURNING *`, [credential.credentialId]);
+            return { result: "closed", credential: revoked[0] ? credentialFrom(revoked[0]) : credential };
+        }
+        const { rows: used } = await this.pool.query(
+            `UPDATE ${this.t.credentials} SET last_used_at = clock_timestamp() WHERE credential_id = $1 RETURNING *`, [credential.credentialId]);
+        return { result: "valid", credential: credentialFrom(used[0] ?? rows[0]) };
+    }
+
+    /**
+     * Revoke credentials before they expire (design 04): one credential by its
+     * id, or every credential of a node execution; each once (the first
+     * revocation's time and reason stand). Returns how many were revoked.
+     */
+    async revokeInvocationCredentials(input: { credentialId?: string | null; nodeExecutionId?: string | null; reason: string }): Promise<number> {
+        if ((input.credentialId == null) === (input.nodeExecutionId == null)) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "Revoke one credential by its id, or the credentials of one node execution.");
+        }
+        const reason = jsonbSafeText(String(input.reason ?? "").trim() || "revoked", 200);
+        const { rowCount } = await this.pool.query(
+            `UPDATE ${this.t.credentials} SET revoked_at = clock_timestamp(), revoked_reason = $3
+              WHERE revoked_at IS NULL AND (credential_id = $1 OR node_execution_id = $2)`,
+            [input.credentialId ?? null, input.nodeExecutionId ?? null, reason]);
+        return rowCount ?? 0;
+    }
+
+    /** The credentials issued for a node execution, oldest first (their hashes, never a token). */
+    async listInvocationCredentials(nodeExecutionId: string): Promise<WorkflowInvocationCredential[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.credentials} WHERE node_execution_id = $1 ORDER BY issued_at, credential_id`, [nodeExecutionId]);
+        return rows.map(credentialFrom);
+    }
+}
+
+/** The audiences of an invocation credential (migration 0102): answer a request, or complete an agent state. */
+export const WORKFLOW_V2_CREDENTIAL_AUDIENCES = ["workflow.respond", "workflow.complete"] as const;
+export type WorkflowCredentialAudience = typeof WORKFLOW_V2_CREDENTIAL_AUDIENCES[number];
+/** The longest an invocation credential lives (it never outlives its effect's deadline either). */
+export const WORKFLOW_V2_CREDENTIAL_MAX_TTL_SECONDS = 86_400;
+
+/** An invocation credential as stored (migration 0102): its binding and lifetime, and the hash of its token. */
+export interface WorkflowInvocationCredential {
+    credentialId: string;
+    tokenSha256: string;
+    audience: WorkflowCredentialAudience;
+    workflowSessionId: string;
+    runId: string;
+    nodeExecutionId: string;
+    holderSessionId: string;
+    issuedAt: Date;
+    expiresAt: Date;
+    revokedAt: Date | null;
+    revokedReason: string | null;
+    lastUsedAt: Date | null;
+}
+
+function credentialFrom(row: Row): WorkflowInvocationCredential {
+    const audience = str(row, "audience");
+    if (!(WORKFLOW_V2_CREDENTIAL_AUDIENCES as readonly string[]).includes(audience)) {
+        throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Credential ${String(row.credential_id)} has an unknown audience.`);
+    }
+    return {
+        credentialId: str(row, "credential_id"), tokenSha256: str(row, "token_sha256"), audience: audience as WorkflowCredentialAudience,
+        workflowSessionId: str(row, "workflow_session_id"), runId: str(row, "run_id"), nodeExecutionId: str(row, "node_execution_id"),
+        holderSessionId: str(row, "holder_session_id"), issuedAt: date(row, "issued_at"), expiresAt: date(row, "expires_at"),
+        revokedAt: dateOrNull(row, "revoked_at"), revokedReason: strOrNull(row, "revoked_reason"), lastUsedAt: dateOrNull(row, "last_used_at"),
+    };
 }
 
 /** The identity of a test response: its kind and value (canonical JSON). */

@@ -549,10 +549,44 @@ Unfulfilled requirements (open, not waived; R26):
   names, are API review item D11. No portal or TUI screen sends a command
   yet: the UI stays read-only.
 - **Response and completion routes** (REST/MCP for `respond_session_request`
-  and `complete_workflow_node`): design 04 requires scoped, service-issued
-  invocation credentials (caller, audience, session/run/node binding, expiry,
-  revocation); an ordinary human bearer token must not complete a node.
-  That credential design is not resolved, so these stay in-process tools.
+  and `complete_workflow_node`): the invocation credential they need exists
+  (below), but no route, MCP tool or TUI command accepts one yet, and nothing
+  issues one: the host's trigger that issues a credential for a holder and
+  hands it to the holder's external runtime is not built. Until then both
+  stay in-process tools.
+
+**Invocation credentials (design 04; migration 0102; INACTIVE).** A
+credential lets one holder session act on one pending workflow effect from
+outside its in-process tools: answer the request of a request state
+(audience `workflow.respond`; the holder is its responder) or complete an
+agent state (audience `workflow.complete`; the holder is its child)
+(`invocation-credentials.ts`, `WorkflowStore.issueInvocationCredential`,
+`verifyInvocationCredential`, `revokeInvocationCredentials`).
+
+- **No signing key.** A credential is an opaque random token (`pswic_` and
+  32 random bytes); only its SHA-256 is stored, with its binding (workflow,
+  run, node execution, holder, audience). The token is returned once to the
+  in-process issuer; it is never stored, logged, or placed in a script, the
+  YAML or a prompt.
+- **Binding.** The store issues one only for the effect's own holder (the
+  request's responder, the agent state's child), only while the effect is
+  pending in an active run of a live workflow; anything else is
+  `CREDENTIAL_BINDING_INVALID` or `CREDENTIAL_BINDING_CLOSED`, and nothing is
+  written.
+- **Expiry and revocation.** It lives `ttlSeconds` (default 3,600, at most
+  86,400) and never past the effect's deadline. Issuing another for the
+  same binding revokes the earlier one (`rotated`); the first use after the
+  effect is decided or its run ended revokes it (`decided`); a revocation by
+  id or by node execution holds (its reason is kept).
+- **Use.** The action needs the token: a person's sign-in alone is
+  `CREDENTIAL_REQUIRED` (401). An unknown or malformed token is
+  `CREDENTIAL_INVALID`, an expired or revoked one `CREDENTIAL_EXPIRED` or
+  `CREDENTIAL_REVOKED` (401); another audience, request or node is
+  `CREDENTIAL_SCOPE` (403); a decided effect `CREDENTIAL_CLOSED` (409). A valid
+  credential then acts as its holder, on its own effect, through the
+  in-process tools' implementation (`respondSessionRequestWithCredential`,
+  `completeWorkflowNodeWithCredential`), which decides again under its locks;
+  the call never names the acting session.
 
 ## Authoring skills (design 04; R24, T124)
 
