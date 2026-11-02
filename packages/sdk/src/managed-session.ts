@@ -29,6 +29,7 @@ import {
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "./workflow/v2/agent-node-service.js";
 import { WORKFLOW_ASK_USER_REFUSAL } from "./workflow/v2/input-policy.js";
+import { interceptWorkflowTestTools } from "./workflow/v2/test-agent-tools.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -937,6 +938,17 @@ export class ManagedSession {
         return this.config.nativeSubagents === "sync" && !this.nativeFeatureRevoked
             && (this.config.nativeFeatureAllowed?.() ?? false);
     }
+    /**
+     * Workflow v2 real-agent test runs (INACTIVE): set once a turn of this
+     * session ran under such a test (its bridge intercepts its framework
+     * tools), and never cleared, since a session's lineage does not change.
+     * While set, the session's permission handler refuses MCP tools
+     * (workflowTestPermission): they cannot be intercepted.
+     */
+    private workflowTestSession = false;
+    workflowTestSessionActive(): boolean {
+        return this.workflowTestSession;
+    }
     /** A cached OFF is sticky for this turn, even if the next poll is ON. */
     refreshNativeFeaturePolicy(): void {
         if (this.activeTurn && !this.canAdmitNativeTask()) this.nativeFeatureRevoked = true;
@@ -1758,6 +1770,7 @@ export class ManagedSession {
             waitThreshold: this.config.waitThreshold ?? 30,
         };
         this.activeTurnState = turnState;
+        if (opts?.controlToolBridge?.workflowTestToolCall) this.workflowTestSession = true;
         try {
             return await this._runTurnWithState(prompt, turnState, opts);
         } finally {
@@ -3442,7 +3455,12 @@ export class ManagedSession {
             ...manageAgentSessionForTurn,
             ...workspaceToolsForTurn,
         ];
-        return allTools;
+        // Workflow v2 real-agent test runs (INACTIVE: only a worker that runs agent states sets the bridge's function): a session
+        // in a test run's agent state subtree runs no framework tool; each call is intercepted for the test to answer.
+        const workflowTestToolCall = controlBridge?.workflowTestToolCall;
+        return workflowTestToolCall
+            ? interceptWorkflowTestTools(allTools, (tool, args) => workflowTestToolCall(tool, args), failureToolResult)
+            : allTools;
     }
 
     /**

@@ -52,6 +52,7 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
+import { workflowTestPermission } from "./workflow/v2/test-agent-tools.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
@@ -2637,7 +2638,10 @@ export class SessionManager {
                     noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
                 } : null,
             ),
-            onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
+            // Workflow v2 real-agent test runs (INACTIVE): a session whose turn ran under such a test refuses MCP tools, which
+            // cannot be intercepted; every other request, and every other session, goes to the handler unchanged.
+            onPermissionRequest: workflowTestPermission((config as any).onPermissionRequest ?? approvePermissionForSession,
+                () => this.sessions.get(sessionId)?.workflowTestSessionActive() === true),
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
             // ManagedSession sees `assistant.message_delta` /

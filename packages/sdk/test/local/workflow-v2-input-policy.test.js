@@ -17,7 +17,11 @@
  * - A real 1.0.83 turn of a worker that runs agent states (runTurnV5 with
  *   the test-only switch): an agent state's child gets the completion bridge
  *   and the ask_user refusal flag and completes its state through the real
- *   tool path; a session outside every agent state gets neither.
+ *   tool path; a session outside every agent state gets neither. The child
+ *   of a real-agent test run's agent state also gets the test's tool
+ *   interception (design 05 agent mode real): its framework tool call is
+ *   recorded and answered by the test's fixture, and a call after its state
+ *   was decided is refused; a live run's child does not get it.
  *
  * The model is scripted; no portal process runs here (the portal's access
  * response is web/test/workflow-input-runtime.test.mjs).
@@ -29,7 +33,8 @@ import { createManagementClient, PilotSwarmClient } from "../helpers/local-worke
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../src/workflow/v2/input-policy.ts";
-import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { parseTestFixtures } from "../../src/workflow/v2/test-mode.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
@@ -72,6 +77,37 @@ async function agentStateOf({ catalog, store }, parent, childSessionId, owner = 
         operationId: "create", requestSha256: "input-policy", publish: true, title: "Workflow: reviewer",
         start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
             inputsText: "{}", kvText: "{}", testAgentMode: null, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+    });
+    const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);
+    expect(await store.enterNode({
+        runId, nodeExecutionId, scopeId: "root", nodeId: "review", ordinal: 1, nodeType: "agent", predecessorId: null, arrivalRoute: null,
+        inputText: "null", kvRevision: 1, waitSeconds: null, immediate: null,
+        agent: { childSessionId, controllingSessionId: parent, task: { source: "prompt", prompt: "Review it." }, outcomes: ["accepted"],
+            outputSchema: "ReviewResult", timeoutSeconds: 3600 },
+    })).toMatchObject({ admitted: true, inserted: true });
+    return { workflowSessionId, runId, nodeExecutionId };
+}
+
+/**
+ * A draft workflow of `parent` with a real-agent test run (agent mode real) whose agent state is admitted pending with its
+ * child `childSessionId`, as controller 1.9.0 admits one; the test answers read_build { buildId: 7 } from a fixture.
+ */
+async function realTestAgentStateOf({ catalog, store }, parent, childSessionId) {
+    const compiled = compileWorkflowV2(AGENT_YAML, { enableRequests: true, enableAgents: true });
+    expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
+    const workflowSessionId = randomUUID();
+    const runId = randomUUID();
+    expect(await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner: null,
+        creationConfig: { workflowV2: { requestSha256: "input-policy-test" } } })).toEqual({ created: true });
+    await store.createDefinition({
+        workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: AGENT_YAML, compiled, actor: ACTOR,
+        operationId: "create", requestSha256: "input-policy-test", publish: false, start: null, title: "Workflow: reviewer",
+    });
+    const fixtures = parseTestFixtures([{ tool: "read_build", arguments: { buildId: 7 }, response: { kind: "success", value: { state: "green" } } }]);
+    await store.startTest({
+        workflowSessionId, expectedRevision: 1, definitionHash: compiled.yamlSha256, operationId: "test-1", requestSha256: "input-policy-test",
+        start: { runId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(runId), inputsText: "{}", kvText: "{}",
+            testAgentMode: "real", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, fixturesText: canonicalJson(fixtures) },
     });
     const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);
     expect(await store.enterNode({
@@ -198,7 +234,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
         const script = async (_call, _prompt, opts) => {
             const bridge = opts.controlToolBridge;
             seen.push({ subtree: bridge?.workflowAgentSubtree === true, complete: typeof bridge?.completeWorkflowNode === "function",
-                milestone: bridge?.workflowMilestone === true });
+                milestone: bridge?.workflowMilestone === true, test: typeof bridge?.workflowTestToolCall === "function" });
             if (typeof bridge?.completeWorkflowNode === "function") {
                 seen.at(-1).invalid = JSON.parse(await bridge.completeWorkflowNode({ outcome: "accepted", output: { verdict: 7 }, operation_id: "op-0" }));
                 seen.at(-1).result = JSON.parse(await bridge.completeWorkflowNode({ outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }));
@@ -215,7 +251,8 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             await h.say("start the review", "cm-agent-1");
             await h.until(async () => seen.length >= 1 && (await h.store.readNodeExecution(nodeExecutionId))?.state === "completed",
                 "the turn completes the state");
-            expect(seen[0]).toMatchObject({ subtree: true, complete: true, milestone: true,
+            // A live run's child is not under a test: its tools are its own.
+            expect(seen[0]).toMatchObject({ subtree: true, complete: true, milestone: true, test: false,
                 invalid: { ok: false, error: { code: "OUTPUT_INVALID", attemptsLeft: 2 } },
                 result: { ok: true, replayed: false, nodeExecutionId, runId, outcome: "accepted", kind: "result" } });
             expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "ok" } });
@@ -224,12 +261,46 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
         });
     });
 
+    it("gives a real-agent test's child the test's tool interception: a fixture answers its framework call, and a call after its state was decided is refused", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        const seen = [];
+        const script = async (_call, _prompt, opts) => {
+            const bridge = opts.controlToolBridge;
+            const entry = { subtree: bridge?.workflowAgentSubtree === true, complete: typeof bridge?.completeWorkflowNode === "function",
+                test: typeof bridge?.workflowTestToolCall === "function" };
+            seen.push(entry);
+            if (entry.test && entry.complete) {
+                entry.answer = await bridge.workflowTestToolCall("read_build", { buildId: 7 });
+                entry.result = JSON.parse(await bridge.completeWorkflowNode({ outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }));
+                try { await bridge.workflowTestToolCall("read_build", { buildId: 7 }); entry.after = "ran"; }
+                catch (error) { entry.after = error?.code ?? String(error?.message ?? error); }
+            }
+            return { type: "completed", content: "done", events: [] };
+        };
+        await intakeNativeCase(getEnv(), "real-agent test child turn", script, { testOptions: { workflowRequests: true } }, async h => {
+            const P = randomUUID();
+            await h.catalog.createSession(P, {});
+            const { nodeExecutionId, runId } = await realTestAgentStateOf(h, P, h.sessionId);
+            await h.start();
+            await h.until(({ history }) => history.some(event => event.kind === "QueueSubscribed"), "the session waits for its messages");
+            await h.say("start the review", "cm-real-agent-1");
+            await h.until(async () => seen.length >= 1 && (await h.store.readNodeExecution(nodeExecutionId))?.state === "completed",
+                "the turn completes the state");
+            expect(seen[0]).toMatchObject({ subtree: true, complete: true, test: true, answer: { state: "green" },
+                result: { ok: true, nodeExecutionId, runId, outcome: "accepted", kind: "result" }, after: "NODE_CLOSED" });
+            expect(await h.store.readInterception(`${nodeExecutionId}/call-1`)).toMatchObject({ operation: "tool.call", tool: "read_build",
+                state: "responded", response: { disposition: "fixture", value: { state: "green" } } });
+            expect(await h.store.readInterception(`${nodeExecutionId}/call-2`)).toBeNull();
+            expect(await h.store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "ok" } });
+        });
+    });
+
     it("gives a session outside every agent state neither", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const seen = [];
         const script = async (_call, _prompt, opts) => {
             const bridge = opts.controlToolBridge;
             seen.push({ subtree: bridge?.workflowAgentSubtree === true, complete: typeof bridge?.completeWorkflowNode === "function",
-                respond: typeof bridge?.respondSessionRequest === "function", milestone: bridge?.workflowMilestone === true });
+                respond: typeof bridge?.respondSessionRequest === "function", milestone: bridge?.workflowMilestone === true,
+                test: typeof bridge?.workflowTestToolCall === "function" });
             return { type: "completed", content: "done", events: [] };
         };
         await intakeNativeCase(getEnv(), "ordinary session turn", script, { testOptions: { workflowRequests: true } }, async h => {
@@ -238,7 +309,7 @@ describe("workflow v2 agent states: a real 1.0.83 turn of a worker that runs the
             await h.say("hello", "cm-plain-1");
             await h.until(async () => seen.length >= 1, "the turn runs");
             // A turn of a worker that runs 1.9.0: its workflow tools describe and take the milestone (R26).
-            expect(seen[0]).toEqual({ subtree: false, complete: false, respond: true, milestone: true });
+            expect(seen[0]).toEqual({ subtree: false, complete: false, respond: true, milestone: true, test: false });
             expect(canonicalJson(seen)).not.toContain("true,\"complete\":true");
         });
     });

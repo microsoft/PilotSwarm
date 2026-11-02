@@ -163,6 +163,12 @@ export interface WorkflowRunRow {
      * run's virtual clock) plus those seconds; null for a run without one. It is not paused with the run.
      */
     deadlineAt: Date | null;
+    /**
+     * A real-agent test run's agent pins (migration 0101; design 05, R18): what its named agent states were pinned to when
+     * the test was admitted, as a publication pins them, for a tested revision that is not the published one (a test of the
+     * published revision uses the publication's pins). Null for every other run.
+     */
+    testAgentPins: JsonValue;
 }
 
 /**
@@ -403,6 +409,7 @@ function runFrom(row: Row): WorkflowRunRow {
         kv: parseStoredJson(str(row, "kv"), "kv"), kvRevision: int(row, "kv_revision"), pausedFrom: pausedFromOf(row),
         controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row), virtualNow: dateOrNull(row, "virtual_now"),
         testScenario: strOrNull(row, "test_scenario"), deadlineAt: dateOrNull(row, "deadline_at"),
+        testAgentPins: jsonOrNull(row, "test_agent_pins"),
     };
 }
 
@@ -2093,6 +2100,7 @@ export class WorkflowStore {
             ...(versioned ? [["controller_version", start.controllerVersion] as [string, unknown]] : []),
             ...(test ? [["virtual_now", WORKFLOW_V2_TEST_EPOCH] as [string, unknown], ["test_fixtures", start.fixturesText ?? "[]"] as [string, unknown]] : []),
             ...(test && typeof start.testScenario === "string" ? [["test_scenario", start.testScenario] as [string, unknown]] : []),
+            ...(test && typeof start.testAgentPinsText === "string" ? [["test_agent_pins", start.testAgentPinsText] as [string, unknown]] : []),
         ];
         await client.query(
             `INSERT INTO ${this.t.runs}
@@ -2979,6 +2987,12 @@ export class WorkflowStore {
             }
             if (run.mode === "test" && run.virtualNow === null) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Test run ${run.runId} has no virtual clock.`);
+            }
+            // A test run's agent state is intercepted in agent mode mocked, and has a child (an agent spec) only in agent mode
+            // real (design 05; migration 0101).
+            if (run.mode === "test" && ((intercept?.operation === "agent" && run.testAgentMode !== "mocked")
+                || (input.agent != null && run.testAgentMode !== "real"))) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${input.nodeExecutionId} does not match test run ${run.runId}'s agent mode.`);
             }
             // A receive spec belongs to a receive state admitted without an
             // immediate result, and has refusals exactly when it names a sender;
@@ -5869,6 +5883,63 @@ export class WorkflowStore {
     }
 
     /**
+     * Record a tool call of a real agent in a test run (design 05, agentMode
+     * real; R19, R20): a call that the agent state's child, or a session in its
+     * subtree, makes through the framework is recorded as that state's next
+     * tool call (`<node execution>/call-<n>`) instead of running, and a
+     * fixture's response answers it in the same transaction. Only a real-agent
+     * test run's pending agent state takes one; a decided state, an ended run
+     * or the run's limit of interceptions refuses it, and nothing runs.
+     */
+    async interceptAgentToolCall(input: {
+        runId: string;
+        nodeExecutionId: string;
+        tool: string;
+        argumentsText: string;
+        fixture: { kind: WorkflowTestResponseKind; valueText: string } | null;
+        projection?: (record: WorkflowTestInterception) => SessionProjection;
+    }): Promise<{ record: WorkflowTestInterception }> {
+        const argumentsSha256 = sha256Hex(input.argumentsText);
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
+            const run = await this.lockRun(client, input.runId);
+            if (run.mode !== "test" || run.testAgentMode !== "real") {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is not a real-agent test run.`);
+            }
+            const { rows: nodes } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1`, [input.nodeExecutionId]);
+            const node = nodes[0] ? nodeFrom(nodes[0]) : null;
+            if (!node || node.runId !== run.runId || node.nodeType !== "agent") {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} is not an agent state of run ${run.runId}.`);
+            }
+            if (!live || node.state !== "pending" || !ACTIVE_RUN_STATUSES.includes(run.status)) {
+                throw new WorkflowStoreError("NODE_CLOSED", `The agent state ${input.nodeExecutionId} was decided; its tool call is not recorded.`);
+            }
+            const { rows: counted } = await client.query(
+                `SELECT count(*)::int AS n, count(*) FILTER (WHERE node_execution_id = $2 AND operation = 'tool.call')::int AS calls
+                   FROM ${this.t.testInterceptions} WHERE run_id = $1`, [run.runId, input.nodeExecutionId]);
+            if (int(counted[0], "n") >= WORKFLOW_V2_TEST_MAX_INTERCEPTIONS) {
+                throw new WorkflowStoreError("TEST_INTERCEPTION_LIMIT", `This test run reached its limit of ${WORKFLOW_V2_TEST_MAX_INTERCEPTIONS} intercepted calls.`);
+            }
+            const interceptionId = workflowTestInterceptionId(input.nodeExecutionId, { call: int(counted[0], "calls") + 1 });
+            const fixture = input.fixture;
+            const { rows } = await client.query(
+                `INSERT INTO ${this.t.testInterceptions}
+                    (interception_id, run_id, node_execution_id, operation, tool, arguments, arguments_sha256, response_schema, state,
+                     response_kind, response, response_sha256, disposition, virtual_at, created_at, responded_at)
+                 SELECT $1, $2, $3, 'tool.call', $4, $5, $6, NULL, $7, $8, $9, $10, $11, virtual_now, clock_timestamp(),
+                        CASE WHEN $7 = 'responded' THEN clock_timestamp() END
+                   FROM ${this.t.runs} WHERE run_id = $2
+                 RETURNING *`,
+                [interceptionId, run.runId, input.nodeExecutionId, input.tool, input.argumentsText, argumentsSha256,
+                    fixture ? "responded" : "awaiting_parent", fixture?.kind ?? null, fixture?.valueText ?? null,
+                    fixture ? testResponseSha256(fixture.kind, fixture.valueText) : null, fixture ? "fixture" : null]);
+            const record = interceptionFrom(rows[0]);
+            await this.project(client, input.projection?.(record));
+            return { record };
+        });
+    }
+
+    /**
      * Answer an intercepted effect of a test run, once (design 05): the same
      * response again is idempotent (replayed), another is TEST_RESPONSE_CONFLICT.
      * An answer to an effect whose state is no longer pending, or of a run
@@ -6028,7 +6099,10 @@ export class WorkflowStore {
      * The test runs of a workflow that retention may delete (migration 0098;
      * design 05 cleanup): its ended test runs beyond the newest `keep` (by
      * admission), each ended at least `graceSeconds` ago by the store's
-     * clock. Never a live run, and never an active test run.
+     * clock. Never a live run, never an active test run, and never a test run
+     * whose agent states had children (agent mode real): their invocation
+     * records stay, as a live run's do, because those ordinary sessions'
+     * human-input denial and depth are read from them.
      */
     async listPrunableTestRuns(workflowSessionId: string, options: { keep: number; graceSeconds: number }): Promise<WorkflowRunRow[]> {
         if (!Number.isSafeInteger(options.keep) || options.keep < 0 || !Number.isSafeInteger(options.graceSeconds) || options.graceSeconds < 0) {
@@ -6041,6 +6115,7 @@ export class WorkflowStore {
                  WHERE run.workflow_session_id = $1 AND run.mode = 'test' AND run.status IN ('completed', 'failed', 'cancelled', 'stopped')
              ) AS ended
              WHERE ended.newest > $2 AND ended.finished_at <= clock_timestamp() - $3::integer * interval '1 second'
+               AND NOT EXISTS (SELECT 1 FROM ${this.t.agentInvocations} AS invocation WHERE invocation.run_id = ended.run_id)
              ORDER BY ended.created_at, ended.run_id`,
             [workflowSessionId, options.keep, options.graceSeconds]);
         return rows.map(runFrom);
@@ -6053,10 +6128,10 @@ export class WorkflowStore {
      * KV revisions and its run row, in one transaction under the session and
      * run locks. Nothing is deleted unless it is a test run that ended at
      * least `graceSeconds` ago and owns no live record (an outbox message, a
-     * request or an agent invocation, which a test run never has). Operation
-     * receipts and the session's events stay as the audit trail: a repeated
-     * test operation still returns its receipt, and the run reads as not
-     * found.
+     * request, which a test run never has, or an agent invocation, which only
+     * a real-agent test run has and keeps). Operation receipts and the
+     * session's events stay as the audit trail: a repeated test operation
+     * still returns its receipt, and the run reads as not found.
      */
     async pruneTestRun(runId: string, options: { graceSeconds: number; projection?: (run: WorkflowRunRow) => SessionProjection }): Promise<
         { pruned: true; run: WorkflowRunRow; deleted: { interceptions: number; inbox: number; nodes: number; kvRevisions: number } }
@@ -6111,6 +6186,8 @@ export interface RunAdmission {
     fixturesText?: string | null;
     /** The scenario a test run is started for (migration 0099); only a test admission names one. */
     testScenario?: string | null;
+    /** A real-agent test run's agent pins as canonical JSON (migration 0101); only such a test admission names them. */
+    testAgentPinsText?: string | null;
 }
 
 /** The receipt of a run command (set_vars, pause, resume, cancel). */

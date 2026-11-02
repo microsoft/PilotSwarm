@@ -77,6 +77,7 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
+import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
 import { spawnNesting } from "./workflow/v2/input-policy.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
@@ -2498,12 +2499,17 @@ export function registerActivities(
         };
         // Workflow agent states (INACTIVE: only on a turn of a worker that runs them): this session's stored lineage. An
         // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
-        // refusal and nests up to level 3 (design 03 human-input denial and depth). A lineage that cannot be read gives
-        // none of these: the ordinary rules apply.
+        // refusal and nests up to level 3 (design 03 human-input denial and depth), and in a test run's agent state's
+        // subtree (design 05 agent mode real) its framework tool calls are intercepted. A session outside every agent state
+        // gets none of these. A lineage or test scope that cannot be read fails the turn (it is retried): a session in an
+        // agent state's subtree never runs a turn without its denial or, under a test, with live tools.
         const workflowLineage = workflowRequestTurn && catalog?.workflowStore
-            ? await catalog.workflowStore().readWorkflowLineage(input.sessionId).catch(() => null)
+            ? await catalog.workflowStore().readWorkflowLineage(input.sessionId)
             : null;
         const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
+        const workflowTestScope = workflowLineage?.agentRoot && catalog?.workflowStore
+            ? await workflowTestAgentScope(catalog.workflowStore(), workflowLineage)
+            : null;
 
         const isAutonomousSystemTurn = () => {
             if (!SYSTEM_AGENT_IDS.has(runConfig.agentIdentity || "")) return false;
@@ -2882,6 +2888,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             } : {}),
             /** Workflow agent states (INACTIVE): a session in an agent state's subtree gets the ask_user refusal (R14). */
             ...(workflowLineage?.agentRoot ? { workflowAgentSubtree: true } : {}),
+            /**
+             * Real-agent test runs (design 05 agent mode real; INACTIVE): a session in a test run's agent state's subtree runs
+             * no framework tool; each call is recorded for the test's parent, or a fixture, to answer (test-agent-tools.ts).
+             */
+            ...(workflowTestScope ? {
+                workflowTestToolCall: async (tool: string, args: Record<string, unknown>) => {
+                    const host = await workflowBridgeHost();
+                    return await workflowTestAgentToolCall({
+                        store: host.store,
+                        authorizeNotice: (workflowSessionId, parentSessionId) => authorizeWorkflowTestNotice(
+                            id => catalog!.getSession(id), workflowSessionId, parentSessionId),
+                        notice: (parentSessionId, prompt, clientMessageId) => host.duroxideClient.enqueueEvent(`session-${parentSessionId}`, "messages",
+                            JSON.stringify({ prompt, sender: { kind: "system", display: "workflow test" }, clientMessageIds: [clientMessageId] })),
+                    }, workflowTestScope, input.sessionId)(tool, args);
+                },
+            } : {}),
             /** Controller 1.9.0's tool surface (INACTIVE): the workflow tools' descriptions match what their host takes (R26). */
             ...(workflowRequestTurn ? { workflowMilestone: true } : {}),
             /** complete_workflow_node (agent states, INACTIVE): the calling session is the host-stamped child of the state. */

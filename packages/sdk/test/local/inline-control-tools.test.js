@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { collectContractViolations } from "../../src/session-proxy.ts";
+import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/v2/input-policy.ts";
 
 class FakeCopilotSession {
     registeredTools = [];
@@ -874,6 +875,61 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("input_required");
         expect(regularToolHandler).not.toHaveBeenCalled();
         expect(fakeSession.aborted).toBe(false);
+    });
+
+    it("intercepts every framework tool of a session under a real-agent workflow test, but complete_workflow_node and ask_user", async () => {
+        // Workflow v2 real-agent test runs (design 05 agent mode real; INACTIVE): the bridge's workflowTestToolCall answers the calls.
+        const fakeSession = new FakeCopilotSession();
+        const regularToolHandler = vi.fn(async () => "live result");
+        const calls = [];
+        const workflowTestToolCall = vi.fn(async (tool, args) => {
+            calls.push([tool, args]);
+            if (tool === "read_logs") throw new Error("not_found: no logs");
+            return tool === "wait" ? "waited" : { state: "green" };
+        });
+        const completeWorkflowNode = vi.fn(async () => JSON.stringify({ ok: true }));
+        const spawnAgent = vi.fn(async () => "spawned");
+        fakeSession.scriptedToolCalls = [
+            { name: "regular_tool", args: { buildId: 1 } },
+            { name: "wait", args: { seconds: 60, reason: "cool off" } },
+            { name: "spawn_agent", args: { task: "help me" } },
+            { name: "read_logs", args: { buildId: 1 } },
+            { name: "ask_user", args: { question: "May I?" } },
+            { name: "complete_workflow_node", args: { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" } },
+        ];
+        const tool = name => ({ name, description: "test tool", parameters: { type: "object", properties: {} }, handler: regularToolHandler });
+        const managed = new ManagedSession("workflow-test-agent", fakeSession, { tools: [tool("regular_tool"), tool("read_logs")] });
+        expect(managed.workflowTestSessionActive()).toBe(false);
+
+        const result = await managed.runTurn("run the state", {
+            controlToolBridge: { workflowTestToolCall, workflowAgentSubtree: true, completeWorkflowNode, spawnAgent },
+        });
+
+        // No framework tool ran, and no call ended the turn (a wait is answered, not waited); the state's own completion and
+        // ask_user's refusal are as in a live run.
+        expect(result.type).toBe("completed");
+        expect(regularToolHandler).not.toHaveBeenCalled();
+        expect(spawnAgent).not.toHaveBeenCalled();
+        expect(calls).toEqual([
+            ["regular_tool", { buildId: 1 }], ["wait", { seconds: 60, reason: "cool off" }], ["spawn_agent", { task: "help me" }], ["read_logs", { buildId: 1 }],
+        ]);
+        expect(completeWorkflowNode).toHaveBeenCalledTimes(1);
+        const handlerResult = name => fakeSession.registeredTools.find(candidate => candidate.name === name);
+        expect(await handlerResult("regular_tool").handler({ buildId: 1 }, { toolCallId: "again" })).toBe(JSON.stringify({ state: "green" }));
+        expect(await handlerResult("wait").handler({ seconds: 1 }, { toolCallId: "again" })).toBe("waited");
+        expect(await handlerResult("read_logs").handler({ buildId: 1 }, { toolCallId: "again" }))
+            .toMatchObject({ resultType: "failure", textResultForLlm: "Tool failed: not_found: no logs" });
+        expect(await handlerResult("ask_user").handler({ question: "May I?" }, { toolCallId: "again" })).toBe(WORKFLOW_ASK_USER_REFUSAL);
+        // From then on the session refuses MCP tools (its permission handler reads this).
+        expect(managed.workflowTestSessionActive()).toBe(true);
+
+        // A turn without the test's bridge runs its tools.
+        const plain = new FakeCopilotSession();
+        plain.scriptedToolCalls = [{ name: "regular_tool", args: { buildId: 2 } }];
+        const live = new ManagedSession("workflow-live-agent", plain, { tools: [tool("regular_tool")] });
+        expect((await live.runTurn("run the state", { controlToolBridge: { workflowAgentSubtree: true } })).type).toBe("completed");
+        expect(regularToolHandler).toHaveBeenCalledTimes(1);
+        expect(live.workflowTestSessionActive()).toBe(false);
     });
 
     it("converts thrown user tool errors into failure tool results instead of surfacing SDK tool errors", async () => {

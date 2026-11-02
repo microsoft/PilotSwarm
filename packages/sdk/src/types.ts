@@ -301,6 +301,16 @@ export interface TurnOptions {
          */
         workflowAgentSubtree?: boolean;
         /**
+         * Workflow v2 real-agent test runs (design 05 agent mode real): this
+         * session is in the subtree of a test run's agent state, so each of
+         * its framework tool calls (all but complete_workflow_node and
+         * ask_user) is intercepted through this function instead of running,
+         * and returns the answer the test gives it; MCP tools are refused
+         * for the turn. Set only on a turn of a worker that runs agent states
+         * (INACTIVE: only tests).
+         */
+        workflowTestToolCall?(tool: string, args: Record<string, unknown>): Promise<unknown>;
+        /**
          * Workflow v2: this turn runs on a worker that runs controller 1.9.0
          * (INACTIVE: only tests register one). Its workflow tools take request,
          * agent and parallel states and the stop and test operations, and
