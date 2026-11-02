@@ -285,8 +285,10 @@ use runtime: node."
 
 - **From an agent:** the `spawn_workflow(yaml, inputs?, notify_on_completion?, key?)`
   tool starts the workflow as a **child** of the agent session and returns at
-  once. The agent receives the result as a system message when the workflow
-  ends. A user can describe the steps in words; the agent writes the YAML.
+  once. When the workflow ends, the agent is woken with a short notice and
+  reads the result with `read_workflow_result` (see
+  [How the parent hears the result](#how-the-parent-hears-the-result)). A
+  user can describe the steps in words; the agent writes the YAML.
 - **On a schedule:** ask an agent to repeat it ("every night at 2, run ...").
   The agent writes one workflow that loops through a `wait` state (a clock
   time with `at`, or `seconds`) and calls `spawn_workflow` once; see
@@ -341,6 +343,50 @@ error) or regeneration (refused with `REGENERATE_UNSUPPORTED`). A workflow has
 no turns, so a stop request answers `no_active_turn` without touching the run,
 and the portal and TUI offer no Stop for it. Pause and resume are not supported
 yet; cancel is the way to stop a run.
+
+## How the parent hears the result
+
+A doorbell and a data channel, so that text a script produced never reaches
+the parent with the runtime's authority:
+
+1. **The full result is saved first.** When the run ends, the worker saves
+   the full result with the session's end record: status, terminal outcome,
+   final state id, step count, output (up to 256 KB), summary, error, stop
+   reason and end time. A retried or repeated finish saves it once.
+2. **The notice carries only what the runtime vouches for:** the workflow
+   session id, its status, its terminal outcome (one of `succeeded`,
+   `blocked`, `failed`, `cancelled`, checked again before it is written) and
+   its step count. Never the output, an error, the summary, the stop reason
+   or the workflow's name, which scripts or a model wrote. The sender shows
+   as `workflow`.
+
+   | Ending | Notice |
+   |---|---|
+   | Terminal state | `[SYSTEM: Workflow <id> finished: completed, outcome "succeeded", 12 steps. Read its result with read_workflow_result("<id>").]` |
+   | Failed (an error) | `[SYSTEM: Workflow <id> failed after 3 steps. Read its result with read_workflow_result("<id>").]` |
+   | Cancelled (not by the parent) | `[SYSTEM: Workflow <id> was cancelled after 5 steps. Read its result with read_workflow_result("<id>").]` |
+
+   A parent that cancelled its own workflow is not told. The notice is sent
+   with the client message id `workflow:<id>:terminal`, so the parent's
+   queue drops a repeat after a crash or a retry (it keeps pending ids and
+   its 20 most recently consumed ones).
+3. **The agent reads the data with `read_workflow_result(session_id)`**,
+   offered next to `spawn_workflow` where workflows run. It returns JSON
+   built with `JSON.stringify`: `{ sessionId, status, outcome, stateId,
+   steps, startedAt, endedAt, summary, output, error, reason }`, or
+   `{ sessionId, status: "running", stateId, steps }` while the run goes
+   on. Only the agent session that started the workflow may read it;
+   workflow scripts cannot call it. As with any tool, the Copilot CLI
+   saves a large result to a file and gives the agent its path instead.
+
+Why: text relayed inside a `[SYSTEM: ...]` frame gets runtime-level trust. A
+script cannot use the excluded tools itself, but it could write output that
+tries to talk the parent into using them. A tool result is a separate API
+role that the text inside cannot close, and `JSON.stringify` escapes every
+quote, bracket and newline, so the output cannot break out of its structure.
+What remains is the persuasion risk of any data an agent reads, such as a
+fetched page. [Issue \#245](https://github.com/microsoft/PilotSwarm/issues/245)
+tracks the same change for sub-agent results.
 
 ## Stopping a workflow
 
