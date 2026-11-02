@@ -111,10 +111,13 @@ export function createArtifactTools(opts: {
      * undefined for the default roots. Compute providers use it: a session
      * whose runtime runs elsewhere must not reach the worker's own files.
      */
-    localPathRootsFor?: (sessionId: string) => string[] | undefined;
+    localPathRootsFor?: (sessionId: string | undefined) => string[] | undefined;
 }): Tool<any>[] {
     const { blobStore } = opts;
-    const rootsFor = (sessionId: string | undefined) => sessionId ? opts.localPathRootsFor?.(sessionId) : undefined;
+    // Asked even when the session cannot be told: answering "the default
+    // roots" for an unknown session is how a session that runs elsewhere
+    // would reach the worker's own files.
+    const rootsFor = (sessionId: string | undefined) => opts.localPathRootsFor?.(sessionId);
 
     // ── write_artifact ─────────────────────────────────────────
 

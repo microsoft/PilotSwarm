@@ -183,6 +183,18 @@ export async function injectSecrets(request: Request, secrets: RemoteSecretMap |
 
 /** The most one SessionFs write may carry. */
 export const SESSION_FS_MAX_WRITE_BYTES = 64 * 1024 * 1024;
+/**
+ * The most a session's whole state folder may hold, before a deployment
+ * says otherwise.
+ *
+ * A runtime on a host writes its session state back through this, and the
+ * folder it writes into is on the worker. One write is bounded; without a
+ * total, a runtime that keeps writing fills the worker's disk, and the
+ * worker's disk is shared with every other session on it.
+ */
+export const SESSION_FS_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+/** How long a count of a session's folder stands before it is taken again. */
+export const SESSION_FS_COUNT_FRESH_MS = 2_000;
 
 function refused(message: string): Error {
     return Object.assign(new Error(message), { code: "EACCES" });
@@ -200,7 +212,71 @@ function refused(message: string): Error {
  *   - one write carries at most SESSION_FS_MAX_WRITE_BYTES
  */
 export class WorkerDirectorySessionFs implements SessionFsProvider {
-    constructor(private readonly dir: string, private readonly virtualRoot = REMOTE_SESSION_STATE_ROOT) {}
+    private readonly maxTotalBytes: number;
+    /** What the folder held when it was last counted, and when that was. */
+    private held = 0;
+    private countedAt = 0;
+
+    constructor(
+        private readonly dir: string,
+        private readonly virtualRoot = REMOTE_SESSION_STATE_ROOT,
+        options: { maxTotalBytes?: number } = {},
+    ) {
+        const limit = Number(options.maxTotalBytes);
+        this.maxTotalBytes = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : SESSION_FS_MAX_TOTAL_BYTES;
+    }
+
+    /**
+     * What this session's folder holds now.
+     *
+     * Counted by walking it, and remembered for a moment: a turn writes
+     * many small files, and walking the folder for every one of them
+     * would cost more than the limit is worth. The remembered figure is
+     * only ever used to let a write through when the folder is well under
+     * the limit, so a short delay in noticing cannot take it far past.
+     */
+    private async totalBytes(): Promise<number> {
+        if (Date.now() - this.countedAt < SESSION_FS_COUNT_FRESH_MS) return this.held;
+        let total = 0;
+        const walk = async (dir: string): Promise<void> => {
+            let entries: Awaited<ReturnType<typeof fs.readdir>>;
+            try {
+                entries = await fs.readdir(dir, { withFileTypes: true }) as never;
+            } catch {
+                return;
+            }
+            for (const entry of entries as unknown as Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) { await walk(full); continue; }
+                if (!entry.isFile()) continue;
+                try { total += (await fs.lstat(full)).size; } catch { /* gone while counting */ }
+            }
+        };
+        await walk(this.dir);
+        this.held = total;
+        this.countedAt = Date.now();
+        return total;
+    }
+
+    /** Room for this many more bytes, or the write is refused. */
+    private async checkRoom(adding: number): Promise<void> {
+        const total = await this.totalBytes();
+        if (total + adding <= this.maxTotalBytes) {
+            // Count it as written: the next write sees it without walking.
+            this.held = total + adding;
+            return;
+        }
+        // Count again before refusing, in case what is remembered is old.
+        this.countedAt = 0;
+        const fresh = await this.totalBytes();
+        if (fresh + adding <= this.maxTotalBytes) {
+            this.held = fresh + adding;
+            return;
+        }
+        throw Object.assign(
+            new Error(`this session's files already hold the ${this.maxTotalBytes} bytes one session may`),
+            { code: "EDQUOT" });
+    }
 
     private relative(p: string): string {
         const posix = String(p).replace(/\\/g, "/");
@@ -246,6 +322,11 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
     async writeFile(p: string, content: string, mode?: number): Promise<void> {
         this.checkSize(content);
         const target = await this.real(p);
+        // What this write adds, which is not what it carries when it
+        // replaces a file that is already there.
+        let replacing = 0;
+        try { replacing = (await fs.lstat(target)).size; } catch { /* a new file */ }
+        await this.checkRoom(Math.max(0, Buffer.byteLength(content, "utf8") - replacing));
         await fs.mkdir(path.dirname(target), { recursive: true });
         await fs.writeFile(target, content, mode !== undefined ? { mode } : undefined);
     }
@@ -253,6 +334,7 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
     async appendFile(p: string, content: string, mode?: number): Promise<void> {
         this.checkSize(content);
         const target = await this.real(p);
+        await this.checkRoom(Buffer.byteLength(content, "utf8"));
         await fs.mkdir(path.dirname(target), { recursive: true });
         await fs.appendFile(target, content, mode !== undefined ? { mode } : undefined);
     }
@@ -292,6 +374,9 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
 
     async rm(p: string, recursive: boolean, force: boolean): Promise<void> {
         await fs.rm(await this.real(p), { recursive, force });
+        // The folder is smaller than it was; count it again rather than
+        // leaving a session unable to write after it has cleaned up.
+        this.countedAt = 0;
     }
 
     async rename(src: string, dest: string): Promise<void> {

@@ -267,6 +267,32 @@ test("the fingerprint input has a workspace key only when a workspace is set (C3
     assert.equal(hashed.workspace.repoAgentHash, "h1");
 });
 
+test("what a session's compute host holds is part of the fingerprint, so a replaced side channel rebinds", () => {
+    // A warm runtime keeps the configuration it was handed: the tickets
+    // its servers are reached by and the paths its copies are at. When
+    // the side channel is replaced — a channel error, a network blip —
+    // the host opens new listeners and the worker mints against a new
+    // link, so a runtime still holding the old ones reaches nothing.
+    // Leaving this out of the fingerprint is what made such a session
+    // fail every call for the rest of its life instead of rebinding.
+    const parts = {
+        capabilityFingerprint: "cap", baseAgentPolicy: "v1", sdkSkillDirectories: [], boundAgentName: undefined,
+        boundAgentSource: undefined, boundAgentCopy: undefined, mcpServers: {}, excludedTools: ["task"], tools: [{ name: "wait" }],
+    };
+    const onWorker = buildBindingFingerprintInput(parts);
+    assert.equal("remoteCapabilities" in onWorker, false,
+        "a session that runs on the worker has no key at all, so its digest is what it always was");
+
+    const first = buildBindingFingerprintInput({ ...parts, remoteCapabilities: JSON.stringify(["ticket-a", "/host/copies/one"]) });
+    const second = buildBindingFingerprintInput({ ...parts, remoteCapabilities: JSON.stringify(["ticket-b", "/host/copies/one"]) });
+    assert.notEqual(bindingFingerprintDigest(first), bindingFingerprintDigest(onWorker));
+    assert.notEqual(bindingFingerprintDigest(second), bindingFingerprintDigest(first),
+        "a new ticket is a different binding, so the session gets a fresh handle");
+    assert.equal(bindingFingerprintDigest(first), bindingFingerprintDigest(
+        buildBindingFingerprintInput({ ...parts, remoteCapabilities: JSON.stringify(["ticket-a", "/host/copies/one"]) })),
+        "and an unchanged host leaves a warm session warm");
+});
+
 test("keepAdoptedRepoInstructions turns only a replaced custom_instructions section into a prepend", () => {
     const message = { mode: "customize", sections: { custom_instructions: { action: "replace", content: "BASE" }, guidelines: { action: "append", content: "G" } } };
     assert.equal(keepAdoptedRepoInstructions(message, false), message, "untouched without adoption");
