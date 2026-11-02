@@ -7,6 +7,7 @@ import {
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
+import type { WorkflowInputCapabilities } from "../workflow/v2/input-policy.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -742,6 +743,29 @@ export class WebPilotSwarmManagementClient {
      */
     async getSessionAccess(sessionId: string, _viewer?: unknown): Promise<any> {
         return this.ops.getSessionAccess({ sessionId });
+    }
+
+    /**
+     * What a person may send to a session, by its workflow lineage (design 03
+     * human-input denial; INACTIVE outside controller 1.9.0's tests): read
+     * from the session's access route, which reports canSendPrompt, canAnswer
+     * and canSteer false, with the workflow and its controlling agent, for a
+     * session in a workflow agent state's subtree (the portal runtime asks the
+     * SDK). Every other session takes all three, as before. The refusal
+     * itself is the SDK's, whatever a client shows.
+     */
+    async getWorkflowInputPolicy(sessionId: string): Promise<WorkflowInputCapabilities> {
+        const access = await this.ops.getSessionAccess({ sessionId }) as unknown as Record<string, any> | null;
+        if (access?.canSendPrompt !== false) {
+            return { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
+        }
+        const workflowInput = access.workflowInput ?? {};
+        return {
+            canSendPrompt: false, canAnswer: access.canAnswer === true, canSteer: access.canSteer === true,
+            reason: typeof workflowInput.reason === "string" ? workflowInput.reason : null,
+            workflowSessionId: typeof workflowInput.workflowSessionId === "string" ? workflowInput.workflowSessionId : null,
+            controllingSessionId: typeof workflowInput.controllingSessionId === "string" ? workflowInput.controllingSessionId : null,
+        };
     }
 
     async setSessionVisibility(sessionId: string, visibility: string): Promise<void> {
