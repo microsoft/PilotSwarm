@@ -1,9 +1,13 @@
-import { WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
+import { WORKFLOW_ATTENTION_OUTCOMES, WORKFLOW_CONTROL_EVENT_TYPES, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
 
 const DETAIL_LIMIT = 40;
 const stepEvents = new Set(["workflow.state_started", "workflow.state_completed"]);
 const terminalEvents = new Set(["workflow.completed", "workflow.failed", "workflow.cancelled"]);
-const significantOutcomes = new Set(["changed", "change", "failure", "failed", "error", "timeout", "cancelled", "canceled", "blocked"]);
+const significantOutcomes = WORKFLOW_ATTENTION_OUTCOMES;
+// Control and side-effect rows (pause, resume, variables, input, recovery, cancel request, parent notice) are not steps: a
+// summary row is found past them and keeps updating, and they neither end nor split it.
+const controlEvents = new Set(WORKFLOW_CONTROL_EVENT_TYPES);
+const runIdOf = (data) => typeof data?.runId === "string" && data.runId !== "" ? data.runId : null;
 
 function duration(ms) {
     if (!Number.isFinite(ms) || ms < 0) return null;
@@ -58,16 +62,19 @@ function finishGroup(chat, index, previous) {
 /** Project repeated state attempts into one display row; durable events remain unchanged. */
 export function appendWorkflowProgress(chat, event, message) {
     const data = event.data ?? {};
-    if (event.eventType === "workflow.started") {
-        chat.push({ ...message, workflowDefinition: Array.isArray(data.states) ? data.states : [] });
-        return;
-    }
+    const runId = runIdOf(data);
     let index = -1;
     for (let i = chat.length - 1; i >= 0; i--) {
-        if (chat[i]?.workflowEvent && chat[i].sessionId === message.sessionId) { index = i; break; }
+        if (chat[i]?.workflowEvent && chat[i].sessionId === message.sessionId && !controlEvents.has(chat[i].workflowEvent)) { index = i; break; }
     }
     const previous = index >= 0 ? chat[index] : null;
     const prior = previous?.workflowProgress;
+    if (event.eventType === "workflow.started") {
+        // A v2 run names itself. A summary of an earlier run ends here, and nothing later merges into it.
+        if (runId && prior) finishGroup(chat, index, previous);
+        chat.push({ ...message, workflowDefinition: Array.isArray(data.states) ? data.states : [], workflowRunId: runId });
+        return;
+    }
     if (!stepEvents.has(event.eventType)) {
         if (prior && (terminalEvents.has(event.eventType) || event.eventType.startsWith("workflow.state_"))) {
             finishGroup(chat, index, previous);
@@ -85,15 +92,23 @@ export function appendWorkflowProgress(chat, event, message) {
     for (let i = chat.length - 1; i >= 0; i--) {
         const item = chat[i];
         if (item?.sessionId === message.sessionId && item.workflowDefinition) {
-            definition = item.workflowDefinition.find(node => node?.id === data.stateId);
+            // The latest definition describes only its own run. Another run's step is not matched against it, so a
+            // run on another revision is never read through this one's transitions.
+            if ((item.workflowRunId ?? null) === runId) definition = item.workflowDefinition.find(node => node?.id === data.stateId);
             break;
         }
     }
-    const sameState = prior?.stateId === data.stateId;
+    // The same state of another run (its step numbers start again) is not a continuation.
+    const sameState = prior?.stateId === data.stateId && (prior.runId ?? null) === runId;
     const selfLoop = definition && Object.values(definition.next ?? {}).includes(data.stateId);
     const eligible = definition ? (started ? selfLoop : definition.next?.[data.outcome] === data.stateId) : Boolean(sameState);
+    // A v2 business result completed normally and carries no exit code; a v2 runtime error is never a quiet repeat. A business
+    // outcome the author named as significant (failure, blocked, ...) stays its own row, as it does for legacy steps.
+    const completedCleanly = data.resultKind === "runtime_error" ? false
+        : data.resultKind === "business" ? true
+            : data.exitCode === 0 || data.resultSource === "reported" || data.resultSource === "stdout";
     const healthy = started || (!significantOutcomes.has(String(data.outcome ?? "").toLowerCase())
-        && (data.exitCode === 0 || data.resultSource === "reported" || data.resultSource === "stdout")
+        && completedCleanly
         && !(Array.isArray(data.toolCalls) ? data.toolCalls : []).some(call => call?.ok === false)
         && !data.stderrTail);
     // A paged transcript without its definition can still group loaded
@@ -126,6 +141,7 @@ export function appendWorkflowProgress(chat, event, message) {
     }];
     const progress = {
         stateId: data.stateId,
+        runId,
         firstStep: merge ? prior.firstStep : step,
         lastStep: step,
         count: (merge ? prior.count : 0) + (started ? 0 : 1),
