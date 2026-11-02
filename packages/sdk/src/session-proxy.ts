@@ -1752,7 +1752,10 @@ export function registerActivities(
                     // pre-1.0.67 inputs → 0 (legacy chain, today's behavior).
                     transcriptEpoch: input.transcriptEpoch ?? 0,
                     dropWarmSession: () => sessionManager.dropWarmSession(input.sessionId),
-                    fenceSessionFiles: (reason) => sessionManager.fenceSessionFiles(input.sessionId, reason),
+                    // Optional, like the rest of the manager's late
+                    // additions: a session manager that does not hold
+                    // remote session folders has nothing to fence.
+                    fenceSessionFiles: (reason) => sessionManager.fenceSessionFiles?.(input.sessionId, reason) ?? (() => {}),
                     trace,
                 }
                 : null;
