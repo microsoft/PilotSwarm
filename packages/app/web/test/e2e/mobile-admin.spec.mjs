@@ -71,6 +71,9 @@ async function screenshot(page, name) {
 
 for (const themeId of ["hearth", "github-light"]) for (const admin of [true, false]) {
     test(`phone header cog: plain ${admin ? "admin console" : "user settings"} in ${themeId}`, async ({ page }) => {
+        // Hearth's firelight animates border tints; compare the two buttons at
+        // rest, not at two moments of the animation.
+        await page.emulateMedia({ reducedMotion: "reduce" });
         const f = await phoneFixture(page, { admin, themeId });
         try {
             const cog = page.getByRole("button", { name: admin ? "Admin Console" : "Settings", exact: true });
@@ -145,7 +148,7 @@ test("phone drill-in, on-screen Back, browser Back and external-close cleanup", 
         await expect(page.getByRole("heading", { name: "research-kit", exact: true }).first()).toBeVisible();
         await back(page, 1);
         await page.getByRole("searchbox", { name: "Find a package" }).fill("research");
-        await page.getByRole("listbox", { name: "Packages", exact: true }).getByRole("button").click();
+        await page.getByRole("region", { name: "Packages", exact: true }).getByRole("button").click();
         await back(page, 1);
         await expect(page.getByRole("searchbox", { name: "Find a package" })).toHaveValue("research");
         await back(page, 0);
