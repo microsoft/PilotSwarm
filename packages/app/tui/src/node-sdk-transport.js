@@ -1072,6 +1072,11 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionAccess(sessionId, viewer);
     }
 
+    /** What a person may send to a session by its workflow lineage (workflow agent states refuse human input). */
+    async getWorkflowInputPolicy(sessionId) {
+        return typeof this.mgmt.getWorkflowInputPolicy === "function" ? this.mgmt.getWorkflowInputPolicy(sessionId) : null;
+    }
+
     async setSessionVisibility(sessionId, visibility) {
         return this.mgmt.setSessionVisibility(sessionId, visibility);
     }

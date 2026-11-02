@@ -602,6 +602,27 @@ export type WorkflowAgentCompletionResult =
     | { kind: "refused"; replayed: boolean; code: WorkflowAgentCompletionRefusal; problems: JsonValue; attemptsLeft: number | null;
         state: { status: "pending" | "completed"; outcome: string | null; winner: string | null }; controllerInstanceId: string };
 
+/**
+ * A session's workflow lineage (readWorkflowLineage), read from the session
+ * rows themselves (deleted ones included) and the agent states' immutable
+ * invocation records: host-derived, never from a caller's claim.
+ */
+export interface WorkflowLineage {
+    sessionId: string;
+    /** Its distance from the root (0 for a root); null when its lineage is cyclic, has a missing parent, or is deeper than any allowed. */
+    level: number | null;
+    /**
+     * The nearest of the session and its ancestors that is an agent state's
+     * child (distance 0: the session itself), with that state's workflow and
+     * controlling parent agent; null for a session outside every agent
+     * state's subtree.
+     */
+    agentRoot: { childSessionId: string; nodeExecutionId: string; workflowSessionId: string; controllingSessionId: string | null; distance: number } | null;
+}
+
+/** The longest lineage readWorkflowLineage follows. */
+export const WORKFLOW_V2_LINEAGE_MAX_DEPTH = 32;
+
 /** Invalid completions an agent state takes before the one that fails it invalid_output (its correction budget). */
 export const WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS = 3;
 /** The longest message of an agent's reported runtime error. */
@@ -4823,6 +4844,56 @@ export class WorkflowStore {
             invocationId: str(row, "invocation_id"), recipientSessionId: str(row, "recipient_session_id"), attemptId: str(row, "attempt_id"),
             exposedAt: str(row, "exposed_at_iso"),
         } : null;
+    }
+
+    /**
+     * A session's workflow lineage (design 03 human-input denial and depth;
+     * R13, R16): one recursive read of the session rows from the session up
+     * (soft-deleted rows included, so a deleted ancestor still counts), with
+     * the agent state invocation, if any, of each. Null when the session row
+     * does not exist. A schema without the invocation table (migration 0097
+     * not applied yet) has no agent states, so no session is in one's subtree.
+     */
+    async readWorkflowLineage(sessionId: string): Promise<WorkflowLineage | null> {
+        if (!storableId(sessionId)) return null;
+        const lineageSql = (withInvocations: boolean) => `
+            WITH RECURSIVE lineage AS (
+                SELECT session_id, parent_session_id, 0 AS distance FROM ${this.t.sessions} WHERE session_id = $1
+                UNION ALL
+                SELECT parent.session_id, parent.parent_session_id, lineage.distance + 1
+                  FROM ${this.t.sessions} parent JOIN lineage ON parent.session_id = lineage.parent_session_id
+                 WHERE lineage.distance < ${WORKFLOW_V2_LINEAGE_MAX_DEPTH}
+            )
+            SELECT lineage.session_id, lineage.parent_session_id, lineage.distance,
+                   ${withInvocations ? "invocation.node_execution_id, invocation.workflow_session_id, invocation.controlling_session_id"
+                       : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
+              FROM lineage
+              ${withInvocations ? `LEFT JOIN ${this.t.agentInvocations} invocation ON invocation.child_session_id = lineage.session_id` : ""}
+             ORDER BY lineage.distance`;
+        let rows: Row[];
+        try {
+            ({ rows } = await this.pool.query(lineageSql(true), [sessionId]));
+        } catch (error) {
+            if ((error as { code?: unknown })?.code !== "42P01") throw error;
+            ({ rows } = await this.pool.query(lineageSql(false), [sessionId]));
+        }
+        if (!rows[0]) return null;
+        const seen = new Set<string>();
+        let cyclic = false;
+        let agentRoot: WorkflowLineage["agentRoot"] = null;
+        for (const row of rows) {
+            const id = str(row, "session_id");
+            if (seen.has(id)) { cyclic = true; break; }
+            seen.add(id);
+            const nodeExecutionId = strOrNull(row, "node_execution_id");
+            if (agentRoot === null && nodeExecutionId !== null) {
+                agentRoot = { childSessionId: id, nodeExecutionId, workflowSessionId: str(row, "workflow_session_id"),
+                    controllingSessionId: strOrNull(row, "controlling_session_id"), distance: int(row, "distance") };
+            }
+        }
+        const top = rows[rows.length - 1];
+        const level = !cyclic && strOrNull(top, "parent_session_id") === null ? int(top, "distance") : null;
+        return { sessionId, level, agentRoot };
     }
 
     // ─── Agent states (IR 8, migration 0097; INACTIVE: only controller 1.9.0 and tests call these) ──

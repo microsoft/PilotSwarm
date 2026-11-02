@@ -28,6 +28,7 @@ import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from
 import { resolveEffectiveSpawnOwner } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
+import { assertWorkflowHumanInputAllowed } from "./workflow/v2/input-policy.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
@@ -907,6 +908,9 @@ export class PilotSwarmClient {
         opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
+        // A workflow agent state's subtree takes no human prompts (design 03, R13): refused before anything is queued or
+        // started. An agent-stamped prompt (a spawn's bootstrap, a workflow's first prompt) passes.
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "prompt", opts?.sender);
         const _trace = this.config.traceWriter ?? (() => {});
         const startedAt = Date.now();
         const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
@@ -1128,6 +1132,11 @@ export class PilotSwarmClient {
     /** @internal */
     _getCatalog(): SessionCatalog {
         return this._catalog;
+    }
+
+    /** @internal The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it). */
+    _workflowStoreOrNull(): import("./workflow/v2/store.js").WorkflowStore | null {
+        return typeof this._catalog?.workflowStore === "function" ? this._catalog.workflowStore() : null;
     }
 
     /** @internal — exposed for PilotSwarmSession.wait() */
@@ -1640,6 +1649,8 @@ export class PilotSwarmSession {
         if (reserved(data)) throw refusal();
         const serialized = JSON.stringify(data);
         if (serialized !== undefined && reserved(JSON.parse(serialized))) throw refusal();
+        // A person's custom event cannot feed a workflow agent state's subtree either (design 03, R13).
+        await assertWorkflowHumanInputAllowed(this.client._workflowStoreOrNull(), this.sessionId, "event");
         const duroxideClient = this.client._getDuroxideClient();
         const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
         if (duroxideClient) {

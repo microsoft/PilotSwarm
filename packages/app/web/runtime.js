@@ -1155,6 +1155,12 @@ export class PortalRuntime {
                 const rootView = snapshot.rootSessionId
                     ? await this.transport.mgmt.getSession(snapshot.rootSessionId, placementPrincipal(authContext)).catch(() => null)
                     : null;
+                // Workflow agent states (design 03 human-input denial): a session in an agent state's subtree takes no
+                // prompts, answers or steers from people, whatever their write access. Separate from canWrite, which
+                // still governs everything else; the SDK refuses such input wherever it comes from.
+                const workflowInput = typeof this.transport.getWorkflowInputPolicy === "function"
+                    ? await this.transport.getWorkflowInputPolicy(safeParams.sessionId)
+                    : null;
                 return {
                     sessionId: safeParams.sessionId,
                     rootSessionId: snapshot.rootSessionId,
@@ -1164,6 +1170,11 @@ export class PortalRuntime {
                     relation,
                     canWrite: snapshot.isSystem ? isAdmin : canWrite,
                     canManage: snapshot.isSystem ? isAdmin : canManage,
+                    ...(workflowInput && !workflowInput.canSendPrompt ? {
+                        canSendPrompt: false, canAnswer: false, canSteer: false,
+                        workflowInput: { reason: workflowInput.reason, workflowSessionId: workflowInput.workflowSessionId,
+                            controllingSessionId: workflowInput.controllingSessionId },
+                    } : {}),
                     viewerGroupId: rootView?.viewerGroupId ?? null,
                     enforced: this.authz.enforce,
                 };

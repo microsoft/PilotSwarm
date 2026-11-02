@@ -162,6 +162,7 @@ import {
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2View } from "./workflow/v2/tools.js";
+import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
 import { WorkflowStoreError } from "./workflow/v2/store.js";
 import {
     AgentPackageValidationError,
@@ -1830,6 +1831,7 @@ export class PilotSwarmManagementClient {
         if (!Number.isInteger(input?.expectedRevision) || input.expectedRevision < 0) {
             throw Object.assign(new Error("expectedRevision must be a non-negative integer"), { code: "WORKSPACE_PATH_INVALID", status: 400 });
         }
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "workspace");
         let workspace: SessionWorkspace | null = null;
         if (input.workspace !== null && input.workspace !== undefined) {
             const checked = validateWorkspaceText(input.workspace);
@@ -2444,6 +2446,7 @@ export class PilotSwarmManagementClient {
      */
     async retrySessionWorkspace(sessionId: string, opts?: { timeoutMs?: number }): Promise<{ retried: boolean } | { status: "pending"; commandId: string }> {
         this._ensureStarted();
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "workspace");
         const id = buildLifecycleCommandId("retry-workspace");
         await this._sendWorkspaceCommand(sessionId, { cmd: "retry_workspace", id });
         const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 60_000));
@@ -2649,6 +2652,8 @@ export class PilotSwarmManagementClient {
         if ((await this._catalog!.getSession(sessionId).catch(() => null))?.sessionKind === "workflow") {
             throw workflowNotConversationalError(sessionId);
         }
+        // A person's steer into a workflow agent state's subtree is refused; a parent agent's (agent-stamped) passes.
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "steer", opts?.caller?.sender);
         // The flag gates new steers only. The catalog checks it under the
         // session row lock after its request-id retry lookup, so a retry of
         // an already recorded request id still gets its first answer (or
@@ -3265,6 +3270,24 @@ export class PilotSwarmManagementClient {
     // principal; every rule is the SDK chokepoint's (canvas-kv.ts). The
     // runtime has already gated session read for door 1.
 
+    /** The workflow store, when this catalog has one (the workflow human-input policy reads lineage from it). */
+    private _workflowStoreOrNull(): import("./workflow/v2/store.js").WorkflowStore | null {
+        const catalog = this._catalog as any;
+        return typeof catalog?.workflowStore === "function" ? catalog.workflowStore() : null;
+    }
+
+    /**
+     * What a person may send to a session, by its workflow lineage (design 03
+     * human-input denial): prompts, answers and steers are refused to a
+     * session in a workflow agent state's subtree. Read access and lifecycle
+     * controls are decided by the session's access rules, not here.
+     */
+    async getWorkflowInputPolicy(sessionId: string): Promise<WorkflowInputCapabilities> {
+        this._ensureStarted();
+        const store = this._workflowStoreOrNull();
+        return workflowInputCapabilities(store ? await store.readWorkflowLineage(sessionId) : null);
+    }
+
     private _canvasKvStore(): CanvasKvStore {
         this._ensureStarted();
         const catalog = this._catalog as any;
@@ -3298,6 +3321,8 @@ export class PilotSwarmManagementClient {
         principal: CanvasKvPrincipal,
         ops: CanvasKvWriteOp[],
     ): Promise<{ results: CanvasKvWriteResult[]; me: CanvasKvMe }> {
+        // A person's write to a canvas of a workflow agent state's subtree is refused; the session's own agent writes as before.
+        if (principal?.kind !== "agent") await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "canvas");
         return this._mapCanvasKvErrors(() => writeCanvasKv(this._canvasKvStore(), sessionId, slot, principal, ops));
     }
 
@@ -4114,6 +4139,8 @@ export class PilotSwarmManagementClient {
         if (session.sessionKind === "workflow") {
             throw workflowNotConversationalError(sessionId);
         }
+        // A workflow agent state's subtree takes no human prompts (R13); an agent-stamped message passes.
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "prompt", options?.sender);
         if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(
                 `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
@@ -4207,6 +4234,7 @@ export class PilotSwarmManagementClient {
         if ((await this.getSession(sessionId))?.sessionKind === "workflow") {
             throw workflowNotConversationalError(sessionId);
         }
+        await assertWorkflowHumanInputAllowed(this._workflowStoreOrNull(), sessionId, "answer", options?.sender);
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         const expectedQuestion = options?.expectedQuestion !== undefined

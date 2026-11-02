@@ -152,7 +152,9 @@ function withoutBudgetGate(catalog) {
 
 /**
  * `script(call, prompt, opts)` plays the model session's n-th run (see
- * scriptedModelSession). `options.workspaceProvider` serves workspace
+ * scriptedModelSession). `options.testOptions` adds to the worker's test-only
+ * switches (workflowRequests, for workflow request and agent states).
+ * `options.workspaceProvider` serves workspace
  * attaches (a fake provider), with `options.managerExtras` for the session
  * manager methods a workspace session needs. `options.runtimeOptions` are
  * merged into each native runtime's options (shorter lock timeouts for a
@@ -225,7 +227,8 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 },
             };
             registerActivities(adapter, sessionManager, null, undefined, withoutBudgetGate(intake.catalog), provider,
-                undefined, undefined, undefined, undefined, null, [], undefined, null, workerNodeId, null, { workflowIntakeTurns: true });
+                undefined, undefined, undefined, undefined, null, [], undefined, null, workerNodeId, null,
+                { workflowIntakeTurns: true, ...(options.testOptions ?? {}) });
             // No fact store here: the knowledge index is empty.
             adapter.registerActivity("loadKnowledgeIndex", async () => ({ skills: [], asks: [] }));
             registerWorkflowIntakeActivities(adapter, intake.deps);

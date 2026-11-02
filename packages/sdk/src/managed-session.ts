@@ -26,6 +26,7 @@ import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow
 import { READ_WORKFLOW_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC } from "./workflow/v2/tools.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "./workflow/v2/agent-node-service.js";
+import { WORKFLOW_ASK_USER_REFUSAL } from "./workflow/v2/input-policy.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -2071,6 +2072,8 @@ export class ManagedSession {
             },
             handler: async (args: { question: string; choices?: string[]; allowFreeform?: boolean }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("ask_user");
+                // Workflow agent states (R14): no person answers here; no input-required state is opened.
+                if (controlBridge?.workflowAgentSubtree === true) return WORKFLOW_ASK_USER_REFUSAL;
                 if (opts?.onEvent) {
                     try {
                         opts.onEvent({

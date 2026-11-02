@@ -2,6 +2,7 @@ import { resolveEffectiveSpawnOwner } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { MessageSender } from "../../message-sender.js";
 import type { WorkflowAgentNodeHost, WorkflowAgentSpawnRequest } from "./runtime.js";
+import { WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "./input-policy.js";
 
 /**
  * Workflow v2 agent states (IR 8; design 03 agent node, R09 to R11, R16):
@@ -30,8 +31,7 @@ import type { WorkflowAgentNodeHost, WorkflowAgentSpawnRequest } from "./runtime
  * repeated prompt while that id is among its most recent ones.
  */
 
-/** The deepest level of a workflow descendant: parent 0, workflow 1, node agent 2 and its child 3 (R16, D02). */
-export const WORKFLOW_V2_MAX_DESCENDANT_LEVEL = 3;
+export { WORKFLOW_V2_MAX_DESCENDANT_LEVEL };
 /** The display name of the sender of an agent state's first prompt. */
 export const WORKFLOW_AGENT_PROMPT_SENDER = "workflow node invocation";
 

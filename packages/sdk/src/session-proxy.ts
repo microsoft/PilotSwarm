@@ -77,6 +77,7 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
+import { spawnNesting } from "./workflow/v2/input-policy.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
 import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/v2/intake-admission.js";
@@ -2469,11 +2470,14 @@ export function registerActivities(
             const sdkClient = await getInlineClient();
             return { catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient() };
         };
-        // Workflow agent states (INACTIVE): on a turn of a worker that runs them, a session that is an agent state's child
-        // gets complete_workflow_node; no other session does.
-        const workflowAgentChild = workflowRequestTurn && catalog?.workflowStore
-            ? (await catalog.workflowStore().readAgentInvocationByChild(input.sessionId)) !== null
-            : false;
+        // Workflow agent states (INACTIVE: only on a turn of a worker that runs them): this session's stored lineage. An
+        // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
+        // refusal and nests up to level 3 (design 03 human-input denial and depth). A lineage that cannot be read gives
+        // none of these: the ordinary rules apply.
+        const workflowLineage = workflowRequestTurn && catalog?.workflowStore
+            ? await catalog.workflowStore().readWorkflowLineage(input.sessionId).catch(() => null)
+            : null;
+        const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
 
         const isAutonomousSystemTurn = () => {
             if (!SYSTEM_AGENT_IDS.has(runConfig.agentIdentity || "")) return false;
@@ -2548,6 +2552,21 @@ export function registerActivities(
                 throw new Error(`agent "${targetOrchId}" is a worker-managed system agent and is not a controllable spawned sub-agent`);
             }
             return child;
+        };
+
+        /**
+         * Workflow agent states (R12; INACTIVE: only on a turn of a worker that
+         * runs them): a session in the subtree of an agent state whose
+         * controlling parent agent is this session (recorded when the state
+         * was admitted), which this session may message although it is not its
+         * child. Null for any other session.
+         */
+        const resolveWorkflowDescendant = async (agentId: string) => {
+            if (!workflowRequestTurn || !catalog?.workflowStore) return null;
+            const sessionId = agentId.startsWith("session-") ? agentId.slice("session-".length) : agentId;
+            const lineage = await catalog.workflowStore().readWorkflowLineage(sessionId).catch(() => null);
+            if (!lineage?.agentRoot || lineage.agentRoot.controllingSessionId !== input.sessionId) return null;
+            return { orchId: `session-${sessionId}`, sessionId, sessionKind: "agent", isSystem: false, workflowDescendant: true as const };
         };
 
         /**
@@ -2835,6 +2854,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     });
                 },
             } : {}),
+            /** Workflow agent states (INACTIVE): a session in an agent state's subtree gets the ask_user refusal (R14). */
+            ...(workflowLineage?.agentRoot ? { workflowAgentSubtree: true } : {}),
             /** complete_workflow_node (agent states, INACTIVE): the calling session is the host-stamped child of the state. */
             ...(workflowAgentChild ? {
                 completeWorkflowNode: async (args: Record<string, unknown>) => {
@@ -2999,9 +3020,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
                         return `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`;
                     }
-                    const childNestingLevel = (input.nestingLevel ?? 0) + 1;
-                    if (childNestingLevel > MAX_NESTING_LEVEL) {
-                        return `[SYSTEM: spawn_agent failed — you are already at nesting level ${input.nestingLevel ?? 0} (max ${MAX_NESTING_LEVEL}). ` +
+                    // Workflow agent states (R16): a session in an agent state's subtree nests by its stored lineage, up to
+                    // level 3 (an agent state's child at level 2 may spawn one level). Elsewhere the ordinary limit applies.
+                    const { childNestingLevel, maxNestingLevel } = spawnNesting(input.nestingLevel ?? 0, MAX_NESTING_LEVEL, workflowLineage);
+                    if (childNestingLevel > maxNestingLevel) {
+                        return `[SYSTEM: spawn_agent failed — you are already at nesting level ${childNestingLevel - 1} (max ${maxNestingLevel}). ` +
                             `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`;
                     }
 
@@ -3162,11 +3185,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const parentSystemMsg = typeof childConfig.systemMessage === "string"
                         ? childConfig.systemMessage
                         : (childConfig.systemMessage as any)?.content ?? "";
-                    const canSpawnMore = childNestingLevel < MAX_NESTING_LEVEL;
+                    const canSpawnMore = childNestingLevel < maxNestingLevel;
                     const subAgentPreamble =
                         `[SUB-AGENT CONTEXT]\n` +
                         `You are a sub-agent spawned by a parent session (ID: session-${input.sessionId}).\n` +
-                        `Your nesting level: ${childNestingLevel} (max: ${MAX_NESTING_LEVEL}).\n` +
+                        `Your nesting level: ${childNestingLevel} (max: ${maxNestingLevel}).\n` +
                         `Your task: "${agentTask.slice(0, 500)}"\n\n` +
                         `Instructions:\n` +
                         `- Focus exclusively on your assigned task. You are autonomous — do NOT ask the user for input. ` +
@@ -3178,7 +3201,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         `- Model overrides: call list_available_models first and use only an exact provider:model value it returns.\n` +
                         `- Worker-managed system agents are not valid spawn targets; if one is missing, report that the workers likely need to be restarted.\n` +
                         (canSpawnMore
-                            ? `- If your parent task explicitly asks for sub-agents or fan-out, delegate within runtime limits (${MAX_NESTING_LEVEL - childNestingLevel} nesting level(s) remaining); otherwise use judgment and avoid unnecessary fan-out. ` +
+                            ? `- If your parent task explicitly asks for sub-agents or fan-out, delegate within runtime limits (${maxNestingLevel - childNestingLevel} nesting level(s) remaining); otherwise use judgment and avoid unnecessary fan-out. ` +
                               `After spawning, finish the turn normally and let qualifying child updates wake you according to contract.wakeOn. ` +
                               `Do not schedule wait or cron solely to poll check_agents; use wait_for_agents only when you need an explicit synchronization barrier.\n`
                             : `- You CANNOT spawn sub-agents — you are at the maximum nesting depth. Handle everything directly.\n`);
@@ -3386,10 +3409,23 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 call?: { toolCallId?: string },
             ) => {
                 try {
-                    const child = await resolveManagedChild(args.agent_id);
+                    // Your own sub-agent, or a session your workflow's agent state runs (R12): you may message it, stamped as you.
+                    let descendant: Awaited<ReturnType<typeof resolveWorkflowDescendant>> = null;
+                    let child: { orchId: string; sessionId: string; sessionKind: string; isSystem: boolean };
+                    try {
+                        child = await resolveManagedChild(args.agent_id);
+                    } catch (error) {
+                        descendant = await resolveWorkflowDescendant(args.agent_id);
+                        if (!descendant) throw error;
+                        child = descendant;
+                    }
                     if (child.sessionKind === "workflow") {
                         return `[SYSTEM: message_agent refused — ${child.orchId} is a workflow session; it runs a workflow graph and takes no messages. `
                             + `Use cancel_agent or delete_agent to stop it.]`;
+                    }
+                    if (descendant && args.contract_patch) {
+                        return `[SYSTEM: message_agent refused — ${child.orchId} runs a state of your workflow, not a sub-agent you spawned; `
+                            + `contract_patch applies to your own sub-agents only. Send the message without it.]`;
                     }
                     if (catalog && args.contract_patch) {
                         const existing = await catalog.getChildOutcome(child.sessionId);
@@ -3411,7 +3447,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         await sdkClient._getDuroxideClient().enqueueEvent(
                             child.orchId,
                             "messages",
-                            JSON.stringify({ prompt: args.message }),
+                            // A workflow state's session is told who wrote (the controlling parent agent); an own sub-agent's
+                            // message stays as it always was.
+                            JSON.stringify(descendant
+                                ? { prompt: args.message, sender: { kind: "agent", sessionId: input.sessionId, display: "controlling parent agent" } }
+                                : { prompt: args.message }),
                         );
                     };
                     if (args.deliver === "now") {

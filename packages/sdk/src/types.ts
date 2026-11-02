@@ -293,6 +293,13 @@ export interface TurnOptions {
          * (INACTIVE: only tests). Returns JSON.
          */
         completeWorkflowNode?(args: Record<string, unknown>): Promise<string>;
+        /**
+         * Workflow v2 agent states: this session is in an agent state's
+         * subtree (its stored lineage), so ask_user is refused with guidance
+         * instead of asking a person (R14). Set only on a turn of a worker
+         * that runs agent states (INACTIVE: only tests).
+         */
+        workflowAgentSubtree?: boolean;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;

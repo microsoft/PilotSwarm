@@ -132,3 +132,49 @@ review:
 Not yet covered here: human-input denial and the depth allowance for the
 node agent's own child (B5), the UI read model and click-through (B9), a
 real-model run of an agent state, and package workflow interfaces.
+
+## Human input and depth in an agent state's subtree (design 03; R12 to R14, R16)
+
+A session is in an agent state's subtree when it, or one of its ancestors,
+is an agent state's child. The store decides this from its own rows
+(`readWorkflowLineage`: one recursive read of the session rows, deleted rows
+included, joined to the agent states' immutable invocation records), never
+from a caller's claim. Only controller 1.9.0 creates agent states' children,
+so outside its tests no session is in such a subtree and nothing below
+changes a session's behavior.
+
+- **Human input is refused at the SDK chokepoints.** Every transport reaches
+  them: the portal (through its transport), and the TUI and MCP direct modes.
+  A person's prompt (the client session's send, which also carries canvas
+  actions, and the management client's `sendMessage`), answer, steer, custom
+  session event, canvas KV write and workspace command (`setSessionWorkspace`,
+  `retrySessionWorkspace`) to such a session fails with 403
+  `WORKFLOW_HUMAN_INPUT_DENIED` before anything is queued or started. The
+  error names the workflow and its controlling parent agent. Input that the
+  host stamps as an agent's (`sender.kind: "agent"`; the portal stamps every
+  caller as a user and overwrites a client's claim) is not human input.
+  Reading the session and its artifacts, and the workflow's own lifecycle
+  controls, are unchanged.
+- **Clients are told.** `getSessionAccess` adds `canSendPrompt`, `canAnswer`
+  and `canSteer` (false) with the workflow and its controlling agent for
+  such a session, separately from `canWrite`. The management client's
+  `getWorkflowInputPolicy` gives the same answer.
+- **The controlling parent agent may message it.** `message_agent` reaches,
+  besides the caller's own sub-agents, a session in the subtree of an agent
+  state whose controlling parent agent (recorded at admission) is the
+  caller. The message is stamped as that agent's. `contract_patch` applies
+  to own sub-agents only.
+- **ask_user is refused** there with guidance: consult the controlling parent
+  agent, or complete the state with `needs_input`. No input-required state
+  is opened.
+- **Depth.** In such a subtree, spawn_agent counts the stored level and allows
+  level 3 (parent 0, workflow 1, node agent 2, its child 3); elsewhere the
+  ordinary limit (2) and the session's own nesting level apply, as before.
+
+These turn-side rules (the ask_user refusal, the depth allowance and the
+`message_agent` route) apply on a turn of a worker that runs agent states
+(the test-only switch). The 1.0.83 orchestration's own spawn path, used only
+by a turn without the inline control bridge, keeps the ordinary limit.
+
+Not covered here: the UI's composer and controls (B9), and denying a
+person's artifact upload into such a session (not in the design's list).
