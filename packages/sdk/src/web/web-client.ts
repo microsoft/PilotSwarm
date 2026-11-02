@@ -78,22 +78,11 @@ export class WebPilotSwarmClient {
     }
 
     /**
-     * Create a workflow session through the Web API. The owner is the
-     * authenticated principal; the deployment's workers run the graph.
+     * Not available over the Web API: a workflow session is always the
+     * child of an agent session, and agents start one with spawn_workflow.
      */
-    async createWorkflowSession(config: {
-        yaml: string;
-        inputs?: Record<string, unknown>;
-        groupId?: string | null;
-        visibility?: "private" | "shared_read" | "shared_write" | null;
-    }): Promise<{ sessionId: string; workflowName: string }> {
-        const view = await this._api.call("createWorkflowSession", {
-            yaml: config.yaml,
-            inputs: config.inputs ?? {},
-            ...(config.groupId != null ? { groupId: config.groupId } : {}),
-            ...(config.visibility != null ? { visibility: config.visibility } : {}),
-        });
-        return { sessionId: view.sessionId, workflowName: view.workflowName };
+    async createWorkflowSession(_config?: unknown): Promise<never> {
+        throw webModeUnsupported("createWorkflowSession", "workflow sessions are started by agent sessions with spawn_workflow");
     }
 
     async createSessionForAgent(agentName: string, opts?: {

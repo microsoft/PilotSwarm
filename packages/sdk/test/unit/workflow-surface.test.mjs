@@ -23,6 +23,7 @@ import {
     workflowChildSessionId,
 } from "../../dist/workflow/index.js";
 import { OPERATIONS } from "../../api/src/protocol.js";
+import { NON_MANAGEMENT_OPERATION_OWNERS } from "../../api/src/surface-contract.js";
 
 const yaml = (stateExtra = "", stateId = "only") => `
 apiVersion: pilotswarm.dev/v1alpha1
@@ -164,12 +165,10 @@ test("workflows run only the state types an operator lists; unset, blank or malf
     );
 });
 
-test("the Web API creates workflow sessions under the session-create gate", () => {
-    const op = OPERATIONS.find((entry) => entry.name === "createWorkflowSession");
-    assert.ok(op);
-    assert.equal(op.access, "session:create");
-    assert.equal(op.method, "POST");
-    assert.deepEqual(Object.keys(op.params).sort(), ["groupId", "inputs", "visibility", "yaml"]);
+test("the Web API has no way to start a top-level workflow session", () => {
+    assert.equal(OPERATIONS.find((entry) => entry.name === "createWorkflowSession"), undefined);
+    assert.equal(OPERATIONS.some((entry) => /workflow/i.test(entry.path) && entry.method === "POST"), false);
+    assert.equal(NON_MANAGEMENT_OPERATION_OWNERS.createWorkflowSession, undefined);
 });
 
 test("the parent hears the terminal state and outcome, or the reason the run stopped", () => {
