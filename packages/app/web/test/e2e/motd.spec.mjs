@@ -154,3 +154,18 @@ test("non-admin reads today's and previous pictures and previews without change 
         expect(f.state.calls[0].path).toContain("/dismiss");
     } finally { await f.stop(); }
 });
+
+test("an empty current-message reply does not break the portal", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    const f = await fixture(page, { admin: true, current: null, history: [] });
+    try {
+        // Registered after the fixture so it wins, then a fresh load reads it.
+        await page.route("**/api/v1/management/motd/current**", route => route.fulfill({ json: { ok: true } }));
+        await page.reload();
+        await expect(page.getByRole("button", { name: "Master of Agents", exact: true })).toBeVisible();
+        await expect(page.getByRole("dialog", { name: "Message of the day", exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Master of Agents", exact: true })).toBeEnabled();
+        expect(errors).toEqual([]);
+    } finally { await f.stop(); }
+});

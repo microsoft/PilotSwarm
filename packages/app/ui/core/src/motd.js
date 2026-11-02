@@ -19,14 +19,22 @@ export function motdLocalParts(time) {
     return { date: local.slice(0, 10), time: local.slice(11, 16) };
 }
 export function motdStartsAt(message) { return message.startsAt ?? message.fromAt; }
+// A server reply that is not a message (an empty body, an error shape) must
+// never reach the splash: one bad timestamp would crash the whole portal.
+export function isMotdMessage(value) {
+    return Boolean(value && typeof value === "object" && (typeof value.motdId === "string" || Number.isInteger(value.motdId))
+        && Number.isFinite(Date.parse(motdStartsAt(value))));
+}
 export function motdEndsAt(message) { return message.endsAt !== undefined ? message.endsAt : message.toAt; }
 export function formatMotdTimestamp(value, now = Date.now()) {
     const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "an unknown time";
     return date.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric",
         ...(date.getFullYear() === new Date(now).getFullYear() ? {} : { year: "numeric" }),
         hour: "numeric", minute: "2-digit" });
 }
 function motdTimeZoneName(value) {
+    if (!Number.isFinite(new Date(value).getTime())) return Intl.DateTimeFormat().resolvedOptions().timeZone;
     return new Intl.DateTimeFormat("en-US", { timeZoneName: "longGeneric" }).formatToParts(new Date(value))
         .find(part => part.type === "timeZoneName")?.value || Intl.DateTimeFormat().resolvedOptions().timeZone;
 }

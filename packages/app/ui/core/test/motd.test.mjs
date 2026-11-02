@@ -231,3 +231,16 @@ test("a role-only change can retry an in-flight picture without accepting its st
     resolveOld({ ...fresh, alt: "Stale picture" }); await old;
     assert.equal(calls, 2); assert.equal(state().images["1"].desktop.alt, "New picture");
 });
+test("a reply that is not a message never reaches the splash", async () => {
+    const { isMotdMessage, formatMotdWindow } = await import("../src/motd.js");
+    for (const reply of [{ ok: true }, {}, undefined, null, "x", message("1", { fromAt: "not a date" }), { bodyMd: "no id", fromAt: "2020-01-01T00:00:00Z" }]) {
+        const { controller, store } = setup({ getCurrentMotd: async () => reply });
+        await controller.refreshMotd();
+        assert.equal(selectMotd(store.getState()).message, null, `reply ${JSON.stringify(reply)}`);
+        assert.equal(isMotdMessage(reply), false);
+    }
+    assert.equal(isMotdMessage(message("1")), true);
+    assert.equal(isMotdMessage(message(7)), true);
+    assert.doesNotThrow(() => formatMotdWindow({ fromAt: undefined, toAt: null }));
+    assert.match(formatMotdWindow({ fromAt: "garbage", toAt: "also garbage" }), /^an unknown time until an unknown time \(/);
+});

@@ -3,7 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
-import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow, createMotdDraft, motdLocalParts } from "./motd.js";
+import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow, createMotdDraft, motdLocalParts, isMotdMessage } from "./motd.js";
 import {
     appendEventToHistory,
     applyLiveTurnToHistory,
@@ -4013,7 +4013,7 @@ export class PilotSwarmUiController {
             if (context !== this._motdContext() || serial !== this._motdCurrentReadSerial) return;
             const message = await this._motdRequest(() => this.transport.getCurrentMotd());
             if (context !== this._motdContext() || serial !== this._motdCurrentReadSerial) return;
-            const current = message && !this.getState().motd.dismissed.includes(message.motdId) ? message : null;
+            const current = isMotdMessage(message) && !this.getState().motd.dismissed.includes(message.motdId) ? message : null;
             // Publish null/deletion before fetching a picture, which may fail.
             this.dispatch({ type: "motd/patch", patch: { current, error: null,
                 images: this._pruneMotdPictures(current) } });
