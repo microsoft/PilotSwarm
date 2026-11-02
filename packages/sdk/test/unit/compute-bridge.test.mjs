@@ -378,3 +378,58 @@ test("a remote runtime with no connection token is refused, and so is one with n
     checkRemoteEndpoint({ transport: "local" }, "k");
     checkRemoteEndpoint({ transport: "uri", address: "127.0.0.1:1", connectionToken: "t", handshake }, "k");
 });
+
+test("the worker is told when the last connection to a host has gone", async (t) => {
+    const host = await echoHost(t);
+    let idle = 0;
+    const bridge = new ComputeRuntimeBridge(() => connect(host.port), { onIdle: () => { idle += 1; } });
+    t.after(() => bridge.close());
+    await bridge.start();
+
+    const bridgePort = Number(bridge.address.split(":")[1]);
+    const first = await connect(bridgePort);
+    const second = await connect(bridgePort);
+    first.write("one");
+    second.write("two");
+    await firstChunk(first);
+    await firstChunk(second);
+    assert.equal(bridge.openConnections, 2);
+
+    // One connection going is not the host going.
+    first.destroy();
+    await deathOf(first);
+    assert.equal(idle, 0, "one connection of two is not an idle bridge");
+
+    // The host itself goes: every connection through the bridge ends, and
+    // the worker is told once so it can drop what it was reaching the host
+    // with.
+    for (const socket of host.connections) socket.destroy();
+    await deathOf(second);
+    assert.equal(idle, 1, "the worker is told the host connection has gone");
+
+    // Closing the bridge is the worker letting go itself; it is not news.
+    const third = await connect(bridgePort);
+    third.write("three");
+    await firstChunk(third);
+    await bridge.close();
+    assert.equal(idle, 1, "a bridge the worker closes tells it nothing");
+});
+
+test("the worker's side of a pipe to a host keeps the connection checked", async (t) => {
+    const host = await echoHost(t);
+    const { openTcpPipe, COMPUTE_PIPE_KEEPALIVE_MS } = await import("../../dist/compute-bridge.js");
+    // A half-open pipe to a host that is gone would otherwise look open
+    // until the next write times out, which can be a whole turn later.
+    const calls = [];
+    const original = net.Socket.prototype.setKeepAlive;
+    net.Socket.prototype.setKeepAlive = function (...args) {
+        calls.push(args);
+        return original.apply(this, args);
+    };
+    t.after(() => { net.Socket.prototype.setKeepAlive = original; });
+
+    const pipe = await openTcpPipe(`127.0.0.1:${host.port}`, AbortSignal.timeout(5_000));
+    t.after(() => pipe.destroy());
+    assert.deepEqual(calls, [[true, COMPUTE_PIPE_KEEPALIVE_MS]], "keepalive is set on the worker's side of the pipe");
+    assert.ok(COMPUTE_PIPE_KEEPALIVE_MS > 0);
+});

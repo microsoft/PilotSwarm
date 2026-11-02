@@ -1551,6 +1551,16 @@ export class SessionManager {
                         // rather than a socket that died on the SDK.
                         binding.handshakeFailure = error;
                     },
+                    onIdle: () => {
+                        // Every connection to this host is gone. The pooled
+                        // client that was driving the runtime through it is
+                        // of no use now: a client kept in the pool after
+                        // its connection closed leaves the session reaching
+                        // a host that is not there until it is evicted,
+                        // and every failed turn puts that off further. The
+                        // next turn makes a fresh one.
+                        void this._retireClientsForEndpoint(binding.endpointKey, { connectionGone: true });
+                    },
                 },
             );
             await made.start();
@@ -1832,9 +1842,37 @@ export class SessionManager {
     private async _retireEndpointIfUnused(endpointKey: string): Promise<void> {
         if (!endpointKey || [...this.computeHosts.values()].some((other) => other.endpointKey === endpointKey)) return;
         this.computeEndpoints.delete(endpointKey);
+        await this._retireClientsForEndpoint(endpointKey);
+    }
+
+    /**
+     * Take the pooled clients of one runtime connection out of the pool and
+     * stop them.
+     *
+     * Used both when no session needs the connection any more and when the
+     * connection itself has closed. In the second case the sessions are
+     * still there: what has gone is the way the worker was reaching their
+     * host, so the client is dropped and the next turn connects again.
+     */
+    private async _retireClientsForEndpoint(endpointKey: string, opts: { connectionGone?: boolean } = {}): Promise<void> {
+        if (!endpointKey) return;
         const suffix = COMPUTE_CLIENT_SEPARATOR + endpointKey;
         const stale = [...this.clients.entries()].filter(([key]) => key.endsWith(suffix));
         for (const [key] of stale) this.clients.delete(key);
+        // A connection that has gone takes the polite shutdown with it. The
+        // ordinary stop ends each session and asks the runtime to shut
+        // down, which means writing down a connection that is not there:
+        // those writes fail, nothing is waiting on them, and an unhandled
+        // rejection takes the worker down with the host. Forcing the stop
+        // drops the connection without writing to it first.
+        const forced = opts.connectionGone === true;
+        if (forced) {
+            for (const [, client] of stale) {
+                const force = (client as { forceStop?: () => Promise<void> }).forceStop;
+                if (typeof force === "function") { try { void force.call(client); } catch { /* best effort */ } }
+            }
+            return;
+        }
         await Promise.all(stale.map(async ([, client]) => {
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {

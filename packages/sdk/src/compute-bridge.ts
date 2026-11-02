@@ -44,6 +44,17 @@ import { COMPUTE_HANDSHAKE_FAILED, COMPUTE_HANDSHAKE_TIMEOUT_MS, runWorkerHandsh
 /** How long a pipe has to open before the attempt is abandoned. */
 export const COMPUTE_PIPE_OPEN_TIMEOUT_MS = 30_000;
 /**
+ * How long a pipe to a host may be silent before the worker's own side
+ * asks whether it is still there.
+ *
+ * Without this a connection whose far end has gone — a host that was
+ * replaced, a network that dropped the route — looks open to the worker
+ * until something is written on it and the write times out, which can be a
+ * whole turn later. Keepalive turns that into a connection that closes,
+ * which the worker already knows how to act on.
+ */
+export const COMPUTE_PIPE_KEEPALIVE_MS = 30_000;
+/**
  * The most connections one bridge carries at a time. The SDK needs very
  * few; the cap stops anything else on the machine from making a bridge
  * open pipes without end.
@@ -66,6 +77,7 @@ export function openTcpPipe(address: string, signal: AbortSignal, timeoutMs = CO
     const host = raw.slice(0, at).replace(/^\[|\]$/g, "");
     return new Promise<Duplex>((resolve, reject) => {
         const socket = netConnect({ host, port, noDelay: true });
+        socket.setKeepAlive(true, COMPUTE_PIPE_KEEPALIVE_MS);
         const give = (error: Error) => { socket.destroy(); reject(error); };
         const timer = setTimeout(() => give(new Error(`nothing accepted at ${host}:${port} within ${timeoutMs} ms`)), timeoutMs);
         const onAbort = () => { clearTimeout(timer); give(new Error("the attempt to reach the host was abandoned")); };
@@ -131,6 +143,13 @@ export class ComputeRuntimeBridge {
             handshakeTimeoutMs?: number;
             /** Told when a connection through this bridge fails its handshake. */
             onHandshakeFailure?: (error: Error) => void;
+            /**
+             * Told when the last connection through this bridge has
+             * closed. The worker uses it to drop what it was reaching the
+             * host with, so the next turn gets a fresh connection instead
+             * of one whose far end has gone.
+             */
+            onIdle?: () => void;
         } = {},
     ) {}
 
@@ -286,20 +305,31 @@ export class ComputeRuntimeBridge {
         this.live.add(entry);
         const close = (error?: Error) => {
             if (!this.live.delete(entry)) return;
-            if (error) {
-                socket.destroy(error);
-                pipe.destroy(error);
-            } else {
-                socket.destroy();
-                pipe.destroy();
+            // The SDK's end of this connection is reset rather than closed
+            // politely. A polite close is a half-close: the SDK's socket
+            // stays alive and unwritable, so everything it sends next fails
+            // one message at a time and it never learns the connection is
+            // gone. A reset ends it at once, which is what actually
+            // happened to the host.
+            try { socket.resetAndDestroy(); } catch { socket.destroy(); }
+            if (error) pipe.destroy(error);
+            else pipe.destroy();
+            // Nothing is reaching the host through this bridge any more.
+            // Said only when the bridge is still open: a bridge that is
+            // being closed is already being let go of.
+            if (!this.closed && this.inFlight === 0) {
+                try { this.options.onIdle?.(); } catch { /* best effort */ }
             }
         };
         socket.on("error", close);
         pipe.on("error", close);
         socket.on("close", () => close());
         pipe.on("close", () => close());
-        socket.pipe(pipe);
-        pipe.pipe(socket);
+        // Neither end is ended when the other does: `close` above takes
+        // both down together, and a half-closed connection is exactly what
+        // leaves the SDK writing into one that is not there any more.
+        socket.pipe(pipe, { end: false });
+        pipe.pipe(socket, { end: false });
     }
 
     /**
