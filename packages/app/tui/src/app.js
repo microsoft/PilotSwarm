@@ -65,9 +65,10 @@ export function isPlainShortcutKey(key = {}) {
 
 /**
  * The workflow view's run controls for the run it shows (p pause · r resume · s stop · c cancel; stop and cancel ask
- * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, and e, which
- * opens the draft editor. INACTIVE: only a deployment that takes a person's workflow commands offers them; otherwise the
- * status line says why nothing was sent.
+ * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, e, which
+ * opens the draft editor, and P, which opens the publication review (publish, publish and start, or start; each asks
+ * first). INACTIVE: only a deployment that takes a person's workflow commands offers them; otherwise the status line
+ * says why nothing was sent.
  */
 const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     p: UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN,
@@ -77,6 +78,7 @@ const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     d: UI_COMMANDS.WORKFLOW_VIEW_DISMISS_NOTICE,
     v: UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES,
     e: UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT,
+    P: UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW,
 });
 
 export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
@@ -310,8 +312,8 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             && controller.giveUpTurnControl()) {
             return;
         }
-        // The workflow variables form and the draft editor take typed text, q included.
-        const typingInForm = modal?.type === "workflowVariable" || modal?.type === "workflowDraft";
+        // The workflow variables form, the draft editor and the publication review take typed text, q included.
+        const typingInForm = modal?.type === "workflowVariable" || modal?.type === "workflowDraft" || modal?.type === "workflowPublish";
         if (focus !== "prompt" && !typingInForm && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();
@@ -590,6 +592,47 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     return;
                 }
                 if (!key.ctrl && !key.meta && input) controller.editWorkflowDraft({ type: "insert", text: input });
+                return;
+            }
+            // The publication review: two text fields for a live run, its inputs and initial variables (JSON objects); Tab
+            // switches them. ctrl-p publishes only, ctrl-r publishes and starts (or starts a published definition's live
+            // run), each after the confirm dialog; ctrl-l reviews a workflow that changed meanwhile again; Enter sends
+            // nothing; Esc goes back to the workflow view.
+            if (modal.type === "workflowPublish") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("p", "\u0010")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("r", "\u0012")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("l", "\u000c")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RELOAD).catch(() => {});
+                    return;
+                }
+                if (key.return) return;
+                if (key.tab) {
+                    controller.editWorkflowPublicationField({ type: "switch" });
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowPublicationField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowPublicationField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowPublicationField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowPublicationField({ type: "insert", text: input });
                 return;
             }
             // The workflow variables form: two text fields, a name and a JSON value. Tab switches them, ↑↓ copy a listed

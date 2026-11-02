@@ -4,8 +4,8 @@ import {
     compactWorkflowV2Executions, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
 } from "./workflow-v2-view.js";
 import {
-    workflowV2DraftEdit, workflowV2DraftEditor, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls,
-    workflowV2RunVariables,
+    workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2RestrictionText, workflowV2RunCommandNotice,
+    workflowV2RunControls, workflowV2RunVariables,
 } from "./workflow-v2-commands.js";
 
 /**
@@ -34,11 +34,15 @@ import {
  * and drafts), and a draft's YAML (e opens an editor: ctrl-o saves it as a
  * new revision after the one the edit started from, replace_definition, the
  * portal's workflowV2DraftEditor and workflowV2DraftEdit; a draft someone
- * else saved meanwhile is refused, never overwritten, and the edit is kept).
- * A workflow in an agent state's subtree takes only pause, stop and cancel
- * from people. The server decides every command again. Publication, tests
- * and their answers are not part of it, and the server keeps refusing human
- * input to an agent state's subtree.
+ * else saved meanwhile is refused, never overwritten, and the edit is kept),
+ * and the definition's publication (P opens a review of the exact revision
+ * and definition hash shown: publish only, publish and start its live run,
+ * or start a published definition's live run, with the run's inputs and
+ * initial variables, each after the confirm dialog; the portal's
+ * workflowV2DefinitionControls). A workflow in an agent state's subtree takes
+ * only pause, stop and cancel from people. The server decides every command
+ * again. Tests and their answers are not part of it, and the server keeps
+ * refusing human input to an agent state's subtree.
  *
  * For an agent state it also shows the agent, the workflow interface the
  * state names and what the shown run pins it to (the package revision and
@@ -113,9 +117,11 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const draftBuffer = workflowDraftBuffer(safeView.draftEdit, draftEditor);
     const draftEdit = draftBuffer ? workflowV2DraftEdit(draftBuffer.base, draftBuffer.text,
         draftBuffer.base.revision > draftEditor.revision ? { ...draftEditor, revision: draftBuffer.base.revision } : draftEditor) : null;
+    // The definition's publication as the portal's publication panel offers it (publish, publish and start, start).
+    const publication = v2 ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null;
     return {
         definition, nodes, v2, status, live, runPicker, runControls, runNotice, runVariables, runReadModel: v2 ? readModel ?? null : null,
-        draftEditor, draftBuffer, draftEdit, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
+        draftEditor, draftBuffer, draftEdit, publication, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -553,6 +559,173 @@ export function selectWorkflowDraftModal(state, maxWidth = 100, viewportHeight =
     };
 }
 
+/** The keys of a publication review's actions; each asks first. */
+export const WORKFLOW_PUBLICATION_KEYS = Object.freeze({ publish: "ctrl-p", publish_and_start: "ctrl-r", start: "ctrl-r" });
+const PUBLICATION_OPERATIONS = new Set(Object.keys(WORKFLOW_PUBLICATION_KEYS));
+
+/**
+ * What a publication review is of (its `pin`): a draft's current revision and that revision's definition hash, or a
+ * published definition's revision and hash, from the portal's publication model (workflowV2DefinitionControls). Null
+ * without one. Pure.
+ */
+export function workflowPublicationPin(publication) {
+    if (!isPlainRecord(publication)) return null;
+    return publication.state === "draft"
+        ? { state: "draft", revision: publication.revision ?? null, definitionHash: publication.definitionHash ?? null }
+        : { state: "published", revision: publication.publishedRevision ?? null, definitionHash: publication.publishedDefinitionHash ?? null };
+}
+
+/** Whether two publication pins name the same definition state, revision and definition hash. */
+function samePin(a, b) {
+    return isPlainRecord(a) && isPlainRecord(b) && a.state === b.state && a.revision === b.revision && a.definitionHash === b.definitionHash;
+}
+
+/** A definition hash as a confirm dialog quotes it (the review shows it whole). */
+const shortHash = hash => (typeof hash === "string" && hash ? (hash.length > 16 ? `${hash.slice(0, 12)}…` : hash) : "not known");
+
+/** At most this many characters of a run's inputs or initial variables are quoted in a confirm dialog; the review shows them whole. */
+const CONFIRM_JSON_LIMIT = 160;
+
+function jsonPreview(value) {
+    let text;
+    try { text = JSON.stringify(value); } catch { text = String(value); }
+    text = typeof text === "string" ? text : String(value);
+    return text.length > CONFIRM_JSON_LIMIT ? `${text.slice(0, CONFIRM_JSON_LIMIT - 1)}…` : text;
+}
+
+/**
+ * Why a publication review of `pin` sends nothing now that the workflow shows `publication`, as a sentence: the
+ * workflow it was opened for moved on (a newer draft revision, or published meanwhile), or can no longer be published
+ * or started here; null while the workflow still shows exactly what the review is of. Pure.
+ */
+export function workflowPublicationChange(pin, publication) {
+    const current = workflowPublicationPin(publication);
+    return samePin(pin, current) ? null : publicationChange(pin, current);
+}
+
+/** The sentence of workflowPublicationChange for a review of `pin` whose workflow now shows `current` (a pin, or null). */
+function publicationChange(pin, current) {
+    const was = `revision ${pin?.revision ?? "not known"}`;
+    if (!current) return "The workflow can no longer be published or started here, so nothing is sent. Esc goes back.";
+    if (pin?.state === "draft" && current.state === "published") {
+        return `The workflow was published meanwhile (revision ${current.revision ?? "not known"}); this review is of draft ${was}, so nothing is sent for it. ctrl-l reviews the workflow as it is now.`;
+    }
+    return `The workflow now shows revision ${current.revision ?? "not known"} (definition hash ${shortHash(current.definitionHash)}); this review is of ${was}, so nothing is sent for it. ctrl-l reviews revision ${current.revision ?? "not known"}.`;
+}
+
+/**
+ * The confirm dialog of a publication review's action: what exactly is published or started (the pinned revision of
+ * the named definition and its definition hash), with which inputs and initial variables, and what it does: publishing
+ * freezes the revision and starts no run (it approves no repository write and grants no tool); a live run's effects are
+ * real, and a workflow has one live run. Pure.
+ */
+export function workflowPublicationConfirm(operation, pin, publication, args = {}) {
+    const name = [publication?.name, publication?.semver].filter(Boolean).join(" ") || "this workflow";
+    const what = `revision ${pin?.revision ?? "not known"} of ${name} (definition hash ${shortHash(pin?.definitionHash)})`;
+    const given = ` with inputs ${jsonPreview(args?.inputs ?? {})}${args?.vars !== undefined ? ` and initial variables ${jsonPreview(args.vars)}` : ""}`;
+    if (operation === "publish") {
+        return { title: `Publish Revision ${pin?.revision ?? ""}`.trim(), confirmLabel: "Publish",
+            message: `Publish ${what}? It no longer changes afterwards, and no run starts. Publication approves no repository write and grants no tool.` };
+    }
+    if (operation === "publish_and_start") {
+        return { title: `Publish and Start Revision ${pin?.revision ?? ""}`.trim(), confirmLabel: "Publish and Start",
+            message: `Publish ${what} and start its live run${given}? It no longer changes afterwards, and the live run's effects are real.` };
+    }
+    return { title: "Start the Live Run", confirmLabel: "Start",
+        message: `Start the live run of published ${what}${given}? Its effects are real, and a workflow has one live run.` };
+}
+
+/**
+ * Why the open workflow view has no publication review, as a sentence; null when it has one (the portal's publication
+ * controls offer publish, publish and start, or start). Pure.
+ */
+export function workflowViewPublicationRefusal(selection) {
+    const projection = selection?.projection ?? null;
+    const publication = projection?.publication ?? null;
+    if (publication?.controls?.length) return null;
+    const model = projection?.definitionModel ?? null;
+    const why = !isPlainRecord(model) ? "The workflow is not loaded yet."
+        : !isPlainRecord(model.personCommands) ? "This deployment takes no workflow commands from people."
+            : !publication ? `The definition is ${typeof model.definition?.state === "string" && model.definition.state ? model.definition.state : "in no known state"}.`
+                : publication.note ?? "This workflow takes no publication commands from people.";
+    return `Publication cannot be reviewed here. ${why}`;
+}
+
+/** The definition's publication in the view's details: what P reviews, when the workflow takes any of it from people. */
+function publicationLines(projection) {
+    const publication = projection.publication;
+    if (!publication?.controls?.length) return [];
+    const subject = publication.state === "draft"
+        ? `draft revision ${publication.revision ?? "not known"}${publication.valid ? "" : " (it has errors)"}`
+        : `published revision ${publication.publishedRevision ?? "not known"}, no live run yet`;
+    const actions = publication.controls.map(control => control.label.toLowerCase()).join(" or ");
+    return [{ text: `Publication: ${subject} — P reviews: ${actions}`, color: publication.busy ? "yellow" : "cyan", indent: "" }];
+}
+
+/**
+ * The publication review (TUI modal "workflowPublish"; the portal's publication panel, mocks M01 and M03): exactly what
+ * is published or started (the definition, the revision and full definition hash the review was opened for, its
+ * validity), what has live effects, that publication approves no repository write and grants no tool, the actions with
+ * their keys (each asks first) or why one is not available now, a review whose workflow changed meanwhile (nothing is
+ * sent for it until it is reviewed again), the last publication command's refusal or lost answer, the review's own
+ * check of what was typed, and, where a live run can start, its inputs and initial variables (JSON objects). Null
+ * unless the review is open. Pure.
+ */
+export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHeight = null) {
+    const modal = state?.ui?.modal;
+    if (!modal || modal.type !== "workflowPublish") return null;
+    const projection = workflowViewProjectionFor(state, modal.sessionId);
+    const publication = projection.publication;
+    const pin = isPlainRecord(modal.pin) ? modal.pin : null;
+    const change = workflowPublicationChange(pin, publication);
+    const changed = change !== null;
+    const draft = pin?.state === "draft";
+    const width = Math.max(40, Number(maxWidth) || 100);
+    const contentWidth = width - 4;
+    const lines = [];
+    const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
+    const controls = changed ? [] : publication?.controls ?? [];
+    const runs = Boolean(publication?.controls?.some(control => control.operation !== "publish"));
+    add(`Definition: ${[publication?.name, publication?.semver].filter(Boolean).join(" ") || "Not named"}`);
+    add(`${draft ? "Revision" : "Published revision"}: ${pin?.revision ?? "Not known"}`);
+    add(`Definition hash: ${pin?.definitionHash ?? "Not known"}`);
+    if (draft && !changed && publication) {
+        add(`Validity: ${publication.valid ? "Valid" : `${publication.errors || "Unlisted"} error${publication.errors === 1 ? "" : "s"}: it cannot be published`}`,
+            publication.valid ? "white" : "red");
+    }
+    add(`Live effects: ${runs ? "Only when its live run starts" : "None until a live run starts"}`);
+    add(draft
+        ? "Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. Publication starts no run, approves no repository write and grants no tool."
+        : "Starting runs the published revision with real effects. A workflow has one live run.", "gray");
+    if (changed) add(change, "yellow");
+    for (const control of controls) {
+        add(`${WORKFLOW_PUBLICATION_KEYS[control.operation]} ${control.label}${control.enabled || control.pending ? "" : ` — not now: ${control.title}`}`,
+            control.enabled ? "cyan" : "gray");
+    }
+    if (!changed && publication && !publication.controls.length && publication.note) add(publication.note, "yellow");
+    const notice = projection.runNotice && PUBLICATION_OPERATIONS.has(projection.runNotice.operation) ? projection.runNotice : null;
+    if (notice) {
+        add(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
+        if (notice.retry) add("The same key sends the same command again once you confirm it; the server applies it once.", "gray", "  ");
+    }
+    if (typeof modal.error === "string" && modal.error) add(modal.error, "red");
+    const fields = runs && !changed;
+    const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
+    const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - (fields ? 18 : 10))));
+    const keys = changed ? ["ctrl-l review it as it is now"] : controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} ${control.label.toLowerCase()}`);
+    const hint = `${[...keys, ...(fields ? ["Tab inputs/variables"] : []), "Esc back"].join(" · ")}${!changed && controls.length ? " — each asks first" : ""}`;
+    const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
+    return {
+        title: draft ? `Publish review · revision ${pin?.revision ?? "not known"}` : `Start the live run · published revision ${pin?.revision ?? "not known"}`,
+        lines, listHeight, scrollOffset: 0, changed, fields,
+        field: modal.field === "vars" ? "vars" : "inputs",
+        inputs: String(modal.inputs ?? ""), inputsCursor: Number(modal.inputsCursor) || 0,
+        vars: String(modal.vars ?? ""), varsCursor: Number(modal.varsCursor) || 0,
+        busy: Boolean(publication?.busy),
+        hint, hintLines, hintHeight: hintLines.length + 2, idealWidth: width,
+    };
+}
+
 /** `text` in lines of at most `limit` characters, broken at spaces; each starts with `indent`, a continuation with two more. */
 function wrapped(text, limit, indent = "") {
     const out = [];
@@ -653,7 +826,7 @@ function detailLines(selection, width) {
     }
     // The run controls, their notice and the variables are wrapped, not cut (a reason or a refusal is read whole); a
     // variable's value is cut to one line.
-    for (const line of [...runControlLines(projection), ...runVariableLines(projection), ...draftLines(projection)]) {
+    for (const line of [...runControlLines(projection), ...runVariableLines(projection), ...draftLines(projection), ...publicationLines(projection)]) {
         if (line.clip) add(`${line.indent}${line.text}`, line.color);
         else for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }

@@ -70,6 +70,12 @@ export const UI_COMMANDS = {
     WORKFLOW_DRAFT_SAVE: "workflowDraftSave",
     WORKFLOW_DRAFT_DISCARD: "workflowDraftDiscard",
     WORKFLOW_DRAFT_KEEP: "workflowDraftKeep",
+    // The definition's publication (INACTIVE likewise): open its review, then publish only, publish and start (or start a
+    // published definition's live run), each after the confirm dialog, or review a workflow that changed meanwhile again.
+    WORKFLOW_VIEW_PUBLICATION_REVIEW: "workflowViewPublicationReview",
+    WORKFLOW_PUBLICATION_PUBLISH: "workflowPublicationPublish",
+    WORKFLOW_PUBLICATION_RUN: "workflowPublicationRun",
+    WORKFLOW_PUBLICATION_RELOAD: "workflowPublicationReload",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

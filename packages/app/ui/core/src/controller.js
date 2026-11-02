@@ -3,11 +3,12 @@ import { workflowDefinition } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
-    workflowViewDraftRefusal, workflowViewVariablesFor,
+    workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS, workflowPublicationChange,
+    workflowPublicationConfirm, workflowPublicationPin,
 } from "./workflow-tui.js";
 import {
-    workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
-    workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2VariableDraft, workflowV2VariableRemoval,
+    workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
+    workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -6760,6 +6761,157 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: `Your edits now apply to revision ${editor.revision}; ctrl-o saves them as a new revision after it` });
     }
 
+    /**
+     * The TUI's workflow view: open the publication review (P; design 04
+     * publish, publish_and_start, start; mocks M01, M03; R17, R18, R26, R28;
+     * INACTIVE: only where the portal's publication panel offers a person a
+     * command, workflowV2DefinitionControls) of exactly the revision and
+     * definition hash the view shows now (its pin): a draft's current
+     * revision, or a published definition without its live run. Otherwise the
+     * status line says why. It returns to the view. Nothing is sent.
+     */
+    openWorkflowPublicationReview() {
+        const state = this.getState();
+        const selection = selectWorkflowViewSelection(state);
+        if (!selection) return;
+        const refusal = workflowViewPublicationRefusal(selection);
+        if (refusal) {
+            this.dispatch({ type: "ui/status", text: refusal });
+            return;
+        }
+        const publication = selection.projection.publication;
+        this.dispatch({ type: "ui/modal", modal: { type: "workflowPublish", sessionId: selection.modal.sessionId, pin: workflowPublicationPin(publication),
+            field: "inputs", inputs: "{}", inputsCursor: 2, vars: "", varsCursor: 0, error: null,
+            returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
+        const actions = publication.controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} ${control.label.toLowerCase()}`);
+        this.dispatch({ type: "ui/status", text: `${publication.state === "draft" ? "Publish review" : "Start review"} — ${actions.join(" · ")} (each asks first) · Esc back` });
+    }
+
+    /** The publication review: change its own state (what is typed, the field, its pin, its message). */
+    updateWorkflowPublicationReview(patch) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "workflowPublish") return;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...patch } });
+    }
+
+    /**
+     * The publication review's two fields, the live run's inputs and its
+     * initial variables (JSON objects, kept as typed until sent): type at the
+     * cursor (`insert`; a pasted line break is a space), delete backward
+     * (`backspace`), move the cursor (`move`: `chars`; `edge`: the start or
+     * the end), or go to the other field (`switch`, Tab).
+     */
+    editWorkflowPublicationField(action = {}) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "workflowPublish") return;
+        const field = modal.field === "vars" ? "vars" : "inputs";
+        if (action.type === "switch") {
+            this.updateWorkflowPublicationReview({ field: field === "inputs" ? "vars" : "inputs" });
+            return;
+        }
+        const text = String(modal[field] ?? "");
+        const cursor = clampPromptCursor(text, Number(modal[`${field}Cursor`]) || 0);
+        let next;
+        if (action.type === "insert") next = insertPromptTextAtCursor(text, cursor, String(action.text ?? "").replace(/\r\n?|\n/g, " "));
+        else if (action.type === "backspace") next = deletePromptCharBackward(text, cursor);
+        else if (action.type === "move") next = { prompt: text, cursor: clampPromptCursor(text, cursor + (Number(action.chars) || 0)) };
+        else if (action.type === "edge") next = { prompt: text, cursor: action.edge === "start" ? 0 : text.length };
+        else return;
+        this.updateWorkflowPublicationReview({ [field]: next.prompt, [`${field}Cursor`]: next.cursor, ...(next.prompt !== text ? { error: null } : {}) });
+    }
+
+    /**
+     * The publication review: ask to send its action (`kind` "publish", ctrl-p:
+     * publish only; "run", ctrl-r: publish and start a draft, or start a
+     * published definition's live run) for exactly the revision and
+     * definition hash the review is of, as the portal's publication panel
+     * sends it (sendWorkflowRunCommand). Nothing is sent for a review whose
+     * workflow changed meanwhile (ctrl-l reviews it again), for an action the
+     * workflow does not offer or not now (compile errors, a viewer the portal
+     * refuses, a command being sent; the portal's reasons), or for inputs or
+     * initial variables that are not JSON objects: the review says why and
+     * keeps what was typed. Otherwise the confirm dialog says exactly what
+     * happens and returns to the review; confirmed, the command is sent.
+     * Accepted, the review returns to the view; refused (a stale revision or
+     * hash reads the workflow again; inputs the definition's schema refuses
+     * list their problems) or unanswered (the same key, once confirmed, sends
+     * the same command again), it stays with what was typed. The server
+     * decides every command again. Never throws.
+     */
+    requestWorkflowPublication(kind) {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowPublish") return { ok: false, reason: "closed" };
+        const refuse = error => {
+            this.updateWorkflowPublicationReview({ error });
+            this.dispatch({ type: "ui/status", text: error });
+            return { ok: false, reason: "invalid" };
+        };
+        const publication = workflowViewProjectionFor(state, modal.sessionId).publication;
+        const change = workflowPublicationChange(modal.pin, publication);
+        if (change) return refuse(change);
+        const pin = modal.pin;
+        const operation = kind === "publish" ? "publish" : pin.state === "draft" ? "publish_and_start" : "start";
+        const label = operation === "publish" ? "Publish only" : operation === "publish_and_start" ? "Publish and start" : "Start live run";
+        const control = publication.controls.find(item => item.operation === operation) ?? null;
+        if (!control) return refuse(`${label} is not offered here.${publication.note ? ` ${publication.note}` : ""}`);
+        if (!control.enabled) return refuse(`${label} is not available now. ${control.title}`);
+        let run = {};
+        if (operation !== "publish") {
+            const inputs = workflowV2JsonObjectDraft(modal.inputs, { label: "Inputs" });
+            const vars = workflowV2JsonObjectDraft(modal.vars, { label: "Initial variables", optional: true });
+            const refused = !inputs.ok ? inputs : !vars.ok ? vars : null;
+            if (refused) return refuse(refused.error);
+            run = { inputs: inputs.value, ...(vars.value !== undefined ? { vars: vars.value } : {}) };
+        }
+        const args = operation === "start" ? { definitionHash: pin.definitionHash, ...run }
+            : { expectedRevision: pin.revision, definitionHash: pin.definitionHash, ...run };
+        if (!workflowV2RunCommandArgs(operation, args).ok) return refuse("The revision or its definition hash is not known; read the workflow again.");
+        this.updateWorkflowPublicationReview({ error: null });
+        this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...workflowPublicationConfirm(operation, pin, publication, args),
+            action: "workflowRunCommand", workflowRunCommand: { sessionId: modal.sessionId, operation, runId: null, ...args },
+            returnModal: this.getState().ui.modal, previousFocus: state.ui.focusRegion } });
+        return { ok: false, reason: "confirming" };
+    }
+
+    /** The publication review of a workflow that changed meanwhile: review it as it is now (ctrl-l); what was typed stays. */
+    reviewWorkflowPublicationAgain() {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowPublish") return;
+        const publication = workflowViewProjectionFor(state, modal.sessionId).publication;
+        if (!workflowPublicationChange(modal.pin, publication)) {
+            this.dispatch({ type: "ui/status", text: "This review already shows the workflow as it is now" });
+            return;
+        }
+        const pin = workflowPublicationPin(publication);
+        if (!pin) {
+            this.dispatch({ type: "ui/status", text: "The workflow can no longer be published or started here" });
+            return;
+        }
+        this.updateWorkflowPublicationReview({ pin, error: null });
+        this.dispatch({ type: "ui/status", text: `Reviewing ${pin.state === "draft" ? "revision" : "published revision"} ${pin.revision ?? "not known"} as it is now` });
+    }
+
+    /**
+     * After a command sent from the publication review `review`: accepted, back to the workflow view; refused or
+     * unanswered, the review stays with what was typed (its own earlier message gives way to the command's notice) and
+     * the status line says so too.
+     */
+    afterWorkflowPublication(review, result) {
+        const current = this.getState().ui.modal;
+        const open = current?.type === "workflowPublish" && current.sessionId === review.sessionId;
+        if (result?.ok) {
+            if (open) this.dispatch({ type: "ui/modal", modal: current.returnModal ?? null });
+            return;
+        }
+        if (result?.reason === "failed" || result?.reason === "unconfirmed") {
+            if (open && current.error) this.updateWorkflowPublicationReview({ error: null });
+            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[review.sessionId]?.runCommand);
+            if (notice) this.dispatch({ type: "ui/status", text: notice.text });
+        }
+    }
+
     /** The TUI's workflow view: clear the notice about its last run command (nothing is sent or undone). */
     dismissWorkflowViewRunCommand() {
         const selection = selectWorkflowViewSelection(this.getState());
@@ -9728,16 +9880,19 @@ export class PilotSwarmUiController {
     closeModal() {
         const modal = this.getState().ui.modal;
         if (!modal) return;
-        // A confirm opened from the TUI's workflow view, its variables form or its draft editor returns to it, and what it
-        // asked about was not done; the variables form and the draft editor return to the view (the draft's edit is kept).
-        if (modal.returnModal && ["confirm", "workflowVariable", "workflowDraft"].includes(modal.type)) {
+        // A confirm opened from the TUI's workflow view, its variables form, its draft editor or its publication review
+        // returns to it, and what it asked about was not done; the variables form, the draft editor and the publication
+        // review return to the view (the draft's edit is kept).
+        if (modal.returnModal && ["confirm", "workflowVariable", "workflowDraft", "workflowPublish"].includes(modal.type)) {
             this.dispatch({ type: "ui/modal", modal: modal.returnModal });
             const operation = modal.type === "confirm" ? modal.workflowRunCommand?.operation : null;
-            const label = operation === "stop" ? "Stop" : operation === "cancel" ? "Cancel" : operation === "set_vars" ? "The removal" : "The command";
+            const labels = { stop: "Stop", cancel: "Cancel", set_vars: "The removal", publish: "Publish", publish_and_start: "Publish and start", start: "Start" };
+            const label = Object.hasOwn(labels, operation ?? "") ? labels[operation] : "The command";
             const unsaved = modal.type === "workflowDraft" && workflowViewProjectionFor(this.getState(), modal.sessionId).draftEdit?.changed;
             this.dispatch({ type: "ui/status", text: modal.type === "workflowVariable" ? "Back to the workflow view"
                 : modal.type === "workflowDraft" ? (unsaved ? "Closed the draft editor; your unsaved edits are kept (e shows them)" : "Closed the draft editor")
-                    : modal.action === "discardWorkflowDraftEdits" ? "Your edits are kept" : `${label} was not sent` });
+                    : modal.type === "workflowPublish" ? "Closed the publication review"
+                        : modal.action === "discardWorkflowDraftEdits" ? "Your edits are kept" : `${label} was not sent` });
             return;
         }
         this.dispatch({ type: "ui/modal", modal: null });
@@ -9981,6 +10136,8 @@ export class PilotSwarmUiController {
                 // refusal on the status line (the portal shows its notice beside the graph).
                 if (modal.returnModal?.type === "workflowVariable") {
                     this.afterWorkflowVariableUpdate(modal.returnModal, result);
+                } else if (modal.returnModal?.type === "workflowPublish") {
+                    this.afterWorkflowPublication(modal.returnModal, result);
                 } else if (modal.returnModal && !result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
                     const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
                     if (notice) this.dispatch({ type: "ui/status", text: notice.text });
@@ -12871,6 +13028,18 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_DRAFT_KEEP:
                 this.keepWorkflowDraftEdits();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW:
+                this.openWorkflowPublicationReview();
+                return;
+            case UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH:
+                this.requestWorkflowPublication("publish");
+                return;
+            case UI_COMMANDS.WORKFLOW_PUBLICATION_RUN:
+                this.requestWorkflowPublication("run");
+                return;
+            case UI_COMMANDS.WORKFLOW_PUBLICATION_RELOAD:
+                this.reviewWorkflowPublicationAgain();
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

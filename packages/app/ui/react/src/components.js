@@ -29,6 +29,7 @@ import {
     selectWorkflowViewModal,
     selectWorkflowVariableModal,
     selectWorkflowDraftModal,
+    selectWorkflowPublicationModal,
     selectWorkflowInputNote,
     workflowViewPanelWidth,
     selectSessionAgentPickerModal,
@@ -2006,6 +2007,96 @@ function WorkflowDraftModalContainer({ controller }) {
     return React.createElement(WorkflowDraftModal, { state: selectorState });
 }
 
+/**
+ * Workflow sessions (TUI): the publication review (selectWorkflowPublicationModal): exactly what is published or started
+ * (the definition, the revision and full definition hash the review is of, its validity), what has live effects, the
+ * actions with their keys (each asks first) or why one is not available now, a workflow that changed meanwhile, the
+ * last command's refusal, and, where a live run can start, its inputs and initial variables (JSON objects). Tab switches
+ * the fields, Esc goes back to the workflow view.
+ */
+export function WorkflowPublicationModal({ state }) {
+    const platform = useUiPlatform();
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = workflowViewPanelWidth(viewport.width);
+    const modal = selectWorkflowPublicationModal(state, width, viewport.height);
+    if (!modal) return null;
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: modal.changed ? "yellow" : "cyan",
+                focused: false,
+                width,
+                height: modal.listHeight,
+                lines: modal.lines,
+                scrollOffset: modal.scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            modal.fields ? React.createElement(platform.Input, {
+                label: "inputs (JSON object)",
+                value: modal.inputs,
+                cursorIndex: modal.inputsCursor,
+                focused: modal.field === "inputs",
+                placeholder: "{} or {\"repo\": \"name\"}",
+                rows: 2,
+            }) : null,
+            modal.fields ? React.createElement(platform.Input, {
+                label: "initial variables (JSON object, optional)",
+                value: modal.vars,
+                cursorIndex: modal.varsCursor,
+                focused: modal.field === "vars",
+                placeholder: "empty, or {\"limit\": 3}",
+                rows: 2,
+            }) : null,
+            React.createElement(platform.Panel, {
+                title: modal.busy ? "Keys · a command is being sent" : "Keys",
+                color: "cyan",
+                focused: false,
+                width,
+                height: modal.hintHeight,
+                lines: modal.hintLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function WorkflowPublicationModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => {
+        const modal = rootState.ui.modal;
+        const sessionId = modal?.type === "workflowPublish" ? modal.sessionId : null;
+        return {
+            modal,
+            layout: rootState.ui.layout,
+            session: sessionId ? rootState.sessions.byId[sessionId] || null : null,
+            history: sessionId ? rootState.history.bySessionId.get(sessionId) || null : null,
+            view: sessionId ? rootState.ui.workflowViews?.[sessionId] || null : null,
+            canvas: sessionId ? rootState.canvas?.bySessionId?.[sessionId] || null : null,
+        };
+    }, shallowEqualObject);
+    const sessionId = state.modal?.type === "workflowPublish" ? state.modal.sessionId : null;
+    const events = state.history?.events || EMPTY_WORKFLOW_EVENTS;
+    const sessionUpdatedAt = state.session?.updatedAt ?? null;
+    // While the review is open, new events or a changed session row read the workflow again: a revision saved or a
+    // publication made elsewhere shows as a change, and nothing is sent for the old one.
+    React.useEffect(() => {
+        if (sessionId) controller.ensureWorkflowDefinition(sessionId).catch(() => {});
+    }, [controller, sessionId, events, sessionUpdatedAt]);
+    if (!sessionId) return null;
+    const selectorState = {
+        ui: { modal: state.modal, layout: state.layout, workflowViews: state.view ? { [sessionId]: state.view } : {} },
+        sessions: { byId: state.session ? { [sessionId]: state.session } : {} },
+        history: { bySessionId: new Map(state.history ? [[sessionId, state.history]] : []) },
+        canvas: { bySessionId: state.canvas ? { [sessionId]: state.canvas } : {} },
+    };
+    return React.createElement(WorkflowPublicationModal, { state: selectorState });
+}
+
 function ArtifactPickerModalContainer({ controller }) {
     const state = useControllerSelector(controller, (rootState) => ({
         ui: {
@@ -2862,6 +2953,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(WorkflowViewModalContainer, { controller }),
         React.createElement(WorkflowVariableModalContainer, { controller }),
         React.createElement(WorkflowDraftModalContainer, { controller }),
+        React.createElement(WorkflowPublicationModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ContextTierPickerModalContainer, { controller }),

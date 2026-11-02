@@ -1,8 +1,8 @@
 // The TUI's workflow view (design 02 "Portal/TUI: graph, observed state, read-only child chats"; T115): `w` opens it
 // outside the prompt (the prompt keeps typing w), the shared Ink app draws it from the shared view model, `?` lists it,
 // and inside it p r s c send a person's run controls for the shown run, d dismisses their notice, v opens the shown
-// run's variables form and e the draft editor (INACTIVE: only a deployment that takes a person's workflow commands
-// offers any).
+// run's variables form, e the draft editor and P the publication review (INACTIVE: only a deployment that takes a
+// person's workflow commands offers any).
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -19,12 +19,14 @@ import {
     createStore,
     selectHelpModal,
 } from "pilotswarm/ui-core";
-import { WorkflowDraftModal, WorkflowVariableModal, WorkflowViewModal } from "../../ui/react/src/components.js";
+import { WorkflowDraftModal, WorkflowPublicationModal, WorkflowVariableModal, WorkflowViewModal } from "../../ui/react/src/components.js";
 import { UiPlatformProvider } from "../../ui/react/src/platform.js";
 import { readModel, row } from "../../ui/core/test/workflow-v2-fixtures.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = fs.readFileSync(path.join(here, "..", "src", "app.js"), "utf8");
+/** The quit key does not fire while a workflow form takes typed text (q is part of a name, a value, YAML or JSON there). */
+const TYPING_IN_FORM = /const typingInForm = modal\?\.type === "workflowVariable" \|\| modal\?\.type === "workflowDraft" \|\| modal\?\.type === "workflowPublish";/;
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600,
@@ -105,11 +107,14 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /workflow view: edit the draft's YAML/);
     assert.match(text, /ctrl-o save as a new revision/);
     assert.match(text, /ctrl-k keep edits on a newer revision/);
+    assert.match(text, /workflow view: publication review of the exact revision and hash shown/);
+    assert.match(text, /ctrl-p publish only · ctrl-r publish and start/);
+    assert.match(text, /each asks first/);
 });
 
 test("the variables form takes typed text, q included; Tab, ↑↓, Enter, ctrl-r and Esc are its own keys", () => {
     // The quit key does not fire while the form is open (q is part of a name or a value there).
-    assert.match(APP, /const typingInForm = modal\?\.type === "workflowVariable" \|\| modal\?\.type === "workflowDraft";/);
+    assert.match(APP, TYPING_IN_FORM);
     assert.match(APP, /if \(focus !== "prompt" && !typingInForm && input === "q" && quitStateRef\.current\.armedUntil > Date\.now\(\)\) \{/);
     assert.match(APP, /if \(focus !== "prompt" && !typingInForm && input === "q"\) \{/);
     const modalBranch = APP.indexOf("if (modal) {");
@@ -157,14 +162,14 @@ test("the shared Ink app draws the variables form: the variables, the revision a
 
 test("the draft editor takes typed text, q included; ctrl-o, ctrl-r, ctrl-k, Enter, Tab, the cursor keys and Esc are its own keys", () => {
     // The quit key does not fire while the editor is open (q is YAML there).
-    assert.match(APP, /const typingInForm = modal\?\.type === "workflowVariable" \|\| modal\?\.type === "workflowDraft";/);
+    assert.match(APP, TYPING_IN_FORM);
     const modalBranch = APP.indexOf("if (modal) {");
     const editor = APP.indexOf('if (modal.type === "workflowDraft") {');
     assert.ok(modalBranch > 0 && modalBranch < editor, "inside the modal branch");
     assert.ok(APP.indexOf('if (modal.type === "confirm") {', modalBranch) < editor, "after the confirm dialog's keys");
     assert.ok(editor < APP.indexOf('modal.type === "renameSession" || modal.type === "artifactUpload"'), "before the other text modals");
     assert.ok(editor < APP.indexOf('if (key.escape || input === "q" ||'), "before q closes a modal");
-    const branch = APP.slice(editor, APP.indexOf('if (modal.type === "workflowVariable") {'));
+    const branch = APP.slice(editor, APP.indexOf('if (modal.type === "workflowPublish") {'));
     for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/,
         /matchesCtrlKey\("o", "\\u000f"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_DRAFT_SAVE/,
         /matchesCtrlKey\("r", "\\u0012"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_DRAFT_DISCARD/,
@@ -213,6 +218,66 @@ test("the shared Ink app draws the draft editor: the revision, the YAML with lin
     assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
 });
 
+test("the publication review takes typed JSON, q included; ctrl-p, ctrl-r, ctrl-l, Tab, the cursor keys and Esc are its own keys; Enter sends nothing", () => {
+    assert.match(APP, TYPING_IN_FORM);
+    const modalBranch = APP.indexOf("if (modal) {");
+    const review = APP.indexOf('if (modal.type === "workflowPublish") {');
+    assert.ok(modalBranch > 0 && modalBranch < review, "inside the modal branch");
+    assert.ok(APP.indexOf('if (modal.type === "confirm") {', modalBranch) < review, "after the confirm dialog's keys");
+    assert.ok(review < APP.indexOf('modal.type === "renameSession" || modal.type === "artifactUpload"'), "before the other text modals");
+    assert.ok(review < APP.indexOf('if (key.escape || input === "q" ||'), "before q closes a modal");
+    const branch = APP.slice(review, APP.indexOf('if (modal.type === "workflowVariable") {'));
+    for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/,
+        /matchesCtrlKey\("p", "\\u0010"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_PUBLICATION_PUBLISH/,
+        /matchesCtrlKey\("r", "\\u0012"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_PUBLICATION_RUN/,
+        /matchesCtrlKey\("l", "\\u000c"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_PUBLICATION_RELOAD/,
+        /if \(key\.return\) return;/,
+        /key\.tab[\s\S]*?controller\.editWorkflowPublicationField\(\{ type: "switch" \}\)/,
+        /controller\.editWorkflowPublicationField\(\{ type: "move", chars: key\.leftArrow \? -1 : 1 \}\)/,
+        /controller\.editWorkflowPublicationField\(\{ type: "edge", edge: key\.home \? "start" : "end" \}\)/,
+        /key\.backspace \|\| key\.delete[\s\S]*?controller\.editWorkflowPublicationField\(\{ type: "backspace" \}\)/,
+        /if \(!key\.ctrl && !key\.meta && input\) controller\.editWorkflowPublicationField\(\{ type: "insert", text: input \}\);/]) {
+        assert.match(branch, binding);
+    }
+    for (const command of ["WORKFLOW_VIEW_PUBLICATION_REVIEW", "WORKFLOW_PUBLICATION_PUBLISH", "WORKFLOW_PUBLICATION_RUN", "WORKFLOW_PUBLICATION_RELOAD"]) {
+        assert.equal(typeof UI_COMMANDS[command], "string", command);
+    }
+});
+
+test("the shared Ink app draws the publication review: what is published, its actions and keys, and the live run's two fields", async () => {
+    const draft = { ...readModel({ noRun: true, graph: { revision: 2, initial: "review", states },
+        definition: { state: "draft", currentRevision: 2, publishedRevision: null, publishedDefinitionHash: null },
+        revision: { revision: 2, definitionHash: "hash-2", name: "review-once" } }),
+    personCommands: { operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"],
+        restriction: null, run: null } };
+    const calls = [];
+    const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return draft; } };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: draft, readModelRunId: null } });
+    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
+    controller.editWorkflowPublicationField({ type: "switch" });
+    controller.editWorkflowPublicationField({ type: "insert", text: '{"limit": 3}' });
+    const inputs = [];
+    const formPlatform = { ...platform, Input: ({ label, value, focused }) => { inputs.push({ label, value, focused });
+        return React.createElement("label", { "data-focused": String(focused) }, `${label}: ${value}`); } };
+    const html = renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform: formPlatform },
+        React.createElement(WorkflowPublicationModal, { state: store.getState() })));
+    assert.match(html, /data-title="Publish review · revision 2"/);
+    assert.match(html, /<p>Definition: review-once 1\.0\.0<\/p>/);
+    assert.match(html, /<p>Definition hash: hash-2<\/p>/);
+    assert.match(html, /<p>ctrl-p Publish only<\/p>/);
+    assert.match(html, /<p>ctrl-r Publish and start<\/p>/);
+    assert.deepEqual(inputs.map(input => [input.label, input.value, input.focused]),
+        [["inputs (JSON object)", "{}", false], ["initial variables (JSON object, optional)", '{"limit": 3}', true]]);
+    assert.match(html, /data-title="Keys"><p>ctrl-p publish only · ctrl-r publish and start · Tab inputs\/variables · Esc back — each asks first<\/p>/);
+    assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
+});
+
 test("p r s c in the open workflow view send its run controls and d dismisses their notice; elsewhere the keys keep their meaning", () => {
     const binding = APP.indexOf('if (modal.type === "workflowView" && plainShortcut && Object.hasOwn(WORKFLOW_VIEW_RUN_KEYS, input)) {');
     assert.ok(binding > 0, "the binding exists");
@@ -226,7 +291,7 @@ test("p r s c in the open workflow view send its run controls and d dismisses th
     const keys = APP.slice(APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS"), APP.indexOf("});", APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS")));
     for (const [key, command] of [["p", "WORKFLOW_VIEW_PAUSE_RUN"], ["r", "WORKFLOW_VIEW_RESUME_RUN"], ["s", "WORKFLOW_VIEW_STOP_RUN"],
         ["c", "WORKFLOW_VIEW_CANCEL_RUN"], ["d", "WORKFLOW_VIEW_DISMISS_NOTICE"], ["v", "WORKFLOW_VIEW_EDIT_VARIABLES"],
-        ["e", "WORKFLOW_VIEW_EDIT_DRAFT"]]) {
+        ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["P", "WORKFLOW_VIEW_PUBLICATION_REVIEW"]]) {
         assert.match(keys, new RegExp(`${key}: UI_COMMANDS\\.${command},`), key);
         assert.equal(typeof UI_COMMANDS[command], "string", command);
     }
