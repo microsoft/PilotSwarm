@@ -255,7 +255,12 @@ function latestRunId(events, excluded = new Set()) {
     return null;
 }
 
-/** Runs known not to be the live run: their start event, or the run list of a read model that projects, gives another mode. */
+/**
+ * Runs known not to be the live run: their start event, the run list of a read model that projects, or that model's own
+ * run (the run it was read for, listed or not) gives another mode. A model's own run whose mode is not "live" is
+ * excluded whatever the mode is, so a run that was read as a test run, and is neither listed nor has its start loaded,
+ * is never taken for the live run when the selection goes back to live and its own model is still loading or failed.
+ */
 function notLiveRunIds(events, model) {
     const ids = new Set();
     for (const event of events) {
@@ -265,6 +270,8 @@ function notLiveRunIds(events, model) {
     for (const item of model?.ok ? model.runs : []) {
         if (typeof item?.runId === "string" && typeof item.mode === "string" && item.mode !== "live") ids.add(item.runId);
     }
+    const own = model?.ok ? model.run : null;
+    if (own && typeof own.runId === "string" && own.mode !== "live") ids.add(own.runId);
     return ids;
 }
 
@@ -325,7 +332,8 @@ function collectExecutions(events, runId, run, overlay) {
             if (data.runId === runId) add(executionFromEvent(event.eventType, data), "event");
         }
     } else if (!runId) {
-        ignoredEvents += events.filter(event => STATE_EVENTS.has(event?.eventType)).length;
+        // Only events that name no run are unreadable; an event of a run that was left out belongs to that run.
+        ignoredEvents += events.filter(event => STATE_EVENTS.has(event?.eventType) && !(isRecord(event.data) && typeof event.data.runId === "string")).length;
     }
     if (run && overlay) {
         for (const message of run.outbox) {
