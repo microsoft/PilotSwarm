@@ -39,6 +39,7 @@ import {
 import { schemaSetFor, type SchemaProblem } from "./schema.js";
 import { intakeEnvelopeSha256, type IntakeEnvelope } from "./intake.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
+import { RESPOND_SESSION_REQUEST_TOOL } from "./request-service.js";
 import { randomUUID } from "node:crypto";
 import {
     ACTIVE_RUN_STATUSES,
@@ -2741,9 +2742,6 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         return { won: stored.won, outcome: stored.node.outcome };
     });
 }
-
-/** The tool an agent session answers a workflow's request with (design workflow-messaging-request.md 6, 8.3). */
-export const RESPOND_SESSION_REQUEST_TOOL = "respond_session_request";
 
 /**
  * The named schema and every schema it references through "#/schemas/..."

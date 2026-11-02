@@ -1,6 +1,5 @@
 import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
-import { RESPOND_SESSION_REQUEST_TOOL } from "./runtime.js";
 import { ACTIVE_RUN_STATUSES, WorkflowStoreError, type WorkflowStore } from "./store.js";
 
 /**
@@ -9,6 +8,9 @@ import { ACTIVE_RUN_STATUSES, WorkflowStoreError, type WorkflowStore } from "./s
  * INACTIVE: only a test registers the tool (on a 1.0.83 turn) and starts a
  * dispatcher; no worker does.
  */
+
+/** The tool an agent session answers a workflow's request with (design 6, 8.3). */
+export const RESPOND_SESSION_REQUEST_TOOL = "respond_session_request";
 
 /** The respond_session_request tool's description and parameters. */
 export const RESPOND_SESSION_REQUEST_TOOL_SPEC = {

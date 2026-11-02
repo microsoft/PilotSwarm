@@ -280,6 +280,12 @@ export interface TurnOptions {
         readWorkflow?(args: Record<string, unknown>): Promise<string>;
         /** Workflow v2: give a workflow run one typed input as this session. Returns JSON. */
         sendWorkflowInput?(args: Record<string, unknown>): Promise<string>;
+        /**
+         * Workflow v2 request states: answer a workflow's request as this
+         * session (respond_session_request). Present only on a 1.0.83 turn of
+         * a worker that runs request states (INACTIVE: only tests). Returns JSON.
+         */
+        respondSessionRequest?(args: Record<string, unknown>): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;

@@ -75,6 +75,7 @@ import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } fro
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
+import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
 import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/v2/intake-admission.js";
@@ -1256,9 +1257,11 @@ export function registerActivities(
      * 1.0.83's turn activities (runTurnV5 / runTurnEpochV5), whose input may
      * carry an invocation's `intake` field; `intakeAdmissionRetryDelaysMs`
      * replaces the in-place waits of their admission's transient retries
-     * (intake-admission.ts). INACTIVE: no worker passes them.
+     * (intake-admission.ts); `workflowRequests` gives those turns the
+     * respond_session_request tool (workflow request states). INACTIVE: no
+     * worker passes them.
      */
-    testOptions?: { workflowIntakeTurns?: boolean; intakeAdmissionRetryDelaysMs?: readonly number[] },
+    testOptions?: { workflowIntakeTurns?: boolean; intakeAdmissionRetryDelaysMs?: readonly number[]; workflowRequests?: boolean },
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -1495,6 +1498,12 @@ export function registerActivities(
         },
         /** 1.0.83 (runTurnV5): the invocation this attempt carries, already checked; null on every other name. */
         turnIntake: IntakeTurnField | null = null,
+        /**
+         * A 1.0.83 turn of a worker that runs workflow request states (test
+         * option workflowRequests; INACTIVE): the session can answer a
+         * workflow's request (respond_session_request).
+         */
+        workflowRequestTurn = false,
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
         // showed turns whose ActivityScheduled input carried refs executing
@@ -2810,6 +2819,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             sendWorkflowInput: async (args: Record<string, unknown>) => sendWorkflowInputFromTool(args, {
                 callerSessionId: input.sessionId, host: await workflowV2Host(),
             }),
+            /** respond_session_request (request states, INACTIVE): the calling session is the host-stamped responder. */
+            ...(workflowRequestTurn ? {
+                respondSessionRequest: async (args: Record<string, unknown>) => {
+                    const host = await workflowV2Host();
+                    return respondSessionRequestFromTool(args, {
+                        callerSessionId: input.sessionId, store: host.store,
+                        dispatcher: new WorkflowResponseWakeDispatcher(host.store, host.duroxideClient),
+                    });
+                },
+            } : {}),
 
             /**
              * Create a TOP-LEVEL session — the Agent Manager's test loop (§7).
@@ -5179,7 +5198,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // whole first. Only a test registers them.
     if (testOptions?.workflowIntakeTurns === true) {
         const runTurnV5Handler = async (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
-            runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake));
+            runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake), testOptions.workflowRequests === true);
         registerWorkflowIntakeTurnActivity(runtime, "runTurn", runTurnV5Handler);
         registerWorkflowIntakeTurnActivity(runtime, "runTurn2", runTurnV5Handler);
     }

@@ -24,6 +24,7 @@ import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
 import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 import { READ_WORKFLOW_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC } from "./workflow/v2/tools.js";
+import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -3102,6 +3103,17 @@ export class ManagedSession {
                 return await controlBridge.sendWorkflowInput(args ?? {});
             },
         });
+        // Workflow request states (INACTIVE): only a turn whose bridge can answer a request gets the tool.
+        const respondSessionRequestTools: Tool<any>[] = controlBridge?.respondSessionRequest
+            ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, {
+                ...RESPOND_SESSION_REQUEST_TOOL_SPEC,
+                handler: async (args: Record<string, unknown>) => {
+                    if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(RESPOND_SESSION_REQUEST_TOOL);
+                    if (!controlBridge?.respondSessionRequest) return `Error: ${RESPOND_SESSION_REQUEST_TOOL} is not available in this session.`;
+                    return await controlBridge.respondSessionRequest(args ?? {});
+                },
+            })]
+            : [];
 
         const subAgentToolsForTurn = isServiceSession
             ? []
@@ -3113,6 +3125,7 @@ export class ManagedSession {
                     updateWorkflowTool,
                     readWorkflowTool,
                     sendWorkflowInputTool,
+                    ...respondSessionRequestTools,
                     messageAgentTool,
                     checkAgentsTool,
                     waitForAgentsTool,
