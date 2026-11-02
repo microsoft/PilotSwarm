@@ -3569,17 +3569,17 @@ export class WorkflowStore {
         : Promise<Array<{ exchangeId: string; runId: string; controllerInstanceId: string; leaseToken: string; attempts: number }>> {
         const limit = Math.max(1, Math.min(input.limit, 100));
         const { rows } = await this.pool.query(
-            `WITH reading AS (SELECT clock_timestamp() AS at),
+            `WITH lease_reading AS (SELECT clock_timestamp() AS at),
                   due AS (
                     SELECT exchange_id FROM ${this.t.responseWakes}
                      WHERE attempts < $1 AND ($3::text IS NULL OR exchange_id = $3)
-                       AND ((state = 'pending' AND next_attempt_at <= (SELECT at FROM reading))
-                            OR (state = 'leased' AND lease_until <= (SELECT at FROM reading)))
+                       AND ((state = 'pending' AND next_attempt_at <= (SELECT at FROM lease_reading))
+                            OR (state = 'leased' AND lease_until <= (SELECT at FROM lease_reading)))
                      ORDER BY next_attempt_at, exchange_id
                      LIMIT $2 FOR UPDATE SKIP LOCKED)
              UPDATE ${this.t.responseWakes} wake
                 SET state = 'leased', lease_token = gen_random_uuid()::text, attempts = wake.attempts + 1,
-                    lease_until = (SELECT at FROM reading) + $4::integer * interval '1 millisecond'
+                    lease_until = (SELECT at FROM lease_reading) + $4::integer * interval '1 millisecond'
                FROM due WHERE wake.exchange_id = due.exchange_id
              RETURNING wake.exchange_id, wake.run_id, wake.controller_instance_id, wake.lease_token, wake.attempts`,
             [WORKFLOW_V2_WAKE_MAX_ATTEMPTS, limit, input.exchangeId ?? null, WORKFLOW_V2_WAKE_LEASE_MS]);
