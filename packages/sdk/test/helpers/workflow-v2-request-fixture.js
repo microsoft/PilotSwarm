@@ -107,7 +107,7 @@ export async function requestFixture(env) {
                 workflowRecipient: refusal("unsupported_contract") },
         });
         return Object.assign(h, {
-            parent, workflow, entry,
+            parent, owner, workflow, entry,
             async admit(run, options) {
                 const input = entry(run, options);
                 const admitted = await h.store.enterNode(input);
