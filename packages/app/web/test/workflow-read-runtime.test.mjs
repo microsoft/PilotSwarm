@@ -113,17 +113,23 @@ test("with the ownership switch off, readWorkflow behaves as every other session
 async function routeHarness() {
     const owner = { provider: "dev", subject: "alice" };
     const adapterCalls = [];
-    const run = (runId, mode, status) => ({ runId, mode, status, revision: 1, terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
-        terminalOutput: null, terminalError: null, kvRevision: 0, kv: {} });
+    // The stand-in rows have every field of the store's current rows: these runs have no stop, virtual clock or scenario,
+    // and the definition pins no agent.
+    const run = (runId, mode, status) => ({ runId, mode, status, revision: 1, irSha256: "i", terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
+        terminalOutput: null, terminalError: null, kvRevision: 0, kv: {}, controllerVersion: null, stop: null,
+        testAgentMode: mode === "test" ? "mocked" : null, virtualNow: null, testScenario: null });
     const runs = [run("run-live", "live", "running"), run("R", "test", "running")];
     const store = {
-        readDefinition: async () => ({ state: "published", semver: "1.0.0", currentRevision: 1, publishedRevision: 1, publishedYamlSha256: "h" }),
+        readDefinition: async () => ({ state: "published", semver: "1.0.0", currentRevision: 1, publishedRevision: 1, publishedYamlSha256: "h",
+            publishedAgentPins: null }),
         readRevision: async () => ({ revision: 1, yamlSha256: "h", valid: true, irSha256: null, name: "w", diagnostics: [], yaml: "" }),
-        readRevisionIr: async () => null,
+        // Only a test run's coverage reads its revision's graph here (the definition's own revision has no stored graph).
+        readRevisionIr: async () => ({ nodes: {} }),
         listRuns: async () => runs,
         listNodeExecutions: async () => [],
         listInbox: async () => [],
         listOutbox: async () => [],
+        listInterceptions: async () => [],
     };
     const mgmt = {
         _ensureStarted() {},

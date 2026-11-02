@@ -2470,6 +2470,21 @@ export function registerActivities(
             const sdkClient = await getInlineClient();
             return { catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient() };
         };
+        // The request and agent-state bridges (INACTIVE) need only the workflow store and a duroxide client to wake the
+        // controller: on this worker's own provider, as notifyParent does, with no inline PilotSwarmClient (so no storeUrl).
+        let workflowBridgeClient: WorkflowToolHost["duroxideClient"] | null = null;
+        const workflowBridgeHost = async (): Promise<Pick<WorkflowToolHost, "store" | "duroxideClient">> => {
+            if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
+            if (!provider) {
+                const host = await workflowV2Host();
+                return { store: host.store, duroxideClient: host.duroxideClient };
+            }
+            if (!workflowBridgeClient) {
+                const { Client } = (await import("node:module")).createRequire(import.meta.url)("duroxide");
+                workflowBridgeClient = new Client(provider) as WorkflowToolHost["duroxideClient"];
+            }
+            return { store: catalog.workflowStore(), duroxideClient: workflowBridgeClient };
+        };
         // Workflow agent states (INACTIVE: only on a turn of a worker that runs them): this session's stored lineage. An
         // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
         // refusal and nests up to level 3 (design 03 human-input denial and depth). A lineage that cannot be read gives
@@ -2847,7 +2862,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             /** respond_session_request (request states, INACTIVE): the calling session is the host-stamped responder. */
             ...(workflowRequestTurn ? {
                 respondSessionRequest: async (args: Record<string, unknown>) => {
-                    const host = await workflowV2Host();
+                    const host = await workflowBridgeHost();
                     return respondSessionRequestFromTool(args, {
                         callerSessionId: input.sessionId, store: host.store,
                         dispatcher: new WorkflowResponseWakeDispatcher(host.store, host.duroxideClient),
@@ -2859,7 +2874,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             /** complete_workflow_node (agent states, INACTIVE): the calling session is the host-stamped child of the state. */
             ...(workflowAgentChild ? {
                 completeWorkflowNode: async (args: Record<string, unknown>) => {
-                    const host = await workflowV2Host();
+                    const host = await workflowBridgeHost();
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient });
                 },
             } : {}),
