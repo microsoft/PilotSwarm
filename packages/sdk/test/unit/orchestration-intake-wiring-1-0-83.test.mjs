@@ -1237,6 +1237,46 @@ test("Q-W2-7: only the owed retry's dispatch sends its thrown key, with its own 
     }
 });
 
+test("Q-W2-7: the owed retry that sends its thrown attempt's key takes only that attempt's prompt; a model notice and a system note queued while it waited ride the next turn that runs; an owed retry with no key takes them", () => {
+    const NOTICE = "Runtime model for this turn is m2. If asked what model you are using, answer this value.";
+    const NOTE = "A pending system note.";
+    for (const [label, thrownTurnKey] of [["with its key", "key-A"], ["without a key", null]]) {
+        // As a set_model while the retry waits leaves the session (lifecycle.ts): the owed retry, the model notice and the
+        // command's continuation prompt; and a pending system note.
+        const runtime = makeRuntime({
+            blobEnabled: true, ownedRetry: owedRetry({ thrownTurnKey }),
+            prompt: "Continue on m2.", bootstrapPrompt: true, runtimeModelNotice: NOTICE, systemPrompt: NOTE,
+        });
+        const seen = [];
+        drive(runLoop(runtime), turnResponder({
+            turn: op => {
+                seen.push({ prompt: op.input.prompt, turnKey: op.input.snapshot?.turnKey ?? null, retryCount: op.input.retryCount ?? 0 });
+                return completed();
+            },
+            stop: op => isTurn(op) && seen.length >= 2,
+        }));
+        assert.equal(seen.length, 2, label);
+        const [retry, next] = seen;
+        assert.equal(retry.retryCount, 1, label);
+        assert.ok(next.prompt.startsWith("Continue on m2."), label);
+        if (thrownTurnKey !== null) {
+            // It may adopt the thrown attempt's saved turn: it sends that attempt's prompt alone, and the notes wait for the
+            // next turn, which runs the model.
+            assert.equal(retry.turnKey, "key-A", label);
+            assert.equal(retry.prompt, "retry words", label);
+            assert.ok(next.prompt.includes(NOTICE) && next.prompt.includes(NOTE), label);
+        } else {
+            // With no key it never adopts: it runs the model and takes the notes, as any other turn does.
+            assert.notEqual(retry.turnKey, "key-A", label);
+            assert.ok(retry.prompt.startsWith("retry words") && retry.prompt.includes(NOTICE) && retry.prompt.includes(NOTE), label);
+            assert.ok(!next.prompt.includes(NOTICE) && !next.prompt.includes(NOTE), label);
+        }
+        // Delivered once either way.
+        assert.equal(runtime.state.runtimeModelNotice, undefined, label);
+        assert.equal(runtime.state.pendingSystemPrompt, undefined, label);
+    }
+});
+
 test("Q-W2-7: an ordinary continue-as-new before the owed retry's dispatch carries it whole, apart from the session's count and key; the next execution's dispatch sends its key with its count", () => {
     const runtime = heldRetryRuntime({ blobEnabled: true, thrownTurnKey: "key-A" });
     // The execution reaches its iteration cap before the dispatch.

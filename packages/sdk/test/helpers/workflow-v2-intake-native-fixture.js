@@ -38,14 +38,33 @@
  * 1.0.83 outside the test's own provider schema. A case may crash its
  * runtime and start another on the same provider (`restart`), to have a
  * work item delivered again with the same scheduled input.
+ *
+ * Snapshot mode (`snapshots: true`, Q-W2-7 adoption proofs): the worker's
+ * activities get a real FilesystemSessionStore (versioned snapshots) over a
+ * temporary directory, so each turn that sends a snapshot key runs the real
+ * session lifecycle (the runTurn preamble, already-committed adoption, the
+ * commit). The fake session manager then also names that state directory,
+ * writes a session layout when it creates a session (as the SDK writes its
+ * own), and each scripted model run appends one line (its run number and
+ * prompt) to the layout's events.jsonl, so the committed conversation shows
+ * which model runs it holds. `afterActivity(name, input, result)` may return
+ * an error to throw in place of a completed activity's result: a completion
+ * lost on the way back, after the real handler ran to its end (a transport
+ * double, listed in the case's doubles; testDoublesOf).
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createRequire } from "node:module";
 import { vi, expect } from "vitest";
 import { intakeActivityFixture } from "./workflow-v2-intake-activities-fixture.js";
+import { makeSessionLayout } from "./snapshot-conformance.js";
 import {
     AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY, WORKSPACE_CAPABILITY,
 } from "../../src/activity-routing.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
+import { FilesystemSessionStore } from "../../src/session-store.ts";
+import { readSnapshotMarker } from "../../src/snapshot-protocol.ts";
 import { registerWorkflowIntakeActivities } from "../../src/workflow/v2/intake-activities.ts";
 import { createRuntime, runLoop } from "../../src/orchestration_1_0_83/runtime.ts";
 import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
@@ -62,6 +81,23 @@ export const TEST_DOUBLES = Object.freeze({
     doubles: ["model session: scripted by the case (it asks the real store's admission when it sends)", "session manager: fake",
         "workspace provider: fake, when the case gives one", "CMS provider budget store: hidden"],
 });
+
+/** The doubles of one case: TEST_DOUBLES, with those of the snapshot mode and of a lost completion when the case uses them. */
+export function testDoublesOf(options = {}) {
+    if (!options.snapshots && !options.afterActivity) return TEST_DOUBLES;
+    return Object.freeze({
+        real: [...TEST_DOUBLES.real, ...(options.snapshots
+            ? ["session lifecycle (runTurn preamble, already-committed adoption, commit) over a FilesystemSessionStore in a temporary directory"]
+            : [])],
+        doubles: [...TEST_DOUBLES.doubles,
+            ...(options.snapshots
+                ? ["session state directory: the layout the fake session manager writes on create; each scripted model run appends one line to its events.jsonl"]
+                : []),
+            ...(options.afterActivity
+                ? ["transport: the case may throw an error in place of a completed activity's result (afterActivity), as a completion lost on the way back"]
+                : [])],
+    });
+}
 const EVIDENCE_LIMIT = 6_000;
 
 function errorDetails(error) {
@@ -125,18 +161,35 @@ export async function admitAndSend(opts) {
  * A model session scripted by `script(call, prompt, opts)`: the n-th call's
  * result. The script calls `admitAndSend(opts)` when its run "sends", as
  * ManagedSession admits and includes the items right before its initial
- * send; a run that ends before its send calls nothing.
+ * send; a run that ends before its send calls nothing. `onRun(call, prompt)`,
+ * when given, is told of each run before the script plays it.
  */
-function scriptedModelSession(script) {
+function scriptedModelSession(script, onRun = null) {
     const prompts = [];
     const session = {
         abort() {},
         async runTurn(prompt, opts) {
             prompts.push(prompt);
+            onRun?.(prompts.length, prompt);
             return script(prompts.length, prompt, opts);
         },
     };
     return { session, prompts };
+}
+
+/** A temporary state directory and a real versioned snapshot store over it (snapshot mode). */
+function snapshotSpace() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-intake-snapshots-"));
+    const stateDir = path.join(root, "session-state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    return { root, stateDir, store: new FilesystemSessionStore(path.join(root, "session-store"), stateDir), dropped: [] };
+}
+
+/** The model-run lines of a session directory's events.jsonl (snapshot mode), oldest first; none when it has no file. */
+function modelRunsIn(sessionDir) {
+    let text;
+    try { text = fs.readFileSync(path.join(sessionDir, "events.jsonl"), "utf8"); } catch { return []; }
+    return text.split("\n").filter(line => line.includes('"modelRun"')).map(line => JSON.parse(line));
 }
 
 /** The real CMS catalog with its provider budget store hidden; every other member is the catalog's own. */
@@ -161,6 +214,7 @@ function withoutBudgetGate(catalog) {
  * crash case). `options.beforeActivity(name, input)`, when it returns a
  * promise, holds that activity's real handler until it settles (a held
  * write, to order a race); the handler itself is never replaced.
+ * `options.snapshots` and `options.afterActivity`: see the file's comment.
  * `restart()` crashes the running runtime (its in-flight activity is never
  * completed by it: the lock it held runs out) and starts another on the
  * same provider with the same registrations, so a work item it held is
@@ -168,11 +222,17 @@ function withoutBudgetGate(catalog) {
  */
 export async function intakeNativeFixture(env, script, options = {}) {
     const intake = await intakeActivityFixture(env);
+    const doubles = testDoublesOf(options);
     let worker = null;
+    let snapshots = null;
     try {
+        if (options.snapshots) snapshots = snapshotSpace();
         const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
         const client = new Client(provider);
-        const model = scriptedModelSession(script);
+        const sessionDir = snapshots ? path.join(snapshots.stateDir, intake.recipientSessionId) : null;
+        // Snapshot mode: each model run leaves its line in the conversation's files, as a real run changes them.
+        const model = scriptedModelSession(script, sessionDir === null ? null
+            : (call, prompt) => fs.appendFileSync(path.join(sessionDir, "events.jsonl"), `${JSON.stringify({ modelRun: call, prompt })}\n`));
         // Only this fixture's session runs on this worker's scripted model; an instance an earlier test left in the schema
         // never reaches it.
         const ownSession = sessionId => {
@@ -190,6 +250,17 @@ export async function intakeNativeFixture(env, script, options = {}) {
             dehydrate: async () => {},
             hydrate: async () => {},
             needsHydration: async () => false,
+            ...(snapshots ? {
+                getSessionStateDir: () => snapshots.stateDir,
+                dropWarmSession: async sessionId => { ownSession(sessionId); snapshots.dropped.push(sessionId); },
+                // As the SDK writes its layout when it creates a session: only when the directory has none (the preamble
+                // removed it, or nothing was there yet); a warm or hydrated one is resumed as it is.
+                getOrCreate: async sessionId => {
+                    ownSession(sessionId);
+                    if (!fs.existsSync(path.join(sessionDir, "workspace.yaml"))) makeSessionLayout(snapshots.stateDir, sessionId, "created");
+                    return model.session;
+                },
+            } : {}),
             ...(options.managerExtras ?? {}),
         };
         const calls = [];
@@ -218,6 +289,13 @@ export async function intakeNativeFixture(env, script, options = {}) {
                             if (held) await held;
                             const result = await (overrides[name] ?? handler)(ctx, input);
                             call.result = result;
+                            // A completion lost on the way back (the case's transport double): the real handler ran to
+                            // its end, and its result stays recorded here, but the orchestration gets the error.
+                            const lost = options.afterActivity?.(name, input, result);
+                            if (lost) {
+                                call.lostCompletion = true;
+                                throw lost;
+                            }
                             return result;
                         } catch (error) {
                             call.error = errorDetails(error);
@@ -226,7 +304,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                     });
                 },
             };
-            registerActivities(adapter, sessionManager, null, undefined, withoutBudgetGate(intake.catalog), provider,
+            registerActivities(adapter, sessionManager, snapshots?.store ?? null, undefined, withoutBudgetGate(intake.catalog), provider,
                 undefined, undefined, undefined, undefined, null, [], undefined, null, workerNodeId, null,
                 { workflowIntakeTurns: true, ...(options.testOptions ?? {}) });
             // No fact store here: the knowledge index is empty.
@@ -290,6 +368,17 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 transcriptRecords: records,
             };
         };
+        /** Snapshot mode: the store's tip, the local marker, the model runs the local conversation holds and the warm drops. */
+        const snapshotState = async () => {
+            if (snapshots === null) return null;
+            const [probe] = await Promise.allSettled([snapshots.store.probeSnapshot(sessionId)]);
+            let marker;
+            try { marker = { ok: true, value: readSnapshotMarker(sessionDir) }; } catch (error) { marker = { ok: false, error: errorDetails(error) }; }
+            let modelRuns;
+            try { modelRuns = { ok: true, value: modelRunsIn(sessionDir).map(run => ({ modelRun: run.modelRun, prompt: bounded(run.prompt, 500) })) }; }
+            catch (error) { modelRuns = { ok: false, error: errorDetails(error) }; }
+            return { probe: readOutcome(probe), marker, modelRuns, warmDrops: snapshots.dropped.length };
+        };
         /**
          * Record the evidence of a failure while the runtime and the schemas still exist, and return the error to throw:
          * the original failure as its cause, with the evidence (or the error that kept it from being read) attached.
@@ -300,7 +389,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
             try {
                 const reads = await Promise.allSettled([client.getInstanceInfo(instanceId), client.getStatus(instanceId), histories()]);
                 const evidence = {
-                    phase, boundary: label, cause: errorDetails(cause), lastObservation: bounded(last), testDoubles: TEST_DOUBLES,
+                    phase, boundary: label, cause: errorDetails(cause), lastObservation: bounded(last), testDoubles: doubles,
                     finalReads: {
                         info: readOutcome(reads[0]), status: readOutcome(reads[1]),
                         histories: reads[2].status === "fulfilled"
@@ -310,6 +399,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                     calls: calls.map(call => bounded(call)),
                     prompts: model.prompts.map(prompt => bounded(prompt, 2_000)),
                     ...(await persisted()),
+                    ...(snapshots ? { snapshots: await snapshotState() } : {}),
                 };
                 console.info("workflow intake native evidence", JSON.stringify(evidence));
                 // Kept on the error for a caller, but not enumerable: the line above is the record, printed once.
@@ -368,7 +458,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                     }
                 }
                 console.info("workflow intake native receipt", JSON.stringify({
-                    case: label, testDoubles: TEST_DOUBLES, orchestrationVersion: info.orchestrationVersion, currentExecutionId: info.currentExecutionId,
+                    case: label, testDoubles: doubles, orchestrationVersion: info.orchestrationVersion, currentExecutionId: info.currentExecutionId,
                     executions: all.length, status: status.status, scheduledNames, modelRuns: model.prompts.length,
                     intakeRows: rows.intakeRows.ok ? rows.intakeRows.value.map(row => ({ exchange_id: row.exchange_id, state: row.state,
                         processing: row.processing, invocation_id: row.invocation_id, cancel_requested: row.cancel_requested })) : rows.intakeRows,
@@ -376,6 +466,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
                     exposures: rows.exposureRows.ok
                         ? rows.exposureRows.value.map(row => ({ invocation_id: row.invocation_id, attempt_id: row.attempt_id })) : rows.exposureRows,
                     transcriptRecords: rows.transcriptRecords.ok ? rows.transcriptRecords.value.length : rows.transcriptRecords,
+                    ...(snapshots ? { snapshots: await snapshotState() } : {}),
                 }));
             } catch (error) {
                 console.info("workflow intake native receipt unreadable", JSON.stringify({ case: label, error: errorDetails(error) }));
@@ -384,18 +475,34 @@ export async function intakeNativeFixture(env, script, options = {}) {
         return {
             ...intake, client, provider, calls, prompts: model.prompts, sessionId, instanceId, start, deliver, say, customStatus, until,
             histories, failure, receipt, restart,
+            /**
+             * Snapshot mode only (else null): the real store, the session's state directory, the store's tip (its probe),
+             * the local marker, and the model runs the local conversation holds (events.jsonl lines, oldest first).
+             */
+            snapshots: snapshots === null ? null : {
+                store: snapshots.store, stateDir: snapshots.stateDir, sessionDir,
+                probe: () => snapshots.store.probeSnapshot(sessionId),
+                marker: () => readSnapshotMarker(sessionDir),
+                modelRuns: () => modelRunsIn(sessionDir),
+                warmDrops: () => snapshots.dropped.length,
+            },
             /** The runtime running now (after a restart, the new one). */
             get worker() { return worker; },
             async close() {
-                try { if (worker) await worker.shutdown(3_000); } finally { await intake.close(); }
+                try {
+                    if (worker) await worker.shutdown(3_000);
+                } finally {
+                    try { await intake.close(); } finally { if (snapshots) fs.rmSync(snapshots.root, { recursive: true, force: true }); }
+                }
             },
         };
     } catch (error) {
         // A setup failure once the stores exist: recorded before they are closed; the original error is rethrown.
-        console.info("workflow intake native evidence", JSON.stringify({ phase: "setup", cause: errorDetails(error), testDoubles: TEST_DOUBLES }));
+        console.info("workflow intake native evidence", JSON.stringify({ phase: "setup", cause: errorDetails(error), testDoubles: doubles }));
         const attach = (key, value) => { if (error !== null && typeof error === "object" && Object.isExtensible(error)) error[key] = value; };
         if (worker) await worker.shutdown(3_000).catch(shutdownError => attach("shutdownError", errorDetails(shutdownError)));
         try { await intake.close(); } catch (closeError) { attach("closeError", errorDetails(closeError)); }
+        if (snapshots) fs.rmSync(snapshots.root, { recursive: true, force: true });
         throw error;
     }
 }

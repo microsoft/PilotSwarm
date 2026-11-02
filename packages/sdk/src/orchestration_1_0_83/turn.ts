@@ -419,15 +419,22 @@ export function* processPrompt(
         }
     }
 
-    let turnSystemPrompt = state.pendingSystemPrompt;
-    state.pendingSystemPrompt = undefined;
+    // 1.0.83 (ordinary retry ownership; review Q-W2-7): the owed retry that
+    // sends its thrown attempt's key may adopt that attempt's saved turn, so
+    // it carries only what that attempt carried, whose own notes its prompt
+    // holds. A note queued after that attempt (a pending system note, the
+    // runtime model notice of a set_model while the retry waited) stays for
+    // the next turn that runs, and is never lost to an adopted result.
+    const ownedRetryMayAdopt = intakeReusesThrownTurnKey(state);
+    let turnSystemPrompt = ownedRetryMayAdopt ? undefined : state.pendingSystemPrompt;
+    if (!ownedRetryMayAdopt) state.pendingSystemPrompt = undefined;
     const extractedPrompt = extractPromptSystemContext(carriedOnlyTurn
         ? splitPrompt.prompt.slice(CARRIED_STEERS_WAKE_PROMPT.length)
         : prompt);
     prompt = extractedPrompt.prompt ?? "";
     turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
     if (carriedOnlyTurn) turnSystemPrompt = mergePrompt(mergePrompt(turnSystemPrompt, splitPrompt.note), carriedResumeNote);
-    if (prompt && state.runtimeModelNotice) {
+    if (prompt && state.runtimeModelNotice && !ownedRetryMayAdopt) {
         turnSystemPrompt = mergePrompt(turnSystemPrompt, state.runtimeModelNotice);
         state.runtimeModelNotice = undefined;
     }

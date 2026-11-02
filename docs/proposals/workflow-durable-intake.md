@@ -577,6 +577,30 @@ flag.
   yet is a flag that every continue-as-new carries
   (`intakeArrivalPending`), so a continue-as-new between the arrival and its
   turn does not drop the one turn it starts for a parked invocation.
+- **Ordinary retry ownership (1.0.83; review Q-W2-7, decision
+  `ordinary-retry-ownership-83`).** This replaces the held-prompt wiring of
+  the bullet above. A failed turn's retry is owed apart from the pending
+  prompt (`ownedRetry`): the turn's exact prompt contract (its prompt,
+  bootstrap flag, required tool, cron origin, client message ids, sender and
+  attachments), its retry count, its thrown attempt's key, and `fresh` for
+  a lossy handoff's retry, which has count 0 and no key and so never adopts
+  a saved turn. Every continue-as-new carries it, a forced one included
+  (the iteration cap, the history-size cap, a `set_model`); the pending
+  prompt and its fields stay the follow-ups'. `decide` dispatches it before
+  any other turn: an agent wait does not hold it (drain keeps the wait and
+  queues its poll after it), a graceful shutdown does, and while it is owed
+  drain sweeps the queue once without waiting for an armed timer. Only that
+  dispatch takes its count, its key and the retry marker
+  (`intakeRetryAttempt` is gone); a second owed retry is a broken invariant
+  that fails the execution, so a retry is never replaced. The dispatch that
+  sends its thrown attempt's key may adopt that attempt's saved turn, so it
+  carries only what that attempt carried: its prompt, which holds that
+  attempt's own notes, and its marker's invocation. A note queued after that
+  attempt (a pending system note such as the shared-session preamble, or a
+  `set_model`'s runtime model notice) stays for the next turn that runs and
+  is never lost to an adopted result. The workspace notes are outside this
+  rule: every attempt sends them, and the first result past the workspace
+  check clears them, adopted or not, as since 1.0.81.
 - **Settlement.** The end is a settlement, never a new attempt. If the end
   settle fails after its retries, the invocation keeps `settle: {outcome}`
   and a due time on the N2 wake (5.4), and the settlement is retried as a
@@ -1011,6 +1035,7 @@ Commits, each with DEV tests and independent review:
 | Parse | Carried intake state that does not validate fails the execution with the field; FIFO parsing is unchanged. |
 | CAN | The intake queue, the invocation (its batch, `sent`, the parked cause and a pending settlement) and rows survive continue-as-new, including one forced by the iteration cap; 1.0.82 inputs run on 1.0.83. |
 | Native (inactive) | On the native duroxide runtime and PostgreSQL, with 1.0.83 registered by the test alone and the real worker and intake activities (`workflow-v2-intake-orchestration.test.js`): an arrival claimed, bound, carried by its own turn as `runTurnV5` under the workflow-request tag, completed, recorded once in the transcript, then a continue-as-new on 1.0.83; a sent attempt's error retried across a continue-as-new that carries the marker and the retry's count, the same invocation completed, recorded once; a run that ends before its send settled `not_dispatched`; a closed workspace gate refusing before any model run, and a person's message delivering the same invocation (decision A1). Not an activation, mixed-version, crash-redelivery or model qualification. |
+| Native, owed retry and adoption (inactive) | The same, with the real session lifecycle over a versioned `FilesystemSessionStore` (`workflow-v2-intake-adoption.test.js`, review Q-W2-7): an attempt that saved its turn under key T and then failed at the worker's fault point after the commit; while its retry waits, a child's summary, a follow-up and a `set_model` whose continue-as-new comes before the retry's dispatch; the retry sends T with its count and its own prompt alone and adopts the saved turn (one model run of the turn, no new version), and the model notice, the summary and the follow-up ride later turns under keys of their own. An attempt that failed before its commit (fault point before the compare-and-swap): the retry sends T, rehydrates the last saved version and runs the turn again, saved under T; the failed run is not in the store. Lossy-fresh control: completions lost to a closed connection (a transport double) retry with T and adopt; the lossy handoff's retry (count 0, no key) never adopts and runs the turn again under a key of its own. The forced continue-as-new is `set_model`'s (the iteration and history-size caps are unit-tested); the child is a tracked entry only; the store is the filesystem one. |
 | Fingerprints | The declared 1.0.83 delta (section 8); the drive and ordinary-message goldens change only by the turn activity names. |
 | Baseline | Full suite and baseline are a separate grant. |
 

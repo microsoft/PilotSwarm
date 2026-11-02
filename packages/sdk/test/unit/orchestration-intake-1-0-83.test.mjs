@@ -185,7 +185,9 @@ const QUEUE_ADDED_GENERIC = [
  * intake, the thrown-turn key is reused only by the attempt the intake asks
  * about (intakeReusesThrownTurnKey), and a failed turn's retry continues as
  * new owed apart from the pending prompt (ordinary retry ownership, review
- * Q-W2-7: state.ts ownedRetryOverrides).
+ * Q-W2-7: state.ts ownedRetryOverrides). The owed retry that may adopt its
+ * thrown attempt's saved turn takes no note queued after that attempt (the
+ * last three lines).
  */
 const TURN_CHANGED_82 = [
     '                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");',
@@ -195,6 +197,9 @@ const TURN_CHANGED_82 = [
     "        yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));",
     "            ...retryContinueOverrides(state, rc),",
     "    yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));",
+    "    let turnSystemPrompt = state.pendingSystemPrompt;",
+    "    state.pendingSystemPrompt = undefined;",
+    "    if (prompt && state.runtimeModelNotice) {",
 ];
 
 /**
