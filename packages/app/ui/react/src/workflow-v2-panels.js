@@ -1,6 +1,6 @@
 import React from "react";
 import {
-    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2RouteKind,
+    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, projectWorkflowV2ReadModel, workflowV2RouteKind,
 } from "../../core/src/workflow-v2-view.js";
 
 const h = React.createElement;
@@ -133,4 +133,93 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
         selected.executions.length > rows.length ? h("details", null,
             h("summary", null, `Every loaded execution (${selected.executions.length})`),
             table(selected.executions.map(execution => ({ execution, count: 1, from: execution.ordinal, to: execution.ordinal })))) : null);
+}
+
+// ── Run picker ──────────────────────────────────────────────────────────────
+// Chooses which run of a v2 workflow the graph, log and details show. The list is `runs` of the read model that
+// readWorkflowV2View returns ({ runId, mode: "live" | "test", status, revision, outcome }); the choice is
+// `ui.workflowViews[sessionId].selectedRunId`, where null is the live run. Nothing here fetches: the controller's
+// ensureWorkflowReadModel reads the selected run, and the projection overlays only that run's own model.
+
+const RUN_MODES = { live: "Live", test: "Test" };
+const RUN_STATUS_WORDS = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled"]);
+const RUN_OPTION_LIMIT = 100;
+const LABEL_LIMIT = 100;
+
+const bounded = (text, max) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+const shortId = id => id.length > 12 ? `${id.slice(0, 8)}…` : id;
+
+/** One option's text, naming the kind, status, outcome, revision and a short run id; long values are cut. */
+function runLabel(run) {
+    const kind = RUN_MODES[run.mode] ?? "Run (mode not recognized)";
+    const status = RUN_STATUS_WORDS.has(run.status) ? run.status : "status unknown";
+    const outcome = typeof run.outcome === "string" && run.outcome ? ` (${run.outcome})` : "";
+    const revision = Number.isSafeInteger(run.revision) ? ` · revision ${run.revision}` : "";
+    return bounded(`${kind} · ${status}${outcome}${revision} · ${shortId(run.runId)}`, LABEL_LIMIT);
+}
+
+/**
+ * What the picker shows, from the workflow's last read model (any selection's: the run list is workflow-wide), the
+ * selection, whether the selection's own model is loaded, and its read error. Pure; never throws. Entries that are not
+ * a run are counted and left out. A selected id that is not in the list is kept as its own option, never replaced.
+ */
+export function workflowV2RunPickerModel({ workflowModel = null, selectedRunId = null, ownModelLoaded = false, error = null } = {}) {
+    const selection = typeof selectedRunId === "string" && selectedRunId !== "" ? selectedRunId : null;
+    const projected = workflowModel ? projectWorkflowV2ReadModel(workflowModel) : null;
+    const list = projected?.ok ? projected.runs : null;
+    const runs = [];
+    const seen = new Set();
+    let malformed = 0;
+    for (const item of list || []) {
+        if (item === null || typeof item !== "object" || Array.isArray(item) || typeof item.runId !== "string" || item.runId === "" || seen.has(item.runId)) {
+            malformed += 1;
+            continue;
+        }
+        seen.add(item.runId);
+        runs.push(item);
+    }
+    const live = runs.find(run => run.mode === "live");
+    const shown = runs.slice(0, RUN_OPTION_LIMIT);
+    const options = [{ value: "", kind: "live", title: "The workflow's live run",
+        label: bounded(live ? `Live run · ${RUN_STATUS_WORDS.has(live.status) ? live.status : "status unknown"} · ${shortId(live.runId)}` : "Live run", LABEL_LIMIT) }];
+    for (const run of shown) options.push({ value: run.runId, kind: run.mode === "test" ? "test" : run.mode === "live" ? "live" : "other", label: runLabel(run), title: run.runId });
+    let missing = false;
+    if (selection !== null && !seen.has(selection)) {
+        missing = true;
+        options.push({ value: selection, kind: "missing", title: selection,
+            label: bounded(`Selected run ${shortId(selection)} · ${list ? "not in the run list that was read" : "run list not loaded"}`, LABEL_LIMIT) });
+    } else if (selection !== null && !shown.some(run => run.runId === selection)) {
+        const run = runs.find(item => item.runId === selection);
+        options.push({ value: selection, kind: run.mode === "test" ? "test" : "live", label: runLabel(run), title: selection });
+    }
+    const notes = [];
+    if (!list) notes.push({ level: "info", text: workflowModel ? "The run list is unavailable." : "Run list not loaded yet." });
+    else if (runs.length === 0 && malformed === 0) notes.push({ level: "info", text: "No runs yet." });
+    if (malformed) notes.push({ level: "warning", text: `${malformed} run ${malformed === 1 ? "entry" : "entries"} in the run list could not be read and ${malformed === 1 ? "is" : "are"} not listed.` });
+    if (runs.length > RUN_OPTION_LIMIT) notes.push({ level: "info", text: `Showing the first ${RUN_OPTION_LIMIT} of ${runs.length} runs.` });
+    if (missing && list) notes.push({ level: "warning", text: "This run is not in the run list that was read; only what is loaded for it is shown." });
+    if (error) notes.push({ level: "error", text: "This run could not be read. Your selection is kept." });
+    else if (!ownModelLoaded) notes.push({ level: "info", text: selection === null ? "Reading the live run…" : "Reading this run…" });
+    return { selection, value: selection ?? "", options, notes, runsKnown: Boolean(list), runCount: runs.length, malformed, missing };
+}
+
+/** Select a run (null for the live run). Only the selection changes; the controller reads that run's model for it. */
+export function selectWorkflowV2Run(controller, sessionId, runId) {
+    const next = typeof runId === "string" && runId !== "" ? runId : null;
+    controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedRunId: next } });
+    return next;
+}
+
+/** A native select: keyboard, type-ahead and screen reader behaviour come with it. Every value is a React text child. */
+export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error }) {
+    const model = workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded, error });
+    const noteId = `wf-run-note-${React.useId().replace(/:/g, "")}`;
+    return h("div", { className: "ps-workflow-run-picker", style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, maxWidth: "100%", fontSize: "0.75rem" } },
+        h("select", { "aria-label": "Workflow run", "aria-describedby": model.notes.length ? noteId : undefined, value: model.value,
+            "data-selection": model.selection ?? "live", title: model.options.find(option => option.value === model.value)?.title,
+            style: { minWidth: 0, maxWidth: "26em", textOverflow: "ellipsis" },
+            onChange: event => selectWorkflowV2Run(controller, sessionId, event.target.value) },
+        model.options.map(option => h("option", { key: option.value === "" ? "live" : `run:${option.value}`, value: option.value, title: option.title, "data-kind": option.kind }, option.label))),
+        model.notes.length ? h("span", { id: noteId, role: "status", "aria-live": "polite", style: { color: "var(--ps-muted)", overflowWrap: "anywhere" } },
+            model.notes.map((note, i) => h("span", { key: i, "data-level": note.level, style: { marginRight: 6, color: TONES[note.level] || TONES.info } }, note.text))) : null);
 }

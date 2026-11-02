@@ -2,7 +2,7 @@ import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
 import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
-import { WorkflowV2Banners, WorkflowV2NoGraph, WorkflowV2NodeContent } from "./workflow-v2-panels.js";
+import { WorkflowV2Banners, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RunPicker } from "./workflow-v2-panels.js";
 
 const EMPTY_EVENTS = [];
 const EMPTY_VIEW = {};
@@ -49,7 +49,8 @@ function useWorkflowView(controller) {
         controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
         controller.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
     };
-    return { sessionId, session, view, nodes, selected, select, live, status, v2, definition, readError };
+    return { sessionId, session, view, nodes, selected, select, live, status, v2, definition, readError,
+        workflowModel, selectedRunId, ownModelLoaded: readModel != null };
 }
 
 /** The read model's last failure for the selected run, beside the graph, with a Retry that asks again now. */
@@ -135,7 +136,7 @@ function WorkflowGraph({ definition, nodes, selected, select, banners }) {
 }
 
 export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
-    const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError } = useWorkflowView(controller);
+    const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded } = useWorkflowView(controller);
     const splitRef = React.useRef(null);
     const dragRef = React.useRef(false);
     const [splitHeight, setSplitHeight] = React.useState(500);
@@ -156,9 +157,10 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
         onNodeSelected?.();
     };
     return React.createElement("section", { className: "ps-workflow-main", "aria-label": "Workflow session" },
-        React.createElement("header", { className: "ps-workflow-main-header" },
+        React.createElement("header", { className: "ps-workflow-main-header", style: { flexWrap: "wrap" } },
             React.createElement("strong", null, icon, definition?.name || session?.title || "Workflow"),
             React.createElement("span", { className: "ps-workflow-status" }, status),
+            v2 ? React.createElement(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
                 onClick: () => selectNode(selected.id) }, "Node details")),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
