@@ -492,8 +492,9 @@ to an exact earlier package revision end to end on such a worker: the
 publication pins the package's revision, the package is republished, the
 run's child is bound to `<packageId>@<sha256>`, the worker installs that
 revision for it beside the active one, and the child's real turn runs that
-revision's prompt and completes the state, while everyone else keeps the
-active version. A person's
+revision's prompt and completes the state; a later publication pins the new
+revision and its run's child runs that one, while the first publication
+keeps its pin and everyone else keeps the active version. A person's
 publication pins package agents only (the management client does not see a
 worker's deployment agents). A real-agent test run of a draft
 revision is pinned when it is admitted, as its publication would be
@@ -903,6 +904,7 @@ worker's deployment agent: the child is created under the workflow, owned as
 its owner, bound to that agent, at 1.0.83; its real turn completes the state
 through `complete_workflow_node`; the run completes; the controller ends the
 child. Its second case runs a registry package agent pinned at an earlier
+revision after a republish, and a later publication's child at the new
 revision (R18, T070; "Publication pins and test evidence" above). The unit
 guards that keep the durable intake inactive now allow
 exactly this module: only it imports 1.0.83 and the intake activities, and

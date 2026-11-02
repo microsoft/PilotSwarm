@@ -23,8 +23,13 @@
  *   one. A live run of the publication binds its child to the pinned
  *   revision (`<packageId>@<sha256>`); the worker installs that revision for
  *   it, beside the active one, and the child's real turn runs the pinned
- *   revision's prompt and completes the state. Everyone else keeps the
- *   active version.
+ *   revision's prompt and completes the state. A later publication (a
+ *   published workflow is immutable, so a later workflow) pins the new
+ *   revision, and its run's child runs that one; the first publication keeps
+ *   its pin. Everyone else keeps the active version. The packages are
+ *   synthetic fixtures published into this test's own registry (its schema
+ *   and the worker's local artifact store), as the pinned-revision test
+ *   publishes them.
  *
  * Test double: the model (scripted). Not an activation: one worker serves
  * everything here, and nothing in a deployment sets the option; duroxide
@@ -274,7 +279,7 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
         });
     });
 
-    it("runs an agent state's child at the package revision its publication pinned, after the package was republished (R18, T070)", { timeout: TIMEOUT }, async () => {
+    it("runs an agent state's child at the package revision its publication pinned after a republish, and a later publication's child at the new one (R18, T070)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const tag = randomUUID().slice(0, 8);
         const kit = `pinned-review-kit-${tag}`;
@@ -299,6 +304,8 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
             dir: writeVersion(version), scope: "shared", owner: OWNER, createdBy: "workflow-v2-agent-worker-test", isAdmin: false,
         });
         const turns = [];
+        /** The child turn of one agent state: its wrapper prompt names the state's node execution. */
+        const turnOf = stateExecutionId => turns.find(turn => String(turn.prompt ?? "").includes(stateExecutionId));
         const { traces, traceWriter } = traceTail();
         const worker = {
             testOptions: { workflowRequests: true }, workerPool: "default", logLevel: "warning", traceWriter,
@@ -342,20 +349,22 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     { actor: ACTOR, operationId: "start" });
                 const runId = started.receipt.run.runId;
                 const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);
+                /** The case's own records for the evidence: the state's task, its child's binding and what the worker serves. */
+                const bindingOf = (stateExecutionId, ids) => async () => {
+                    const invocation = await store.readAgentInvocation(stateExecutionId);
+                    return {
+                        ids, task: invocation?.task ?? null,
+                        creationConfig: invocation ? await catalog.getSessionCreationConfig(invocation.childSessionId) : null,
+                        served: { active: versionOf(pickAgentCopyForOwner(copies(), null)),
+                            ...Object.fromEntries(Object.entries(ids).map(([key, id]) => [key, versionOf(pickAgentCopyByPackageIdForOwner(copies(), id, null))])) },
+                    };
+                };
                 const { boundary } = agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId, nodeExecutionId, workflowSessionId,
-                    extra: async () => {
-                        const invocation = await store.readAgentInvocation(nodeExecutionId);
-                        return {
-                            pinnedId, task: invocation?.task ?? null,
-                            creationConfig: invocation ? await catalog.getSessionCreationConfig(invocation.childSessionId) : null,
-                            served: { active: versionOf(pickAgentCopyForOwner(copies(), null)),
-                                pinned: versionOf(pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null)) },
-                        };
-                    } });
+                    extra: bindingOf(nodeExecutionId, { pinned: pinnedId }) });
 
                 await boundary("the agent state is entered", () => store.readNodeExecution(nodeExecutionId));
                 await boundary("the child is spawned", async () => (await store.readAgentInvocation(nodeExecutionId))?.spawnedAt ?? null);
-                await boundary("the child's turn reaches the model with complete_workflow_node", async () => (turns.length > 0 ? turns[0] : null));
+                await boundary("the child's turn reaches the model with complete_workflow_node", async () => turnOf(nodeExecutionId) ?? null);
                 await boundary("the state is decided", async () => {
                     const node = await store.readNodeExecution(nodeExecutionId);
                     return node?.state === "completed" ? node : null;
@@ -376,16 +385,62 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     owner: { provider: OWNER.provider, subject: OWNER.subject } });
                 expect(await catalog.getSessionCreationConfig(child)).toMatchObject({ boundAgentName: reviewer, boundAgentPackageId: pinnedId });
                 expect(await sessionOrchestrationVersion(client, child)).toBe(DURABLE_SESSION_INTAKE_VERSION);
-                expect(turns[0].prompt).toContain("WORKFLOW NODE INVOCATION");
-                expect(turns[0].system).toContain(marker("1.0.0"));
-                expect(turns[0].system).not.toContain(marker("1.1.0"));
-                expect(JSON.parse(turns[0].result)).toMatchObject({ ok: true, kind: "result", outcome: "accepted", nodeExecutionId, runId });
+                await boundary("the child's turn gets its completion's receipt", async () => turnOf(nodeExecutionId)?.result ?? null);
+                const turn = turnOf(nodeExecutionId);
+                expect(turn.prompt).toContain("WORKFLOW NODE INVOCATION");
+                expect(turn.system).toContain(marker("1.0.0"));
+                expect(turn.system).not.toContain(marker("1.1.0"));
+                expect(JSON.parse(turn.result)).toMatchObject({ ok: true, kind: "result", outcome: "accepted", nodeExecutionId, runId });
                 // The worker installed that revision for the child, beside the active version; everyone else keeps the active one.
                 const served = pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null);
                 expect(versionOf(served)).toBe("1.0.0");
                 expect(served.pinnedRevision).toBe(v1.sha256);
                 expect(versionOf(pickAgentCopyForOwner(copies(), null))).toBe("1.1.0");
                 expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), v1.packageId, null))).toBe("1.1.0");
+
+                // A later publication pins the revision the package is at now (1.1.0); the frozen publication keeps its own pin
+                // (a published workflow is immutable: a later revision is a later workflow's publication).
+                const laterSessionId = randomUUID();
+                const later = await createWorkflowV2(host, {
+                    workflowSessionId: laterSessionId, parentSessionId: parent, yaml: workflowNaming({ name: reviewer }), actor: ACTOR,
+                    operationId: "create-later", publish: true, notifyParent: false,
+                });
+                expect(later.receipt, JSON.stringify(later.receipt.diagnostics)).toMatchObject({ valid: true, state: "published", run: null });
+                const laterPin = { ...pin, version: "1.1.0", revision: v11.sha256 };
+                const laterPinnedId = pinnedAgentPackageId(v11.packageId, v11.sha256);
+                expect((await store.readDefinition(laterSessionId)).publishedAgentPins).toEqual({ review: laterPin });
+                expect((await store.readDefinition(workflowSessionId)).publishedAgentPins).toEqual({ review: pin });
+
+                // Its live run's child is bound to that revision, which the worker installs and serves to it; its real turn runs
+                // the 1.1.0 prompt, never the 1.0.0 one, and completes its state.
+                const laterStarted = await updateWorkflowV2(host, laterSessionId, { operation: "start", definitionHash: later.receipt.yamlSha256, inputs: {} },
+                    { actor: ACTOR, operationId: "start-later" });
+                const laterRunId = laterStarted.receipt.run.runId;
+                const laterNode = nodeExecutionIdFor(laterRunId, "root", "review", 1);
+                const laterProbe = agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId: laterRunId, nodeExecutionId: laterNode,
+                    workflowSessionId: laterSessionId, extra: bindingOf(laterNode, { pinned: pinnedId, later: laterPinnedId }) });
+                await laterProbe.boundary("the later child is spawned", async () => (await store.readAgentInvocation(laterNode))?.spawnedAt ?? null);
+                await laterProbe.boundary("the later child's turn reaches the model with complete_workflow_node", async () => turnOf(laterNode) ?? null);
+                const laterRun = await laterProbe.boundary("the later run ends", async () => {
+                    const row = await store.readRun(laterRunId);
+                    return row && ENDED.includes(row.status) ? row : null;
+                });
+                expect(laterRun).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, terminalOutput: { verdict: "pinned" } });
+                const laterInvocation = await store.readAgentInvocation(laterNode);
+                expect(laterInvocation.task).toEqual({ source: "agent", ...laterPin });
+                expect(laterInvocation.childSessionId).not.toBe(child);
+                expect(await catalog.getSessionCreationConfig(laterInvocation.childSessionId))
+                    .toMatchObject({ boundAgentName: reviewer, boundAgentPackageId: laterPinnedId });
+                await laterProbe.boundary("the later child's turn gets its completion's receipt", async () => turnOf(laterNode)?.result ?? null);
+                const laterTurn = turnOf(laterNode);
+                expect(laterTurn.system).toContain(marker("1.1.0"));
+                expect(laterTurn.system).not.toContain(marker("1.0.0"));
+                expect(JSON.parse(laterTurn.result)).toMatchObject({ ok: true, kind: "result", outcome: "accepted", nodeExecutionId: laterNode, runId: laterRunId });
+                // Each revision is served to its own binding only; the default copy stays the active version.
+                expect(pickAgentCopyByPackageIdForOwner(copies(), laterPinnedId, null)?.pinnedRevision).toBe(v11.sha256);
+                expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), laterPinnedId, null))).toBe("1.1.0");
+                expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null))).toBe("1.0.0");
+                expect(versionOf(pickAgentCopyForOwner(copies(), null))).toBe("1.1.0");
             });
         } finally {
             await catalog.close();
