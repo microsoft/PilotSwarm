@@ -1,7 +1,11 @@
 import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, checkRemoteEndpoint, computeBindingKey, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { computeCopyLimits, planComputeCopy, type ComputeCopyLimits, type ComputeCopyRefusal } from "./compute-assets.js";
+import { ComputeControlLink, type ComputeCallerStatement } from "./compute-control.js";
+import { computeCopyName, packageMcpFolders, packageMcpFoldersForAgents, remoteMcpCustomAgents, remoteMcpServers, type McpServerOrigin } from "./compute-mcp.js";
 import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
-import { ComputeBridgeRegistry, ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
+import { COMPUTE_PIPE_OPEN_TIMEOUT_MS, ComputeBridgeRegistry, ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
 import { computeFailureError, computeFailureMessage } from "./compute-failures.js";
+import { runWorkerHandshake } from "./compute-handshake.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -294,6 +298,13 @@ export interface WorkerDefaults {
     mcpAllowedAgents?: Map<string, Set<string>>;
     /** Every server name the deployment defines — a package may not redefine one. Held BY REFERENCE. */
     deploymentMcpNames?: Set<string>;
+    /**
+     * Where each catalog server came from, and the entry as it was
+     * written. Only a session whose agent runs on a compute host reads
+     * it: it decides which servers stay on the trusted side and which go
+     * to the host (compute-mcp.ts). Held BY REFERENCE.
+     */
+    mcpServerOrigins?: Map<string, McpServerOrigin>;
     /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
@@ -630,6 +641,8 @@ interface ComputeBinding {
      * a host, so they must share its address and its pooled client.
      */
     bridge?: ComputeRuntimeBridge;
+    /** The tree's owner, for the statement the worker vouches to a forwarded server. */
+    owner?: ComputePrincipal | null;
     /**
      * The coded failure of a handshake on a connection through this
      * binding's bridge, when one has failed since the bridge was proved.
@@ -865,6 +878,16 @@ export class SessionManager {
      * changes keeps its bridge while still being reached correctly.
      */
     private computeReach = new Map<string, Exclude<ComputeRuntimeEndpoint, { transport: "local" }>>();
+    /**
+     * Per host: the side channel beside its runtime connection, carrying
+     * the read-only copies of a session's folders and the traffic of the
+     * MCP servers that stay on the trusted side. One per host, like the
+     * bridge, and made only when a session on that host actually has
+     * folders or servers.
+     */
+    private computeControl = new Map<string, Promise<ComputeControlLink>>();
+    /** How much one session's copy of its folders carries. */
+    private computeCopyLimits: ComputeCopyLimits = computeCopyLimits();
     /** Whether a provider may hand back a runtime address that is not on this machine. */
     private computeAllowNonLoopbackEndpoints = false;
     /**
@@ -1358,6 +1381,7 @@ export class SessionManager {
             provider, target, host: bound.host, rootSessionId, workerNodeId,
             hostKey: computeBindingKey(target.id, bound.host, rootSessionId),
             endpointKey: sameHost ? previous!.endpointKey : "",
+            owner,
             workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
         };
         this.computeHosts.set(sessionId, binding);
@@ -1480,6 +1504,131 @@ export class SessionManager {
         };
     }
 
+    /**
+     * The side channel to this binding's host, made once per host.
+     *
+     * It is a second connection to the same address, proved by the same
+     * handshake and named `control` in its hello, so a host that cannot
+     * prove itself never sees a copied file or a forwarded call either.
+     */
+    private async _controlLink(binding: ComputeBinding): Promise<ComputeControlLink> {
+        const key = binding.hostKey;
+        const held = this.computeControl.get(key);
+        if (held) {
+            const link = await held.catch(() => undefined);
+            if (link && !link.isClosed) return link;
+            this.computeControl.delete(key);
+        }
+        const made = (async () => {
+            const reach = this.computeReach.get(key);
+            if (!reach) throw new Error("this host's address is not recorded");
+            const handshake = reach.handshake;
+            if (!handshake) throw new Error("this host's binding has no secret, so a second connection cannot be proved");
+            const pipe = await openTcpPipe(reach.address, AbortSignal.timeout(COMPUTE_PIPE_OPEN_TIMEOUT_MS));
+            try {
+                await runWorkerHandshake(pipe, handshake, { purpose: "control" });
+            } catch (error) {
+                try { pipe.destroy(); } catch { /* already gone */ }
+                throw error;
+            }
+            const link = new ComputeControlLink(pipe, {
+                onRefusal: ({ reason }) => console.warn(`[SessionManager] a forwarded call on ${binding.target.name} was refused: ${reason}`),
+            });
+            // Make the host say what it offers before anything is sent,
+            // so a host that cannot serve a side channel fails here.
+            await link.hostFacts();
+            return link;
+        })();
+        this.computeControl.set(key, made);
+        try {
+            return await made;
+        } catch (error) {
+            if (this.computeControl.get(key) === made) this.computeControl.delete(key);
+            throw error;
+        }
+    }
+
+    /**
+     * The skill folders and MCP servers a session gets when its agent runs
+     * on a compute host.
+     *
+     * Everything that decides WHICH folders and WHICH servers a session
+     * may have has already happened: this is the same list a session on
+     * the worker would be given. What happens here is only where each of
+     * them lives — the folders are copied to the host and named by the
+     * host's paths, the package servers are rebuilt to run there, and the
+     * deployment's servers stay here and are reached through the channel.
+     *
+     * Returns null when the session has neither, which is the common case
+     * for a session with no skills and no servers: no channel is opened.
+     */
+    private async _remoteCapabilities(args: {
+        sessionId: string;
+        binding: ComputeBinding;
+        skillDirectories: string[];
+        mcpServers: Record<string, any>;
+        customAgents?: any[];
+    }): Promise<{
+        skillDirectories: string[];
+        mcpServers: Record<string, any>;
+        customAgents?: any[];
+        unavailable: Array<{ name: string; reason: string }>;
+        refusals: ComputeCopyRefusal[];
+        fingerprint: string;
+    } | null> {
+        const { binding, sessionId } = args;
+        const origins = (name: string): McpServerOrigin | undefined => this.workerDefaults.mcpServerOrigins?.get(name);
+        const hasServers = Object.keys(args.mcpServers ?? {}).length > 0
+            || (args.customAgents ?? []).some((agent) => Object.keys(agent?.mcpServers ?? {}).length > 0);
+        if (args.skillDirectories.length === 0 && !hasServers) return null;
+
+        const link = await this._controlLink(binding);
+        const folders = [
+            ...args.skillDirectories.map((source) => ({ name: computeCopyName("skills", source), source })),
+            ...packageMcpFolders(args.mcpServers, origins),
+            ...packageMcpFoldersForAgents(args.customAgents, origins),
+        ];
+        const wanted = new Map<string, string>();
+        for (const folder of folders) if (!wanted.has(folder.name)) wanted.set(folder.name, folder.source);
+        const plan = planComputeCopy([...wanted].map(([name, source]) => ({ name, source })), this.computeCopyLimits);
+        const placements = await link.copy(plan);
+        const facts = { ...(await link.hostFacts()), placements };
+        const caller: ComputeCallerStatement = {
+            sessionId,
+            rootSessionId: binding.rootSessionId,
+            ownerProvider: binding.owner?.provider ?? "",
+            ownerSubject: binding.owner?.subject ?? "",
+            ownerEmail: binding.owner?.email ?? "",
+            computeTarget: binding.target.name,
+        };
+        const mint = (server: string) => link.mintTicket({
+            sessionId, server, caller,
+            config: args.mcpServers[server] ?? (args.customAgents ?? [])
+                .map((agent) => agent?.mcpServers?.[server]).find(Boolean),
+        });
+        const servers = remoteMcpServers(args.mcpServers, origins, facts, mint);
+        const nested = remoteMcpCustomAgents(args.customAgents, origins, facts, mint);
+        const skillDirectories = args.skillDirectories
+            .map((source) => placements[computeCopyName("skills", source)])
+            .filter((placed): placed is string => Boolean(placed));
+        return {
+            skillDirectories,
+            mcpServers: servers.servers,
+            ...(args.customAgents ? { customAgents: nested.agents } : {}),
+            unavailable: [...servers.unavailable, ...nested.unavailable],
+            refusals: plan.refusals,
+            // What the host actually holds. A skill whose text changed
+            // gives a different digest, so the session rebinds and the
+            // runtime reads the new text.
+            fingerprint: JSON.stringify([
+                plan.items.map((item) => [item.name, item.digest]),
+                skillDirectories,
+                Object.keys(servers.servers).sort(),
+                servers.unavailable.map((entry) => entry.name).sort(),
+            ]),
+        };
+    }
+
     /** Run one provider call with a deadline; a provider that does not answer fails the call. */
     private async _computeCall<T>(name: string, timeoutMs: number, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
         const controller = new AbortController();
@@ -1538,6 +1687,17 @@ export class SessionManager {
                 this.computeReach.delete(binding.hostKey);
             }
         }
+        // The side channel goes the same way: the session's tickets first,
+        // then the channel itself once nothing on this host is using it.
+        const control = this.computeControl.get(binding.hostKey);
+        if (control) {
+            const link = await control.catch(() => undefined);
+            link?.forgetSession(sessionId);
+            if (![...this.computeHosts.values()].some((other) => other.hostKey === binding.hostKey)) {
+                this.computeControl.delete(binding.hostKey);
+                link?.close();
+            }
+        }
         if (!binding.provider.release) return;
         try {
             await this._computeCall("release", COMPUTE_RELEASE_TIMEOUT_MS, (signal) => binding.provider.release!({
@@ -1570,9 +1730,14 @@ export class SessionManager {
     }
 
     /** Compute providers: whether a provider may return a runtime address that is not on this machine. */
-    setComputeOptions(options: { allowNonLoopbackEndpoints?: boolean; requireCompute?: boolean }): void {
+    setComputeOptions(options: {
+        allowNonLoopbackEndpoints?: boolean;
+        requireCompute?: boolean;
+        copyLimits?: Partial<ComputeCopyLimits>;
+    }): void {
         this.computeAllowNonLoopbackEndpoints = options.allowNonLoopbackEndpoints === true;
         this.computeRequired = options.requireCompute === true;
+        this.computeCopyLimits = computeCopyLimits(options.copyLimits);
     }
 
     /** Compute providers: add one plug-in per compute type. */
@@ -3088,12 +3253,64 @@ export class SessionManager {
             ? [linkSkillFolders(path.join(os.tmpdir(), "pilotswarm-skills", sessionId), repoAdoption.skills)]
             : repoAdoption?.skillDirectories ?? [];
         const sessionSkillDirectories = [...sdkSkillDirectories, ...adoptedSkillDirectories];
+        // The custom agents this turn would hand the runtime. Named here
+        // because a remote session's nested MCP maps are transformed with
+        // the top-level one, and the result goes into the fingerprint.
+        const sessionCustomAgents: any[] | undefined = nativeEnabled
+            ? (repoAdoption?.customAgents.length
+                ? [...nativeSubagentDefinitions(sdkModelName, nativeTaskAccess), ...repoAdoption.customAgents]
+                : nativeSubagentDefinitions(sdkModelName, nativeTaskAccess))
+            : (this.workerDefaults.customAgents?.length ? this.workerDefaults.customAgents : undefined);
+        // Compute providers: a session whose agent runs elsewhere gets the
+        // same skill folders and the same servers, in the only places they
+        // can be — the folders copied to its host, the package servers
+        // rebuilt to run there, the deployment's servers left here and
+        // reached through the host component. Nothing about which ones it
+        // may have is decided here.
+        let remoteCapabilities: Awaited<ReturnType<SessionManager["_remoteCapabilities"]>> = null;
+        if (remoteEndpoint) {
+            const binding = this.computeHosts.get(sessionId);
+            if (binding) {
+                try {
+                    remoteCapabilities = await this._remoteCapabilities({
+                        sessionId, binding,
+                        skillDirectories: sessionSkillDirectories,
+                        mcpServers: effectiveMcpServers,
+                        customAgents: sessionCustomAgents,
+                    });
+                } catch (error) {
+                    // Nothing could be delivered to the host. That is a
+                    // compute failure like any other: the turn fails here,
+                    // rather than running with a silently emptier session
+                    // than the one that was asked for.
+                    throw computeFailureError({
+                        code: COMPUTE_ERROR_CODES.UNAVAILABLE,
+                        message: `this session's skill folders and MCP servers could not be prepared on its compute host: ${String((error as Error)?.message ?? error)}`,
+                        retryAfterMs: 5_000,
+                    });
+                }
+                const notices = [
+                    ...(remoteCapabilities?.unavailable ?? []).map((entry) => ({ kind: "mcpServer", name: entry.name, reason: entry.reason })),
+                    ...(remoteCapabilities?.refusals ?? []).map((entry) => ({ kind: "file", name: entry.path ? `${entry.item}/${entry.path}` : entry.item, reason: entry.reason })),
+                ];
+                if (notices.length > 0) {
+                    for (const notice of notices) {
+                        console.warn(`[SessionManager] ${sessionId}: ${notice.name} is unavailable on this session's compute host: ${notice.reason}`);
+                    }
+                    void this.sessionCatalog?.recordEvents(sessionId, [{
+                        eventType: "session.compute_capabilities",
+                        data: { target: binding.target.name, unavailable: notices },
+                    }]).catch(() => { /* observability only */ });
+                }
+            }
+        }
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
         const bindingFingerprint = bindingFingerprintDigest(buildBindingFingerprintInput({
             capabilityFingerprint: config.capabilityFingerprint,
             baseAgentPolicy: config.baseAgentPolicy?.fingerprint,
             v2InventoryFingerprint,
             sdkSkillDirectories,
+            ...(remoteCapabilities ? { remoteCapabilities: remoteCapabilities.fingerprint } : {}),
             boundAgentName: config.boundAgentName,
             boundAgentSource: config.boundAgentSource,
             boundAgentCopy,
@@ -3197,9 +3414,7 @@ export class SessionManager {
             // tools, and loaded PilotSwarm agents expect durable child contracts.
             excludedTools,
             ...(nativeEnabled ? {
-                customAgents: repoAdoption?.customAgents.length
-                    ? [...nativeSubagentDefinitions(sdkModelName, nativeTaskAccess), ...repoAdoption.customAgents]
-                    : nativeSubagentDefinitions(sdkModelName, nativeTaskAccess),
+                customAgents: remoteCapabilities?.customAgents ?? sessionCustomAgents,
                 customAgentsLocalOnly: true,
                 excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
             } : {}),
@@ -3207,12 +3422,21 @@ export class SessionManager {
             ...sessionProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
-            // Compute providers: skill folders and MCP server configs are
-            // worker-local (paths, commands, env), so a remote runtime does not
-            // get them yet.
-            ...(!remoteEndpoint && sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
-            ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
-            ...(!remoteEndpoint && Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
+            // Compute providers: a remote session gets the same folders and
+            // the same servers, as its host sees them — the copies' paths,
+            // the package servers rebuilt for the host, and an entry per
+            // deployment server that reaches back through the host
+            // component. A worker path, a worker value or a configured
+            // credential never appears in any of them.
+            ...(remoteEndpoint
+                ? (remoteCapabilities?.skillDirectories.length ? { skillDirectories: remoteCapabilities.skillDirectories } : {})
+                : sessionSkillDirectories.length ? { skillDirectories: sessionSkillDirectories } : {}),
+            ...(!nativeEnabled && !remoteEndpoint && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            ...(!nativeEnabled && remoteEndpoint && (remoteCapabilities?.customAgents ?? sessionCustomAgents)?.length
+                && { customAgents: remoteCapabilities?.customAgents ?? sessionCustomAgents }),
+            ...(remoteEndpoint
+                ? (remoteCapabilities && Object.keys(remoteCapabilities.mcpServers).length > 0 ? { mcpServers: remoteCapabilities.mcpServers } : {})
+                : Object.keys(effectiveMcpServers).length > 0 ? { mcpServers: effectiveMcpServers } : {}),
         };
 
         let copilotSession: CopilotSession;

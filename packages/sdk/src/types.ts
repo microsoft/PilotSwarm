@@ -1460,6 +1460,20 @@ export interface PilotSwarmWorkerOptions {
      */
     requireCompute?: boolean;
 
+    /**
+     * Compute providers: the most bytes one session's read-only copy of
+     * its skill and package folders carries to its host. Default 64 MiB.
+     * Env: `PILOTSWARM_COMPUTE_COPY_MAX_BYTES`.
+     */
+    computeCopyMaxBytes?: number;
+
+    /**
+     * Compute providers: the most files one session's read-only copy of
+     * its skill and package folders carries to its host. Default 4,096.
+     * Env: `PILOTSWARM_COMPUTE_COPY_MAX_FILES`.
+     */
+    computeCopyMaxFiles?: number;
+
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
 
