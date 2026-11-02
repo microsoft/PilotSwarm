@@ -47,6 +47,15 @@ function connect(t, address) {
  * last frame put back, so a reader resumes it — which is what the bridge
  * and the host component do by piping it.
  */
+/** Wait for a condition rather than for a guess at how long it takes. */
+async function until(ready, within = 10_000) {
+    const deadline = Date.now() + within;
+    while (!ready()) {
+        if (Date.now() > deadline) throw new Error("the condition never became true");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+}
+
 function once(stream) {
     return new Promise((resolve) => {
         stream.once("data", (chunk) => resolve(chunk.toString()));
@@ -192,8 +201,12 @@ test("an open connection keeps the host component alive, and the clock starts ag
 
     const socket = await connect(t, component.address);
     await runWorkerHandshake(socket, credential);
-    // Several times the idle timeout, with the connection held open.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Several times the idle timeout, with the connection held open and
+    // carrying bytes, which is what a warm session's connection does.
+    for (let i = 0; i < 8; i++) {
+        socket.write("keep");
+        assert.equal(await once(socket), "runtime:keep");
+    }
     assert.equal(idle, 0, "a session that is warm holds its connection, so its host is never taken away");
     assert.equal(component.isClosed, false);
 
@@ -224,16 +237,17 @@ test("connections that say nothing are refused quickly and never take a proved c
     // More connections that say nothing than the pre-auth cap allows.
     const silent = [];
     for (let i = 0; i < 6; i++) silent.push(await connect(t, component.address));
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    assert.ok(refusals.some((m) => /proving themselves/.test(m)),
-        "the ones over the pre-auth cap are refused at once");
+    // Wait for the refusals themselves rather than for a fixed time: the
+    // ones over the cap are refused the moment they arrive.
+    await until(() => refusals.some((m) => /proving themselves/.test(m)));
     assert.equal(component.connections, 0,
         "and none of them takes one of the places a proved connection would use");
 
-    // Their deadline is the short one, so the port frees up in a quarter
-    // of a second rather than the handshake's fifteen.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // Their deadline is the short one, so the port frees up rather than
+    // waiting out the handshake's own. Wait for the places to free, not
+    // for a guess at how long that takes.
+    await until(() => refusals.filter((m) => /in time|deadline|timed out|proving themselves/.test(m)).length >= 6
+        || silent.every((socket) => socket.destroyed));
     const worker = await connect(t, component.address);
     await runWorkerHandshake(worker, credential);
     worker.write("hello");

@@ -90,13 +90,31 @@ export interface ComputeHandshakeCredential {
     secret: string;
 }
 
+/**
+ * What the host said when it refused, where the worker can act on it.
+ *
+ * `purpose-not-served` is the one the worker treats differently: a host
+ * that serves the runtime stream but not the side channel is a working
+ * host with less to offer, not a broken one, so the turn goes on with
+ * the session's skills and servers marked unavailable.
+ */
+export type ComputeHandshakeRefusal = "purpose-not-served";
+
 /** A refused handshake. Always this code, so a turn can say what happened. */
 export class ComputeHandshakeError extends Error {
     readonly code = COMPUTE_HANDSHAKE_FAILED;
-    constructor(message: string) {
+    /** What the host called the refusal, when it named one. */
+    readonly refusal?: ComputeHandshakeRefusal;
+    constructor(message: string, refusal?: ComputeHandshakeRefusal) {
         super(message);
         this.name = "ComputeHandshakeError";
+        this.refusal = refusal;
     }
+}
+
+/** Whether this error is a host that does not serve the side channel. */
+export function isPurposeNotServed(error: unknown): boolean {
+    return error instanceof ComputeHandshakeError && error.refusal === "purpose-not-served";
 }
 
 /** A fresh per-binding secret: 32 random bytes, hex. */
@@ -331,6 +349,14 @@ export async function runWorkerHandshake(
                 extra: null,
             });
             const answer = await reader.next();
+            if (answer.t === "no") {
+                // The host refused before proving anything. It may be
+                // refusing the purpose rather than the worker, which the
+                // caller treats differently, so the reason travels out.
+                const refusal = text(answer.refusal) === "purpose-not-served" ? "purpose-not-served" as const : undefined;
+                throw new ComputeHandshakeError(
+                    `the host refused this worker: ${text(answer.reason) || "no reason given"}`, refusal);
+            }
             if (answer.t !== "host") throw new ComputeHandshakeError(`the host answered "${text(answer.t)}" instead of proving itself`);
             if (answer.v !== COMPUTE_HANDSHAKE_VERSION) {
                 throw new ComputeHandshakeError(`the host speaks handshake version ${String(answer.v)}, this worker speaks ${COMPUTE_HANDSHAKE_VERSION}`);
@@ -348,7 +374,9 @@ export async function runWorkerHandshake(
             });
             const done = await reader.next();
             if (done.t !== "ok") {
-                throw new ComputeHandshakeError(`the host refused this worker: ${text(done.reason) || text(done.t) || "no reason given"}`);
+                const refusal = text(done.refusal) === "purpose-not-served" ? "purpose-not-served" as const : undefined;
+                throw new ComputeHandshakeError(
+                    `the host refused this worker: ${text(done.reason) || text(done.t) || "no reason given"}`, refusal);
             }
         });
     } finally {
@@ -384,9 +412,13 @@ export async function runHostHandshake(
             if (workerNonce.length < 16) throw new ComputeHandshakeError("the worker sent no usable nonce");
             const purpose = (text(hello.purpose) || COMPUTE_HANDSHAKE_DEFAULT_PURPOSE) as ComputeHandshakePurpose;
             if (!offered.includes(purpose)) {
-                await writeFrame(stream, { v: COMPUTE_HANDSHAKE_VERSION, t: "no", reason: "this host does not serve connections for that purpose" })
-                    .catch(() => { /* the refusal is the close */ });
-                throw new ComputeHandshakeError(`the worker asked for a "${purpose}" connection, which this host does not serve`);
+                await writeFrame(stream, {
+                    v: COMPUTE_HANDSHAKE_VERSION, t: "no",
+                    reason: "this host does not serve connections for that purpose",
+                    refusal: "purpose-not-served",
+                }).catch(() => { /* the refusal is the close */ });
+                throw new ComputeHandshakeError(
+                    `the worker asked for a "${purpose}" connection, which this host does not serve`, "purpose-not-served");
             }
             const seen = options.seenNonces;
             if (seen) {

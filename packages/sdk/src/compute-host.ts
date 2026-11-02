@@ -79,6 +79,18 @@ export const COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS = 15_000;
  * its provider at its next turn.
  */
 export const COMPUTE_HOST_IDLE_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How long a connection may carry no bytes before the operating system
+ * starts asking the other end whether it is still there.
+ *
+ * Idle shutdown is the backstop for a worker that crashed or a network
+ * that went away. Without this, such a connection stays open for ever as
+ * far as this component can tell, it is counted as live, and the host
+ * never ends itself — which is the one thing the backstop exists for.
+ */
+export const COMPUTE_HOST_KEEPALIVE_MS = 30_000;
+/** How often the component looks at how long its connections have been silent. */
+export const COMPUTE_HOST_IDLE_SWEEP_MS = 15_000;
 
 /**
  * This binding's secret, taken out of the environment as it is read.
@@ -204,7 +216,36 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
     let refused = 0;
     let closed = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let sweeper: ReturnType<typeof setInterval> | null = null;
     let stopListening: (() => Promise<void>) | null = null;
+    /** When each connection last carried a byte, so a silent one can be seen. */
+    const lastByte = new WeakMap<Socket, number>();
+
+    function endOfIdleness(): void {
+        void (async () => {
+            await stopListening?.().catch(() => { /* going away anyway */ });
+            options.onIdle?.();
+        })();
+    }
+
+    /**
+     * A connection that has carried no bytes for the idle time does not
+     * count as company.
+     *
+     * A worker that crashed, or a network that went away, leaves a
+     * connection this end still believes in. Counting it as live is what
+     * would keep a host up for ever with nobody on the other end.
+     */
+    function silent(socket: Socket): boolean {
+        const at = lastByte.get(socket) ?? 0;
+        return Date.now() - at >= idleTimeoutMs;
+    }
+
+    function busy(): boolean {
+        if (pending.size > 0) return true;
+        for (const socket of live) if (!silent(socket)) return true;
+        return false;
+    }
 
     /**
      * The idle clock runs only while nothing at all is connected, and it
@@ -217,10 +258,7 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
         idleTimer = setTimeout(() => {
             idleTimer = null;
             if (closed || live.size > 0 || pending.size > 0) return;
-            void (async () => {
-                await stopListening?.().catch(() => { /* going away anyway */ });
-                options.onIdle?.();
-            })();
+            endOfIdleness();
         }, idleTimeoutMs);
     }
 
@@ -239,6 +277,11 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
 
     async function serve(socket: Socket): Promise<void> {
         socket.setNoDelay(true);
+        // So a connection whose other end has gone without saying so is
+        // found rather than believed in for ever.
+        try { socket.setKeepAlive(true, COMPUTE_HOST_KEEPALIVE_MS); } catch { /* not every platform */ }
+        lastByte.set(socket, Date.now());
+        socket.on("data", () => lastByte.set(socket, Date.now()));
         socket.on("error", () => { /* the connection's end is reported below */ });
         disarmIdle();
         pending.add(socket);
@@ -268,6 +311,8 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
             // Only after both sides have proved themselves does anything
             // reach the runtime.
             runtimeSocket = await dial(runtime.host, runtime.port, COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS);
+            try { runtimeSocket.setKeepAlive(true, COMPUTE_HOST_KEEPALIVE_MS); } catch { /* not every platform */ }
+            runtimeSocket.on("data", () => lastByte.set(socket, Date.now()));
             runtimeSocket.on("close", () => { forget(socket); options.onConnectionClosed?.({ ok: true }); });
             join(socket, runtimeSocket);
         } catch (error) {
@@ -292,9 +337,19 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
     });
     server.on("error", () => { /* surfaced through the connections */ });
     const bound = server.address() as AddressInfo;
+    if (idleTimeoutMs > 0) {
+        sweeper = setInterval(() => {
+            // With nothing connected at all the ordinary clock applies;
+            // this is only for connections that are open and silent.
+            if (closed || live.size === 0 || busy()) return;
+            endOfIdleness();
+        }, Math.min(COMPUTE_HOST_IDLE_SWEEP_MS, Math.max(1_000, Math.floor(idleTimeoutMs / 2))));
+        sweeper.unref?.();
+    }
     stopListening = async () => {
         closed = true;
         disarmIdle();
+        if (sweeper) { clearInterval(sweeper); sweeper = null; }
         for (const socket of [...live, ...pending]) {
             live.delete(socket);
             pending.delete(socket);

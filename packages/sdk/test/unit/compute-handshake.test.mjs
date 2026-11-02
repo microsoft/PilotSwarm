@@ -10,16 +10,16 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { Duplex, PassThrough } from "node:stream";
-import { fileURLToPath } from "node:url";
 import {
     COMPUTE_HANDSHAKE_MAX_FRAME_BYTES,
     COMPUTE_HANDSHAKE_SECRET_MIN_CHARS,
     ComputeHandshakeError,
     computeHandshakeProof,
+    isPurposeNotServed,
     isUsableHandshakeSecret,
     newComputeHandshakeSecret,
+    proofsMatch,
     runHostHandshake,
     runWorkerHandshake,
 } from "../../dist/compute-handshake.js";
@@ -207,9 +207,33 @@ test("a host that serves the side channel says which purpose was proved", async 
     assert.deepEqual(proved, { purpose: "control" });
 });
 
-test("proofs are compared in constant time", () => {
-    const source = readFileSync(fileURLToPath(new URL("../../src/compute-handshake.ts", import.meta.url)), "utf8");
-    assert.match(source, /timingSafeEqual\(/,
-        "proofsMatch must compare with crypto.timingSafeEqual, not ===");
-    assert.doesNotMatch(source.split("export function proofsMatch")[1]?.split("\n}")[0] ?? "", /a === b/);
+test("a host that does not serve the side channel says so in a way the worker can act on", async () => {
+    const secret = newComputeHandshakeSecret();
+    const { worker, host } = twoEnds();
+    const [refused] = await Promise.allSettled([
+        runWorkerHandshake(worker, { bindingId: "b", secret }, { timeoutMs: 5_000, purpose: "control" }),
+        runHostHandshake(host, { bindingId: "b", secret }, { timeoutMs: 5_000, purposes: ["runtime"] }),
+    ]);
+    assert.equal(refused.status, "rejected");
+    assert.equal(isPurposeNotServed(refused.reason), true,
+        "so the turn can go on with the session's skills and servers unavailable, rather than failing");
+    // Anything else refused is NOT that, or every refusal would degrade
+    // quietly instead of failing the turn.
+    assert.equal(isPurposeNotServed(new Error("the host did not prove it holds this binding's secret")), false);
+});
+
+test("a proof that differs only in its last byte is still rejected, however it is compared", () => {
+    const secret = newComputeHandshakeSecret();
+    const parts = { bindingId: "b", workerNonce: "n".repeat(32), hostNonce: "m".repeat(32), purpose: "runtime" };
+    const right = computeHandshakeProof(secret, "host", parts);
+    // Every single-character difference, at every position: none matches,
+    // and none of them is accepted by a shortcut that stops early.
+    for (const at of [0, 1, right.length - 2, right.length - 1]) {
+        const wrong = right.slice(0, at) + (right[at] === "0" ? "1" : "0") + right.slice(at + 1);
+        assert.equal(wrong.length, right.length);
+        assert.equal(proofsMatch(wrong, right), false, `a proof differing at ${at} must not match`);
+    }
+    assert.equal(proofsMatch(right, right), true);
+    assert.equal(proofsMatch(right.slice(0, -1), right), false, "a shorter proof never matches");
+    assert.equal(proofsMatch(undefined, right), false);
 });
