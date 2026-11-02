@@ -71,8 +71,7 @@ async function screenshot(page, name) {
 
 for (const themeId of ["hearth", "github-light"]) for (const admin of [true, false]) {
     test(`phone header cog: plain ${admin ? "admin console" : "user settings"} in ${themeId}`, async ({ page }) => {
-        // Hearth's firelight animates border tints; compare the two buttons at
-        // rest, not at two moments of the animation.
+        // Hearth's firelight animates border tints; compare the buttons at rest.
         await page.emulateMedia({ reducedMotion: "reduce" });
         const f = await phoneFixture(page, { admin, themeId });
         try {
@@ -91,7 +90,13 @@ for (const themeId of ["hearth", "github-light"]) for (const admin of [true, fal
                 const style = getComputedStyle(node);
                 return { border: style.border, radius: style.borderRadius, padding: style.padding };
             };
-            expect(await cog.evaluate(visualStyle)).toEqual(await signOut.evaluate(visualStyle));
+            // The cog renders after sign-in resolves, so a theme's border-colour
+            // transition can be at a different point on each button for a moment.
+            // Compare once both have settled.
+            await expect.poll(async () => {
+                const [mine, theirs] = [await cog.evaluate(visualStyle), await signOut.evaluate(visualStyle)];
+                return JSON.stringify(mine) === JSON.stringify(theirs) ? "same" : JSON.stringify({ cog: mine, signOut: theirs });
+            }).toBe("same");
             const glyph = await cog.locator("svg").boundingBox();
             const logoutGlyph = await signOut.locator("svg").boundingBox();
             expect(glyph.width).toBe(logoutGlyph.width); expect(glyph.height).toBe(logoutGlyph.height);
