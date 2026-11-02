@@ -3,13 +3,14 @@
  *
  * A workflow session runs a graph of states instead of a conversation.
  * The worker records one CMS event per step; the transcript renders them as
- * an execution log: the graph when it starts, a line per state as it starts
- * and ends (or, for a wait state, when it waits until), and the terminal
- * state the run reached. The live view is the session's canvas,
+ * an execution log: a one-line start notice that opens to the graph, a line
+ * per state as it starts and ends (or, for a wait state, when it waits
+ * until), and the terminal state the run reached. A polling loop through a
+ * wait state folds into one row (workflow-progress.js). The live view is the session's canvas,
  * which the worker draws and updates (packages/sdk workflow/canvas.ts).
  */
 
-export const WORKFLOW_SESSION_GLYPH = "⛓";
+export const WORKFLOW_SESSION_GLYPH = "◇";
 
 export const WORKFLOW_EVENT_TYPES = [
     "workflow.started",
@@ -170,9 +171,10 @@ export function formatWorkflowEventText(event) {
 }
 
 /**
- * How one workflow event is drawn in the transcript. The graph and the end
- * result are full cards; each step is a one-line notice that opens to show
- * its output and errors. `text` is the Markdown body either way.
+ * How one workflow event is drawn in the transcript. The start is a one-line
+ * notice that opens to the graph; the end result is a card; each step is a
+ * one-line notice that opens to show its output and errors. `text` is the
+ * Markdown body either way.
  */
 export function describeWorkflowEvent(event) {
     const text = formatWorkflowEventText(event);
@@ -180,8 +182,16 @@ export function describeWorkflowEvent(event) {
     const data = event?.data && typeof event.data === "object" ? event.data : {};
     const stepTitle = `${WORKFLOW_SESSION_GLYPH} Step ${data.step ?? "?"}`;
     switch (event.eventType) {
-        case "workflow.started":
-            return { kind: "card", title: "Workflow", color: "magenta", text };
+        case "workflow.started": {
+            const states = Array.isArray(data.states) ? data.states.length : 0;
+            return {
+                kind: "notice",
+                title: `${WORKFLOW_SESSION_GLYPH} ${data.name ?? "workflow"}${data.version ? ` ${data.version}` : ""}`,
+                color: "magenta",
+                summary: `${states} state${states === 1 ? "" : "s"} · initial ${data.initial ?? "?"}`,
+                text,
+            };
+        }
         case "workflow.completed":
             return { kind: "card", title: "Workflow result", color: "green", text };
         case "workflow.failed":

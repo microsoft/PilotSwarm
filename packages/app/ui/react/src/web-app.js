@@ -180,7 +180,7 @@ function supportsLocalFileOpen(controller) {
     return typeof controller?.transport?.openPathInDefaultApp === "function";
 }
 
-const WORKFLOW_COMPOSER_NOTE = "⛓ Workflow session — it runs a workflow graph, not a conversation, and does not accept messages. Each step appears above as it runs.";
+const WORKFLOW_COMPOSER_NOTE = "◇ Workflow session — it runs a workflow graph, not a conversation, and does not accept messages. Each step appears above as it runs.";
 const SESSION_LINK_COPIED_STATUS = "Session link copied to clipboard";
 const ARTIFACT_LINK_COPIED_STATUS = "Artifact link copied to clipboard";
 // Mirrors SESSION_NAV_SETTLE_MS in the controller: the access probe rides the

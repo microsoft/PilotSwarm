@@ -1,7 +1,8 @@
 // Workflow sessions in the portal, in a real browser:
-//   - the session list marks a workflow session (⛓) beside agent sessions
-//   - its transcript is the execution log, and the composer says why there
-//     is no chat box
+//   - the session list marks a workflow session (◇) beside agent sessions
+//   - its transcript is the execution log: a one-line start notice that
+//     opens to the graph, and a polling loop folded into one row; the
+//     composer says why there is no chat box
 //   - a workflow session is always an agent's child (spawn_workflow): New
 //     offers no way to start one, neither at the model step nor in the
 //     agent chooser
@@ -15,6 +16,7 @@ import { buildWorkflowCanvasHtml, compileWorkflow, foldWorkflowCanvasState } fro
 
 const AGENT_ID = "11111110-2222-3333-4444-555555555550";
 const WORKFLOW_ID = "77777777-2222-3333-4444-555555555555";
+const LOOP_ID = "88888888-2222-3333-4444-555555555555";
 const SHOTS = process.env.PS_E2E_SHOT_DIR || null;
 
 const now = Date.now();
@@ -23,6 +25,10 @@ const SESSIONS = [
     {
         sessionId: WORKFLOW_ID, title: "Workflow: nightly-report", status: "completed", sessionKind: "workflow",
         parentSessionId: AGENT_ID, createdAt: now - 30_000, updatedAt: now - 20_000,
+    },
+    {
+        sessionId: LOOP_ID, title: "Workflow: poll-builds", status: "running", sessionKind: "workflow",
+        parentSessionId: AGENT_ID, createdAt: now - 25_000, updatedAt: now - 1_000,
     },
 ];
 
@@ -54,6 +60,32 @@ const WORKFLOW_EVENTS = [
     ev("workflow.completed", { name: "nightly-report", steps: 2, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"count\":3}" }, 2700),
 ];
 
+// A polling loop: check, wait, check, wait, check, wait.
+const loopEv = (eventType, data, offsetMs) => ({ seq: ++seq, sessionId: LOOP_ID, eventType, data, timestamp: now - 25_000 + offsetMs, createdAt: now - 25_000 + offsetMs });
+const LOOP_EVENTS = [
+    loopEv("workflow.started", {
+        name: "poll-builds", version: "1.0.0", initial: "check",
+        states: [
+            { id: "check", type: "script", runtime: "node", timeoutSeconds: 300, next: { idle: "sleep", found: "handle" } },
+            { id: "sleep", type: "wait", seconds: 600, next: { elapsed: "check" } },
+            { id: "handle", type: "script", runtime: "node", timeoutSeconds: 300, next: { done: "done" } },
+            { id: "done", type: "terminal", outcome: "succeeded" },
+        ],
+    }, 0),
+    ...[1, 2, 3].flatMap((visit) => {
+        const step = visit * 2 - 1;
+        const at = visit * 1_000;
+        return [
+            loopEv("workflow.state_started", { stateId: "check", runtime: "node", step, visit }, at),
+            loopEv("workflow.state_completed", {
+                stateId: "check", step, visit, outcome: "idle", resultSource: "reported", exitCode: 0, durationMs: 800,
+                toolCalls: [{ name: "read_facts", ok: true, durationMs: 40 }], outputPreview: `{"failed":0,"visit":${visit}}`,
+            }, at + 100),
+            loopEv("workflow.state_waiting", { stateId: "sleep", step: step + 1, seconds: 600, until: now + 600_000, visit }, at + 200),
+        ];
+    }),
+];
+
 let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
@@ -78,6 +110,8 @@ async function routeApi(page, { agents = null } = {}) {
         if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions: SESSIONS, hasMore: false });
         if (agents && pathname.endsWith("/agents") && req.method() === "GET") return answer(agents);
         if (pathname.includes(`/sessions/${WORKFLOW_ID}/events`)) return answer(WORKFLOW_EVENTS);
+        if (pathname.includes(`/sessions/${LOOP_ID}/events`)) return answer(LOOP_EVENTS);
+        if (pathname.endsWith(`/sessions/${LOOP_ID}`)) return answer({ ...SESSIONS[2], events: [], messages: [] });
         if (pathname.endsWith(`/sessions/${WORKFLOW_ID}`)) return answer({ ...SESSIONS[1], events: [], messages: [] });
         return route.fallback();
     });
@@ -91,11 +125,16 @@ test("a workflow session is marked in the list, shows its execution log and has 
 
     const workflowRow = page.locator(".ps-session-row-content", { hasText: "Workflow: nightly-report" }).first();
     await expect(workflowRow).toBeVisible();
-    await expect(workflowRow).toContainText("⛓");
-    await expect(page.locator(".ps-session-row-content", { hasText: "Release triage agent" }).first()).not.toContainText("⛓");
+    await expect(workflowRow).toContainText("◇");
+    await expect(workflowRow).not.toContainText("⛓");
+    await expect(page.locator(".ps-session-row-content", { hasText: "Release triage agent" }).first()).not.toContainText("◇");
 
     const chat = page.locator(".ps-chat-panel");
-    await expect(chat).toContainText("Workflow nightly-report 1.0.0 started: 5 states, initial collect");
+    // The start is one line; it opens to the graph.
+    const start = chat.locator(".ps-system-notice-summary", { hasText: "nightly-report 1.0.0: 5 states · initial collect" });
+    await expect(start).toBeVisible();
+    await expect(chat).not.toContainText("found → report, empty → nothing, failure → failed");
+    await start.click();
     await expect(chat).toContainText("found → report, empty → nothing, failure → failed");
     await expect(chat).toContainText("ends: succeeded");
     await expect(chat).toContainText("Step 1: collect → found in 1.8 s · 1 tool call (read_facts)");
@@ -129,10 +168,31 @@ test("New offers no way to start a workflow: agents start them with spawn_workfl
     const chooser = page.locator(".ps-modal");
     await expect(chooser).toContainText("Alpha");
     await expect(chooser).not.toContainText("Workflow");
-    await expect(chooser).not.toContainText("⛓");
+    await expect(chooser).not.toContainText("◇");
     await expect(page.locator("#ps-workflow-yaml")).toHaveCount(0);
     await shot(page, "3-agent-chooser-without-workflow");
     expect(workflowPosts).toEqual([]);
+    expect(errors).toEqual([]);
+});
+
+test("a polling loop through a wait state reads as one row that opens to its checks", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${LOOP_ID}`);
+
+    const chat = page.locator(".ps-chat-panel");
+    const row = chat.locator(".ps-system-notice-summary", { hasText: "◇ check: Waiting · 3 checks · idle" });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("last 800 ms");
+    await expect(row).toContainText("next check");
+    // The individual checks and waits are folded into it.
+    await expect(chat).not.toContainText("Step 1: check");
+    await expect(chat).not.toContainText("sleep waiting");
+    await row.click();
+    await expect(chat).toContainText("Latest output:");
+    await expect(chat).toContainText('{"failed":0,"visit":3}');
+    await shot(page, "4-workflow-polling-row");
     expect(errors).toEqual([]);
 });
 

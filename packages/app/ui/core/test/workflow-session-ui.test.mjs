@@ -101,10 +101,14 @@ test("a wait state reads as waiting, with its length, end time and loop count", 
     assert.match(clockGraph, /\| nightly \| wait \(daily at 02:00 America\/Los_Angeles\) \| elapsed → report \|/);
 });
 
-test("the graph and the result are cards; each step is a one-line notice", () => {
+test("the start is a one-line notice that opens to the graph; the result is a card; each step is a one-line notice", () => {
+    assert.equal(WORKFLOW_SESSION_GLYPH, "◇");
+    const start = describeWorkflowEvent(STARTED);
+    assert.deepEqual([start.kind, start.title, start.summary], ["notice", "◇ nightly-report 1.0.0", "4 states · initial collect"]);
+    assert.match(start.text, /\| collect \| script \(python\) \|/);
     assert.deepEqual(
-        [STARTED, COMPLETED, FAILED].map((e) => [describeWorkflowEvent(e).kind, describeWorkflowEvent(e).title]),
-        [["card", "Workflow"], ["card", "Workflow result"], ["card", "Workflow failed"]],
+        [COMPLETED, FAILED].map((e) => [describeWorkflowEvent(e).kind, describeWorkflowEvent(e).title]),
+        [["card", "Workflow result"], ["card", "Workflow failed"]],
     );
     const step = describeWorkflowEvent(NODE_COMPLETED);
     assert.equal(step.kind, "notice");
@@ -113,7 +117,7 @@ test("the graph and the result are cards; each step is a one-line notice", () =>
     assert.doesNotMatch(step.summary, /[*`]/, "a one-line summary is plain text");
     assert.match(step.text, /Output:/);
     const history = buildHistoryModel([STARTED, NODE_COMPLETED]);
-    assert.equal(history.chat[0].cardTitle, "Workflow");
+    assert.equal(history.chat[0].workflowNotice.summary, "4 states · initial collect");
     assert.equal(history.chat[1].workflowNotice.summary, step.summary);
 });
 

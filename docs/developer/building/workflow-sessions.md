@@ -21,7 +21,7 @@ is created.
 
 A workflow session is always the **child of an agent session**: an agent
 starts it with `spawn_workflow`, and there is no top-level workflow. It has a
-row in the session list (marked `⛓`) under its parent, the parent's owner,
+row in the session list (marked `◇`) under its parent, the parent's owner,
 sharing, and a transcript.
 
 - The **live view** is the session's canvas. The worker draws the graph when
@@ -29,9 +29,17 @@ sharing, and a transcript.
   finished states show their outcome and time, taken transitions light up,
   the terminal state reached is marked, and a table lists recent steps. The
   portal opens it when you open the session.
-- The **transcript** is the execution log: the graph, one line per state as
-  it starts and ends (outcome, duration, tool calls, output preview), and the
-  terminal state reached.
+- The **transcript** is the execution log: a one-line start notice
+  (`<name> <version>: N states · initial <id>`, which opens to the graph),
+  one line per state as it starts and ends (outcome, duration, tool calls,
+  output preview), and the terminal state reached. Repeated visits of a
+  script state through a wait loop fold into **one row that updates in
+  place**, for example
+  `◇ check: Waiting · 37 checks · idle · last checked 01:20 · last 0.8 s · next check 01:30`.
+  Opening it lists the latest 40 checks (step, outcome, time, tool calls)
+  and the latest output; a different outcome, a failure or any other event
+  ends the row and gets its own. This is a display only: the session's
+  events keep every step, and no model reads the transcript.
 
 ## Example
 

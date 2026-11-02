@@ -2881,13 +2881,15 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
         }
         // A workflow step: one line that opens to its output (workflow-sessions.js).
         if (message?.workflowNotice) {
-            return [buildSystemNoticeLine({
+            // A folded polling row updates in place; a fixed timestamp would be its first check's.
+            const line = buildSystemNoticeLine({
                 title: message.workflowNotice.title,
                 summary: message.workflowNotice.summary,
                 body: message.text || "",
-                timestamp: formatTimestamp(message?.createdAt || message?.time),
+                timestamp: message.workflowNotice.progress ? "" : formatTimestamp(message?.createdAt || message?.time),
                 color: message.workflowNotice.color || "gray",
-            })];
+            });
+            return [message.workflowNotice.progress ? { ...line, workflowProgress: true } : line];
         }
         // System-role messages that carry an explicit non-"System" cardTitle
         // (e.g. "Question", "Error", "Warning") are real product cards built by
