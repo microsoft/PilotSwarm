@@ -13,6 +13,8 @@ import {
     WORKFLOW_V2_MAX_CORRELATION_BYTES,
     WORKFLOW_V2_NOTIFY_NAME,
     WORKFLOW_V2_NOTIFY_VERSION,
+    WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+    WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION,
     workflowLiveControllerInstanceId,
     workflowNotifyInstanceId,
     type ControllerInput,
@@ -60,6 +62,29 @@ export interface WorkflowV2Host {
         getStatus(instanceId: string): Promise<{ status: string; error?: string }>;
         enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
     };
+    /**
+     * Request states (design workflow-messaging-request.md 8.4; INACTIVE:
+     * only a test sets it, with workers that register them): a definition
+     * compiles with request states enabled (IR 7), and runs start at
+     * controller 1.9.0 with the 1.1.0 notifier. Absent or false: a request
+     * state keeps a definition an invalid draft, and runs start at 1.8.0.
+     */
+    requests?: boolean;
+}
+
+/** The controller version a host starts runs at (WorkflowV2Host.requests). */
+function controllerVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
+    return host.requests === true ? WORKFLOW_V2_REQUEST_CONTROLLER_VERSION : WORKFLOW_V2_CONTROLLER_VERSION;
+}
+
+/** The notifier version a host starts (WorkflowV2Host.requests). */
+function notifyVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
+    return host.requests === true ? WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION : WORKFLOW_V2_NOTIFY_VERSION;
+}
+
+/** A definition as a host compiles it (WorkflowV2Host.requests). */
+function compileFor(host: Pick<WorkflowV2Host, "requests">, yaml: string): WorkflowCompileResult {
+    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true } : {});
 }
 
 export interface CreateWorkflowV2Request {
@@ -130,7 +155,7 @@ export async function dispatchWorkflowV2Run(host: WorkflowV2Host, receipt: Workf
     const run = await host.store.readRun(admitted.runId);
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
     const input: ControllerInput = { v: 2, workflowSessionId: receipt.workflowSessionId, runId: admitted.runId };
-    await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
+    await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, controllerVersionFor(host));
 }
 
 /** duroxide statuses after which an orchestration does no more work. */
@@ -195,12 +220,12 @@ function parseRecoverReceipt(value: JsonValue): WorkflowV2RecoverReceipt {
  * stable client message id); starting it again for the same run is ignored
  * by duroxide, so a repeated recover only makes sure it was started.
  */
-async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, run: WorkflowRunRow): Promise<void> {
+async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow): Promise<void> {
     if (run.mode !== "live" || run.status !== "failed" || !isJsonObject(run.terminalError) || run.terminalError.code !== "controller_ended") return;
     const definition = await host.store.readDefinition(run.workflowSessionId);
     if (!definition?.parentSessionId || !definition.notifyParent) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
-        { runId: run.runId }, WORKFLOW_V2_NOTIFY_VERSION);
+        { runId: run.runId }, notifyVersionFor(host));
 }
 
 /**
@@ -210,10 +235,10 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
  * after an interruption; duroxide ignores a second start of an instance, and
  * the run's stored controller instance id never changes.
  */
-async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient">, run: WorkflowRunRow): Promise<void> {
+async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient" | "requests">, run: WorkflowRunRow): Promise<void> {
     if (!runNotBegun(run)) return;
     const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
-    await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
+    await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, controllerVersionFor(host));
 }
 
 /**
@@ -227,7 +252,7 @@ async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient">
  * is left alone. The begin activity starts the same notifier when the
  * run's controller starts (workflow-v2-controller begin).
  */
-async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, run: WorkflowRunRow, operationId: string,
+async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow, operationId: string,
     callerSessionId: string | null): Promise<void> {
     const error = run.terminalError;
     const details = isJsonObject(error) && isJsonObject(error.details) ? error.details : null;
@@ -236,7 +261,7 @@ async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "
     if (!definition?.parentSessionId || !definition.notifyParent) return;
     if (details.requestedBy === definition.parentSessionId || callerSessionId === definition.parentSessionId) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
-        { runId: run.runId }, WORKFLOW_V2_NOTIFY_VERSION);
+        { runId: run.runId }, notifyVersionFor(host));
 }
 
 /**
@@ -389,7 +414,7 @@ function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: Sessi
 export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWorkflowV2Request): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(request.operationId);
     requireStorableYaml(request.yaml);
-    const compiled = compileWorkflowV2(request.yaml);
+    const compiled = compileFor(host, request.yaml);
     const publish = request.publish === true || Boolean(request.start);
     const startInputs = request.start ? request.start.inputs : null;
     if (request.start) validateRunInputs(compiled, request.start.inputs);
@@ -485,7 +510,7 @@ export async function updateWorkflowV2(
     let stored: StoredOperation<WorkflowDefinitionReceipt>;
     if (command.operation === "replace_definition") {
         requireStorableYaml(command.yaml);
-        const compiled = compileWorkflowV2(command.yaml);
+        const compiled = compileFor(host, command.yaml);
         stored = await host.store.replaceDraft({
             workflowSessionId, expectedRevision: command.expectedRevision, yaml: command.yaml, compiled,
             declaredSemver: compiled.version ?? declaredSemver(command.yaml), actor: context.actor, operationId: context.operationId,
