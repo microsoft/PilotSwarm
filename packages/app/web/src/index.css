@@ -9378,44 +9378,17 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   }
 }
 
-/* The session list may pan sideways when its rows overflow — long titles and
-   model names are routinely wider than a phone. Vertical stays the primary
-   axis (see useAxisLockedPan: sideways needs a deliberate, mostly
-   horizontal swipe), and rows stop truncating so there is something to reach. */
+/* The phone's session list scrolls vertically only, and natively: the
+   system's own momentum, at the display's refresh rate, on the compositor.
+   It used to let long rows pan sideways, which needed a script to drive both
+   axes from touch events; that ran on the main thread at 60fps and read as
+   choppy beside native scrolling. Rows now fit the pane and a long title ends
+   in an ellipsis, as on the desktop. The selected session's full title is in
+   the detail box below the list. */
 .ps-mobile-session-pane .ps-action-list {
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  /* iOS draws its overlay scrollbar against the scrolled CONTENT when a
-     container pans both axes, so the indicator slid across the rows as a
-     stray vertical line. The gesture is the affordance on a phone; drop the
-     chrome. */
-  scrollbar-width: none;
-}
-
-.ps-mobile-session-pane .ps-action-list::-webkit-scrollbar {
-  display: none;
-}
-
-/* Rows must be intrinsically WIDE for there to be anything to pan to: the
-   default row clamps itself to the pane (max-width:100% on .ps-list-button,
-   ellipsis on the title text), so the list's scrollWidth equalled its
-   clientWidth and a sideways swipe moved nothing. On the phone pane the row
-   grows to its content and the title stops ellipsizing; the list scrolls.
-   Panning stays deliberate — useAxisLockedPan commits each gesture to one
-   axis, and sideways needs a drag that clearly beats vertical. (The old
-   comment here said the hook "keeps touch-action at pan-y"; it never touched
-   touch-action. The pan-y below is CSS's own, and is now only a fallback for
-   if those listeners fail to attach.) */
-.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-list-button {
-  width: max-content;
-  min-width: 100%;
-  max-width: none;
-}
-
-.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-session-row-title__text,
-.ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-line {
-  overflow: visible;
-  text-overflow: clip;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 
 /* The mobile inspector KEEPS horizontal scroll: the sequence grid is sized to

@@ -5252,178 +5252,6 @@ function useStableValue(value) {
     return ref.current;
 }
 
-/**
- * One axis per gesture: a touch drag scrolls the session list up/down OR
- * left/right, never both.
- *
- * The session list has `width: max-content` rows, so it overflows sideways
- * whenever a title is long. With both axes on offer a swipe is never perfectly
- * vertical, so scrolling down kept sliding the list sideways too.
- *
- * This used to hand the vertical case back to the browser (`touch-action:
- * pan-y`) and only drive horizontal itself. That relied on the browser to
- * refuse the sideways component, and it has two problems:
- *
- *   - What counts as "vertical enough" for `pan-y` is the browser's call, not
- *     ours, and engines disagree. The guarantee was only as good as whichever
- *     one the reader happened to be using.
- *   - A drag near 45° fell in the gap: we committed it to vertical and stepped
- *     aside, and the browser then declined to pan it at all. The list simply
- *     did not move, which reads as broken rather than as a locked axis.
- *
- * So both axes are driven here. Every gesture past the slop threshold commits
- * to exactly one axis and always moves it — no dead zone, and no engine gets a
- * vote on the diagonal. Vertical stays the default: sideways has to be asked
- * for, by a drag that beats vertical by PAN_HORIZONTAL_RATIO.
- *
- * The list tracks the finger and stops on release: no inertial fling. Chat
- * and canvas scrolling are independent and keep their native behavior.
- * CSS keeps `touch-action: pan-y` as a floor: if these
- * listeners ever fail to attach, the list still scrolls vertically the native
- * way rather than becoming inert.
- */
-const PAN_COMMIT_PX = 10;      // ignore the first few px — every swipe starts noisy
-const PAN_HORIZONTAL_RATIO = 1.6;   // |dx| must beat |dy| by this much to go sideways
-
-/**
- * Which axis does this gesture own? Pure, and exported so the rule can be
- * tested without a browser — the bug it replaces was a gesture that matched
- * NEITHER branch and therefore scrolled nothing.
- *
- * Returns null while the drag is still inside the slop radius, then "x" or
- * "y" — never null again, and never both. Every gesture that gets past the
- * threshold moves something.
- */
-export function commitPanAxis(dx, dy) {
-    if (Math.abs(dx) < PAN_COMMIT_PX && Math.abs(dy) < PAN_COMMIT_PX) return null;
-    // Ties, and anything close to a tie, go to vertical. Vertical is the
-    // primary axis; sideways has to be asked for.
-    return Math.abs(dx) > Math.abs(dy) * PAN_HORIZONTAL_RATIO ? "x" : "y";
-}
-
-function useAxisLockedPan(ref, enabled = true) {
-    React.useEffect(() => {
-        const el = ref.current;
-        // Coarse pointers only. On a touchscreen LAPTOP the pointer is fine,
-        // so drag-to-reorder is armed on the same rows — and because this hook
-        // prevents native scrolling, the browser never fires the pointercancel
-        // that would otherwise end that drag. Both would then own one finger:
-        // a ghost row appears, the list pans under it, and the drop resolves
-        // against a list that moved. Mirrors the gate reorder uses the other
-        // way round; a fine pointer scrolls natively under the pan-y CSS.
-        if (!el || !enabled) return undefined;
-
-        let startX = 0;
-        let startY = 0;
-        let lastX = 0;
-        let lastY = 0;
-        let axis = null;    // null = undecided, "x" | "y" = committed, "done" = not ours
-        let swallowClick = false;
-        const canScroll = (which) => (which === "x"
-            ? el.scrollWidth > el.clientWidth + 1
-            : el.scrollHeight > el.clientHeight + 1);
-
-        const onTouchStart = (event) => {
-            swallowClick = false;
-            // targetTouches, not touches: a thumb resting elsewhere on the page
-            // is not part of this gesture. Two fingers HERE is a pinch.
-            if (event.targetTouches.length !== 1) { axis = "done"; return; }
-            const touch = event.targetTouches[0];
-            startX = lastX = touch.clientX;
-            startY = lastY = touch.clientY;
-            axis = null;
-        };
-
-        const onTouchMove = (event) => {
-            if (axis === "done" || event.targetTouches.length !== 1) return;
-            const touch = event.targetTouches[0];
-            const dx = touch.clientX - startX;
-            const dy = touch.clientY - startY;
-
-            if (axis === null) {
-                // Decide BEFORE preventing. Preventing a touchmove prevents
-                // scrolling for every later move of that touch, so a hand-off
-                // after the commit cannot hand anything back — the browser has
-                // already been told no.
-                //
-                // Vertical is the browser's own axis here (touch-action:
-                // pan-y), and it has to be claimed from the FIRST move or not
-                // at all: the browser's slop is smaller than ours (5-8px
-                // against 10), so an un-prevented move past it starts a native
-                // pan-y scroll and marks the rest of the gesture
-                // non-cancelable — our preventDefault then no-ops while
-                // scrollTop -= step still runs, and vertical moved at double
-                // speed with two flings on release. So a list with vertical
-                // overflow is claimed now, inside the slop.
-                //
-                // A list WITHOUT vertical overflow leaves the early moves
-                // alone. The browser only ever takes the vertical under pan-y,
-                // so a sideways commit can still claim the gesture for the
-                // list's horizontal overflow (a short list of long titles),
-                // and a vertical commit hands the pane its scroll untouched.
-                const ownsVertical = canScroll("y");
-                if (!ownsVertical && !canScroll("x")) { axis = "done"; return; }
-                if (ownsVertical && event.cancelable) event.preventDefault();
-                axis = commitPanAxis(dx, dy);
-                if (axis === null) return;
-                // A list that cannot scroll on the committed axis is not ours
-                // to pan; and if the browser has already begun its own scroll
-                // (the event is no longer cancelable), the gesture is its.
-                if (!canScroll(axis) || !event.cancelable) { axis = "done"; return; }
-                // Measure from here, so the slop we ignored is not also applied.
-                lastX = touch.clientX;
-                lastY = touch.clientY;
-                // A drag must not select whichever row ends up under the thumb.
-                swallowClick = true;
-            }
-
-            // Ours: stop the browser doing it as well. A repeat of the
-            // first-move prevent for a list that owns vertical; the first
-            // prevent of the gesture for a sideways pan on a short list.
-            if (event.cancelable) event.preventDefault();
-
-            const stepX = touch.clientX - lastX;
-            const stepY = touch.clientY - lastY;
-
-            if (axis === "x") el.scrollLeft -= stepX;
-            else el.scrollTop -= stepY;
-
-            lastX = touch.clientX;
-            lastY = touch.clientY;
-        };
-
-        const onTouchEnd = (event) => {
-            // Lifting ONE finger of a pinch does not hand the survivor a pan:
-            // its start point belongs to a different gesture, and the commit
-            // would land on a large bogus delta. Stay out until all lift.
-            if (event.targetTouches.length > 0) { axis = "done"; return; }
-            axis = null;
-        };
-
-        const onTouchCancel = () => { axis = "done"; };
-
-        const onClickCapture = (event) => {
-            if (!swallowClick || event.detail === 0) return;
-            swallowClick = false;
-            event.preventDefault();
-            event.stopPropagation();
-        };
-
-        el.addEventListener("touchstart", onTouchStart, { passive: true });
-        el.addEventListener("touchmove", onTouchMove, { passive: false });
-        el.addEventListener("touchend", onTouchEnd, { passive: true });
-        el.addEventListener("touchcancel", onTouchCancel, { passive: true });
-        el.addEventListener("click", onClickCapture, true);
-        return () => {
-            el.removeEventListener("touchstart", onTouchStart);
-            el.removeEventListener("touchmove", onTouchMove);
-            el.removeEventListener("touchend", onTouchEnd);
-            el.removeEventListener("touchcancel", onTouchCancel);
-            el.removeEventListener("click", onClickCapture, true);
-        };
-    }, [ref, enabled]);
-}
-
 const SessionSearchControl = React.memo(function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = false, expanded = false, onOpen, onClose, triggerRef, listRef = null }) {
     // Keep typing local: expensive list filtering and external-store updates
     // must never be part of the input's immediate render path.
@@ -5516,7 +5344,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const searchOverlay = compactSearch && searchOpen;
     const searchDialogRef = React.useRef(null);
     const searchTriggerRef = React.useRef(null);
-    // Vertical is the primary scroll axis; sideways takes a deliberate swipe.
+    // On a touch screen the list scrolls natively: the system's own momentum,
+    // at the display's refresh rate, on the compositor.
     const sessionListRef = React.useRef(null);
     // Selection reverts to plain taps wherever the primary input is a finger:
     // the mobile pane, and the chat-focus overlay's list on a phone. Matches
@@ -5526,7 +5355,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // waiting for panelClassName to change under a mounted pane.
     const coarsePointer = useCoarsePointer();
     const touchInput = isMobilePane || coarsePointer;
-    useAxisLockedPan(sessionListRef, touchInput);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const detailCollapsed = useControllerSelector(
@@ -14809,6 +14637,20 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
     const themeSoundMobile = useControllerSelector(controller, (state) => state.ui.themeSoundMobile);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, state => state.ui.touchScale);
+    // Phone only: which people's sessions the list shows. The phone toolbar
+    // has no room for the funnel the desktop keeps beside New session.
+    const ownerFilterSummary = useControllerSelector(controller, (state) => {
+        const filter = state.sessions?.ownerFilter;
+        if (!filter || filter.all) return "Everyone";
+        const parts = [];
+        if (filter.includeMe) parts.push("Me");
+        if (filter.includeShared) parts.push("Shared");
+        const others = Array.isArray(filter.ownerKeys) ? filter.ownerKeys.length : 0;
+        if (others) parts.push(`${others} ${others === 1 ? "person" : "people"}`);
+        if (filter.includeSystem) parts.push("System");
+        if (filter.includeUnowned) parts.push("Unowned");
+        return parts.length ? parts.join(", ") : "Nobody";
+    });
     if (mobile) return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
         React.createElement("h3", null, "Appearance"),
         React.createElement("label", { className: "ps-mobile-setting-row" },
@@ -14818,6 +14660,11 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
         React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
             onClick: () => controller.openThemePicker() },
             React.createElement("span", null, "Theme"), React.createElement("span", null, getTheme(themeId)?.label || themeId, " ›")),
+        React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
+            "aria-label": "Filter sessions",
+            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}) },
+            React.createElement("span", null, "Show sessions from"),
+            React.createElement("span", null, ownerFilterSummary, " ›")),
         React.createElement(MobileThemeSoundRows, {
             setting: themeSoundMobile,
             theme: getTheme(themeId),

@@ -15,7 +15,7 @@ let stub;
 let base;
 
 test.beforeAll(async () => {
-    stub = await startStubServer(0, { sessionCount: 48, transcriptTurns: 8 });
+    stub = await startStubServer(0, { sessionCount: 90, transcriptTurns: 8 });
     base = `http://127.0.0.1:${stub.port}`;
 });
 
@@ -48,48 +48,53 @@ test("a tap still selects", async ({ page }) => {
     await expect(page.locator(".ps-session-list-button.is-selected")).toHaveCount(1);
 });
 
-async function checkDragStops(page, nativeTouch = false) {
+// The list scrolls natively on a phone: nothing of ours sits between the
+// finger and the browser, so the system's own momentum and refresh rate apply.
+test("the list scrolls natively: no script holds the finger, nothing pans sideways", async ({ page }) => {
     await openList(page);
-    const list = page.locator(".ps-session-list").first();
-    await list.waitFor();
-    await expect.poll(() => list.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(200);
-    const box = await list.boundingBox();
-    const selected = await page.locator(".ps-session-list-button.is-selected").textContent();
-    const cdp = nativeTouch ? await page.context().newCDPSession(page) : null;
-    const x = Math.round(box.x + box.width / 2);
-    const y = Math.round(box.y + box.height - 15);
-    const touch = async (type, points) => {
-        if (cdp) return cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
-        // WebKit has no CDP touch driver. Dispatch the input consumed by our
-        // non-passive handler; Chromium below also verifies native arbitration.
-        await list.evaluate((el, { type, points }) => {
-            const event = new Event(type.toLowerCase(), { bubbles: true, cancelable: true });
-            Object.defineProperty(event, "targetTouches", { value: points.map(p => ({ clientX: p.x, clientY: p.y })) });
+    const list = page.locator(".ps-mobile-session-slideover .ps-session-list").first();
+    await expect.poll(() => list.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(600);
+    const shape = await list.evaluate((el) => {
+        const style = getComputedStyle(el);
+        // A touch that starts and moves: no listener of ours may cancel it.
+        const fire = (type, y) => {
+            const event = new Event(type, { bubbles: true, cancelable: true });
+            Object.defineProperty(event, "targetTouches", { value: y == null ? [] : [{ clientX: 100, clientY: y }] });
             el.dispatchEvent(event);
-        }, { type, points });
-    };
-    await touch("touchStart", [{ x, y }]);
-    for (const delta of [4, 12, 28, 44, 60]) {
-        await touch("touchMove", [{ x, y: y - delta }]);
-    }
-    await touch("touchEnd", []);
-    const released = await list.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }));
-    expect(released.y).toBeGreaterThan(20);
-    await page.waitForTimeout(500);
-    expect(await list.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }))).toEqual(released);
-    expect(await page.locator(".ps-session-list-button.is-selected").textContent()).toBe(selected);
-    await cdp?.detach();
-}
-
-test("a thumb drag stops on release without selecting a row", async ({ page }) => {
-    await checkDragStops(page);
+            return event.defaultPrevented;
+        };
+        fire("touchstart", 500);
+        const prevented = [fire("touchmove", 490), fire("touchmove", 420), fire("touchmove", 300)].some(Boolean);
+        fire("touchend", null);
+        return { prevented, overflowX: style.overflowX, touchAction: style.touchAction, wide: el.scrollWidth - el.clientWidth };
+    });
+    expect(shape.prevented, "a touchmove was cancelled: the list is script-scrolled").toBe(false);
+    expect(shape.overflowX).toBe("hidden");
+    expect(shape.touchAction).toContain("pan-y");
+    expect(shape.wide, "a row is wider than the list").toBeLessThanOrEqual(1);
+    // Long titles end in an ellipsis instead of overflowing.
+    const clipped = await list.locator(".ps-session-list-button[data-session-id] .ps-line").evaluateAll((lines) => lines.filter((line) => line.scrollWidth > line.clientWidth + 1).map((line) => getComputedStyle(line).textOverflow));
+    expect(clipped.every((value) => value === "ellipsis")).toBe(true);
 });
 
-test("a thumb drag stops on release without browser inertia in Chromium", async () => {
+test("Chromium: a real finger drag scrolls the list and selects nothing", async () => {
     const browser = await chromium.launch();
     try {
         const page = await browser.newPage({ ...devices["Pixel 7"] });
-        await checkDragStops(page, true);
+        await openList(page);
+        const list = page.locator(".ps-mobile-session-slideover .ps-session-list").first();
+        await expect.poll(() => list.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(600);
+        const selected = await page.locator(".ps-session-list-button.is-selected").textContent();
+        const box = await list.boundingBox();
+        const x = Math.round(box.x + box.width / 2), y = Math.round(box.y + box.height - 20);
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+        for (const d of [8, 30, 70, 120, 170, 220]) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - d }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await expect.poll(() => list.evaluate(el => el.scrollTop)).toBeGreaterThan(100);
+        await page.waitForTimeout(800);
+        expect(await page.locator(".ps-session-list-button.is-selected").textContent()).toBe(selected);
+        await cdp.detach();
     } finally {
         await browser.close();
     }
