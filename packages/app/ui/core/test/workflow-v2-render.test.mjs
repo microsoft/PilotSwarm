@@ -54,7 +54,7 @@ test("a v2 graph is drawn from durable events alone, and an unrecognized read mo
     assert.ok(html.includes(">Waiting<"));
     const refused = main(mount({ view: { readModel: { nope: true } } }));
     assert.ok(refused.includes("No workflow graph to show"));
-    assert.ok(refused.includes("not a workflow v2 read model"));
+    assert.ok(refused.includes("workflow data has an unknown format"));
     const legacyKept = main(mount({ view: { definition: workflowDefinition(legacyStartedData), readModel: { nope: true } } }));
     assert.ok(legacyKept.includes("node · idle"), "a bad read model never hides a legacy definition");
 });
@@ -131,7 +131,7 @@ test("a v2 definition is not redrawn once the read model says there is no graph"
 test("an unverified run status is shown with its notice", () => {
     const html = main(mount({ view: { readModel: readModel({ nodeExecutions: [row("poll", 1, "pending")] }), readModelAfterSeq: 1 },
         events: [{ eventType: "workflow.paused", seq: 4, data: { runId: "run-1" } }] }));
-    assert.ok(html.includes("Status unverified · read model says running, latest event says paused"));
-    assert.ok(html.includes("Refresh the read model."));
-    assert.ok(html.includes("Pending · run status unverified"));
+    assert.ok(html.includes("Status not certain · its data says running, latest event says paused"));
+    assert.ok(html.includes("Refresh to read it again."));
+    assert.ok(html.includes("Pending · run status not certain"));
 });

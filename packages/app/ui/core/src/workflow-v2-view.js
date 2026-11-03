@@ -51,7 +51,7 @@ export function workflowV2Kind(node) {
 }
 
 function invalidState(node, why) {
-    return new Error(`State '${node.id}' is not a valid workflow v2 ${node.type} state: ${why}.`);
+    return new Error(`Step '${node.id}' is not a valid ${node.type} step: ${why}.`);
 }
 
 function checkState(node) {
@@ -59,12 +59,12 @@ function checkState(node) {
         if (!TERMINAL_OUTCOMES.has(node.outcome)) throw invalidState(node, "its outcome is unknown");
         return;
     }
-    if (!isRecord(node.next)) throw invalidState(node, "it has no transitions");
-    for (const target of Object.values(node.next)) if (typeof target !== "string") throw invalidState(node, "a transition is not a state id");
+    if (!isRecord(node.next)) throw invalidState(node, "it has no next steps");
+    for (const target of Object.values(node.next)) if (typeof target !== "string") throw invalidState(node, "a next step is not a step id");
     if (!Array.isArray(node.outcomes) || node.outcomes.some(outcome => typeof outcome !== "string")) throw invalidState(node, "it lists no outcomes");
     if (node.type === "wait" && typeof node.seconds !== "number" && typeof node.seconds !== "string") throw invalidState(node, "it has no duration");
     if (node.type === "messaging" && (!MESSAGING_MODES.has(node.mode) || typeof node.contract !== "string")) {
-        throw invalidState(node, "its messaging mode or contract is unknown");
+        throw invalidState(node, "its messaging mode or message type is unknown");
     }
     if (node.type === "agent" && (!isRecord(node.invoke) || (node.invoke.source !== "prompt" && node.invoke.source !== "agent"))) {
         throw invalidState(node, "it has no task");
@@ -80,21 +80,21 @@ function checkState(node) {
  * model). The states are kept as given, so every transition is preserved.
  */
 export function workflowV2Definition(data, meta = {}) {
-    if (!isRecord(data) || !Array.isArray(data.states) || !data.states.length) throw new Error("The workflow definition has no states.");
+    if (!isRecord(data) || !Array.isArray(data.states) || !data.states.length) throw new Error("The workflow definition has no steps.");
     const ids = new Set();
     for (const node of data.states) {
         if (!isRecord(node) || typeof node.id !== "string" || !node.id || !STATE_TYPES.has(node.type)) {
-            throw new Error("The workflow definition contains an invalid or unsupported state.");
+            throw new Error("The workflow definition contains an invalid or unsupported step.");
         }
-        if (ids.has(node.id)) throw new Error(`The workflow definition repeats state '${node.id}'.`);
+        if (ids.has(node.id)) throw new Error(`The workflow definition repeats step '${node.id}'.`);
         ids.add(node.id);
         checkState(node);
     }
     const initial = data.initial || data.states[0].id;
-    if (!ids.has(initial)) throw new Error("The workflow's initial state is not defined.");
+    if (!ids.has(initial)) throw new Error("The workflow's first step is not defined.");
     for (const node of data.states) {
         for (const target of Object.values(node.next || {})) {
-            if (!ids.has(target)) throw new Error(`State '${node.id}' has a transition to an undefined state.`);
+            if (!ids.has(target)) throw new Error(`Step '${node.id}' leads to a step that is not defined.`);
         }
     }
     return {
@@ -170,15 +170,15 @@ export function workflowV2AgentBindingRows(binding) {
     if (!binding) return [];
     const rows = [];
     if (binding.interface) rows.push(["Interface", binding.interface]);
-    if (binding.mocked) rows.push(["Agent in this test", "Mocked: the parent or a fixture gives its typed result"]);
+    if (binding.mocked) rows.push(["Agent in this test", "Mocked: the parent or the test's answers give its typed result"]);
     const pin = binding.pin;
     if (pin) {
         const what = pin.package
             ? `${pin.package}${pin.version ? ` ${pin.version}` : ""}${pin.revision ? ` · revision ${shortHash(pin.revision)}` : " · by version"}`
             : `${pin.name ?? "agent"} · a deployment agent, by name`;
-        rows.push([binding.pinnedBy === "test" ? "Pinned for this test" : "Pinned by publication", what]);
-        if (pin.interface) rows.push(["Interface digest", `${pin.interface.ref} · ${shortHash(pin.interface.digest)}`]);
-        else if (binding.interface) rows.push(["Interface digest", "Not pinned"]);
+        rows.push([binding.pinnedBy === "test" ? "Locked for this test" : "Locked by publishing", what]);
+        if (pin.interface) rows.push(["Interface fingerprint", `${pin.interface.ref} · ${shortHash(pin.interface.digest)}`]);
+        else if (binding.interface) rows.push(["Interface fingerprint", "Not locked"]);
     }
     return rows;
 }
@@ -194,7 +194,7 @@ export function workflowV2NodeLabel(node) {
         case "agent": return node.invoke?.source === "agent" ? `agent · ${node.invoke.name}` : "agent · inline prompt";
         case "parallel": return `parallel · ${node.concurrency === 1 ? "one branch at a time" : `up to ${node.concurrency} branches`}`;
         case "terminal": return `ends · ${node.outcome}`;
-        default: return String(node?.type || "state");
+        default: return String(node?.type || "step");
     }
 }
 
@@ -413,7 +413,7 @@ export function workflowV2WaitingRepliesLabel(count) {
 export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now() } = {}) {
     if (!isRecord(model) || typeof model.workflowId !== "string" || !isRecord(model.definition)
         || !isRecord(model.revision) || typeof model.revision.valid !== "boolean" || !Array.isArray(model.runs)) {
-        return unrecognized("This payload is not a workflow v2 read model, so it was not shown.");
+        return unrecognized("This workflow data has an unknown format, so it was not shown.");
     }
     const { definition: lifecycle, revision } = model;
     const banners = [];
@@ -454,13 +454,13 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
     let overlay = Boolean(run && graph);
     if (run && graph && runRevision === null) {
         overlay = false;
-        banners.push({ level: "warning", text: "This run's revision is not listed, so node status is not overlaid." });
+        banners.push({ level: "warning", text: "This run's revision is not listed, so its step status is not shown on the graph." });
     } else if (run && graph && runRevision !== graph.revision) {
         overlay = false;
-        banners.push({ level: "warning", text: `This run used revision ${runRevision}; the graph shows revision ${graph.revision}, so node status is not overlaid.` });
+        banners.push({ level: "warning", text: `This run used revision ${runRevision}; the graph shows revision ${graph.revision}, so its step status is not shown on the graph.` });
     }
     if (model.run !== null && model.run !== undefined && !run) {
-        banners.push({ level: "warning", text: "The run in this read model has an unknown shape, so it was not shown." });
+        banners.push({ level: "warning", text: "This run's data has an unknown format, so it was not shown." });
     } else if (!run) {
         banners.push({ level: "info", text: model.runs.length
             ? `No live run is selected; ${model.runs.length === 1 ? "1 other run exists" : `${model.runs.length} other runs exist`}.` : "No run yet." });
@@ -474,7 +474,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
         // Agent mode real: its agent states run real agent sessions (they spend model tokens), whose framework tools are mocked.
         if (test.agentMode === "real") {
             banners.push({ level: "warning", text: typeof test.agentNotice === "string" && test.agentNotice
-                ? test.agentNotice : "Agent states run real agent sessions; their framework tool calls are mocked." });
+                ? test.agentNotice : "Agent steps run real agent sessions; their framework tool calls are mocked." });
         }
         if (test.stale === true) {
             banners.push({ level: "warning", text: `This test ran revision ${test.testedRevision}; the definition is now at revision ${lifecycle.currentRevision}, so its result is stale.` });
@@ -494,12 +494,12 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
     // current states are read however long its history is; older history is loaded on request (loadOlderWorkflowHistory).
     const history = run?.history;
     if (history && !history.paged && !history.complete) {
-        banners.push({ level: "info", text: `Only the first ${LEGACY_EXECUTION_LIMIT} node executions are listed, so counts may be incomplete.` });
+        banners.push({ level: "info", text: `Only the first ${LEGACY_EXECUTION_LIMIT} step runs are listed, so counts may be incomplete.` });
     } else if (history?.next?.executions) {
-        banners.push({ level: "info", text: "Older node executions of this run are not loaded, so counts may be incomplete." });
+        banners.push({ level: "info", text: "Older step runs of this run are not loaded, so counts may be incomplete." });
     }
     if (history?.paged && !history.openComplete) {
-        banners.push({ level: "warning", text: "This run has more open states, inputs, deliveries or waiting effects than a read lists (500 of each), so some of them are not shown." });
+        banners.push({ level: "warning", text: "This run has more open steps, inputs, deliveries or waiting effects than one read lists (500 of each), so some of them are not shown." });
     }
     if (history?.staleOlder) {
         banners.push({ level: "info", text: history.staleOlder === 1
@@ -655,7 +655,7 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null, rea
         const business = end.stateId !== null && end.outcome !== null;
         const label = end.status === "completed" ? `Completed · ${end.outcome ?? "ended"}`
             : end.status === "cancelled" ? "Cancelled"
-            : end.status === "stopped" ? "Stopped · no new state was started after the stop"
+            : end.status === "stopped" ? "Stopped · no new step was started after the stop"
                 : business ? `Failed · ended at '${end.stateId}' (${end.outcome})` : `Failed · ${end.code || "runtime error"}`;
         return { phase: end.status, ended: true, label: mode + label, businessOutcome: business ? end.outcome : null, error: end.error,
             terminalState: end.stateId };
@@ -669,18 +669,18 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null, rea
     if (contradicts) {
         const modelSays = run.status === "paused" ? "paused" : run.status;
         return { phase: "unverified", ended: false, stale: true, conflict: { readModel: modelSays, events: control.kind === "paused" ? "paused" : "resumed" },
-            label: `${mode}Status unverified · read model says ${modelSays}, latest event says ${control.kind === "paused" ? "paused" : "resumed"}` };
+            label: `${mode}Status not certain · its data says ${modelSays}, latest event says ${control.kind === "paused" ? "paused" : "resumed"}` };
     }
     const status = run?.status ?? (control?.kind ?? (begun ? "running" : null));
     switch (status) {
-        case "admitted": return { phase: "admitted", ended: false, label: `${mode}Admitted · not started` };
+        case "admitted": return { phase: "admitted", ended: false, label: `${mode}Waiting to start` };
         case "paused": {
             const label = run?.pausedFrom === "admitted" ? "Paused before it started"
-                : run?.pauseSettled === false ? "Pausing · waiting for running states to settle" : "Paused";
+                : run?.pauseSettled === false ? "Pausing · waiting for running steps to finish" : "Paused";
             return { phase: run?.pauseSettled === false ? "pausing" : "paused", ended: false, label: mode + label };
         }
         case "running": return run?.stop
-            ? { phase: "stopping", ended: false, label: `${mode}Stopping · admitted work may settle until ${run.stop.deadline ?? "its deadline"}` }
+            ? { phase: "stopping", ended: false, label: `${mode}Stopping · steps already started may finish until ${run.stop.deadline ?? "its deadline"}` }
             : { phase: "running", ended: false, label: `${mode}Running` };
         default:
             return control?.kind === "paused" ? { phase: "paused", ended: false, label: "Paused" } : { phase: "none", ended: false, label: "No run yet" };
@@ -720,7 +720,7 @@ export function describeWorkflowV2Execution(node, execution) {
         const wanted = execution.receive ? { contract: execution.receive.contract, from: execution.receive.from } : { contract: node.contract, from: node.from };
         if (pending) {
             lines.push(`Waiting for ${wanted.contract} from ${party(wanted.from)}.`);
-            if (execution.deadline) lines.push(`If none arrives, the state routes on 'elapsed' after ${execution.deadline}.`);
+            if (execution.deadline) lines.push(`If none arrives by ${execution.deadline}, the step continues on 'elapsed'.`);
         } else if (execution.outcome === "received") {
             lines.push(`Received ${execution.contract || wanted.contract}${execution.senderSessionId ? ` from ${execution.senderSessionId}` : ""}.`);
         } else if (execution.outcome === "elapsed") lines.push("The wait limit passed before a matching message arrived.");
@@ -739,13 +739,13 @@ export function describeWorkflowV2Execution(node, execution) {
         else if (execution.outcome === "declined") lines.push(`${execution.responderSessionId || to} declined the request.`);
     } else if (kind === "agent") {
         if (execution.agent?.childSessionId) lines.push(`Its agent works in child session ${execution.agent.childSessionId}; open it to read the actual chat.`);
-        if (pending) lines.push("Only the agent's typed result completes this state; its chat messages do not.");
+        if (pending) lines.push("Only the agent's typed result completes this step; its chat messages do not.");
     } else if (kind === "parallel") {
         if (Number.isSafeInteger(execution.branches)) lines.push(`${execution.branches} branch${execution.branches === 1 ? "" : "es"} from its manifest.`);
         if (pending) lines.push(`Branches start at '${node.body?.initial}', ${node.concurrency === 1 ? "one at a time" : `up to ${node.concurrency} at a time`}.`);
     }
-    if (execution.branch && Number.isSafeInteger(execution.branch.index)) lines.push(`In branch ${execution.branch.index} of its parallel state.`);
-    if (execution.catchAll) lines.push("Entered as the workflow's catch-all state after an unhandled runtime error.");
+    if (execution.branch && Number.isSafeInteger(execution.branch.index)) lines.push(`In branch ${execution.branch.index} of its parallel step.`);
+    if (execution.catchAll) lines.push("Entered as the workflow's catch-all step after an unhandled runtime error.");
     return lines;
 }
 
@@ -765,7 +765,7 @@ function nodeView(node, executions, context) {
         if (context.run.ended) {
             state = "cancelled"; phase = "ended-early"; stateLabel = "Run ended first";
         } else if (context.run.phase === "unverified") {
-            state = "idle"; phase = "unverified"; stateLabel = "Pending · run status unverified";
+            state = "idle"; phase = "unverified"; stateLabel = "Pending · run status not certain";
         } else if (context.run.phase === "paused") {
             state = "idle"; phase = "paused"; stateLabel = "Pending · run paused";
         } else {
@@ -774,7 +774,7 @@ function nodeView(node, executions, context) {
     } else if (result) {
         if (result.resultKind === "runtime_error") {
             state = "failed"; phase = "error";
-            stateLabel = `Runtime error${result.outcome ? ` · ${result.outcome}` : result.effectStatus ? ` · effect ${result.effectStatus}` : ""}`;
+            stateLabel = `Runtime error${result.outcome ? ` · ${result.outcome}` : result.effectStatus ? ` · action ${result.effectStatus}` : ""}`;
         } else if (node.type === "terminal") {
             outcome = node.outcome;
             state = node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done";
@@ -782,7 +782,7 @@ function nodeView(node, executions, context) {
         } else if (result.resultKind === "business") {
             state = "done"; phase = "done"; stateLabel = outcomeText(kind, result.outcome);
         } else {
-            state = "done"; phase = "unclassified"; stateLabel = "Completed · result kind not recorded";
+            state = "done"; phase = "unclassified"; stateLabel = "Completed · how it ended was not recorded";
         }
     } else if (reachedByRun) {
         state = node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done";
@@ -859,7 +859,7 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
         const revision = Number.isSafeInteger(begun?.data?.revision) ? begun.data.revision : listed;
         if (Number.isSafeInteger(revision) && revision !== active.revision) {
             bound = false; unboundRevision = revision;
-            banners.push({ level: "warning", text: `This run used revision ${revision}; the graph shows revision ${active.revision}, so node status is not overlaid.` });
+            banners.push({ level: "warning", text: `This run used revision ${revision}; the graph shows revision ${active.revision}, so its step status is not shown on the graph.` });
         }
     }
     const { executions, ignoredEvents, ignoredRows } = bound
@@ -869,21 +869,21 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
         : workflowV2RunStatus({ run, events: bound || !modelOk ? events : [], runId, readModelAfterSeq });
     // A selected run whose own read model is not here (yet), and none of whose events are loaded.
     if (!modelOk && selection !== null && status.phase === "none") status = { ...status, label: "Selected run not loaded" };
-    if (!bound && runId) status = { ...status, terminalState: null, label: `${unboundRevision === null ? "Unbound" : `Revision ${unboundRevision}`} run · ${status.label}` };
+    if (!bound && runId) status = { ...status, terminalState: null, label: `${unboundRevision === null ? "Run of an unknown revision" : `Revision ${unboundRevision} run`} · ${status.label}` };
     // Replies waiting in the shown run beside its status (q15, mock M16: "Paused · 1 reply waiting"); the banner says why.
     if (bound && modelOk && model.waitingReplies > 0 && !status.ended) {
         status = { ...status, label: `${status.label}${workflowV2WaitingRepliesLabel(model.waitingReplies)}` };
     }
     if (status.phase === "unverified") {
-        banners.push({ level: "warning", text: `Run status is not verified: the read model says ${status.conflict.readModel} but the latest durable event says ${status.conflict.events}. Refresh the read model.` });
+        banners.push({ level: "warning", text: `Run status is not certain: the workflow's data says ${status.conflict.readModel} but its latest event says ${status.conflict.events}. Refresh to read it again.` });
     }
-    if (ignoredEvents) banners.push({ level: "warning", text: `${ignoredEvents} workflow event${ignoredEvents === 1 ? "" : "s"} did not have the v2 shape and ${ignoredEvents === 1 ? "was" : "were"} ignored.` });
-    if (ignoredRows) banners.push({ level: "warning", text: `${ignoredRows} node execution row${ignoredRows === 1 ? "" : "s"} did not have the v2 shape and ${ignoredRows === 1 ? "was" : "were"} ignored.` });
+    if (ignoredEvents) banners.push({ level: "warning", text: `${ignoredEvents} workflow event${ignoredEvents === 1 ? "" : "s"} had an unknown format and ${ignoredEvents === 1 ? "was" : "were"} ignored.` });
+    if (ignoredRows) banners.push({ level: "warning", text: `${ignoredRows} step run${ignoredRows === 1 ? "" : "s"} had an unknown format and ${ignoredRows === 1 ? "was" : "were"} ignored.` });
     const known = new Set((active?.states || []).map(node => node.id));
     const unknown = executions.filter(item => !known.has(item.stateId)).length;
-    if (unknown) banners.push({ level: "warning", text: `${unknown} execution${unknown === 1 ? "" : "s"} belong to states that are not in this graph.` });
+    if (unknown) banners.push({ level: "warning", text: `${unknown} step run${unknown === 1 ? "" : "s"} belong to steps that are not in this graph.` });
     const context = { run: status, hasRun: status.phase !== "none", terminalState: bound ? status.terminalState ?? run?.terminalState ?? null : null,
-        complete: Boolean(run && bound && run.history.complete), stateless: !bound && runId ? "Run not overlaid" : undefined,
+        complete: Boolean(run && bound && run.history.complete), stateless: !bound && runId ? "Not shown on the graph" : undefined,
         pins: agentPinSource(shared, run, bound, active) };
     // Each parallel state's branches as the loaded executions show them (mock M21 active and queued counts, M22 a blocked join).
     context.branchProgress = workflowV2BranchProgress(executions, active?.states || []);

@@ -131,7 +131,7 @@ test("the view says what P reviews; the review shows exactly the revision and ha
     assert.deepEqual(texts(shown.lines).slice(0, 5), ["Definition: watch-v2 1.0.0", "Revision: 2", `Definition hash: ${hashOf(2)}`, "Validity: Valid",
         "Live effects: Only when its live run starts"]);
     // The review's evidence rows, as the portal's (mock M03): no named agent here, and no test of this revision (none is required).
-    assert.deepEqual(texts(shown.lines).slice(5, 7), ["Agents: None: no state runs a named agent", "Tests of this revision: None run. Publishing does not require a test"]);
+    assert.deepEqual(texts(shown.lines).slice(5, 7), ["Agents: None: no step runs a named agent", "Tests of this revision: None run. Publishing does not require a test"]);
     assert.ok(joined(shown.lines).includes("Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. "
         + "Publication starts no run, approves no repository write and grants no tool."));
     assert.ok(texts(shown.lines).includes("ctrl-p Publish only"));

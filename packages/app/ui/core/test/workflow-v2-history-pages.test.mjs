@@ -84,11 +84,11 @@ test("an older row open when read and no longer open is left out and counted; on
 test("an older server's model without pages keeps the first-200 notice; a paged one says only that older executions are not loaded", () => {
     const legacy = { ...runOf({ page: Array.from({ length: 200 }, (_, i) => exec(i + 1)) }), pages: undefined };
     const projected = projectWorkflowV2ReadModel(modelOf(legacy));
-    assert.ok(projected.banners.some(banner => banner.text === "Only the first 200 node executions are listed, so counts may be incomplete."));
+    assert.ok(projected.banners.some(banner => banner.text === "Only the first 200 step runs are listed, so counts may be incomplete."));
     assert.equal(workflowV2RunHistory(legacy).paged, false);
     assert.equal(workflowV2RunHistory(legacy).more, false, "an older server pages no further");
     const paged = projectWorkflowV2ReadModel(modelOf(runOf({ page: [exec(10)], next: cursor("after-e10") })));
-    assert.ok(paged.banners.some(banner => banner.text === "Older node executions of this run are not loaded, so counts may be incomplete."));
+    assert.ok(paged.banners.some(banner => banner.text === "Older step runs of this run are not loaded, so counts may be incomplete."));
     assert.ok(!paged.banners.some(banner => banner.text.startsWith("Only the first")));
 });
 

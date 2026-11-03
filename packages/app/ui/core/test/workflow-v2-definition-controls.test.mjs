@@ -271,7 +271,7 @@ test("the review names each named agent and what is pinned for it, and the tests
     assert.deepEqual(draft.tests, [{ runId: "test-run-0001", status: "completed", outcome: "succeeded" }, { runId: "test-run-0002", status: "running", outcome: null }],
         "a test of another revision is not this revision's evidence");
     assert.deepEqual(workflowV2PublicationEvidenceRows(draft), [
-        ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · its exact package revision is pinned when this revision is published"],
+        ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · its exact package revision is locked when this revision is published"],
         ["  Interface", "ReviewResult@1"],
         ["Tests of this revision", "test-r…0001 completed · succeeded; test-r…0002 running"],
     ]);
@@ -281,20 +281,20 @@ test("the review names each named agent and what is pinned for it, and the tests
     const published = workflowV2DefinitionControls({ ...publishedModel(), definition: { ...publishedModel().definition, publishedAgentPins: pins },
         graph: { revision: 1, initial: "review", states: AGENT_STATES }, runs: [] });
     assert.deepEqual(workflowV2PublicationEvidenceRows(published), [
-        ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · pinned: review-kit 1.2.0 · revision bbbbbbbbbbbb…"],
+        ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · locked: review-kit 1.2.0 · revision bbbbbbbbbbbb…"],
         ["  Interface", "ReviewResult@1"],
-        ["  Interface digest", "ReviewResult@1 · cccccccccccc…"],
+        ["  Interface fingerprint", "ReviewResult@1 · cccccccccccc…"],
         ["Tests of this revision", "None run. Publishing does not require a test"],
     ]);
     // Without a graph, nothing is said about agents; a revision with no named agent says so.
     assert.deepEqual(workflowV2PublicationEvidenceRows(workflowV2DefinitionControls({ ...draftModel(), graph: null, runs: [] }))[0],
         ["Agents", "Not known: the revision has no graph to read"]);
-    assert.deepEqual(workflowV2PublicationEvidenceRows(workflowV2DefinitionControls({ ...draftModel(), runs: [] }))[0], ["Agents", "None: no state runs a named agent"]);
+    assert.deepEqual(workflowV2PublicationEvidenceRows(workflowV2DefinitionControls({ ...draftModel(), runs: [] }))[0], ["Agents", "None: no step runs a named agent"]);
     // The portal's review shows the same rows.
     const open = main(mount({ readModel: { ...draftModel(), graph: { revision: 2, initial: "review", states: AGENT_STATES }, runs: testRuns },
         readModelRunId: null, definitionOpen: true }));
     assert.ok(open.includes("data-evidence=\"Agent in &#x27;review&#x27;\""), open);
-    assert.ok(open.includes("its exact package revision is pinned when this revision is published"));
+    assert.ok(open.includes("its exact package revision is locked when this revision is published"));
     assert.ok(open.includes("test-r…0001 completed · succeeded; test-r…0002 running"));
     // Mock M03 "Back to draft" (accounting row 13): the review has its Close; mock M28 "Fit" (row 91): the graph opens fitted.
     const fitted = main(mount({ readModel: draftModel(), readModelRunId: null, definitionOpen: true }));
@@ -323,7 +323,7 @@ test("the draft review shows the agent versions publishing would lock now, or wh
         [["Publishing would be refused", message], ["Agent in 'review'", "code-reviewer · review-kit 1.2.0"]]);
     assert.deepEqual(workflowV2PublicationEvidenceRows(draft, read({ resolves: false }))[0],
         ["Agent versions", "This deployment locks no agent versions when publishing: each agent step uses the version current when it starts."]);
-    const plain = "code-reviewer · review-kit 1.2.0 · its exact package revision is pinned when this revision is published";
+    const plain = "code-reviewer · review-kit 1.2.0 · its exact package revision is locked when this revision is published";
     assert.equal(agentLine(null), plain);
     assert.equal(agentLine({ ...read({}), revision: 3 }), plain, "a read of another revision");
     assert.equal(agentLine(read({ definitionHash: "d".repeat(64) })), plain, "a read of another definition hash");

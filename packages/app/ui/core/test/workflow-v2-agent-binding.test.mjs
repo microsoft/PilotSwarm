@@ -56,19 +56,19 @@ test("a published revision's agent state shows the interface it names and what p
         pin: { name: "code-reviewer", package: "review-kit", version: "1.2.0", revision: REVISION, interface: { ref: "review_change@1", digest: DIGEST } } });
     assert.deepEqual(workflowV2AgentBindingRows(review.binding), [
         ["Interface", "review_change@1"],
-        ["Pinned by publication", "review-kit 1.2.0 · revision 0123456789ab…"],
-        ["Interface digest", "review_change@1 · fedcba987654…"],
+        ["Locked by publishing", "review-kit 1.2.0 · revision 0123456789ab…"],
+        ["Interface fingerprint", "review_change@1 · fedcba987654…"],
     ]);
     // A deployment agent is pinned by name; an inline prompt has nothing to pin.
-    assert.deepEqual(rowsOf(published(), "helper"), [["Pinned by publication", "local-helper · a deployment agent, by name"]]);
+    assert.deepEqual(rowsOf(published(), "helper"), [["Locked by publishing", "local-helper · a deployment agent, by name"]]);
     const inline = projection.nodes.find(node => node.id === "inline");
     assert.equal("binding" in inline, false);
     assert.equal(workflowV2AgentTask(inline), "Inline prompt");
     assert.equal(workflowV2AgentTask(review), "code-reviewer · review-kit 1.2.0");
     // The portal's details say the same.
     const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "details", selected: review, nodes: projection.nodes, select: () => {} }));
-    for (const text of ["code-reviewer · review-kit 1.2.0", "Interface", "review_change@1", "Pinned by publication",
-        "review-kit 1.2.0 · revision 0123456789ab…", "Interface digest", "review_change@1 · fedcba987654…"]) {
+    for (const text of ["code-reviewer · review-kit 1.2.0", "Interface", "review_change@1", "Locked by publishing",
+        "review-kit 1.2.0 · revision 0123456789ab…", "Interface fingerprint", "review_change@1 · fedcba987654…"]) {
         assert.ok(html.includes(text), text);
     }
 });
@@ -76,14 +76,14 @@ test("a published revision's agent state shows the interface it names and what p
 test("a test run shows its own pins when it tested the graph's revision, none for another revision, and a mocked test says its agent is mocked", () => {
     assert.deepEqual(rowsOf(tested(TEST)), [
         ["Interface", "review_change@1"],
-        ["Pinned for this test", "review-kit 1.2.0 · revision 89abcdef0123…"],
-        ["Interface digest", "review_change@1 · fedcba987654…"],
+        ["Locked for this test", "review-kit 1.2.0 · revision 89abcdef0123…"],
+        ["Interface fingerprint", "review_change@1 · fedcba987654…"],
     ]);
     // A test of another revision: its pins are not those of the states drawn, and the publication's are not this run's.
     assert.deepEqual(rowsOf(tested(TEST, 2)), [["Interface", "review_change@1"]]);
     assert.deepEqual(rowsOf(tested({ ...TEST, agentMode: "mocked", agentPins: null })), [
         ["Interface", "review_change@1"],
-        ["Agent in this test", "Mocked: the parent or a fixture gives its typed result"],
+        ["Agent in this test", "Mocked: the parent or the test's answers give its typed result"],
     ]);
 });
 
@@ -94,12 +94,12 @@ test("a draft shows only the interface it names; an older or malformed pin shows
     // A publication made before revisions and interfaces were pinned.
     const older = published({ review: { name: "code-reviewer", package: "review-kit", version: "1.2.0", packageId: "pkg-1" } });
     assert.deepEqual(rowsOf(older), [
-        ["Interface", "review_change@1"], ["Pinned by publication", "review-kit 1.2.0 · by version"], ["Interface digest", "Not pinned"],
+        ["Interface", "review_change@1"], ["Locked by publishing", "review-kit 1.2.0 · by version"], ["Interface fingerprint", "Not locked"],
     ]);
     const malformed = published({ review: { package: "review-kit", version: "1.2.0", revision: "not-a-hash",
         interface: { name: "review_change", version: "1", digest: "short" } } });
     assert.deepEqual(rowsOf(malformed), [
-        ["Interface", "review_change@1"], ["Pinned by publication", "review-kit 1.2.0 · by version"], ["Interface digest", "Not pinned"],
+        ["Interface", "review_change@1"], ["Locked by publishing", "review-kit 1.2.0 · by version"], ["Interface fingerprint", "Not locked"],
     ]);
     assert.deepEqual(rowsOf(published("corrupt")), [["Interface", "review_change@1"]]);
     assert.deepEqual(rowsOf(published({ review: "corrupt" })), [["Interface", "review_change@1"]]);
@@ -126,7 +126,7 @@ test("the TUI's workflow view shows the agent, its interface and its pin as the 
     await live.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     const lines = detailTexts(live.store);
     for (const text of ["Agent: code-reviewer · review-kit 1.2.0", "Interface: review_change@1",
-        "Pinned by publication: review-kit 1.2.0 · revision 0123456789ab…", "Interface digest: review_change@1 · fedcba987654…"]) {
+        "Locked by publishing: review-kit 1.2.0 · revision 0123456789ab…", "Interface fingerprint: review_change@1 · fedcba987654…"]) {
         assert.ok(lines.includes(text), `${text}\n${lines.join("\n")}`);
     }
     assert.ok(live.calls.every(call => call[0] === "readWorkflow"));
@@ -134,6 +134,6 @@ test("the TUI's workflow view shows the agent, its interface and its pin as the 
     const mocked = harness({ selectedRunId: RUN, readModel: tested({ ...TEST, agentMode: "mocked", agentPins: null }), readModelRunId: RUN });
     await mocked.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     const mockedLines = detailTexts(mocked.store);
-    assert.ok(mockedLines.includes("Agent in this test: Mocked: the parent or a fixture gives its typed result"), mockedLines.join("\n"));
+    assert.ok(mockedLines.includes("Agent in this test: Mocked: the parent or the test's answers give its typed result"), mockedLines.join("\n"));
     assert.ok(!mockedLines.some(line => line.startsWith("Pinned")), mockedLines.join("\n"));
 });

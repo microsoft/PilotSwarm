@@ -53,7 +53,7 @@ test("a parallel state is drawn leading to its body's first state, as how each b
 test("a stopping run says what may still settle; a stopped run is ended, and the picker names it", () => {
     const stopping = workflowV2RunStatus({ run: { runId: RUN, mode: "live", status: "running", stop: { deadline: "2026-11-02T10:00:00.000Z" } }, runId: RUN });
     assert.equal(stopping.phase, "stopping");
-    assert.match(stopping.label, /Stopping · admitted work may settle until 2026-11-02T10:00:00.000Z/);
+    assert.match(stopping.label, /Stopping · steps already started may finish until 2026-11-02T10:00:00.000Z/);
     const stopped = projectWorkflowV2({ readModel: readModel({ graph, run: { status: "stopped" }, nodeExecutions: [done("review", 1, "accepted")] }) });
     assert.equal(stopped.status.phase, "stopped");
     assert.equal(stopped.status.ended, true);
@@ -87,7 +87,7 @@ test("an agent state's node names its child session and opens its actual chat; a
     ] }) });
     assert.equal(byId(branched, "fan").stateLabel, "Running its branches");
     assert.ok(byId(branched, "fan").description.includes("3 branches from its manifest."));
-    assert.ok(byId(branched, "work").description.includes("In branch 0 of its parallel state."));
+    assert.ok(byId(branched, "work").description.includes("In branch 0 of its parallel step."));
     // Mock M21: the branches now, from the loaded executions: one begun and still working, two not begun yet.
     assert.ok(byId(branched, "fan").description.includes("Branches now: 1 active, 2 queued, 0 ended."), byId(branched, "fan").description.join("\n"));
     const progressed = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
@@ -127,8 +127,8 @@ test("a real-agent test run says its agents are real, and lists their mocked too
     assert.ok(texts.includes(test.notice));
     assert.ok(texts.includes(test.agentNotice));
     // Without its text, the banner still says so; a mocked test has none.
-    assert.ok(project({ ...test, agentNotice: undefined }).includes("Agent states run real agent sessions; their framework tool calls are mocked."));
-    assert.ok(!project({ ...test, agentMode: "mocked" }).some(text => text.startsWith("Agent states run real agent sessions")));
+    assert.ok(project({ ...test, agentNotice: undefined }).includes("Agent steps run real agent sessions; their framework tool calls are mocked."));
+    assert.ok(!project({ ...test, agentMode: "mocked" }).some(text => text.includes("run real agent sessions")));
     const html = renderToStaticMarkup(React.createElement(WorkflowV2TestInterceptions, { test }));
     assert.ok(html.includes("tool.call · read_build"));
     assert.ok(html.includes("review"));

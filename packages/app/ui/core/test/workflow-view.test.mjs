@@ -14,9 +14,9 @@ const event = (eventType, data) => ({ eventType, data });
 test("definition projection preserves transitions without executing source or accepting empty definitions", () => {
     assert.deepEqual(definition.states, start.data.states);
     assert.throws(() => workflowDefinition(null), /no states/);
-    assert.throws(() => workflowDefinition({ states: [null, 3] }), /invalid or unsupported state/);
-    assert.throws(() => workflowDefinition({ states: [start.data.states[0], start.data.states[0]] }), /repeats state/);
-    assert.throws(() => workflowDefinition({ states: [start.data.states[0]] }), /undefined state/);
+    assert.throws(() => workflowDefinition({ states: [null, 3] }), /invalid or unsupported step/);
+    assert.throws(() => workflowDefinition({ states: [start.data.states[0], start.data.states[0]] }), /repeats step/);
+    assert.throws(() => workflowDefinition({ states: [start.data.states[0]] }), /step that is not defined/);
 });
 
 test("phone graphs retain sibling branches instead of folding them into a false sequence", () => {

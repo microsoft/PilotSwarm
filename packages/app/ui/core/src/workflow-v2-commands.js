@@ -521,16 +521,16 @@ export function workflowV2PublicationEvidenceRows(publication, versionsNow = nul
     const now = draft ? publicationVersionsNow(publication, versionsNow) : null;
     const rows = [];
     if (!publication.graphKnown) rows.push(["Agents", "Not known: the revision has no graph to read"]);
-    else if (!publication.agents?.length) rows.push(["Agents", "None: no state runs a named agent"]);
+    else if (!publication.agents?.length) rows.push(["Agents", "None: no step runs a named agent"]);
     else if (now?.problem) rows.push(["Publishing would be refused", now.problem]);
     else if (now?.note) rows.push(["Agent versions", now.note]);
     for (const agent of publication.agents ?? []) {
-        const pin = agent.rows.find(([label]) => label === "Pinned by publication");
+        const pin = agent.rows.find(([label]) => label === "Locked by publishing");
         const lockedNow = now?.byState?.[agent.stateId];
         const draftText = lockedNow ? ` · version now: ${lockedNow}; publishing locks it`
-            : now?.agentText ?? " · its exact package revision is pinned when this revision is published";
-        rows.push([`Agent in '${agent.stateId}'`, `${agent.task}${draft ? draftText : pin ? ` · pinned: ${pin[1]}` : " · no pin recorded"}`]);
-        for (const [label, value] of agent.rows) if (label !== "Pinned by publication") rows.push([`  ${label}`, value]);
+            : now?.agentText ?? " · its exact package revision is locked when this revision is published";
+        rows.push([`Agent in '${agent.stateId}'`, `${agent.task}${draft ? draftText : pin ? ` · locked: ${pin[1]}` : " · no lock recorded"}`]);
+        for (const [label, value] of agent.rows) if (label !== "Locked by publishing") rows.push([`  ${label}`, value]);
     }
     const tests = publication.tests ?? [];
     rows.push(["Tests of this revision", tests.length
