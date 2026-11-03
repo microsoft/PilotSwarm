@@ -11,6 +11,7 @@ import {
     WorkflowV2NodeContent, WorkflowV2RunCommandNotice, WorkflowV2RunControls, WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock,
     WorkflowV2RunActivity, WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2TestToggle, WorkflowV2Variables, WorkflowV2VariablesToggle,
 } from "./workflow-v2-panels.js";
+import { WorkflowToolButton } from "./workflow-tool-button.js";
 
 const EMPTY_EVENTS = [];
 const EMPTY_VIEW = {};
@@ -198,18 +199,24 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
         select(id, { open: open || !mobile || Boolean(onNodeSelected) || id === view.selectedNodeId });
         onNodeSelected?.();
     };
+    const title = definition?.name || session?.title || "Workflow";
     return React.createElement("section", { className: "ps-workflow-main", "aria-label": "Workflow session" },
-        React.createElement("header", { className: "ps-workflow-main-header", style: { flexWrap: "wrap" } },
-            React.createElement("strong", null, icon, definition?.name || session?.title || "Workflow"),
+        // One compact header (of-02): the name on one line (ellipsis; the whole name on hover and to screen readers), the
+        // status as its own badge beside it, and the run picker and the icon tools (of-04) after it. At desktop widths it
+        // is one row; a narrow screen wraps the tools to a second row.
+        React.createElement("header", { className: "ps-workflow-main-header" },
+            React.createElement("strong", { className: "ps-workflow-main-title" }, icon,
+                React.createElement("span", { className: "ps-workflow-main-name", title }, title)),
             React.createElement("span", { className: "ps-workflow-status" }, status),
-            v2 ? React.createElement(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
-            runControls ? React.createElement(WorkflowV2RunControls, { controller, sessionId, model: runControls }) : null,
-            variables ? React.createElement(WorkflowV2VariablesToggle, { controller, sessionId, open: variablesOpen, controls: variablesId }) : null,
-            React.createElement(WorkflowV2DraftToggle, { controller, sessionId, model: draftEditor, open: draftOpen, controls: draftId }),
-            React.createElement(WorkflowV2DefinitionToggle, { controller, sessionId, model: publication, open: publicationOpen, controls: publicationId }),
-            React.createElement(WorkflowV2TestToggle, { controller, sessionId, model: testControls, open: testOpen, controls: testId }),
-            React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
-                onClick: () => selectNode(selected.id, { open: true }) }, "Step details")),
+            React.createElement("div", { className: "ps-workflow-main-tools" },
+                v2 ? React.createElement(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error: readError }) : null,
+                runControls ? React.createElement(WorkflowV2RunControls, { controller, sessionId, model: runControls }) : null,
+                variables ? React.createElement(WorkflowV2VariablesToggle, { controller, sessionId, open: variablesOpen, controls: variablesId }) : null,
+                React.createElement(WorkflowV2DraftToggle, { controller, sessionId, model: draftEditor, open: draftOpen, controls: draftId }),
+                React.createElement(WorkflowV2DefinitionToggle, { controller, sessionId, model: publication, open: publicationOpen, controls: publicationId }),
+                React.createElement(WorkflowV2TestToggle, { controller, sessionId, model: testControls, open: testOpen, controls: testId }),
+                React.createElement(WorkflowToolButton, { label: "Step details", glyph: "details", disabled: !selected,
+                    onClick: () => selectNode(selected.id, { open: true }) }))),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
         // Why the shown run ended, and who did what in it (owner decision q14; mocks M09, M14).

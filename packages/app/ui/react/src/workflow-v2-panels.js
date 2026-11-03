@@ -5,6 +5,7 @@ import {
     workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2VisitEnding, workflowV2WholeValue,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
+import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
     workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
@@ -529,10 +530,9 @@ export function WorkflowV2RunControls({ controller, sessionId, model }) {
     return h("div", { className: "ps-workflow-run-controls", role: "group", "aria-label": "Run controls", "aria-busy": model.busy || undefined,
         "aria-describedby": model.restriction ? noteId : undefined, "data-run-id": model.runId,
         style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0, maxWidth: "100%" } },
-    model.controls.map(control => h("button", { key: control.operation, type: "button",
-        className: `ps-mini-button${control.danger ? " is-danger" : ""}`, "data-operation": control.operation,
-        disabled: !control.enabled, title: control.title,
-        onClick: () => { controller.sendWorkflowRunCommand(sessionId, { operation: control.operation, runId: model.runId }); } }, control.label)),
+    model.controls.map(control => h(WorkflowToolButton, { key: control.operation, label: control.label, glyph: control.operation,
+        danger: Boolean(control.danger), "data-operation": control.operation, disabled: !control.enabled, title: control.title,
+        onClick: () => { controller.sendWorkflowRunCommand(sessionId, { operation: control.operation, runId: model.runId }); } })),
     model.restriction ? h("span", { id: noteId, className: "ps-workflow-run-restriction",
         style: { color: "var(--ps-muted)", fontSize: "0.75rem", overflowWrap: "anywhere" } }, model.restriction) : null);
 }
@@ -616,17 +616,17 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
 
 /** The header button that opens and closes the variables panel (the view's `variablesOpen`). */
 export function WorkflowV2VariablesToggle({ controller, sessionId, open, controls }) {
-    return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
-        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { variablesOpen: !open } }) }, "Variables");
+    return h(WorkflowToolButton, { label: "Variables", glyph: "variables", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
+        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { variablesOpen: !open } }) });
 }
 
 /** The header button that opens and closes the publication panel (the view's `definitionOpen`): "Publish…" for a draft, "Start…" otherwise. */
 export function WorkflowV2DefinitionToggle({ controller, sessionId, model, open, controls }) {
     if (!model?.controls?.length) return null;
-    return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
-        "data-definition-state": model.state,
-        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: !open } }) },
-    model.state === "draft" ? "Publish…" : "Start…");
+    const draft = model.state === "draft";
+    return h(WorkflowToolButton, { label: draft ? "Publish…" : "Start…", glyph: draft ? "publish" : "start",
+        "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined, "data-definition-state": model.state,
+        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: !open } }) });
 }
 
 /**
@@ -714,8 +714,8 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, ve
 /** The header button that opens and closes the draft editor (the view's `draftOpen`). */
 export function WorkflowV2DraftToggle({ controller, sessionId, model, open, controls }) {
     if (!model) return null;
-    return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
-        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: !open } }) }, "Edit draft");
+    return h(WorkflowToolButton, { label: "Edit draft", glyph: "edit", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
+        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: !open } }) });
 }
 
 /**
@@ -976,8 +976,8 @@ function WorkflowV2YamlBox({ value, onChange, marks, changed }) {
 /** The header button that opens and closes the test review (the view's `testOpen`). */
 export function WorkflowV2TestToggle({ controller, sessionId, model, open, controls }) {
     if (!model) return null;
-    return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
-        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: !open } }) }, "Test…");
+    return h(WorkflowToolButton, { label: "Test…", glyph: "test", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
+        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: !open } }) });
 }
 
 /**

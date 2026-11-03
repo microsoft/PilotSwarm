@@ -586,10 +586,24 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         const controls = main.getByRole("group", { name: "Run controls", exact: true });
         await expect(controls).toBeVisible();
         await expect(controls).toHaveAttribute("data-run-id", "run-1");
-        // A running run offers Pause, Stop, Cancel (not Resume), each enabled with its explanatory title.
-        await expect(controls.getByRole("button")).toHaveText(["Pause", "Stop", "Cancel"]);
-        await expect(controls.locator('[data-operation="stop"]')).toHaveAttribute("title", /^Stop the run gracefully/);
+        // A running run offers Pause, Stop, Cancel (not Resume), each an icon button named by its old text (of-04) and
+        // enabled with its explanation, which its tooltip shows.
+        await expect(controls.getByRole("button")).toHaveCount(3);
+        for (const [index, name] of ["Pause", "Stop", "Cancel"].entries()) {
+            await expect(controls.getByRole("button").nth(index)).toHaveAttribute("aria-label", name);
+        }
+        await expect(controls.locator('[data-operation="stop"]')).toHaveAttribute("data-title", /^Stop the run gracefully/);
         await expect(controls.locator('[data-operation="cancel"]')).toHaveClass(/is-danger/);
+        // Hover and keyboard focus show the tooltip: the name and the explanation.
+        await controls.locator('[data-operation="stop"]').hover();
+        await expect(page.locator(".ps-icon-tooltip")).toHaveText(/^Stop — Stop the run gracefully/);
+        await page.mouse.move(0, 0);
+        await expect(page.locator(".ps-icon-tooltip")).toHaveCount(0);
+        await controls.locator('[data-operation="pause"]').focus();
+        await page.keyboard.press("Tab");
+        await expect(page.locator(".ps-icon-tooltip")).toHaveText(/^Stop/);
+        await page.keyboard.press("Escape");
+        await expect(page.locator(".ps-icon-tooltip")).toHaveCount(0);
 
         // Review: Stop opens the confirm dialog with the run named; dismissing it sends nothing (negative control).
         await controls.getByRole("button", { name: "Stop", exact: true }).click();
@@ -658,12 +672,12 @@ test("v2 commands: an unconfirmed pause is retried with the same operation id, n
     await controls.getByRole("button", { name: "Pause", exact: true }).click();
 
     // Pending: the sent control shows its pending label; every control is disabled and says why; the group is busy.
-    await expect(controls.locator('[data-operation="pause"]')).toHaveText("Pausing…");
+    await expect(controls.locator('[data-operation="pause"]')).toHaveAttribute("aria-label", "Pausing…");
     await expect(controls).toHaveAttribute("aria-busy", "true");
     await expect(controls.locator('[data-operation="pause"]')).toBeDisabled();
-    await expect(controls.locator('[data-operation="pause"]')).toHaveAttribute("title", "This command is being sent.");
+    await expect(controls.locator('[data-operation="pause"]')).toHaveAttribute("data-title", "This command is being sent.");
     await expect(controls.locator('[data-operation="cancel"]')).toBeDisabled();
-    await expect(controls.locator('[data-operation="cancel"]')).toHaveAttribute("title", "Another command for this workflow is being sent.");
+    await expect(controls.locator('[data-operation="cancel"]')).toHaveAttribute("data-title", "Another command for this workflow is being sent.");
     release();
 
     const notice = main.locator(".ps-workflow-run-command-notice");

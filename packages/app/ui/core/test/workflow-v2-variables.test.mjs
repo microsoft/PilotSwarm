@@ -235,7 +235,7 @@ test("the panel opens from the header's Variables button: a form where a person 
     assert.ok(!plain.includes(">Variables<") && !plain.includes("Workflow variables"), "no panel without personCommands");
 
     const closed = main(mount({ readModel: withCommands({ kv: KV, kvRevision: 3 }), readModelRunId: null }));
-    assert.ok(closed.includes(">Variables</button>"));
+    assert.ok(closed.includes("aria-label=\"Variables\""), "an icon button named by its old text (of-04)");
     assert.ok(closed.includes("aria-expanded=\"false\""));
     assert.ok(!closed.includes("Workflow variables"));
 

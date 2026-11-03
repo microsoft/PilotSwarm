@@ -155,7 +155,7 @@ const main = controller => renderToStaticMarkup(React.createElement(WorkflowMain
 
 test("the editor opens from the header with the draft's YAML; nothing is offered without the YAML, for a published definition or in a subtree", () => {
     const closed = main(mount({ readModel: modelOf(), readModelRunId: null }));
-    assert.ok(closed.includes(">Edit draft</button>"));
+    assert.ok(closed.includes("aria-label=\"Edit draft\""), "an icon button named by its old text (of-04)");
     assert.ok(!closed.includes("Draft editor"));
 
     const open = main(mount({ readModel: modelOf(), readModelRunId: null, draftOpen: true }));

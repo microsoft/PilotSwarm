@@ -4548,23 +4548,75 @@ body.is-resizing-pane-y iframe {
 
 .ps-workflow-main-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
+  gap: 6px 10px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--ps-border);
   font-size: 0.9rem;
 }
 
-.ps-workflow-main-header strong {
+/* of-02: the name never wraps letter by letter. One line with an ellipsis (the whole name is its title), beside its
+   own status badge; the tools follow on the same row at desktop widths and wrap to a second row on a narrow screen. */
+.ps-workflow-main-title {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 6rem;
+  flex: 1 1 10rem;
+}
+.ps-workflow-main-title > :first-child { flex: 0 0 auto; }
+.ps-workflow-main-name {
   min-width: 0;
-  flex: 1;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.ps-workflow-status { color: var(--ps-muted); font-size: 0.8rem; }
+.ps-workflow-status {
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  color: var(--ps-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-workflow-main-tools {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+/* of-04: the workflow toolbar's icon buttons, in the top bar's icon style; their tooltip is .ps-icon-tooltip. */
+.ps-workflow-tool-wrap { display: inline-flex; }
+.ps-mini-button.ps-workflow-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px 6px;
+  touch-action: manipulation;
+}
+.ps-workflow-tool-glyph { display: inline-flex; line-height: 1; }
+.ps-mini-button.ps-workflow-tool[aria-expanded="true"] {
+  color: var(--ps-accent);
+  border-color: var(--ps-accent);
+}
+.ps-mini-button.ps-workflow-tool:focus-visible {
+  outline: 2px solid var(--ps-accent);
+  outline-offset: 1px;
+}
 .ps-workflow-split { flex: 1; min-height: 0; display: grid; }
 .ps-workflow-graph-region, .ps-workflow-log { min-width: 0; min-height: 0; }
 .ps-workflow-graph-region {

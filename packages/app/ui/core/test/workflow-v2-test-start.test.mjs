@@ -154,7 +154,7 @@ const main = controller => renderToStaticMarkup(React.createElement(WorkflowMain
 
 test("the test review opens from the header with the test notice, the exact revision and hash, and mocked agents by default", () => {
     const closed = main(mount({ readModel: modelOf(), readModelRunId: null }));
-    assert.ok(closed.includes(">Test…</button>"));
+    assert.ok(closed.includes("aria-label=\"Test…\""), "an icon button named by its old text (of-04)");
     assert.ok(!closed.includes("Test review"));
 
     const open = main(mount({ readModel: modelOf(), readModelRunId: null, testOpen: true }));
@@ -174,6 +174,6 @@ test("the test review opens from the header with the test notice, the exact revi
         ["subtree", modelOf({ personCommands: SUBTREE })], ["no personCommands", readModel({ definition: DRAFT, noRun: true })],
         ["published (of-06)", modelOf({ definition: { state: "published", currentRevision: 2 } })]]) {
         const html = main(mount({ readModel: model, readModelRunId: null, testOpen: true }));
-        assert.ok(!html.includes(">Test…</button>") && !html.includes("Test review"), label);
+        assert.ok(!html.includes("aria-label=\"Test…\"") && !html.includes("Test review"), label);
     }
 });

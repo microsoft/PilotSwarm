@@ -220,7 +220,7 @@ test("the review panel opens from the header: the exact revision and hash with P
     assert.ok(!plain.includes("Publish…") && !plain.includes("Publish review"), "no controls without personCommands");
 
     const closed = main(mount({ readModel: draftModel(), readModelRunId: null }));
-    assert.ok(closed.includes(">Publish…</button>"));
+    assert.ok(closed.includes("aria-label=\"Publish…\""), "an icon button named by its old text (of-04)");
     assert.ok(closed.includes("data-definition-state=\"draft\""));
     assert.ok(!closed.includes("Publish review"));
 
@@ -234,7 +234,7 @@ test("the review panel opens from the header: the exact revision and hash with P
     assert.ok(open.includes("Publishing freezes this exact revision"));
 
     const start = main(mount({ readModel: publishedModel(), readModelRunId: null, definitionOpen: true }));
-    assert.ok(start.includes(">Start…</button>"));
+    assert.ok(start.includes("aria-label=\"Start…\""));
     assert.ok(start.includes("aria-label=\"Start the live run\""));
     assert.deepEqual([...start.matchAll(/data-operation="([a-z_]+)"/g)].map(match => match[1]), ["start"]);
 
