@@ -4608,7 +4608,6 @@ body.is-resizing-pane-y iframe {
 .ps-workflow-log-resizer span { height: 3px; width: 34px; border-radius: 2px; background: var(--ps-muted); }
 .ps-workflow-log > .ps-chat-panel { height: 100%; border: 0; border-radius: 0; }
 .ps-workflow-log .ps-chat-panel > .ps-panel-header { display: flex; }
-.ps-workflow-main > .ps-chat-composer { border-top: 1px solid var(--ps-border); text-align: center; }
 .ps-workflow-empty { padding: 20px; color: var(--ps-muted); display: grid; gap: 12px; }
 .ps-workflow-node-details { height: 100%; overflow: auto; padding: 16px; }
 .ps-workflow-node-details header small { color: var(--ps-muted); font-size: 0.75rem; letter-spacing: 0.06em; }

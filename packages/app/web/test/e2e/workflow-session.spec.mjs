@@ -108,7 +108,8 @@ test("a workflow session is marked in the list, shows its execution log and has 
     await expect(chat).toContainText("Step 2: report → done");
     await expect(chat).toContainText("Workflow nightly-report reached published after 2 steps: outcome succeeded. Report published.");
 
-    await expect(page.locator(".ps-composer-readonly")).toHaveText("Workflow session");
+    // flow-09: the workflow screen has no static composer bar; nobody types into it.
+    await expect(page.locator(".ps-workflow-main .ps-composer-readonly")).toHaveCount(0);
     await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
     await shot(page, "1-workflow-session-execution-log");
     expect(errors).toEqual([]);
@@ -192,9 +193,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(summary.locator(".ps-system-notice-summary-text")).toHaveAttribute("aria-live", "polite");
         await expect(summary.locator(".ps-workflow-glyph")).toHaveAttribute("aria-hidden", "true");
         await expect(summary).not.toHaveAttribute("open", "");
-        await expect(page.locator(".ps-composer-readonly")).toHaveText("Workflow session");
-        const footer = await page.locator(".ps-chat-composer.is-workflow").boundingBox();
-        expect(footer.height).toBeLessThan(48);
+        await expect(page.locator(".ps-workflow-main .ps-chat-composer")).toHaveCount(0);
         const bounds = await summary.boundingBox();
         expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
         await shot(page, `poll-waiting-${viewport.width}`);
@@ -285,15 +284,16 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     });
 }
 
-test("mobile Zen has one workflow footer, accurate resize bounds and reachable node details", async ({ page }) => {
+test("mobile Zen has no workflow composer bar, accurate resize bounds and reachable node details", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await routeApi(page, { workflowEvents: QUALITY_EVENTS,
         workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
     const zen = page.locator(".ps-mobile-zen");
-    await expect(zen.locator(".ps-composer-readonly")).toHaveCount(1);
-    await expect(zen.locator(".ps-composer-readonly")).toHaveText("Workflow session");
+    // flow-09: no static "Workflow session" bar, and no empty footer in its place.
+    await expect(zen.locator(".ps-composer-readonly")).toHaveCount(0);
+    await expect(zen.locator(".ps-mobile-zen-composer")).toBeHidden();
     const divider = zen.getByRole("separator", { name: "Resize the step log" });
     const log = zen.locator(".ps-workflow-log");
     const initialHeight = (await log.boundingBox()).height;

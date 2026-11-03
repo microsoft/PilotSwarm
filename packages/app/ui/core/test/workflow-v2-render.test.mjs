@@ -29,7 +29,7 @@ test("the legacy graph renders as before, without v2 marks", () => {
     assert.ok(html.includes("node · idle"));
     assert.ok(!html.includes("data-kind"));
     assert.ok(!html.includes("data-phase=\"waiting\""));
-    assert.equal(html.split(">Workflow session<").length - 1, 1, "the footer text appears once");
+    assert.equal(html.split(">Workflow session<").length - 1, 0, "no static composer bar (flow-09)");
 });
 
 test("a v2 graph shows typed state labels, runtime-error routes and run status from the read model", () => {
@@ -44,7 +44,8 @@ test("a v2 graph shows typed state labels, runtime-error routes and run status f
     assert.ok(html.includes("data-phase=\"waiting\""));
     assert.ok(html.includes(">Running<"), "the header shows the run status");
     assert.ok(html.includes("aria-label=\"Inspect notify\"") && html.includes("tabindex=\"0\""), "nodes keep their keyboard and button semantics");
-    assert.equal(html.split(">Workflow session<").length - 1, 1);
+    assert.equal(html.split(">Workflow session<").length - 1, 0);
+    assert.ok(!html.includes("ps-chat-composer"), "no composer bar on the workflow screen (flow-09)");
 });
 
 test("a v2 graph is drawn from durable events alone, and an unrecognized read model is reported, not drawn", () => {

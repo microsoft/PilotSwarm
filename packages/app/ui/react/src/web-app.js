@@ -7177,17 +7177,16 @@ function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, c
     const inputWait = workflowInputWait(controller, mayBeWorkflowStep, accessRead);
     const readOnly = session?.serviceKind || isWorkflow || access?.canWrite === false || workflowInputDenied || Boolean(inputWait);
     React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
-    if (!session || session.isGroup || modal) return null;
-    return React.createElement("div", { className: `ps-chat-composer${isWorkflow ? " is-workflow" : ""}` }, readOnly
-        ? (inputWait && !session.serviceKind && !isWorkflow && !workflowInputDenied
+    // A workflow session has no composer bar at all (flow-09): its screen names the workflow, and nobody types into it.
+    if (!session || session.isGroup || modal || isWorkflow) return null;
+    return React.createElement("div", { className: "ps-chat-composer" }, readOnly
+        ? (inputWait && !session.serviceKind && !workflowInputDenied
             ? React.createElement(WorkflowInputWait, { wait: inputWait, onRetry: () => accessRead.reload() })
             : React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
                 ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
-                : isWorkflow
-                    ? WORKFLOW_COMPOSER_NOTE
-                    : workflowInputDenied
-                        ? workflowInputNote(access)
-                        : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`))
+                : workflowInputDenied
+                    ? workflowInputNote(access)
+                    : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`))
         : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus, active: true }));
 }
 
@@ -7301,7 +7300,6 @@ function ChatPane(props) {
     return workflow
         ? React.createElement(WorkflowMainPane, {
             controller: props.controller, icon: React.createElement(WorkflowGlyph, { decorative: true }),
-            showFooter: props.showComposer !== false,
             onNodeSelected: props.onWorkflowNodeSelected, mobile: Boolean(props.mobile),
             log: React.createElement(ChatTranscriptPane, { ...props, showComposer: false, workflowLog: true }),
         })

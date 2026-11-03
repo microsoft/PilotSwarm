@@ -162,7 +162,8 @@ function WorkflowGraph({ definition, nodes, selected, select, banners }) {
         }))));
 }
 
-export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected, mobile = false }) {
+// The workflow screen has no composer bar: its header already names the workflow, and nobody types into it (flow-09).
+export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile = false }) {
     const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded,
         runControls, variables, publication, draftEditor, testControls, testResponder, runNotice, events } = useWorkflowView(controller);
     const variablesId = `wf-vars-${React.useId().replace(/:/g, "")}`;
@@ -257,9 +258,7 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
                     }
                 },
             }, React.createElement("span", { "aria-hidden": true })),
-            React.createElement("div", { className: "ps-workflow-log" }, log)),
-        showFooter ? React.createElement("div", { className: "ps-chat-composer is-workflow" },
-            React.createElement("div", { className: "ps-composer-readonly" }, "Workflow session")) : null);
+            React.createElement("div", { className: "ps-workflow-log" }, log)));
 }
 
 export function WorkflowNodePane({ controller }) {

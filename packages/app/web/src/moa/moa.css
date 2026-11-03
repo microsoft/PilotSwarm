@@ -121,6 +121,8 @@
 .ps-mobile-zen-chat .ps-panel-header { display: none; }
 .ps-mobile-zen-composer { flex-shrink: 0; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); border-top: 1px solid var(--ps-border); }
 .ps-mobile-zen-composer .ps-chat-composer { border: 0; padding: 0; }
+/* A workflow session renders no composer (flow-09): no empty bar either. */
+.ps-mobile-zen-composer:empty { display: none; }
 /* Keep the desktop map visible. Only the list gives up space and scrolls. */
 .ps-moa-dialog:has(.ps-moa-map-body) { height: min(800px, calc(var(--ps-moa-viewport-height, 100dvh) - 16px)); }
 .ps-moa-map-body { display: flex; flex-direction: column; flex: 1; gap: 12px; padding: 12px; min-height: 0; overflow: hidden; }
@@ -242,7 +244,7 @@
 :root[data-ps-theme="win95"] .ps-moa-dashboard-choice { background: var(--w95-face); color: #000; }
 
 .ps-moa-pane-composer { flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--ps-border); }
-.ps-moa-pane-composer[hidden] { display: none; }
+.ps-moa-pane-composer[hidden], .ps-moa-pane-composer:empty { display: none; }
 .ps-moa-pane-composer .ps-chat-composer { margin: 0; padding: 4px 6px; border-top: 0; }
 .ps-moa-workspace.is-mobile .ps-moa-pane-composer { padding-bottom: env(safe-area-inset-bottom); }
 
