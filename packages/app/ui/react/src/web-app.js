@@ -14252,6 +14252,32 @@ function ScopedModalLayer({ controller }) {
     return React.createElement(ModalLayer, { controller });
 }
 
+/**
+ * Keep the session row a keyboard move selected on screen.
+ *
+ * Selection from elsewhere (a refresh, a deep link, MoA) never moves the list;
+ * see the active-row reveal in SessionPane. An arrow or page key IN the list is
+ * the user moving through it, so the row they land on must stay visible:
+ * "nearest" scrolls only when the row is off screen, and only as far as needed.
+ */
+function revealKeyboardSessionRow(controller) {
+    let frames = 0;
+    const step = () => {
+        const sessionId = controller.getState().sessions.activeSessionId;
+        const row = sessionId
+            ? [...document.querySelectorAll(".ps-session-list-button[data-session-id]")]
+                .find((node) => node.dataset.sessionId === sessionId && node.offsetParent && !node.closest(".ps-modal"))
+            : null;
+        if (row) {
+            row.scrollIntoView({ block: "nearest", inline: "nearest" });
+            return;
+        }
+        // The new selection renders on the next frame or two.
+        if (++frames < 4) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+
 function useKeyboardShortcuts(controller, mobile, suspended = false) {
     React.useEffect(() => {
         if (suspended) return undefined;
@@ -14510,12 +14536,14 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             }
             if (focusRegion === "sessions" && (event.key === "ArrowUp" || event.key === "k")) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && (event.key === "ArrowDown" || event.key === "j")) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && event.ctrlKey && event.key.toLowerCase() === "g" && !event.metaKey && !event.altKey) {
@@ -14525,12 +14553,14 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             }
             if (focusRegion === "sessions" && (event.key === "PageUp" || (event.ctrlKey && event.key.toLowerCase() === "u"))) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.PAGE_UP).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.PAGE_UP)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && (event.key === "PageDown" || (event.ctrlKey && event.key.toLowerCase() === "d"))) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.PAGE_DOWN).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.PAGE_DOWN)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && event.key === "t" && isPlainShortcut) {
