@@ -7,7 +7,7 @@ import {
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor,
     workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
-    workflowV2TestResponder,
+    workflowV2TestResponder, workflowV2VariableBatchDraft,
 } from "./workflow-v2-commands.js";
 
 /**
@@ -32,7 +32,9 @@ import {
  * ask first, one command at a time, the same command again after an answer
  * that never came), and its variables (v opens a form: set a name to a JSON
  * value, or remove a name after the confirm dialog, each as one set_vars
- * update at the revision the view shows; the portal's workflowV2RunVariables
+ * update at the revision the view shows; V opens a form for several in one
+ * set_vars update: a JSON object to set and a JSON list to remove, a
+ * removal after the confirm dialog; the portal's workflowV2RunVariables
  * and drafts), and a draft's YAML (e opens an editor: ctrl-o saves it as a
  * new revision after the one the edit started from, replace_definition, the
  * portal's workflowV2DraftEditor and workflowV2DraftEdit; a draft someone
@@ -334,7 +336,7 @@ function runVariableLines(projection) {
     const variables = projection.runVariables;
     if (!variables) return [];
     const lines = [{ text: `Variables${variables.revision === null ? "" : ` · revision ${variables.revision}`}`
-        + (variables.editable ? " — v sets or removes one" : ""), color: "cyan", indent: "" }];
+        + (variables.editable ? " — v sets or removes one · V updates several at once" : ""), color: "cyan", indent: "" }];
     for (const entry of variables.entries.slice(0, VARIABLE_ROWS)) lines.push({ text: `${entry.key} = ${entry.displayText}`, color: "white", indent: "  ", clip: true });
     if (variables.entries.length > VARIABLE_ROWS) {
         lines.push({ text: `… ${variables.entries.length - VARIABLE_ROWS} more; the variables form (v) lists them all`, color: "gray", indent: "  " });
@@ -416,6 +418,89 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
         value: String(modal.value ?? ""), valueCursor: Number(modal.valueCursor) || 0,
         busy: Boolean(variables?.busy),
         hint: "Tab name/value · ↑↓ copy a listed variable · Enter set · ctrl-r remove (asks first) · Esc back to the view",
+        idealWidth: width,
+    };
+}
+
+/** At most this many names are listed in the several-variables form's review; the update sends them all. */
+const BATCH_REVIEW_ROWS = 12;
+
+/**
+ * The several-variables form (TUI modal "workflowVariableBatch"; design 02 open KV, set_vars as one batch): what one
+ * update of the run it was opened for sends, from what is typed now (workflowV2VariableBatchDraft): each name under Set
+ * added, or replacing the value it has (whole), each name under Remove removed, at the revision the view shows; every
+ * other variable stays as it is, and the server applies all of it or none. Before it: why the variables cannot be
+ * changed, an update being sent, the last update's refusal or lost answer and the form's own check of what was typed;
+ * after it, the run's variables now. Its two fields: Set (a JSON object of names and values) and Remove (a JSON list of
+ * names). Null unless the form is open. Pure.
+ */
+export function selectWorkflowVariableBatchModal(state, maxWidth = 100, viewportHeight = null) {
+    const modal = state?.ui?.modal;
+    if (!modal || modal.type !== "workflowVariableBatch") return null;
+    const projection = workflowViewProjectionFor(state, modal.sessionId);
+    const variables = projection.runVariables;
+    const sameRun = Boolean(variables) && variables.runId === modal.runId;
+    const width = Math.max(40, Number(maxWidth) || 100);
+    const contentWidth = width - 4;
+    const lines = [];
+    const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, contentWidth), color, ...extra });
+    const addWrapped = (text, color, indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) add(piece, color); };
+    const setText = String(modal.set ?? "");
+    const removeText = String(modal.remove ?? "");
+    addWrapped("One update of several variables: each name under Set gets its JSON value (a new name is added; a value it has is "
+        + "replaced whole, not merged), each name under Remove is removed, and every other variable stays as it is. The server "
+        + "applies all of it at the revision shown, or none of it.", "gray");
+    if (!sameRun) {
+        addWrapped("The workflow view no longer shows the run this form was opened for, so it sends nothing. Esc goes back.", "yellow");
+    } else {
+        if (!variables.editable && variables.reason) addWrapped(variables.reason, "yellow");
+        if (variables.pending) add("Saving…", "yellow");
+    }
+    const notice = projection.runNotice?.operation === "set_vars" ? projection.runNotice : null;
+    if (notice) {
+        addWrapped(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
+        if (notice.retry) addWrapped("Enter sends the same update again; the server applies it once.", "gray", "  ");
+    }
+    if (typeof modal.error === "string" && modal.error) addWrapped(modal.error, "red");
+    // What Enter sends, only where it may send anything (the reason above says why not).
+    if (sameRun && variables.editable) {
+        if (!setText.trim() && !removeText.trim()) {
+            addWrapped("Set: a JSON object of names and values, for example {\"limit\": 5, \"mode\": \"fast\"}. Remove: a JSON list of "
+                + "names, for example [\"old\", \"stale key\"]. Either may be empty, not both.", "gray");
+        } else {
+            const draft = workflowV2VariableBatchDraft(setText, removeText);
+            if (!draft.ok) {
+                addWrapped(`Nothing to send yet: ${draft.error}`, "gray");
+            } else {
+                // Whether a name has a value now is known only from a whole list (a preview cut short lists none).
+                const listed = variables.complete ? new Set(variables.entries.map(entry => entry.key)) : null;
+                add(`Enter sends one update${variables.revision === null ? "" : ` at revision ${variables.revision}`}:`, "cyan");
+                const rows = [
+                    ...Object.keys(draft.set).map(name => `${listed === null ? "set" : listed.has(name) ? "replace" : "add"} '${name}' = `
+                        + JSON.stringify(draft.set[name])),
+                    ...draft.delete.map(name => `remove '${name}'${listed !== null && !listed.has(name) ? " (not set now)" : ""}`),
+                ];
+                for (const row of rows.slice(0, BATCH_REVIEW_ROWS)) add(`  ${row}`);
+                if (rows.length > BATCH_REVIEW_ROWS) add(`  … ${rows.length - BATCH_REVIEW_ROWS} more, sent with the rest`, "gray");
+                if (draft.delete.length) add("It removes variables, so it asks first.", "gray");
+            }
+        }
+    }
+    if (sameRun) {
+        add(`Variables now${variables.revision === null ? "" : ` · revision ${variables.revision}`}:`, "cyan");
+        for (const entry of variables.entries) add(`  ${entry.key} = ${entry.displayText}`, "gray");
+        if (variables.note) addWrapped(variables.note, "gray", "  ");
+        if (variables.preview) add(`  ${variables.preview}`, "gray");
+    }
+    const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, (Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40) - 16)));
+    return {
+        title: `Several variables · run ${shortRunId(modal.runId)}${sameRun && variables.revision !== null ? ` · revision ${variables.revision}` : ""}`,
+        lines, listHeight, scrollOffset: 0,
+        field: modal.field === "remove" ? "remove" : "set",
+        set: setText, setCursor: Number(modal.setCursor) || 0,
+        remove: removeText, removeCursor: Number(modal.removeCursor) || 0,
+        busy: Boolean(variables?.busy),
+        hint: "Tab set/remove · Enter send as one update (a removal asks first) · Esc back to the view",
         idealWidth: width,
     };
 }

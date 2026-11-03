@@ -62,9 +62,12 @@ export const UI_COMMANDS = {
     WORKFLOW_VIEW_STOP_RUN: "workflowViewStopRun",
     WORKFLOW_VIEW_CANCEL_RUN: "workflowViewCancelRun",
     WORKFLOW_VIEW_DISMISS_NOTICE: "workflowViewDismissNotice",
-    // The shown run's variables (INACTIVE likewise): open the variables form, and remove the variable it names.
+    // The shown run's variables (INACTIVE likewise): open the variables form, and remove the variable it names; open the
+    // several-variables form, and send what it names as one update.
     WORKFLOW_VIEW_EDIT_VARIABLES: "workflowViewEditVariables",
     WORKFLOW_VARIABLE_REMOVE: "workflowVariableRemove",
+    WORKFLOW_VIEW_UPDATE_VARIABLES: "workflowViewUpdateVariables",
+    WORKFLOW_VARIABLE_BATCH_SEND: "workflowVariableBatchSend",
     // The draft's YAML (INACTIVE likewise): open the draft editor, save the edit, discard it, keep it on a newer revision.
     WORKFLOW_VIEW_EDIT_DRAFT: "workflowViewEditDraft",
     WORKFLOW_DRAFT_SAVE: "workflowDraftSave",

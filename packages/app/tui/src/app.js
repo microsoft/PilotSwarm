@@ -65,13 +65,13 @@ export function isPlainShortcutKey(key = {}) {
 
 /**
  * The workflow view's run controls for the run it shows (p pause · r resume · s stop · c cancel; stop and cancel ask
- * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, e, which
- * opens the draft editor, P, which opens the publication review (publish, publish and start, or start; each asks
- * first), t, which opens the test review (a test run of the current revision; it asks first), and, for a test run
- * shown, a, which answers one of its intercepted effects that waits, and +, which advances its virtual clock. [ and ]
- * show the selected state's result of an older or newer visit (the latest by default). INACTIVE (apart from [ and ],
- * which read only): only a deployment that takes a person's workflow commands offers them; otherwise the status line says
- * why nothing was sent.
+ * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, V, which
+ * opens the form for several of them in one update, e, which opens the draft editor, P, which opens the publication
+ * review (publish, publish and start, or start; each asks first), t, which opens the test review (a test run of the
+ * current revision; it asks first), and, for a test run shown, a, which answers one of its intercepted effects that
+ * waits, and +, which advances its virtual clock. [ and ] show the selected state's result of an older or newer visit
+ * (the latest by default). INACTIVE (apart from [ and ], which read only): only a deployment that takes a person's
+ * workflow commands offers them; otherwise the status line says why nothing was sent.
  */
 const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     p: UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN,
@@ -80,6 +80,7 @@ const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     c: UI_COMMANDS.WORKFLOW_VIEW_CANCEL_RUN,
     d: UI_COMMANDS.WORKFLOW_VIEW_DISMISS_NOTICE,
     v: UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES,
+    V: UI_COMMANDS.WORKFLOW_VIEW_UPDATE_VARIABLES,
     e: UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT,
     P: UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW,
     t: UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW,
@@ -320,10 +321,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             && controller.giveUpTurnControl()) {
             return;
         }
-        // The workflow variables form, the draft editor, the publication and test reviews and the test run's answer and clock
+        // The workflow variables forms, the draft editor, the publication and test reviews and the test run's answer and clock
         // forms take typed text, q included.
-        const typingInForm = ["workflowVariable", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer", "workflowTestClock"]
-            .includes(modal?.type);
+        const typingInForm = ["workflowVariable", "workflowVariableBatch", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer",
+            "workflowTestClock"].includes(modal?.type);
         if (focus !== "prompt" && !typingInForm && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();
@@ -780,6 +781,36 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     return;
                 }
                 if (!key.ctrl && !key.meta && input) controller.insertWorkflowVariableText(input);
+                return;
+            }
+            // The several-variables form: two text fields, Set (a JSON object of names and values) and Remove (a JSON list of
+            // names). Tab switches them, Enter sends them as one update (a removal asks first), Esc goes back to the view.
+            if (modal.type === "workflowVariableBatch") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_BATCH_SEND).catch(() => {});
+                    return;
+                }
+                if (key.tab) {
+                    controller.editWorkflowVariableBatchField({ type: "switch" });
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowVariableBatchField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowVariableBatchField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowVariableBatchField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowVariableBatchField({ type: "insert", text: input });
                 return;
             }
             if (modal.type === "renameSession" || modal.type === "artifactUpload" || modal.type === "sessionGroupName" || modal.type === "shareSession" || modal.type === "sessionWorkspace") {

@@ -28,6 +28,7 @@ import {
     selectWorkflowCreateModal,
     selectWorkflowViewModal,
     selectWorkflowVariableModal,
+    selectWorkflowVariableBatchModal,
     selectWorkflowDraftModal,
     selectWorkflowPublicationModal,
     selectWorkflowTestModal,
@@ -1926,6 +1927,64 @@ function WorkflowVariableModalContainer({ controller }) {
 }
 
 /**
+ * Workflow sessions (TUI): the several-variables form (selectWorkflowVariableBatchModal): what Enter sends as one
+ * update (each name added, replaced or removed; every other variable stays), why nothing can be sent when it cannot,
+ * the last update's refusal, the run's variables now, and the two fields, Set (a JSON object of names and values) and
+ * Remove (a JSON list of names). Tab switches them, Enter sends (a removal asks first), Esc goes back to the view.
+ */
+export function WorkflowVariableBatchModal({ state }) {
+    const platform = useUiPlatform();
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = workflowViewPanelWidth(viewport.width);
+    const modal = selectWorkflowVariableBatchModal(state, width, viewport.height);
+    if (!modal) return null;
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: modal.listHeight,
+                lines: modal.lines,
+                scrollOffset: modal.scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: "set (JSON object of names and values)",
+                value: modal.set,
+                cursorIndex: modal.setCursor,
+                focused: modal.field === "set",
+                placeholder: "{\"limit\": 5, \"mode\": \"fast\"}",
+                rows: 2,
+            }),
+            React.createElement(platform.Input, {
+                label: "remove (JSON list of names)",
+                value: modal.remove,
+                cursorIndex: modal.removeCursor,
+                focused: modal.field === "remove",
+                placeholder: "[\"old\", \"stale key\"]",
+                rows: 1,
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.busy ? "Keys · an update is being sent" : "Keys",
+                color: "cyan",
+                focused: false,
+                width,
+                height: 3,
+                lines: [{ text: modal.hint, color: "gray" }],
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+/**
  * Workflow sessions (TUI): the draft editor (selectWorkflowDraftModal): the YAML with line numbers and the cursor, the
  * revision the edit started from (the border turns yellow with unsaved edits), and below it what the edit is, the last
  * save's refusal and the current revision's diagnostics. ctrl-o saves, ctrl-r discards the edit (asking first), Esc
@@ -3171,6 +3230,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(HelpModalContainer, { controller }),
         React.createElement(WorkflowViewModalContainer, { controller }),
         React.createElement(WorkflowVariableModalContainer, { controller }),
+        React.createElement(WorkflowFormModalContainer, { controller, type: "workflowVariableBatch", component: WorkflowVariableBatchModal }),
         React.createElement(WorkflowDraftModalContainer, { controller }),
         React.createElement(WorkflowPublicationModalContainer, { controller }),
         React.createElement(WorkflowTestModalContainer, { controller }),

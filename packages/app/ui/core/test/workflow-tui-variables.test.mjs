@@ -83,7 +83,7 @@ async function opened(initial, answers = []) {
 test("the view lists the shown run's variables; v opens the form, and Enter sets a name, kept as typed, to its typed JSON value", async () => {
     const h = await opened(model());
     const lines = details(h.store);
-    assert.ok(lines.includes("Variables · revision 3 — v sets or removes one"), lines.join("\n"));
+    assert.ok(lines.includes("Variables · revision 3 — v sets or removes one · V updates several at once"), lines.join("\n"));
     assert.ok(lines.includes("  a = 1"));
     assert.ok(lines.includes('  b c = "x"'));
     const view = h.store.getState().ui.modal;

@@ -2,7 +2,8 @@
  * Workflow v2: a person's workflow commands in the workflow view (design 04
  * and 07, mocks M03, M04, M15 and M16; R04, R05, R17, R18, R26; INACTIVE): the
  * run controls (pause, resume, stop, cancel), the run's variables (set_vars:
- * set or remove a key at the expected KV revision), the draft's YAML
+ * set or remove a key, or several in one update, at the expected KV
+ * revision), the draft's YAML
  * (replace_definition at the revision the edit started from), the
  * definition's publication (publish the exact revision shown, publish it and
  * start its live run, start the published revision's live run), a test of
@@ -278,6 +279,86 @@ export function workflowV2VariableRemoval(key) {
     const name = typeof key === "string" ? key : "";
     if (name.length < 1 || name.length > KV_KEY_MAX) return { ok: false, error: `Name the variable to remove (1 to ${KV_KEY_MAX} characters).` };
     return { ok: true, delete: [name] };
+}
+
+/**
+ * The names a JSON object's text gives more than once at its top level, in order (JSON.parse keeps only the last of
+ * them). `source` is the text of a valid JSON object.
+ */
+function repeatedNames(source) {
+    const seen = new Set();
+    const repeated = [];
+    let depth = 0;
+    for (let at = 0; at < source.length; at++) {
+        const char = source[at];
+        if (char === "{" || char === "[") depth++;
+        else if (char === "}" || char === "]") depth--;
+        else if (char === "\"") {
+            let end = at + 1;
+            while (end < source.length && source[end] !== "\"") end += source[end] === "\\" ? 2 : 1;
+            let next = end + 1;
+            while (next < source.length && " \t\n\r".includes(source[next])) next++;
+            // A string directly inside the top-level object and followed by ":" is one of its names.
+            if (depth === 1 && source[next] === ":") {
+                const name = JSON.parse(source.slice(at, end + 1));
+                if (seen.has(name) && !repeated.includes(name)) repeated.push(name);
+                seen.add(name);
+            }
+            at = end;
+        }
+    }
+    return repeated;
+}
+
+/** A JSON text a person typed, parsed, or the reason it does not parse (`label` names the field). */
+function parsedJson(source, label) {
+    try {
+        return { ok: true, value: JSON.parse(source) };
+    } catch (error) {
+        return { ok: false, error: `${label}: ${bounded(String(error?.message || error))}` };
+    }
+}
+
+/**
+ * Several variables a person typed for one update of a run (set_vars as one batch, design 02 open KV), as the `set`
+ * map and `delete` list it is sent as, or the reason it is not one. `setText` is a JSON object of names and their JSON
+ * values: each name gets its value whole (a new name is added, a value it has is replaced, not merged; null is a
+ * value). `removeText` is a JSON list of the names to remove. Either may be empty, not both. Each name is 1 to 128
+ * characters, kept exactly as typed and named once: twice in the object (JSON keeps only the last), twice in the list,
+ * or in both is refused rather than guessed. Every variable not named stays as it is, and the server applies the whole
+ * update at the revision the person saw, or none of it, checking it again.
+ */
+export function workflowV2VariableBatchDraft(setText, removeText) {
+    const setSource = typeof setText === "string" ? setText : "";
+    const removeSource = typeof removeText === "string" ? removeText : "";
+    let set = {};
+    if (setSource.trim()) {
+        const parsed = parsedJson(setSource, "Set must be a JSON object of names and values");
+        if (!parsed.ok) return parsed;
+        if (!isRecord(parsed.value)) return { ok: false, error: "Set must be a JSON object of names and values, for example {\"limit\": 5, \"mode\": \"fast\"}." };
+        const repeated = repeatedNames(setSource);
+        if (repeated.length) return { ok: false, error: `Set names ${keyNames(repeated)} more than once; give each name once.` };
+        set = parsed.value;
+    }
+    let removed = [];
+    if (removeSource.trim()) {
+        const parsed = parsedJson(removeSource, "Remove must be a JSON list of names");
+        if (!parsed.ok) return parsed;
+        if (!Array.isArray(parsed.value) || parsed.value.some(name => typeof name !== "string")) {
+            return { ok: false, error: "Remove must be a JSON list of names, for example [\"old\", \"stale key\"]." };
+        }
+        const twice = [...new Set(parsed.value.filter((name, index) => parsed.value.indexOf(name) !== index))];
+        if (twice.length) return { ok: false, error: `Remove lists ${keyNames(twice)} more than once; give each name once.` };
+        removed = parsed.value;
+    }
+    const names = [...Object.keys(set), ...removed];
+    if (!names.length) return { ok: false, error: "Nothing to update: set at least one variable or remove one." };
+    if (names.some(name => name.length < 1)) return { ok: false, error: `Each name is 1 to ${KV_KEY_MAX} characters; an empty name is not one.` };
+    const long = names.find(name => name.length > KV_KEY_MAX);
+    if (long !== undefined) return { ok: false, error: `Each name is 1 to ${KV_KEY_MAX} characters; ${keyNames([long])} has ${long.length}.` };
+    const both = removed.filter(name => Object.hasOwn(set, name));
+    if (both.length) return { ok: false, error: `${keyNames(both)} ${both.length > 1 ? "are" : "is"} both set and removed; give each name once.` };
+    return { ok: true, set, delete: removed };
 }
 
 /** The list of variables from the read model's preview of them (canonical JSON of the whole map, cut at 4,000 characters). */
@@ -574,13 +655,19 @@ export function workflowV2DraftEdit(base, textValue, model) {
 /**
  * The confirm dialog of a command that ends work or loses data, or null for
  * one that needs none: stop and cancel (mock M16: neither undoes effects
- * that already happened), and a variables update that removes keys.
+ * that already happened), and a variables update that removes keys (with
+ * the keys it also sets, when it is one update of several).
  */
 export function workflowV2RunCommandConfirm(operation, runId, args = null) {
     const run = `run ${shortId(String(runId ?? ""))}`;
     if (operation === "set_vars") {
         const removed = Array.isArray(args?.delete) ? args.delete : [];
         if (!removed.length) return null;
+        const set = isRecord(args?.set) ? Object.keys(args.set) : [];
+        if (set.length) {
+            return { title: "Update Workflow Variables", confirmLabel: "Update",
+                message: `In one update of the variables of ${run}, set ${keyNames(set)} and remove ${keyNames(removed)}? Every other variable stays as it is. States that start from now on see the update; work already running keeps the values it started with.` };
+        }
         const plural = removed.length > 1;
         return { title: plural ? "Remove Workflow Variables" : "Remove Workflow Variable", confirmLabel: "Remove",
             message: `Remove ${keyNames(removed)} from the variables of ${run}? States that start from now on do not see ${plural ? "them" : "it"}; work already running keeps the values it started with.` };

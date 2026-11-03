@@ -650,7 +650,7 @@ per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, one visit's own result (the latest, or an older visit chosen with [ ]), an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, one visit's own result (the latest, or an older visit chosen with [ ]), an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming) or of several in one update (V: a JSON object to set and a JSON list to remove; an update that removes asks first), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -816,7 +816,9 @@ KV), through the same `updateWorkflow` transport, with no new route.
   its own operation id: if the variables changed meanwhile, the server
   refuses it (409 `KV_REVISION_CONFLICT`), the notice says so, and the view
   reads the workflow again, keeping what the person typed. A batch of
-  several keys in one update goes through the API, MCP or the agent tool.
+  several keys in one update goes through the API, MCP, the agent tool or
+  the TUI's several-variables form (below); the portal's panel changes one
+  at a time.
 
 **Editing a draft's YAML (R03, R17, R26; mocks M01, M02; INACTIVE).** The
 same view lets a person who may change a draft edit its YAML.
@@ -929,10 +931,11 @@ Unfulfilled requirements (open, not waived; R26):
   design 04's separate `/test-runs` and `/inbox` paths, and the final path
   names, are API review item D11.
 - **The rest of the UI commands**: the portal sends every person's command
-  (above). Test fixtures and a several-key variables update go through the
-  API, MCP or the agent tool. The TUI's workflow view (below) sends only a
-  person's run controls, variable changes, draft saves, publication
-  commands, test starts, test answers and virtual clock advances.
+  (above). Test fixtures go through the API, MCP or the agent tool; a
+  several-key variables update goes through them or the TUI. The TUI's
+  workflow view (below) sends only a person's run controls, variable
+  changes, draft saves, publication commands, test starts, test answers and
+  virtual clock advances.
 
 **The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
 state, read-only child chats"; T115).** On a workflow session, `w` (outside
@@ -1027,6 +1030,33 @@ and sends nothing else. A form whose run the view no longer shows (a new
 live run) sends nothing. Accepted, the form returns to the view. While the
 form is open, q is text, not the quit key. Nothing else about the open KV
 changes.
+
+**Several variables in one update (design 02 open KV: `set_vars` is one
+atomic batch; R04, R05; INACTIVE likewise).** `V` in the workflow view
+opens a second form for the shown run, where the variables form would
+open (the same gate: `workflowViewVariablesFor`). It has two fields: Set,
+a JSON object of names and their JSON values, and Remove, a JSON list of
+names (Tab switches them). The shared `workflowV2VariableBatchDraft`
+checks them: Set must be an object and Remove a list of strings, either
+may be empty but not both, each name is 1 to 128 characters, kept exactly
+as typed and plain data (`__proto__` included), and a name given twice in
+Set (JSON would keep only the last), twice in Remove, or in both is
+refused rather than guessed. The form reviews what Enter sends, from what
+is typed: each name added, or replacing the value it has (whole, not
+merged), or removed, at the revision the view shows; every other variable
+stays as it is (where the variables are too long to list, it says set,
+not add or replace). Enter sends it as one `set_vars` command (`set` and
+`delete` together, `expected_kv_revision`), never as one command per
+variable, through `sendWorkflowRunCommand`, so the server applies all of
+it or none. An update that removes any asks first, in the shared confirm
+dialog, which names what it sets and removes and returns to the form; one
+that only sets is sent at once, as a single set is. Refusals, a changed
+revision (read again; the next Enter uses the new revision), an answer
+that never came (the same update sends the same operation id), one
+command at a time, a run the view no longer shows and Esc behave as in
+the variables form, and what was typed stays until the update is
+accepted or the form is closed. The one-variable form (`v`) is unchanged;
+an ordinary session has neither form.
 
 **The TUI's draft editor (design 04 replace_definition; mocks M01, M02;
 R03, R17, R26; INACTIVE likewise).** The workflow view's details name the
@@ -1195,8 +1225,6 @@ fails, the composer stays as it is and the server refuses the input
 reads the same policy through its session access), are unchanged.
 
 Not in the TUI yet (open, not waived):
-- a several-key variables update (the form sends one name at a time, as the
-  portal's panel does): the API, MCP and the agent tools take it;
 - the TUI refuses a person's prompt, answer and steer to an agent state's
   subtree locally; its other human input there (a workspace command, for
   one) is refused by the server only.

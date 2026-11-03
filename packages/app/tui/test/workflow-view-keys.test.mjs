@@ -1,8 +1,9 @@
 // The TUI's workflow view (design 02 "Portal/TUI: graph, observed state, read-only child chats"; T115): `w` opens it
 // outside the prompt (the prompt keeps typing w), the shared Ink app draws it from the shared view model, `?` lists it,
 // and inside it p r s c send a person's run controls for the shown run, d dismisses their notice, v opens the shown
-// run's variables form, e the draft editor, P the publication review, t the test review, and for a shown test run a its
-// answer form and + its virtual clock (INACTIVE: only a deployment that takes a person's workflow commands offers any).
+// run's variables form, V the form for several of them in one update, e the draft editor, P the publication review, t
+// the test review, and for a shown test run a its answer form and + its virtual clock (INACTIVE: only a deployment that
+// takes a person's workflow commands offers any).
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -20,7 +21,8 @@ import {
     selectHelpModal,
 } from "pilotswarm/ui-core";
 import {
-    WorkflowDraftModal, WorkflowPublicationModal, WorkflowTestAnswerModal, WorkflowTestClockModal, WorkflowTestModal, WorkflowVariableModal, WorkflowViewModal,
+    WorkflowDraftModal, WorkflowPublicationModal, WorkflowTestAnswerModal, WorkflowTestClockModal, WorkflowTestModal, WorkflowVariableBatchModal,
+    WorkflowVariableModal, WorkflowViewModal,
 } from "../../ui/react/src/components.js";
 import { UiPlatformProvider } from "../../ui/react/src/platform.js";
 import { readModel, row } from "../../ui/core/test/workflow-v2-fixtures.mjs";
@@ -28,7 +30,7 @@ import { readModel, row } from "../../ui/core/test/workflow-v2-fixtures.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = fs.readFileSync(path.join(here, "..", "src", "app.js"), "utf8");
 /** The quit key does not fire while a workflow form takes typed text (q is part of a name, a value, YAML or JSON there). */
-const TYPING_IN_FORM = /const typingInForm = \["workflowVariable", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer", "workflowTestClock"\]\s*\.includes\(modal\?\.type\);/;
+const TYPING_IN_FORM = /const typingInForm = \["workflowVariable", "workflowVariableBatch", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer",\s*"workflowTestClock"\]\.includes\(modal\?\.type\);/;
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600,
@@ -117,6 +119,8 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /workflow view, a test run shown: a answers an intercepted effect that waits/);
     assert.match(text, /\+ advances its virtual clock by whole seconds \(script clocks are real\)/);
     assert.match(text, /workflow view: the selected state's own result of an older \/ newer visit of the shown run/);
+    assert.match(text, /workflow view: several of the shown run's variables in one update — Set a JSON object of names and values, Remove a JSON list of names; every other variable stays/);
+    assert.match(text, /Enter send, a removal asks first/);
 });
 
 test("the variables form takes typed text, q included; Tab, ↑↓, Enter, ctrl-r and Esc are its own keys", () => {
@@ -164,6 +168,60 @@ test("the shared Ink app draws the variables form: the variables, the revision a
     assert.match(html, /  b c = &quot;x&quot;/);
     assert.deepEqual(inputs.map(input => [input.label, input.value, input.focused]), [["name", "limit", true], ["value (JSON)", "", false]]);
     assert.match(html, /Enter set · ctrl-r remove \(asks first\) · Esc back to the view/);
+    assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
+});
+
+test("the several-variables form takes typed text, q included; Tab, Enter, the cursor keys and Esc are its own keys", () => {
+    // The quit key does not fire while the form is open (q is part of a name or a value there).
+    assert.match(APP, TYPING_IN_FORM);
+    const modalBranch = APP.indexOf("if (modal) {");
+    const form = APP.indexOf('if (modal.type === "workflowVariableBatch") {');
+    assert.ok(modalBranch > 0 && modalBranch < form, "inside the modal branch");
+    assert.ok(APP.indexOf('if (modal.type === "confirm") {', modalBranch) < form, "after the confirm dialog's keys");
+    assert.ok(form < APP.indexOf('modal.type === "renameSession" || modal.type === "artifactUpload"'), "before the other text modals");
+    assert.ok(form < APP.indexOf('if (key.escape || input === "q" ||'), "before q closes a modal");
+    const branch = APP.slice(form, APP.indexOf('if (modal.type === "renameSession" || modal.type === "artifactUpload"'));
+    for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/, /key\.return[\s\S]*?UI_COMMANDS\.WORKFLOW_VARIABLE_BATCH_SEND/,
+        /key\.tab[\s\S]*?controller\.editWorkflowVariableBatchField\(\{ type: "switch" \}\)/,
+        /controller\.editWorkflowVariableBatchField\(\{ type: "move", chars: key\.leftArrow \? -1 : 1 \}\)/,
+        /controller\.editWorkflowVariableBatchField\(\{ type: "edge", edge: key\.home \? "start" : "end" \}\)/,
+        /key\.backspace \|\| key\.delete[\s\S]*?controller\.editWorkflowVariableBatchField\(\{ type: "backspace" \}\)/,
+        /if \(!key\.ctrl && !key\.meta && input\) controller\.editWorkflowVariableBatchField\(\{ type: "insert", text: input \}\);/]) {
+        assert.match(branch, binding);
+    }
+    for (const command of ["WORKFLOW_VIEW_UPDATE_VARIABLES", "WORKFLOW_VARIABLE_BATCH_SEND"]) {
+        assert.equal(typeof UI_COMMANDS[command], "string", command);
+    }
+});
+
+test("the shared Ink app draws the several-variables form: what Enter sends, the variables now and its two fields", async () => {
+    const withVars = { ...MODEL, run: { ...MODEL.run, kvRevision: 3, kv: JSON.stringify({ a: 1, "b c": "x" }) },
+        personCommands: { operations: ["set_vars", "pause", "resume", "stop", "cancel"], restriction: null, run: { runId: "run-1", stop: true } } };
+    const calls = [];
+    const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return withVars; } };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: withVars, readModelRunId: null } });
+    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_UPDATE_VARIABLES);
+    controller.editWorkflowVariableBatchField({ type: "insert", text: "{\"limit\": 3}" });
+    controller.editWorkflowVariableBatchField({ type: "switch" });
+    controller.editWorkflowVariableBatchField({ type: "insert", text: "[\"a\"]" });
+    const inputs = [];
+    const formPlatform = { ...platform, Input: ({ label, value, focused }) => { inputs.push({ label, value, focused });
+        return React.createElement("label", { "data-focused": String(focused) }, `${label}: ${value}`); } };
+    const html = renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform: formPlatform },
+        React.createElement(WorkflowVariableBatchModal, { state: store.getState() })));
+    assert.match(html, /data-title="Several variables · run run-1 · revision 3"/);
+    assert.match(html, /<p>Enter sends one update at revision 3:<\/p><p>  add &#x27;limit&#x27; = 3<\/p><p>  remove &#x27;a&#x27;<\/p>/);
+    assert.match(html, /<p>It removes variables, so it asks first\.<\/p>/);
+    assert.match(html, /<p>  b c = &quot;x&quot;<\/p>/);
+    assert.deepEqual(inputs.map(input => [input.label, input.value, input.focused]),
+        [["set (JSON object of names and values)", "{\"limit\": 3}", false], ["remove (JSON list of names)", "[\"a\"]", true]]);
+    assert.match(html, /Tab set\/remove · Enter send as one update \(a removal asks first\) · Esc back to the view/);
     assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
 });
 
@@ -443,10 +501,15 @@ test("p r s c in the open workflow view send its run controls and d dismisses th
     const keys = APP.slice(APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS"), APP.indexOf("});", APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS")));
     for (const [key, command] of [["p", "WORKFLOW_VIEW_PAUSE_RUN"], ["r", "WORKFLOW_VIEW_RESUME_RUN"], ["s", "WORKFLOW_VIEW_STOP_RUN"],
         ["c", "WORKFLOW_VIEW_CANCEL_RUN"], ["d", "WORKFLOW_VIEW_DISMISS_NOTICE"], ["v", "WORKFLOW_VIEW_EDIT_VARIABLES"],
-        ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["P", "WORKFLOW_VIEW_PUBLICATION_REVIEW"], ["t", "WORKFLOW_VIEW_TEST_REVIEW"], ["a", "WORKFLOW_VIEW_TEST_ANSWER"]]) {
+        ["V", "WORKFLOW_VIEW_UPDATE_VARIABLES"], ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["P", "WORKFLOW_VIEW_PUBLICATION_REVIEW"],
+        ["t", "WORKFLOW_VIEW_TEST_REVIEW"], ["a", "WORKFLOW_VIEW_TEST_ANSWER"]]) {
         assert.match(keys, new RegExp(`${key}: UI_COMMANDS\\.${command},`), key);
         assert.equal(typeof UI_COMMANDS[command], "string", command);
     }
+    // Outside the view, V keeps toggling the session list's select mode (the view's keys are checked first, in the modal branch).
+    const selectMode = APP.indexOf('if (plainShortcut && input === "V") {');
+    assert.ok(binding < selectMode, "V toggles select mode only outside the view");
+    assert.match(APP.slice(selectMode, selectMode + 160), /UI_COMMANDS\.TOGGLE_SELECT_MODE/);
     assert.match(keys, /"\+": UI_COMMANDS\.WORKFLOW_VIEW_TEST_CLOCK,/);
     assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK, "string");
     assert.match(keys, /"\[": UI_COMMANDS\.WORKFLOW_VIEW_OLDER_EXECUTION,/);
