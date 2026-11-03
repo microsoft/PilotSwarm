@@ -81,5 +81,7 @@ jobs:
         run: |
           npm run test:campaign:unit
           npm run test:campaign:dashboard:unit
+      - name: Install Chromium for application browser tests
+        run: npm exec --workspace=pilotswarm -- playwright install --with-deps chromium
       - name: Application unit tests
         run: npm test --workspace=pilotswarm
