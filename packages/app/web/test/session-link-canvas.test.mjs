@@ -71,6 +71,8 @@ test("the dialog starts unchecked, re-copies on change, and reads the session's 
     assert.match(body, /disabled: slots\.length === 0/, "no canvas → the box cannot be ticked");
     assert.match(body, /const recopy = \(nextInclude, nextSlot\) =>/);
     assert.equal((body.match(/recopy\(/g) || []).length, 2, "called from the box and the picker");
+    assert.match(body, /MultiOriginLinkRows, \{ url, keyPrefix: "session", copied, onCopy: copy, wrap: true \}/,
+        "the whole link is visible, so the added canvas part can be seen");
     assert.match(WEB_APP, /const canvas = selectCanvasView\(controller\.getState\(\)\);/,
         "the click handler reads the drawn slots");
 });

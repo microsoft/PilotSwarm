@@ -4980,6 +4980,23 @@ body.is-resizing-pane-y iframe {
   border-radius: var(--ps-radius-sm);
 }
 
+/* The session Copy link dialog's box: the whole link, wrapped, so a change
+   at its end ("Include canvas") is visible. Grows with the link where the
+   browser supports field-sizing; elsewhere it is two rows and scrolls. */
+.ps-link-input.is-wrapped {
+  resize: none;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  min-height: 2.8em;
+  field-sizing: content;
+}
+
+.ps-link-row:has(.is-wrapped) {
+  align-items: flex-start;
+}
+
 /* One labeled, independently copyable box per entry point, with a Copy all
    underneath. Replaces the single shared textarea that made the sender hand
    over every URL even when they knew which one the recipient needed. */

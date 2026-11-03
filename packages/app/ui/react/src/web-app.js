@@ -252,14 +252,22 @@ function copySessionLinkText(url) {
  * Single-origin deployments render exactly one unlabeled row — no labels, no
  * Copy all, nothing to explain.
  */
-function MultiOriginLinkRows({ url, keyPrefix, copied, onCopy }) {
+function MultiOriginLinkRows({ url, keyPrefix, copied, onCopy, wrap = false }) {
     const links = buildPortalLinks(url, portalLinkOrigins);
     const selectOnFocus = (event) => event.currentTarget.select();
+    // `wrap` shows the whole link over several lines instead of a one-line
+    // box that hides its end. The session Copy link dialog needs it: the
+    // "Include canvas" option changes only the END of the link, which a
+    // one-line box never shows.
+    const field = (value, extra = {}) => React.createElement(wrap ? "textarea" : "input", {
+        className: wrap ? "ps-link-input is-wrapped" : "ps-link-input",
+        readOnly: true, value, onFocus: selectOnFocus,
+        ...(wrap ? { rows: 2, spellCheck: false } : {}),
+        ...extra,
+    });
     if (links.length <= 1) {
         return React.createElement("div", { className: "ps-link-row" },
-            React.createElement("input", {
-                className: "ps-link-input", readOnly: true, value: url, onFocus: selectOnFocus,
-            }),
+            field(url),
             React.createElement("button", {
                 type: "button", className: "ps-mini-button", onClick: () => onCopy(keyPrefix, url),
             }, copied === keyPrefix ? "Copied" : "Copy"));
@@ -271,10 +279,7 @@ function MultiOriginLinkRows({ url, keyPrefix, copied, onCopy }) {
             return React.createElement("div", { className: "ps-link-origin", key },
                 React.createElement("div", { className: "ps-link-origin-label" }, link.label),
                 React.createElement("div", { className: "ps-link-row" },
-                    React.createElement("input", {
-                        className: "ps-link-input", readOnly: true, value: link.url,
-                        "aria-label": `${link.label} link`, onFocus: selectOnFocus,
-                    }),
+                    field(link.url, { "aria-label": `${link.label} link` }),
                     React.createElement("button", {
                         type: "button", className: "ps-mini-button",
                         onClick: () => onCopy(key, link.url),
@@ -6533,7 +6538,7 @@ function SessionLinkModal({ url: baseUrl, warn, canvasSlots = [], defaultCanvasS
                 multi
                     ? "All entry-point links were copied. Copy just the one your recipient's network can reach, or take both."
                     : "Copied to your clipboard — anyone with access can open the session from this link."),
-            React.createElement(MultiOriginLinkRows, { url, keyPrefix: "session", copied, onCopy: copy }),
+            React.createElement(MultiOriginLinkRows, { url, keyPrefix: "session", copied, onCopy: copy, wrap: true }),
             React.createElement("div", { className: "ps-link-canvas" },
                 React.createElement("label", { className: "ps-canvas-share-check" },
                     React.createElement("input", {

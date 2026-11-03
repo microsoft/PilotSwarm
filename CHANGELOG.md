@@ -8,7 +8,9 @@ unless you tick it. Ticked, the link adds `view=canvas&slot=<n>` and opens the
 session with that canvas beside the chat. A session with several canvases
 shows a picker; the one on screen is preselected. Changing either option
 copies the new link again. A session with no canvas shows the checkbox
-disabled.
+disabled. The dialog's link box now wraps, so the whole link is visible.
+Links are interpreted exactly as before: the option only writes the
+`view=canvas` and `slot` parameters the portal already accepted.
 
 **Azure deploy: large Azure CLI output.** The base-infra step checks each
 Foundry deployment against `az cognitiveservices model list`. In some
