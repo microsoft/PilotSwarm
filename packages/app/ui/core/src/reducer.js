@@ -1732,13 +1732,25 @@ function baseReducer(state, action) {
             // everything. With no baseline we cannot tell new from
             // pre-existing, so we add nothing and trust the restored state.
             const hadBaseline = state.sessions.listingSeen === true;
+            const previousDefaultCollapsedIds = hadBaseline ? collectDefaultCollapsedSessionIds(Object.values(state.sessions.byId)) : null;
             if (previousCollapsedIdsExplicit && hadBaseline) {
-                const previousDefaultCollapsedIds = collectDefaultCollapsedSessionIds(Object.values(state.sessions.byId));
                 for (const sessionId of initialCollapsedIds) {
                     if (!previousDefaultCollapsedIds.has(sessionId)) {
                         collapsedIds.add(sessionId);
                     }
                 }
+            }
+            // Except under the session the person is looking at: when it gains its FIRST child (a workflow its chat just
+            // started, a sub-agent), the child shows at once instead of behind "[+1]". Background rows still start
+            // collapsed, and a session that already had children keeps whatever the person chose. Same baseline rule as
+            // above (no baseline, no change). It is kept open as an explicit choice: the defaults, recomputed from
+            // scratch on each listing while nothing is explicit, would collapse it again.
+            const activeId = state.sessions.activeSessionId;
+            let collapsedIdsExplicit = previousCollapsedIdsExplicit;
+            if (hadBaseline && activeId && !rowStatusById[activeId]?.isGroup
+                && initialCollapsedIds.has(activeId) && !previousDefaultCollapsedIds.has(activeId)) {
+                collapsedIds.delete(activeId);
+                collapsedIdsExplicit = true;
             }
             // Drop pins/selection for sessions that no longer exist; only
             // keep pins on top-level rows (groups and ungrouped top-level
@@ -1751,7 +1763,7 @@ function baseReducer(state, action) {
                 byId: rowStatusById,
                 goneIds: (state.sessions.goneIds || []).filter((id) => !action.sessions.some((row) => row.sessionId === id)),
                 collapsedIds,
-                collapsedIdsExplicit: previousCollapsedIdsExplicit,
+                collapsedIdsExplicit,
                 listingSeen: true,
                 pinnedIds: survivingPins,
                 selectedIds: survivingSelected,
