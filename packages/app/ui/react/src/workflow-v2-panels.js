@@ -7,7 +7,7 @@ import {
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
-    workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
+    workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
     workflowV2AnswerSourceText,
 } from "../../core/src/workflow-v2-commands.js";
@@ -767,7 +767,8 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id, revisi
  * fields where the value comes from (a run input, the previous step's result, a workflow variable or a fixed value; a
  * value written in a way this editor does not change stays as written). "Show the change" asks the server to write it
  * into the draft's YAML (only that step's input lines change) and shows the changed lines; "Save as a new draft
- * revision" saves exactly that text, at the revision it was prepared on. Nothing is saved while the YAML box above has
+ * revision" saves exactly that text, at the revision it was prepared on. Changing or adding a field drops the prepared
+ * change, so what is saved is always what the fields say. Nothing is saved while the YAML box above has
  * unsaved edits, so the two never overwrite each other.
  */
 export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded, preview, draftRevision, draftYaml, busy, unsaved }) {
@@ -781,10 +782,13 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
     const mine = loaded && loaded.state === chosen ? loaded : null;
     const value = mine?.phase === "loaded" ? mine.value : null;
     React.useEffect(() => { setRows(workflowV2StepInputRows(value)); setError(null); }, [value]);
-    const shown = preview && preview.state === chosen ? preview : null;
-    const summary = shown ? workflowV2StepInputSummary(chosen, shown) : null;
-    const setRow = (index, patch) => setRows(current => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+    // Any change to the fields drops the prepared change (and one still being prepared): it no longer says what is shown.
+    const changeRows = update => { setRows(update); controller.forgetWorkflowStepInputPreview?.(sessionId); };
+    const setRow = (index, patch) => changeRows(current => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
     const request = workflowV2StepInputRequest(rows);
+    // A prepared change is shown, and saved, only while it was prepared from exactly these fields.
+    const shown = preview && preview.state === chosen && preview.key === workflowV2StepInputKey(request.ok ? request.input : null) ? preview : null;
+    const summary = shown ? workflowV2StepInputSummary(chosen, shown) : null;
     const prepare = () => {
         if (!request.ok) { setError(request.error); return; }
         setError(null);
@@ -832,7 +836,7 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
             onChange: event => setNewField(event.target.value) }),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "add-field",
             disabled: !newField.trim() || rows.some(row => row.name === newField.trim()),
-            onClick: () => { setRows(current => [...current, { name: newField.trim(), required: false, declared: false, type: null, description: null,
+            onClick: () => { changeRows(current => [...current, { name: newField.trim(), required: false, declared: false, type: null, description: null,
                 source: "fixed", detail: "", keepable: false, keepText: null }]); setNewField(""); } }, "Add field")) : null,
     request.ok && request.missing.length ? h("p", { style: { margin: 0, color: TONES.warning } },
         `Not set: ${request.missing.join(", ")} (required). The step refuses to start without them.`) : null,
@@ -845,7 +849,8 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
         h("button", { type: "button", className: "ps-mini-button", "data-action": "prepare-step-input", disabled: shown?.phase === "loading",
             onClick: prepare }, "Show the change"),
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", "data-action": "save-step-input",
-            disabled: !canSave, title: saveTitle, onClick: () => { controller.saveWorkflowStepInput?.(sessionId)?.catch?.(() => {}); } },
+            disabled: !canSave, title: saveTitle,
+            onClick: () => { controller.saveWorkflowStepInput?.(sessionId, { state: chosen, input: request.input })?.catch?.(() => {}); } },
         "Save as a new draft revision")) : null);
 }
 

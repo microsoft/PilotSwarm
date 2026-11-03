@@ -16,7 +16,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import {
-    WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
+    WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
 } from "../src/workflow-v2-commands.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
 import { WorkflowV2StepInputEditor } from "../../react/src/workflow-v2-panels.js";
@@ -125,12 +125,12 @@ test("the controller reads a step's inputs, prepares the change and saves it as 
     const input = { pr: { source: "run_input", name: "repo" } };
     await h.controller.previewWorkflowStepInput(SID, "review", input);
     assert.deepEqual(h.reads.at(-1), [SID, { stepInput: { state: "review", input } }]);
-    assert.deepEqual(h.view().stepInputPreview, { state: "review", revision: 2, phase: "loaded", error: null,
+    assert.deepEqual(h.view().stepInputPreview, { state: "review", revision: 2, key: workflowV2StepInputKey(input), phase: "loaded", error: null,
         value: { yaml: PROPOSED, changed: true, valid: true, diagnostics: [] } });
     // A change is prepared only for the step the editor shows.
     assert.equal(await h.controller.previewWorkflowStepInput(SID, "other", input), null);
 
-    const saved = await h.controller.saveWorkflowStepInput(SID);
+    const saved = await h.controller.saveWorkflowStepInput(SID, { state: "review", input });
     assert.equal(saved.ok, true);
     assert.equal(h.updates.length, 1);
     const [sessionId, command] = h.updates[0];
@@ -151,6 +151,51 @@ test("a read that fails is shown with its reason, and nothing can be prepared fr
     const read = await h.controller.loadWorkflowStepInput(SID, "review");
     assert.deepEqual(read, { state: "review", phase: "failed", value: null, error: "Only a draft's step inputs are edited; a published workflow does not change." });
     assert.equal(await h.controller.previewWorkflowStepInput(SID, "review", {}), null);
+});
+
+test("changing the fields drops the prepared change, and an answer for fields since changed is dropped", async () => {
+    const h = seeded();
+    await h.controller.loadWorkflowStepInput(SID, "review");
+    const before = { pr: { source: "run_input", name: "repo" } };
+    const after = { pr: { source: "run_input", name: "pr" } };
+    assert.equal(workflowV2StepInputKey(before), workflowV2StepInputKey({ pr: { source: "run_input", name: "repo" } }));
+    assert.notEqual(workflowV2StepInputKey(before), workflowV2StepInputKey(after));
+    assert.equal(workflowV2StepInputKey(undefined), null);
+
+    // Edit after "Show the change": nothing prepared from other fields, or for another step, is saved, and the edit drops it.
+    await h.controller.previewWorkflowStepInput(SID, "review", before);
+    assert.equal(h.view().stepInputPreview.phase, "loaded");
+    assert.deepEqual(await h.controller.saveWorkflowStepInput(SID, { state: "review", input: after }), { ok: false, reason: "invalid" });
+    assert.deepEqual(await h.controller.saveWorkflowStepInput(SID, { state: "fix", input: before }), { ok: false, reason: "invalid" });
+    h.controller.forgetWorkflowStepInputPreview(SID);
+    assert.equal(h.view().stepInputPreview, null);
+    assert.deepEqual(await h.controller.saveWorkflowStepInput(SID, { state: "review", input: before }), { ok: false, reason: "invalid" });
+
+    // Edit while the change is being prepared: its answer, when it comes, is dropped.
+    const read = h.controller.transport.readWorkflow;
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    h.controller.transport.readWorkflow = async (sessionId, options) => { if (options?.stepInput?.input) await held; return read(sessionId, options); };
+    const pending = h.controller.previewWorkflowStepInput(SID, "review", before);
+    assert.equal(h.view().stepInputPreview.phase, "loading");
+    h.controller.forgetWorkflowStepInputPreview(SID);
+    release();
+    await pending;
+    assert.equal(h.view().stepInputPreview, null);
+    assert.deepEqual(await h.controller.saveWorkflowStepInput(SID, { state: "review", input: before }), { ok: false, reason: "invalid" });
+    assert.equal(h.updates.length, 0);
+
+    // Shown twice: only the later preparation's answer is kept, even when the earlier one arrives last.
+    let releaseFirst;
+    const first = new Promise(resolve => { releaseFirst = resolve; });
+    h.controller.transport.readWorkflow = async (sessionId, options) => { if (options?.stepInput?.input === before) await first; return read(sessionId, options); };
+    const slow = h.controller.previewWorkflowStepInput(SID, "review", before);
+    await h.controller.previewWorkflowStepInput(SID, "review", after);
+    releaseFirst();
+    await slow;
+    assert.equal(h.view().stepInputPreview.key, workflowV2StepInputKey(after));
+    assert.equal((await h.controller.saveWorkflowStepInput(SID, { state: "review", input: after })).ok, true);
+    assert.equal(h.updates.length, 1);
 });
 
 const render = props => renderToStaticMarkup(React.createElement(WorkflowV2StepInputEditor, { controller: {}, sessionId: SID, steps: ["review", "fix"],
@@ -202,7 +247,9 @@ test("the editor lists each field with where its value comes from; saving waits 
     assert.deepEqual(saveButton(html), { disabled: true, title: "Show the change first." });
     assert.ok(!/contract|binding|candidate/i.test(html.replace(/data-[a-z-]+="[^"]*"/g, "")), "plain words only");
 
-    const preview = { state: "review", revision: 2, phase: "loaded", error: null, value: { yaml: PROPOSED, changed: true, valid: true, diagnostics: [] } };
+    // A change prepared from the fields as loaded (the key is what the editor's own request says).
+    const preview = { state: "review", revision: 2, key: workflowV2StepInputKey(workflowV2StepInputRequest(workflowV2StepInputRows(STEP_INPUT)).input),
+        phase: "loaded", error: null, value: { yaml: PROPOSED, changed: true, valid: true, diagnostics: [] } };
     const ready = render({ preview });
     assert.deepEqual(saveButton(ready), { disabled: false, title: "Save as a new revision after revision 2." });
     assert.match(ready, /Only the input lines of step &#x27;review&#x27; change\. Saving makes a new draft revision\./);
@@ -210,6 +257,10 @@ test("the editor lists each field with where its value comes from; saving waits 
     assert.deepEqual(saveButton(render({ preview, unsaved: true })), { disabled: true, title: "Save or discard your YAML edits above first." });
     assert.deepEqual(saveButton(render({ preview, draftRevision: 3 })), { disabled: true, title: "The draft changed since this was prepared; show the change again." });
     assert.deepEqual(saveButton(render({ preview, busy: true })), { disabled: true, title: "Another command for this workflow is being sent." });
+    // A change prepared from other fields (one has been changed since) is not shown, and cannot be saved.
+    const otherFields = render({ preview: { ...preview, key: workflowV2StepInputKey({ pr: { source: "run_input", name: "repo" } }) } });
+    assert.deepEqual(saveButton(otherFields), { disabled: true, title: "Show the change first." });
+    assert.ok(!otherFields.includes("data-kind=\"added\"") && !otherFields.includes("Saving makes a new draft revision"), otherFields);
 
     // A step whose input is one value: choosing fields replaces it. A step that lists no fields: add each by name.
     const expression = render({ loaded: { state: "review", phase: "loaded", error: null,

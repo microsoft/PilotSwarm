@@ -13,7 +13,7 @@ import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
     workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableBatchDraft,
     workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
-    workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId,
+    workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId, workflowV2StepInputKey,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -6431,6 +6431,7 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInput: entry } });
             return entry;
         };
+        this._nextWorkflowStepInputPreparation(sessionId);
         this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInput: { state, phase: "loading", value: null, error: null }, stepInputPreview: null } });
         try {
             const answer = await this.transport.readWorkflow(sessionId, { stepInput: { state } });
@@ -6442,40 +6443,69 @@ export class PilotSwarmUiController {
     }
 
     /**
+     * Workflow v2 (owner decision q6): start a new preparation of a change to a session's step inputs, or none. An answer
+     * for an earlier one is then dropped, as the person changed the fields, chose another step or read the step again.
+     */
+    _nextWorkflowStepInputPreparation(sessionId) {
+        if (!this.workflowStepInputPreparations) this.workflowStepInputPreparations = new Map();
+        const preparation = (this.workflowStepInputPreparations.get(sessionId) ?? 0) + 1;
+        this.workflowStepInputPreparations.set(sessionId, preparation);
+        return preparation;
+    }
+
+    /**
      * Workflow v2: prepare a change to an agent step's inputs (owner decision q6): the draft's YAML with only that step's
      * input mapping changed, as the server writes it (readWorkflow stepInput with `input`), into the view's
-     * `stepInputPreview` ({ state, revision, phase, value: { yaml, changed, valid, diagnostics }, error }). Nothing is saved.
-     * Never throws.
+     * `stepInputPreview` ({ state, revision, key, phase, value: { yaml, changed, valid, diagnostics }, error }; `key` is
+     * the mapping it was prepared from, workflowV2StepInputKey). Only the latest preparation's answer is kept. Nothing is
+     * saved. Never throws.
      */
     async previewWorkflowStepInput(sessionId, state, input) {
         const loaded = this.getState().ui.workflowViews?.[sessionId]?.stepInput;
         if (!loaded || loaded.state !== state || loaded.phase !== "loaded" || typeof this.transport?.readWorkflow !== "function") return null;
         const revision = loaded.value?.revision ?? null;
+        const key = workflowV2StepInputKey(input);
+        const preparation = this._nextWorkflowStepInputPreparation(sessionId);
         const write = entry => {
-            if (this.getState().ui.workflowViews?.[sessionId]?.stepInput?.state !== state) return entry;
+            if (this.workflowStepInputPreparations.get(sessionId) !== preparation
+                || this.getState().ui.workflowViews?.[sessionId]?.stepInput?.state !== state) return entry;
             this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInputPreview: entry } });
             return entry;
         };
-        write({ state, revision, phase: "loading", value: null, error: null });
+        write({ state, revision, key, phase: "loading", value: null, error: null });
         try {
             const answer = await this.transport.readWorkflow(sessionId, { stepInput: { state, input } });
             const proposed = answer?.stepInput?.proposed;
             if (answer?.stepInput?.state !== state || typeof proposed?.yaml !== "string") throw new Error("The answer held no proposed YAML.");
-            return write({ state, revision: answer.stepInput.revision ?? revision, phase: "loaded", value: proposed, error: null });
+            return write({ state, revision: answer.stepInput.revision ?? revision, key, phase: "loaded", value: proposed, error: null });
         } catch (error) {
-            return write({ state, revision, phase: "failed", value: null, error: error?.message || String(error) });
+            return write({ state, revision, key, phase: "failed", value: null, error: error?.message || String(error) });
+        }
+    }
+
+    /**
+     * Workflow v2: drop the prepared change to a step's inputs (owner decision q6), and any answer still on its way: the
+     * person changed or added a field, so it no longer says what is shown. Nothing is sent.
+     */
+    forgetWorkflowStepInputPreview(sessionId) {
+        if (!sessionId) return;
+        this._nextWorkflowStepInputPreparation(sessionId);
+        if (this.getState().ui.workflowViews?.[sessionId]?.stepInputPreview) {
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInputPreview: null } });
         }
     }
 
     /**
      * Workflow v2: save the prepared change to an agent step's inputs (owner decision q6) as a new draft revision: the
      * same replace_definition as the draft editor, at the revision the change was prepared on, so a draft changed meanwhile
-     * is refused, never overwritten. Accepted: the editor reads the step again on the new revision. Never throws.
+     * is refused, never overwritten. `shown` names the step and the mapping the editor shows now: only a change prepared
+     * from exactly that is saved. Accepted: the editor reads the step again on the new revision. Never throws.
      */
-    async saveWorkflowStepInput(sessionId) {
+    async saveWorkflowStepInput(sessionId, shown = {}) {
         const view = this.getState().ui.workflowViews?.[sessionId];
         const preview = view?.stepInputPreview;
-        if (!preview || preview.phase !== "loaded" || preview.value?.changed !== true || !Number.isSafeInteger(preview.revision)) {
+        if (!preview || preview.phase !== "loaded" || preview.value?.changed !== true || !Number.isSafeInteger(preview.revision)
+            || preview.state !== shown?.state || preview.key === null || preview.key !== workflowV2StepInputKey(shown?.input)) {
             return { ok: false, reason: "invalid" };
         }
         const result = await this.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: preview.revision,
@@ -6490,6 +6520,7 @@ export class PilotSwarmUiController {
     /** Workflow v2: close the step-input editor (owner decision q6); nothing is sent. */
     closeWorkflowStepInput(sessionId) {
         if (!sessionId || this.getState().sessions.byId[sessionId]?.sessionKind !== "workflow") return;
+        this._nextWorkflowStepInputPreparation(sessionId);
         this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInput: null, stepInputPreview: null } });
     }
 

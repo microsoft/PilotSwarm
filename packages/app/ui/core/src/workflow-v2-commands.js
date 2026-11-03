@@ -1032,6 +1032,15 @@ export function workflowV2StepInputRequest(rows) {
     return { ok: true, input, missing };
 }
 
+/**
+ * Which input mapping a prepared change to a step's inputs was made from (owner decision q6): the same text for the same
+ * mapping (workflowV2StepInputRequest's `input`), so a change is saved only while the fields still say what it was
+ * prepared from. Null for no mapping. Pure.
+ */
+export function workflowV2StepInputKey(input) {
+    return isRecord(input) ? JSON.stringify(input) : null;
+}
+
 /** One line on what the proposed change to a step's inputs is (owner decision q6), from its preview. Pure. */
 export function workflowV2StepInputSummary(state, preview) {
     if (!isRecord(preview)) return null;
