@@ -208,10 +208,11 @@ and the route `timeout`, and text around a binding.
 | `test_respond` | `run_id`, `interception_id`, `response` | Answers one intercepted effect. |
 | `test_advance` | `run_id`, `seconds` | Moves a test run's virtual clock. |
 
-`read_workflow`: `workflow_id`, `run_id?` (default: the live run),
-`include_yaml?`. Shows the definition, the graph, the runs and one run's
-node executions, KV, inbox and outbox, its stop, agent children
-(`agent.childSessionId`), parallel branches, and a test run's evidence.
+`read_workflow`: `workflow_id`, `run_id?` (default live run),
+`include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
+rows), `execution_id?` (its whole result). Shows the graph, runs, a
+run's newest rows (open ones apart), KV, stop, `agent.childSessionId`,
+branches, tests.
 
 `send_workflow_input`: `workflow_id`, `contract`, `payload`,
 `correlation?`, `run_id?`, `ttl_seconds?` (1 to 86,400, the default),

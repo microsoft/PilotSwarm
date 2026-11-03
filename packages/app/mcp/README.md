@@ -355,7 +355,7 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `get_capabilities` | Mode (web/direct), admin role, facts search/embedder flags, graph availability, embedded-worker count, default model; the deployment's workflow support as its bootstrap advertises it (`workflows`, null from a host that advertises none) and the workflow tools this server registers (`workflow_tools`) |
+| `get_capabilities` | Mode (web/direct), admin role, facts search/embedder flags, graph availability, embedded-worker count, default model; the deployment's workflow support as its bootstrap advertises it (`workflows`, null from a host that advertises none; a bootstrap that cannot be read or a malformed advertisement answers an error) and the workflow tools this server registers (`workflow_tools`) |
 | `get_system_status` | Embedded-worker count (0 is normal with dedicated worker pods), session-creation policy, creatable agents, log config *(web)* |
 
 ### Session Management
@@ -408,11 +408,12 @@ pending, not refused. `stopped` is true only for `stopped` or `stop_forced`.
 | `list_session_groups` | List YOUR groups (private per-user organization); `include_sessions` adds the sessions you placed in each |
 | `manage_session_group` | `action: create \| update \| place \| assign \| move \| cancel \| complete \| delete` — `place` puts sessions you can read into your own groups (assign/move are deprecated aliases; cancel/complete are deprecated) |
 
-### Workflows *(inactive; registered only with the test-only `workflowCommands` option)*
+### Workflows
 
 | Tool | Description |
 |------|-------------|
-| `update_workflow` | A person's command to a version 2 workflow session: the `update_workflow` agent tool's `operation`, `operation_id` and arguments (`POST /api/v1/sessions/:sessionId/workflow/commands` in web mode). A workflow inside a workflow agent state's subtree takes only `pause`, `stop` and `cancel` |
+| `read_workflow` | Read a version 2 workflow session without changing it (always registered): its definition, graph, runs and one run (`run_id`, default the live run) with the newest page of its executions, inbox, outbox and a test run's effects, the open rows apart, and `run.pages` with each section's `nextCursor`. `cursor` (a `nextCursor` given back) reads that section's next, older page; `execution_id` reads one execution's whole output or error; `limit` 1 to 200. `GET /api/v1/sessions/:sessionId/workflow` in web mode, under its `session:read` gate. Refusals answer `{ error, code, status, session_id }` |
+| `update_workflow` | *(inactive; registered only with the test-only `workflowCommands` option)* A person's command to a version 2 workflow session: the `update_workflow` agent tool's `operation`, `operation_id` and arguments (`POST /api/v1/sessions/:sessionId/workflow/commands` in web mode). A workflow inside a workflow agent state's subtree takes only `pause`, `stop` and `cancel` |
 
 ### Artifacts *(web)*
 

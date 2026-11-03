@@ -159,6 +159,8 @@ for (const mgmt of [
     webClient(null),
     {},
     { getWorkflowCapabilities: async () => null },
+    // Undefined is no advertisement either (tester r2 M3 open point, decided: absent, as null).
+    { getWorkflowCapabilities: async () => undefined },
 ]) {
     const { tool, resource } = await describedBy(capabilityCtx(mgmt, { webMode: true }));
     assert.equal(tool.workflows, null);
@@ -185,6 +187,10 @@ for (const [mgmt, message] of [
     let readResource = null;
     registerCapabilityResources({ registerResource: (_name, _uri, _meta, handler) => { readResource = handler; } }, ctx);
     await assert.rejects(readResource(new URL("pilotswarm://capabilities")), message);
+    // A malformed answer keeps its exact code on the rejection (tester r2 M3 C4): never a null in its place.
+    if (/not an object/.test(String(message))) {
+        await assert.rejects(readResource(new URL("pilotswarm://capabilities")), error => error?.code === "WORKFLOW_CAPABILITIES_MALFORMED");
+    }
 }
 
 console.log("✅ get_capabilities and the capabilities resource: the bootstrap's workflow advertisement, default off, test-only, web, older host, failures");
@@ -228,3 +234,59 @@ console.log("✅ get_capabilities and the capabilities resource: the bootstrap's
 }
 
 console.log("✅ read_workflow: always registered, arguments as given, the read's answer and refusal shapes");
+
+// 7. (Adapted from the independent test design 090ad919-r2, M0-M2.) update_workflow forwards a repeated delivery unchanged
+//    and keeps the server's replay marker (the SDK decides idempotency; MCP neither de-duplicates nor rewrites), and maps
+//    refusals generically: the codes below are arbitrary on purpose, no product code is claimed.
+{
+    const updateWith = updateWorkflow => toolsWith({ workflowCommands: true, mgmt: { updateWorkflow } }).get("update_workflow");
+    // M0: only an option exactly true registers the command tool (the read tool is always there).
+    for (const workflowCommands of ["true", 1, undefined]) {
+        const tools = toolsWith({ workflowCommands, mgmt: {} });
+        assert.equal(tools.has("update_workflow"), false, String(workflowCommands));
+        assert.deepEqual([...tools.keys()], ["read_workflow"], String(workflowCommands));
+    }
+    // M1: a duplicate delivery is forwarded unchanged; the receipt text is the server's, byte for byte.
+    const seen = new Map();
+    const calls = [];
+    const tool = updateWith(async (sessionId, command) => {
+        calls.push([sessionId, structuredClone(command)]);
+        const first = !seen.has(command.operation_id);
+        if (first) seen.set(command.operation_id, { operation: command.operation, operationId: command.operation_id, runId: "r1" });
+        return { ...seen.get(command.operation_id), replayed: !first };
+    });
+    const command = { operation: "pause", operation_id: "dup-1" };
+    const a = await tool({ session_id: SID, command });
+    const b = await tool({ session_id: SID, command });
+    assert.equal(a.isError, undefined);
+    assert.equal(b.isError, undefined);
+    assert.equal(calls.length, 2, "no client-side de-duplication");
+    assert.deepEqual(calls[0], [SID, command]);
+    assert.deepEqual(calls[1], calls[0], "the second delivery is the same command, unchanged");
+    assert.equal(a.content[0].text, JSON.stringify({ operation: "pause", operationId: "dup-1", runId: "r1", replayed: false }, null, 2));
+    assert.equal(JSON.parse(b.content[0].text).replayed, true, "the server's replay marker is not dropped");
+    assert.equal(JSON.parse((await tool({ session_id: SID, command: { operation: "pause", operation_id: "dup-2" } })).content[0].text).replayed, false);
+    // M2: the generic refusal mapping.
+    const refusedWith = async error => updateWith(async () => { throw error; })({ session_id: SID, command: { operation: "set_vars", operation_id: "k-9" } });
+    const coded = await refusedWith(Object.assign(new Error("refused: x"), { code: "ANY_CODED_REFUSAL", status: 409, details: { expected: 3, current: 4 } }));
+    assert.equal(coded.isError, true);
+    assert.deepEqual(JSON.parse(coded.content[0].text), { error: "refused: x", code: "ANY_CODED_REFUSAL", session_id: SID, status: 409, details: { expected: 3, current: 4 } });
+    // A status that is not an integer and null details are omitted, never sent as null.
+    assert.deepEqual(JSON.parse((await refusedWith(Object.assign(new Error("refused: y"), { code: "OTHER_CODE", status: "409", details: null }))).content[0].text),
+        { error: "refused: y", code: "OTHER_CODE", session_id: SID });
+    // A coded 403 that is not FORBIDDEN keeps the coded shape (as a human-input denial does).
+    assert.deepEqual(JSON.parse((await refusedWith(Object.assign(new Error("people cannot send it commands"), { code: "SOME_DENIAL", status: 403 }))).content[0].text),
+        { error: "people cannot send it commands", code: "SOME_DENIAL", session_id: SID, status: 403 });
+    // FORBIDDEN 403 goes to the standard answer: its reason kept, no session_id added; a bare one says it gave no reason.
+    assert.deepEqual(JSON.parse((await refusedWith(Object.assign(new Error("Only the owner may command this workflow."), { code: "FORBIDDEN", status: 403 }))).content[0].text),
+        { error: "Only the owner may command this workflow.", status: 403, code: "FORBIDDEN" });
+    assert.deepEqual(JSON.parse((await refusedWith(Object.assign(new Error("Forbidden"), { code: "FORBIDDEN", status: 403 }))).content[0].text),
+        { error: "The server refused this call (HTTP 403) and gave no reason.", status: 403, code: "FORBIDDEN" });
+    // An uncoded failure, or a code that is not a string, is plain text: never a guessed code.
+    const uncoded = await refusedWith(Object.assign(new Error("socket hang up"), { status: 502 }));
+    assert.equal(uncoded.isError, true);
+    assert.equal(uncoded.content[0].text, "Error: socket hang up");
+    assert.equal((await refusedWith(Object.assign(new Error("numeric code"), { code: 7 }))).content[0].text, "Error: numeric code");
+}
+
+console.log("✅ update_workflow: exact registration gate, duplicate delivery forwarded unchanged, generic refusal mapping (tester r2 M0-M2)");

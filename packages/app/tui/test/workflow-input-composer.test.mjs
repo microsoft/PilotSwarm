@@ -62,3 +62,86 @@ test("an ordinary session's composer is unchanged, and it is never asked about; 
     assert.equal(render(controller), '<span data-kind="readonly">Workflow session</span>');
     assert.deepEqual(asked, []);
 });
+
+// Adapted from the independent test design 090ad919-r2 (T1, T2a, T2c, T3): what the composer shows follows the session
+// shown, from the server's lineage read only (design 03 "Direct human-input denial": the server refuses; UI controls are
+// explanatory only; T115, T116). T2a characterizes the documented failure contract of the read; it does NOT decide
+// whether an unknown policy should keep the ordinary composer: that UX question (r2 T2b) stays open.
+const DENIED = { canSendPrompt: false, canAnswer: false, canSteer: false, reason: REASON, workflowSessionId: "wf", controllingSessionId: "r1" };
+const OPEN = { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
+
+function policyHarness(policyFor) {
+    const asked = [];
+    const transport = { getWorkflowInputPolicy: async (sessionId) => { asked.push(sessionId); return policyFor(sessionId); } };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [
+        { sessionId: "r1", title: "Root", status: "idle" },
+        { sessionId: "wf", title: "Workflow: review", status: "running", sessionKind: "workflow", parentSessionId: "r1" },
+        { sessionId: "c1", title: "Workflow node: review", status: "running", parentSessionId: "wf" },
+        { sessionId: "c2", title: "Workflow node: other", status: "running", parentSessionId: "wf" },
+        { sessionId: "s1", title: "Sub-agent", status: "idle", parentSessionId: "r1" },
+    ] });
+    return { controller, store, asked };
+}
+const recorded = (store, id) => store.getState().ui.workflowInputPolicies?.[id];
+
+test("the read-only composer of a subtree child does not follow the person to the next session, and returning reads nothing again", async () => {
+    const { controller, store, asked } = policyHarness(sessionId => (sessionId === "c1" ? DENIED : OPEN));
+    store.dispatch({ type: "sessions/selected", sessionId: "c1" });
+    await controller.ensureWorkflowInputPolicy("c1");
+    assert.match(render(controller), /data-kind="readonly"/);
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    assert.equal(await controller.ensureWorkflowInputPolicy("s1"), null, "s1 is in no workflow's subtree");
+    assert.deepEqual(asked, ["c1"], "the server is not asked about s1");
+    assert.match(render(controller), /<input/);
+    assert.doesNotMatch(render(controller), /People cannot send it prompts/);
+    store.dispatch({ type: "sessions/selected", sessionId: "c1" });
+    assert.match(render(controller), /data-kind="readonly"/, "c1's recorded policy, without asking again");
+    assert.deepEqual(asked, ["c1"]);
+});
+
+test("a failed policy read resolves null, records nothing and is read again on the next call (the documented contract; the UX of an unknown policy stays open)", async () => {
+    let fail = true;
+    const { controller, store, asked } = policyHarness(async () => {
+        if (fail) throw Object.assign(new Error("policy unavailable"), { status: 503 });
+        return DENIED;
+    });
+    store.dispatch({ type: "sessions/selected", sessionId: "c1" });
+    assert.equal(await controller.ensureWorkflowInputPolicy("c1"), null);
+    assert.equal(recorded(store, "c1"), undefined);
+    assert.deepEqual(asked, ["c1"]);
+    fail = false;
+    assert.deepEqual(await controller.ensureWorkflowInputPolicy("c1"), DENIED);
+    assert.deepEqual(asked, ["c1", "c1"]);
+    assert.equal(recorded(store, "c1").canSendPrompt, false);
+    assert.match(render(controller), /data-kind="readonly"/);
+});
+
+test("concurrent asks for one session share one server read", async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const { controller, asked } = policyHarness(async () => { await gate; return DENIED; });
+    const first = controller.ensureWorkflowInputPolicy("c1");
+    const second = controller.ensureWorkflowInputPolicy("c1");
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    assert.deepEqual(asked, ["c1"]);
+    assert.deepEqual(a, b);
+});
+
+test("a late policy answer for a session the person already left changes only that session's record", async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const { controller, store } = policyHarness(async sessionId => { if (sessionId === "c2") { await gate; return DENIED; } return OPEN; });
+    store.dispatch({ type: "sessions/selected", sessionId: "c2" });
+    const pending = controller.ensureWorkflowInputPolicy("c2");
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    assert.equal(await controller.ensureWorkflowInputPolicy("s1"), null);
+    release();
+    await pending;
+    assert.match(render(controller), /<input/, "s1 keeps its ordinary composer");
+    assert.equal(recorded(store, "s1"), undefined);
+    store.dispatch({ type: "sessions/selected", sessionId: "c2" });
+    assert.match(render(controller), /data-kind="readonly"/);
+});

@@ -649,7 +649,7 @@ most 64 KiB per schema file).
 |---|---|---|
 | Agent tools (the workflow's parent) | `read_workflow` | `update_workflow` (draft, publish, start, KV, pause, resume, cancel; on a 1.9.0 host also stop, test, test_respond, test_advance), `send_workflow_input` |
 | Agent tools (a request's responder, an agent state's child) | — | `respond_session_request`, `complete_workflow_node` (in-process, bound by the host) |
-| REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, portal | the same `readWorkflowV2View`; with `workflowCommands` (INACTIVE) also `personCommands` | nothing |
+| REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, MCP `read_workflow`, portal | the same `readWorkflowV2View`: the view, a section's next page (`cursor`) or one execution's whole value (`executionId`); with `workflowCommands` (INACTIVE) the view also `personCommands` | nothing |
 | Portal workflow view run controls (INACTIVE: only with `personCommands`) | `personCommands` and the shown run | a person's `pause`, `resume`, `stop`, `cancel` of the shown run, as `updateWorkflow` commands |
 | Portal workflow view variables panel (INACTIVE: only with `personCommands`) | the shown run's `kv` preview and `kvRevision` | a person's `set_vars` of one variable (set, or remove after confirming) at the revision shown |
 | Portal workflow view draft editor (INACTIVE: only with `personCommands.draft`) | the draft's current revision and YAML, for a caller who may change it | a person's `replace_definition` at the revision the edit started from |
@@ -659,7 +659,7 @@ most 64 KiB per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, one visit's own result (the latest, or an older visit chosen with [ ]), an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming) or of several in one update (V: a JSON object to set and a JSON list to remove; an update that removes asks first), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, one visit's own result (the latest, or an older visit chosen with [ ]; f reads its whole value), the run's older history (o), an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming) or of several in one update (V: a JSON object to set and a JSON list to remove; an update that removes asks first), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -710,9 +710,13 @@ call again. An older server advertises none (null). The MCP server's
 `get_capabilities` and its `pilotswarm://capabilities` resource carry the
 same value as `workflows` (the management client's own answer: in direct
 mode this process's configuration, in web mode the server's bootstrap;
-null from a host that advertises none or cannot be asked), and beside it
+null only from a host that advertises none: no getter, or a null answer; a
+host that cannot be asked, or whose answer is not an object, is an error:
+`get_capabilities` answers it as its error result and the resource read
+fails, `WORKFLOW_CAPABILITIES_MALFORMED` for a malformed answer, and the web
+clients' getters reject the same way), and beside it
 `workflow_tools: { read, commands }`, the workflow tools that server
-registers: no workflow read tool, and `update_workflow` only with the
+registers: `read_workflow` always, and `update_workflow` only with the
 test-only option, so a client sees where the two differ.
 
 **A person's workflow command (`updateWorkflow`; design 04, R26; INACTIVE).**
@@ -1268,14 +1272,57 @@ its error and no result from another run's model. Nothing new is read or
 sent, and no read authorization or runtime behaviour changes; ordinary
 sessions are untouched.
 
-Not covered (required, not waived): the views show the read model's bounded
-previews (500 characters per execution's output or runtime error, 1,000
-per event preview) and only the first 200 node executions of a run, by
-entry (each view keeps the newest 40 per state of those). Design 04's
-`read_workflow` "bounded history pagination" and mock M10's "Inspect typed
-output" (the whole value, within the 256 KiB payload cap, D07) are not
-implemented; a run with more than 200 node executions does not show its
-newer ones, its current state included.
+**A run's history in pages, and one execution's whole value (design 04
+`read_workflow` "bounded history pagination"; R01, R26; mocks M04, M10
+"Inspect typed output"; D07).** A read lists each section of a run (node
+executions, inbox, outbox, and a test run's intercepted effects) newest
+first, one bounded page at a time: by default 200 executions, 50 inputs, 50
+sent messages and 200 effects, `limit` 1 to 200 for every section. Rows the
+page does not hold that are still open (pending executions, unclaimed
+input that has not expired, pending deliveries, effects that wait for an
+answer) are listed apart (`openExecutions`, `openInbox`, `openOutbox`,
+`test.openInterceptions`, at most 500 each), so a run's current state is
+read however old it is. `run.pages` gives each section's `nextCursor`: given
+back as `cursor`, it reads the next, older page. A cursor is bound to the
+workflow, run, section, order and its format version, and holds the exact
+key of the previous page's last row (an immutable time or sequence, then a
+unique id); a cursor that is not one, or names another workflow or run, is
+refused (`WORKFLOW_CURSOR_INVALID`); it grants nothing. Pages are separate
+reads, not one snapshot: no row is listed twice, and over a stable result
+set following the cursors lists each row once; a row committed later is
+shown by a later read (one whose key sorts below a position already passed,
+because its transaction read the clock or took its sequence earlier, by a
+new pass); a page shows its rows as they are when it is read. A test run's
+coverage is counted over all its executions. `execution_id` (the agent
+tool) or `executionId` (the API) reads one node execution of the run (default
+the live run) with its whole output or runtime error as stored (`result`:
+kind, bytes, value), within the 256 KiB cap; a stored value larger than a
+read returns (the runtime writes none) gives its bounded preview, marked
+`whole: false`; an execution of another run or workflow is
+`EXECUTION_NOT_FOUND`. The same read serves the agent tool (its arguments
+are declared only on a 1.9.0 turn; every turn's handler pages), the
+management client and `GET /sessions/{id}/workflow` (`cursor`, `executionId`
+and `limit` in the query, under the same `session:read` gate and not-found
+privacy; `personCommands` only with the view), the web clients and MCP's
+`read_workflow`. A run of at most `limit` rows per section reads as before.
+
+The portal and the TUI join older pages a person loads to the shown run's
+own read model: the portal's History tab and test effects table have Load
+older history, the TUI `o`; a newer read whose page no longer joins the
+loaded rows hides them, says so, and reads older history again from its own
+page, so no unread row is skipped; an older row that was open when it was
+read and is no longer open is left out and counted. Every loaded visit of
+a state is reachable (the former cap of 40 per state is gone). The portal's
+Output tab reads the whole value of the execution it shows (Read the whole
+value), the TUI `f`, for exactly the shown run and execution, never
+another's in its place; the TUI shows at most 40,000 characters of it.
+
+Not covered: the pages are bounded reads, not a snapshot of the run; the
+inbox has no `(run_id, seq)` index (as before; no migration added); a
+`cursor` or `limit` that is not JSON is refused 400 `INVALID_REQUEST` by the
+route before the session gate (the existing JSON query convention, as
+`listSessionsPage`). A server without pages (an older one) keeps its
+first-200 notice.
 
 **Responses and completions stay in process (owner scope, 2026-11-02).**
 External agents are not in scope: agents run only within PilotSwarm, as

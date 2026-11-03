@@ -267,6 +267,9 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             await db.query(`UPDATE ${s}.workflow_node_executions SET output = '"' || repeat('x', 270000) || '"' WHERE node_execution_id = $1`, [exec(2)]);
             await db.query(`UPDATE ${s}.workflow_node_executions SET outcome = 'timed_out', result_kind = 'runtime_error', output = NULL,
                     error = '{"code":"timed_out","message":"late"}' WHERE node_execution_id = $1`, [exec(3)]);
+            // The cap's edge (tester r2 R4): exactly 262,144 bytes is whole; one byte more is not (multi-byte text counts in bytes).
+            await db.query(`UPDATE ${s}.workflow_node_executions SET output = '"' || repeat('x', 262142) || '"' WHERE node_execution_id = $1`, [exec(4)]);
+            await db.query(`UPDATE ${s}.workflow_node_executions SET output = '"' || repeat('é', 131071) || '"' WHERE node_execution_id = $1`, [exec(5)]);
             // 60 typed inputs: the three oldest unclaimed and unexpired, the others taken by a receive.
             await db.query(`INSERT INTO ${s}.workflow_inbox (message_id, workflow_session_id, run_id, sender_session_id, operation_id, request_sha256,
                     contract, correlation, payload, accepted_at, expires_at, consumed_by, consumed_at)
@@ -331,6 +334,14 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             expect(await value(exec(2))).toEqual({ kind: "output", bytes: 270_002, whole: false, limitBytes: 262_144, preview: `"${"x".repeat(3_999)}…` });
             const error = { code: "timed_out", message: "late" };
             expect(await value(exec(3))).toEqual({ kind: "error", bytes: Buffer.byteLength(JSON.stringify(error)), whole: true, value: error });
+            expect(await value(exec(4))).toEqual({ kind: "output", bytes: 262_144, whole: true, value: "x".repeat(262_142) });
+            expect(await value(exec(5))).toMatchObject({ kind: "output", bytes: 262_144, whole: true });
+            await db.query(`UPDATE ${s}.workflow_node_executions SET output = '"' || repeat('é', 131071) || 'x"' WHERE node_execution_id = $1`, [exec(5)]);
+            expect(await value(exec(5))).toMatchObject({ kind: "output", bytes: 262_145, whole: false, limitBytes: 262_144 });
+            // Page edges (tester r2 R2): sixty inputs in pages of 30 are exactly two pages, the second without a next cursor.
+            const thirty = await readWorkflowV2View(store, a.workflowSessionId, { limit: 30 });
+            expect(await followPages(store, a.workflowSessionId, a.runId, thirty, "inbox", 30, "messageId"))
+                .toEqual({ seen: range(1, 60, g => `${a.runId}-m${g}`).reverse(), pages: 2 });
             // The view's rows keep their previews.
             expect(tail.items.find(row => row.nodeExecutionId === exec(1)).outputPreview).toHaveLength(501);
 
