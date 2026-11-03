@@ -231,6 +231,12 @@ test("the review panel opens from the header: the exact revision and hash with P
     assert.match(open, /<span>Definition<\/span><strong>[^<]* · revision 2 · valid · <code/);
     assert.deepEqual([...open.matchAll(/data-operation="([a-z_]+)"/g)].map(match => match[1]), ["publish", "publish_and_start"]);
     assert.ok(open.includes("data-field=\"inputs\"") && open.includes("data-field=\"vars\""));
+    // of-07: the review's JSON boxes take the shared theme style in monospace, each named by its own label.
+    for (const field of ["inputs", "vars"]) {
+        const [, id] = open.match(new RegExp(`<textarea id="([^"]+)" class="ps-workflow-input is-code"[^>]*data-field="${field}"`)) ?? [];
+        assert.ok(id, `the ${field} box has the shared JSON style`);
+        assert.ok(open.includes(`<label for="${id}">`), `the ${field} label names its box`);
+    }
     assert.ok(open.includes("Publishing freezes this exact revision"));
 
     const start = main(mount({ readModel: publishedModel(), readModelRunId: null, definitionOpen: true }));

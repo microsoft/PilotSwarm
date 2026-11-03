@@ -473,7 +473,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 // store below keeps what the page saves). The arrow keys move it by 24 pixels and stop at chat's floor without storing
 // a width the screen cannot show, so the first key back moves it; a double-click puts it back at its opening width.
 // With Diagnostics open too on a window too narrow for both opening widths, the seam moves itself (the canvas gives up
-// the pixels) and Diagnostics keeps its width; it used to move the inner seam instead, or nothing at all.
+// the pixels) and Diagnostics keeps its width; it used to move the inner seam instead, or nothing at all, and a drag or
+// keys toward the workflow grew the canvas over Diagnostics. A Diagnostics column a narrower window squeezed out gets
+// its width back first. The zen chat rail's seam resets on a double-click.
 // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "of-03" (from packages/app/web, after build).
 const rightBlock = (page) => page.evaluate(() => {
     const width = (selector) => document.querySelector(selector)?.getBoundingClientRect().width ?? null;
@@ -533,6 +535,9 @@ test("of-03: the Step details pane resizes by drag, keys and double-click at 144
     await dragSeam(page, seam, -150, async () => { await expect.poll(pane).toBeGreaterThan(700); });
     await expect.poll(pane).toBeGreaterThanOrEqual(788);
     expect(await pane()).toBeLessThanOrEqual(792);
+    // Step details fills the right side it was given: no empty strip beside it (of-03-A).
+    const filled = await rightBlock(page);
+    expect(filled.host - filled.canvas).toBeLessThanOrEqual(2);
 
     // Keys: one step each way.
     await seam.focus();
@@ -578,12 +583,61 @@ test("of-03: with Diagnostics open on a narrow window the seam beside Step detai
     // The window cannot show both opening widths (640 + 320): the grid gives Diagnostics less than its own width.
     expect(before.diagnostics).toBeLessThan(318);
     const seam = page.getByRole("button", { name: "Resize the right column", exact: true });
+    // Chat is at its floor, so neither a drag toward the workflow nor the arrow keys widen Step details, and Diagnostics
+    // is never squeezed to make room (of-03-B: the canvas grew and Diagnostics went to 0 px).
+    await dragSeam(page, seam, -150);
+    await seam.focus();
+    for (let i = 0; i < 12; i += 1) await page.keyboard.press("ArrowLeft");
+    const held = await rightBlock(page);
+    expect(Math.abs(held.diagnostics - before.diagnostics)).toBeLessThanOrEqual(3);
+    expect(Math.abs(held.canvas - before.canvas)).toBeLessThanOrEqual(3);
     await dragSeam(page, seam, 100);
     await expect.poll(async () => before.host - ((await rightBlock(page)).host ?? 0)).toBeGreaterThanOrEqual(90);
     const after = await rightBlock(page);
     expect(before.canvas - after.canvas).toBeGreaterThanOrEqual(90);
     expect(Math.abs(after.diagnostics - before.diagnostics)).toBeLessThanOrEqual(3);
     await shot(page, "of-03-both-columns-narrow");
+    expect(errors).toEqual([]);
+});
+
+test("of-03: Diagnostics squeezed by a narrower window gets its width back first when the seam beside Step details moves", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await page.locator(".ps-workflow-main").getByRole("button", { name: "Inspect collect", exact: true }).click();
+    await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("collect");
+    await page.getByRole("button", { name: /Show diagnostics/i }).first().click();
+    await expect.poll(async () => (await rightBlock(page)).diagnostics ?? 0).toBeGreaterThan(300);
+    const seam = page.getByRole("button", { name: "Resize the right column", exact: true });
+    // Step details as wide as chat allows, then a narrower window: the grid squeezes Diagnostics out.
+    await seam.focus();
+    for (let i = 0; i < 30; i += 1) await page.keyboard.press("ArrowLeft");
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await expect.poll(async () => (await rightBlock(page)).diagnostics ?? 0).toBeLessThan(120);
+    // Moving the seam does not remember the squeeze: Diagnostics takes back the pixels Step details gives up.
+    await dragSeam(page, seam, 200);
+    await expect.poll(async () => (await rightBlock(page)).diagnostics ?? 0).toBeGreaterThanOrEqual(150);
+    expect(errors).toEqual([]);
+});
+
+test("of-03: the zen chat rail resizes by drag and a double-click puts it back at 380px", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await page.locator(".ps-workflow-main").getByRole("button", { name: "Inspect collect", exact: true }).click();
+    await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("collect");
+    await page.getByRole("button", { name: "Zen mode", exact: true }).first().click();
+    const rail = async () => Math.round(await page.locator(".ps-workspace-main-grid").evaluate((element) => element.getBoundingClientRect().width));
+    await expect.poll(rail).toBe(380);
+    const seam = page.getByRole("button", { name: "Resize the zen chat rail", exact: true });
+    await dragSeam(page, seam, 100);
+    await expect.poll(rail).toBeGreaterThanOrEqual(470);
+    await seam.dblclick();
+    await expect.poll(rail).toBe(380);
     expect(errors).toEqual([]);
 });
 

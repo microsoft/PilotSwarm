@@ -751,7 +751,9 @@ const PORTAL_COLUMN_KEY_STEP_PX = 24;
  * sessions column, a key press past the cap, or opening both columns on a small screen leaves the stored widths ahead
  * of the screen. The seams used to start from the stored widths: the seam a person dragged then did not move until the
  * hidden excess was unwound, or the other seam moved instead. Every seam now starts from these shown widths.
- * Null for a column that is not on screen.
+ * Null for a column that is not on screen, and for Diagnostics while it is squeezed below the snap width (a window
+ * narrowed under a wide canvas leaves it at 0px): its stored width is kept, so it gets that width back first as the
+ * canvas narrows, instead of the squeeze being remembered.
  */
 function measureRightBlock(handle) {
     const grid = handle?.closest?.(".ps-workspace-grid");
@@ -765,7 +767,8 @@ function measureRightBlock(handle) {
     return {
         // A canvas wider than its host is cut off by the grid: only the part on screen counts.
         canvasAdjust: canvas === null ? null : Math.round(Math.min(canvas, hostWidth)) - PORTAL_CANVAS_COL_DEFAULT_PX,
-        diagnosticsAdjust: diagnostics === null ? null : Math.round(diagnostics) - PORTAL_DIAG_COL_DEFAULT_PX,
+        diagnosticsAdjust: diagnostics === null || diagnostics < PORTAL_COLUMN_SNAP_CLOSED_PX
+            ? null : Math.round(diagnostics) - PORTAL_DIAG_COL_DEFAULT_PX,
         chatSpare: chat === null ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(chat - PORTAL_MIN_CHAT_COLUMN_PX)),
     };
 }

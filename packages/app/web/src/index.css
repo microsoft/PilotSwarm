@@ -4640,6 +4640,8 @@ body.is-resizing-pane-y iframe {
   line-height: var(--ps-line-height-dense);
 }
 textarea.ps-workflow-input { width: 100%; resize: vertical; }
+/* A select's open list follows the theme too, where the browser draws it from the page's styles. */
+select.ps-workflow-input option { background: var(--ps-background); color: var(--ps-foreground); }
 .ps-workflow-input.is-code { font-family: var(--ps-mono, monospace); line-height: 1.45; }
 .ps-workflow-input::placeholder {
   color: color-mix(in srgb, var(--ps-muted) 74%, transparent);

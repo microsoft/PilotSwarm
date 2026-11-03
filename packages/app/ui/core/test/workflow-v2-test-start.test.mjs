@@ -168,6 +168,13 @@ test("the test review opens from the header with the test notice, the exact revi
     assert.doesNotMatch(radios.find(input => input.includes('value="real"')), /checked=""/);
     assert.ok(!open.includes("their results vary"), "the real-agent cost notice shows only once real agents are chosen");
     assert.ok(open.includes("data-field=\"inputs\"") && open.includes("data-field=\"scenario\""));
+    // of-07: the review's boxes take the shared theme style (JSON in monospace) and each label is tied to its box.
+    for (const field of ["inputs", "vars"]) {
+        const [, id] = open.match(new RegExp(`<textarea id="([^"]+)" class="ps-workflow-input is-code"[^>]*data-field="${field}"`)) ?? [];
+        assert.ok(id, `the ${field} box has the shared JSON style`);
+        assert.ok(open.includes(`<label for="${id}">`), `the ${field} label names its box`);
+    }
+    assert.match(open, /<input type="text" class="ps-workflow-input"[^>]*data-field="scenario"/);
     assert.match(open, /data-operation="test" title="Test draft revision 2\.">Start test</);
 
     for (const [label, model] of [["1.8.0 host", modelOf({ personCommands: { operations: MILESTONE.slice(0, 8), restriction: null, run: null } })],
