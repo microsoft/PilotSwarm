@@ -21,7 +21,9 @@ import {
     normalizeWorkflowInputPolicy,
     selectActiveChat,
     selectChatLines,
+    selectWorkflowInputCheck,
     selectWorkflowInputNote,
+    WORKFLOW_INPUT_CHECKING_TEXT,
     selectWorkflowViewModal,
     selectWorkflowViewSelection,
     workflowInputPolicyApplies,
@@ -231,25 +233,78 @@ test("a prompt, an answer and a steer to such a session are not sent; the draft 
     assert.equal(calls.filter(call => call[0] === "getWorkflowInputPolicy").length, 1);
 });
 
-test("over the Web API the session access says it; a failed read records nothing, so the composer stays and the server refuses", async () => {
+test("over the Web API the session access says it; a failed read records no policy and leaves the check failed until it is asked again", async () => {
     const api = inputHarness({ apiMode: true });
     await api.controller.ensureWorkflowInputPolicy("c1");
     await api.controller.ensureWorkflowInputPolicy("o1");
     assert.deepEqual(api.calls, [["getSessionAccess", "c1"], ["getSessionAccess", "o1"]]);
     assert.equal(selectWorkflowInputNote(api.store.getState(), "c1"), NOTE);
     assert.equal(selectWorkflowInputNote(api.store.getState(), "o1"), null);
+    assert.equal(selectWorkflowInputCheck(api.store.getState(), "c1"), null, "answered");
 
     const flaky = inputHarness({ fail: new Set(["c1"]) });
     assert.equal(await flaky.controller.ensureWorkflowInputPolicy("c1"), null);
     assert.equal(flaky.store.getState().ui.workflowInputPolicies.c1, undefined);
     assert.equal(selectWorkflowInputNote(flaky.store.getState(), "c1"), null);
+    assert.equal(selectWorkflowInputCheck(flaky.store.getState(), "c1"), "failed");
     // The next selection asks again.
     assert.deepEqual(await flaky.controller.ensureWorkflowInputPolicy("c1"), DENIED);
+    assert.equal(selectWorkflowInputCheck(flaky.store.getState(), "c1"), null);
 
     // What the server says, whichever transport carried it; anything else is unknown.
     assert.deepEqual(normalizeWorkflowInputPolicy({ canWrite: true }), ALLOWED);
     assert.deepEqual(normalizeWorkflowInputPolicy(DENIED), DENIED);
     for (const value of [null, undefined, "denied", 3, []]) assert.equal(normalizeWorkflowInputPolicy(value), null);
+});
+
+// Owner decision q18: while the server is asked whether a person may send input to a session that may be a workflow
+// step, and after that check failed, the composer shows that instead of the message box, and nothing is sent; Enter after
+// a failure asks again. An unreadable answer counts as a failure.
+test("while the check runs or after it failed nothing is sent and the draft stays; Enter after a failure checks again", async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    let failing = true;
+    const { controller, store, calls } = inputHarness({ apiMode: false });
+    controller.transport.getWorkflowInputPolicy = async (sessionId) => {
+        calls.push(["getWorkflowInputPolicy", sessionId]);
+        await gate;
+        if (failing) throw new Error("connection reset");
+        return DENIED;
+    };
+    store.dispatch({ type: "sessions/selected", sessionId: "c1" });
+    const pending = controller.ensureWorkflowInputPolicy("c1");
+    assert.equal(selectWorkflowInputCheck(store.getState(), "c1"), "checking");
+    controller.setPrompt("first draft");
+    await controller.sendPrompt();
+    assert.equal(store.getState().ui.statusText, WORKFLOW_INPUT_CHECKING_TEXT);
+    assert.equal(store.getState().ui.prompt, "first draft");
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "c1", acceptsTurnControl: true } });
+    store.dispatch({ type: "turnControl/steering", enabled: true });
+    store.dispatch({ type: "ui/status", text: "before" });
+    await controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.equal(store.getState().ui.statusText, WORKFLOW_INPUT_CHECKING_TEXT, "no steer while it is checked");
+    release();
+    assert.equal(await pending, null);
+    assert.equal(selectWorkflowInputCheck(store.getState(), "c1"), "failed");
+    // Enter asks again; this time the server answers, and its refusal is what the composer then shows.
+    failing = false;
+    await controller.sendPrompt();
+    assert.equal(store.getState().ui.statusText, "Checking again whether you can send messages here…");
+    await settle();
+    await settle();
+    assert.equal(selectWorkflowInputCheck(store.getState(), "c1"), null);
+    assert.equal(selectWorkflowInputNote(store.getState(), "c1"), NOTE);
+    assert.equal(store.getState().ui.prompt, "first draft");
+    assert.deepEqual(calls.filter(call => call[0] !== "getWorkflowInputPolicy"), [], "nothing was sent");
+    assert.equal(calls.filter(call => call[0] === "getWorkflowInputPolicy").length, 2);
+
+    // An unreadable answer counts as a failure; a session outside every workflow is never checked.
+    const odd = inputHarness();
+    odd.controller.transport.getWorkflowInputPolicy = async () => "yes";
+    assert.equal(await odd.controller.ensureWorkflowInputPolicy("c1"), null);
+    assert.equal(selectWorkflowInputCheck(odd.store.getState(), "c1"), "failed");
+    assert.equal(await odd.controller.ensureWorkflowInputPolicy("s1"), null);
+    assert.equal(selectWorkflowInputCheck(odd.store.getState(), "s1"), null);
 });
 
 // T116 on the web surfaces (portal, deep link, MoA panel, Mobile Zen): each reads the session access for its composer

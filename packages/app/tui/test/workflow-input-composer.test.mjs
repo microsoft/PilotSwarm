@@ -42,9 +42,12 @@ const render = controller => renderToStaticMarkup(React.createElement(UiPlatform
 test("an agent state's child has a read-only composer with the server's reason and its controlling agent", async () => {
     const { controller, store, asked } = harness();
     store.dispatch({ type: "sessions/selected", sessionId: "c1" });
-    // Until the server answered, the composer is as for any session (and the server refuses what is sent).
+    // Before it is asked, the composer is as for any session; while the server is asked, it says so instead of offering
+    // the message box (owner decision q18).
     assert.match(render(controller), /<input/);
-    await controller.ensureWorkflowInputPolicy("c1");
+    const pending = controller.ensureWorkflowInputPolicy("c1");
+    assert.equal(render(controller), '<span data-kind="readonly">Checking whether you can send messages here…</span>');
+    await pending;
     assert.equal(render(controller), `<span data-kind="readonly">${REASON.replace(/'/g, "&#x27;")} Its controlling agent is session r1.</span>`);
     assert.deepEqual(asked, ["c1"]);
 });
@@ -65,8 +68,8 @@ test("an ordinary session's composer is unchanged, and it is never asked about; 
 
 // Adapted from the independent test design 090ad919-r2 (T1, T2a, T2c, T3): what the composer shows follows the session
 // shown, from the server's lineage read only (design 03 "Direct human-input denial": the server refuses; UI controls are
-// explanatory only; T115, T116). T2a characterizes the documented failure contract of the read; it does NOT decide
-// whether an unknown policy should keep the ordinary composer: that UX question (r2 T2b) stays open.
+// explanatory only; T115, T116). T2a's failure contract of the read stands; what the composer shows meanwhile is the
+// owner's decision q18: a "could not check" line instead of the message box, and Enter checks again.
 const DENIED = { canSendPrompt: false, canAnswer: false, canSteer: false, reason: REASON, workflowSessionId: "wf", controllingSessionId: "r1" };
 const OPEN = { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
 
@@ -101,7 +104,7 @@ test("the read-only composer of a subtree child does not follow the person to th
     assert.deepEqual(asked, ["c1"]);
 });
 
-test("a failed policy read resolves null, records nothing and is read again on the next call (the documented contract; the UX of an unknown policy stays open)", async () => {
+test("a failed policy read resolves null, records nothing, shows that it could not check instead of the message box, and is read again on the next call", async () => {
     let fail = true;
     const { controller, store, asked } = policyHarness(async () => {
         if (fail) throw Object.assign(new Error("policy unavailable"), { status: 503 });
@@ -111,11 +114,12 @@ test("a failed policy read resolves null, records nothing and is read again on t
     assert.equal(await controller.ensureWorkflowInputPolicy("c1"), null);
     assert.equal(recorded(store, "c1"), undefined);
     assert.deepEqual(asked, ["c1"]);
+    assert.equal(render(controller), '<span data-kind="readonly">Could not check whether you can send messages here. Press Enter to check again.</span>');
     fail = false;
     assert.deepEqual(await controller.ensureWorkflowInputPolicy("c1"), DENIED);
     assert.deepEqual(asked, ["c1", "c1"]);
     assert.equal(recorded(store, "c1").canSendPrompt, false);
-    assert.match(render(controller), /data-kind="readonly"/);
+    assert.match(render(controller), /data-kind="readonly">This session runs a workflow state/);
 });
 
 test("concurrent asks for one session share one server read", async () => {

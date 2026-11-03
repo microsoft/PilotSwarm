@@ -1569,3 +1569,21 @@ export function selectWorkflowInputNote(state, sessionId) {
     const reason = policy.reason || WORKFLOW_INPUT_DENIED_TEXT;
     return policy.controllingSessionId ? `${reason} Its controlling agent is session ${policy.controllingSessionId}.` : reason;
 }
+
+/**
+ * What a composer shows instead of the message box while the server is asked whether a person may send input to a
+ * session that may be in a workflow agent state's subtree (owner decision q18).
+ */
+export const WORKFLOW_INPUT_CHECKING_TEXT = "Checking whether you can send messages here…";
+/** What it shows when that check failed: still no message box until the server answers (owner decision q18). */
+export const WORKFLOW_INPUT_CHECK_FAILED_TEXT = "Could not check whether you can send messages here.";
+
+/**
+ * The check of a session's input policy (ensureWorkflowInputPolicy): "checking" while it is asked, "failed" when the
+ * read failed or its answer was unreadable, else null (never asked, or the policy is recorded). Pure.
+ */
+export function selectWorkflowInputCheck(state, sessionId) {
+    if (!sessionId || state?.ui?.workflowInputPolicies?.[sessionId]) return null;
+    const phase = state?.ui?.workflowInputChecks?.[sessionId];
+    return phase === "checking" || phase === "failed" ? phase : null;
+}

@@ -35,6 +35,9 @@ import {
     selectWorkflowTestAnswerModal,
     selectWorkflowTestClockModal,
     selectWorkflowInputNote,
+    selectWorkflowInputCheck,
+    WORKFLOW_INPUT_CHECKING_TEXT,
+    WORKFLOW_INPUT_CHECK_FAILED_TEXT,
     workflowViewPanelWidth,
     selectSessionAgentPickerModal,
     selectShareSessionModal,
@@ -954,6 +957,8 @@ export const PromptBar = React.memo(function PromptBar({ controller, rows }) {
             workflow: activeSession?.sessionKind === "workflow",
             // A session in a workflow agent state's subtree: what the server reported a person may send (design 03).
             inputNote: selectWorkflowInputNote(state, activeSessionId),
+            // While the server is asked whether a person may send input here, or after that check failed (owner decision q18).
+            inputCheck: selectWorkflowInputCheck(state, activeSessionId),
             focused: state.ui.focusRegion === "prompt",
             answeringQuestion: Boolean(activeSession?.pendingQuestion?.question),
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -974,6 +979,10 @@ export const PromptBar = React.memo(function PromptBar({ controller, rows }) {
     }
     if (promptState.inputNote) {
         return React.createElement(platform.Lines, { lines: [{ text: promptState.inputNote, color: "gray" }] });
+    }
+    if (promptState.inputCheck) {
+        return React.createElement(platform.Lines, { lines: [{ color: "gray", text: promptState.inputCheck === "failed"
+            ? `${WORKFLOW_INPUT_CHECK_FAILED_TEXT} Press Enter to check again.` : WORKFLOW_INPUT_CHECKING_TEXT }] });
     }
     return React.createElement(platform.Input, {
         label: promptState.answeringQuestion ? "answer" : promptState.editingPending ? "pending" : "you",

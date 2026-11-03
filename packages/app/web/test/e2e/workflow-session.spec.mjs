@@ -533,8 +533,9 @@ test("a v2 workflow's read model failure is shown beside its graph, and Retry re
 // unconfirmed pause retried with the same operation id; the virtual clock's checks and one exact advance; a workflow agent
 // state's chat read-only beside an ordinary one; a lost draft save kept and resent unchanged.
 // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "v2 commands:" (from packages/app/web, after build).
-// Recorded, not asserted: a failed access read leaves the ordinary composer (an open decision; see the design's S4).
-// The confirm modal's dialog role, modal marking, name, description and focus are asserted (owner decision q17).
+// The confirm modal's dialog role, modal marking, name, description and focus are asserted (owner decision q18 changed
+// what a failed access read shows: "Could not check…" with Retry instead of the ordinary composer; owner decision q17
+// added the dialog semantics).
 const V2_COMMANDS_PATH = `/api/v1/sessions/${WORKFLOW_ID}/workflow/commands`;
 /** A v2 read model that offers the person's run controls for run-1 (fixture contract: personCommands shape from
  *  workflowV2RunControls; everything else is the file's V2_READ_MODEL). */
@@ -784,6 +785,47 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         expect(errors).toEqual([]);
     });
 }
+
+// Owner decision q18: a session that may be a workflow step waits for the server's word; a failed access read shows that
+// it could not check, with Retry, and no message box; Retry reads again and the server's answer decides.
+test("v2 commands: a failed access check says it could not check, with Retry, and no message box until the server answers", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page);
+    const child = { sessionId: CHILD_ID, title: "Workflow node: review", status: "idle", model: "test:test-model",
+        parentSessionId: WORKFLOW_ID, createdAt: now - 10_000, updatedAt: now - 10_000 };
+    const sessions = [...SESSIONS, child];
+    let accessReads = 0;
+    let failAccess = true;
+    await page.route("**/api/v1/**", async (route) => {
+        const req = route.request();
+        const pathname = new URL(req.url()).pathname;
+        const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        if (pathname.endsWith("/management/sessions")) return answer({ sessions, hasMore: false, nextCursor: null });
+        if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions, hasMore: false });
+        if (pathname.endsWith(`/sessions/${CHILD_ID}/access`)) {
+            accessReads += 1;
+            if (failAccess) return route.fulfill({ status: 503, json: { ok: false, error: { code: "UNAVAILABLE", message: "try later" } } });
+            return answer({ sessionId: CHILD_ID, rootSessionId: AGENT_ID, canWrite: true, canManage: true, canSendPrompt: false, canAnswer: false,
+                canSteer: false, workflowInput: { reason: CHILD_REASON, workflowSessionId: WORKFLOW_ID, controllingSessionId: AGENT_ID } });
+        }
+        if (pathname.includes(`/sessions/${CHILD_ID}/events`)) return answer([]);
+        if (pathname.endsWith(`/sessions/${CHILD_ID}`)) return answer({ ...child, events: [], messages: [] });
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${CHILD_ID}`);
+    const readonly = page.locator(".ps-composer-readonly").filter({ visible: true });
+    await expect(readonly).toHaveText("Could not check whether you can send messages here. Retry");
+    await expect(readonly).toHaveAttribute("role", "alert");
+    await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toHaveCount(0);
+    const failedReads = accessReads;
+    failAccess = false;
+    await readonly.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(readonly).toHaveText(`${CHILD_REASON} Its controlling agent is session ${AGENT_ID}.`);
+    expect(accessReads).toBeGreaterThan(failedReads);
+    await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
 
 // ------------------------------------------------------------------------------------------------------------
 // B5 — draft edit whose save answer is lost: the edit is kept, the notice offers Retry, and Retry sends the SAME

@@ -5,6 +5,7 @@ import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowMainPane, WorkflowNodePane } from "./workflow-workspace.js";
 import { ModalDialog } from "./modal-dialog.js";
+import { WorkflowInputWait, workflowInputWait } from "./workflow-input-wait.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -15,6 +16,7 @@ import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./ch
 import {
     normalizeMoa,
     UI_COMMANDS,
+    workflowInputPolicyApplies,
     WORKFLOW_SESSION_GLYPH,
     INSPECTOR_TABS,
     ARTIFACT_DOWNLOAD_HINT,
@@ -6806,23 +6808,25 @@ function LifecycleGlyph() {
  * a deployment that isn't enforcing).
  */
 function useActiveSessionAccess(controller, activeSessionId, isGroup) {
-    const [state, setState] = React.useState({ access: null, loading: false });
+    // `sessionId`: the session the answer (or the failure) is for, so a session never shows another one's access.
+    const [state, setState] = React.useState({ access: null, loading: false, failed: false, sessionId: null });
     const reload = React.useCallback(() => {
         if (!activeSessionId || isGroup || typeof controller.transport.getSessionAccess !== "function") {
-            setState({ access: null, loading: false });
+            setState({ access: null, loading: false, failed: false, sessionId: null });
             return;
         }
         let cancelled = false;
         const sessionId = activeSessionId;
-        setState((s) => ({ ...s, loading: true }));
+        // A retry after a failed read waits again ("checking"); a reload of an answered session keeps its answer meanwhile.
+        setState((s) => ({ ...s, loading: true, ...(s.sessionId === sessionId && s.failed ? { failed: false, sessionId: null } : {}) }));
         controller.transport.getSessionAccess(sessionId)
             .then((access) => {
                 // A refusal of people's input (a workflow agent state's subtree) is kept on the controller for this
                 // session, so its prompt, answer and steer paths refuse it too, whichever surface reads access here.
                 controller.recordWorkflowInputAccess?.(sessionId, access);
-                if (!cancelled) setState({ access, loading: false });
+                if (!cancelled) setState({ access, loading: false, failed: false, sessionId });
             })
-            .catch(() => { if (!cancelled) setState({ access: null, loading: false }); });
+            .catch(() => { if (!cancelled) setState({ access: null, loading: false, failed: true, sessionId }); });
         return () => { cancelled = true; };
     }, [controller, activeSessionId, isGroup]);
     // Deferred for the same reason the session fetch is: this fires on every
@@ -6838,7 +6842,9 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
             if (typeof cancelInFlight === "function") cancelInFlight();
         };
     }, [reload]);
-    return { access: state.access, loading: state.loading, reload };
+    // Only the answer for the session shown counts: `answered` is false until it arrives (or its read failed).
+    const answered = Boolean(activeSessionId) && state.sessionId === activeSessionId;
+    return { access: answered ? state.access : null, loading: state.loading, failed: answered && state.failed, answered, reload };
 }
 
 // Combined "Share & settings" modal opened from the session list toolbar:
@@ -7158,21 +7164,27 @@ function workflowInputNote(access) {
 function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, compact = false, autoFocus = !mobile }) {
     const modal = useControllerSelector(controller, state => state.ui.modal);
     const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
-    const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
+    const mayBeWorkflowStep = useControllerSelector(controller, state => workflowInputPolicyApplies(state, state.sessions.activeSessionId));
+    const accessRead = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
+    const { access } = accessRead;
     const isWorkflow = session?.sessionKind === "workflow";
     // A session in a workflow agent state's subtree takes no prompts from people (design 03; the server refuses them too).
     const workflowInputDenied = access?.canSendPrompt === false;
-    const readOnly = session?.serviceKind || isWorkflow || access?.canWrite === false || workflowInputDenied;
+    // A session that may be one waits for the server's word first (owner decision q18).
+    const inputWait = workflowInputWait(controller, mayBeWorkflowStep, accessRead);
+    const readOnly = session?.serviceKind || isWorkflow || access?.canWrite === false || workflowInputDenied || Boolean(inputWait);
     React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
     if (!session || session.isGroup || modal) return null;
     return React.createElement("div", { className: `ps-chat-composer${isWorkflow ? " is-workflow" : ""}` }, readOnly
-        ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
-            ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
-            : isWorkflow
-                ? WORKFLOW_COMPOSER_NOTE
-                : workflowInputDenied
-                    ? workflowInputNote(access)
-                    : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+        ? (inputWait && !session.serviceKind && !isWorkflow && !workflowInputDenied
+            ? React.createElement(WorkflowInputWait, { wait: inputWait, onRetry: () => accessRead.reload() })
+            : React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
+                ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
+                : isWorkflow
+                    ? WORKFLOW_COMPOSER_NOTE
+                    : workflowInputDenied
+                        ? workflowInputNote(access)
+                        : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`))
         : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus, active: true }));
 }
 
@@ -7319,6 +7331,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
             inspectorTab: state.ui.inspectorTab,
             // The session's recorded input policy: its question card says whether people may answer (T116).
             activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
+            // Whether it may be in a workflow agent state's subtree: its composer then waits for the server (q18).
+            activeMayBeWorkflowStep: activeSessionId ? workflowInputPolicyApplies(state, activeSessionId) : false,
             activeSessionIsGroup: Boolean(activeSessionId && state.sessions.byId[activeSessionId]?.isGroup),
             activeSessionStatus: activeSessionId ? String(state.sessions.byId[activeSessionId]?.status || "").toLowerCase() : "",
             focused: state.ui.focusRegion === "chat",
@@ -7413,9 +7427,10 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
     // gets an explanatory notice instead of the composer. The visibility chip
     // and Share affordance now live in the session list "Modify" modal and the
     // selected-session details, keeping the composer chrome minimal (mobile).
-    const { access } = useActiveSessionAccess(
+    const accessRead = useActiveSessionAccess(
         controller, viewState.activeSessionId, viewState.activeSessionIsGroup,
     );
+    const { access } = accessRead;
     const navigationError = useControllerSelector(controller, selectNavigationError, shallowEqualObject);
     const composerBase = showComposer && !viewState.activeSessionIsGroup;
     // Service sessions (⚗ tree-scoped machinery, e.g. the regen distiller) are
@@ -7424,11 +7439,15 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
     const activeIsService = Boolean(viewState.sessionsById?.[viewState.activeSessionId]?.serviceKind);
     const activeIsWorkflow = viewState.sessionsById?.[viewState.activeSessionId]?.sessionKind === "workflow";
     const workflowInputDenied = Boolean(access) && access.canSendPrompt === false;
-    const readOnly = activeIsService || activeIsWorkflow || (Boolean(access) && access.canWrite === false) || workflowInputDenied;
+    // A session that may be in a workflow agent state's subtree waits for the server's word first (owner decision q18).
+    const inputWait = activeIsService || activeIsWorkflow ? null : workflowInputWait(controller, viewState.activeMayBeWorkflowStep, accessRead);
+    const readOnly = activeIsService || activeIsWorkflow || (Boolean(access) && access.canWrite === false) || workflowInputDenied || Boolean(inputWait);
     const composer = composerBase
         ? React.createElement("div", { className: `ps-chat-composer${activeIsWorkflow ? " is-workflow" : ""}` },
             readOnly
-                ? React.createElement("div", { className: "ps-composer-readonly" },
+                ? inputWait && !workflowInputDenied
+                    ? React.createElement(WorkflowInputWait, { wait: inputWait, onRetry: () => accessRead.reload() })
+                    : React.createElement("div", { className: "ps-composer-readonly" },
                     activeIsService
                         ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
                         : activeIsWorkflow

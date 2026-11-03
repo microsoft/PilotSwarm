@@ -3516,6 +3516,17 @@ function baseReducer(state, action) {
             } } };
         }
 
+        // That read in flight or failed (owner decision q18); null clears it.
+        case "ui/workflowInputCheck": {
+            const sessionId = action.sessionId;
+            if (!sessionId) return state;
+            const checks = { ...(state.ui.workflowInputChecks || {}) };
+            if (action.phase === "checking" || action.phase === "failed") checks[sessionId] = action.phase;
+            else if (Object.hasOwn(checks, sessionId)) delete checks[sessionId];
+            else return state;
+            return { ...state, ui: { ...state.ui, workflowInputChecks: checks } };
+        }
+
         case "ui/canvasOpen": {
             const open = typeof action.open === "boolean" ? action.open : !state.ui.canvasOpen;
             const sessionId = action.sessionId || state.sessions.activeSessionId || null;

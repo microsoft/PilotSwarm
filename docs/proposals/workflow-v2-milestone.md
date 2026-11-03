@@ -739,21 +739,25 @@ the same agent child, branch, stop, test and pin fields. The shared UI
   refusal was known are refused by the server only (a queued one shows as
   rejected with the server's reason). A pending question there (none should
   exist: `ask_user` is refused) shows the reason instead of asking for an
-  answer below; in the TUI too. Until the access read answers, or when it
-  fails, the ordinary composer stays and the server refuses the input (an
-  open owner question).
+  answer below; in the TUI too. A session that may be in such a subtree
+  (its loaded parents say it may) shows "Checking whether you can send
+  messages here…" instead of the message box until the access read
+  answers, and "Could not check whether you can send messages here." with
+  Retry when the read fails (owner decision q18); a session known to be
+  outside every workflow keeps its box at once.
 - **Run controls, variables, the draft editor, publication and test starts
   (R03, R04, R05, R17 to R20, R26, R28; mocks M01 to M04, M15, M16, M18 to
   M20; INACTIVE).** See below.
 - **Browser checks** (`web/test/e2e/workflow-session.spec.mjs`, the tests
-  named `v2 commands:`, against its stub server): Stop's confirmation and
-  its dismissal (nothing sent), a 409's reason and the re-read, and Pause by
-  keyboard, at 1440 and 390 px; an unconfirmed pause sent again with the
-  same operation id; the virtual clock's local
-  refusal and one exact advance; an agent state's read-only chat beside an
-  ordinary one at 1440 and 390 px; a lost draft save kept and retried as
-  the same `replace_definition`. They need a browser runtime; whether they
-  ran is in the run receipts, not here.
+  named `v2 commands:`, against its stub server): Stop's confirmation, a
+  dialog with its name, description and focus (q17), and its dismissal
+  (nothing sent), a 409's reason and the re-read, and Pause by keyboard,
+  at 1440 and 390 px; an unconfirmed pause sent again with the same
+  operation id; the virtual clock's local refusal and one exact advance;
+  an agent state's read-only chat beside an ordinary one at 1440 and 390
+  px; a failed access check that says so, with Retry (q18); a lost draft
+  save kept and retried as the same `replace_definition`. They need a
+  browser runtime; whether they ran is in the run receipts, not here.
 
 **Capability advertisement (design 04 "Advertise capability/version in
 bootstrap"; D11).** The bootstrap carries `workflows`, what the deployment
@@ -1313,9 +1317,12 @@ loaded ancestry (`workflowInputPolicyApplies`: an agent state's child is
 created under its workflow session, so a root session, an ordinary agent
 tree and a workflow session are never asked about; an ancestor that is not
 loaded is asked about). A prompt, an answer or a steer to such a session is
-not sent and its draft is kept. Until the server answered, or when the read
-fails, the composer stays as it is and the server refuses the input
-(403 `WORKFLOW_HUMAN_INPUT_DENIED`). Ordinary sessions are unchanged. The
+not sent and its draft is kept. While the server is asked, the composer
+says "Checking whether you can send messages here…"; when the read fails or
+its answer is unreadable, it says "Could not check whether you can send
+messages here. Press Enter to check again.", and Enter asks again (owner
+decision q18). Meanwhile nothing is sent and no steer either. Ordinary
+sessions are unchanged. The
 portal records the same policy from the session access it reads for its
 composer (`recordWorkflowInputAccess`; "Human input" above).
 

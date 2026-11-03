@@ -3,7 +3,7 @@ import { workflowDefinition, workflowReadModelView, workflowV2ExecutionValueKey,
     workflowV2RunHistory, workflowV2RunRows,
     workflowV2ShownExecution } from "./workflow-view.js";
 import {
-    normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
+    normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
     workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewTestRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS,
     workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
@@ -9434,8 +9434,11 @@ export class PilotSwarmUiController {
      * reports (its API mode). Only a session that may be in such a subtree
      * by its loaded ancestry is asked about (workflowInputPolicyApplies): a
      * root session, an ordinary agent tree and a workflow session never are.
-     * A read that fails records nothing: the composer stays, and the server
-     * refuses the input anyway. Never throws.
+     * While it is asked, and after a read that failed or answered something
+     * unreadable, the session's check is "checking" or "failed"
+     * (selectWorkflowInputCheck): the composer shows that instead of the
+     * message box, and nothing is sent (owner decision q18); a failed read
+     * records no policy and the next call asks again. Never throws.
      */
     async ensureWorkflowInputPolicy(sessionId) {
         const state = this.getState();
@@ -9447,12 +9450,15 @@ export class PilotSwarmUiController {
         if (!read) return null;
         if (!this.workflowInputPolicyReads) this.workflowInputPolicyReads = new Map();
         if (this.workflowInputPolicyReads.has(sessionId)) return this.workflowInputPolicyReads.get(sessionId);
+        this.dispatch({ type: "ui/workflowInputCheck", sessionId, phase: "checking" });
         const request = (async () => {
             try {
                 const policy = normalizeWorkflowInputPolicy(await read());
                 if (policy) this.dispatch({ type: "ui/workflowInputPolicy", sessionId, policy });
+                this.dispatch({ type: "ui/workflowInputCheck", sessionId, phase: policy ? null : "failed" });
                 return policy;
             } catch {
+                this.dispatch({ type: "ui/workflowInputCheck", sessionId, phase: "failed" });
                 return null;
             } finally {
                 this.workflowInputPolicyReads.delete(sessionId);
@@ -11165,6 +11171,14 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: inputNote });
             return;
         }
+        // While the server is asked whether a person may send input here, or after that check failed, nothing is sent and
+        // the draft is kept (owner decision q18); after a failed check, this asks again.
+        const inputCheck = selectWorkflowInputCheck(this.getState(), sessionId);
+        if (inputCheck) {
+            if (inputCheck === "failed") this.ensureWorkflowInputPolicy(sessionId).catch(() => {});
+            this.dispatch({ type: "ui/status", text: inputCheck === "failed" ? "Checking again whether you can send messages here…" : WORKFLOW_INPUT_CHECKING_TEXT });
+            return;
+        }
         if (!sessionId) {
             const created = await this.createSession({});
             if (!created?.sessionId) return;
@@ -12804,6 +12818,11 @@ export class PilotSwarmUiController {
         if (state.ui.workflowInputPolicies?.[sessionId]?.canSteer === false) {
             this.dispatch({ type: "ui/status", text: selectWorkflowInputNote(state, sessionId)
                 || "This session runs a workflow state. People cannot steer it." });
+            return;
+        }
+        // Nor while that is being checked, or after the check failed (owner decision q18).
+        if (selectWorkflowInputCheck(state, sessionId)) {
+            this.dispatch({ type: "ui/status", text: WORKFLOW_INPUT_CHECKING_TEXT });
             return;
         }
         if (typeof this.transport.steerSessionTurn !== "function") {
