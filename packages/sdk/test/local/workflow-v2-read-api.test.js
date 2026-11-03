@@ -11,7 +11,7 @@
  * nothing here passes through the agent tool's parent check.
  */
 import { describe, it, expect } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient } from "../helpers/local-workers.js";
@@ -137,6 +137,10 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             await refused(() => mgmt.readWorkflow(workflowSessionId, { cursor: { v: 1 } }), "WORKFLOW_CURSOR_INVALID", 400);
             await refused(() => mgmt.readWorkflow(workflowSessionId, { cursor: "next" }), "WORKFLOW_CURSOR_INVALID", 400);
             expect(view.run.pages.executions).toEqual({ order: "newest_first", limit: 200, nextCursor: null, openComplete: true });
+            // One revision of the run's variables, under the same adapter: its only revision, and one it does not have.
+            expect((await mgmt.readWorkflow(workflowSessionId, { kvRevision: 1 })).kv).toEqual({ revision: 1, acceptedRevision: 1, keys: 0, bytes: 2, whole: true, entries: [] });
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { kvRevision: 2 }), "KV_REVISION_NOT_FOUND", 404);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { kvKey: "a" }), "WORKFLOW_READ_INVALID", 400);
             await refused(() => mgmt.readWorkflow(parent), "WORKFLOW_NOT_FOUND", 404);
             await refused(() => mgmt.readWorkflow(randomUUID()), "NOT_FOUND", 404);
             await catalog.softDeleteSession(workflowSessionId);
@@ -399,6 +403,62 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             await expect(readWorkflowV2View(store, a.workflowSessionId, { runId: a.runId, cursor: effectsCursor })).rejects.toMatchObject({ code: "WORKFLOW_CURSOR_INVALID" });
             await expect(readWorkflowV2View(store, a.workflowSessionId, { cursor: { ...effectsCursor, runId: a.runId } })).rejects.toMatchObject({ code: "WORKFLOW_CURSOR_INVALID" });
             await expect(readWorkflowV2View(store, a.workflowSessionId, { runId: testRun, executionId: exec(1) })).rejects.toMatchObject({ code: "EXECUTION_NOT_FOUND" });
+        } finally {
+            await db.end();
+            await catalog.close();
+        }
+    });
+
+    // Mock M15 "Inspect update" and "Compare snapshots" (R04, R05): every revision of a run's variables is kept and read as it
+    // was, each value with its size and sha256 (two snapshots compare exactly), whole up to 256 KiB in all, and one variable
+    // whole; a revision the run does not have is refused.
+    it("reads each kept revision of a run's variables, whole or as previews over 256 KiB, one variable whole, and refuses a revision it does not have", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const db = new pg.Client({ connectionString: env.store });
+        await db.connect();
+        const sha = text => createHash("sha256").update(text, "utf8").digest("hex");
+        try {
+            const store = catalog.workflowStore();
+            const a = await liveWorkflow(catalog, "read-kv");
+            const other = await liveWorkflow(catalog, "read-kv-other");
+            const s = `"${env.cmsSchema}"`;
+            const big = `"${"x".repeat(150_000)}"`;
+            await db.query(`INSERT INTO ${s}.workflow_kv_revisions (run_id, revision, kv) VALUES ($1, 2, '{"a":1,"b":"x"}'), ($1, 3, '{"a":2,"c":true}'),
+                ($1, 4, '{"p":' || $2 || ',"q":' || $2 || '}')`, [a.runId, big]);
+            await db.query(`UPDATE ${s}.workflow_runs SET kv_revision = 4, kv = '{"p":' || $2 || ',"q":' || $2 || '}' WHERE run_id = $1`, [a.runId, big]);
+            const read = options => readWorkflowV2View(store, a.workflowSessionId, options);
+
+            expect(await read({ kvRevision: 2 })).toEqual({ workflowId: a.workflowSessionId, runId: a.runId, kv: { revision: 2, acceptedRevision: 4, keys: 2,
+                bytes: Buffer.byteLength('{"a":1,"b":"x"}'), whole: true, entries: [
+                    { key: "a", bytes: 1, sha256: sha("1"), value: 1 }, { key: "b", bytes: 3, sha256: sha('"x"'), value: "x" }] } });
+            // Revision 3 changed a, removed b and added c: the sha256 of each value tells what changed.
+            const three = (await read({ kvRevision: 3 })).kv;
+            expect(three.entries).toEqual([{ key: "a", bytes: 1, sha256: sha("2"), value: 2 }, { key: "c", bytes: 4, sha256: sha("true"), value: true }]);
+            expect((await read({ kvRevision: 3, kvKey: "a" })).kv).toEqual({ revision: 3, acceptedRevision: 4, key: "a", present: true, bytes: 1, value: 2 });
+            expect((await read({ kvRevision: 3, kvKey: "b" })).kv).toEqual({ revision: 3, acceptedRevision: 4, key: "b", present: false });
+            // Over 256 KiB in all: previews of 200 characters, each value's size and sha256 still exact; one variable read whole.
+            const four = (await read({ kvRevision: 4 })).kv;
+            expect(four).toMatchObject({ revision: 4, acceptedRevision: 4, keys: 2, whole: false });
+            for (const entry of four.entries) {
+                expect(entry).toEqual({ key: entry.key, bytes: 150_002, sha256: sha(big), preview: `${big.slice(0, 200)}…` });
+            }
+            expect((await read({ kvRevision: 4, kvKey: "p" })).kv).toMatchObject({ present: true, bytes: 150_002, value: "x".repeat(150_000) });
+            // Refusals: a revision the run does not have, an invalid revision or key, a key without a revision, mixed reads,
+            // and another workflow's run.
+            await expect(read({ kvRevision: 5 })).rejects.toMatchObject({ code: "KV_REVISION_NOT_FOUND" });
+            for (const options of [{ kvRevision: 0 }, { kvRevision: "2" }, { kvRevision: 1.5 }, { kvRevision: 2, kvKey: "" }, { kvKey: "a" },
+                { kvRevision: 2, cursor: { v: 1 } }, { kvRevision: 2, executionId: "nx" }, { kvRevision: 2, limit: 5 }, { kvRevision: 2, includeYaml: true }]) {
+                await expect(read(options)).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID" });
+            }
+            await expect(read({ runId: other.runId, kvRevision: 1 })).rejects.toMatchObject({ code: "RUN_NOT_FOUND" });
+            // The agent tool reads the same, for the workflow's parent only.
+            const host = { catalog, store };
+            const tool = async (callerSessionId, args) => JSON.parse(await readWorkflowFromTool({ workflow_id: a.workflowSessionId, ...args }, { callerSessionId, host }));
+            expect(await tool(a.parent, { kv_revision: 3, kv_key: "c" })).toEqual({ ok: true, workflowId: a.workflowSessionId, runId: a.runId,
+                kv: { revision: 3, acceptedRevision: 4, key: "c", present: true, bytes: 4, value: true } });
+            expect(await tool(other.parent, { kv_revision: 3 })).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
         } finally {
             await db.end();
             await catalog.close();

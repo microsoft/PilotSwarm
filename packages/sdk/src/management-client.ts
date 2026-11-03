@@ -1896,7 +1896,10 @@ export class PilotSwarmManagementClient {
      * bounds them; the YAML is omitted. `cursor` (a nextCursor a read
      * returned, given back as it was) reads that section's next, older page
      * instead, and `executionId` one node execution's whole output or error;
-     * `limit` (1 to 200) sets the rows per page (readWorkflowV2View).
+     * `limit` (1 to 200) sets the rows per page, and `kvRevision` (with an
+     * optional `kvKey`) reads one revision of the run's variables
+     * (readWorkflowV2View; a revision it does not have is
+     * KV_REVISION_NOT_FOUND, 404).
      * Authorization is the caller's (the portal gates session:read, with its
      * not-found privacy, before this runs; the direct client is trusted). This
      * is the human read adapter, separate from the agent tool: it never acts
@@ -1914,7 +1917,7 @@ export class PilotSwarmManagementClient {
      * those, and, for a draft a person may change, its current YAML
      * (`personCommands.draft`); without it the view is exactly the tool's.
      */
-    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown } = {})
+    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown } = {})
         : Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
@@ -1928,11 +1931,14 @@ export class PilotSwarmManagementClient {
         if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
         const cursor = options?.cursor ?? null;
         const executionId = options?.executionId ?? null;
+        const kvRevision = options?.kvRevision ?? null;
+        const kvKey = options?.kvKey ?? null;
         let view: Record<string, unknown>;
         try {
             view = await readWorkflowV2View(store, sessionId, {
                 runId, ...(cursor !== null ? { cursor } : {}), ...(executionId !== null ? { executionId } : {}),
                 ...(options?.limit !== undefined && options.limit !== null ? { limit: options.limit } : {}),
+                ...(kvRevision !== null ? { kvRevision } : {}), ...(kvKey !== null ? { kvKey } : {}),
             });
         } catch (error) {
             const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
@@ -1942,7 +1948,7 @@ export class PilotSwarmManagementClient {
         // The read never depends on the option: absent (or no options at all, as for a host that lends this adapter its
         // catalog), the view is exactly the tool's. A page or an execution's value is not the view: it has no commands.
         const enabled = this.config?.workflowCommands;
-        if (!enabled || cursor !== null || executionId !== null) return view;
+        if (!enabled || cursor !== null || executionId !== null || kvRevision !== null || kvKey !== null) return view;
         const run = view.run as { runId?: unknown } | null | undefined;
         const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
         // A draft's current revision: its YAML is what a person who may change the draft edits.

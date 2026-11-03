@@ -266,7 +266,7 @@ export class HttpApiTransport {
      */
     async readWorkflow(sessionId, options = {}) {
         const params = { sessionId };
-        for (const key of ["runId", "cursor", "executionId", "limit"]) {
+        for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey"]) {
             const value = options?.[key];
             if (value !== undefined && value !== null) params[key] = value;
         }

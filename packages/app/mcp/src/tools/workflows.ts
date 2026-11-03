@@ -29,8 +29,9 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "(openExecutions, openInbox, openOutbox, run.test.openInterceptions), and run.pages: each section's nextCursor. Give a "
                 + "nextCursor back as cursor (it is a JSON object; limit may go with it) to read that section's next, older page; null "
                 + "means none is older. execution_id (with run_id, default the live run) reads one node execution with its whole output "
-                + "or error (execution.result) instead of its preview. limit: rows per page, 1 to 200. Refusals carry their code: "
-                + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID.",
+                + "or error (execution.result) instead of its preview. limit: rows per page, 1 to 200. kv_revision reads that revision of the "
+                + "run's variables (each with its size and sha256), and kv_key with it one variable, whole. Refusals carry their code: "
+                + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to read"),
                 run_id: z.string().optional().describe("A run of the workflow; default the live run"),
@@ -38,15 +39,19 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     .describe("A nextCursor from run.pages (or from a page), given back as it was: that section's next, older page"),
                 execution_id: z.string().optional().describe("A node execution of the run: its whole output or error"),
                 limit: z.number().int().optional().describe("Rows per page of each section, 1 to 200"),
+                kv_revision: z.number().int().optional().describe("A revision of the run's variables, 1 to its kvRevision"),
+                kv_key: z.string().optional().describe("With kv_revision: one variable of that revision, whole"),
             },
         },
-        withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit }) => {
+        withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit, kv_revision, kv_key }) => {
             try {
                 return jsonResult(await ctx.mgmt.readWorkflow(session_id, {
                     ...(run_id !== undefined ? { runId: run_id } : {}),
                     ...(cursor !== undefined ? { cursor } : {}),
                     ...(execution_id !== undefined ? { executionId: execution_id } : {}),
                     ...(limit !== undefined ? { limit } : {}),
+                    ...(kv_revision !== undefined ? { kvRevision: kv_revision } : {}),
+                    ...(kv_key !== undefined ? { kvKey: kv_key } : {}),
                 }));
             } catch (err: unknown) {
                 return refusal(err, session_id);

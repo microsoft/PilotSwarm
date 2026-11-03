@@ -1,7 +1,8 @@
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import {
-    assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, previewJson, utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError,
+    assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, previewJson, sha256Hex, utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES,
+    WorkflowJsonError,
     type JsonValue,
 } from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
@@ -30,6 +31,7 @@ import {
     diagnosticsJson,
     WORKFLOW_V2_STOP_MAX_GRACE_SECONDS,
     WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS,
+    WORKFLOW_V2_KV_LIMITS,
     WORKFLOW_V2_TEST_EPOCH,
     WorkflowStoreError,
     type WorkflowActor,
@@ -178,7 +180,9 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
         + "openExecutions, openInbox, openOutbox and run.test.openInterceptions hold the rows still open that the page does not, however "
         + `old; limit (1 to ${WORKFLOW_READ_PAGE_MAX}) sets the rows per page. run.pages names each section's nextCursor: give it back as `
         + "cursor (with limit at most) to read that section's next, older page; null means none is older. execution_id (with run_id, "
-        + "default the live run) reads one node execution's whole output or error (execution.result) instead of its preview.",
+        + "default the live run) reads one node execution's whole output or error (execution.result) instead of its preview. "
+        + "kv_revision (1 to the run's kvRevision) reads that revision of the run's variables (each with its size and sha256, whole "
+        + "up to 256 KiB in all); with kv_key, one variable of it, whole.",
     parameters: {
         type: "object",
         properties: {
@@ -186,6 +190,8 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
             limit: { type: "integer", description: `Rows per page of each section, 1 to ${WORKFLOW_READ_PAGE_MAX}. Default: 200 executions, 50 inputs, 50 sent messages, 200 interceptions.` },
             cursor: { type: "object", description: "A nextCursor from run.pages (or from a page), given back as it was: that section's next, older page." },
             execution_id: { type: "string", description: "A node execution of the run: its whole output or error, instead of its preview." },
+            kv_revision: { type: "integer", description: "A revision of the run's variables, 1 to its kvRevision: that snapshot (each node execution's kvRevision is the one it applied)." },
+            kv_key: { type: "string", description: "With kv_revision: one variable of that revision, whole." },
         },
         required: ["workflow_id"],
     },
@@ -522,6 +528,10 @@ export interface WorkflowV2ReadOptions {
     executionId?: unknown;
     /** The rows of each page, 1 to WORKFLOW_READ_PAGE_MAX; by default each section's own (WORKFLOW_READ_PAGE_DEFAULTS). */
     limit?: unknown;
+    /** One revision of the run's open KV map (1 to the run's kvRevision): its variables (mock M15 "Inspect update", "Compare snapshots"). */
+    kvRevision?: unknown;
+    /** With kvRevision: one variable of that revision, whole. */
+    kvKey?: unknown;
 }
 
 const readInvalid = (message: string): WorkflowStoreError => new WorkflowStoreError("WORKFLOW_READ_INVALID", message);
@@ -542,14 +552,71 @@ const readInvalid = (message: string): WorkflowStoreError => new WorkflowStoreEr
  * (an execution that is not one of the run's), and as before WORKFLOW_NOT_FOUND and RUN_NOT_FOUND.
  */
 export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId: string, options: WorkflowV2ReadOptions = {}): Promise<{ [key: string]: JsonValue }> {
-    const paging = options.cursor !== undefined && options.cursor !== null;
-    const execution = options.executionId !== undefined && options.executionId !== null;
-    if (paging && execution) throw readInvalid("A read takes a cursor (the next page of a section) or an execution id (one execution's whole value), not both.");
-    if ((paging || execution) && options.includeYaml === true) throw readInvalid("include_yaml belongs to the workflow's view, not to a page or to an execution's value.");
-    if (execution && options.limit !== undefined && options.limit !== null) throw readInvalid("limit belongs to the view and its pages, not to an execution's value.");
+    const given = (value: unknown) => value !== undefined && value !== null;
+    const paging = given(options.cursor);
+    const execution = given(options.executionId);
+    const kv = given(options.kvRevision);
+    if ([paging, execution, kv].filter(Boolean).length > 1) {
+        throw readInvalid("A read takes one of a cursor (the next page of a section), an execution id (one execution's whole value) or a KV revision.");
+    }
+    if (given(options.kvKey) && !kv) throw readInvalid("kv_key names a variable of a KV revision: give kv_revision with it.");
+    if ((paging || execution || kv) && options.includeYaml === true) throw readInvalid("include_yaml belongs to the workflow's view, not to a page or to a value.");
+    if ((execution || kv) && given(options.limit)) throw readInvalid("limit belongs to the view and its pages, not to a value.");
     if (execution) return readExecution(store, workflowSessionId, options.runId ?? null, options.executionId);
+    if (kv) return readKvRevision(store, workflowSessionId, options.runId ?? null, options.kvRevision, options.kvKey);
     if (paging) return readSectionPage(store, workflowSessionId, options.runId ?? null, options.cursor, options.limit);
     return readOverview(store, workflowSessionId, options);
+}
+
+/** A KV snapshot's whole map is sent when its canonical text is at most this many bytes; otherwise each value's preview. */
+const KV_WHOLE_MAX_BYTES = WORKFLOW_PAYLOAD_MAX_BYTES;
+/** The characters of each value's preview when a snapshot is too large to send whole. */
+const KV_ENTRY_PREVIEW_CHARS = 200;
+
+/**
+ * One revision of a run's open KV map (default the live run; design 02 open KV, every revision kept; R04, R05; mock M15
+ * "Inspect update", "Compare snapshots"): `revision`, the run's accepted revision now (`acceptedRevision`), and its
+ * variables sorted by name, each with its size and its sha256 (of its canonical JSON, so two snapshots compare exactly)
+ * and its whole value when the map's canonical text is at most 256 KiB, otherwise a 200-character preview (`whole`
+ * says which). With `kvKey`, one variable of that revision, whole (a value is at most 256 KiB, the KV limit), or that
+ * it is not set. A revision the run does not have is KV_REVISION_NOT_FOUND. Reading changes nothing.
+ */
+async function readKvRevision(store: WorkflowStore, workflowSessionId: string, runId: string | null, revisionValue: unknown, keyValue: unknown)
+    : Promise<{ [key: string]: JsonValue }> {
+    if (typeof revisionValue !== "number" || !Number.isSafeInteger(revisionValue) || revisionValue < 1) {
+        throw readInvalid("kv_revision must be a positive integer.");
+    }
+    const key = keyValue === undefined || keyValue === null ? null : keyValue;
+    if (key !== null && (typeof key !== "string" || !key || key.length > WORKFLOW_V2_KV_LIMITS.maxKeyLength || !isStorableText(key))) {
+        throw readInvalid(`kv_key must be a variable name of 1 to ${WORKFLOW_V2_KV_LIMITS.maxKeyLength} characters.`);
+    }
+    if (!await store.readDefinition(workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    const runs = await store.listRuns(workflowSessionId);
+    const run = runId ? runs.find(item => item.runId === runId) : runs.find(item => item.mode === "live");
+    if (!run) {
+        throw new WorkflowStoreError("RUN_NOT_FOUND", runId ? `Run ${runId} is not a run of this workflow.`
+            : "This workflow has no live run; name the run whose variables to read (run_id).");
+    }
+    if (revisionValue > run.kvRevision) {
+        throw new WorkflowStoreError("KV_REVISION_NOT_FOUND", `Run ${run.runId} has KV revisions 1 to ${run.kvRevision}, not ${revisionValue}.`);
+    }
+    const map = await store.readKv(run.runId, revisionValue);
+    const values: { [key: string]: JsonValue } = isJsonObject(map) ? map : {};
+    const head = { workflowId: workflowSessionId, runId: run.runId };
+    if (key !== null) {
+        const present = Object.hasOwn(values, key);
+        return { ...head, kv: { revision: revisionValue, acceptedRevision: run.kvRevision, key, present,
+            ...(present ? { bytes: utf8ByteLength(canonicalJson(values[key])), value: values[key] } : {}) } };
+    }
+    const names = Object.keys(values).sort();
+    const bytes = utf8ByteLength(canonicalJson(values));
+    const whole = bytes <= KV_WHOLE_MAX_BYTES;
+    const entries = names.map(name => {
+        const text = canonicalJson(values[name]);
+        return { key: name, bytes: utf8ByteLength(text), sha256: sha256Hex(text),
+            ...(whole ? { value: values[name] } : { preview: jsonbSafeText(text, KV_ENTRY_PREVIEW_CHARS) }) };
+    });
+    return { ...head, kv: { revision: revisionValue, acceptedRevision: run.kvRevision, keys: names.length, bytes, whole, entries } };
 }
 
 async function readOverview(store: WorkflowStore, workflowSessionId: string, options: WorkflowV2ReadOptions): Promise<{ [key: string]: JsonValue }> {
@@ -950,7 +1017,7 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
         const view = await readWorkflowV2View(context.host.store, workflowSessionId, {
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml === true,
-            cursor: args.cursor, limit: args.limit, executionId: args.execution_id,
+            cursor: args.cursor, limit: args.limit, executionId: args.execution_id, kvRevision: args.kv_revision, kvKey: args.kv_key,
         });
         // Report (never change) whether an active run's controller can still end it; the view only (a page or an execution's value
         // has no run object).

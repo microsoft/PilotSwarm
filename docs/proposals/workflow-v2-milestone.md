@@ -1313,6 +1313,21 @@ and `limit` in the query, under the same `session:read` gate and not-found
 privacy; `personCommands` only with the view), the web clients and MCP's
 `read_workflow`. A run of at most `limit` rows per section reads as before.
 
+**A run's variables at any kept revision (design 02 open KV; R04, R05; mock
+M15 "Inspect update", "Compare snapshots").** Every revision of a run's
+open KV map is kept; `kv_revision` (the agent tool, MCP) or `kvRevision`
+(the API), 1 to the run's `kvRevision`, reads that revision as it was:
+its variables sorted by name, each with its size and the sha256 of its
+canonical JSON (so two revisions compare exactly), whole when the map's
+canonical text is at most 256 KiB, otherwise each value's 200-character
+preview (`whole: false`), and the run's accepted revision now
+(`acceptedRevision`). With `kv_key` / `kvKey`, one variable of that
+revision, whole (a value is at most 256 KiB, the KV limit), or that it was
+not set. Each node execution's `kvRevision` is the revision it applied. A
+revision the run does not have is `KV_REVISION_NOT_FOUND` (404); a key
+without a revision, or a KV read mixed with a page or an execution read,
+`WORKFLOW_READ_INVALID`. Reading changes nothing.
+
 The portal and the TUI join older pages a person loads to the shown run's
 own read model: the portal's History tab and test effects table have Load
 older history, the TUI `o`; a newer read whose page no longer joins the

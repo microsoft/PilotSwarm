@@ -35,7 +35,8 @@ test("readWorkflow is one GET session:read operation: the session in the path, a
     assert.deepEqual({ access: op.access, method: op.method, path: op.path, params: op.params }, {
         access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow",
         params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string", strict: true },
-            cursor: { in: "query", type: "json" }, executionId: { in: "query", type: "string", strict: true }, limit: { in: "query", type: "json" } },
+            cursor: { in: "query", type: "json" }, executionId: { in: "query", type: "string", strict: true }, limit: { in: "query", type: "json" },
+            kvRevision: { in: "query", type: "json" }, kvKey: { in: "query", type: "string", strict: true } },
     });
     // The legacy creation route is unchanged.
     const create = OPERATIONS.find((entry) => entry.name === "createWorkflowSession");
@@ -318,6 +319,9 @@ test("a section's next page and one execution's value are read through the same 
         for (const [query, status, code, options] of [
             ["?executionId=nx-9", 404, "EXECUTION_NOT_FOUND", { executionId: "nx-9" }],
             ["?limit=0", 400, "WORKFLOW_READ_INVALID", { limit: 0 }],
+            // A KV revision the run does not have (the stand-in run is at revision 0), and a key without a revision.
+            ["?kvRevision=1", 404, "KV_REVISION_NOT_FOUND", { kvRevision: 1 }],
+            ["?kvKey=a", 400, "WORKFLOW_READ_INVALID", { kvKey: "a" }],
             [`?cursor=${encoded({ ...own, workflowId: "wf-other" })}`, 400, "WORKFLOW_CURSOR_INVALID", { cursor: { ...own, workflowId: "wf-other" } }],
             [`?cursor=${encoded(own)}&executionId=nx-9`, 400, "WORKFLOW_READ_INVALID", { cursor: own, executionId: "nx-9" }],
         ]) {
