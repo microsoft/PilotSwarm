@@ -2,7 +2,7 @@
 // replaces waldemort's bundle monkey patch.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPortalLinks, formatPortalLinksForCopy, withCanvasTarget } from "../src/portal-links.js";
+import { buildPortalLinks, canvasLinkChoices, formatPortalLinksForCopy, withCanvasTarget } from "../src/portal-links.js";
 
 const TWO = [
     { label: "Corporate", origin: "https://corp.example.com" },
@@ -52,4 +52,21 @@ test("withCanvasTarget adds view=canvas and the slot, and only for slots 1..5", 
     assert.equal(withCanvasTarget("https://p/?session=s", 5), "https://p/?session=s&view=canvas&slot=5");
     assert.equal(withCanvasTarget("https://p/?session=s", 0), "https://p/?session=s");
     assert.equal(withCanvasTarget("https://p/?session=s", null), "https://p/?session=s");
+});
+
+test("withCanvasTarget re-points an existing view/slot instead of duplicating it", () => {
+    assert.equal(withCanvasTarget("https://p/?session=s&view=full&slot=1", 3), "https://p/?session=s&view=canvas&slot=3");
+    assert.equal(withCanvasTarget("https://p/?session=s#top", 2), "https://p/?session=s&view=canvas&slot=2#top");
+    assert.equal(withCanvasTarget("not a url", 2), "not a url");
+});
+
+test("canvasLinkChoices lists the session's drawn slots and preselects the one on screen", () => {
+    const view = { sessionId: "s", slot: 4, slots: [{ slot: 1, name: "A", latestRev: 3 }, { slot: 4, name: "B" }] };
+    assert.deepEqual(canvasLinkChoices(view, "s"), { slots: [{ slot: 1, name: "A" }, { slot: 4, name: "B" }], slot: 4 });
+    // The on-screen slot is not drawn (stale selection): fall back to the first drawn one.
+    assert.deepEqual(canvasLinkChoices({ ...view, slot: 2 }, "s").slot, 1);
+    // Another session's view, or nothing drawn: nothing to offer.
+    assert.deepEqual(canvasLinkChoices(view, "other"), { slots: [], slot: null });
+    assert.deepEqual(canvasLinkChoices({ sessionId: "s", slot: 1, slots: [] }, "s"), { slots: [], slot: null });
+    assert.deepEqual(canvasLinkChoices(null, "s"), { slots: [], slot: null });
 });

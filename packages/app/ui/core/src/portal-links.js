@@ -48,7 +48,34 @@ export function withCanvasTarget(url, slot) {
     const text = String(url || "");
     const n = Number(slot);
     if (!text || !Number.isInteger(n) || n < 1 || n > 5) return text;
-    return `${text}${text.includes("?") ? "&" : "?"}view=canvas&slot=${n}`;
+    try {
+        // set(), not append(): a link that already names a view or slot is
+        // re-pointed, never given a second, conflicting copy.
+        const parsed = new URL(text);
+        parsed.searchParams.set("view", "canvas");
+        parsed.searchParams.set("slot", String(n));
+        return parsed.toString();
+    } catch {
+        return text;
+    }
+}
+
+/**
+ * The canvases a session link can point at, from the canvas view the portal
+ * already holds (`selectCanvasView`): every drawn slot of `sessionId`, and
+ * the one to preselect — the slot on screen when it is drawn, else the
+ * first. Empty when the view is for another session or has no drawn canvas.
+ */
+export function canvasLinkChoices(canvasView, sessionId) {
+    const view = canvasView || {};
+    if (!sessionId || view.sessionId !== sessionId || !Array.isArray(view.slots)) {
+        return { slots: [], slot: null };
+    }
+    const slots = view.slots
+        .filter((s) => Number.isInteger(s?.slot) && s.slot >= 1 && s.slot <= 5)
+        .map((s) => ({ slot: s.slot, name: typeof s.name === "string" ? s.name : "" }));
+    const slot = slots.some((s) => s.slot === view.slot) ? view.slot : (slots[0]?.slot ?? null);
+    return { slots, slot };
 }
 
 /**

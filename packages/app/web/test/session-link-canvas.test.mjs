@@ -73,6 +73,8 @@ test("the dialog starts unchecked, re-copies on change, and reads the session's 
     assert.equal((body.match(/recopy\(/g) || []).length, 2, "called from the box and the picker");
     assert.match(body, /MultiOriginLinkRows, \{ url, keyPrefix: "session", copied, onCopy: copy, wrap: true \}/,
         "the whole link is visible, so the added canvas part can be seen");
-    assert.match(WEB_APP, /const canvas = selectCanvasView\(controller\.getState\(\)\);/,
+    assert.match(WEB_APP, /React\.createElement\(SessionLinkModal, \{\n\s*key: linkModal\.openSeq,/,
+        "each Copy link click opens a fresh dialog, so a re-click cannot leave a ticked box over a plain clipboard link");
+    assert.match(WEB_APP, /canvasLinkChoices\(selectCanvasView\(controller\.getState\(\)\), sid\)/,
         "the click handler reads the drawn slots");
 });

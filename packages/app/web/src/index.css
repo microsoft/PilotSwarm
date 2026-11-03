@@ -5054,6 +5054,7 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-link-canvas-name {
+  margin-left: 4px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7755,8 +7756,13 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   .ps-share-add-select,
   .ps-admin-add__scope,
   .ps-prompt-input,
-  .ps-prompt-shell.is-mobile .ps-prompt-input {
+  .ps-prompt-shell.is-mobile .ps-prompt-input,
+  .ps-link-canvas .ps-link-canvas-slot {
     font-size: max(16px, 1em);
+  }
+
+  .ps-link-canvas .ps-link-canvas-slot {
+    height: 32px;
   }
 
   /* Session rows used to be enlarged here (36px tall, 2px gap) to give a
@@ -9617,7 +9623,7 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    pre whitespace so a long link NEVER soft-wraps into a second visual line
    (which pushed the next origin's link behind the inner scrollbar), plus a
    floor so two links are fully visible without scrolling. */
-textarea.ps-link-input {
+textarea.ps-link-input:not(.is-wrapped) {
   resize: vertical;
   min-height: 5.25rem;
   line-height: 1.35;

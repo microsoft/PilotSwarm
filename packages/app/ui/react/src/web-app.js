@@ -26,6 +26,7 @@ import {
     buildPortalLinks,
     formatPortalLinksForCopy,
     withCanvasTarget,
+    canvasLinkChoices,
     createStore,
     AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
@@ -267,7 +268,7 @@ function MultiOriginLinkRows({ url, keyPrefix, copied, onCopy, wrap = false }) {
     });
     if (links.length <= 1) {
         return React.createElement("div", { className: "ps-link-row" },
-            field(url),
+            field(url, wrap ? { "aria-label": "Session link" } : {}),
             React.createElement("button", {
                 type: "button", className: "ps-mini-button", onClick: () => onCopy(keyPrefix, url),
             }, copied === keyPrefix ? "Copied" : "Copy"));
@@ -5654,7 +5655,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // session:share), so the button is disabled for anyone else — the server
     // enforces too, but a disabled button is clearer than a 403.
     const [manageOpen, setManageOpen] = React.useState(false);
-    const [linkModal, setLinkModal] = React.useState(null); // { url, warn, canvasSlots, canvasSlot } | null
+    const [linkModal, setLinkModal] = React.useState(null); // { url, warn, canvasSlots, canvasSlot, openSeq } | null
     // The model picker is a separate (controller-owned) modal that would render
     // behind the Manage modal, so we close Manage while it is open and reopen
     // it when the picker closes — cancelling returns the user to Manage.
@@ -6298,10 +6299,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 // canvas" option. Read once at click time: the dialog is a
                 // snapshot of what exists now, and the plain link above is
                 // what lands on the clipboard until the sharer opts in.
-                const canvas = selectCanvasView(controller.getState());
-                const canvasSlots = canvas.sessionId === sid ? canvas.slots.map((s) => ({ slot: s.slot, name: s.name })) : [];
-                const canvasSlot = canvasSlots.some((s) => s.slot === canvas.slot) ? canvas.slot : (canvasSlots[0]?.slot ?? null);
-                setLinkModal({ url, warn: false, canvasSlots, canvasSlot });
+                const { slots: canvasSlots, slot: canvasSlot } = canvasLinkChoices(selectCanvasView(controller.getState()), sid);
+                // openSeq keys the dialog: every click opens a FRESH one. A
+                // re-click while it is open copies the plain link again, so a
+                // dialog that kept its ticked box would show one link while
+                // the clipboard held another.
+                setLinkModal({ url, warn: false, canvasSlots, canvasSlot, openSeq: Date.now() });
                 resolveSessionLinkWarn(controller, sid).then((warn) => {
                     setLinkModal((cur) => (cur && cur.url === url ? { ...cur, warn } : cur));
                 }).catch(() => {});
@@ -6484,6 +6487,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         : null,
     linkModal
         ? React.createElement(SessionLinkModal, {
+            key: linkModal.openSeq,
             url: linkModal.url,
             warn: linkModal.warn,
             canvasSlots: linkModal.canvasSlots,
@@ -6529,6 +6533,9 @@ function SessionLinkModal({ url: baseUrl, warn, canvasSlots = [], defaultCanvasS
     };
     const stop = (e) => e.stopPropagation();
     const slotLabel = (s) => (s.name ? `Canvas ${s.slot} — ${s.name}` : `Canvas ${s.slot}`);
+    const hintText = slots.length === 0
+        ? "This session has no canvas yet."
+        : includeCanvas ? "Opens the session with this canvas beside the chat." : "";
     return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-link-modal", onClick: stop },
             React.createElement("div", { className: "ps-share-modal-head" },
@@ -6545,12 +6552,18 @@ function SessionLinkModal({ url: baseUrl, warn, canvasSlots = [], defaultCanvasS
                         type: "checkbox",
                         checked: includeCanvas,
                         disabled: slots.length === 0,
+                        "aria-describedby": hintText ? "ps-link-canvas-hint" : undefined,
                         onChange: (event) => {
                             setIncludeCanvas(event.target.checked);
                             recopy(event.target.checked, canvasSlot);
                         },
                     }),
-                    "Include canvas"),
+                    "Include canvas",
+                    // One canvas: its name is part of the label, so assistive
+                    // tech announces which canvas the box adds.
+                    slots.length === 1
+                        ? React.createElement("span", { className: "ps-link-canvas-name" }, slotLabel(slots[0]))
+                        : null),
                 slots.length > 1
                     ? React.createElement("select", {
                         className: "ps-canvas-slot-select ps-link-canvas-slot",
@@ -6563,15 +6576,10 @@ function SessionLinkModal({ url: baseUrl, warn, canvasSlots = [], defaultCanvasS
                             recopy(includeCanvas, next);
                         },
                     }, slots.map((s) => React.createElement("option", { key: s.slot, value: s.slot }, slotLabel(s))))
-                    : null,
-                slots.length === 1
-                    ? React.createElement("span", { className: "ps-link-canvas-name" }, slotLabel(slots[0]))
                     : null),
-            slots.length === 0
-                ? React.createElement("div", { className: "ps-share-section-sub" }, "This session has no canvas yet.")
-                : includeCanvas
-                    ? React.createElement("div", { className: "ps-share-section-sub" }, "Opens the session with this canvas beside the chat.")
-                    : null,
+            hintText
+                ? React.createElement("div", { className: "ps-share-section-sub", id: "ps-link-canvas-hint" }, hintText)
+                : null,
             warn
                 ? React.createElement("div", { className: "ps-link-warn" }, SESSION_LINK_PRIVATE_WARNING)
                 : null));
