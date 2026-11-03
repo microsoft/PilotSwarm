@@ -7462,24 +7462,6 @@ export function selectModelPickerModal(state, maxWidth = 72) {
     };
 }
 
-/** The new-workflow editor. Hosts without a multi-line editor show only the note. */
-export function selectWorkflowCreateModal(state) {
-    const modal = state.ui.modal;
-    if (!modal || modal.type !== "workflowCreate") return null;
-    return {
-        title: modal.title || "New workflow session",
-        yaml: typeof modal.yaml === "string" ? modal.yaml : "",
-        inputs: typeof modal.inputs === "string" ? modal.inputs : "{}",
-        error: modal.error || null,
-        busy: modal.busy === true,
-        noteLines: [
-            [{ text: `${WORKFLOW_SESSION_GLYPH} A workflow session runs a graph of script nodes instead of a conversation.`, color: "white" }],
-            [{ text: "New workflows run JavaScript and call their parent agent's permitted tools without a model turn.", color: "gray" }],
-            [{ text: "Start the workflow from an agent with spawn_workflow. New top-level workflow starts are deferred.", color: "gray" }],
-        ],
-    };
-}
-
 export function selectSessionAgentPickerModal(state, maxWidth = 76) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "sessionAgentPicker") return null;
@@ -7520,14 +7502,14 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
                 ...(item.meta ? [{ text: `  ·  ${item.meta}`, color: "gray" }] : []),
             ], contentWidth);
         } else {
-            const callable = item?.kind === "generic" || item?.kind === "workflow" || item?.supportsDirectStart !== false;
+            const callable = item?.kind === "generic" || item?.supportsDirectStart !== false;
             // ONE LINE PER AGENT. The package is trailing metadata rather than a
             // row of its own, so the list is as long as the number of agents —
             // the grouped shape spent a second row on every single-agent package
             // saying the same thing twice.
-            const glyph = item?.kind === "generic" ? "○ " : item?.kind === "workflow" ? `${WORKFLOW_SESSION_GLYPH} ` : "★ ";
+            const glyph = item?.kind === "generic" ? "○ " : "★ ";
             const name = item?.title || item?.agentName || item?.id || "Agent";
-            const pkg = item?.kind === "generic" || item?.kind === "workflow" ? "" : (item?.packageTitle || item?.packageName || "");
+            const pkg = item?.kind === "generic" ? "" : (item?.packageTitle || item?.packageName || "");
             // Only shown while sorting BY use, where the number is the sort key
             // and therefore explains the order. Everywhere else it is noise.
             const uses = modal.sort === "used" && Number(item?.usageCount) > 0

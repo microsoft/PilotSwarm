@@ -109,44 +109,6 @@ export function packageRowSelector(row) {
     };
 }
 
-/** Starting point in the workflow editor: a two-node graph that shows a tool call and a branch. */
-export const WORKFLOW_YAML_TEMPLATE = `apiVersion: pilotswarm.dev/v1alpha1
-kind: Workflow
-metadata:
-  name: example-workflow
-  version: 1.0.0
-inputs:
-  keyPattern: { type: string }
-initial: collect
-states:
-  collect:
-    type: script
-    runtime: node
-    source: |
-      const facts = await callTool("read_facts", {key_pattern: context.inputs.keyPattern ?? "%", limit: 20});
-      await setResult("success", {facts});
-    completion: { outcomes: [success, failure] }
-    transition:
-      next: { success: summarize, failure: failed }
-  summarize:
-    type: script
-    runtime: node
-    source: |
-      const count = context.input?.facts?.count ?? 0;
-      await setResult(count > 0 ? "found" : "empty", { count });
-    completion: { outcomes: [found, empty] }
-    transition:
-      next: { found: done, empty: done }
-  done:
-    type: terminal
-    outcome: succeeded
-    output: \${states.summarize.result}
-  failed:
-    type: terminal
-    outcome: failed
-    summary: Could not read facts.
-`;
-
 const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
 const SESSION_STATS_REFRESH_MS = 20_000;
 const FLEET_STATS_REFRESH_MS = 30_000;
@@ -1141,7 +1103,6 @@ export function buildAgentPickerItems(catalog = [], opts = {}) {
         sort = AGENT_PICKER_DEFAULT_SORT,
         usage = null,
         genericItem = null,
-        workflowItem = null,
     } = opts || {};
 
     // Generic sits ABOVE everything and never filters out on an empty query:
@@ -1151,11 +1112,6 @@ export function buildAgentPickerItems(catalog = [], opts = {}) {
     const terms = String(query || "").trim();
     if (genericItem && (!terms || scoreAgentMatch({ label: genericItem.label, description: genericItem.description }, terms) >= 0)) {
         items.push({ ...genericItem, depth: 0 });
-    }
-    // A workflow is the other kind of session, so it sits beside
-    // Generic rather than among the agents.
-    if (workflowItem && (!terms || scoreAgentMatch({ label: workflowItem.title, description: workflowItem.description }, terms) >= 0)) {
-        items.push({ ...workflowItem, depth: 0 });
     }
 
     // Composition still decides whether an agent can be STARTED — `startedBy`
@@ -8270,35 +8226,6 @@ export class PilotSwarmUiController {
         }
     }
 
-    /** Explain child-first creation for callers of the legacy workflow editor. */
-    openWorkflowCreateModal(sessionOptions = {}, previousFocus = null) {
-        this.dispatch({
-            type: "ui/modal",
-            modal: {
-                type: "workflowCreate",
-                title: "New workflow session",
-                yaml: WORKFLOW_YAML_TEMPLATE,
-                inputs: "{}",
-                error: "Start a workflow from an agent with spawn_workflow to inherit its permitted tools. New top-level workflows are deferred.",
-                busy: false,
-                sessionOptions,
-                previousFocus: previousFocus ?? this.getState().ui.focusRegion,
-            },
-        });
-        this.dispatch({ type: "ui/status", text: "Start this workflow from an agent with spawn_workflow." });
-    }
-
-    /** Keep legacy editor input intact while directing new runs to a parent. */
-    async createWorkflowSession({ yaml, inputs } = {}) {
-        const message = "Start a workflow from an agent with spawn_workflow to inherit its permitted tools. New top-level workflows are deferred.";
-        const modal = this.getState().ui.modal;
-        if (modal?.type === "workflowCreate") {
-            this.dispatch({ type: "ui/modal", modal: { ...modal, yaml, inputs, error: message, busy: false } });
-        }
-        this.dispatch({ type: "ui/status", text: message });
-        return null;
-    }
-
     async createSessionForAgent(agentName, options = {}) {
         if (typeof this.transport.createSessionForAgent !== "function") {
             throw new Error("Named-agent session creation is not supported by this transport");
@@ -9016,18 +8943,7 @@ export class PilotSwarmUiController {
         const sort = AGENT_PICKER_SORTS.includes(this._agentPickerSort)
             ? this._agentPickerSort
             : AGENT_PICKER_DEFAULT_SORT;
-        const workflowItem = typeof this.transport.createWorkflowSession === "function"
-            ? {
-                id: "__workflow__",
-                kind: "workflow",
-                group: "generic",
-                title: "Workflow",
-                description: "JavaScript workflows run as children of an agent and inherit its permitted tools. Ask the agent to use spawn_workflow; top-level starts are deferred.",
-                tools: [],
-                supportsDirectStart: false,
-            }
-            : null;
-        const items = buildAgentPickerItems(catalog, { query: "", sort, usage, genericItem, workflowItem });
+        const items = buildAgentPickerItems(catalog, { query: "", sort, usage, genericItem });
 
         this.dispatch({
             type: "ui/modal",
@@ -9036,7 +8952,6 @@ export class PilotSwarmUiController {
                 title: "Select agent for new session",
                 catalog,
                 genericItem,
-                workflowItem,
                 items,
                 query: "",
                 sort,
@@ -10978,7 +10893,6 @@ export class PilotSwarmUiController {
             sort: next.sort,
             usage: next.usage,
             genericItem: next.genericItem || null,
-            workflowItem: next.workflowItem || null,
         });
         // Keep the same agent selected when it survives the new list; land on
         // the first row when it does not, so Enter always does something.
@@ -11279,18 +11193,12 @@ export class PilotSwarmUiController {
             await this.openSessionAgentPicker(nextOptions, previousFocus);
             return;
         }
-        if (modal.type === "workflowCreate") {
-            // The portal submits from its editor; a host without one (the TUI)
-            // can only show the note and close.
-            this.closeModal();
-            return;
-        }
         if (modal.type === "sessionAgentPicker") {
             const item = modal.items?.[modal.selectedIndex || 0];
             // A called-only agent is rendered so the package's composition is
             // visible, but starting one cold is not a thing you can do. Refuse
             // here rather than letting the create fail after the dialog closes.
-            if (item && item.kind !== "generic" && item.kind !== "workflow" && item.supportsDirectStart === false) {
+            if (item && item.kind !== "generic" && item.supportsDirectStart === false) {
                 this.dispatch({
                     type: "ui/status",
                     text: `${item.title || item.agentName} is created by another agent and cannot be started on its own`,
@@ -11305,10 +11213,6 @@ export class PilotSwarmUiController {
             }
             if (!item || item.kind === "generic") {
                 await this.createSession(sessionOptions);
-                return;
-            }
-            if (item.kind === "workflow") {
-                this.openWorkflowCreateModal(sessionOptions, previousFocus);
                 return;
             }
             await this.createSessionForAgent(item.agentName, {

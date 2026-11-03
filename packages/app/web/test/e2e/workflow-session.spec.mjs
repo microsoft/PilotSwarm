@@ -114,7 +114,7 @@ test("a workflow session is marked in the list, shows its execution log and has 
     expect(errors).toEqual([]);
 });
 
-test("new top-level workflows explain the parent requirement without sending a create", async ({ page }) => {
+test("the new-session dialog offers no workflow start: an agent starts workflows (flow-05)", async ({ page }) => {
     const errors = [];
     const created = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -130,27 +130,12 @@ test("new top-level workflows explain the parent requirement without sending a c
     await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
     await shot(page, "2-new-session-model-step");
-    const workflow = page.getByRole("button", { name: /Workflows start from an agent/ });
-    await expect(workflow).toBeDisabled();
-    await expect(workflow).toHaveAttribute("title", /spawn_workflow/);
+    await expect(page.getByRole("button", { name: /Workflows? start/ })).toHaveCount(0);
     expect(created).toHaveLength(0);
-    await expect(page.locator(".ps-workflow-modal")).toHaveCount(0);
-    await shot(page, "3-workflow-child-first");
-    expect(errors).toEqual([]);
-});
-
-test("the child-first restriction leaves the ordinary agent conversation available", async ({ page }) => {
-    await routeApi(page, {
-        onCreate: (route) => route.fulfill({
-            status: 400,
-            json: { ok: false, error: { code: "WORKFLOW_INVALID", message: "Invalid workflow: states.collect.type 'agent' is not supported yet; this version runs script and terminal states." } },
-        }),
-    });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
-    await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
-    await expect(page.getByRole("button", { name: /Workflows start from an agent/ })).toBeDisabled();
+    // Leaving the dialog leaves the ordinary agent conversation as it was.
     await page.keyboard.press("Escape");
     await expect(page.locator(".ps-prompt-input")).toBeVisible();
+    expect(errors).toEqual([]);
 });
 
 test("failed process results remain failed and node output is rendered as text", async ({ page }) => {
