@@ -1800,3 +1800,11 @@ serves), no typed input into a running test, and no display of lineage, receipts
   a workflow are written into its graph (a `request` to the parent, a route back to an earlier step); the authoring
   skill's section 12 says how. No control re-runs a finished step inside a live run: that would need a new runtime
   operation and a change to the formal model.
+- **The parent chat when a run ends (preview finding on d72dfadf).** A live run's end reaches its parent agent as one
+  system message (`notifyParent`, `workflowV2ParentNotification`). It used to say only that untrusted output
+  arrived; gpt-5.6-terra (reasoning effort none) answered it with nothing, the Copilot CLI reported "No response was
+  returned", and the session retried the same message twice (15 s, 30 s) before giving up, about 30k input tokens a
+  turn; the chat view hides that diagnostic by design (`isActivityOnlySessionError`). The message now asks the agent
+  to tell the user the result in one or two sentences, and still marks the JSON as untrusted data. Not specific to
+  1.0.83: the message and the session's retry are the same at 1.0.82. Version 1 workflows (`workflow/activities.ts`)
+  still send the old wording.
