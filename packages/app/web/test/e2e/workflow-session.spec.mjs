@@ -439,9 +439,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await page.mouse.up();
         await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
         if (viewport.width < 920) {
-            // On a phone a tap only selects the step and keeps the workflow on screen; Step details opens it (flow-04).
+            // On a phone a tap only selects the step and keeps the workflow on screen (flow-04), even for collect, the step
+            // the view selects by default; a second tap on it opens its details.
             await expect(main.locator(".ps-workflow-graph")).toBeVisible();
-            await main.getByRole("button", { name: "Step details", exact: true }).click();
+            await expect(page.locator(".ps-workflow-node-details").filter({ visible: true })).toHaveCount(0);
+            await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
         }
         const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
         await expect(details.locator("h2")).toHaveText("collect");
@@ -457,6 +459,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(main.locator(".ps-workflow-graph")).toBeVisible();
         await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
         await shot(page, `workflow-main-${viewport.width}`);
+        if (viewport.width < 920) {
+            // Step details opens the step the view selects by default, with no tap first.
+            await main.getByRole("button", { name: "Step details", exact: true }).click();
+            await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("collect");
+        }
         expect(errors).toEqual([]);
     });
 }

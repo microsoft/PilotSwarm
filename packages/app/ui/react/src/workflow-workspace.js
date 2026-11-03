@@ -190,10 +190,12 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
             view: { logHeight: workflowLogBounds(splitRef.current?.clientHeight || splitHeight, next).height } });
     };
     // On a phone, Step details cover the whole screen: tapping a step on the graph only selects it, and a second tap on the
-    // selected step, or Step details, opens them. Elsewhere selecting a step opens its details beside the graph, as before,
-    // and so does mobile Zen, which leaves Zen for the details it asks for (onNodeSelected).
-    const selectNode = id => {
-        select(id, { open: !mobile || Boolean(onNodeSelected) || id === selected?.id });
+    // step the person selected, or Step details, opens them. "Selected" here is the person's own choice (view.selectedNodeId),
+    // not the step the view shows by default (the current or first step), so a first tap on that one does not open it.
+    // Elsewhere selecting a step opens its details beside the graph, as before, and so does mobile Zen, which leaves Zen for
+    // the details it asks for (onNodeSelected). Step details always opens (`open`).
+    const selectNode = (id, { open = false } = {}) => {
+        select(id, { open: open || !mobile || Boolean(onNodeSelected) || id === view.selectedNodeId });
         onNodeSelected?.();
     };
     return React.createElement("section", { className: "ps-workflow-main", "aria-label": "Workflow session" },
@@ -207,7 +209,7 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
             React.createElement(WorkflowV2DefinitionToggle, { controller, sessionId, model: publication, open: publicationOpen, controls: publicationId }),
             React.createElement(WorkflowV2TestToggle, { controller, sessionId, model: testControls, open: testOpen, controls: testId }),
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
-                onClick: () => selectNode(selected.id) }, "Step details")),
+                onClick: () => selectNode(selected.id, { open: true }) }, "Step details")),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
         // Why the shown run ended, and who did what in it (owner decision q14; mocks M09, M14).
