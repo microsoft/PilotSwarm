@@ -166,8 +166,32 @@ function formatToolCalls(toolCalls) {
     return `${label} (${names.join(", ")})${failed ? `, ${failed} failed` : ""}`;
 }
 
+/**
+ * " after N steps" for a run's end: a version 1 run counts its steps; a version 2 run (its events name the run) records
+ * no count, so nothing is said rather than "after 0 steps".
+ */
+function afterSteps(data) {
+    if (data.steps === undefined && nonEmpty(data.runId)) return "";
+    return ` after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}`;
+}
+
+/**
+ * How a step event names its step: "Step 2: `poll`" for a version 1 step (its run's step number), "Step `poll`" for a
+ * version 2 step (its events name the visit, `nodeExecutionId`), with the visit number after the first visit.
+ */
+function stepName(data) {
+    if (!nonEmpty(data.nodeExecutionId)) return `Step ${data.step ?? "?"}: ${code(data.stateId)}`;
+    return `Step ${code(data.stateId)}${visitText(data)}`;
+}
+
+/** " (visit N)" for a version 2 step's second and later visits; "" otherwise. */
+function visitText(data) {
+    const visit = Number(data.step);
+    return nonEmpty(data.nodeExecutionId) && Number.isSafeInteger(visit) && visit > 1 ? ` (visit ${visit})` : "";
+}
+
 function endedAtTerminal(data, mark) {
-    return `${mark} Workflow **${data.name ?? "workflow"}** reached ${code(data.stateId)} after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}: `
+    return `${mark} Workflow **${data.name ?? "workflow"}** reached ${code(data.stateId)}${afterSteps(data)}: `
         + `outcome **${data.outcome ?? "?"}**${data.summary ? `. ${data.summary}` : "."}`;
 }
 
@@ -192,15 +216,15 @@ export function formatWorkflowEventText(event) {
             return lines.join("\n");
         }
         case "workflow.state_started":
-            return `▶ Step ${data.step ?? "?"}: ${code(data.stateId)} started (${data.runtime ?? data.type ?? "script"}).`;
+            return `▶ ${stepName(data)} started (${data.runtime ?? data.type ?? "script"}).`;
         case "workflow.state_completed": {
             // An explicit runtime error recorded as a completion contradicts itself; it is never shown as a success.
             if (data.resultKind === "runtime_error") {
                 const detail = nonEmpty(data.error) ? data.error : nonEmpty(data.outputPreview) && data.outputPreview !== "null" ? data.outputPreview : null;
-                return `✗ Step ${data.step ?? "?"}: ${code(data.stateId)} runtime error${nonEmpty(data.outcome) ? ` ${inline(data.outcome, 60)}` : ""}`
+                return `✗ ${stepName(data)} runtime error${nonEmpty(data.outcome) ? ` ${inline(data.outcome, 60)}` : ""}`
                     + `, recorded as a completion${detail ? `: ${inline(detail, 300)}` : ""}`;
             }
-            const parts = [`✓ Step ${data.step ?? "?"}: ${code(data.stateId)} → **${data.outcome ?? "?"}**`];
+            const parts = [`✓ ${stepName(data)} → **${data.outcome ?? "?"}**`];
             const duration = formatDuration(data.durationMs);
             if (duration) parts.push(`in ${duration}`);
             const tools = formatToolCalls(data.toolCalls);
@@ -213,9 +237,9 @@ export function formatWorkflowEventText(event) {
         case "workflow.state_failed":
             if (data.resultKind === "runtime_error") {
                 const reason = nonEmpty(data.error) ? data.error : nonEmpty(data.effectStatus) ? `the action ${data.effectStatus}` : "no error text was recorded";
-                return `✗ Step ${data.step ?? "?"}: ${code(data.stateId)} runtime error${nonEmpty(data.outcome) ? ` ${inline(data.outcome, 60)}` : ""}: ${inline(reason, 300)}`;
+                return `✗ ${stepName(data)} runtime error${nonEmpty(data.outcome) ? ` ${inline(data.outcome, 60)}` : ""}: ${inline(reason, 300)}`;
             }
-            return `✗ Step ${data.step ?? "?"}: ${code(data.stateId)} could not run: ${data.error ?? "unknown error"}`;
+            return `✗ ${stepName(data)} could not run: ${data.error ?? "unknown error"}`;
         case "workflow.completed": {
             const lines = [endedAtTerminal(data, "■")];
             if (data.outputPreview && data.outputPreview !== "null") {
@@ -225,15 +249,15 @@ export function formatWorkflowEventText(event) {
         }
         case "workflow.failed":
             if (data.outcome !== undefined) return endedAtTerminal(data, "✗");
-            return `✗ Workflow **${data.name ?? "workflow"}** failed after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}`
+            return `✗ Workflow **${data.name ?? "workflow"}** failed${afterSteps(data)}`
                 + `${data.stateId ? ` at ${code(data.stateId)}` : ""}: ${data.error ?? "unknown error"}`;
         case "workflow.state_cancelled": {
             const duration = formatDuration(data.durationMs);
-            return `⏹ Step ${data.step ?? "?"}: ${code(data.stateId)} stopped${duration ? ` after ${duration}` : ""}.`;
+            return `⏹ ${stepName(data)} stopped${duration ? ` after ${duration}` : ""}.`;
         }
         case "workflow.cancelled":
             if (data.outcome !== undefined) return endedAtTerminal(data, "⏹");
-            return `⏹ Workflow **${data.name ?? "workflow"}** stopped after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}`
+            return `⏹ Workflow **${data.name ?? "workflow"}** stopped${afterSteps(data)}`
                 + `${data.stateId ? ` at ${code(data.stateId)}` : ""}: ${data.reason ?? "cancelled"}`;
         default:
             return controlEventView(event)?.text ?? null;
@@ -249,7 +273,8 @@ export function describeWorkflowEvent(event) {
     const text = formatWorkflowEventText(event);
     if (!text) return null;
     const data = event?.data && typeof event.data === "object" ? event.data : {};
-    const stepTitle = `${WORKFLOW_SESSION_GLYPH} Step ${data.step ?? "?"}`;
+    // A version 1 step by its run's step number; a version 2 step's notice names it in its summary, with its visit after the first.
+    const stepTitle = nonEmpty(data.nodeExecutionId) ? `${WORKFLOW_SESSION_GLYPH} Step${visitText(data)}` : `${WORKFLOW_SESSION_GLYPH} Step ${data.step ?? "?"}`;
     switch (event.eventType) {
         case "workflow.started":
             return { kind: "notice", title: "Workflow", color: "magenta",
@@ -262,7 +287,7 @@ export function describeWorkflowEvent(event) {
         case "workflow.cancelled":
             return { kind: "card", title: "Workflow stopped", color: "yellow", text };
         case "workflow.state_started":
-            return { kind: "notice", title: stepTitle, color: "gray", summary: `${data.stateId ?? "?"} started (${data.runtime ?? "script"})`, text };
+            return { kind: "notice", title: stepTitle, color: "gray", summary: `${data.stateId ?? "?"} started (${data.runtime ?? data.type ?? "script"})`, text };
         case "workflow.state_completed": {
             const duration = formatDuration(data.durationMs);
             const tools = formatToolCalls(data.toolCalls);

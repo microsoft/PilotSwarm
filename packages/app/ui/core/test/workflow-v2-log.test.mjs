@@ -96,7 +96,7 @@ test("poll counts never merge across runs or revisions", () => {
     const again = buildHistoryModel([started("run-a"), begin(1), done(1), begin(1, "run-b"), done(1, "unchanged", "run-b")]);
     assert.deepEqual(counts(again), [1]);
     assert.equal(again.chat.length, 4);
-    assert.match(again.chat.at(-1).text, /Step 1: `poll` → \*\*unchanged\*\*/);
+    assert.match(again.chat.at(-1).text, /Step `poll` → \*\*unchanged\*\*/);
 });
 
 test("legacy steps keep their rules and an unclassified step is never a quiet repeat", () => {
@@ -261,23 +261,39 @@ test("the step notice colour follows the result kind, and legacy colours do not 
 test("an explicit runtime error recorded as a completion reads as a runtime error, not a success", () => {
     const contradictory = done(2, "invalid_output", "run-a", { resultKind: "runtime_error", outputPreview: '{"detail":"x"}' });
     const text = formatWorkflowEventText(contradictory);
-    assert.equal(text, "✗ Step 2: `poll` runtime error `invalid_output`, recorded as a completion: `{\"detail\":\"x\"}`");
+    // A version 2 step is named by its step, with its visit after the first; a legacy one keeps its run's step number.
+    assert.equal(text, "✗ Step `poll` (visit 2) runtime error `invalid_output`, recorded as a completion: `{\"detail\":\"x\"}`");
     assert.ok(!text.includes("✓") && !text.includes("→ **"));
     const view = describeWorkflowEvent(contradictory);
-    assert.deepEqual([view.color, view.summary], ["red", "poll runtime error invalid_output"]);
-    assert.equal(formatWorkflowEventText(done(2, "x", "run-a", { resultKind: "runtime_error", outputPreview: undefined })), "✗ Step 2: `poll` runtime error `x`, recorded as a completion");
+    assert.deepEqual([view.color, view.summary, view.title], ["red", "poll runtime error invalid_output", "◇ Step (visit 2)"]);
+    assert.equal(describeWorkflowEvent(done(1)).title, "◇ Step");
+    assert.equal(formatWorkflowEventText(done(2, "x", "run-a", { resultKind: "runtime_error", outputPreview: undefined })), "✗ Step `poll` (visit 2) runtime error `x`, recorded as a completion");
     assert.match(formatWorkflowEventText(done(2, "x", "run-a", { resultKind: "runtime_error", error: "`bad`\nline" })), /: `'bad' line`$/);
     // Business results, including a business "failure", and legacy completions keep their text.
-    assert.equal(formatWorkflowEventText(done(3, "failure")), "✓ Step 3: `poll` → **failure**.\nOutput: `{\"n\":1}`");
+    assert.equal(formatWorkflowEventText(done(3, "failure")), "✓ Step `poll` (visit 3) → **failure**.\nOutput: `{\"n\":1}`");
     assert.match(formatWorkflowEventText(event("workflow.state_completed", { stateId: "poll", step: 1, outcome: "unchanged", exitCode: 1 })), /^✓ Step 1: `poll` → \*\*unchanged\*\*\.$/);
     const history = buildHistoryModel([started(), begin(1), done(1), begin(2), contradictory]);
     assert.equal(history.chat.at(-1).workflowNotice.color, "red");
-    assert.match(history.chat.at(-1).text, /^✗ Step 2: `poll` runtime error `invalid_output`, recorded as a completion/);
+    assert.match(history.chat.at(-1).text, /^✗ Step `poll` \(visit 2\) runtime error `invalid_output`, recorded as a completion/);
+});
+
+test("a v2 step is named by its type and its step; a v2 run's end says no step count it does not have (flow-06)", () => {
+    // Each step's own type: a wait, an agent and a terminal step do not claim to be scripts.
+    for (const type of ["wait", "agent", "terminal", "script"]) {
+        const begun = event("workflow.state_started", { runId: "r", nodeExecutionId: `nx-${type}`, stateId: type, ordinal: 1, type, step: 1 });
+        assert.equal(formatWorkflowEventText(begun), `▶ Step \`${type}\` started (${type}).`);
+        assert.equal(describeWorkflowEvent(begun).summary, `${type} started (${type})`);
+    }
+    const ended = event("workflow.completed", { runId: "r", name: "ux-check", outcome: "succeeded", stateId: "done" });
+    assert.equal(formatWorkflowEventText(ended), "■ Workflow **ux-check** reached `done`: outcome **succeeded**.");
+    // A legacy run's end keeps its step count, as before.
+    assert.match(formatWorkflowEventText(event("workflow.completed", { name: "legacy", outcome: "succeeded", stateId: "done", steps: 0 })),
+        /reached `done` after 0 steps: outcome/);
 });
 
 test("a v2 runtime error with no error text names the effect or says nothing was recorded", () => {
     const effect = event("workflow.state_failed", { runId: "r", nodeExecutionId: "n", stateId: "poll", step: 2, effectStatus: "Failed", resultKind: "runtime_error" });
-    assert.equal(formatWorkflowEventText(effect), "✗ Step 2: `poll` runtime error: `the action Failed`");
+    assert.equal(formatWorkflowEventText(effect), "✗ Step `poll` (visit 2) runtime error: `the action Failed`");
     assert.equal(describeWorkflowEvent(effect).summary, "poll runtime error");
     const none = event("workflow.state_failed", { runId: "r", stateId: "poll", step: 2, outcome: "execution_failed", resultKind: "runtime_error" });
     assert.equal(formatWorkflowEventText(none), "✗ Step 2: `poll` runtime error `execution_failed`: `no error text was recorded`");
