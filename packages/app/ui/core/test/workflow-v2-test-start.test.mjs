@@ -160,7 +160,7 @@ test("the test review opens from the header with the test notice, the exact revi
     assert.ok(open.includes("aria-label=\"Test review\""));
     assert.ok(open.includes("Test review · not a sandbox"));
     assert.ok(open.includes(WORKFLOW_V2_TEST_NOTICE_TEXT), "the test notice is shown before the test starts");
-    assert.ok(open.includes(`>${HASH}</code>`));
+    assert.ok(open.includes(` title="${HASH}" data-hash="${HASH}">${HASH.length > 12 ? `${HASH.slice(0, 12)}…` : HASH}</code>`), "the short hash, whole on hover (flow-08)");
     // The selection, read from each radio input whatever the order of its attributes.
     const radios = [...open.matchAll(/<input\b[^>]*>/g)].map(match => match[0]).filter(input => input.includes('type="radio"'));
     assert.match(radios.find(input => input.includes('value="mocked"')), /checked=""/, "agents are mocked by default");

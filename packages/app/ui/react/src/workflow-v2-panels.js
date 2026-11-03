@@ -2,7 +2,7 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
-    workflowV2AgentEndText, workflowV2EventTime, workflowV2VisitEnding, workflowV2WholeValue,
+    workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2VisitEnding, workflowV2WholeValue,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -631,6 +631,21 @@ export function WorkflowV2DefinitionToggle({ controller, sessionId, model, open,
 }
 
 /**
+ * The definition a review is about, on one line (flow-08): its name and version · its revision · whether it is valid
+ * (when the review says), and its hash by its first 12 characters. The whole hash is on hover and in `data-hash`; the
+ * command still sends the whole hash.
+ */
+function DefinitionSummary({ model, revisionLabel, revision, hash, validity = null }) {
+    const parts = [[model.name, model.semver].filter(Boolean).join(" ") || "Not named",
+        `${revisionLabel} ${revision === null || revision === undefined ? "not known" : revision}`, ...(validity ? [validity] : [])];
+    const whole = typeof hash === "string" && hash ? hash : null;
+    return h("div", { className: "ps-workflow-property", "data-field": "definition-summary" }, h("span", null, "Definition"),
+        h("strong", null, `${parts.join(" · ")} · `,
+            h("code", { "data-field": "definition-hash", title: whole ?? undefined, "data-hash": whole ?? undefined },
+                whole ? (whole.length > 12 ? workflowV2ShortHash(whole) : whole) : "hash not known")));
+}
+
+/**
  * Publication review (design 04; mocks M01 and M03; R17, R18, R26; INACTIVE: only a read model that says which commands
  * the workflow takes from people has it). `model` is workflowV2DefinitionControls' answer. It shows exactly what is
  * published or started (the definition, the revision and its full definition hash), then sends the command for that
@@ -674,10 +689,8 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, ve
         "data-definition-state": model.state,
         style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, draft ? "Publish review" : "Start the live run"),
-    row("Definition", [model.name, model.semver].filter(Boolean).join(" ") || "Not named"),
-    row(draft ? "Revision" : "Published revision", shownRevision === null ? "Not known" : String(shownRevision)),
-    row("Definition hash", h("code", { style: { overflowWrap: "anywhere" }, "data-field": "definition-hash" }, shownHash ?? "Not known")),
-    draft ? row("Validity", model.valid ? "Valid" : `${model.errors || "Unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be published`) : null,
+    h(DefinitionSummary, { model, revisionLabel: draft ? "revision" : "published revision", revision: shownRevision, hash: shownHash,
+        validity: draft ? (model.valid ? "valid" : `${model.errors || "unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be published`) : null }),
     row("Live effects", runs ? "Only when its live run starts" : "None until a live run starts"),
     // What publication pins for each named agent, and the tests of exactly this revision (information: no test is required).
     workflowV2PublicationEvidenceRows(model, versionsNow).map(([label, value], index) => row(label, value, { key: `evidence-${index}`, "data-evidence": label.trim() })),
@@ -1002,17 +1015,14 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
             controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: false, ...(runId ? { selectedRunId: runId } : {}) } });
         }
     };
-    const row = (label, value) => h("div", { className: "ps-workflow-property" }, h("span", null, label), h("strong", null, value));
     const radio = (value, label) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 } },
         h("input", { type: "radio", name: modeName, value, checked: agentMode === value, onChange: () => setAgentMode(value), "data-agent-mode": value }), label);
     return h("section", { id, className: "ps-workflow-test-review", "aria-label": "Test review", "data-revision": model.revision ?? undefined,
         style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, "Test review · not a sandbox"),
     h("p", { role: "note", style: { margin: 0, color: TONES.warning } }, WORKFLOW_V2_TEST_NOTICE_TEXT),
-    row("Definition", [model.name, model.semver].filter(Boolean).join(" ") || "Not named"),
-    row(model.state === "draft" ? "Draft revision" : "Revision", model.revision === null ? "Not known" : String(model.revision)),
-    row("Definition hash", h("code", { style: { overflowWrap: "anywhere" }, "data-field": "definition-hash" }, model.definitionHash ?? "Not known")),
-    row("Validity", model.valid ? "Valid" : `${model.errors || "Unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be tested`),
+    h(DefinitionSummary, { model, revisionLabel: model.state === "draft" ? "draft revision" : "revision", revision: model.revision, hash: model.definitionHash,
+        validity: model.valid ? "valid" : `${model.errors || "unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be tested` }),
     h("fieldset", { style: { margin: 0, padding: "4px 8px", border: "1px solid var(--ps-border)" } },
         h("legend", null, "Agent steps"),
         radio("mocked", "Mocked: the parent answers for each agent step"),

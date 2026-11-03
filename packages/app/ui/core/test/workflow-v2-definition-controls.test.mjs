@@ -226,7 +226,9 @@ test("the review panel opens from the header: the exact revision and hash with P
 
     const open = main(mount({ readModel: draftModel(), readModelRunId: null, definitionOpen: true }));
     assert.ok(open.includes("aria-label=\"Publish review\""));
-    assert.ok(open.includes(`>${HASH_2}</code>`), "the full definition hash is shown");
+    // flow-08: one line for the definition, its revision and validity, and the hash by its start; the whole hash on hover.
+    assert.ok(open.includes(` title="${HASH_2}" data-hash="${HASH_2}">${HASH_2.slice(0, 12)}…</code>`), "the short hash, whole on hover");
+    assert.match(open, /<span>Definition<\/span><strong>[^<]* · revision 2 · valid · <code/);
     assert.deepEqual([...open.matchAll(/data-operation="([a-z_]+)"/g)].map(match => match[1]), ["publish", "publish_and_start"]);
     assert.ok(open.includes("data-field=\"inputs\"") && open.includes("data-field=\"vars\""));
     assert.ok(open.includes("Publishing freezes this exact revision"));

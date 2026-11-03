@@ -140,7 +140,11 @@ export function workflowV2AgentTask(node) {
 }
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-const shortHash = value => `${value.slice(0, 12)}…`;
+/** A long hash by its first 12 characters and "…" (a person reads the whole one on hover or in a copy). Pure. */
+export function workflowV2ShortHash(value) {
+    return `${value.slice(0, 12)}…`;
+}
+const shortHash = workflowV2ShortHash;
 
 /**
  * What a named agent state is bound to (design 03, 04, 09; R09, R18; mock
