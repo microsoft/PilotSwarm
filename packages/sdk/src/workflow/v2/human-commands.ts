@@ -132,7 +132,7 @@ export async function workflowCommandsForPerson(store: Pick<WorkflowStore, "read
     return {
         operations,
         restriction: root ? {
-            reason: `This workflow runs in a workflow agent state's subtree: people can ${operationWords(operations)} it; only its controlling agent changes, resumes or tests it.`,
+            reason: `This workflow was started by an agent step of another workflow: people can ${operationWords(operations)} it; only its controlling agent changes, resumes or tests it.`,
             workflowSessionId: root.workflowSessionId, controllingSessionId: root.controllingSessionId,
         } : null,
         run: shown ? { runId: shown.runId, stop: operations.includes("stop") && shown.controllerVersion !== null

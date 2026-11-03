@@ -50,7 +50,7 @@ assert.equal(toolsWith({ mgmt: {}, workflowCommands: false }).has("update_workfl
 
 // 3. Refusals with a code: one JSON shape, with status and details.
 for (const [error, expected] of [
-    [Object.assign(new Error("Session x runs a workflow state for workflow w: people cannot change its definition, inputs, runs or tests."),
+    [Object.assign(new Error("Session x runs a step of workflow w: people cannot change its definition, inputs, runs or tests."),
         { code: "WORKFLOW_HUMAN_INPUT_DENIED", status: 403, details: { sessionId: SID, action: "workflow", controllingSessionId: "P" } }),
         { code: "WORKFLOW_HUMAN_INPUT_DENIED", status: 403, details: { sessionId: SID, action: "workflow", controllingSessionId: "P" } }],
     [Object.assign(new Error("This deployment does not take workflow commands from people yet."), { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 }),

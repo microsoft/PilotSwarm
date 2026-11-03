@@ -1,6 +1,6 @@
 // The TUI workflow view's read-only history and test effects (design 02 "Portal/TUI: observed state"; design 05 test
 // mode, T115, T119 in the TUI): the selected state's executions newest first, as the portal's History tab lists them
-// (unchanged repeats of a loop combined; a legacy state's steps), the shown test run's intercepted effects as the
+// (unchanged repeats of a loop combined; a legacy state's steps), the shown test run's held calls as the
 // portal's table lists them (read-only; answered by the run's parent agent, a fixture or a person in the portal), and
 // the details scrolled with PgUp/PgDn within what the panel shows.
 //
@@ -41,7 +41,7 @@ const LIVE = readModel({ graph, revision: { name: "review-loop" }, runs: RUNS, n
     done("fix", 4, "fixed"),
     row("review", 5, "pending", { agent: agent("child-5") }),
 ] });
-/** A test run with `count` intercepted effects of review: the first answered by a fixture, the rest waiting for the parent. */
+/** A test run with `count` held calls of review: the first answered by a fixture, the rest waiting for the parent. */
 function testRun(count) {
     const interceptions = Array.from({ length: count }, (_, i) => ({
         interceptionId: `nx-review-1/call-${i + 1}`, operation: "tool.call", tool: i === 0 ? "read_build" : `notify_${i}`, nodeExecutionId: "nx-review-1",
@@ -50,7 +50,7 @@ function testRun(count) {
         response: i === 0 ? { kind: "success", disposition: "fixture", value: "{\"state\":\"green\"}", sha256: "v", respondedAt: "2026-11-02T20:00:00.000Z" } : null,
     }));
     return readModel({ graph, revision: { name: "review-loop" }, runs: RUNS, nodeExecutions: [row("review", 1, "pending", { agent: agent("child-t1") })],
-        run: { runId: "run-t1", mode: "test", status: "running", test: { notice: "TEST — scripts run normally; framework tools are mocked.",
+        run: { runId: "run-t1", mode: "test", status: "running", test: { notice: "TEST — scripts run normally; workflow tools are mocked.",
             agentMode: "mocked", agentPins: null, scenario: null, testedRevision: 1, stale: false,
             virtualClock: { now: "9000-01-01T00:00:00.000Z", elapsedSeconds: 0 }, interceptions,
             coverage: { unanswered: interceptions.filter(item => !item.response).map(item => item.interceptionId) } } } });
@@ -90,8 +90,8 @@ test("a state's history lists its visits newest first, a loop's unchanged repeat
     await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
     lines = texts(selectWorkflowViewModal(store.getState(), 110));
     assert.ok(lines.includes("  No visits in the loaded history."));
-    // A live run shows no intercepted effects.
-    assert.ok(!lines.some(line => line.startsWith("Intercepted effects")));
+    // A live run shows no held calls.
+    assert.ok(!lines.some(line => line.startsWith("Held calls")));
 });
 
 test("a legacy state's history lists its steps newest first with their outcome and duration", async () => {
@@ -111,18 +111,18 @@ test("a legacy state's history lists its steps newest first with their outcome a
     assert.deepEqual(lines.slice(at + 1, at + 3), ["  step 2 · changed · 1.3 s", "  step 1 · unchanged · 420 ms"]);
 });
 
-test("a test run's intercepted effects are listed with their state and answer, read-only, from that run's own model", async () => {
+test("a test run's held calls are listed with their state and answer, read-only, from that run's own model", async () => {
     const model = testRun(2);
     const { controller, store } = harness({ view: { selectedRunId: "run-t1", readModel: model, readModelRunId: "run-t1" },
         transport: { readWorkflow: async () => model } });
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     const view = selectWorkflowViewModal(store.getState(), 110);
     const lines = texts(view);
-    assert.ok(lines.includes("! TEST — scripts run normally; framework tools are mocked."));
-    assert.ok(lines.includes("Intercepted effects of this test run (2; 1 waits for the parent):"), lines.join("\n"));
+    assert.ok(lines.includes("! TEST — scripts run normally; workflow tools are mocked."));
+    assert.ok(lines.includes("Held calls of this test run (2; 1 waits for the parent):"), lines.join("\n"));
     assert.ok(lines.includes("  tool.call · read_build · step review · success · fixture ◂ this step"));
     assert.ok(lines.includes("  tool.call · notify_1 · step review · waiting for the parent ◂ this step"));
-    assert.ok(lines.includes("The TUI shows them; the run's parent agent, a fixture or a person in the portal answers them."));
+    assert.ok(lines.includes("The TUI shows them; the run's parent agent, a prepared answer or a person in the portal answers them."));
     assert.equal(view.detailsLines.find(line => line.text.includes("notify_1")).color, "yellow");
     // Another state of the same run: the effects are the run's, without the mark.
     await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
@@ -130,7 +130,7 @@ test("a test run's intercepted effects are listed with their state and answer, r
     assert.ok(other.includes("  tool.call · read_build · step review · success · fixture"));
     // A model read for another run is never shown for this one.
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: "run-1" } });
-    assert.ok(!texts(selectWorkflowViewModal(store.getState(), 110)).some(line => line.startsWith("Intercepted effects")));
+    assert.ok(!texts(selectWorkflowViewModal(store.getState(), 110)).some(line => line.startsWith("Held calls")));
 });
 
 test("PgUp/PgDn scroll the details a page at a time within what the panel shows; another state or run starts at the top", async () => {

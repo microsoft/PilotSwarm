@@ -740,14 +740,14 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
 // {ok:true} with no flags (not denied).
 // ------------------------------------------------------------------------------------------------------------
 const CHILD_ID = "99999999-2222-3333-4444-555555555555";
-const CHILD_REASON = "This session runs a workflow state. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
+const CHILD_REASON = "This session runs a step of a workflow. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     test(`v2 commands: a workflow agent state's chat is read-only with the server's reason; an ordinary chat is not, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
         await routeApi(page);
-        const child = { sessionId: CHILD_ID, title: "Workflow node: review", status: "idle", model: "test:test-model",
+        const child = { sessionId: CHILD_ID, title: "Workflow step: review", status: "idle", model: "test:test-model",
             parentSessionId: WORKFLOW_ID, createdAt: now - 10_000, updatedAt: now - 10_000 };
         const sessions = [...SESSIONS, child];
         const prompts = [];
@@ -792,7 +792,7 @@ test("v2 commands: a failed access check says it could not check, with Retry, an
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await routeApi(page);
-    const child = { sessionId: CHILD_ID, title: "Workflow node: review", status: "idle", model: "test:test-model",
+    const child = { sessionId: CHILD_ID, title: "Workflow step: review", status: "idle", model: "test:test-model",
         parentSessionId: WORKFLOW_ID, createdAt: now - 10_000, updatedAt: now - 10_000 };
     const sessions = [...SESSIONS, child];
     let accessReads = 0;

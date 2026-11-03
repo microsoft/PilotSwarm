@@ -125,8 +125,8 @@ function controlEventView(event) {
         }
         case "workflow.cancel_requested": {
             const count = Array.isArray(data.effects) ? data.effects.length : 0;
-            return { text: `⏹ Asked ${count} running effect${count === 1 ? "" : "s"} to stop. They may take a moment to end.`,
-                summary: `${count} effect${count === 1 ? "" : "s"} asked to stop`, color: "yellow" };
+            return { text: `⏹ Asked ${count} running action${count === 1 ? "" : "s"} to stop. They may take a moment to end.`,
+                summary: `${count} action${count === 1 ? "" : "s"} asked to stop`, color: "yellow" };
         }
         case "workflow.parent_notified":
             return { text: `✉ The parent session was told that the run ended${nonEmpty(data.parentSessionId) ? ` (${inline(String(data.parentSessionId).slice(0, 8), 20)})` : ""}.`,

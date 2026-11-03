@@ -115,8 +115,8 @@ test("an agent state's node names its child session and opens its actual chat; a
 
 test("a real-agent test run says its agents are real, and lists their mocked tool calls under their agent state", () => {
     const test = {
-        notice: "TEST — scripts run normally; framework tools are mocked.", agentMode: "real",
-        agentNotice: "Agent states run real agent sessions: they spend model tokens and their results vary as a model's do.",
+        notice: "TEST — scripts run normally; workflow tools are mocked.", agentMode: "real",
+        agentNotice: "Agent steps run real agent sessions: they spend model tokens and their results vary as a model's do.",
         agentPins: null, scenario: null, testedRevision: 1, stale: false, virtualClock: { now: "9000-01-01T00:00:00.000Z", elapsedSeconds: 0 },
         interceptions: [{ interceptionId: "nx-1/call-1", operation: "tool.call", tool: "read_build", stateId: "review", state: "awaiting_parent", response: null }],
         coverage: { unanswered: ["nx-1/call-1"] },
@@ -127,7 +127,7 @@ test("a real-agent test run says its agents are real, and lists their mocked too
     assert.ok(texts.includes(test.notice));
     assert.ok(texts.includes(test.agentNotice));
     // Without its text, the banner still says so; a mocked test has none.
-    assert.ok(project({ ...test, agentNotice: undefined }).includes("Agent steps run real agent sessions; their framework tool calls are mocked."));
+    assert.ok(project({ ...test, agentNotice: undefined }).includes("Agent steps run real agent sessions; their workflow tool calls are mocked."));
     assert.ok(!project({ ...test, agentMode: "mocked" }).some(text => text.includes("run real agent sessions")));
     const html = renderToStaticMarkup(React.createElement(WorkflowV2TestInterceptions, { test }));
     assert.ok(html.includes("tool.call · read_build"));
@@ -136,7 +136,7 @@ test("a real-agent test run says its agents are real, and lists their mocked too
 
 test("a test run keeps its notice visible, with its staleness, virtual clock and open interceptions", () => {
     const test = {
-        notice: "TEST — scripts run normally; framework tools are mocked.", agentMode: "mocked", scenario: null, testedRevision: 1, stale: true,
+        notice: "TEST — scripts run normally; workflow tools are mocked.", agentMode: "mocked", scenario: null, testedRevision: 1, stale: true,
         virtualClock: { now: "9000-01-01T01:00:00.000Z", elapsedSeconds: 3600 },
         interceptions: [
             { interceptionId: "nx-1/call-1", operation: "tool.call", tool: "read_build", stateId: "fetch", state: "responded",
@@ -151,9 +151,9 @@ test("a test run keeps its notice visible, with its staleness, virtual clock and
     assert.ok(texts.includes(test.notice));
     assert.ok(texts.some(text => text.includes("This test ran revision 1; the definition is now at revision 2")));
     assert.ok(texts.some(text => text.startsWith("Virtual clock: 1 h")));
-    assert.ok(texts.includes("1 intercepted effect waits for the parent's answer."));
+    assert.ok(texts.includes("1 held call waits for the parent's answer."));
     const html = renderToStaticMarkup(React.createElement(WorkflowV2TestInterceptions, { test }));
-    assert.ok(html.includes("Intercepted effects (2)"));
+    assert.ok(html.includes("Held calls (2)"));
     assert.ok(html.includes("tool.call · read_build"));
     assert.ok(html.includes("success · fixture"));
     assert.ok(html.includes("Waiting for the parent"));

@@ -24,7 +24,7 @@ import { readModel, states } from "./workflow-v2-fixtures.mjs";
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order; a host without 1.9.0 takes the first eight. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
     "test", "test_respond", "test_advance"];
-const SUBTREE = "This workflow runs in a workflow agent state's subtree: people can pause, stop or cancel it; only its controlling "
+const SUBTREE = "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling "
     + "agent changes, resumes or tests it.";
 const hashOf = revision => `sha${revision}`.padEnd(64, "0");
 const TEST_RUN = "test-run-0001";
@@ -174,7 +174,7 @@ test("ctrl-a chooses real agents, with their notice; the confirm and the test na
     const h = await reviewing(workflow(), [started]);
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_AGENTS);
     assert.equal(modalOf(h.store).agentMode, "real");
-    assert.equal(statusOf(h.store), "Agent steps: real agents. They spend model tokens; their framework tool calls are mocked");
+    assert.equal(statusOf(h.store), "Agent steps: real agents. They spend model tokens; their workflow tool calls are mocked");
     let shown = review(h.store);
     assert.ok(texts(shown.lines).includes("Agent steps: real agents, which spend model tokens (ctrl-a: mocked)"));
     assert.ok(joined(shown.lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT));

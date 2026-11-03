@@ -49,7 +49,7 @@ import {
  * the real-agent notice, the run's inputs, initial variables and scenario
  * name, started after the confirm dialog; the portal's
  * workflowV2TestControls), and the shown test run's answers and clock (a
- * opens an answer form bound to the run and one intercepted effect that
+ * opens an answer form bound to the run and one held call that
  * waits; + opens its virtual clock; the portal's workflowV2TestResponder). A
  * workflow in an agent state's subtree takes only pause, stop and cancel
  * from people. The server decides every command again, and keeps refusing
@@ -1042,7 +1042,7 @@ function testRunAbsentReason(projection, what) {
     const responder = projection?.testResponder ?? null;
     if (responder) {
         if (responder.reason) return responder.reason;
-        if (what === "answer" && responder.respond) return "No intercepted effect of this test run waits for an answer.";
+        if (what === "answer" && responder.respond) return "No held call of this test run waits for an answer.";
         return what === "answer" ? "This workflow takes no test answers from people." : "This workflow takes no clock advances from people.";
     }
     const model = projection?.runReadModel ?? null;
@@ -1073,7 +1073,7 @@ function testRunLines(projection) {
     if (!responder) return [];
     const count = responder.waiting.length;
     const parts = [];
-    if (responder.respond) parts.push(count > 1 ? `a answers one of its ${count} waiting effects` : count ? "a answers its waiting effect" : "no effect waits for an answer");
+    if (responder.respond) parts.push(count > 1 ? `a answers one of its ${count} waiting calls` : count ? "a answers its waiting call" : "no call waits for an answer");
     if (responder.advance) parts.push("+ advances its virtual clock");
     const lines = [{ text: `Test run ${shortRunId(responder.runId)}${parts.length ? ` — ${parts.join(" · ")}` : ""}`, color: responder.busy ? "yellow" : "cyan",
         indent: "" }];
@@ -1092,7 +1092,7 @@ function testRunNoticeLines(test) {
 
 /**
  * The answer form (TUI modal "workflowTestAnswer"; the portal's answer form, mock M18): bound to one test run and one
- * of its intercepted effects (`runId`, `interceptionId`), it shows the run's notices, the effect, its actual state
+ * of its held calls (`runId`, `interceptionId`), it shows the run's notices, the effect, its actual state
  * (waiting, answered with what and by whom, or its state ended another way), what it reached, the schema the answer
  * must match and, for an agent state, its outcomes; the answer's kind (success, error or cancel) and its JSON value; an
  * answer being sent, the last answer's refusal or lost reply, why a person cannot answer, and the form's own check.
@@ -1120,10 +1120,10 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
     const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
     for (const line of testRunNoticeLines(test)) add(line.text, line.color);
     if (!sameRun) add(`The workflow view no longer shows test run ${shortRunId(modal.runId)}, so this form sends nothing. Esc goes back.`, "yellow");
-    else if (!item) add(`Interception ${modal.interceptionId} is not one of this test run's effects, so this form sends nothing. Esc goes back.`, "yellow");
+    else if (!item) add(`Held call ${modal.interceptionId} is not one of this test run's held calls, so this form sends nothing. Esc goes back.`, "yellow");
     else {
-        add(`Effect: ${item.operation ?? "effect"}${item.tool ? ` · ${item.tool}` : ""}${item.stateId ? ` in step '${item.stateId}'` : ""}`, "cyan");
-        add(`Interception: ${item.interceptionId}`);
+        add(`Call: ${item.operation ?? "call"}${item.tool ? ` · ${item.tool}` : ""}${item.stateId ? ` in step '${item.stateId}'` : ""}`, "cyan");
+        add(`Held call: ${item.interceptionId}`);
         if (isPlainRecord(item.response)) {
             const value = item.response.value === undefined || item.response.value === null ? "" : `: ${testValueText(item.response.value)}`;
             add(`Answered: ${item.response.kind ?? "an answer"} · ${item.response.disposition ?? "not known"}${value}. Another answer is refused; the same answer again is the same answer.`);
@@ -1136,10 +1136,10 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
         if (item.responseSchema !== null && item.responseSchema !== undefined) add(`The answer must match: ${testValueText(item.responseSchema)}`);
         if (waiting?.outcomes?.length) add(`Its step's outcomes: ${waiting.outcomes.join(", ")}`);
         add(`Answer: ${WORKFLOW_TEST_ANSWER_KINDS.map(entry => (entry === kind ? `[${entry}]` : entry)).join(" · ")} (Tab changes it)`, "cyan");
-        if (kind === "cancel") add("The effect ends as cancelled; a cancel has no value.", "gray");
+        if (kind === "cancel") add("The call ends as cancelled; a cancel has no value.", "gray");
         if (kind === "error") add('An error answer is { "code", "message", "details"? } with a message of 1 to 4,000 characters.', "gray");
         if (responder.waiting.length > 1 || at < 0) {
-            add(`${at >= 0 ? `${at + 1} of ${responder.waiting.length}` : responder.waiting.length} effect${responder.waiting.length === 1 ? "" : "s"} wait`
+            add(`${at >= 0 ? `${at + 1} of ${responder.waiting.length}` : responder.waiting.length} held call${responder.waiting.length === 1 ? "" : "s"} wait`
                 + `${responder.waiting.length === 1 ? "s" : ""} for an answer${responder.waiting.length ? " · ↑↓ another" : ""}`, "gray");
         }
     }
@@ -1155,10 +1155,10 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
     const valueShown = sameRun && Boolean(item) && kind !== "cancel";
     const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
     const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - (valueShown ? 14 : 10))));
-    const hint = "Enter send · Tab success/error/cancel · ↑↓ another waiting effect · Esc back";
+    const hint = "Enter send · Tab success/error/cancel · ↑↓ another waiting call · Esc back";
     const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
     return {
-        title: `Answer · test run ${shortRunId(modal.runId)}${item ? ` · ${item.operation ?? "effect"}${item.stateId ? ` in '${item.stateId}'` : ""}` : ""}`,
+        title: `Answer · test run ${shortRunId(modal.runId)}${item ? ` · ${item.operation ?? "call"}${item.stateId ? ` in '${item.stateId}'` : ""}` : ""}`,
         lines, listHeight, scrollOffset: 0, kind, valueShown,
         value: String(modal.value ?? ""), valueCursor: Number(modal.valueCursor) || 0,
         busy: Boolean(responder?.busy),
@@ -1169,7 +1169,7 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
 /**
  * The virtual clock form (TUI modal "workflowTestClock"; the portal's clock, mock M19): bound to one test run
  * (`runId`), it shows the run's notices, how far its virtual clock is from the test's start, what an advance decides
- * (what came due: a wait or a receive's wait elapses, an intercepted request or agent times out; a result that won first
+ * (what came due: a wait or a receive's wait elapses, a held request or agent times out; a result that won first
  * stands; script clocks are real), the effects that wait, an advance being sent, the last advance's refusal or lost
  * reply, why a person cannot advance it, and the form's own check of the seconds. Null unless the form is open. Pure.
  */
@@ -1189,10 +1189,10 @@ export function selectWorkflowTestClockModal(state, maxWidth = 100, viewportHeig
     if (!sameRun) add(`The workflow view no longer shows test run ${shortRunId(modal.runId)}, so this form sends nothing. Esc goes back.`, "yellow");
     else {
         add(`Virtual clock: ${responder.elapsedSeconds === null ? "not known" : `${formatSeconds(responder.elapsedSeconds)} after the test began`}`, "cyan");
-        add("An advance by whole seconds (1 to 30 days) decides what came due: a wait or a receive's wait elapses, an intercepted request or agent "
+        add("An advance by whole seconds (1 to 30 days) decides what came due: a wait or a receive's wait elapses, a held request or agent "
             + "times out; a result that won first stands. Script clocks are real.", "gray");
         const count = responder.waiting.length;
-        if (count) add(`${count} intercepted effect${count === 1 ? " waits" : "s wait"} for an answer.`);
+        if (count) add(`${count} held call${count === 1 ? " waits" : "s wait"} for an answer.`);
         if (responder.reason) add(responder.reason, "yellow");
     }
     if (responder?.pending === "test_advance") add("Advancing…", "yellow");
@@ -1407,7 +1407,7 @@ function historyLines(node) {
 }
 
 /**
- * A test run's intercepted effects (design 05), as the portal's table lists them: the effect, its state and its answer,
+ * A test run's held calls (design 05), as the portal's table lists them: the effect, its state and its answer,
  * from the shown run's own read model only. The TUI shows them; the run's parent agent, a fixture or a person in the
  * portal answers them. Null when the shown run has none.
  */
@@ -1425,11 +1425,11 @@ function testEffectLines(projection, selectedId) {
     });
     if (items.length > EFFECT_LIMIT) lines.push({ text: `  … ${items.length - EFFECT_LIMIT} more`, color: "gray" });
     return {
-        title: `Intercepted effects of this test run (${items.length}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for the parent` : ""}):`,
+        title: `Held calls of this test run (${items.length}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for the parent` : ""}):`,
         lines,
         note: projection.testResponder?.respond
-            ? "a answers one that waits; the parent agent or a fixture may answer first, and the first answer stands."
-            : "The TUI shows them; the run's parent agent, a fixture or a person in the portal answers them.",
+            ? "a answers one that waits; the parent agent or a prepared answer may answer first, and the first answer stands."
+            : "The TUI shows them; the run's parent agent, a prepared answer or a person in the portal answers them.",
     };
 }
 
@@ -1573,7 +1573,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
 }
 
 /** The note a read-only composer shows when the session's input policy (normalizeWorkflowInputPolicy) refuses prompts. */
-export const WORKFLOW_INPUT_DENIED_TEXT = "This session runs a workflow state. People cannot send it prompts, answers or steers.";
+export const WORKFLOW_INPUT_DENIED_TEXT = "This session runs a step of a workflow. People cannot send it prompts, answers or steers.";
 
 /**
  * What a person may send to a session, as the server reports it: getWorkflowInputPolicy's answer (the TUI's direct

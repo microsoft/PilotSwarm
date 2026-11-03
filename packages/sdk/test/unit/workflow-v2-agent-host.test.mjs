@@ -76,7 +76,7 @@ test("an inline prompt's child is the workflow's child one level down, owned by 
     assert.equal(resolved.length, 0);
     assert.deepEqual(created, [{
         sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, model: "azure-openai:gpt-test", reasoningEffort: "high",
-        title: "Workflow node: review", prompt: "[SYSTEM: wrapper]\n{}", clientMessageId: "workflow:W:run-1:agent:nx-1",
+        title: "Workflow step: review", prompt: "[SYSTEM: wrapper]\n{}", clientMessageId: "workflow:W:run-1:agent:nx-1",
         sender: { kind: "agent", sessionId: "W", display: WORKFLOW_AGENT_PROMPT_SENDER },
     }]);
     // Without a controlling agent the child inherits no model.
@@ -178,7 +178,7 @@ test("the client-based creator starts a client, creates the child, titles it and
     });
     const catalog = { updateSession: async (id, update) => { calls.push(["title", id, update]); } };
     const spec = {
-        sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, model: "azure-openai:gpt-test", title: "Workflow node: review",
+        sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, model: "azure-openai:gpt-test", title: "Workflow step: review",
         prompt: "wrapper", clientMessageId: "cm-1", sender: { kind: "agent", sessionId: "W", display: WORKFLOW_AGENT_PROMPT_SENDER },
         boundAgentName: "kit:reviewer", toolNames: ["read_file"], agentId: "reviewer",
     };
@@ -187,7 +187,7 @@ test("the client-based creator starts a client, creates the child, titles it and
         "start",
         ["create", { sessionId: "child-1", parentSessionId: "W", nestingLevel: 2, owner: OWNER, model: "azure-openai:gpt-test",
             boundAgentName: "kit:reviewer", agentId: "reviewer", toolNames: ["read_file"] }],
-        ["title", "child-1", { title: "Workflow node: review" }],
+        ["title", "child-1", { title: "Workflow step: review" }],
         ["send", "wrapper", { clientMessageIds: ["cm-1"], sender: spec.sender }],
         "stop",
     ]);

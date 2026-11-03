@@ -24,7 +24,7 @@ const END_EVENTS = { "workflow.completed": "completed", "workflow.failed": "fail
 
 /**
  * The sections of a run that the read pages (design 04 read_workflow "Bounded history pagination"; readWorkflowV2View
- * run.pages): node executions, inbox, outbox and a test run's intercepted effects. A read model without run.pages is an
+ * run.pages): node executions, inbox, outbox and a test run's held calls. A read model without run.pages is an
  * older server's, which listed a run's first rows by entry and paged no further.
  */
 export const WORKFLOW_V2_READ_SECTIONS = Object.freeze(["executions", "inbox", "outbox", "interceptions"]);
@@ -470,11 +470,11 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
     if (run?.test) {
         const test = run.test;
         banners.push({ level: "warning", text: typeof test.notice === "string" && test.notice
-            ? test.notice : "TEST — scripts run normally; framework tools are mocked." });
+            ? test.notice : "TEST — scripts run normally; workflow tools are mocked." });
         // Agent mode real: its agent states run real agent sessions (they spend model tokens), whose framework tools are mocked.
         if (test.agentMode === "real") {
             banners.push({ level: "warning", text: typeof test.agentNotice === "string" && test.agentNotice
-                ? test.agentNotice : "Agent steps run real agent sessions; their framework tool calls are mocked." });
+                ? test.agentNotice : "Agent steps run real agent sessions; their workflow tool calls are mocked." });
         }
         if (test.stale === true) {
             banners.push({ level: "warning", text: `This test ran revision ${test.testedRevision}; the definition is now at revision ${lifecycle.currentRevision}, so its result is stale.` });
@@ -483,7 +483,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
             banners.push({ level: "info", text: `Virtual clock: ${formatSeconds(test.virtualClock.elapsedSeconds)} after the test began. Script clocks are real.` });
         }
         const open = Array.isArray(test.coverage?.unanswered) ? test.coverage.unanswered.length : 0;
-        if (open) banners.push({ level: "info", text: `${open} intercepted effect${open === 1 ? " waits" : "s wait"} for the parent's answer.` });
+        if (open) banners.push({ level: "info", text: `${open} held call${open === 1 ? " waits" : "s wait"} for the parent's answer.` });
     }
     // Replies that arrived before the run was ready for them (q15, mock M16): counted from the read's own rows.
     const replies = run ? workflowV2WaitingReplies(model.run, now).length : 0;
@@ -499,7 +499,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
         banners.push({ level: "info", text: "Older visits of this run are not loaded, so counts may be incomplete." });
     }
     if (history?.paged && !history.openComplete) {
-        banners.push({ level: "warning", text: "This run has more open steps, inputs, deliveries or waiting effects than one read lists (500 of each), so some of them are not shown." });
+        banners.push({ level: "warning", text: "This run has more open steps, inputs, deliveries or waiting calls than one read lists (500 of each), so some of them are not shown." });
     }
     if (history?.staleOlder) {
         banners.push({ level: "info", text: history.staleOlder === 1

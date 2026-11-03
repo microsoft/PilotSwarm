@@ -148,7 +148,7 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
                 owner: owner ? { provider: owner.provider, subject: owner.subject, email: owner.email ?? null, displayName: owner.displayName ?? null } : null,
                 ...(controlling?.model ? { model: controlling.model } : {}),
                 ...(controlling?.reasoningEffort ? { reasoningEffort: controlling.reasoningEffort } : {}),
-                title: `Workflow node: ${request.stateId}`,
+                title: `Workflow step: ${request.stateId}`,
                 prompt: request.prompt, clientMessageId: request.clientMessageId,
                 sender: { kind: "agent", sessionId: request.workflowSessionId, display: WORKFLOW_AGENT_PROMPT_SENDER },
             };

@@ -36,7 +36,7 @@ const EVERY = ["replace_definition", "publish", "publish_and_start", "start", "s
 const commands = (extra = {}) => ({ operations: EVERY, restriction: null, run: null, ...extra });
 const SUBTREE = {
     operations: ["pause", "stop", "cancel"],
-    restriction: { reason: "This workflow runs in a workflow agent state's subtree: people can pause, stop or cancel it; only its controlling agent changes, resumes or tests it.",
+    restriction: { reason: "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling agent changes, resumes or tests it.",
         workflowSessionId: "wf-container", controllingSessionId: "parent-agent" },
     run: null,
 };

@@ -7253,7 +7253,7 @@ export class PilotSwarmUiController {
         const agentMode = modal.agentMode === "real" ? "mocked" : "real";
         this.updateWorkflowTestReview({ agentMode, error: null });
         this.dispatch({ type: "ui/status", text: agentMode === "real"
-            ? "Agent steps: real agents. They spend model tokens; their framework tool calls are mocked"
+            ? "Agent steps: real agents. They spend model tokens; their workflow tool calls are mocked"
             : "Agent steps: mocked. The parent answers for each agent step" });
     }
 
@@ -7353,7 +7353,7 @@ export class PilotSwarmUiController {
      * The TUI's workflow view: open the answer form (a; design 05
      * test_respond; mock M18; R19, R20, R26; INACTIVE: only where the portal's
      * answer form lets a person answer, workflowV2TestResponder) bound to the
-     * test run the view shows and one of its intercepted effects that waits
+     * test run the view shows and one of its held calls that waits
      * for the parent: the selected state's, else the first. It starts from
      * the effect's own template (an agent state's first outcome, a request's
      * response, null). Otherwise the status line says why. It returns to the
@@ -7374,7 +7374,7 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/modal", modal: { type: "workflowTestAnswer", sessionId: selection.modal.sessionId, runId: responder.runId,
             interceptionId: waiting.interceptionId, kind: "success", value, valueCursor: value.length, error: null,
             returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
-        this.dispatch({ type: "ui/status", text: "Answer — Enter send · Tab success/error/cancel · ↑↓ another waiting effect · Esc back" });
+        this.dispatch({ type: "ui/status", text: "Answer — Enter send · Tab success/error/cancel · ↑↓ another waiting call · Esc back" });
     }
 
     /** The answer form's JSON value: type, delete, move the cursor (editWorkflowModalField). */
@@ -7403,13 +7403,13 @@ export class PilotSwarmUiController {
         const responder = workflowViewProjectionFor(state, modal.sessionId).testResponder;
         const waiting = responder?.runId === modal.runId ? responder.waiting : [];
         if (!waiting.length) {
-            this.dispatch({ type: "ui/status", text: "No effect of this test run waits for an answer" });
+            this.dispatch({ type: "ui/status", text: "No call of this test run waits for an answer" });
             return;
         }
         const current = waiting.findIndex(entry => entry.interceptionId === modal.interceptionId);
         const next = current < 0 ? (delta > 0 ? 0 : waiting.length - 1) : Math.max(0, Math.min(current + delta, waiting.length - 1));
         if (next === current) {
-            this.dispatch({ type: "ui/status", text: waiting.length === 1 ? "No other effect waits for an answer" : "No more effects that wait in this direction" });
+            this.dispatch({ type: "ui/status", text: waiting.length === 1 ? "No other call waits for an answer" : "No more calls that wait in this direction" });
             return;
         }
         const value = workflowV2TestAnswerTemplate(waiting[next]);
@@ -7449,7 +7449,7 @@ export class PilotSwarmUiController {
         }
         const items = workflowV2RunRows(projection.runReadModel?.run ?? null).interceptions;
         if (!items.some(item => item?.interceptionId === modal.interceptionId)) {
-            return refuse(`Interception ${modal.interceptionId} is not one of this test run's effects, so nothing was sent.`);
+            return refuse(`Held call ${modal.interceptionId} is not one of this test run's held calls, so nothing was sent.`);
         }
         if (!responder.respond) return refuse(responder.reason ?? "This workflow takes no test answers from people.");
         if (responder.busy) return refuse(responder.pending === "test_respond" ? "The answer is being sent; wait for its reply." : "Another command for this workflow is being sent.");
@@ -12917,7 +12917,7 @@ export class PilotSwarmUiController {
         // A session in a workflow agent state's subtree takes no steer from a person (the server refuses it too).
         if (state.ui.workflowInputPolicies?.[sessionId]?.canSteer === false) {
             this.dispatch({ type: "ui/status", text: selectWorkflowInputNote(state, sessionId)
-                || "This session runs a workflow state. People cannot steer it." });
+                || "This session runs a step of a workflow. People cannot steer it." });
             return;
         }
         // Nor while that is being checked, or after the check failed (owner decision q18).

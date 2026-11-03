@@ -17,7 +17,7 @@ import { PortalRuntime } from "../runtime.js";
 
 const DENIED = {
     canSendPrompt: false, canAnswer: false, canSteer: false,
-    reason: "This session runs a workflow state. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.",
+    reason: "This session runs a step of a workflow. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.",
     workflowSessionId: "W", controllingSessionId: "P",
 };
 
@@ -39,7 +39,7 @@ function runtimeWith() {
         mgmt: { getSession: async () => null },
         sendMessage: async (sessionId, prompt, options) => {
             if (sessionId === "child") {
-                throw Object.assign(new Error(`Session ${sessionId} runs a workflow state for workflow W: people cannot send it prompts.`),
+                throw Object.assign(new Error(`Session ${sessionId} runs a step of workflow W: people cannot send it prompts.`),
                     { code: "WORKFLOW_HUMAN_INPUT_DENIED", status: 403 });
             }
             sent.push({ sessionId, prompt, sender: options.sender });
@@ -81,12 +81,12 @@ test("a person's prompt to such a session fails with the SDK's 403; an ordinary 
 // Distinctive ids so a leak check by substring is meaningful.
 const SECRET_WF = "wf-secret-7c1e";
 const SECRET_CTRL = "ctrl-secret-91ab";
-const INPUT_REASON = "This session runs a workflow state. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
+const INPUT_REASON = "This session runs a step of a workflow. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
 const SECRET_DENIED = { canSendPrompt: false, canAnswer: false, canSteer: false, reason: INPUT_REASON, workflowSessionId: SECRET_WF, controllingSessionId: SECRET_CTRL };
 const SECRET_OPEN = { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
 
 function inputDenial(sessionId, what) {
-    return Object.assign(new Error(`Session ${sessionId} runs a workflow state for workflow ${SECRET_WF}: people cannot send it ${what}.`),
+    return Object.assign(new Error(`Session ${sessionId} runs a step of workflow ${SECRET_WF}: people cannot send it ${what}.`),
         { code: "WORKFLOW_HUMAN_INPUT_DENIED", status: 403, details: { sessionId, controllingSessionId: SECRET_CTRL } });
 }
 

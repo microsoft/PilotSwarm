@@ -36,8 +36,8 @@ const PIN = { name: "code-reviewer", package: "review-kit", version: "1.2.0", pa
     interface: { name: "review_change", version: "1", digest: DIGEST } };
 const PINS = { review: PIN, helper: { name: "local-helper", package: null, version: null, packageId: null } };
 const TEST = {
-    notice: "TEST — scripts run normally; framework tools are mocked.", agentMode: "real",
-    agentNotice: "Agent states run real agent sessions: they spend model tokens and their results vary as a model's do.",
+    notice: "TEST — scripts run normally; workflow tools are mocked.", agentMode: "real",
+    agentNotice: "Agent steps run real agent sessions: they spend model tokens and their results vary as a model's do.",
     agentPins: { review: { ...PIN, revision: TESTED_REVISION } }, scenario: null, testedRevision: 1, stale: false, virtualClock: null,
     interceptions: [], coverage: { unanswered: [] },
 };

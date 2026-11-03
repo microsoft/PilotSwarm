@@ -1,5 +1,5 @@
 /**
- * Workflow v2: a person answers a test run's intercepted effects and moves
+ * Workflow v2: a person answers a test run's held calls and moves
  * its virtual clock from the workflow view (design 05 test_respond and
  * test_advance; mocks M18 and M19; R19, R20, R26; INACTIVE):
  *   - nothing without `personCommands` listing test_respond or test_advance
@@ -41,7 +41,7 @@ const states = [
 const graph = { revision: 1, initial: "review", states };
 const AGENT = "nx-review-1/agent";
 const testView = (extra = {}) => ({
-    notice: "TEST — scripts run normally; framework tools are mocked.", agentMode: "mocked", scenario: null, testedRevision: 1, stale: false,
+    notice: "TEST — scripts run normally; workflow tools are mocked.", agentMode: "mocked", scenario: null, testedRevision: 1, stale: false,
     virtualClock: { now: "9000-01-01T01:00:00.000Z", elapsedSeconds: 3600 },
     interceptions: [
         { interceptionId: "nx-fetch-1/call-1", operation: "tool.call", tool: "read_build", stateId: "fetch", state: "responded",
@@ -73,7 +73,7 @@ test("nothing without test_respond or test_advance, or unless the view shows a t
 
     const ended = workflowV2TestResponder(testModel({ status: "completed" }));
     assert.deepEqual([ended.respond, ended.advance], [false, false]);
-    assert.equal(ended.reason, "Test run run-1 has ended (completed); its open interceptions stay unanswered.");
+    assert.equal(ended.reason, "Test run run-1 has ended (completed); its held calls stay unanswered.");
     const denied = workflowV2TestResponder(testModel({ viewer: { allowed: false, reason: "Only the session owner (Alice) or an admin can do this." } }));
     assert.deepEqual([denied.respond, denied.advance, denied.reason], [false, false, "Only the session owner (Alice) or an admin can do this."]);
     const pending = workflowV2TestResponder(testModel(), { operation: "test_advance", runId: RUN, phase: "pending" });
@@ -119,7 +119,7 @@ test("the commands name the test run; the answer names its interception; a refus
 
     assert.equal(workflowV2RunCommandAccepted("test_respond", RUN, { replayed: false, runId: RUN, interceptionId: AGENT,
         node: { stateId: "review", state: "completed", outcome: "accepted" } }, { interceptionId: AGENT, response }),
-    "Answered interception nx-rev…gent of test run run-1. State 'review' ended 'accepted'.");
+    "Answered held call nx-rev…gent of test run run-1. State 'review' ended 'accepted'.");
     assert.equal(workflowV2RunCommandAccepted("test_advance", RUN, { seconds: 300, decided: [{ nodeExecutionId: "nx-1" }] }, { seconds: 300 }),
         "Advanced the virtual clock of test run run-1 by 300 seconds: 1 deadline came due. Script clocks are real.");
     const invalid = workflowV2RunCommandFailure(Object.assign(new Error("The output does not match ReviewResult."),
@@ -167,7 +167,7 @@ test("an answer and an advance are sent for the shown test run, and the workflow
     assert.match(answer.operation_id, /^ui-test_respond-./);
     assert.deepEqual(Object.fromEntries(Object.entries(answer).filter(([key]) => key !== "operation_id")),
         { operation: "test_respond", run_id: RUN, interception_id: AGENT, response });
-    assert.equal(store.getState().ui.statusText, "Answered interception nx-rev…gent of test run run-1. State 'review' ended 'accepted'.");
+    assert.equal(store.getState().ui.statusText, "Answered held call nx-rev…gent of test run run-1. State 'review' ended 'accepted'.");
     await until(() => reads.length === 1, "the read model read again");
     assert.equal((await controller.sendWorkflowRunCommand(SID, { operation: "test_advance", runId: RUN, seconds: 300 })).ok, true);
     assert.deepEqual(Object.fromEntries(Object.entries(updates[1][1]).filter(([key]) => key !== "operation_id")),
@@ -186,15 +186,15 @@ const main = controller => renderToStaticMarkup(React.createElement(WorkflowMain
 
 test("a waiting interception has an Answer button that opens its form; the clock advances; neither shows where it is not allowed", () => {
     const html = main(mount({ readModel: testModel() }));
-    assert.ok(html.includes("Intercepted effects (2)"));
+    assert.ok(html.includes("Held calls (2)"));
     assert.equal([...html.matchAll(/data-action="answer"/g)].length, 1, "only the waiting interception can be answered");
     assert.ok(html.includes("aria-label=\"Virtual clock\""));
     assert.ok(html.includes("Virtual clock: 1 h after the test began"));
     assert.ok(html.includes("data-operation=\"test_advance\""));
-    assert.ok(!html.includes("Answer an intercepted effect"));
+    assert.ok(!html.includes("Answer a held call"));
 
     const open = main(mount({ readModel: testModel(), answeringInterceptionId: AGENT }));
-    assert.ok(open.includes("aria-label=\"Answer an intercepted effect\""));
+    assert.ok(open.includes("aria-label=\"Answer a held call\""));
     assert.ok(open.includes("Answer agent in &#x27;review&#x27;"));
     assert.ok(open.includes("{&quot;outcome&quot;:&quot;accepted&quot;,&quot;output&quot;:null}</textarea>"), "the agent's first outcome is the template");
     // The selection, read from each radio input whatever the order of its attributes.
@@ -206,7 +206,7 @@ test("a waiting interception has an Answer button that opens its form; the clock
     for (const [label, model] of [["ended", testModel({ status: "completed" })], ["no test operations", testModel({ operations: MILESTONE.slice(0, 10) })],
         ["viewer", testModel({ viewer: { allowed: false, reason: "no" } })]]) {
         const page = main(mount({ readModel: model, answeringInterceptionId: AGENT }));
-        assert.ok(page.includes("Intercepted effects (2)"), `${label}: the interceptions stay readable`);
-        assert.ok(!page.includes("data-action=\"answer\"") && !page.includes("Answer an intercepted effect") && !page.includes("aria-label=\"Virtual clock\""), label);
+        assert.ok(page.includes("Held calls (2)"), `${label}: the interceptions stay readable`);
+        assert.ok(!page.includes("data-action=\"answer\"") && !page.includes("Answer a held call") && !page.includes("aria-label=\"Virtual clock\""), label);
     }
 });

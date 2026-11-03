@@ -10,7 +10,7 @@ import { workflowV2AgentBinding, workflowV2AgentBindingRows, workflowV2AgentTask
  * definition's publication (publish the exact revision shown, publish it and
  * start its live run, start the published revision's live run), a test of
  * the exact revision shown (test, with its agent mode), and a test run's
- * answers to its intercepted effects and its virtual clock (test_respond,
+ * answers to its held calls and its virtual clock (test_respond,
  * test_advance). Pure: nothing here
  * calls anything. The controller sends a command (sendWorkflowRunCommand) as
  * an updateWorkflow command through the transport; this module says which
@@ -48,10 +48,10 @@ const RESPONSE_KINDS = new Set(["success", "error", "cancel"]);
  * shown before a test starts; the run's own notices come back with its read
  * model once it runs.
  */
-export const WORKFLOW_V2_TEST_NOTICE_TEXT = "TEST — scripts run normally; framework tools are mocked. Direct script effects (network, files, "
+export const WORKFLOW_V2_TEST_NOTICE_TEXT = "TEST — scripts run normally; workflow tools are mocked. Direct script effects (network, files, "
     + "processes, the clock, randomness) are real, and a test result is not evidence that the definition is safe to run live.";
 export const WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT = "Agent steps run real agent sessions: they spend model tokens and their results vary as a "
-    + "model's do. Their framework tool calls are mocked; their model's own built-in tools (shell, files) run normally; MCP tools are refused.";
+    + "model's do. Their workflow tool calls are mocked; their model's own built-in tools (shell, files) run normally; MCP tools are refused.";
 /** The largest workflow YAML (compiler.ts WORKFLOW_V2_MAX_YAML_BYTES); the server checks it again. */
 const YAML_MAX_BYTES = 256 * 1024;
 /** The longest KV key (store.ts WORKFLOW_V2_KV_LIMITS.maxKeyLength). */
@@ -151,7 +151,7 @@ export function workflowV2RunControls(model, command = null) {
  */
 export function workflowV2RunCommandArgs(operation, input = {}) {
     if (WORKFLOW_V2_RUN_CONTROL_OPERATIONS.includes(operation)) return { ok: true, args: null };
-    // A test run's answer to one of its intercepted effects, and its virtual clock (design 05).
+    // A test run's answer to one of its held calls, and its virtual clock (design 05).
     if (operation === "test_respond") {
         if (!isRecord(input) || typeof input.interceptionId !== "string" || !input.interceptionId) return { ok: false };
         const response = input.response;
@@ -617,7 +617,7 @@ export function workflowV2ScenarioDraft(source) {
  * R26) given the view's last command, or null: without `personCommands`
  * listing test_respond or test_advance (a host without controller 1.9.0, or
  * a workflow agent state's subtree), or unless the read model shows a test
- * run. `waiting` lists the run's intercepted effects that wait for an answer
+ * run. `waiting` lists the run's held calls that wait for an answer
  * (`awaiting_parent`), with what the answer must match. `respond` and
  * `advance` say whether a person may answer and move the virtual clock now:
  * not once the run has ended, and not for a viewer who may not command the
@@ -633,7 +633,7 @@ export function workflowV2TestResponder(model, command = null) {
     if (typeof run.runId !== "string" || !run.runId) return null;
     const viewer = isRecord(model.personCommands.viewer) ? model.personCommands.viewer : null;
     const denied = viewer?.allowed === false ? text(viewer.reason) ?? "You cannot command this workflow." : null;
-    const reason = !ACTIVE.has(run.status) ? `Test run ${shortId(run.runId)} has ended (${run.status}); its open interceptions stay unanswered.` : denied;
+    const reason = !ACTIVE.has(run.status) ? `Test run ${shortId(run.runId)} has ended (${run.status}); its held calls stay unanswered.` : denied;
     const states = Array.isArray(model.graph?.states) ? model.graph.states : [];
     // The run's interceptions as one list: its newest page and the waiting ones the page does not hold (workflowV2RunRows).
     const waiting = workflowV2RunRows(run).interceptions
@@ -811,7 +811,7 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
         const node = isRecord(receipt?.node) ? receipt.node : null;
         const decided = node && node.state !== "pending" && text(node.outcome)
             ? ` State '${text(node.stateId) ?? "?"}' ended '${node.outcome}'.` : "";
-        return `Answered interception ${interception} of test ${run}.${decided}${again}`;
+        return `Answered held call ${interception} of test ${run}.${decided}${again}`;
     }
     if (operation === "test_advance") {
         const seconds = isRecord(receipt) && Number.isSafeInteger(receipt.seconds) ? receipt.seconds : args?.seconds;

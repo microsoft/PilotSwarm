@@ -220,7 +220,7 @@ describe("workflow v2: a person's workflow command (direct management client, in
             // What it takes from a person, as its read model says: the brakes, with the reason and its controlling agent.
             expect((await mgmt.readWorkflow(nested.workflowSessionId)).personCommands).toEqual({
                 operations: ["pause", "stop", "cancel"],
-                restriction: { reason: "This workflow runs in a workflow agent state's subtree: people can pause, stop or cancel it; only its controlling agent changes, resumes or tests it.",
+                restriction: { reason: "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling agent changes, resumes or tests it.",
                     workflowSessionId: container.workflowSessionId, controllingSessionId: parent },
                 run: { runId: nested.runId, stop: true },
             });

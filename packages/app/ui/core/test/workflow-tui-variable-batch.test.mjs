@@ -31,7 +31,7 @@ const graph = { revision: 1, initial: "review", states };
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
     "test", "test_respond", "test_advance"];
-const SUBTREE = "This workflow runs in a workflow agent state's subtree: people can pause, stop or cancel it; only its controlling "
+const SUBTREE = "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling "
     + "agent changes, resumes or tests it.";
 const VIEWER = "You may read this workflow but not command it.";
 

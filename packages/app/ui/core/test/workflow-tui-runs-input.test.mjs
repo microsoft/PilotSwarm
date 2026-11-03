@@ -136,14 +136,14 @@ test("a run whose model is still loading or could not be read says so beside it;
 
 // ── The composer of a session in a workflow agent state's subtree ──────────────────────────────────────────────────
 
-const REASON = "This session runs a workflow state. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
+const REASON = "This session runs a step of a workflow. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
 const DENIED = { canSendPrompt: false, canAnswer: false, canSteer: false, reason: REASON, workflowSessionId: "wf", controllingSessionId: "r1" };
 const ALLOWED = { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
 /** r1 (a root agent) → wf (its workflow) → c1 (an agent state's child) → g1 (c1's own sub-agent); r1 → s1 (an ordinary sub-agent); o1 (parent not loaded). */
 const TREE = [
     { sessionId: "r1", title: "Root", status: "idle" },
     { sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow", parentSessionId: "r1" },
-    { sessionId: "c1", title: "Workflow node: review", status: "running", parentSessionId: "wf" },
+    { sessionId: "c1", title: "Workflow step: review", status: "running", parentSessionId: "wf" },
     { sessionId: "g1", title: "Helper", status: "idle", parentSessionId: "c1" },
     { sessionId: "s1", title: "Sub-agent", status: "idle", parentSessionId: "r1" },
     { sessionId: "o1", title: "Orphan", status: "idle", parentSessionId: "not-loaded" },

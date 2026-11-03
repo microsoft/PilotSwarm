@@ -117,7 +117,7 @@ const refusal = (code, status, message, extra = {}) => Object.assign(new Error(m
 test("over HTTP: the receipt, the refusals with their status and safe details, the inactive 501's message, through both clients", async () => {
     const h = await routeHarness((command) => {
         if (command.operation === "set_vars") {
-            throw refusal("WORKFLOW_HUMAN_INPUT_DENIED", 403, "Session w runs a workflow state for workflow c: people cannot change its definition, inputs, runs or tests.",
+            throw refusal("WORKFLOW_HUMAN_INPUT_DENIED", 403, "Session w runs a step of workflow c: people cannot change its definition, inputs, runs or tests.",
                 { details: { sessionId: "w", action: "workflow", controllingSessionId: "P" }, exposeDetails: true });
         }
         if (command.operation === "start") throw refusal("WORKFLOW_COMMANDS_UNAVAILABLE", 501, "This deployment does not take workflow commands from people yet.", { expose: true });

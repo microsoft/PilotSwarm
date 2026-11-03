@@ -69,7 +69,7 @@ function WholeValue({ whole }) {
 
 /**
  * The shown run's older history (design 04 read_workflow "Bounded history pagination"): Load older history reads the
- * next, older page of its executions, messages and test effects; after loaded rows changed it reads them again from
+ * next, older page of its executions, messages and held calls; after loaded rows changed it reads them again from
  * the start. Nothing when the whole history is loaded and nothing changed.
  */
 function OlderHistory({ history, onLoadOlder, section = null }) {
@@ -312,7 +312,7 @@ export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, sele
 }
 
 /**
- * A test run's intercepted effects (design 05; INACTIVE outside controller 1.9.0's tests): what each reached, the
+ * A test run's held calls (design 05; INACTIVE outside controller 1.9.0's tests): what each reached, the
  * schema its answer must match and its answer. The parent answers through its own tools; a person may answer one that
  * waits only when `responder` (workflowV2TestResponder's answer) says so: its Answer button opens the answer form for it.
  * The notice that scripts run normally stays in the banners above.
@@ -322,10 +322,10 @@ export function WorkflowV2TestInterceptions({ test, controller = null, sessionId
     if (!items.length) return null;
     const answerable = Boolean(controller && responder?.respond);
     const waits = id => answerable && responder.waiting.some(item => item.interceptionId === id);
-    return h("section", { className: "ps-workflow-test", "aria-label": "Test interceptions", style: { padding: "6px 10px", fontSize: "0.75rem" } },
-        h("h3", null, `Intercepted effects (${items.length})`),
+    return h("section", { className: "ps-workflow-test", "aria-label": "Test held calls", style: { padding: "6px 10px", fontSize: "0.75rem" } },
+        h("h3", null, `Held calls (${items.length})`),
         h("table", null,
-            h("thead", null, h("tr", null, [...["Effect", "Step", "Answer"], ...(answerable ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
+            h("thead", null, h("tr", null, [...["Call", "Step", "Answer"], ...(answerable ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
             h("tbody", null, items.map((item, i) => h("tr", { key: item.interceptionId || i, "data-interception": item.interceptionId },
                 h("td", { title: item.interceptionId }, item.tool ? `${item.operation} · ${item.tool}` : String(item.operation)),
                 h("td", null, item.stateId || "—"),
@@ -334,12 +334,12 @@ export function WorkflowV2TestInterceptions({ test, controller = null, sessionId
                     disabled: responder.busy, "aria-pressed": answering === item.interceptionId,
                     onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { answeringInterceptionId: item.interceptionId } }) },
                 "Answer") : null) : null)))),
-        // Older intercepted effects of this run than the read holds: the run's older history reads them.
+        // Older held calls of this run than the read holds: the run's older history reads them.
         h(OlderHistory, { history, onLoadOlder, section: "interceptions" }));
 }
 
 /**
- * A person's answer to one intercepted effect of a test run (design 05 test_respond; mock M18; R19, R20, R26;
+ * A person's answer to one held call of a test run (design 05 test_respond; mock M18; R19, R20, R26;
  * INACTIVE). It shows what the effect reached (its arguments) and what the answer must match, then sends the answer the
  * person chose: success with a JSON value, error with { code, message, details? }, or cancel. The JSON is checked here;
  * the server checks it against the effect's contract and says which fields it refuses, and the same answer sent again is
@@ -366,15 +366,15 @@ export function WorkflowV2TestAnswer({ controller, sessionId, responder, interce
     const radio = (value, label) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 } },
         h("input", { type: "radio", name: kindName, value, checked: kind === value, onChange: () => setKind(value), "data-answer-kind": value }), label);
     const what = `${waiting.operation}${waiting.tool ? ` · ${waiting.tool}` : ""}${waiting.stateId ? ` in '${waiting.stateId}'` : ""}`;
-    return h("section", { className: "ps-workflow-test-answer", "aria-label": "Answer an intercepted effect", "data-interception": interceptionId,
+    return h("section", { className: "ps-workflow-test-answer", "aria-label": "Answer a held call", "data-interception": interceptionId,
         style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, `Answer ${what}`),
-    h("div", { className: "ps-workflow-property" }, h("span", null, "Interception"), h("strong", null, h("code", null, interceptionId))),
+    h("div", { className: "ps-workflow-property" }, h("span", null, "Held call"), h("strong", null, h("code", null, interceptionId))),
     waiting.arguments !== null ? h(Value, { value: waiting.arguments, label: "What it reached" }) : null,
     waiting.responseSchema !== null ? h(Value, { value: waiting.responseSchema, label: "The answer must match" }) : null,
     h("fieldset", { style: { margin: 0, padding: "4px 8px", border: "1px solid var(--ps-border)" } },
         h("legend", null, "Answer"), radio("success", "Success"), radio("error", "Error"), radio("cancel", "Cancel")),
-    kind === "cancel" ? h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, "The effect ends as cancelled; a cancel has no value.")
+    kind === "cancel" ? h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, "The call ends as cancelled; a cancel has no value.")
         : h("label", { style: { display: "grid", gap: 2 } }, kind === "error" ? "Error (JSON: { \"code\", \"message\", \"details\"? })" : "Value (JSON)",
             h("textarea", { value: valueText, rows: 4, onChange: event => setValueText(event.target.value), "data-field": "answer",
                 style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })),

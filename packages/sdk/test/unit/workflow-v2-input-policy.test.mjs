@@ -67,7 +67,7 @@ test("capabilities refuse prompts, answers and steers only in an agent state's s
     const denied = workflowInputCapabilities(LINEAGES.G);
     assert.deepEqual([denied.canSendPrompt, denied.canAnswer, denied.canSteer, denied.workflowSessionId, denied.controllingSessionId],
         [false, false, false, "W", "P"]);
-    assert.match(denied.reason, /workflow state/);
+    assert.match(denied.reason, /runs a step of a workflow/);
     assert.match(WORKFLOW_ASK_USER_REFUSAL, /needs_input/);
 });
 

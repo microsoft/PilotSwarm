@@ -7156,7 +7156,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
 function workflowInputNote(access) {
     const reason = typeof access?.workflowInput?.reason === "string" && access.workflowInput.reason
         ? access.workflowInput.reason
-        : "This session runs a workflow state. People cannot send it prompts, answers or steers.";
+        : "This session runs a step of a workflow. People cannot send it prompts, answers or steers.";
     const parent = access?.workflowInput?.controllingSessionId;
     return parent ? `${reason} Its controlling agent is session ${parent}.` : reason;
 }

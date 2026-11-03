@@ -130,7 +130,7 @@ async function routeHarness({ config } = {}) {
         // Only a test run's coverage reads its revision's graph here (the definition's own revision has no stored graph).
         readRevisionIr: async () => ({ nodes: {} }),
         listRuns: async () => runs,
-        // The read's pages: these runs have no executions, messages or intercepted effects yet.
+        // The read's pages: these runs have no executions, messages or held calls yet.
         pageNodeExecutions: async () => ({ rows: [], more: false }),
         listOpenNodeExecutions: async () => ({ rows: [], more: false }),
         pageInbox: async () => ({ rows: [], more: false }),

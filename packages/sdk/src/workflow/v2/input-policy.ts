@@ -50,7 +50,7 @@ export const WORKFLOW_V2_MAX_DESCENDANT_LEVEL = 3;
 export function workflowHumanInputError(sessionId: string, action: WorkflowHumanInputAction, lineage: WorkflowLineage): Error & { code: string; status: number; details: unknown } {
     const root = lineage.agentRoot!;
     const via = root.controllingSessionId ? ` Message the workflow's parent agent (session ${root.controllingSessionId}) instead;` : "";
-    return Object.assign(new Error(`Session ${sessionId} runs a workflow state for workflow ${root.workflowSessionId}: people cannot ${ACTION_WORDS[action]}.`
+    return Object.assign(new Error(`Session ${sessionId} runs a step of workflow ${root.workflowSessionId}: people cannot ${ACTION_WORDS[action]}.`
         + `${via} you can still read its transcript and stop or cancel the workflow.`), {
         code: WORKFLOW_HUMAN_INPUT_DENIED, status: 403,
         details: { sessionId, action, workflowSessionId: root.workflowSessionId, nodeExecutionId: root.nodeExecutionId,
@@ -95,7 +95,7 @@ export function workflowInputCapabilities(lineage: WorkflowLineage | null): Work
     if (root === null) return { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
     return {
         canSendPrompt: false, canAnswer: false, canSteer: false,
-        reason: "This session runs a workflow state. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.",
+        reason: "This session runs a step of a workflow. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.",
         workflowSessionId: root.workflowSessionId, controllingSessionId: root.controllingSessionId,
     };
 }

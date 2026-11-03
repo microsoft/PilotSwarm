@@ -26,7 +26,7 @@ import {
  * live call. A test run is never evidence that a definition is safe to run
  * live.
  */
-export const WORKFLOW_V2_TEST_NOTICE = "TEST — scripts run normally; framework tools are mocked. Direct script effects (network, files, "
+export const WORKFLOW_V2_TEST_NOTICE = "TEST — scripts run normally; workflow tools are mocked. Direct script effects (network, files, "
     + "processes, the clock, randomness) are real, and a test result is not evidence that the definition is safe to run live.";
 
 /**
@@ -35,8 +35,8 @@ export const WORKFLOW_V2_TEST_NOTICE = "TEST — scripts run normally; framework
  */
 export const WORKFLOW_V2_TEST_AGENT_MODES = ["mocked", "real"] as const;
 /** What a real-agent test run adds to WORKFLOW_V2_TEST_NOTICE (design 05: real-agent mode spends model tokens; model variability stays). */
-export const WORKFLOW_V2_TEST_REAL_AGENT_NOTICE = "Agent states run real agent sessions: they spend model tokens and their results vary as a "
-    + "model's do. Their framework tool calls are mocked; their model's own built-in tools (shell, files) run normally; MCP tools are refused.";
+export const WORKFLOW_V2_TEST_REAL_AGENT_NOTICE = "Agent steps run real agent sessions: they spend model tokens and their results vary as a "
+    + "model's do. Their workflow tool calls are mocked; their model's own built-in tools (shell, files) run normally; MCP tools are refused.";
 /** The most fixtures one test run carries. */
 export const WORKFLOW_V2_TEST_MAX_FIXTURES = 200;
 /** The most bytes of a test run's fixtures, as canonical JSON. */

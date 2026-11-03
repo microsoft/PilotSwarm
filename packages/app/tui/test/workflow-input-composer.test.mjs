@@ -9,7 +9,7 @@ import { PilotSwarmUiController, appReducer, createInitialState, createStore } f
 import { PromptBar } from "../../ui/react/src/components.js";
 import { UiPlatformProvider } from "../../ui/react/src/platform.js";
 
-const REASON = "This session runs a workflow state. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
+const REASON = "This session runs a step of a workflow. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
 
 function harness() {
     const asked = [];
@@ -26,7 +26,7 @@ function harness() {
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "r1", title: "Root", status: "idle" },
         { sessionId: "wf", title: "Workflow: review", status: "running", sessionKind: "workflow", parentSessionId: "r1" },
-        { sessionId: "c1", title: "Workflow node: review", status: "running", parentSessionId: "wf" },
+        { sessionId: "c1", title: "Workflow step: review", status: "running", parentSessionId: "wf" },
         { sessionId: "s1", title: "Sub-agent", status: "idle", parentSessionId: "r1" },
     ] });
     return { controller, store, asked };
@@ -81,8 +81,8 @@ function policyHarness(policyFor) {
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "r1", title: "Root", status: "idle" },
         { sessionId: "wf", title: "Workflow: review", status: "running", sessionKind: "workflow", parentSessionId: "r1" },
-        { sessionId: "c1", title: "Workflow node: review", status: "running", parentSessionId: "wf" },
-        { sessionId: "c2", title: "Workflow node: other", status: "running", parentSessionId: "wf" },
+        { sessionId: "c1", title: "Workflow step: review", status: "running", parentSessionId: "wf" },
+        { sessionId: "c2", title: "Workflow step: other", status: "running", parentSessionId: "wf" },
         { sessionId: "s1", title: "Sub-agent", status: "idle", parentSessionId: "r1" },
     ] });
     return { controller, store, asked };
@@ -119,7 +119,7 @@ test("a failed policy read resolves null, records nothing, shows that it could n
     assert.deepEqual(await controller.ensureWorkflowInputPolicy("c1"), DENIED);
     assert.deepEqual(asked, ["c1", "c1"]);
     assert.equal(recorded(store, "c1").canSendPrompt, false);
-    assert.match(render(controller), /data-kind="readonly">This session runs a workflow state/);
+    assert.match(render(controller), /data-kind="readonly">This session runs a step of a workflow/);
 });
 
 test("concurrent asks for one session share one server read", async () => {

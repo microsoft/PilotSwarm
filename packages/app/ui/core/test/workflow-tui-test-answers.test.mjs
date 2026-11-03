@@ -1,6 +1,6 @@
 // A test run's answers and virtual clock from the TUI's workflow view (design 05 test_respond, test_advance; mocks M18
 // and M19; R08, R19, R20, R26; INACTIVE: only where the portal's answer form and clock let a person act, from the shown
-// test run's own read model): a opens an answer form bound to exactly that run and one intercepted effect that waits
+// test run's own read model): a opens an answer form bound to exactly that run and one held call that waits
 // for the parent (↑↓ another, each from its own template), with the run's notices, the effect's actual state, what it
 // reached, the schema the answer must match and its outcomes; Tab changes the kind (success, error, cancel); Enter
 // sends one test_respond as the portal sends it. + opens the run's virtual clock; Enter sends one test_advance, and the
@@ -23,7 +23,7 @@ import { readModel, row } from "./workflow-v2-fixtures.mjs";
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
     "test", "test_respond", "test_advance"];
-const SUBTREE = "This workflow runs in a workflow agent state's subtree: people can pause, stop or cancel it; only its controlling "
+const SUBTREE = "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling "
     + "agent changes, resumes or tests it.";
 const states = [
     { id: "review", type: "agent", invoke: { source: "prompt" }, timeoutSeconds: 600, outcomes: ["accepted", "rejected"],
@@ -38,7 +38,7 @@ const NOTIFY = "nx-notify-2/call-1";
 const FETCHED = "nx-review-1/call-1";
 const SCHEMA = { type: "object", required: ["outcome"] };
 
-/** An intercepted effect as read_workflow shows it (tools.ts interceptionViewOf). */
+/** An held call as read_workflow shows it (tools.ts interceptionViewOf). */
 const interception = (interceptionId, { operation = "tool.call", tool = null, node, stateId, response = null, schema = null, args = "{}" } = {}) => ({
     interceptionId, operation, tool, nodeExecutionId: node, stateId, state: response ? "responded" : "awaiting_parent", arguments: args,
     argumentsSha256: "h", responseSchema: schema, virtualAt: "2026-11-02T00:00:00.000Z", response });
@@ -144,11 +144,11 @@ async function answering(initial, answers = []) {
     return h;
 }
 
-test("the view says what a and + do for the shown test run; a binds the form to the run and a waiting effect, from its template; Enter sends it", async () => {
+test("the view says what a and + do for the shown test run; a binds the form to the run and a waiting call, from its template; Enter sends it", async () => {
     const h = await opened(workflow(), [answered("accepted")]);
     const lines = details(h.store);
-    assert.ok(lines.includes("Test run test-r…0001 — a answers one of its 2 waiting effects · + advances its virtual clock"), lines.join("\n"));
-    assert.ok(lines.includes("a answers one that waits; the parent agent or a fixture may answer first, and the first answer stands."));
+    assert.ok(lines.includes("Test run test-r…0001 — a answers one of its 2 waiting calls · + advances its virtual clock"), lines.join("\n"));
+    assert.ok(lines.includes("a answers one that waits; the parent agent or a prepared answer may answer first, and the first answer stands."));
     const view = modalOf(h.store);
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER);
@@ -156,31 +156,31 @@ test("the view says what a and + do for the shown test run; a binds the form to 
     assert.deepEqual([form.type, form.runId, form.interceptionId, form.kind, form.value], ["workflowTestAnswer", TEST_RUN, AGENT, "success",
         "{\"outcome\":\"accepted\",\"output\":null}"]);
     assert.deepEqual(form.returnModal, view);
-    assert.equal(statusOf(h.store), "Answer — Enter send · Tab success/error/cancel · ↑↓ another waiting effect · Esc back");
+    assert.equal(statusOf(h.store), "Answer — Enter send · Tab success/error/cancel · ↑↓ another waiting call · Esc back");
     const shown = answerForm(h.store);
     assert.equal(shown.title, "Answer · test run test-r…0001 · agent in 'review'");
     assert.ok(joined(shown.lines).startsWith(WORKFLOW_V2_TEST_NOTICE_TEXT));
-    for (const line of ["Agent steps are mocked: the parent answers for each agent step.", "Effect: agent in step 'review'", `Interception: ${AGENT}`,
+    for (const line of ["Agent steps are mocked: the parent answers for each agent step.", "Call: agent in step 'review'", `Held call: ${AGENT}`,
         "Waits for an answer (reached at virtual time 2026-11-02T00:00:00.000Z).", "What it reached: {\"input\":null}",
         "The answer must match: {\"type\":\"object\",\"required\":[\"outcome\"]}", "Its step's outcomes: accepted, rejected",
-        "Answer: [success] · error · cancel (Tab changes it)", "1 of 2 effects wait for an answer · ↑↓ another"]) {
+        "Answer: [success] · error · cancel (Tab changes it)", "1 of 2 held calls wait for an answer · ↑↓ another"]) {
         assert.ok(texts(shown.lines).includes(line), line);
     }
     assert.deepEqual([shown.valueShown, shown.kind, shown.value], [true, "success", "{\"outcome\":\"accepted\",\"output\":null}"]);
-    assert.equal(shown.hint, "Enter send · Tab success/error/cancel · ↑↓ another waiting effect · Esc back");
+    assert.equal(shown.hint, "Enter send · Tab success/error/cancel · ↑↓ another waiting call · Esc back");
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND);
     const [first] = h.sent();
     assert.match(first.operation_id, /^ui-test_respond-./);
     assert.deepEqual(without(first, "operation_id"), { operation: "test_respond", run_id: TEST_RUN, interception_id: AGENT,
         response: { kind: "success", value: { outcome: "accepted", output: null } } });
-    assert.equal(statusOf(h.store), "Answered interception nx-rev…gent of test run test-r…0001. State 'review' ended 'accepted'.");
+    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. State 'review' ended 'accepted'.");
     assert.deepEqual(modalOf(h.store), view, "accepted: back to the view");
     await settle();
-    assert.ok(details(h.store).includes("Test run test-r…0001 — a answers its waiting effect · + advances its virtual clock"));
+    assert.ok(details(h.store).includes("Test run test-r…0001 — a answers its waiting call · + advances its virtual clock"));
 });
 
-test("Tab changes the kind and what was typed is checked first; ↑↓ bind the form to another waiting effect from its own template; cancel sends no value", async () => {
+test("Tab changes the kind and what was typed is checked first; ↑↓ bind the form to another waiting call from its own template; cancel sends no value", async () => {
     const h = await answering(workflow({ agentMode: "real" }), [answered("cancelled")]);
     const errorOf = () => modalOf(h.store).error;
     let shown = answerForm(h.store);
@@ -208,10 +208,10 @@ test("Tab changes the kind and what was typed is checked first; ↑↓ bind the 
     shown = answerForm(h.store);
     assert.deepEqual([modalOf(h.store).interceptionId, shown.value, shown.kind], [NOTIFY, "null", "success"], "another effect starts from its template");
     assert.equal(shown.title, "Answer · test run test-r…0001 · tool.call in 'notify'");
-    assert.ok(texts(shown.lines).includes("Effect: tool.call · notify_build in step 'notify'"));
-    assert.ok(texts(shown.lines).includes("2 of 2 effects wait for an answer · ↑↓ another"));
+    assert.ok(texts(shown.lines).includes("Call: tool.call · notify_build in step 'notify'"));
+    assert.ok(texts(shown.lines).includes("2 of 2 held calls wait for an answer · ↑↓ another"));
     h.controller.pickWorkflowTestInterception(1);
-    assert.equal(statusOf(h.store), "No more effects that wait in this direction");
+    assert.equal(statusOf(h.store), "No more calls that wait in this direction");
     h.controller.pickWorkflowTestInterception(-1);
     assert.deepEqual([modalOf(h.store).interceptionId, modalOf(h.store).value], [AGENT, "{\"outcome\":\"accepted\",\"output\":null}"]);
 
@@ -219,10 +219,10 @@ test("Tab changes the kind and what was typed is checked first; ↑↓ bind the 
     h.controller.cycleWorkflowTestAnswerKind();
     shown = answerForm(h.store);
     assert.deepEqual([shown.kind, shown.valueShown], ["cancel", false]);
-    assert.ok(texts(shown.lines).includes("The effect ends as cancelled; a cancel has no value."));
+    assert.ok(texts(shown.lines).includes("The call ends as cancelled; a cancel has no value."));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND);
     assert.deepEqual(without(h.sent()[0], "operation_id"), { operation: "test_respond", run_id: TEST_RUN, interception_id: AGENT, response: { kind: "cancel" } });
-    assert.equal(statusOf(h.store), "Answered interception nx-rev…gent of test run test-r…0001. State 'review' ended 'cancelled'.");
+    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. State 'review' ended 'cancelled'.");
     await settle();
 });
 
@@ -244,16 +244,16 @@ test("neither form is offered for a live run, a run that ended, a viewer the por
         return h;
     };
     await both(workflow({ mode: "live", runId: "run-live" }), "The shown run is not a test run; ←→ chooses a test run.");
-    const ended = await both(workflow({ status: "completed" }), "Test run test-r…0001 has ended (completed); its open interceptions stay unanswered.");
-    assert.ok(details(ended.store).includes("  Test run test-r…0001 has ended (completed); its open interceptions stay unanswered."));
+    const ended = await both(workflow({ status: "completed" }), "Test run test-r…0001 has ended (completed); its held calls stay unanswered.");
+    assert.ok(details(ended.store).includes("  Test run test-r…0001 has ended (completed); its held calls stay unanswered."));
     await both(workflow({ viewer: { allowed: false, reason: "You may read this workflow but not command it." } }), "You may read this workflow but not command it.");
     await both(workflow({ operations: ["pause", "stop", "cancel"], restriction: { reason: SUBTREE, workflowSessionId: "outer", controllingSessionId: "parent-1" } }),
         `${SUBTREE} Its controlling agent is session parent-1.`);
     await both(workflow({ operations: ALL.slice(0, 10) }), "This workflow takes no test answers or clock advances from people.");
     await both(workflow({ commands: false }), "This deployment takes no workflow commands from people.");
     const quiet = await both(workflow({ interceptions: effects({ agent: answeredBy("parent", "null") }).slice(0, 2) }),
-        "No intercepted effect of this test run waits for an answer.", null);
-    assert.ok(details(quiet.store).some(line => line.startsWith("Test run test-r…0001 — no effect waits for an answer · + advances its virtual clock")));
+        "No held call of this test run waits for an answer.", null);
+    assert.ok(details(quiet.store).some(line => line.startsWith("Test run test-r…0001 — no call waits for an answer · + advances its virtual clock")));
 });
 
 test("the server decides the rest and the form keeps what was typed: a contract's refusal names its fields; another answer to an answered effect is refused and read again", async () => {
@@ -279,7 +279,7 @@ test("the server decides the rest and the form keeps what was typed: a contract'
     const shown = answerForm(h.store);
     assert.ok(joined(shown.lines).includes("Answered: success · fixture: {\"outcome\":\"rejected\",\"output\":null}. Another answer is refused; "
         + "the same answer again is the same answer."), joined(shown.lines));
-    assert.ok(texts(shown.lines).includes("1 effect waits for an answer · ↑↓ another"), "the form stays bound to its effect");
+    assert.ok(texts(shown.lines).includes("1 held call waits for an answer · ↑↓ another"), "the form stays bound to its effect");
     assert.equal(modalOf(h.store).interceptionId, AGENT);
 
     // The same answer again is the same answer: the server accepts it as the one it has.
@@ -288,7 +288,7 @@ test("the server decides the rest and the form keeps what was typed: a contract'
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND);
     const [, second, third] = h.sent();
     assert.notEqual(third.operation_id, second.operation_id, "a different answer is a different command");
-    assert.equal(statusOf(h.store), "Answered interception nx-rev…gent of test run test-r…0001. State 'review' ended 'rejected'. It had already been accepted.");
+    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. State 'review' ended 'rejected'. It had already been accepted.");
     assert.equal(modalOf(h.store).type, "workflowView");
     await settle();
 });
@@ -330,7 +330,7 @@ test("+ opens the run's virtual clock; Enter advances it by the seconds given an
     assert.ok(texts(shown.lines).includes("Virtual clock: 1 h after the test began"));
     assert.ok(joined(shown.lines).includes("An advance by whole seconds (1 to 30 days) decides what came due: a wait or a receive's wait elapses, an "
         + "intercepted request or agent times out; a result that won first stands. Script clocks are real."));
-    assert.ok(texts(shown.lines).includes("2 intercepted effects wait for an answer."));
+    assert.ok(texts(shown.lines).includes("2 held calls wait for an answer."));
     assert.deepEqual([shown.fieldShown, shown.seconds, shown.hint], [true, "60", "Enter advance · Esc back"]);
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_CLOCK_ADVANCE);
