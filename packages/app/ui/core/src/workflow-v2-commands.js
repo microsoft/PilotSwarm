@@ -633,7 +633,7 @@ export function workflowV2TestResponder(model, command = null) {
     if (typeof run.runId !== "string" || !run.runId) return null;
     const viewer = isRecord(model.personCommands.viewer) ? model.personCommands.viewer : null;
     const denied = viewer?.allowed === false ? text(viewer.reason) ?? "You cannot command this workflow." : null;
-    const reason = !ACTIVE.has(run.status) ? `Test run ${shortId(run.runId)} has ended (${run.status}); its held calls stay unanswered.` : denied;
+    const reason = !ACTIVE.has(run.status) ? `Test run ${shortId(run.runId)} has ended (${run.status}); its calls stay unanswered.` : denied;
     const states = Array.isArray(model.graph?.states) ? model.graph.states : [];
     // The run's interceptions as one list: its newest page and the waiting ones the page does not hold (workflowV2RunRows).
     const waiting = workflowV2RunRows(run).interceptions
@@ -811,7 +811,7 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
         const node = isRecord(receipt?.node) ? receipt.node : null;
         const decided = node && node.state !== "pending" && text(node.outcome)
             ? ` Step '${text(node.stateId) ?? "?"}' ended '${node.outcome}'.` : "";
-        return `Answered held call ${interception} of test ${run}.${decided}${again}`;
+        return `Answered call ${interception} of test ${run}.${decided}${again}`;
     }
     if (operation === "test_advance") {
         const seconds = isRecord(receipt) && Number.isSafeInteger(receipt.seconds) ? receipt.seconds : args?.seconds;
@@ -1114,7 +1114,7 @@ export function workflowV2StepQuestion({ workflowName = null, workflowSessionId,
  */
 export function workflowV2HeldCallQuestion({ workflowName = null, workflowSessionId, runId, call, response = null, note = "" } = {}) {
     const what = `${call?.operation ?? "call"}${call?.tool ? ` · ${call.tool}` : ""}`;
-    const about = `in test run ${runId}, the held call ${what}${call?.stateId ? ` in step '${call.stateId}'` : ""} (held call ${call?.interceptionId}) `
+    const about = `in test run ${runId}, the call ${what}${call?.stateId ? ` in step '${call.stateId}'` : ""} (call ${call?.interceptionId}) `
         + "waits for an answer.";
     const json = value => {
         const written = JSON.stringify(value ?? null);

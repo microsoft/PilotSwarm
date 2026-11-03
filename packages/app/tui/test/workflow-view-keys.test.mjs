@@ -116,7 +116,7 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /each asks first/);
     assert.match(text, /workflow view: test review of the current revision and hash, not a sandbox/);
     assert.match(text, /ctrl-a agents mocked\/real, real ones spend model tokens/);
-    assert.match(text, /workflow view, a test run shown: a answers a held call that waits/);
+    assert.match(text, /workflow view, a test run shown: a answers a call that waits/);
     assert.match(text, /\+ advances its virtual clock by whole seconds \(script clocks are real\)/);
     assert.match(text, /workflow view: the selected step's own result of an older \/ newer visit of the shown run/);
     assert.match(text, /workflow view: o reads the shown run.s older history/);
@@ -478,7 +478,7 @@ test("the shared Ink app draws a test run's answer form and its virtual clock", 
     await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER);
     let html = draw(WorkflowTestAnswerModal);
     assert.match(html, /data-title="Answer · test run test-r…0001 · agent in &#x27;review&#x27;"/);
-    assert.match(html, /<p>Held call: nx-review-1\/agent<\/p>/);
+    assert.match(html, /<p>Call id: nx-review-1\/agent<\/p>/);
     assert.match(html, /<p>Answer: \[success\] · error · cancel \(Tab changes it\)<\/p>/);
     assert.deepEqual(inputs, [["value (JSON)", "{\"outcome\":\"accepted\",\"output\":null}", true]]);
     assert.match(html, /data-title="Keys"><p>Enter send · ctrl-p to the parent agent · Tab success\/error\/cancel · ↑↓ another waiting call · Esc back<\/p>/);

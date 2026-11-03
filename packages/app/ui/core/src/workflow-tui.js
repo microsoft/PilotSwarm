@@ -1046,7 +1046,7 @@ function testRunAbsentReason(projection, what) {
     const responder = projection?.testResponder ?? null;
     if (responder) {
         if (responder.reason) return responder.reason;
-        if (what === "answer" && responder.respond) return "No held call of this test run waits for an answer.";
+        if (what === "answer" && responder.respond) return "No call of this test run waits for an answer.";
         return what === "answer" ? "This workflow takes no test answers from people." : "This workflow takes no clock advances from people.";
     }
     const model = projection?.runReadModel ?? null;
@@ -1124,10 +1124,11 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
     const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
     for (const line of testRunNoticeLines(test)) add(line.text, line.color);
     if (!sameRun) add(`The workflow view no longer shows test run ${shortRunId(modal.runId)}, so this form sends nothing. Esc goes back.`, "yellow");
-    else if (!item) add(`Held call ${modal.interceptionId} is not one of this test run's held calls, so this form sends nothing. Esc goes back.`, "yellow");
+    else if (!item) add(`Call ${modal.interceptionId} is not one of this test run's calls, so this form sends nothing. Esc goes back.`, "yellow");
     else {
         add(`Call: ${item.operation ?? "call"}${item.tool ? ` · ${item.tool}` : ""}${item.stateId ? ` in step '${item.stateId}'` : ""}`, "cyan");
-        add(`Held call: ${item.interceptionId}`);
+        // The terminal lists calls without their ids, so the form keeps it.
+        add(`Call id: ${item.interceptionId}`);
         if (isPlainRecord(item.response)) {
             const value = item.response.value === undefined || item.response.value === null ? "" : `: ${testValueText(item.response.value)}`;
             add(`Answered: ${item.response.kind ?? "an answer"} · ${workflowV2AnswerSourceText(item.response.disposition)}${value}. Another answer is refused; the same answer again is the same answer.`);
@@ -1143,7 +1144,7 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
         if (kind === "cancel") add("The call ends as cancelled; a cancel has no value.", "gray");
         if (kind === "error") add('An error answer is { "code", "message", "details"? } with a message of 1 to 4,000 characters.', "gray");
         if (responder.waiting.length > 1 || at < 0) {
-            add(`${at >= 0 ? `${at + 1} of ${responder.waiting.length}` : responder.waiting.length} held call${responder.waiting.length === 1 ? "" : "s"} wait`
+            add(`${at >= 0 ? `${at + 1} of ${responder.waiting.length}` : responder.waiting.length} call${responder.waiting.length === 1 ? "" : "s"} wait`
                 + `${responder.waiting.length === 1 ? "s" : ""} for an answer${responder.waiting.length ? " · ↑↓ another" : ""}`, "gray");
         }
     }
@@ -1196,7 +1197,7 @@ export function selectWorkflowTestClockModal(state, maxWidth = 100, viewportHeig
         add("An advance by whole seconds (1 to 30 days) decides what came due: a wait or a receive's wait elapses, a held request or agent "
             + "times out; a result that won first stands. Script clocks are real.", "gray");
         const count = responder.waiting.length;
-        if (count) add(`${count} held call${count === 1 ? " waits" : "s wait"} for an answer.`);
+        if (count) add(`${count} call${count === 1 ? " waits" : "s wait"} for an answer.`);
         if (responder.reason) add(responder.reason, "yellow");
     }
     if (responder?.pending === "test_advance") add("Advancing…", "yellow");
@@ -1432,7 +1433,7 @@ function testEffectLines(projection, selectedId) {
     });
     if (items.length > EFFECT_LIMIT) lines.push({ text: `  … ${items.length - EFFECT_LIMIT} more`, color: "gray" });
     return {
-        title: `Held calls of this test run (${items.length}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for the parent` : ""}):`,
+        title: `Calls of this test run (${items.length}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for the parent` : ""}):`,
         lines,
         note: projection.testResponder?.respond
             ? "a answers one that waits; the parent agent or a prepared answer may answer first, and the first answer stands."

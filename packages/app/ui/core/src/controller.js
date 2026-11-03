@@ -7505,7 +7505,7 @@ export class PilotSwarmUiController {
         }
         const items = workflowV2RunRows(projection.runReadModel?.run ?? null).interceptions;
         if (!items.some(item => item?.interceptionId === modal.interceptionId)) {
-            return refuse(`Held call ${modal.interceptionId} is not one of this test run's held calls, so nothing was sent.`);
+            return refuse(`Call ${modal.interceptionId} is not one of this test run's calls, so nothing was sent.`);
         }
         if (!responder.respond) return refuse(responder.reason ?? "This workflow takes no test answers from people.");
         if (responder.busy) return refuse(responder.pending === "test_respond" ? "The answer is being sent; wait for its reply." : "Another command for this workflow is being sent.");
@@ -7565,7 +7565,7 @@ export class PilotSwarmUiController {
         const projection = workflowViewProjectionFor(state, modal.sessionId);
         const items = workflowV2RunRows(projection.runReadModel?.run ?? null).interceptions;
         const call = items.find(item => item?.interceptionId === modal.interceptionId) ?? null;
-        if (!call) return refuse(`Held call ${modal.interceptionId} is not one of this test run's held calls, so nothing was sent.`);
+        if (!call) return refuse(`Call ${modal.interceptionId} is not one of this test run's calls, so nothing was sent.`);
         const draft = workflowV2TestResponseDraft(modal.kind, modal.value);
         if (!draft.ok) return refuse(draft.error);
         const result = await this.askParentAboutHeldCall(modal.sessionId, { runId: modal.runId, interceptionId: modal.interceptionId, response: draft.response });
@@ -7608,7 +7608,7 @@ export class PilotSwarmUiController {
         const call = run && run.runId === runId
             ? workflowV2RunRows(run).interceptions.find(item => item?.interceptionId === interceptionId) ?? null : null;
         if (!call) {
-            const reason = `Held call ${interceptionId} is not one of the shown test run's held calls, so nothing was sent.`;
+            const reason = `Call ${interceptionId} is not one of the shown test run's calls, so nothing was sent.`;
             this.dispatch({ type: "ui/status", text: reason });
             return { ok: false, reason };
         }

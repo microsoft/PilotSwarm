@@ -74,7 +74,7 @@ test("nothing without test_respond or test_advance, or unless the view shows a t
 
     const ended = workflowV2TestResponder(testModel({ status: "completed" }));
     assert.deepEqual([ended.respond, ended.advance], [false, false]);
-    assert.equal(ended.reason, "Test run run-1 has ended (completed); its held calls stay unanswered.");
+    assert.equal(ended.reason, "Test run run-1 has ended (completed); its calls stay unanswered.");
     const denied = workflowV2TestResponder(testModel({ viewer: { allowed: false, reason: "Only the session owner (Alice) or an admin can do this." } }));
     assert.deepEqual([denied.respond, denied.advance, denied.reason], [false, false, "Only the session owner (Alice) or an admin can do this."]);
     const pending = workflowV2TestResponder(testModel(), { operation: "test_advance", runId: RUN, phase: "pending" });
@@ -120,7 +120,7 @@ test("the commands name the test run; the answer names its interception; a refus
 
     assert.equal(workflowV2RunCommandAccepted("test_respond", RUN, { replayed: false, runId: RUN, interceptionId: AGENT,
         node: { stateId: "review", state: "completed", outcome: "accepted" } }, { interceptionId: AGENT, response }),
-    "Answered held call nx-rev…gent of test run run-1. Step 'review' ended 'accepted'.");
+    "Answered call nx-rev…gent of test run run-1. Step 'review' ended 'accepted'.");
     assert.equal(workflowV2RunCommandAccepted("test_advance", RUN, { seconds: 300, decided: [{ nodeExecutionId: "nx-1" }] }, { seconds: 300 }),
         "Advanced the virtual clock of test run run-1 by 300 seconds: 1 deadline came due. Script clocks are real.");
     const invalid = workflowV2RunCommandFailure(Object.assign(new Error("The output does not match ReviewResult."),
@@ -168,7 +168,7 @@ test("an answer and an advance are sent for the shown test run, and the workflow
     assert.match(answer.operation_id, /^ui-test_respond-./);
     assert.deepEqual(Object.fromEntries(Object.entries(answer).filter(([key]) => key !== "operation_id")),
         { operation: "test_respond", run_id: RUN, interception_id: AGENT, response });
-    assert.equal(store.getState().ui.statusText, "Answered held call nx-rev…gent of test run run-1. Step 'review' ended 'accepted'.");
+    assert.equal(store.getState().ui.statusText, "Answered call nx-rev…gent of test run run-1. Step 'review' ended 'accepted'.");
     await until(() => reads.length === 1, "the read model read again");
     assert.equal((await controller.sendWorkflowRunCommand(SID, { operation: "test_advance", runId: RUN, seconds: 300 })).ok, true);
     assert.deepEqual(Object.fromEntries(Object.entries(updates[1][1]).filter(([key]) => key !== "operation_id")),
@@ -187,15 +187,17 @@ const main = controller => renderToStaticMarkup(React.createElement(WorkflowMain
 
 test("a waiting interception has an Answer button that opens its form; the clock advances; neither shows where it is not allowed", () => {
     const html = main(mount({ readModel: testModel() }));
-    assert.ok(html.includes("Held calls (2)"));
+    assert.ok(html.includes("Calls (2)") && !html.includes("Held call"));
     assert.equal([...html.matchAll(/data-action="answer"/g)].length, 1, "only the waiting interception can be answered");
     assert.ok(html.includes("aria-label=\"Virtual clock\""));
     assert.ok(html.includes("Virtual clock: 1 h after the test began"));
     assert.ok(html.includes("data-operation=\"test_advance\""));
-    assert.ok(!html.includes("Answer a held call"));
+    assert.ok(!html.includes("Answer a call"));
 
     const open = main(mount({ readModel: testModel(), answeringInterceptionId: AGENT }));
-    assert.ok(open.includes("aria-label=\"Answer a held call\""));
+    assert.ok(open.includes("aria-label=\"Answer a call\""));
+    // ui-06: the form shows no raw id row; the table's row still carries it as its title.
+    assert.ok(!open.includes("<span>Held call</span>") && open.includes(`title="${AGENT}"`), open);
     assert.ok(open.includes("Answer agent in &#x27;review&#x27;"));
     assert.ok(open.includes("{&quot;outcome&quot;:&quot;accepted&quot;,&quot;output&quot;:null}</textarea>"), "the agent's first outcome is the template");
     // The selection, read from each radio input whatever the order of its attributes.
@@ -207,8 +209,8 @@ test("a waiting interception has an Answer button that opens its form; the clock
     for (const [label, model] of [["ended", testModel({ status: "completed" })], ["no test operations", testModel({ operations: MILESTONE.slice(0, 10) })],
         ["viewer", testModel({ viewer: { allowed: false, reason: "no" } })]]) {
         const page = main(mount({ readModel: model, answeringInterceptionId: AGENT }));
-        assert.ok(page.includes("Held calls (2)"), `${label}: the interceptions stay readable`);
-        assert.ok(!page.includes("data-action=\"answer\"") && !page.includes("Answer a held call") && !page.includes("aria-label=\"Virtual clock\""), label);
+        assert.ok(page.includes("Calls (2)"), `${label}: the interceptions stay readable`);
+        assert.ok(!page.includes("data-action=\"answer\"") && !page.includes("Answer a call") && !page.includes("aria-label=\"Virtual clock\""), label);
     }
 });
 
@@ -216,7 +218,7 @@ test("a waiting interception has an Answer button that opens its form; the clock
 // ordinary message in the parent's chat that names the workflow, the test run, the call and the suggested answer; the
 // parent answers with its own tool. People still cannot write to a step's chat.
 const QUESTION = [
-    "About workflow \"watch-v2\" (session wf): in test run run-1, the held call agent in step 'review' (held call nx-review-1/agent) waits for an answer.",
+    "About workflow \"watch-v2\" (session wf): in test run run-1, the call agent in step 'review' (call nx-review-1/agent) waits for an answer.",
     "My suggested answer: success with {\"outcome\":\"accepted\",\"output\":null}",
     "If you agree, answer it with update_workflow (operation test_respond, run_id run-1, interception_id nx-review-1/agent, "
         + "response {\"kind\":\"success\",\"value\":{\"outcome\":\"accepted\",\"output\":null}}).",
@@ -227,12 +229,12 @@ test("q12: the message to the parent agent names the workflow, the test run, the
     const response = { kind: "success", value: { outcome: "accepted", output: null } };
     assert.equal(workflowV2HeldCallQuestion({ workflowName: "watch-v2", workflowSessionId: "wf", runId: RUN, call, response }), QUESTION);
     assert.equal(workflowV2HeldCallQuestion({ workflowSessionId: "wf", runId: RUN, call, response: { kind: "cancel" }, note: "  the reviewer is away  " }), [
-        "About workflow (session wf): in test run run-1, the held call agent in step 'review' (held call nx-review-1/agent) waits for an answer.",
+        "About workflow (session wf): in test run run-1, the call agent in step 'review' (call nx-review-1/agent) waits for an answer.",
         "My suggested answer: cancel it", "My note: the reviewer is away",
         "If you agree, answer it with update_workflow (operation test_respond, run_id run-1, interception_id nx-review-1/agent, response {\"kind\":\"cancel\"}).",
     ].join("\n"));
     const none = workflowV2HeldCallQuestion({ workflowSessionId: "wf", runId: RUN, call: testView().interceptions[0] });
-    assert.equal(none, ["About workflow (session wf): in test run run-1, the held call tool.call · read_build in step 'fetch' (held call nx-fetch-1/call-1) waits for an answer.",
+    assert.equal(none, ["About workflow (session wf): in test run run-1, the call tool.call · read_build in step 'fetch' (call nx-fetch-1/call-1) waits for an answer.",
         "If you agree, answer it with update_workflow (operation test_respond, run_id run-1, interception_id nx-fetch-1/call-1)."].join("\n"));
     const long = workflowV2HeldCallQuestion({ workflowSessionId: "wf", runId: RUN, call, response: { kind: "success", value: "x".repeat(5_000) } });
     assert.ok(long.split("\n")[1].length < 4_100, "a long value is cut");
@@ -265,7 +267,7 @@ test("q12: the controller sends the question to the parent's chat as an ordinary
     // A call that is not one of the shown run's, a workflow without a parent, a message that could not be sent.
     assert.equal((await h.controller.askParentAboutHeldCall("wf", { runId: "other-run", interceptionId: AGENT })).ok, false);
     assert.equal((await h.controller.askParentAboutHeldCall("wf", { runId: RUN, interceptionId: "nx-missing/call" })).reason,
-        "Held call nx-missing/call is not one of the shown test run's held calls, so nothing was sent.");
+        "Call nx-missing/call is not one of the shown test run's calls, so nothing was sent.");
     assert.equal(h.sent.length, 1);
     const orphan = asking({ parent: null });
     assert.deepEqual(await orphan.controller.askParentAboutHeldCall("wf", { runId: RUN, interceptionId: AGENT }),

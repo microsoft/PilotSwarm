@@ -1747,8 +1747,8 @@ serves), no typed input into a running test, and no display of lineage, receipts
   "Node details" and "Execution log" are "Step details" and "Step log". The wire, the stored names and the YAML keep
   the design's terms (`states`, `initial`, `nodeExecutions`, `contract`). This pass is done in parts: the shared
   workflow view, then the portal's and the TUI's panels, keys, help and transcript lines, then the test-mode words and
-  the texts the server writes for people. In a test run an intercepted effect is a **held call** (the portal's
-  "Held calls" table and its "Call" column, the TUI's "Call:" and "Held call:" lines), a fixture is a **prepared
+  the texts the server writes for people. In a test run an intercepted effect is a **call** (the portal's "Calls"
+  table and its "Call" column, the TUI's "Call:" and "Call id:" lines; review item ui-06 dropped "held call"), a fixture is a **prepared
   answer**, and the test notices say **workflow tools are mocked** (not framework tools). The server's texts follow:
   the human-input refusal says "This session runs a step of a workflow" (its error "Session … runs a step of workflow
   …"), the restriction of a workflow under an agent step says "This workflow was started by an agent step of another

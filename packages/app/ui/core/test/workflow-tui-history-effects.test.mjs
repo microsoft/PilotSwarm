@@ -91,7 +91,7 @@ test("a state's history lists its visits newest first, a loop's unchanged repeat
     lines = texts(selectWorkflowViewModal(store.getState(), 110));
     assert.ok(lines.includes("  No visits in the loaded history."));
     // A live run shows no held calls.
-    assert.ok(!lines.some(line => line.startsWith("Held calls")));
+    assert.ok(!lines.some(line => line.startsWith("Calls of this test run")));
 });
 
 test("a legacy state's history lists its steps newest first with their outcome and duration", async () => {
@@ -119,7 +119,7 @@ test("a test run's held calls are listed with their state and answer, read-only,
     const view = selectWorkflowViewModal(store.getState(), 110);
     const lines = texts(view);
     assert.ok(lines.includes("! TEST — scripts run normally; workflow tools are mocked."));
-    assert.ok(lines.includes("Held calls of this test run (2; 1 waits for the parent):"), lines.join("\n"));
+    assert.ok(lines.includes("Calls of this test run (2; 1 waits for the parent):"), lines.join("\n"));
     assert.ok(lines.includes("  tool.call · read_build · step review · success · prepared answer ◂ this step"));
     assert.ok(lines.includes("  tool.call · notify_1 · step review · waiting for the parent ◂ this step"));
     assert.ok(lines.includes("The TUI shows them; the run's parent agent, a prepared answer or a person in the portal answers them."));
@@ -130,7 +130,7 @@ test("a test run's held calls are listed with their state and answer, read-only,
     assert.ok(other.includes("  tool.call · read_build · step review · success · prepared answer"));
     // A model read for another run is never shown for this one.
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: "run-1" } });
-    assert.ok(!texts(selectWorkflowViewModal(store.getState(), 110)).some(line => line.startsWith("Held calls")));
+    assert.ok(!texts(selectWorkflowViewModal(store.getState(), 110)).some(line => line.startsWith("Calls of this test run")));
 });
 
 test("PgUp/PgDn scroll the details a page at a time within what the panel shows; another state or run starts at the top", async () => {

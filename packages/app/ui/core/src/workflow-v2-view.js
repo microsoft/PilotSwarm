@@ -484,7 +484,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
             banners.push({ level: "info", text: `Virtual clock: ${formatSeconds(test.virtualClock.elapsedSeconds)} after the test began. Script clocks are real.` });
         }
         const open = Array.isArray(test.coverage?.unanswered) ? test.coverage.unanswered.length : 0;
-        if (open) banners.push({ level: "info", text: `${open} held call${open === 1 ? " waits" : "s wait"} for the parent's answer.` });
+        if (open) banners.push({ level: "info", text: `${open} call${open === 1 ? " waits" : "s wait"} for the parent's answer.` });
     }
     // Replies that arrived before the run was ready for them (q15, mock M16): counted from the read's own rows.
     const replies = run ? workflowV2WaitingReplies(model.run, now).length : 0;
@@ -1274,7 +1274,7 @@ const WORKFLOW_EVENT_TEXT = {
     },
     "workflow.branches_cancelled": { short: () => ({ text: "The other branches were cancelled", level: "warning" }) },
     "workflow.test_intercepted": {
-        short: data => ({ text: `Held call${text(data.operation) ? ` ${data.operation}` : ""}${text(data.tool) ? ` · ${data.tool}` : ""}${text(data.stateId) ? ` in ${stepOf(data)}` : ""}` }),
+        short: data => ({ text: `Call${text(data.operation) ? ` ${data.operation}` : ""}${text(data.tool) ? ` · ${data.tool}` : ""}${text(data.stateId) ? ` in ${stepOf(data)}` : ""}` }),
     },
     "workflow.test_clock_advanced": { short: data => ({ text: `Test clock advanced${Number.isSafeInteger(data.seconds) ? ` by ${formatSeconds(data.seconds)}` : ""}` }) },
 };

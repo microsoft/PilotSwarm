@@ -165,9 +165,9 @@ test("a test run keeps its notice visible, with its staleness, virtual clock and
     assert.ok(texts.includes(test.notice));
     assert.ok(texts.some(text => text.includes("This test ran revision 1; the definition is now at revision 2")));
     assert.ok(texts.some(text => text.startsWith("Virtual clock: 1 h")));
-    assert.ok(texts.includes("1 held call waits for the parent's answer."));
+    assert.ok(texts.includes("1 call waits for the parent's answer."));
     const html = renderToStaticMarkup(React.createElement(WorkflowV2TestInterceptions, { test }));
-    assert.ok(html.includes("Held calls (2)"));
+    assert.ok(html.includes("Calls (2)"));
     assert.ok(html.includes("tool.call · read_build"));
     assert.ok(html.includes("success · prepared answer"));
     assert.ok(html.includes("Waiting for the parent"));

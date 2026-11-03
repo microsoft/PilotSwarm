@@ -413,8 +413,8 @@ export function WorkflowV2TestInterceptions({ test, controller = null, sessionId
     // Asking the workflow's parent agent about a held call that waits (owner decision q12): a message in its chat.
     const askable = Boolean(controller && parentSessionId && responder?.runId);
     const asks = item => askable && item.state === "awaiting_parent";
-    return h("section", { className: "ps-workflow-test", "aria-label": "Test held calls", style: { padding: "6px 10px", fontSize: "0.75rem" } },
-        h("h3", null, `Held calls (${items.length})`),
+    return h("section", { className: "ps-workflow-test", "aria-label": "Test calls", style: { padding: "6px 10px", fontSize: "0.75rem" } },
+        h("h3", null, `Calls (${items.length})`),
         h("table", null,
             h("thead", null, h("tr", null, [...["Call", "Step", "Answer"], ...(answerable || askable ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
             h("tbody", null, items.map((item, i) => h("tr", { key: item.interceptionId || i, "data-interception": item.interceptionId },
@@ -471,10 +471,9 @@ export function WorkflowV2TestAnswer({ controller, sessionId, responder, interce
     const radio = (value, label) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 } },
         h("input", { type: "radio", name: kindName, value, checked: kind === value, onChange: () => setKind(value), "data-answer-kind": value }), label);
     const what = `${waiting.operation}${waiting.tool ? ` · ${waiting.tool}` : ""}${waiting.stateId ? ` in '${waiting.stateId}'` : ""}`;
-    return h("section", { className: "ps-workflow-test-answer", "aria-label": "Answer a held call", "data-interception": interceptionId,
+    return h("section", { className: "ps-workflow-test-answer", "aria-label": "Answer a call", "data-interception": interceptionId,
         style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, `Answer ${what}`),
-    h("div", { className: "ps-workflow-property" }, h("span", null, "Held call"), h("strong", null, h("code", null, interceptionId))),
     waiting.arguments !== null ? h(Value, { value: waiting.arguments, label: "What it reached" }) : null,
     waiting.responseSchema !== null ? h(Value, { value: waiting.responseSchema, label: "The answer must match" }) : null,
     h("fieldset", { style: { margin: 0, padding: "4px 8px", border: "1px solid var(--ps-border)" } },
