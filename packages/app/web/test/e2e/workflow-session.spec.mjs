@@ -747,6 +747,66 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
 });
 
 // ------------------------------------------------------------------------------------------------------------
+// of-07 — one theme-consistent style for the workflow screen's edit boxes: the variables form's Name and Value boxes
+// have the theme's background, text colour and shared corner radius; the JSON Value box is monospace; a value that
+// does not parse is marked aria-invalid with the problem under the box (its accessible description) and nothing is
+// sent; valid JSON clears the mark; focus shows the ring.
+// ------------------------------------------------------------------------------------------------------------
+test("v2 commands: the workflow screen's edit boxes share one theme style and mark invalid JSON under the box (of-07)", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const { commands } = await routeV2(page, {
+        readModel: () => ({ ...V2_WITH_CONTROLS,
+            personCommands: { ...V2_WITH_CONTROLS.personCommands, operations: [...V2_WITH_CONTROLS.personCommands.operations, "set_vars"] } }),
+        onCommand: (route, command) => accept(route, command),
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    await main.getByRole("button", { name: "Variables", exact: true }).click();
+    const form = main.getByRole("form", { name: "Set or remove a variable", exact: true });
+    const name = form.getByRole("textbox", { name: "Name", exact: true });
+    const value = form.getByRole("textbox", { name: "Value (JSON)", exact: true });
+    await expect(name).toHaveClass(/\bps-workflow-input\b/);
+    await expect(value).toHaveClass(/\bps-workflow-input\b.*\bis-code\b/);
+    const theme = await page.evaluate(() => {
+        const probe = document.createElement("div");
+        probe.style.background = "var(--ps-background)";
+        probe.style.color = "var(--ps-foreground)";
+        document.body.appendChild(probe);
+        const style = getComputedStyle(probe);
+        const out = { background: style.backgroundColor, color: style.color };
+        probe.remove();
+        return out;
+    });
+    const look = (element) => {
+        const style = getComputedStyle(element);
+        return { background: style.backgroundColor, color: style.color, radius: style.borderTopLeftRadius, font: style.fontFamily, shadow: style.boxShadow };
+    };
+    for (const box of [name, value]) {
+        const style = await box.evaluate(look);
+        expect(style.background).toBe(theme.background);
+        expect(style.color).toBe(theme.color);
+        expect(style.radius).toBe("6px");
+    }
+    expect((await value.evaluate(look)).font).toMatch(/mono/i);
+
+    await name.fill("limit");
+    await value.fill("{oops");
+    await expect(value).toHaveAttribute("aria-invalid", "true");
+    const problem = form.locator(".ps-workflow-field-error");
+    await expect(problem).toHaveText(/^The value is not valid JSON: /);
+    await expect(value).toHaveAccessibleDescription(/^The value is not valid JSON: /);
+    expect(commands).toEqual([]);
+    await value.fill("3");
+    await expect(problem).toHaveCount(0);
+    expect(await value.getAttribute("aria-invalid")).toBeNull();
+    await value.focus();
+    expect((await value.evaluate(look)).shadow).not.toBe("none");
+    await shot(page, "v2-edit-boxes");
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
 // B4 — a workflow agent state's child chat is read-only in the rendered DOM with the server's reason; the ordinary
 // agent session (positive control) keeps its prompt input; no prompt request is sent from the read-only one.
 // 1440 and 390.

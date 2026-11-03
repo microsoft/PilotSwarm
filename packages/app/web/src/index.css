@@ -4618,6 +4618,63 @@ body.is-resizing-pane-y iframe {
   outline: 2px solid var(--ps-accent);
   outline-offset: 1px;
 }
+
+/* of-07: one theme-consistent style for every edit box on the workflow screen (JSON boxes, names, notes, selects, the
+   clock's seconds and the YAML box), in the modal inputs' colours and focus ring. JSON and YAML are monospace; a JSON
+   box whose text does not parse is marked aria-invalid and shows the problem under it (.ps-workflow-field-error).
+   Font sizes are left to the coarse-pointer block at the end of this file, which keeps a phone from zooming. */
+.ps-workflow-input {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 28px;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 60%, transparent);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  background-clip: padding-box;
+  color: var(--ps-foreground);
+  caret-color: var(--ps-foreground);
+  padding: 4px 8px;
+  outline: none;
+  font-family: inherit;
+  font-size: var(--ps-font-size-dense);
+  line-height: var(--ps-line-height-dense);
+}
+textarea.ps-workflow-input { width: 100%; resize: vertical; }
+.ps-workflow-input.is-code { font-family: var(--ps-mono, monospace); line-height: 1.45; }
+.ps-workflow-input::placeholder {
+  color: color-mix(in srgb, var(--ps-muted) 74%, transparent);
+  opacity: 1;
+}
+.ps-workflow-input:focus,
+.ps-workflow-yaml:focus-within {
+  border-color: var(--ps-modal-selected-border);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-modal-selected-border) 20%, transparent);
+}
+.ps-workflow-input[aria-invalid="true"] { border-color: var(--ps-danger); }
+.ps-workflow-input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-danger) 22%, transparent);
+}
+.ps-workflow-field { display: grid; gap: 3px; min-width: 0; }
+.ps-workflow-field > label,
+.ps-workflow-field > span:first-child { color: var(--ps-muted); font-size: 0.75rem; }
+.ps-workflow-field.is-grow { flex: 1 1 14em; }
+.ps-workflow-field-error { color: var(--ps-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
+.ps-workflow-yaml {
+  display: flex;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 60%, transparent);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  font-family: var(--ps-mono, monospace);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.ps-workflow-yaml > textarea {
+  font: inherit;
+  background: transparent;
+  color: var(--ps-foreground);
+  caret-color: var(--ps-foreground);
+  outline: none;
+}
 .ps-workflow-split { flex: 1; min-height: 0; display: grid; }
 .ps-workflow-graph-region, .ps-workflow-log { min-width: 0; min-height: 0; }
 .ps-workflow-graph-region {
@@ -7439,7 +7496,9 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   .ps-share-add-select,
   .ps-admin-add__scope,
   .ps-prompt-input,
-  .ps-prompt-shell.is-mobile .ps-prompt-input {
+  .ps-prompt-shell.is-mobile .ps-prompt-input,
+  .ps-workflow-input,
+  .ps-workflow-yaml {
     font-size: max(16px, 1em);
   }
 

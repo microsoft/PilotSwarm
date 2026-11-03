@@ -16,6 +16,37 @@ import {
 const h = React.createElement;
 const TONES = { error: "var(--ps-danger)", warning: "var(--ps-warning)", info: "var(--ps-muted)" };
 
+/** What is wrong with a JSON box's text, in plain words, or null (empty text is left to the submit's own check). */
+function jsonProblem(text, { name, object }) {
+    if (typeof text !== "string" || !text.trim()) return null;
+    if (object) {
+        const draft = workflowV2JsonObjectDraft(text, { label: name, optional: true });
+        return draft.ok ? null : draft.error;
+    }
+    try { JSON.parse(text); return null; } catch (error) { return `${name} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`; }
+}
+
+/**
+ * A JSON edit box of the workflow screen (of-07): its label tied to it, the shared theme style in monospace, vertical
+ * resize, and what is wrong with the JSON as text under it while it is invalid (its description, so screen readers read
+ * it with the box). `object` asks for a JSON object; otherwise any JSON value.
+ */
+function JsonBox({ label, name, value, onChange, rows = 3, field, object = true, className = "" }) {
+    const id = `wf-json-${React.useId().replace(/:/g, "")}`;
+    const problem = jsonProblem(value, { name, object });
+    return h("div", { className: `ps-workflow-field${className ? ` ${className}` : ""}` },
+        h("label", { htmlFor: id }, label),
+        h("textarea", { id, className: "ps-workflow-input is-code", value, rows, spellCheck: false, "data-field": field,
+            "aria-invalid": problem ? true : undefined, "aria-describedby": problem ? `${id}-problem` : undefined,
+            onChange: event => onChange(event.target.value) }),
+        problem ? h("span", { id: `${id}-problem`, className: "ps-workflow-field-error" }, problem) : null);
+}
+
+/** A one-line or plain-text edit box of the workflow screen, in the shared style (of-07), its label tied to it. */
+function TextBox({ label, children, className = "" }) {
+    return h("label", { className: `ps-workflow-field${className ? ` ${className}` : ""}` }, h("span", null, label), children);
+}
+
 /** Notices about the definition and the run. Text only; every value is a React child, never markup. */
 export function WorkflowV2Banners({ banners }) {
     if (!banners?.length) return null;
@@ -199,8 +230,8 @@ function AskParent({ onAskParent, executionId }) {
         h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, Object.entries(WORKFLOW_V2_ASK_PARENT_KINDS).map(([value, item]) =>
             h("button", { key: value, type: "button", className: "ps-mini-button", "data-ask": value, "aria-pressed": kind === value,
                 onClick: () => { setKind(value); setSent(null); } }, item.label))),
-        kind ? h("label", { style: { display: "grid", gap: 2 } }, "Your note (optional)",
-            h("textarea", { value: note, rows: 3, "data-field": "ask-note", onChange: event => setNote(event.target.value) })) : null,
+        kind ? h(TextBox, { label: "Your note (optional)" },
+            h("textarea", { className: "ps-workflow-input", value: note, rows: 3, "data-field": "ask-note", onChange: event => setNote(event.target.value) })) : null,
         kind ? h("button", { type: "button", className: "ps-mini-button", "data-action": "ask-parent-send", style: { justifySelf: "start" },
             onClick: () => { send(); } }, "Send to the parent agent") : null,
         sent ? h("p", { role: "status", style: { margin: 0 } }, sent) : null,
@@ -390,7 +421,7 @@ export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, sele
     const model = workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded, error });
     const noteId = `wf-run-note-${React.useId().replace(/:/g, "")}`;
     return h("div", { className: "ps-workflow-run-picker", style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, maxWidth: "100%", fontSize: "0.75rem" } },
-        h("select", { "aria-label": "Workflow run", "aria-describedby": model.notes.length ? noteId : undefined, value: model.value,
+        h("select", { "aria-label": "Workflow run", className: "ps-workflow-input", "aria-describedby": model.notes.length ? noteId : undefined, value: model.value,
             "data-selection": model.selection ?? "live", title: model.options.find(option => option.value === model.value)?.title,
             style: { minWidth: 0, maxWidth: "26em", textOverflow: "ellipsis" },
             onChange: event => selectWorkflowV2Run(controller, sessionId, event.target.value) },
@@ -480,9 +511,8 @@ export function WorkflowV2TestAnswer({ controller, sessionId, responder, interce
     h("fieldset", { style: { margin: 0, padding: "4px 8px", border: "1px solid var(--ps-border)" } },
         h("legend", null, "Answer"), radio("success", "Success"), radio("error", "Error"), radio("cancel", "Cancel")),
     kind === "cancel" ? h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, "The call ends as cancelled; a cancel has no value.")
-        : h("label", { style: { display: "grid", gap: 2 } }, kind === "error" ? "Error (JSON: { \"code\", \"message\", \"details\"? })" : "Value (JSON)",
-            h("textarea", { value: valueText, rows: 4, onChange: event => setValueText(event.target.value), "data-field": "answer",
-                style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })),
+        : h(JsonBox, { label: kind === "error" ? "Error (JSON: { \"code\", \"message\", \"details\"? })" : "Value (JSON)",
+            name: kind === "error" ? "The error" : "The value", object: kind === "error", value: valueText, onChange: setValueText, rows: 4, field: "answer" }),
     h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "test_respond", disabled: !responder.respond || responder.busy,
             title: responder.reason ?? (responder.busy ? "Another command for this workflow is being sent." : "Send this answer to the test run."),
@@ -512,7 +542,7 @@ export function WorkflowV2TestClock({ controller, sessionId, responder }) {
         style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
     h("span", null, responder.elapsedSeconds === null ? "Virtual clock" : `Virtual clock: ${formatSeconds(responder.elapsedSeconds)} after the test began`),
     h("input", { type: "number", min: 1, step: 1, value: seconds, onChange: event => setSeconds(event.target.value), "aria-label": "Seconds to advance",
-        "data-field": "seconds", style: { width: "7em" } }),
+        "data-field": "seconds", className: "ps-workflow-input", style: { width: "7em" } }),
     h("button", { type: "button", className: "ps-mini-button", "data-operation": "test_advance", disabled: responder.busy,
         onClick: advance }, responder.pending === "test_advance" ? "Advancing…" : "Advance"),
     h("span", { style: { color: "var(--ps-muted)" } }, "Script clocks are real."),
@@ -603,11 +633,9 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
     model.editable
         ? h("form", { "aria-label": "Set or remove a variable", onSubmit: onSet,
             style: { display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6 } },
-        h("label", { style: { display: "grid", gap: 2 } }, "Name",
-            h("input", { type: "text", value: key, maxLength: 128, onChange: event => setKey(event.target.value), "data-field": "name" })),
-        h("label", { style: { display: "grid", gap: 2, flex: "1 1 14em", minWidth: 0 } }, "Value (JSON)",
-            h("textarea", { value, rows: 2, onChange: event => setValue(event.target.value), "data-field": "value",
-                style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })),
+        h(TextBox, { label: "Name" },
+            h("input", { type: "text", className: "ps-workflow-input", value: key, maxLength: 128, onChange: event => setKey(event.target.value), "data-field": "name" })),
+        h(JsonBox, { label: "Value (JSON)", name: "The value", object: false, value, onChange: setValue, rows: 2, field: "value", className: "is-grow" }),
         h("button", { type: "submit", className: "ps-mini-button", disabled: model.busy, "data-operation": "set" }, model.pending ? "Saving…" : "Set"),
         h("button", { type: "button", className: "ps-mini-button is-danger", disabled: model.busy, "data-operation": "remove", onClick: onRemove }, "Remove"),
         error ? h("span", { role: "alert", style: { flexBasis: "100%", color: TONES.error } }, error) : null)
@@ -696,12 +724,8 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, ve
     h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, draft
         ? "Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. Publication starts no run, approves no repository write and grants no tool."
         : "Starting runs the published revision with real effects. A workflow has one live run."),
-    runs ? h("label", { style: { display: "grid", gap: 2 } }, "Inputs (JSON object)",
-        h("textarea", { value: inputs, rows: 3, onChange: event => setInputs(event.target.value), "data-field": "inputs",
-            style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })) : null,
-    runs ? h("label", { style: { display: "grid", gap: 2 } }, "Initial variables (JSON object, optional)",
-        h("textarea", { value: vars, rows: 2, onChange: event => setVars(event.target.value), "data-field": "vars",
-            style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })) : null,
+    runs ? h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, rows: 3, field: "inputs" }) : null,
+    runs ? h(JsonBox, { label: "Initial variables (JSON object, optional)", name: "Initial variables", value: vars, onChange: setVars, rows: 2, field: "vars" }) : null,
     h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
         model.controls.map(control => h("button", { key: control.operation, type: "button", className: "ps-mini-button",
             "data-operation": control.operation, disabled: !control.enabled, title: control.title,
@@ -820,7 +844,7 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
         style: { display: "grid", gap: 6, paddingTop: 6, borderTop: "1px solid var(--ps-border)" } },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, "Step inputs"),
     h("label", { style: { display: "inline-flex", alignItems: "center", gap: 6 } }, "Agent step",
-        h("select", { value: chosen, "data-field": "step", onChange: event => setState(event.target.value) },
+        h("select", { className: "ps-workflow-input", value: chosen, "data-field": "step", onChange: event => setState(event.target.value) },
             steps.map(step => h("option", { key: step, value: step }, step)))),
     mine?.phase === "loading" ? h("p", { role: "status", style: { margin: 0 } }, "Reading the step's inputs…") : null,
     mine?.phase === "failed" ? h("p", { role: "alert", style: { margin: 0, color: TONES.error } }, `The step's inputs could not be read: ${mine.error}`) : null,
@@ -834,17 +858,17 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
         h("tbody", null, rows.map((row, index) => h("tr", { key: row.name, "data-input-field": row.name },
             h("td", null, row.name, row.required ? " (required)" : "", row.type ? ` · ${row.type}` : "",
                 row.description ? h("div", { style: { color: "var(--ps-muted)" } }, row.description) : null),
-            h("td", null, h("select", { value: row.source, "aria-label": `Where ${row.name} comes from`,
+            h("td", null, h("select", { className: "ps-workflow-input", value: row.source, "aria-label": `Where ${row.name} comes from`,
                 onChange: event => setRow(index, { source: event.target.value,
                     detail: event.target.value === "keep" ? row.keepText ?? "" : event.target.value === row.source ? row.detail : "" }) },
             Object.entries(WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS).filter(([source]) => source !== "keep" || row.keepable)
                 .map(([source, label]) => h("option", { key: source, value: source }, label)))),
             h("td", null, row.source === "none" ? null : row.source === "keep"
                 ? h("code", null, row.detail)
-                : h("input", { type: "text", value: row.detail, placeholder: placeholder(row.source), "aria-label": `${row.name}: ${placeholder(row.source)}`,
+                : h("input", { type: "text", className: "ps-workflow-input", value: row.detail, placeholder: placeholder(row.source), "aria-label": `${row.name}: ${placeholder(row.source)}`,
                     list: row.source === "run_input" && runInputs.length ? listId : undefined, onChange: event => setRow(index, { detail: event.target.value }) })))))) : null,
     value ? h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 } },
-        h("input", { type: "text", value: newField, placeholder: "new field name", "aria-label": "New field name", "data-field": "new-field",
+        h("input", { type: "text", className: "ps-workflow-input", value: newField, placeholder: "new field name", "aria-label": "New field name", "data-field": "new-field",
             onChange: event => setNewField(event.target.value) }),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "add-field",
             disabled: !newField.trim() || rows.some(row => row.name === newField.trim()),
@@ -904,7 +928,7 @@ export function WorkflowV2RevisionCompare({ controller, sessionId, latest, reads
     }, [compared.ready, beforeText, afterText, layout]);
     const options = Array.from({ length: latest }, (_, index) => index + 1);
     const pick = (label, value, onChange, field) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4 } }, label,
-        h("select", { value, "data-field": field, onChange: event => onChange(Number(event.target.value)) },
+        h("select", { className: "ps-workflow-input", value, "data-field": field, onChange: event => onChange(Number(event.target.value)) },
             options.map(revision => h("option", { key: revision, value: revision }, `Revision ${revision}${revision === latest ? " (latest)" : ""}`))));
     return h("section", { className: "ps-workflow-compare", "aria-label": "Compare versions", "data-from": from, "data-to": to,
         style: { display: "grid", gap: 6 } },
@@ -918,7 +942,7 @@ export function WorkflowV2RevisionCompare({ controller, sessionId, latest, reads
     compared.ready ? h("div", { ref: hostRef, className: "ps-workflow-compare-view",
         style: viewer === "ready" ? { maxHeight: "28em", overflow: "auto", border: "1px solid var(--ps-border)" } : { display: "none" } }) : null,
     compared.ready && viewer !== "ready" ? h("pre", { "data-diff": "lines", style: { margin: 0, padding: "4px 6px", maxHeight: "28em", overflow: "auto",
-        border: "1px solid var(--ps-border)", fontFamily: "var(--ps-font-mono, monospace)", fontSize: "0.8rem" } },
+        border: "1px solid var(--ps-border)", fontFamily: "var(--ps-mono, monospace)", fontSize: "0.8rem" } },
     compared.diff.rows.map((row, index) => h("div", { key: index, "data-kind": row.kind,
         style: row.kind === "added" ? { color: TONES.success ?? "var(--ps-code-inserted)" } : row.kind === "removed" ? { color: TONES.error } : undefined },
     `${row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "} ${row.text}`))) : null);
@@ -937,7 +961,6 @@ function WorkflowV2YamlBox({ value, onChange, marks, changed }) {
     const listId = `wf-yaml-marks-${React.useId().replace(/:/g, "")}`;
     const lineCount = value.split("\n").length;
     const byLine = new Map(marks.lines.map(mark => [mark.line, mark]));
-    const mono = { fontFamily: "var(--ps-font-mono, monospace)", fontSize: "0.8rem", lineHeight: 1.45 };
     const goTo = line => {
         const area = areaRef.current;
         if (!area) return;
@@ -948,10 +971,12 @@ function WorkflowV2YamlBox({ value, onChange, marks, changed }) {
         area.setSelectionRange(start, start + rows[index].length);
         area.scrollTop = Math.max(0, (area.scrollHeight / Math.max(1, rows.length)) * (index - 2));
     };
+    // The box's look (monospace, theme colours, focus ring) is the shared workflow edit-box style in index.css (of-07);
+    // the gutter and the text inherit one font from the box, so each line number stays beside its line.
     return h(React.Fragment, null,
-        h("div", { className: "ps-workflow-yaml", style: { display: "flex", border: "1px solid var(--ps-border)", borderRadius: 4 } },
+        h("div", { className: "ps-workflow-yaml" },
             h("div", { ref: gutterRef, className: "ps-workflow-yaml-gutter", "aria-hidden": "true",
-                style: { ...mono, overflow: "hidden", textAlign: "right", padding: "2px 6px", color: "var(--ps-muted)", userSelect: "none",
+                style: { overflow: "hidden", textAlign: "right", padding: "2px 6px", color: "var(--ps-muted)", userSelect: "none",
                     borderRight: "1px solid var(--ps-border)", minWidth: "3.5em" } },
             Array.from({ length: lineCount }, (_, index) => {
                 const mark = byLine.get(index + 1);
@@ -963,7 +988,7 @@ function WorkflowV2YamlBox({ value, onChange, marks, changed }) {
                 ...(marks.lines.length ? { "aria-describedby": listId } : {}),
                 onChange: event => onChange(event.target.value),
                 onScroll: event => { if (gutterRef.current) gutterRef.current.scrollTop = event.target.scrollTop; },
-                style: { ...mono, flex: 1, minWidth: 0, width: "100%", resize: "vertical", border: 0, padding: "2px 6px", whiteSpace: "pre", overflow: "auto" } })),
+                style: { flex: 1, minWidth: 0, width: "100%", resize: "vertical", border: 0, padding: "2px 6px", whiteSpace: "pre", overflow: "auto" } })),
         marks.lines.length ? h("ul", { id: listId, className: "ps-workflow-yaml-marks", "aria-label": "Errors marked in the YAML",
             style: { margin: 0, paddingLeft: 18, display: "grid", gap: 2 } },
         marks.lines.map(mark => h("li", { key: mark.line, "data-mark": mark.severity },
@@ -1028,14 +1053,10 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
         radio("real", "Real agents (spend model tokens)")),
     agentMode === "real" ? h("p", { role: "note", "data-notice": "real-agents", style: { margin: 0, color: TONES.warning } },
         WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT) : null,
-    h("label", { style: { display: "grid", gap: 2 } }, "Inputs (JSON object)",
-        h("textarea", { value: inputs, rows: 3, onChange: event => setInputs(event.target.value), "data-field": "inputs",
-            style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })),
-    h("label", { style: { display: "grid", gap: 2 } }, "Initial variables (JSON object, optional)",
-        h("textarea", { value: vars, rows: 2, onChange: event => setVars(event.target.value), "data-field": "vars",
-            style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })),
-    h("label", { style: { display: "grid", gap: 2 } }, "Scenario name (optional)",
-        h("input", { type: "text", value: scenario, maxLength: 128, onChange: event => setScenario(event.target.value), "data-field": "scenario" })),
+    h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, rows: 3, field: "inputs" }),
+    h(JsonBox, { label: "Initial variables (JSON object, optional)", name: "Initial variables", value: vars, onChange: setVars, rows: 2, field: "vars" }),
+    h(TextBox, { label: "Scenario name (optional)" },
+        h("input", { type: "text", className: "ps-workflow-input", value: scenario, maxLength: 128, onChange: event => setScenario(event.target.value), "data-field": "scenario" })),
     h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "test", disabled: !model.control.enabled, title: model.control.title,
             onClick: () => { start(); } }, model.control.label),
