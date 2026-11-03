@@ -4544,9 +4544,14 @@ body.is-resizing-pane-y iframe {
   border: 1px solid var(--ps-border);
   border-radius: var(--ps-radius-sm);
   background: var(--ps-surface);
+  /* F-06: only when the pane is shorter than its header, its notices and the graph's 262px floor (a short window or
+     a small dashboard pane) does the whole pane scroll; otherwise the panels area below scrolls on its own. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .ps-workflow-main-header {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4555,6 +4560,19 @@ body.is-resizing-pane-y iframe {
   border-bottom: 1px solid var(--ps-border);
   font-size: 0.9rem;
 }
+
+/* F-06: the open panels (Edit draft, Publish review, Test review, Variables, the run's activity and test calls) share
+   one area that takes its content's height and shrinks first, scrolling inside itself, while the graph and the step
+   log below keep at least 262px: 150 for the graph, 12 for the divider and 100 for the log. A fixed cap on each panel
+   was the alternative; it would still let two open panels crush the graph, and would cut a short panel on a tall
+   screen for nothing. */
+.ps-workflow-panels {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ps-workflow-panels:empty { display: none; }
 
 /* of-02: the name never wraps letter by letter. One line with an ellipsis (the whole name is its title), beside its
    own status badge; the tools follow on the same row at desktop widths and wrap to a second row on a narrow screen. */
@@ -4677,7 +4695,8 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   caret-color: var(--ps-foreground);
   outline: none;
 }
-.ps-workflow-split { flex: 1; min-height: 0; display: grid; }
+/* F-06: the graph (150px), the divider (12px) and the step log (100px) never get less than 262px together. */
+.ps-workflow-split { flex: 1 1 262px; min-height: 262px; display: grid; }
 .ps-workflow-graph-region, .ps-workflow-log { min-width: 0; min-height: 0; }
 .ps-workflow-graph-region {
   background-image: radial-gradient(color-mix(in srgb, var(--ps-border) 35%, transparent) 0.7px, transparent 0.7px);
@@ -4686,6 +4705,9 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-graph-scroll { width: 100%; height: 100%; overflow: auto; padding: 8px; }
 .ps-workflow-graph-view { height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .ps-workflow-graph-view > .ps-workflow-graph-scroll { flex: 1; min-height: 0; }
+/* F-06: many notices about the definition never push the graph out of its own region: they take at most 40% of it
+   and scroll inside it. */
+.ps-workflow-graph-view > .ps-workflow-banners { flex: 0 1 auto; min-height: 0; max-height: 40%; overflow-y: auto; }
 .ps-workflow-graph-tools { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 0.75rem; color: var(--ps-muted); }
 .ps-workflow-graph-tools span { flex: 1; }
 .ps-workflow-graph-tools button[aria-pressed="true"] { color: var(--ps-accent); }

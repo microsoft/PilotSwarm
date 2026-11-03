@@ -219,6 +219,11 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
                     onClick: () => selectNode(selected.id, { open: true }) }))),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
+        // F-06: every panel a person opens (and the run's activity and test calls) sits in one area above the graph that
+        // scrolls on its own and gives up height before the graph and the step log do: they keep at least 262px (graph
+        // 150, divider 12, log 100), so the log's divider stays on screen. The two notices above stay outside it, so a
+        // refusal is seen wherever that area is scrolled.
+        React.createElement("div", { className: "ps-workflow-panels" },
         // Why the shown run ended, and who did what in it (owner decision q14; mocks M09, M14).
         v2?.bound && v2.runId ? React.createElement(WorkflowV2RunActivity, { ending: v2.ending, events, runId: v2.runId }) : null,
         draftOpen ? React.createElement(WorkflowV2DraftEditor, { controller, sessionId, model: draftEditor, id: draftId, revisionReads: view.definitionRevisions ?? null,
@@ -234,7 +239,7 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
         testResponder?.advance ? React.createElement(WorkflowV2TestClock, { controller, sessionId, responder: testResponder }) : null,
         testResponder?.respond && view.answeringInterceptionId
             ? React.createElement(WorkflowV2TestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId,
-                parentSessionId: session?.parentSessionId ?? null }) : null,
+                parentSessionId: session?.parentSessionId ?? null }) : null),
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
             style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
             React.createElement("div", { className: "ps-workflow-graph-region" },

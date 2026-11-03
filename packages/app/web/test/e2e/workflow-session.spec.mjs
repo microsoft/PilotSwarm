@@ -1143,3 +1143,48 @@ test("v2 commands: a draft save whose answer is lost keeps the edit and Retry se
     await expect(save).toBeDisabled();
     expect(errors).toEqual([]);
 });
+
+// F-06 (batch 4, UX resize report): the panels a person opens above the graph never crush the graph and the step log. With
+// the draft editor and Publish review both open, the graph, the log's divider and the log keep at least 262px together
+// (150 + 12 + 100) and the divider is on screen and takes the pointer; the panels scroll inside their own area, so the
+// review's last button is reachable. At 1440 the pane itself does not scroll.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "F-06" (from packages/app/web, after build).
+const PANELS_MODEL = {
+    ...V2_READ_MODEL,
+    definition: { state: "draft", semver: "1.0.0", currentRevision: 1, publishedRevision: null, publishedDefinitionHash: null },
+    personCommands: { operations: ["replace_definition", "publish", "publish_and_start"], viewer: { allowed: true },
+        draft: { revision: 1, definitionHash: "hash-1", yaml: DRAFT_YAML_1 } },
+};
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`F-06: with the draft editor and Publish review open the graph and step log keep 262px and the log divider stays on screen at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const { commands } = await routeV2(page, { readModel: () => PANELS_MODEL, onCommand: (route, command) => accept(route, command) });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        await main.getByRole("button", { name: "Edit draft", exact: true }).click();
+        await main.getByRole("button", { name: "Publish…", exact: true }).click();
+        await expect(main.getByRole("region", { name: "Draft editor", exact: true })).toBeAttached();
+        const review = main.getByRole("region", { name: "Publish review", exact: true });
+        await expect(review).toBeAttached();
+        const split = main.locator(".ps-workflow-split");
+        await expect.poll(async () => (await split.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(261);
+        if (viewport.width >= 920) expect(await main.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+        const divider = main.getByRole("separator", { name: "Resize the step log", exact: true });
+        await divider.scrollIntoViewIfNeeded();
+        const box = await divider.boundingBox();
+        expect(box.y).toBeGreaterThanOrEqual(0);
+        expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+        const hit = await page.evaluate(([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest(".ps-workflow-log-resizer")),
+            [box.x + box.width / 2, box.y + box.height / 2]);
+        expect(hit).toBe(true);
+        // The panels area scrolls on its own: the review's Publish only button can be brought into view.
+        const publish = review.locator('[data-operation="publish"]');
+        await publish.scrollIntoViewIfNeeded();
+        await expect(publish).toBeInViewport();
+        await shot(page, `f06-panels-open-${viewport.width}`);
+        expect(commands).toEqual([]);
+        expect(errors).toEqual([]);
+    });
+}
