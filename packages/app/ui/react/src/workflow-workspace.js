@@ -54,8 +54,9 @@ function useWorkflowView(controller) {
     const terminal = events.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
     const status = v2 ? v2.status.label : terminal?.eventType.slice("workflow.".length)
         || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "Starting");
-    const select = nodeId => {
+    const select = (nodeId, { open = true } = {}) => {
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: nodeId } });
+        if (!open) return;
         controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
         controller.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
     };
@@ -161,7 +162,7 @@ function WorkflowGraph({ definition, nodes, selected, select, banners }) {
         }))));
 }
 
-export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
+export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected, mobile = false }) {
     const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded,
         runControls, variables, publication, draftEditor, testControls, testResponder, runNotice, events } = useWorkflowView(controller);
     const variablesId = `wf-vars-${React.useId().replace(/:/g, "")}`;
@@ -187,8 +188,11 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
         controller.dispatch({ type: "ui/workflowView", sessionId,
             view: { logHeight: workflowLogBounds(splitRef.current?.clientHeight || splitHeight, next).height } });
     };
+    // On a phone, Step details cover the whole screen: tapping a step on the graph only selects it, and a second tap on the
+    // selected step, or Step details, opens them. Elsewhere selecting a step opens its details beside the graph, as before,
+    // and so does mobile Zen, which leaves Zen for the details it asks for (onNodeSelected).
     const selectNode = id => {
-        select(id);
+        select(id, { open: !mobile || Boolean(onNodeSelected) || id === selected?.id });
         onNodeSelected?.();
     };
     return React.createElement("section", { className: "ps-workflow-main", "aria-label": "Workflow session" },

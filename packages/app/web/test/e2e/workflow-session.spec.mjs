@@ -290,6 +290,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         }
         await graph.getByRole("button", { name: "Inspect blocked", exact: true }).scrollIntoViewIfNeeded();
         await graph.getByRole("button", { name: "Inspect blocked", exact: true }).click();
+        if (viewport.width < 920) {
+            // On a phone a tap only selects the step; Step details opens it (flow-04).
+            await expect(graph).toBeVisible();
+            await main.getByRole("button", { name: "Step details", exact: true }).click();
+        }
         await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("blocked");
         await shot(page, `quality-branch-details-${viewport.width}`);
     });
@@ -448,6 +453,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 35, { steps: 4 });
         await page.mouse.up();
         await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
+        if (viewport.width < 920) {
+            // On a phone a tap only selects the step and keeps the workflow on screen; Step details opens it (flow-04).
+            await expect(main.locator(".ps-workflow-graph")).toBeVisible();
+            await main.getByRole("button", { name: "Step details", exact: true }).click();
+        }
         const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
         await expect(details.locator("h2")).toHaveText("collect");
         await expect(details).toContainText("read_facts");
