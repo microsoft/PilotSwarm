@@ -1,11 +1,12 @@
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
-    compactWorkflowV2Executions, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
+    compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
 } from "./workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor,
     workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
+    workflowV2TestResponder,
 } from "./workflow-v2-commands.js";
 
 /**
@@ -43,10 +44,12 @@ import {
  * revision (t opens its review: the test notice, mocked or real agents with
  * the real-agent notice, the run's inputs, initial variables and scenario
  * name, started after the confirm dialog; the portal's
- * workflowV2TestControls). A workflow in an agent state's subtree takes only
- * pause, stop and cancel from people. The server decides every command
- * again. A test run's answers and its virtual clock are not part of it, and
- * the server keeps refusing human input to an agent state's subtree.
+ * workflowV2TestControls), and the shown test run's answers and clock (a
+ * opens an answer form bound to the run and one intercepted effect that
+ * waits; + opens its virtual clock; the portal's workflowV2TestResponder). A
+ * workflow in an agent state's subtree takes only pause, stop and cancel
+ * from people. The server decides every command again, and keeps refusing
+ * human input to an agent state's subtree.
  *
  * For an agent state it also shows the agent, the workflow interface the
  * state names and what the shown run pins it to (the package revision and
@@ -125,9 +128,11 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     // test of its current revision as the portal's test review offers it.
     const publication = v2 ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null;
     const testControls = v2 ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null;
+    // The shown test run's answers and clock, from that run's own read model only, as the portal's answer form and clock.
+    const testResponder = v2 ? workflowV2TestResponder(readModel, runCommand) : null;
     return {
         definition, nodes, v2, status, live, runPicker, runControls, runNotice, runVariables, runReadModel: v2 ? readModel ?? null : null,
-        draftEditor, draftBuffer, draftEdit, publication, testControls, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
+        draftEditor, draftBuffer, draftEdit, publication, testControls, testResponder, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -863,6 +868,199 @@ export function selectWorkflowTestModal(state, maxWidth = 100, viewportHeight = 
     };
 }
 
+/** The kinds of a test answer, in the order Tab goes through them (test-mode.ts parseTestResponse). */
+export const WORKFLOW_TEST_ANSWER_KINDS = Object.freeze(["success", "error", "cancel"]);
+/** At most this many characters of what an effect reached, or of the schema its answer must match, are shown. */
+const TEST_VALUE_LIMIT = 400;
+
+/** What an effect reached, the schema an answer must match or an answer's value, as one bounded line of text. */
+function testValueText(value) {
+    let text;
+    if (typeof value === "string") text = value;
+    else {
+        try { text = JSON.stringify(value); } catch { text = String(value); }
+    }
+    text = String(text ?? "").replace(/\s+/g, " ").trim();
+    return text.length > TEST_VALUE_LIMIT ? `${text.slice(0, TEST_VALUE_LIMIT - 1)}…` : text;
+}
+
+/** Why the shown run takes no test answer or clock advance from a person here (`what`: "answer" or "clock"), as a sentence. */
+function testRunAbsentReason(projection, what) {
+    const responder = projection?.testResponder ?? null;
+    if (responder) {
+        if (responder.reason) return responder.reason;
+        if (what === "answer" && responder.respond) return "No intercepted effect of this test run waits for an answer.";
+        return what === "answer" ? "This workflow takes no test answers from people." : "This workflow takes no clock advances from people.";
+    }
+    const model = projection?.runReadModel ?? null;
+    if (!isPlainRecord(model)) return "The shown run is not loaded yet.";
+    if (!isPlainRecord(model.run)) return "No run is shown; ←→ chooses a test run.";
+    if (model.run.mode !== "test") return "The shown run is not a test run; ←→ chooses a test run.";
+    if (!isPlainRecord(model.personCommands)) return "This deployment takes no workflow commands from people.";
+    return workflowV2RestrictionText(model.personCommands) ?? "This workflow takes no test answers or clock advances from people.";
+}
+
+/** Why the open workflow view does not open the answer form for the test run it shows, as a sentence; null when it does. Pure. */
+export function workflowViewTestAnswerRefusal(selection) {
+    const responder = selection?.projection?.testResponder ?? null;
+    if (responder?.respond && responder.waiting.length) return null;
+    return `No test answer can be given here. ${testRunAbsentReason(selection?.projection ?? null, "answer")}`;
+}
+
+/** Why the open workflow view does not open the virtual clock of the test run it shows, as a sentence; null when it does. Pure. */
+export function workflowViewTestClockRefusal(selection) {
+    const responder = selection?.projection?.testResponder ?? null;
+    if (responder?.advance) return null;
+    return `The virtual clock cannot be advanced here. ${testRunAbsentReason(selection?.projection ?? null, "clock")}`;
+}
+
+/** The shown test run's answers and clock in the view's details: what a and + do, or why a person cannot. */
+function testRunLines(projection) {
+    const responder = projection.testResponder;
+    if (!responder) return [];
+    const count = responder.waiting.length;
+    const parts = [];
+    if (responder.respond) parts.push(count > 1 ? `a answers one of its ${count} waiting effects` : count ? "a answers its waiting effect" : "no effect waits for an answer");
+    if (responder.advance) parts.push("+ advances its virtual clock");
+    const lines = [{ text: `Test run ${shortRunId(responder.runId)}${parts.length ? ` — ${parts.join(" · ")}` : ""}`, color: responder.busy ? "yellow" : "cyan",
+        indent: "" }];
+    if (responder.reason) lines.push({ text: responder.reason, color: "gray", indent: "  " });
+    return lines;
+}
+
+/** The notices of the shown test run: a test, not a sandbox, and its agent states mocked or real (spending model tokens). */
+function testRunNoticeLines(test) {
+    const lines = [{ text: typeof test?.notice === "string" && test.notice ? test.notice : WORKFLOW_V2_TEST_NOTICE_TEXT, color: "yellow" }];
+    lines.push(test?.agentMode === "real"
+        ? { text: typeof test.agentNotice === "string" && test.agentNotice ? test.agentNotice : WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, color: "yellow" }
+        : { text: "Agent states are mocked: the parent answers each agent state.", color: "gray" });
+    return lines;
+}
+
+/**
+ * The answer form (TUI modal "workflowTestAnswer"; the portal's answer form, mock M18): bound to one test run and one
+ * of its intercepted effects (`runId`, `interceptionId`), it shows the run's notices, the effect, its actual state
+ * (waiting, answered with what and by whom, or its state ended another way), what it reached, the schema the answer
+ * must match and, for an agent state, its outcomes; the answer's kind (success, error or cancel) and its JSON value; an
+ * answer being sent, the last answer's refusal or lost reply, why a person cannot answer, and the form's own check.
+ * Null unless the form is open. Pure.
+ */
+export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHeight = null) {
+    const modal = state?.ui?.modal;
+    if (!modal || modal.type !== "workflowTestAnswer") return null;
+    const projection = workflowViewProjectionFor(state, modal.sessionId);
+    const responder = projection.testResponder;
+    const run = projection.runReadModel?.run ?? null;
+    const test = isPlainRecord(run?.test) ? run.test : null;
+    const sameRun = Boolean(responder) && responder.runId === modal.runId;
+    const items = sameRun && Array.isArray(test?.interceptions) ? test.interceptions.filter(isPlainRecord) : [];
+    const item = items.find(entry => entry.interceptionId === modal.interceptionId) ?? null;
+    const at = sameRun ? responder.waiting.findIndex(entry => entry.interceptionId === modal.interceptionId) : -1;
+    const waiting = at >= 0 ? responder.waiting[at] : null;
+    const node = item && Array.isArray(run?.nodeExecutions) ? run.nodeExecutions.find(entry => entry?.nodeExecutionId === item.nodeExecutionId) ?? null : null;
+    const kind = WORKFLOW_TEST_ANSWER_KINDS.includes(modal.kind) ? modal.kind : "success";
+    const width = Math.max(40, Number(maxWidth) || 100);
+    const contentWidth = width - 4;
+    const lines = [];
+    const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
+    for (const line of testRunNoticeLines(test)) add(line.text, line.color);
+    if (!sameRun) add(`The workflow view no longer shows test run ${shortRunId(modal.runId)}, so this form sends nothing. Esc goes back.`, "yellow");
+    else if (!item) add(`Interception ${modal.interceptionId} is not one of this test run's effects, so this form sends nothing. Esc goes back.`, "yellow");
+    else {
+        add(`Effect: ${item.operation ?? "effect"}${item.tool ? ` · ${item.tool}` : ""}${item.stateId ? ` in state '${item.stateId}'` : ""}`, "cyan");
+        add(`Interception: ${item.interceptionId}`);
+        if (isPlainRecord(item.response)) {
+            const value = item.response.value === undefined || item.response.value === null ? "" : `: ${testValueText(item.response.value)}`;
+            add(`Answered: ${item.response.kind ?? "an answer"} · ${item.response.disposition ?? "not known"}${value}. Another answer is refused; the same answer again is the same answer.`);
+        } else if (isPlainRecord(node) && node.state !== "pending") {
+            add(`Its state already ended${typeof node.outcome === "string" && node.outcome ? ` '${node.outcome}'` : ""}; an answer is refused.`, "yellow");
+        } else {
+            add(`Waits for an answer${typeof item.virtualAt === "string" && item.virtualAt ? ` (reached at virtual time ${item.virtualAt})` : ""}.`, "yellow");
+        }
+        if (item.arguments !== null && item.arguments !== undefined) add(`What it reached: ${testValueText(item.arguments)}`);
+        if (item.responseSchema !== null && item.responseSchema !== undefined) add(`The answer must match: ${testValueText(item.responseSchema)}`);
+        if (waiting?.outcomes?.length) add(`Its state's outcomes: ${waiting.outcomes.join(", ")}`);
+        add(`Answer: ${WORKFLOW_TEST_ANSWER_KINDS.map(entry => (entry === kind ? `[${entry}]` : entry)).join(" · ")} (Tab changes it)`, "cyan");
+        if (kind === "cancel") add("The effect ends as cancelled; a cancel has no value.", "gray");
+        if (kind === "error") add('An error answer is { "code", "message", "details"? } with a message of 1 to 4,000 characters.', "gray");
+        if (responder.waiting.length > 1 || at < 0) {
+            add(`${at >= 0 ? `${at + 1} of ${responder.waiting.length}` : responder.waiting.length} effect${responder.waiting.length === 1 ? "" : "s"} wait`
+                + `${responder.waiting.length === 1 ? "s" : ""} for an answer${responder.waiting.length ? " · ↑↓ another" : ""}`, "gray");
+        }
+    }
+    if (sameRun && responder.reason) add(responder.reason, "yellow");
+    if (responder?.pending === "test_respond") add("Sending…", "yellow");
+    else if (responder?.busy) add("Another command for this workflow is being sent.", "gray");
+    const notice = projection.runNotice?.operation === "test_respond" ? projection.runNotice : null;
+    if (notice) {
+        add(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
+        if (notice.retry) add("Enter sends the same answer again; the server records it once.", "gray", "  ");
+    }
+    if (typeof modal.error === "string" && modal.error) add(modal.error, "red");
+    const valueShown = sameRun && Boolean(item) && kind !== "cancel";
+    const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
+    const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - (valueShown ? 14 : 10))));
+    const hint = "Enter send · Tab success/error/cancel · ↑↓ another waiting effect · Esc back";
+    const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
+    return {
+        title: `Answer · test run ${shortRunId(modal.runId)}${item ? ` · ${item.operation ?? "effect"}${item.stateId ? ` in '${item.stateId}'` : ""}` : ""}`,
+        lines, listHeight, scrollOffset: 0, kind, valueShown,
+        value: String(modal.value ?? ""), valueCursor: Number(modal.valueCursor) || 0,
+        busy: Boolean(responder?.busy),
+        hint, hintLines, hintHeight: hintLines.length + 2, idealWidth: width,
+    };
+}
+
+/**
+ * The virtual clock form (TUI modal "workflowTestClock"; the portal's clock, mock M19): bound to one test run
+ * (`runId`), it shows the run's notices, how far its virtual clock is from the test's start, what an advance decides
+ * (what came due: a wait or a receive's wait elapses, an intercepted request or agent times out; a result that won first
+ * stands; script clocks are real), the effects that wait, an advance being sent, the last advance's refusal or lost
+ * reply, why a person cannot advance it, and the form's own check of the seconds. Null unless the form is open. Pure.
+ */
+export function selectWorkflowTestClockModal(state, maxWidth = 100, viewportHeight = null) {
+    const modal = state?.ui?.modal;
+    if (!modal || modal.type !== "workflowTestClock") return null;
+    const projection = workflowViewProjectionFor(state, modal.sessionId);
+    const responder = projection.testResponder;
+    const run = projection.runReadModel?.run ?? null;
+    const test = isPlainRecord(run?.test) ? run.test : null;
+    const sameRun = Boolean(responder) && responder.runId === modal.runId;
+    const width = Math.max(40, Number(maxWidth) || 100);
+    const contentWidth = width - 4;
+    const lines = [];
+    const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
+    for (const line of testRunNoticeLines(test)) add(line.text, line.color);
+    if (!sameRun) add(`The workflow view no longer shows test run ${shortRunId(modal.runId)}, so this form sends nothing. Esc goes back.`, "yellow");
+    else {
+        add(`Virtual clock: ${responder.elapsedSeconds === null ? "not known" : `${formatSeconds(responder.elapsedSeconds)} after the test began`}`, "cyan");
+        add("An advance by whole seconds (1 to 30 days) decides what came due: a wait or a receive's wait elapses, an intercepted request or agent "
+            + "times out; a result that won first stands. Script clocks are real.", "gray");
+        const count = responder.waiting.length;
+        if (count) add(`${count} intercepted effect${count === 1 ? " waits" : "s wait"} for an answer.`);
+        if (responder.reason) add(responder.reason, "yellow");
+    }
+    if (responder?.pending === "test_advance") add("Advancing…", "yellow");
+    else if (responder?.busy) add("Another command for this workflow is being sent.", "gray");
+    const notice = projection.runNotice?.operation === "test_advance" ? projection.runNotice : null;
+    if (notice) {
+        add(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
+        if (notice.retry) add("Enter sends the same advance again; the server applies it once.", "gray", "  ");
+    }
+    if (typeof modal.error === "string" && modal.error) add(modal.error, "red");
+    const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
+    const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - 12)));
+    const hint = "Enter advance · Esc back";
+    const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
+    return {
+        title: `Virtual clock · test run ${shortRunId(modal.runId)}`,
+        lines, listHeight, scrollOffset: 0, fieldShown: sameRun,
+        seconds: String(modal.seconds ?? ""), secondsCursor: Number(modal.secondsCursor) || 0,
+        busy: Boolean(responder?.busy),
+        hint, hintLines, hintHeight: hintLines.length + 2, idealWidth: width,
+    };
+}
+
 /** `text` in lines of at most `limit` characters, broken at spaces; each starts with `indent`, a continuation with two more. */
 function wrapped(text, limit, indent = "") {
     const out = [];
@@ -946,7 +1144,9 @@ function testEffectLines(projection, selectedId) {
     return {
         title: `Intercepted effects of this test run (${items.length}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for the parent` : ""}):`,
         lines,
-        note: "The TUI shows them; the run's parent agent, a fixture or a person in the portal answers them.",
+        note: projection.testResponder?.respond
+            ? "a answers one that waits; the parent agent or a fixture may answer first, and the first answer stands."
+            : "The TUI shows them; the run's parent agent, a fixture or a person in the portal answers them.",
     };
 }
 
@@ -964,7 +1164,7 @@ function detailLines(selection, width) {
     // The run controls, their notice and the variables are wrapped, not cut (a reason or a refusal is read whole); a
     // variable's value is cut to one line.
     for (const line of [...runControlLines(projection), ...runVariableLines(projection), ...draftLines(projection), ...publicationLines(projection),
-        ...testLines(projection)]) {
+        ...testLines(projection), ...testRunLines(projection)]) {
         if (line.clip) add(`${line.indent}${line.text}`, line.color);
         else for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }

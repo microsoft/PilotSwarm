@@ -31,6 +31,8 @@ import {
     selectWorkflowDraftModal,
     selectWorkflowPublicationModal,
     selectWorkflowTestModal,
+    selectWorkflowTestAnswerModal,
+    selectWorkflowTestClockModal,
     selectWorkflowInputNote,
     workflowViewPanelWidth,
     selectSessionAgentPickerModal,
@@ -2183,6 +2185,137 @@ function WorkflowTestModalContainer({ controller }) {
     return React.createElement(WorkflowTestModal, { state: selectorState });
 }
 
+/**
+ * Workflow sessions (TUI): a test run's answer form (selectWorkflowTestAnswerModal): the run's notices, the intercepted
+ * effect it is bound to with its actual state, what it reached, the schema the answer must match and its outcomes, the
+ * answer's kind and its JSON value (none for a cancel). Enter sends, Tab changes the kind, ↑↓ another waiting effect.
+ */
+export function WorkflowTestAnswerModal({ state }) {
+    const platform = useUiPlatform();
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = workflowViewPanelWidth(viewport.width);
+    const modal = selectWorkflowTestAnswerModal(state, width, viewport.height);
+    if (!modal) return null;
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "yellow",
+                focused: false,
+                width,
+                height: modal.listHeight,
+                lines: modal.lines,
+                scrollOffset: modal.scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            modal.valueShown ? React.createElement(platform.Input, {
+                label: modal.kind === "error" ? "error (JSON: code, message, details?)" : "value (JSON)",
+                value: modal.value,
+                cursorIndex: modal.valueCursor,
+                focused: true,
+                placeholder: "null, \"text\", {..} or [..]",
+                rows: 2,
+            }) : null,
+            React.createElement(platform.Panel, {
+                title: modal.busy ? "Keys · a command is being sent" : "Keys",
+                color: "cyan",
+                focused: false,
+                width,
+                height: modal.hintHeight,
+                lines: modal.hintLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+/**
+ * Workflow sessions (TUI): a test run's virtual clock form (selectWorkflowTestClockModal): the run's notices, how far its
+ * clock is from the test's start, what an advance decides, and the seconds to advance by. Enter advances.
+ */
+export function WorkflowTestClockModal({ state }) {
+    const platform = useUiPlatform();
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = workflowViewPanelWidth(viewport.width);
+    const modal = selectWorkflowTestClockModal(state, width, viewport.height);
+    if (!modal) return null;
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "yellow",
+                focused: false,
+                width,
+                height: modal.listHeight,
+                lines: modal.lines,
+                scrollOffset: modal.scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            modal.fieldShown ? React.createElement(platform.Input, {
+                label: "seconds to advance (1 to 2592000)",
+                value: modal.seconds,
+                cursorIndex: modal.secondsCursor,
+                focused: true,
+                placeholder: "60",
+                rows: 1,
+            }) : null,
+            React.createElement(platform.Panel, {
+                title: modal.busy ? "Keys · a command is being sent" : "Keys",
+                color: "cyan",
+                focused: false,
+                width,
+                height: modal.hintHeight,
+                lines: modal.hintLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+/**
+ * The container of a TUI workflow form modal of `type` (drawn by `component`): it reads only that session's state, and
+ * while the form is open new events or a changed session row read the workflow again, so the form shows the run as the
+ * server has it.
+ */
+function WorkflowFormModalContainer({ controller, type, component }) {
+    const state = useControllerSelector(controller, (rootState) => {
+        const modal = rootState.ui.modal;
+        const sessionId = modal?.type === type ? modal.sessionId : null;
+        return {
+            modal,
+            layout: rootState.ui.layout,
+            session: sessionId ? rootState.sessions.byId[sessionId] || null : null,
+            history: sessionId ? rootState.history.bySessionId.get(sessionId) || null : null,
+            view: sessionId ? rootState.ui.workflowViews?.[sessionId] || null : null,
+            canvas: sessionId ? rootState.canvas?.bySessionId?.[sessionId] || null : null,
+        };
+    }, shallowEqualObject);
+    const sessionId = state.modal?.type === type ? state.modal.sessionId : null;
+    const events = state.history?.events || EMPTY_WORKFLOW_EVENTS;
+    const sessionUpdatedAt = state.session?.updatedAt ?? null;
+    React.useEffect(() => {
+        if (sessionId) controller.ensureWorkflowDefinition(sessionId).catch(() => {});
+    }, [controller, sessionId, events, sessionUpdatedAt]);
+    if (!sessionId) return null;
+    const selectorState = {
+        ui: { modal: state.modal, layout: state.layout, workflowViews: state.view ? { [sessionId]: state.view } : {} },
+        sessions: { byId: state.session ? { [sessionId]: state.session } : {} },
+        history: { bySessionId: new Map(state.history ? [[sessionId, state.history]] : []) },
+        canvas: { bySessionId: state.canvas ? { [sessionId]: state.canvas } : {} },
+    };
+    return React.createElement(component, { state: selectorState });
+}
+
 function ArtifactPickerModalContainer({ controller }) {
     const state = useControllerSelector(controller, (rootState) => ({
         ui: {
@@ -3041,6 +3174,8 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(WorkflowDraftModalContainer, { controller }),
         React.createElement(WorkflowPublicationModalContainer, { controller }),
         React.createElement(WorkflowTestModalContainer, { controller }),
+        React.createElement(WorkflowFormModalContainer, { controller, type: "workflowTestAnswer", component: WorkflowTestAnswerModal }),
+        React.createElement(WorkflowFormModalContainer, { controller, type: "workflowTestClock", component: WorkflowTestClockModal }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ContextTierPickerModalContainer, { controller }),

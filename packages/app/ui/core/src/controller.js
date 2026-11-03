@@ -5,11 +5,12 @@ import {
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
     workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewTestRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS,
     workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
+    WORKFLOW_TEST_ANSWER_KINDS, workflowViewTestAnswerRefusal, workflowViewTestClockRefusal,
 } from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
     workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableDraft,
-    workflowV2VariableRemoval,
+    workflowV2VariableRemoval, workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -7060,6 +7061,209 @@ export class PilotSwarmUiController {
         }
     }
 
+    /**
+     * The TUI's workflow view: open the answer form (a; design 05
+     * test_respond; mock M18; R19, R20, R26; INACTIVE: only where the portal's
+     * answer form lets a person answer, workflowV2TestResponder) bound to the
+     * test run the view shows and one of its intercepted effects that waits
+     * for the parent: the selected state's, else the first. It starts from
+     * the effect's own template (an agent state's first outcome, a request's
+     * response, null). Otherwise the status line says why. It returns to the
+     * view. Nothing is sent.
+     */
+    openWorkflowTestAnswer() {
+        const state = this.getState();
+        const selection = selectWorkflowViewSelection(state);
+        if (!selection) return;
+        const refusal = workflowViewTestAnswerRefusal(selection);
+        if (refusal) {
+            this.dispatch({ type: "ui/status", text: refusal });
+            return;
+        }
+        const responder = selection.projection.testResponder;
+        const waiting = responder.waiting.find(entry => entry.stateId && entry.stateId === selection.selected?.id) ?? responder.waiting[0];
+        const value = workflowV2TestAnswerTemplate(waiting);
+        this.dispatch({ type: "ui/modal", modal: { type: "workflowTestAnswer", sessionId: selection.modal.sessionId, runId: responder.runId,
+            interceptionId: waiting.interceptionId, kind: "success", value, valueCursor: value.length, error: null,
+            returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
+        this.dispatch({ type: "ui/status", text: "Answer — Enter send · Tab success/error/cancel · ↑↓ another waiting effect · Esc back" });
+    }
+
+    /** The answer form's JSON value: type, delete, move the cursor (editWorkflowModalField). */
+    editWorkflowTestAnswerField(action = {}) {
+        if (action.type === "switch") return;
+        this.editWorkflowModalField("workflowTestAnswer", ["value"], action);
+    }
+
+    /** The answer form: the next kind of answer (Tab): success, error, cancel. What was typed stays. */
+    cycleWorkflowTestAnswerKind() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "workflowTestAnswer") return;
+        const at = WORKFLOW_TEST_ANSWER_KINDS.indexOf(modal.kind);
+        this.updateWorkflowModal("workflowTestAnswer", { kind: WORKFLOW_TEST_ANSWER_KINDS[(Math.max(0, at) + 1) % WORKFLOW_TEST_ANSWER_KINDS.length], error: null });
+    }
+
+    /**
+     * The answer form: bind it to the previous or next effect of its test run
+     * that waits for an answer (↑↓), which starts from its own template, as
+     * the portal's form does for another interception.
+     */
+    pickWorkflowTestInterception(delta) {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowTestAnswer") return;
+        const responder = workflowViewProjectionFor(state, modal.sessionId).testResponder;
+        const waiting = responder?.runId === modal.runId ? responder.waiting : [];
+        if (!waiting.length) {
+            this.dispatch({ type: "ui/status", text: "No effect of this test run waits for an answer" });
+            return;
+        }
+        const current = waiting.findIndex(entry => entry.interceptionId === modal.interceptionId);
+        const next = current < 0 ? (delta > 0 ? 0 : waiting.length - 1) : Math.max(0, Math.min(current + delta, waiting.length - 1));
+        if (next === current) {
+            this.dispatch({ type: "ui/status", text: waiting.length === 1 ? "No other effect waits for an answer" : "No more effects that wait in this direction" });
+            return;
+        }
+        const value = workflowV2TestAnswerTemplate(waiting[next]);
+        this.updateWorkflowModal("workflowTestAnswer", { interceptionId: waiting[next].interceptionId, kind: "success", value, valueCursor: value.length,
+            error: null });
+    }
+
+    /**
+     * The answer form: send its answer (Enter) as one test_respond for exactly
+     * the test run and interception it is bound to, as the portal's form
+     * sends it (sendWorkflowRunCommand). What was typed is checked first
+     * (workflowV2TestResponseDraft) and the form says what is wrong; nothing is
+     * sent for a run the view no longer shows, an interception that is not
+     * one of the run's, a run that ended or a viewer the portal refuses, or
+     * while a command is sent. The server decides the rest and the form keeps
+     * what was typed: an answer its contract refuses names the fields
+     * (TEST_RESPONSE_INVALID), another answer to an answered effect is
+     * refused (TEST_RESPONSE_CONFLICT) while the same answer again is the
+     * same answer, and a state that already ended refuses it (NODE_CLOSED);
+     * a refused conflict reads the workflow again. After an answer that never
+     * came, Enter sends the same answer again (the same operation id).
+     * Accepted: back to the view, the status line saying how the state ended.
+     */
+    async sendWorkflowTestAnswer() {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowTestAnswer") return { ok: false, reason: "closed" };
+        const refuse = error => {
+            this.updateWorkflowModal("workflowTestAnswer", { error });
+            this.dispatch({ type: "ui/status", text: error });
+            return { ok: false, reason: "invalid" };
+        };
+        const projection = workflowViewProjectionFor(state, modal.sessionId);
+        const responder = projection.testResponder;
+        if (!responder || responder.runId !== modal.runId) {
+            return refuse("The workflow view no longer shows the test run this form was opened for, so nothing was sent. Esc goes back.");
+        }
+        const items = Array.isArray(projection.runReadModel?.run?.test?.interceptions) ? projection.runReadModel.run.test.interceptions : [];
+        if (!items.some(item => item?.interceptionId === modal.interceptionId)) {
+            return refuse(`Interception ${modal.interceptionId} is not one of this test run's effects, so nothing was sent.`);
+        }
+        if (!responder.respond) return refuse(responder.reason ?? "This workflow takes no test answers from people.");
+        if (responder.busy) return refuse(responder.pending === "test_respond" ? "The answer is being sent; wait for its reply." : "Another command for this workflow is being sent.");
+        const draft = workflowV2TestResponseDraft(modal.kind, modal.value);
+        if (!draft.ok) return refuse(draft.error);
+        this.updateWorkflowModal("workflowTestAnswer", { error: null });
+        const result = await this.sendWorkflowRunCommand(modal.sessionId, { operation: "test_respond", runId: modal.runId,
+            interceptionId: modal.interceptionId, response: draft.response });
+        this.afterWorkflowTestCommand(modal, result);
+        return result;
+    }
+
+    /**
+     * The TUI's workflow view: open the virtual clock form (+; design 05
+     * test_advance; mock M19; R08, R19, R26; INACTIVE: only where the portal's
+     * clock lets a person advance it, workflowV2TestResponder) bound to the
+     * test run the view shows; otherwise the status line says why. It returns
+     * to the view. Nothing is sent.
+     */
+    openWorkflowTestClock() {
+        const state = this.getState();
+        const selection = selectWorkflowViewSelection(state);
+        if (!selection) return;
+        const refusal = workflowViewTestClockRefusal(selection);
+        if (refusal) {
+            this.dispatch({ type: "ui/status", text: refusal });
+            return;
+        }
+        this.dispatch({ type: "ui/modal", modal: { type: "workflowTestClock", sessionId: selection.modal.sessionId,
+            runId: selection.projection.testResponder.runId, seconds: "60", secondsCursor: 2, error: null, returnModal: selection.modal,
+            previousFocus: state.ui.focusRegion } });
+        this.dispatch({ type: "ui/status", text: "Virtual clock — Enter advance by the seconds given · Esc back" });
+    }
+
+    /** The virtual clock form's seconds: type, delete, move the cursor (editWorkflowModalField). */
+    editWorkflowTestClockField(action = {}) {
+        if (action.type === "switch") return;
+        this.editWorkflowModalField("workflowTestClock", ["seconds"], action);
+    }
+
+    /**
+     * The virtual clock form: advance the clock (Enter) of exactly the test run
+     * it is bound to by the seconds given, as one test_advance, as the
+     * portal's clock sends it (sendWorkflowRunCommand); nothing else moves it,
+     * and script clocks stay real. The seconds are checked first (a whole
+     * number from 1 to 30 days); nothing is sent for a run the view no longer
+     * shows, a run that ended, a viewer the portal refuses, or while a command
+     * is sent. The server decides the rest (a refusal stays in the form with
+     * what was typed). After an answer that never came, Enter sends the same
+     * advance again (the same operation id). Accepted: back to the view, the
+     * status line saying which deadlines came due and how each state ended.
+     */
+    async advanceWorkflowTestClock() {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowTestClock") return { ok: false, reason: "closed" };
+        const refuse = error => {
+            this.updateWorkflowModal("workflowTestClock", { error });
+            this.dispatch({ type: "ui/status", text: error });
+            return { ok: false, reason: "invalid" };
+        };
+        const responder = workflowViewProjectionFor(state, modal.sessionId).testResponder;
+        if (!responder || responder.runId !== modal.runId) {
+            return refuse("The workflow view no longer shows the test run this form was opened for, so nothing was sent. Esc goes back.");
+        }
+        if (!responder.advance) return refuse(responder.reason ?? "This workflow takes no clock advances from people.");
+        if (responder.busy) return refuse(responder.pending === "test_advance" ? "The advance is being sent; wait for its reply." : "Another command for this workflow is being sent.");
+        const draft = workflowV2AdvanceDraft(modal.seconds);
+        if (!draft.ok) return refuse(draft.error);
+        this.updateWorkflowModal("workflowTestClock", { error: null });
+        const result = await this.sendWorkflowRunCommand(modal.sessionId, { operation: "test_advance", runId: modal.runId, seconds: draft.seconds });
+        const decided = result.ok && Array.isArray(result.receipt?.decided)
+            ? result.receipt.decided.filter(item => item && typeof item === "object" && typeof item.stateId === "string") : [];
+        if (decided.length) {
+            const shown = decided.slice(0, 3).map(item => `'${item.stateId}' ${typeof item.outcome === "string" ? item.outcome : "ended"}`);
+            this.dispatch({ type: "ui/status", text: `${workflowV2RunCommandAccepted("test_advance", modal.runId, result.receipt, { seconds: draft.seconds })} `
+                + `Came due: ${shown.join(", ")}${decided.length > 3 ? ` and ${decided.length - 3} more` : ""}.` });
+        }
+        this.afterWorkflowTestCommand(modal, result);
+        return result;
+    }
+
+    /**
+     * After a test answer or clock advance sent from `form` (the answer form or
+     * the clock form): accepted, back to the workflow view; refused or
+     * unanswered, the form stays with what was typed (its own earlier message
+     * gives way to the command's notice) and the status line says so too.
+     */
+    afterWorkflowTestCommand(form, result) {
+        const current = this.getState().ui.modal;
+        const open = current?.type === form.type && current.sessionId === form.sessionId && current.runId === form.runId;
+        if (result?.ok) {
+            if (open) this.dispatch({ type: "ui/modal", modal: current.returnModal ?? null });
+            return;
+        }
+        if (result?.reason === "failed" || result?.reason === "unconfirmed") {
+            if (open && current.error) this.updateWorkflowModal(form.type, { error: null });
+            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[form.sessionId]?.runCommand);
+            if (notice) this.dispatch({ type: "ui/status", text: notice.text });
+        }
+    }
+
     /** The TUI's workflow view: clear the notice about its last run command (nothing is sent or undone). */
     dismissWorkflowViewRunCommand() {
         const selection = selectWorkflowViewSelection(this.getState());
@@ -10031,14 +10235,15 @@ export class PilotSwarmUiController {
         // A confirm opened from the TUI's workflow view, its variables form, its draft editor, its publication review or its
         // test review returns to it, and what it asked about was not done; the variables form, the draft editor and the two
         // reviews return to the view (the draft's edit is kept).
-        if (modal.returnModal && ["confirm", "workflowVariable", "workflowDraft", "workflowPublish", "workflowTest"].includes(modal.type)) {
+        if (modal.returnModal && ["confirm", "workflowVariable", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer", "workflowTestClock"]
+            .includes(modal.type)) {
             this.dispatch({ type: "ui/modal", modal: modal.returnModal });
             const operation = modal.type === "confirm" ? modal.workflowRunCommand?.operation : null;
             const labels = { stop: "Stop", cancel: "Cancel", set_vars: "The removal", publish: "Publish", publish_and_start: "Publish and start", start: "Start",
                 test: "The test" };
             const label = Object.hasOwn(labels, operation ?? "") ? labels[operation] : "The command";
             const unsaved = modal.type === "workflowDraft" && workflowViewProjectionFor(this.getState(), modal.sessionId).draftEdit?.changed;
-            this.dispatch({ type: "ui/status", text: modal.type === "workflowVariable" ? "Back to the workflow view"
+            this.dispatch({ type: "ui/status", text: ["workflowVariable", "workflowTestAnswer", "workflowTestClock"].includes(modal.type) ? "Back to the workflow view"
                 : modal.type === "workflowDraft" ? (unsaved ? "Closed the draft editor; your unsaved edits are kept (e shows them)" : "Closed the draft editor")
                     : modal.type === "workflowPublish" ? "Closed the publication review"
                         : modal.type === "workflowTest" ? "Closed the test review"
@@ -13204,6 +13409,18 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_TEST_RELOAD:
                 this.reviewWorkflowTestAgain();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER:
+                this.openWorkflowTestAnswer();
+                return;
+            case UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND:
+                await this.sendWorkflowTestAnswer();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK:
+                this.openWorkflowTestClock();
+                return;
+            case UI_COMMANDS.WORKFLOW_TEST_CLOCK_ADVANCE:
+                await this.advanceWorkflowTestClock();
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

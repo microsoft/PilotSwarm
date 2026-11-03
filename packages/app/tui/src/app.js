@@ -67,8 +67,10 @@ export function isPlainShortcutKey(key = {}) {
  * The workflow view's run controls for the run it shows (p pause · r resume · s stop · c cancel; stop and cancel ask
  * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, e, which
  * opens the draft editor, P, which opens the publication review (publish, publish and start, or start; each asks
- * first), and t, which opens the test review (a test run of the current revision; it asks first). INACTIVE: only a
- * deployment that takes a person's workflow commands offers them; otherwise the status line says why nothing was sent.
+ * first), t, which opens the test review (a test run of the current revision; it asks first), and, for a test run
+ * shown, a, which answers one of its intercepted effects that waits, and +, which advances its virtual clock. INACTIVE:
+ * only a deployment that takes a person's workflow commands offers them; otherwise the status line says why nothing was
+ * sent.
  */
 const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     p: UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN,
@@ -80,6 +82,8 @@ const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     e: UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT,
     P: UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW,
     t: UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW,
+    a: UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER,
+    "+": UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK,
 });
 
 export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
@@ -313,8 +317,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             && controller.giveUpTurnControl()) {
             return;
         }
-        // The workflow variables form, the draft editor and the publication and test reviews take typed text, q included.
-        const typingInForm = ["workflowVariable", "workflowDraft", "workflowPublish", "workflowTest"].includes(modal?.type);
+        // The workflow variables form, the draft editor, the publication and test reviews and the test run's answer and clock
+        // forms take typed text, q included.
+        const typingInForm = ["workflowVariable", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer", "workflowTestClock"]
+            .includes(modal?.type);
         if (focus !== "prompt" && !typingInForm && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();
@@ -674,6 +680,65 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     return;
                 }
                 if (!key.ctrl && !key.meta && input) controller.editWorkflowTestField({ type: "insert", text: input });
+                return;
+            }
+            // A test run's answer form: one JSON value. Enter sends the answer, Tab changes its kind (success, error, cancel),
+            // ↑↓ bind it to another effect that waits, Esc goes back to the workflow view.
+            if (modal.type === "workflowTestAnswer") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND).catch(() => {});
+                    return;
+                }
+                if (key.tab) {
+                    controller.cycleWorkflowTestAnswerKind();
+                    return;
+                }
+                if (key.upArrow || key.downArrow) {
+                    controller.pickWorkflowTestInterception(key.upArrow ? -1 : 1);
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowTestAnswerField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowTestAnswerField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowTestAnswerField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowTestAnswerField({ type: "insert", text: input });
+                return;
+            }
+            // A test run's virtual clock form: the seconds to advance. Enter advances, Esc goes back to the workflow view.
+            if (modal.type === "workflowTestClock") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_CLOCK_ADVANCE).catch(() => {});
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowTestClockField({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowTestClockField({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowTestClockField({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowTestClockField({ type: "insert", text: input });
                 return;
             }
             // The workflow variables form: two text fields, a name and a JSON value. Tab switches them, ↑↓ copy a listed

@@ -9652,6 +9652,7 @@ const KEYBINDING_HELP = [
         ["e", "workflow view: edit the draft's YAML (ctrl-o save as a new revision · ctrl-r discard edits · ctrl-k keep edits on a newer revision · Esc close, edits kept)"],
         ["P", "workflow view: publication review of the exact revision and hash shown (ctrl-p publish only · ctrl-r publish and start, or start a published one's live run, with its JSON inputs and variables · each asks first · ctrl-l review it again after a change · Esc back)"],
         ["t", "workflow view: test review of the current revision and hash, not a sandbox (ctrl-t start the test, asks first · ctrl-a agents mocked/real, real ones spend model tokens · Tab inputs/variables/scenario · ctrl-l review it again after a change · Esc back)"],
+        ["a  +", "workflow view, a test run shown: a answers an intercepted effect that waits (Enter send · Tab success/error/cancel · ↑↓ another waiting effect) · + advances its virtual clock by whole seconds (script clocks are real)"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],

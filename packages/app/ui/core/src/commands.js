@@ -82,6 +82,12 @@ export const UI_COMMANDS = {
     WORKFLOW_TEST_START: "workflowTestStart",
     WORKFLOW_TEST_AGENTS: "workflowTestAgents",
     WORKFLOW_TEST_RELOAD: "workflowTestReload",
+    // The shown test run's answers and virtual clock (INACTIVE likewise): open the answer form and send its answer, open the
+    // clock form and advance it.
+    WORKFLOW_VIEW_TEST_ANSWER: "workflowViewTestAnswer",
+    WORKFLOW_TEST_ANSWER_SEND: "workflowTestAnswerSend",
+    WORKFLOW_VIEW_TEST_CLOCK: "workflowViewTestClock",
+    WORKFLOW_TEST_CLOCK_ADVANCE: "workflowTestClockAdvance",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

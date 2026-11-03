@@ -1,8 +1,8 @@
 // The TUI's workflow view (design 02 "Portal/TUI: graph, observed state, read-only child chats"; T115): `w` opens it
 // outside the prompt (the prompt keeps typing w), the shared Ink app draws it from the shared view model, `?` lists it,
 // and inside it p r s c send a person's run controls for the shown run, d dismisses their notice, v opens the shown
-// run's variables form, e the draft editor, P the publication review and t the test review (INACTIVE: only a deployment
-// that takes a person's workflow commands offers any).
+// run's variables form, e the draft editor, P the publication review, t the test review, and for a shown test run a its
+// answer form and + its virtual clock (INACTIVE: only a deployment that takes a person's workflow commands offers any).
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -19,14 +19,16 @@ import {
     createStore,
     selectHelpModal,
 } from "pilotswarm/ui-core";
-import { WorkflowDraftModal, WorkflowPublicationModal, WorkflowTestModal, WorkflowVariableModal, WorkflowViewModal } from "../../ui/react/src/components.js";
+import {
+    WorkflowDraftModal, WorkflowPublicationModal, WorkflowTestAnswerModal, WorkflowTestClockModal, WorkflowTestModal, WorkflowVariableModal, WorkflowViewModal,
+} from "../../ui/react/src/components.js";
 import { UiPlatformProvider } from "../../ui/react/src/platform.js";
 import { readModel, row } from "../../ui/core/test/workflow-v2-fixtures.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP = fs.readFileSync(path.join(here, "..", "src", "app.js"), "utf8");
 /** The quit key does not fire while a workflow form takes typed text (q is part of a name, a value, YAML or JSON there). */
-const TYPING_IN_FORM = /const typingInForm = \["workflowVariable", "workflowDraft", "workflowPublish", "workflowTest"\]\.includes\(modal\?\.type\);/;
+const TYPING_IN_FORM = /const typingInForm = \["workflowVariable", "workflowDraft", "workflowPublish", "workflowTest", "workflowTestAnswer", "workflowTestClock"\]\s*\.includes\(modal\?\.type\);/;
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600,
@@ -112,6 +114,8 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /each asks first/);
     assert.match(text, /workflow view: test review of the current revision and hash, not a sandbox/);
     assert.match(text, /ctrl-a agents mocked\/real, real ones spend model tokens/);
+    assert.match(text, /workflow view, a test run shown: a answers an intercepted effect that waits/);
+    assert.match(text, /\+ advances its virtual clock by whole seconds \(script clocks are real\)/);
 });
 
 test("the variables form takes typed text, q included; Tab, ↑↓, Enter, ctrl-r and Esc are its own keys", () => {
@@ -290,7 +294,7 @@ test("the test review takes typed JSON and a scenario name, q included; ctrl-t, 
     assert.ok(review < APP.indexOf('if (key.escape || input === "q" ||'), "before q closes a modal");
     // ctrl-t steers a running turn only from the prompt without a modal, so the review receives it.
     assert.ok(APP.indexOf('if (focus === "prompt" && !modal && matchesCtrlKey("t", "\\u0014")) {') > 0);
-    const branch = APP.slice(review, APP.indexOf('if (modal.type === "workflowVariable") {'));
+    const branch = APP.slice(review, APP.indexOf('if (modal.type === "workflowTestAnswer") {'));
     for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/,
         /matchesCtrlKey\("t", "\\u0014"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_TEST_START/,
         /matchesCtrlKey\("a", "\\u0001"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_TEST_AGENTS/,
@@ -345,6 +349,86 @@ test("the shared Ink app draws the test review: the test notice, what is tested,
     assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
 });
 
+test("a test run's answer form and clock take typed text, q included; Enter sends, Tab changes the kind, ↑↓ another effect, Esc goes back", () => {
+    assert.match(APP, TYPING_IN_FORM);
+    const modalBranch = APP.indexOf("if (modal) {");
+    const answer = APP.indexOf('if (modal.type === "workflowTestAnswer") {');
+    const clock = APP.indexOf('if (modal.type === "workflowTestClock") {');
+    const variables = APP.indexOf('if (modal.type === "workflowVariable") {');
+    for (const [label, at] of [["answer", answer], ["clock", clock]]) {
+        assert.ok(modalBranch > 0 && modalBranch < at, `${label}: inside the modal branch`);
+        assert.ok(APP.indexOf('if (modal.type === "confirm") {', modalBranch) < at, `${label}: after the confirm dialog's keys`);
+        assert.ok(at < APP.indexOf('modal.type === "renameSession" || modal.type === "artifactUpload"'), `${label}: before the other text modals`);
+        assert.ok(at < APP.indexOf('if (key.escape || input === "q" ||'), `${label}: before q closes a modal`);
+    }
+    const answerBranch = APP.slice(answer, clock);
+    for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/, /key\.return[\s\S]*?UI_COMMANDS\.WORKFLOW_TEST_ANSWER_SEND/,
+        /key\.tab[\s\S]*?controller\.cycleWorkflowTestAnswerKind\(\)/, /controller\.pickWorkflowTestInterception\(key\.upArrow \? -1 : 1\)/,
+        /controller\.editWorkflowTestAnswerField\(\{ type: "move", chars: key\.leftArrow \? -1 : 1 \}\)/,
+        /controller\.editWorkflowTestAnswerField\(\{ type: "edge", edge: key\.home \? "start" : "end" \}\)/,
+        /key\.backspace \|\| key\.delete[\s\S]*?controller\.editWorkflowTestAnswerField\(\{ type: "backspace" \}\)/,
+        /if \(!key\.ctrl && !key\.meta && input\) controller\.editWorkflowTestAnswerField\(\{ type: "insert", text: input \}\);/]) {
+        assert.match(answerBranch, binding);
+    }
+    const clockBranch = APP.slice(clock, variables);
+    for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/, /key\.return[\s\S]*?UI_COMMANDS\.WORKFLOW_TEST_CLOCK_ADVANCE/,
+        /controller\.editWorkflowTestClockField\(\{ type: "move", chars: key\.leftArrow \? -1 : 1 \}\)/,
+        /controller\.editWorkflowTestClockField\(\{ type: "edge", edge: key\.home \? "start" : "end" \}\)/,
+        /key\.backspace \|\| key\.delete[\s\S]*?controller\.editWorkflowTestClockField\(\{ type: "backspace" \}\)/,
+        /if \(!key\.ctrl && !key\.meta && input\) controller\.editWorkflowTestClockField\(\{ type: "insert", text: input \}\);/]) {
+        assert.match(clockBranch, binding);
+    }
+    for (const command of ["WORKFLOW_VIEW_TEST_ANSWER", "WORKFLOW_TEST_ANSWER_SEND", "WORKFLOW_VIEW_TEST_CLOCK", "WORKFLOW_TEST_CLOCK_ADVANCE"]) {
+        assert.equal(typeof UI_COMMANDS[command], "string", command);
+    }
+});
+
+test("the shared Ink app draws a test run's answer form and its virtual clock", async () => {
+    const effect = "nx-review-1/agent";
+    const shown = { ...readModel({ graph: { revision: 1, initial: "review", states },
+        definition: { state: "draft", currentRevision: 1, publishedRevision: null, publishedDefinitionHash: null },
+        nodeExecutions: [row("review", 1, "pending")],
+        run: { runId: "test-run-0001", mode: "test", status: "running", test: { notice: "TEST — scripts run normally; framework tools are mocked.",
+            agentMode: "mocked", virtualClock: { now: "2026-11-02T00:01:30.000Z", elapsedSeconds: 90 }, coverage: { unanswered: [effect] },
+            interceptions: [{ interceptionId: effect, operation: "agent", tool: null, nodeExecutionId: "nx-review-1", stateId: "review",
+                state: "awaiting_parent", arguments: "{\"input\":null}", responseSchema: null, virtualAt: "2026-11-02T00:00:00.000Z", response: null }] } },
+        runs: [{ runId: "test-run-0001", mode: "test", status: "running", revision: 1, outcome: null }] }),
+    personCommands: { operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
+        "test", "test_respond", "test_advance"], restriction: null, run: null } };
+    const calls = [];
+    const transport = { readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return shown; } };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-once", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: "test-run-0001", readModel: shown, readModelRunId: "test-run-0001" } });
+    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    const inputs = [];
+    const formPlatform = { ...platform, Input: ({ label, value, focused }) => { inputs.push([label, value, focused]);
+        return React.createElement("label", { "data-focused": String(focused) }, `${label}: ${value}`); } };
+    const draw = component => renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform: formPlatform },
+        React.createElement(component, { state: store.getState() })));
+
+    await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER);
+    let html = draw(WorkflowTestAnswerModal);
+    assert.match(html, /data-title="Answer · test run test-r…0001 · agent in &#x27;review&#x27;"/);
+    assert.match(html, /<p>Interception: nx-review-1\/agent<\/p>/);
+    assert.match(html, /<p>Answer: \[success\] · error · cancel \(Tab changes it\)<\/p>/);
+    assert.deepEqual(inputs, [["value (JSON)", "{\"outcome\":\"accepted\",\"output\":null}", true]]);
+    assert.match(html, /data-title="Keys"><p>Enter send · Tab success\/error\/cancel · ↑↓ another waiting effect · Esc back<\/p>/);
+
+    await controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK);
+    inputs.length = 0;
+    html = draw(WorkflowTestClockModal);
+    assert.match(html, /data-title="Virtual clock · test run test-r…0001"/);
+    assert.match(html, /<p>Virtual clock: 1\.5 min after the test began<\/p>/);
+    assert.deepEqual(inputs, [["seconds to advance (1 to 2592000)", "60", true]]);
+    assert.match(html, /data-title="Keys"><p>Enter advance · Esc back<\/p>/);
+    assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
+});
+
 test("p r s c in the open workflow view send its run controls and d dismisses their notice; elsewhere the keys keep their meaning", () => {
     const binding = APP.indexOf('if (modal.type === "workflowView" && plainShortcut && Object.hasOwn(WORKFLOW_VIEW_RUN_KEYS, input)) {');
     assert.ok(binding > 0, "the binding exists");
@@ -358,10 +442,14 @@ test("p r s c in the open workflow view send its run controls and d dismisses th
     const keys = APP.slice(APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS"), APP.indexOf("});", APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS")));
     for (const [key, command] of [["p", "WORKFLOW_VIEW_PAUSE_RUN"], ["r", "WORKFLOW_VIEW_RESUME_RUN"], ["s", "WORKFLOW_VIEW_STOP_RUN"],
         ["c", "WORKFLOW_VIEW_CANCEL_RUN"], ["d", "WORKFLOW_VIEW_DISMISS_NOTICE"], ["v", "WORKFLOW_VIEW_EDIT_VARIABLES"],
-        ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["P", "WORKFLOW_VIEW_PUBLICATION_REVIEW"], ["t", "WORKFLOW_VIEW_TEST_REVIEW"]]) {
+        ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["P", "WORKFLOW_VIEW_PUBLICATION_REVIEW"], ["t", "WORKFLOW_VIEW_TEST_REVIEW"], ["a", "WORKFLOW_VIEW_TEST_ANSWER"]]) {
         assert.match(keys, new RegExp(`${key}: UI_COMMANDS\\.${command},`), key);
         assert.equal(typeof UI_COMMANDS[command], "string", command);
     }
+    assert.match(keys, /"\+": UI_COMMANDS\.WORKFLOW_VIEW_TEST_CLOCK,/);
+    assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK, "string");
+    // j and k keep moving through the states: the view's keys are checked first, so they must not take them.
+    assert.ok(!/\n\s+[jk]: UI_COMMANDS/.test(keys));
 });
 
 test("← → in the open workflow view choose its run; elsewhere they keep their meaning", () => {

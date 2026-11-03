@@ -650,7 +650,7 @@ per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first) and `test` of the current revision and hash (t: the review, mocked or real agents; it asks first) as `updateWorkflow` commands; it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -932,7 +932,7 @@ Unfulfilled requirements (open, not waived; R26):
   (above). Test fixtures and a several-key variables update go through the
   API, MCP or the agent tool. The TUI's workflow view (below) sends only a
   person's run controls, variable changes, draft saves, publication
-  commands and test starts.
+  commands, test starts, test answers and virtual clock advances.
 
 **The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
 state, read-only child chats"; T115).** On a workflow session, `w` (outside
@@ -1138,6 +1138,45 @@ controlling agent named), by a host that takes no test from people, or
 without a person's commands; the status line says why. Test semantics are
 unchanged: the server decides every test again.
 
+**The TUI's test answers and virtual clock (design 05 test_respond,
+test_advance; mocks M18, M19; R08, R19, R20, R26; INACTIVE likewise).** For
+a test run the view shows, its details say what a person may do there, as
+the portal's answer form and clock allow it (`workflowV2TestResponder`, from
+that run's own read model): `a` answers an intercepted effect that waits for
+the parent, `+` advances the run's virtual clock; a run that ended or a
+viewer the portal refuses says why instead, and the list of intercepted
+effects says that a person may answer one there. `a` opens the answer form
+bound to exactly that test run and one waiting effect (the selected state's,
+else the first; ↑↓ binds it to another, starting from that effect's own
+template). It shows the run's notices (a test, not a sandbox; its agent
+states mocked or real, with the real-agent notice), the effect, its actual
+state (waiting; answered, with what and by whom; or its state ended another
+way), what it reached, the schema the answer must match and, for an agent
+state, its outcomes. The answer is success with a JSON value, error with
+`{ code, message, details? }` or cancel with no value (Tab changes it); what
+was typed is checked first (`workflowV2TestResponseDraft`). Enter sends one
+`test_respond` for that run and interception as the portal sends it
+(`sendWorkflowRunCommand`); accepted, the form returns to the view and the
+status line says how the state ended. The server decides the rest and the
+form keeps what was typed: an answer its contract refuses names the fields
+(`TEST_RESPONSE_INVALID`), another answer to an answered effect is refused
+(`TEST_RESPONSE_CONFLICT`, read again) while the same answer again is
+accepted as the same answer, a state that already ended refuses it
+(`NODE_CLOSED`), and a run that ended refuses it (`RUN_ENDED`). `+` opens the
+clock form bound to the run: how far its virtual clock is from the test's
+start, what an advance decides (a wait or a receive's wait elapses, an
+intercepted request or agent times out; a result that won first stands;
+script clocks are real) and the seconds to advance by (a whole number from 1
+to 30 days, `60` to start with). Enter sends one `test_advance`; accepted,
+the form returns to the view and the status line names the deadlines that
+came due and how each state ended. Nothing else moves the clock, and no
+lifecycle rule changes. Neither form sends for a run the view no longer
+shows, a run that ended, a viewer the portal refuses, or while a command is
+sent; after an answer that never came, Enter sends the same command again
+(the same operation id). Esc goes back; q is text. In an agent state's
+subtree, by a host without controller 1.9.0, or without a person's
+commands, neither is offered and the status line says why.
+
 **The TUI composer of a session in an agent state's subtree (design 03
 human-input denial; T115 "no human composer", T116 in the TUI).** It is
 read-only, as the portal's is: it shows the server's reason and the
@@ -1156,11 +1195,8 @@ fails, the composer stays as it is and the server refuses the input
 reads the same policy through its session access), are unchanged.
 
 Not in the TUI yet (open, not waived):
-- a test run's answers to its intercepted effects and its virtual clock
-  (`test_respond`, `test_advance`): the portal, the API, MCP and the agent
-  tools take them, and the view lists the effects read-only; a several-key
-  variables update (the form sends one name at a time, as the portal's
-  panel does);
+- a several-key variables update (the form sends one name at a time, as the
+  portal's panel does): the API, MCP and the agent tools take it;
 - each execution's own output: the view shows the state's latest output or
   error (bounded), as the portal's Output tab does;
 - the TUI refuses a person's prompt, answer and steer to an agent state's
