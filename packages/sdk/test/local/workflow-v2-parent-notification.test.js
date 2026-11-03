@@ -64,7 +64,21 @@ async function settledNotificationTurns(client, sessionId) {
     }, "the notification's turns to settle");
 }
 
-/** A chat that starts the workflow; `onNotification(position)` answers the run's end. */
+/** The chat's answers so far, in order: each assistant message with text (a tool call's empty message is not one). */
+async function answersOf(client, sessionId) {
+    return (await client._catalog.getSessionEvents(sessionId, 0, 500, ["assistant.message"]))
+        .map(event => event.data?.content)
+        .filter(content => typeof content === "string" && content !== "");
+}
+
+/**
+ * A chat that starts the workflow; `onNotification(position)` answers the run's end.
+ *
+ * The run ends about a second after spawn_workflow, so its notification can reach the chat's queue while the first turn
+ * still runs, or just after it. Either way it is never merged into that turn: the session runs it as the next turn. So
+ * sendAndWait cannot be the check (it reports the answer of whichever turn it first sees end with the session idle, which
+ * can be the notification's); the chat's own transcript is, in the order its turns ran.
+ */
 async function chatWithEndedWorkflow(env, onNotification, then) {
     const notifications = [];
     const respond = (_body, position) => {
@@ -84,9 +98,10 @@ async function chatWithEndedWorkflow(env, onNotification, then) {
     await withScriptedModel(env, { respond, worker }, async ({ client, qualifiedModel }) => {
         client._startSessionsAt(workflowV2TestEnvironmentFromEnv(ON).sessionStartVersion);
         const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
-        expect(await chat.sendAndWait(PROMPT, TIMEOUT)).toBe("Started it.");
+        await chat.send(PROMPT);
+        await until(async () => (await answersOf(client, chat.sessionId)).includes("Started it."), "the chat's answer to the person's prompt");
         const turns = await settledNotificationTurns(client, chat.sessionId);
-        await then({ client, chat, turns, notifications });
+        await then({ client, chat, turns, notifications, answers: await answersOf(client, chat.sessionId) });
     });
 }
 
@@ -101,21 +116,24 @@ describe("a workflow's parent chat when the run ends", () => {
     it("a model that answers only when asked reports the result in one turn: no session error and no retry", { timeout: TIMEOUT }, async () => {
         // Like gpt-5.6-terra on the preview: nothing at all for a message that asks for nothing.
         await chatWithEndedWorkflow(getEnv(), position => (position.lastUserText.includes(ASKED) ? { content: REPORT } : {}),
-            async ({ client, chat, turns, notifications }) => {
+            async ({ client, chat, turns, notifications, answers }) => {
                 expect(notifications, "one notification turn, no retry").toHaveLength(1);
                 expect(notifications[0]).toContain("untrusted workflow output");
                 expect(turns.map(turn => turn.data.resultType)).toEqual(["completed"]);
                 const errors = await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["session.error"]);
                 expect(errors, JSON.stringify(errors)).toEqual([]);
-                const answers = (await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["assistant.message"])).map(event => event.data?.content);
+                // The person sees both: the answer to their prompt, then the report.
+                expect(answers, JSON.stringify(answers)).toContain("Started it.");
                 expect(answers.at(-1)).toBe(REPORT);
+                expect(answers.indexOf("Started it.")).toBeLessThan(answers.lastIndexOf(REPORT));
             });
     });
 
     it("a model that says nothing to it anyway: the person's next message is still answered", { timeout: TIMEOUT }, async () => {
-        await chatWithEndedWorkflow(getEnv(), () => ({}), async ({ chat, turns }) => {
+        await chatWithEndedWorkflow(getEnv(), () => ({}), async ({ chat, turns, answers }) => {
             // Settled either way: one quiet turn, or three failed ones (the empty-answer diagnostic and its retries).
             expect([1, 3]).toContain(turns.length);
+            expect(answers, JSON.stringify(answers)).toContain("Started it.");
             expect(await chat.sendAndWait(LATER, TIMEOUT)).toBe("Yes.");
         });
     });
