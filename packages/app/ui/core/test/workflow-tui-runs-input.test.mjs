@@ -156,6 +156,8 @@ function inputHarness({ policies = { c1: DENIED, g1: DENIED, o1: ALLOWED }, apiM
     const base = {
         sendMessage: async (...args) => { calls.push(["sendMessage", ...args]); },
         sendAnswer: async (...args) => { calls.push(["sendAnswer", ...args]); },
+        setSessionWorkspace: async (...args) => { calls.push(["setSessionWorkspace", ...args]); return { status: "set", revision: 1 }; },
+        retrySessionWorkspace: async (...args) => { calls.push(["retrySessionWorkspace", ...args]); },
         steerSessionTurn: async (...args) => { calls.push(["steerSessionTurn", ...args]); return { outcome: "accepted", steerId: 1, turn: 0 }; },
         getSessionEvents: async () => [],
         subscribeSession: () => () => {},
@@ -287,7 +289,20 @@ test("a refusal in the session access the portal read is recorded: send, answer 
     // A canvas action from that session's canvas is a person's input too.
     assert.deepEqual(await controller.submitCanvasAction("c1", { type: "canvas-action", action: "request", data: { id: "r-1" } }),
         { ok: false, reason: NOTE });
-    assert.deepEqual(calls, [], "no prompt, answer, steer or canvas action was sent");
+    // So are its workspace commands, and resending a steer that was sent before the refusal was known.
+    const refusedHere = async (run) => {
+        store.dispatch({ type: "ui/status", text: "before" });
+        await run();
+        assert.equal(store.getState().ui.statusText, NOTE);
+    };
+    await refusedHere(() => controller.openSetWorkspaceModal());
+    assert.notEqual(store.getState().ui.modal?.type, "sessionWorkspace");
+    await refusedHere(() => controller.clearActiveSessionWorkspace({ confirmed: true }));
+    await refusedHere(() => controller.retryActiveSessionWorkspace());
+    store.dispatch({ type: "turnControl/session", sessionId: "c1", patch: { steer: { phase: "unconfirmed", requestId: "steer-1", text: "go on" } } });
+    await refusedHere(() => controller.retryTurnControl("steer", "c1"));
+    assert.equal(store.getState().turnControl.bySessionId.c1.steer.phase, "unconfirmed", "not resent");
+    assert.deepEqual(calls, [], "no prompt, answer, steer, canvas action or workspace command was sent");
 
     // The positive control: an ordinary sub-agent's question card asks for the answer, and its composer sends.
     store.dispatch({ type: "sessions/selected", sessionId: "s1" });
@@ -300,6 +315,9 @@ test("a refusal in the session access the portal read is recorded: send, answer 
     assert.equal(store.getState().ui.prompt, "", "the ordinary session's prompt left the composer");
     assert.notEqual(store.getState().ui.statusText, NOTE);
     assert.equal(store.getState().ui.workflowInputPolicies.s1, undefined);
+    await controller.openSetWorkspaceModal();
+    assert.equal(store.getState().ui.modal?.type, "sessionWorkspace", "an ordinary session's workspace dialog opens");
+    store.dispatch({ type: "ui/modal", modal: null });
     // Its canvas action is not refused for input (this one is refused only because no canvas contract is drawn).
     const action = await controller.submitCanvasAction("s1", { type: "canvas-action", action: "request", data: { id: "r-2" } });
     assert.equal(action.ok, false);

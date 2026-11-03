@@ -691,12 +691,16 @@ the same agent child, branch, stop, test and pin fields. The shared UI
   access for its composer (the portal, a deep link, a MoA panel, Mobile Zen)
   records the refusal on its controller (`recordWorkflowInputAccess`), so
   that controller's prompt, answer, steer and canvas-action paths refuse the
-  session too, not only the hidden composer, and keep the draft. Its canvas
-  KV writes and workspace commands are refused by the server only. A
-  pending question there (none should exist: `ask_user` is refused) shows
-  the reason instead of asking for an answer below; in the TUI too. Until
-  the access read answers, or when it fails, the ordinary composer stays and
-  the server refuses the input (an open owner question).
+  session too, not only the hidden composer, and keep the draft. Its
+  workspace commands, and the resend of a steer sent before the refusal was
+  known, are refused there too (Stop stays: a lifecycle control). Canvas KV
+  writes (the canvas page's own store) and messages queued before the
+  refusal was known are refused by the server only (a queued one shows as
+  rejected with the server's reason). A pending question there (none should
+  exist: `ask_user` is refused) shows the reason instead of asking for an
+  answer below; in the TUI too. Until the access read answers, or when it
+  fails, the ordinary composer stays and the server refuses the input (an
+  open owner question).
 - **Run controls, variables, the draft editor, publication and test starts
   (R03, R04, R05, R17 to R20, R26, R28; mocks M01 to M04, M15, M16, M18 to
   M20; INACTIVE).** See below.
@@ -1261,13 +1265,13 @@ tree and a workflow session are never asked about; an ancestor that is not
 loaded is asked about). A prompt, an answer or a steer to such a session is
 not sent and its draft is kept. Until the server answered, or when the read
 fails, the composer stays as it is and the server refuses the input
-(403 `WORKFLOW_HUMAN_INPUT_DENIED`). Ordinary sessions, and the portal (which
-reads the same policy through its session access), are unchanged.
+(403 `WORKFLOW_HUMAN_INPUT_DENIED`). Ordinary sessions are unchanged. The
+portal records the same policy from the session access it reads for its
+composer (`recordWorkflowInputAccess`; "Human input" above).
 
-Not in the TUI yet (open, not waived):
-- the TUI refuses a person's prompt, answer and steer to an agent state's
-  subtree locally; its other human input there (a workspace command, for
-  one) is refused by the server only.
+Its workspace commands to such a session (set, clear, retry) and the resend
+of an unconfirmed steer are refused locally too, from the same recorded
+policy; Stop stays (a lifecycle control). The TUI has no canvas.
 
 **Each execution's own result (R01 history; design 02 node occurrences;
 mock M10 "Inspect typed output"; portal and TUI).** A state's visits stay

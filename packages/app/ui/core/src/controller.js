@@ -8314,6 +8314,13 @@ export class PilotSwarmUiController {
             return null;
         }
         const view = state.sessionStats?.bySessionId?.[sessionId]?.workspace || null;
+        // A workspace command is a person's input too: a session in a workflow agent state's subtree takes none (design
+        // 03; the server refuses it as well).
+        const inputNote = selectWorkflowInputNote(state, sessionId);
+        if (inputNote) {
+            this.dispatch({ type: "ui/status", text: inputNote });
+            return null;
+        }
         return { sessionId, session, view, revision: Number.isInteger(view?.revision) ? view.revision : 0 };
     }
 
@@ -13098,6 +13105,13 @@ export class PilotSwarmUiController {
         if (!sessionId || (kind !== "steer" && kind !== "stop")) return;
         const request = this._turnControlEntry(sessionId)[kind];
         if (!request || request.phase !== "unconfirmed") return;
+        // A steer sent before the session's refusal of people's input was known is not sent again (design 03; Stop is a
+        // lifecycle control and stays).
+        const inputNote = kind === "steer" ? selectWorkflowInputNote(this.getState(), sessionId) : null;
+        if (inputNote) {
+            this.dispatch({ type: "ui/status", text: inputNote });
+            return;
+        }
         // One steer request at a time (steerActiveSessionTurn).
         if (kind === "steer" && selectSteerAction(this.getState(), sessionId).sending) {
             this.dispatch({ type: "ui/status", text: "A steer is being sent; wait for its answer" });
