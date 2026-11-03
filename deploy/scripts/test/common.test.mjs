@@ -158,3 +158,39 @@ test("parseEnvFile leaves full-line `#` comments alone (existing behavior)", () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── run(): captured output size ──
+// spawnSync's default limit is 1 MiB. Above the limit it stops the child and
+// sets error.code = ENOBUFS. run() must not report that as a failed start.
+import { run, CAPTURE_MAX_BUFFER_BYTES } from "../lib/common.mjs";
+
+function printBytes(count) {
+  return ["-e", `process.stdout.write("x".repeat(${count}))`];
+}
+
+test("run captures output larger than spawnSync's 1 MiB default", () => {
+  const size = 2 * 1024 * 1024;
+  assert.ok(CAPTURE_MAX_BUFFER_BYTES > size);
+  const { status, stdout } = run(process.execPath, printBytes(size), { capture: true });
+  assert.equal(status, 0);
+  assert.equal(stdout.length, size);
+});
+
+test("run reports output above maxBuffer as too large, not as a failed spawn", () => {
+  assert.throws(
+    () => run(process.execPath, printBytes(4096), { capture: true, maxBuffer: 1024 }),
+    (err) => {
+      assert.match(err.message, /^Output too large: /);
+      assert.match(err.message, /printed more than 1024 bytes/);
+      assert.doesNotMatch(err.message, /Failed to spawn/);
+      return true;
+    },
+  );
+});
+
+test("run still reports a missing command as a failed spawn", () => {
+  assert.throws(
+    () => run("pilotswarm-command-that-does-not-exist", [], { capture: true }),
+    /^Error: Failed to spawn pilotswarm-command-that-does-not-exist: .*ENOENT/,
+  );
+});

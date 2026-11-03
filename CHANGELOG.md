@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+**Azure deploy: large Azure CLI output.** The base-infra step checks each
+Foundry deployment against `az cognitiveservices model list`. In some
+subscriptions that list is now larger than 1 MiB, which is Node's default
+output limit for `spawnSync`. The deploy then stopped with "Failed to spawn
+az", and the GitHub Action reported "Azure CLI could not start". Three
+changes fix this:
+
+- The model list asks `az` for only the model format, name and version.
+  This makes the output about 20 times smaller.
+- Captured commands may print up to 64 MiB.
+- Output above the limit is reported as "Output too large", and the Action
+  prints "Azure CLI output exceeded the capture limit".
+
 ## 0.8.8 — 2026-11-02
 
 **Message of the day.** Admins can post a fleet-wide message with an optional
