@@ -241,7 +241,7 @@ test("q12: the message to the parent agent names the workflow, the test run, the
     assert.equal(workflowV2ParentSessionId({ s: { sessionKind: "chat", parentSessionId: "p" } }, "s"), null);
     assert.equal(workflowV2ParentSessionId({ wf: { sessionKind: "workflow", parentSessionId: null } }, "wf"), null);
     assert.equal(workflowV2AskParentSent("4f9d2c1e-0000-0000-0000-000000000000"),
-        "Sent to the parent agent's chat (session 4f9d2c1e…). It answers with its own tools; open its chat from the session list.");
+        "Sent to the parent agent's chat (session 4f9d2c1e). It answers with its own tools; open its chat from the session list.");
 });
 
 function asking({ parent = "parent-1", sendMessage } = {}) {

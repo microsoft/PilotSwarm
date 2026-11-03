@@ -12,6 +12,7 @@
  * never read as a legacy workflow, and a legacy payload is never read as V2.
  * Canvas ticks are not read at all: V2 does not draw a workflow canvas.
  */
+import { shortSessionId as shortId } from "./formatting.js";
 
 // Agent and parallel states (IR 8) and stopped runs are written only by controller 1.9.0 (INACTIVE: only tests run it);
 // they are read here so a test deployment shows them, and nothing else changes for the others.
@@ -1101,7 +1102,6 @@ function branchProgressLines(node, execution, context) {
 // ── Activity, why a run or a step ended, and the sessions under a step (owner decision q14; mocks M09, M14) ──────────
 
 const ACTIVITY_LIMIT = 50;
-const shortId = value => (typeof value === "string" && value.length > 12 ? value.slice(0, 8) : String(value ?? ""));
 const clipped = (value, max = 200) => {
     const one = String(value ?? "").replace(/\s+/g, " ").trim();
     return one.length > max ? `${one.slice(0, max - 1)}…` : one;

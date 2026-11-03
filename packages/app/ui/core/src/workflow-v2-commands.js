@@ -1,3 +1,4 @@
+import { shortRunId as shortId, shortSessionId as shortSession } from "./formatting.js";
 import { workflowV2AgentBinding, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RunRows } from "./workflow-v2-view.js";
 
 /**
@@ -70,7 +71,6 @@ const MESSAGE_LIMIT = 300;
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const text = value => typeof value === "string" && value ? value : null;
 /** A long id keeps its start and its end; the title or the message carries the whole id where it matters. */
-const shortId = id => id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
 const bounded = value => value.length > MESSAGE_LIMIT ? `${value.slice(0, MESSAGE_LIMIT - 1)}…` : value;
 
 /** "'a'", "'a' and 'b'", "'a', 'b', 'c' and 2 more". */
@@ -1056,7 +1056,6 @@ export function workflowV2StepInputSummary(state, preview) {
 }
 
 const ASK_PARENT_VALUE_LIMIT = 4_000;
-const shortSession = value => (typeof value === "string" && value.length > 12 ? `${value.slice(0, 8)}…` : String(value ?? ""));
 
 /**
  * The parent session of a workflow, which runs it and answers for it (owner decisions q12, q16), from the session rows

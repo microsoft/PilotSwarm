@@ -106,6 +106,11 @@ export function shortSessionId(sessionId) {
     return value.slice(0, 8);
 }
 
+/** A run id (or another long workflow id) as the workflow views show it: its first 6 and last 4 characters when longer than 12. */
+export function shortRunId(id) {
+    return typeof id === "string" && id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : String(id ?? "");
+}
+
 export function shortModelName(model) {
     const value = String(model || "");
     if (!value) return "";

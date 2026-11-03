@@ -1,3 +1,4 @@
+import { shortRunId } from "./formatting.js";
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
@@ -380,7 +381,6 @@ export function workflowViewVariablesFor(selection) {
     return { ok: true, runId: variables.runId };
 }
 
-const shortRunId = id => (typeof id === "string" && id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : String(id ?? ""));
 
 /**
  * The variables form (TUI modal "workflowVariable"; the portal's variables panel as a form): the run it was opened for,

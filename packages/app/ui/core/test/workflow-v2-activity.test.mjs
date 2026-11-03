@@ -63,7 +63,7 @@ test("the activity lists who did what, newest first, for one run and one visit",
         "Agent chat for step 'review' created (session child-12); its time limit is 2026-11-03T10:00:00Z");
     assert.equal(one("workflow.agent_ended", { stateId: "review", end: "cancel" }), "Agent chat for step 'review' ended (cancelled)");
     assert.equal(one("workflow.request_delivered", { contract: "Review@1", responderSessionId: "reviewer-1", deadlineAt: "2026-11-03T10:00:00Z" }),
-        "Request Review@1 sent to session reviewer-1; answer due by 2026-11-03T10:00:00Z");
+        "Request Review@1 sent to session reviewer; answer due by 2026-11-03T10:00:00Z");
     assert.equal(one("workflow.response_wake_abandoned", {}), "An answer arrived, but waking the run was not confirmed; the run collects the answer later");
     assert.equal(one("workflow.state_completed", { stateId: "review", outcome: "accepted" }), "Step 'review' ended 'accepted'");
     assert.equal(one("workflow.completed", { outcome: "succeeded", stateId: "done" }), "Run ended succeeded at 'done'");
