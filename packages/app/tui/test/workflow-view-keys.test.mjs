@@ -402,7 +402,9 @@ test("the shared Ink app draws the test review: the test notice, what is tested,
     const html = renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform: formPlatform },
         React.createElement(WorkflowTestModal, { state: store.getState() })));
     assert.match(html, /data-title="Test review · draft revision 2"/);
-    assert.match(html, /<p>TEST — workflow tools are mocked, but scripts run normally: their files, network, processes and clock are real\./);
+    // The notice wraps at the modal's width: read it as one line (each wrapped line is its own <p>, indented).
+    const unwrapped = html.replace(/<\/p><p>\s*/g, " ");
+    assert.match(unwrapped, /<p>TEST — workflow tools are mocked, but scripts run normally: their files, network, processes and clock are real\. A passing test does not show that the workflow is safe to run live\./);
     assert.match(html, /<p>Definition hash: hash-2<\/p>/);
     assert.match(html, /<p>Agent steps: real agents, which spend model tokens \(ctrl-a: mocked\)<\/p>/);
     assert.match(html, /Agent steps run real agent sessions: they spend model tokens/);

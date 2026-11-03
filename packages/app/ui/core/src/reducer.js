@@ -1743,12 +1743,16 @@ function baseReducer(state, action) {
             // Except under the session the person is looking at: when it gains its FIRST child (a workflow its chat just
             // started, a sub-agent), the child shows at once instead of behind "[+1]". Background rows still start
             // collapsed, and a session that already had children keeps whatever the person chose. Same baseline rule as
-            // above (no baseline, no change). It is kept open as an explicit choice: the defaults, recomputed from
-            // scratch on each listing while nothing is explicit, would collapse it again.
+            // above (no baseline, no change). A session that was already collapsed before this listing stays collapsed:
+            // a restored profile can collapse a parent whose children have not loaded yet, and their arrival is not a
+            // first child (the reload ratchet; collapse-stickiness "applied BEFORE its children load"). It is kept open as
+            // an explicit choice: the defaults, recomputed from scratch on each listing while nothing is explicit, would
+            // collapse it again.
             const activeId = state.sessions.activeSessionId;
             let collapsedIdsExplicit = previousCollapsedIdsExplicit;
             if (hadBaseline && activeId && !rowStatusById[activeId]?.isGroup
-                && initialCollapsedIds.has(activeId) && !previousDefaultCollapsedIds.has(activeId)) {
+                && initialCollapsedIds.has(activeId) && !previousDefaultCollapsedIds.has(activeId)
+                && !state.sessions.collapsedIds?.has?.(activeId)) {
                 collapsedIds.delete(activeId);
                 collapsedIdsExplicit = true;
             }

@@ -113,8 +113,10 @@ test("the pane renders a native select with an accessible name, the selection ch
     const html = pane(seed({ view: { definition: def(), readModel: MODEL, readModelRunId: null } }).controller);
     assert.match(html, /<select aria-label="Workflow run"/);
     assert.ok(!/<select[^>]*tabindex="-1"/.test(html), "reachable by keyboard");
-    assert.equal((html.match(/<option/g) || []).length, 5);
-    assert.match(html, /<option[^>]*value=""[^>]*selected=""[^>]*>Live run · running · run-live<\/option>/);
+    // flow-03: the live run is one option, the empty value, with its revision; the other three runs follow.
+    assert.equal((html.match(/<option/g) || []).length, 4);
+    assert.match(html, /<option[^>]*value=""[^>]*selected=""[^>]*>Live run · running · revision 1 · run-live<\/option>/);
+    assert.ok(!html.includes('value="run-live"'), "the live run is not listed a second time by its id");
     const test2 = pane(seed({ view: { definition: def(), readModel: MODEL, readModelRunId: null, selectedRunId: "run-test-2" } }).controller);
     assert.match(test2, /<option[^>]*value="run-test-2"[^>]*selected=""[^>]*>Test · cancelled · revision 1 · run-test-2<\/option>/);
     assert.ok(!/<option[^>]*value=""[^>]*selected/.test(test2));
