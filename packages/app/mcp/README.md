@@ -355,7 +355,7 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `get_capabilities` | Mode (web/direct), admin role, facts search/embedder flags, graph availability, embedded-worker count, default model |
+| `get_capabilities` | Mode (web/direct), admin role, facts search/embedder flags, graph availability, embedded-worker count, default model; the deployment's workflow support as its bootstrap advertises it (`workflows`, null from a host that advertises none) and the workflow tools this server registers (`workflow_tools`) |
 | `get_system_status` | Embedded-worker count (0 is normal with dedicated worker pods), session-creation policy, creatable agents, log config *(web)* |
 
 ### Session Management

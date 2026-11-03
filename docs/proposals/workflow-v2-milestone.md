@@ -576,7 +576,18 @@ build.
   (`AGENT_UNAVAILABLE`), since it cannot check it.
 - **Runtime.** Unchanged: the run binds the child to the pinned revision
   (R18), whose interface cannot change, and checks the child's output
-  against the state's own `outputSchema`, which is the interface's.
+  against the state's own `outputSchema`, which is the interface's. On a
+  real worker (`workflow-v2-agent-worker.test.js`, the scripted model): a
+  publication of review_change@1 pins its digest with the revision; after
+  the package is republished with review_change@2 (an input schema, another
+  output schema, another outcome), the old name and the new name with the
+  old contract are refused at publication (`CONTRACT_MISMATCH`) and stay
+  drafts with no run, child or model turn; the first publication's run
+  keeps its revision, its child's wrapper carries exactly @1's outcomes and
+  output schema, a completion under @2's outcome is refused
+  (`OUTPUT_INVALID`) and one under @1 decides the state; a later
+  publication of @2 pins the new revision and digest, and its child's
+  wrapper carries @2's input, input and output schemas and outcomes.
 - **Discovery (`agent-discovery.ts`, `worker.ts`).** `ps_list_agents`
   lists, for a published agent whose installed active version exports an
   interface, `workflowInterface: { ref, name, version, outcomes,
@@ -625,14 +636,12 @@ worker's `ps_list_agents`, and a republish's). Display:
 and the TUI's view for publication, test, mocked, draft, older and
 malformed pins).
 
-Not covered (required, not waived): a run on a worker is not yet exercised
-with an interface-pinned publication (its binding is the revision's,
-unchanged). No adapter maps a workflow schema to an interface other than
-exact equality (mock M17's "Edit input mapping" is the draft editor only).
-The portal's agent picker and package views do not show interfaces (the
-package manifest the registry APIs return holds them). The interface
-schemas ride the install manifest that every worker reads (at most 64 KiB
-per schema file).
+Not covered (required, not waived): no adapter maps a workflow schema to an
+interface other than exact equality (mock M17's "Edit input mapping" is
+the draft editor only). The portal's agent picker and package views do not
+show interfaces (the package manifest the registry APIs return holds them).
+The interface schemas ride the install manifest that every worker reads (at
+most 64 KiB per schema file).
 
 ## Surfaces: what each one shows and takes (design 04, 07; R13, R23, R26)
 
@@ -697,7 +706,14 @@ send; `legacyCreate` says that `createWorkflowSession` keeps its version 1
 semantics and never makes a version 2 draft. It reports configuration only:
 it serves, registers and activates nothing, the route names are unchanged
 (their final names stay API review item D11), and the server decides every
-call again. An older server advertises none (null).
+call again. An older server advertises none (null). The MCP server's
+`get_capabilities` and its `pilotswarm://capabilities` resource carry the
+same value as `workflows` (the management client's own answer: in direct
+mode this process's configuration, in web mode the server's bootstrap;
+null from a host that advertises none or cannot be asked), and beside it
+`workflow_tools: { read, commands }`, the workflow tools that server
+registers: no workflow read tool, and `update_workflow` only with the
+test-only option, so a client sees where the two differ.
 
 **A person's workflow command (`updateWorkflow`; design 04, R26; INACTIVE).**
 The direct management client takes a person's command to a workflow
@@ -1229,8 +1245,9 @@ Not in the TUI yet (open, not waived):
   subtree locally; its other human input there (a workspace command, for
   one) is refused by the server only.
 
-**Each execution's own result (R06; design 02 execution history; portal
-and TUI).** A state's visits stay distinct, a loop's included, and each
+**Each execution's own result (R01 history; design 02 node occurrences;
+mock M10 "Inspect typed output"; portal and TUI).** A state's visits stay
+distinct, a loop's included, and each
 shows its own result, never another's. The portal's History tab gives each
 row of one execution a Result button: it chooses exactly that execution of
 the shown run and state (`selectedExecution`: run, state, execution id)
@@ -1250,6 +1267,15 @@ and no other execution's result is shown in its place. A refused read shows
 its error and no result from another run's model. Nothing new is read or
 sent, and no read authorization or runtime behaviour changes; ordinary
 sessions are untouched.
+
+Not covered (required, not waived): the views show the read model's bounded
+previews (500 characters per execution's output or runtime error, 1,000
+per event preview) and only the first 200 node executions of a run, by
+entry (each view keeps the newest 40 per state of those). Design 04's
+`read_workflow` "bounded history pagination" and mock M10's "Inspect typed
+output" (the whole value, within the 256 KiB payload cap, D07) are not
+implemented; a run with more than 200 node executions does not show its
+newer ones, its current state included.
 
 **Responses and completions stay in process (owner scope, 2026-11-02).**
 External agents are not in scope: agents run only within PilotSwarm, as

@@ -1191,7 +1191,7 @@ const durationText = ms => typeof ms === "number" && Number.isFinite(ms)
     ? (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`) : "not recorded";
 
 /**
- * The selected state's result in the view's details, of exactly one visit (R06; design 02 history): the visit chosen
+ * The selected state's result in the view's details, of exactly one visit (R01 history; design 02 node occurrences): the visit chosen
  * with [ ] for exactly the shown run and this state, else its latest result, as before. It is that visit's own output or
  * runtime error as read (wrapped, not cut), or that it has not ended or recorded no output; a chosen visit that is no
  * longer loaded says so and shows nothing in its place; and the read's cut is named. Entries { text, color, indent }.

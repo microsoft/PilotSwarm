@@ -3,6 +3,26 @@ import type { ServerContext } from "../context.js";
 import { jsonResult, withToolErrors } from "../util/respond.js";
 
 /**
+ * Workflow support as the deployment advertises it (design 04 "Advertise
+ * capability/version in bootstrap", D11; R26): the management client's own
+ * answer, which is exactly what a bootstrap carries as `workflows` (web mode:
+ * the server's bootstrap; direct mode: this process's own configuration, the
+ * answer its server would advertise). Null from a host that advertises none
+ * (an older server, or a client without the getter) or that cannot be asked
+ * now. It reports configuration only: the server decides every call again.
+ */
+export async function workflowAdvertisement(ctx: ServerContext): Promise<Record<string, unknown> | null> {
+    const mgmt = ctx.mgmt as { getWorkflowCapabilities?: () => Promise<Record<string, unknown> | null> };
+    if (typeof mgmt.getWorkflowCapabilities !== "function") return null;
+    try {
+        const advertised = await mgmt.getWorkflowCapabilities();
+        return advertised !== null && typeof advertised === "object" && !Array.isArray(advertised) ? advertised : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Capability & identity descriptor (proposal G1).
  *
  * Two-layer discovery: conditional tool registration means an absent
@@ -48,6 +68,12 @@ export function buildCapabilities(ctx: ServerContext) {
         // refs are validated against the session's artifact store at the API
         // edge, which direct mode does not run).
         prompt: { imageAttachments: ctx.webMode },
+        // The workflow tools this server registers, keyed as the deployment's
+        // advertisement (`workflows.v2`, which get_capabilities and the
+        // capabilities resource add) so a client compares them: no workflow
+        // read tool here (the Web API's GET /sessions/:id/workflow reads),
+        // and update_workflow only with the test-only option workflowCommands.
+        workflow_tools: { read: false, commands: ctx.workflowCommands === true },
     };
 }
 
@@ -59,7 +85,9 @@ export function registerCapabilityTools(server: McpServer, ctx: ServerContext) {
             description:
                 "Describe this PilotSwarm MCP server's capability surface: mode (web/direct), whether the caller's "
                 + "credential carries the admin role, enhanced-facts search/embedder availability, graph availability, "
-                + "and counts of registered agents/skills. Use this before planning multi-step operations — tools for "
+                + "and counts of registered agents/skills; the deployment's workflow support exactly as its bootstrap "
+                + "advertises it (workflows: null from a host that advertises none) and the workflow tools this server "
+                + "registers (workflow_tools). Use this before planning multi-step operations — tools for "
                 + "absent capabilities are not registered at all.",
             inputSchema: {},
         },
@@ -88,6 +116,7 @@ export function registerCapabilityTools(server: McpServer, ctx: ServerContext) {
             }
             return jsonResult({
                 ...buildCapabilities(ctx),
+                workflows: await workflowAdvertisement(ctx),
                 embedded_workers: embeddedWorkers,
                 default_model: defaultModel,
             });

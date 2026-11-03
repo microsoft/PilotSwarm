@@ -717,7 +717,7 @@ export function compactWorkflowV2Executions(executions) {
 }
 
 /**
- * Which execution of a state a person reads (R06; design 02 history), by its exact identity: the one `selection` names
+ * Which execution of a state a person reads (R01 history; design 02 node occurrences), by its exact identity: the one `selection` names
  * ({ runId, stateId, executionId }) when it is for exactly this run (`runId`, the run the projection overlays) and this
  * state (`node`, a v2 node view); otherwise the state's latest completed execution, as before. A chosen execution that
  * is not among the state's loaded executions is `missing`, and the latest result is never shown in its place. `index`

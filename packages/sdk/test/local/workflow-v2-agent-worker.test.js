@@ -30,6 +30,26 @@
  *   synthetic fixtures published into this test's own registry (its schema
  *   and the worker's local artifact store), as the pinned-revision test
  *   publishes them.
+ * - A publication's workflow interface (R09, R18; T011, T070, T071; design
+ *   04 package-agent I/O export, 09 `interface: name@version`): the package
+ *   agent declares interface review_change@1 (package format v5, schemas
+ *   read from inside the package); a workflow whose agent state names it,
+ *   with exactly its outcomes and output schema, is published as a 1.9.0
+ *   host publishes it, and the pin holds the interface's name, version and
+ *   digest with the exact package revision. The package is republished with
+ *   review_change@2 (an input schema, another output schema, another
+ *   outcome). What no longer matches is refused at publication
+ *   (CONTRACT_MISMATCH: the old interface name, or the new name with the old
+ *   contract) and stays a draft: no run, no child, no model turn. The first
+ *   publication's live run keeps its pinned revision and contract: its
+ *   child's wrapper carries exactly review_change@1's outcomes and output
+ *   schema, the child runs the pinned revision's prompt, a completion under
+ *   the new interface's outcome is refused (OUTPUT_INVALID) and one under the
+ *   pinned contract decides the state. A later publication naming
+ *   review_change@2 pins the new revision and digest; its child's wrapper
+ *   carries @2's input, input schema, output schema and outcomes, a result
+ *   that misses @2's output schema is refused, and one that matches it
+ *   decides the state.
  *
  * Test double: the model (scripted). Not an activation: one worker serves
  * everything here, and nothing in a deployment sets the option; duroxide
@@ -137,6 +157,79 @@ function completingModel(turns, output) {
             return { tools: [{ name: "complete_workflow_node", args: { outcome: "accepted", output, operation_id: "review-1" } }] };
         }
         turns.at(-1).result = position.toolResults.at(-1);
+        return { content: "STATE_COMPLETED" };
+    };
+}
+
+/**
+ * The invocation an agent state's wrapper prompt carries (workflowAgentPrompt: its one line of runtime data, JSON that
+ * parses to the exact value), or null.
+ */
+function invocationOf(prompt) {
+    for (const line of String(prompt ?? "").split("\n")) {
+        const text = line.trim();
+        if (!text.startsWith("{")) continue;
+        try {
+            const value = JSON.parse(text);
+            if (value && typeof value === "object" && typeof value.nodeExecutionId === "string") return value;
+        } catch {
+            // Not the invocation's line.
+        }
+    }
+    return null;
+}
+
+/**
+ * One agent state naming `agent` ({ name, package, interface }) under `contract` ({ inputSchema?, outputSchema,
+ * outcomes }): its schemas declared once and referenced, an outcome route for each outcome, then terminals. As a
+ * document (JSON is YAML).
+ */
+function contractedWorkflow(agent, contract) {
+    return JSON.stringify({
+        apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "worker-contract-review", version: "1.0.0" },
+        initialInput: { change: "rename a field" }, initial: "review",
+        schemas: { ...(contract.inputSchema ? { ReviewInput: contract.inputSchema } : {}), ReviewResult: contract.outputSchema },
+        states: {
+            review: {
+                type: "agent", invoke: { agent }, ...(contract.inputSchema ? { inputSchema: { $ref: "#/schemas/ReviewInput" } } : {}),
+                outputSchema: { $ref: "#/schemas/ReviewResult" }, timeoutSeconds: 600,
+                transition: { next: { ...Object.fromEntries(contract.outcomes.map(outcome => [outcome, "done"])), failure: "failed" } },
+            },
+            done: { type: "terminal", outcome: "succeeded", output: "${input}" },
+            failed: { type: "terminal", outcome: "failed", output: "${runtime.error}" },
+        },
+    }, null, 2);
+}
+
+/**
+ * The scripted model of the interface case: an agent state's child reads the contract in its wrapper (the invocation's
+ * outcomes) and first completes with the other interface revision's result, which the state's pinned contract refuses,
+ * then with one that matches it, then ends its turn. review_change@1 takes { verdict } with accepted; @2 takes
+ * { verdict, notes } with accepted or changes_required. Every other request is answered "ok". Each child turn is recorded
+ * by its node execution, with its prompt, system prompt, invocation and each completion's answer. The answers depend on
+ * the request alone, so a retried request gets the same one.
+ */
+function contractModel(turns) {
+    return (body, position) => {
+        const tools = (body.tools ?? []).map(tool => tool.function?.name);
+        if (!tools.includes("complete_workflow_node")) return { content: "ok" };
+        const invocation = invocationOf(position.lastUserText);
+        const id = invocation?.nodeExecutionId ?? "unknown";
+        const second = Array.isArray(invocation?.outcomes) && invocation.outcomes.includes("changes_required");
+        const notes = "rename it everywhere";
+        const wrong = second ? { outcome: "changes_required", output: { verdict: "rework" } }
+            : { outcome: "changes_required", output: { verdict: "rework", notes } };
+        const right = second ? { outcome: "changes_required", output: { verdict: "rework", notes } } : { outcome: "accepted", output: { verdict: "approved" } };
+        if (position.step === 0) {
+            const record = { id, prompt: position.lastUserText, system: systemText(body), tools, invocation, results: [] };
+            const at = turns.findIndex(turn => turn.id === id);
+            if (at >= 0) turns[at] = record;
+            else turns.push(record);
+            return { tools: [{ name: "complete_workflow_node", args: { ...wrong, operation_id: "contract-try" } }] };
+        }
+        const turn = turns.find(item => item.id === id);
+        if (turn && position.step <= 2) turn.results[position.step - 1] = position.toolResults.at(-1);
+        if (position.step === 1) return { tools: [{ name: "complete_workflow_node", args: { ...right, operation_id: "contract-final" } }] };
         return { content: "STATE_COMPLETED" };
     };
 }
@@ -441,6 +534,218 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                 expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), laterPinnedId, null))).toBe("1.1.0");
                 expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null))).toBe("1.0.0");
                 expect(versionOf(pickAgentCopyForOwner(copies(), null))).toBe("1.1.0");
+            });
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("runs an agent state's child under the workflow interface its publication pinned, after a republish with a new interface revision, and a later publication's child under the new one; a contract that does not match is refused before any child (R09, R18, T011, T070, T071)", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const tag = randomUUID().slice(0, 8);
+        const kit = `contract-kit-${tag}`;
+        const reviewer = `contract-reviewer-${tag}`;
+        const marker = version => `CONTRACT-REVIEWER-${tag}-${version}`;
+        const RESULT_1 = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false };
+        const INPUT_2 = { type: "object", required: ["change"], properties: { change: { type: "string" } }, additionalProperties: false };
+        const RESULT_2 = { type: "object", required: ["verdict", "notes"], properties: { verdict: { type: "string" }, notes: { type: "string" } },
+            additionalProperties: false };
+        /** review_change@1 (package 1.0.0) and review_change@2 (1.1.0): another input, output and outcome set. */
+        const CONTRACT_1 = { version: "1", outputSchema: RESULT_1, outcomes: ["accepted"] };
+        const CONTRACT_2 = { version: "2", inputSchema: INPUT_2, outputSchema: RESULT_2, outcomes: ["accepted", "changes_required"] };
+        /** One version of the registry package: its schemaVersion 5 agent exports `contract` as review_change; its prompt names the version. */
+        const writeVersion = (version, contract) => {
+            const dir = join(env.baseDir, `agent-worker-contract-${tag}-${version}`);
+            mkdirSync(join(dir, "agents"), { recursive: true });
+            mkdirSync(join(dir, "contracts"), { recursive: true });
+            writeFileSync(join(dir, "plugin.json"), JSON.stringify({ name: kit, version, description: "A workflow's contract reviewer, one interface revision at a time." }));
+            writeFileSync(join(dir, "contracts", "review-result.schema.json"), JSON.stringify(contract.outputSchema));
+            if (contract.inputSchema) writeFileSync(join(dir, "contracts", "review-input.schema.json"), JSON.stringify(contract.inputSchema));
+            writeFileSync(join(dir, "agents", `${reviewer}.agent.md`), [
+                "---", `name: ${reviewer}`, "description: Reviews a change against its workflow contract.", "schemaVersion: 5", `version: ${version}`,
+                "workflowInterface:", "  name: review_change", `  version: "${contract.version}"`,
+                ...(contract.inputSchema ? ["  inputSchema: ./contracts/review-input.schema.json"] : []),
+                "  outputSchema: ./contracts/review-result.schema.json", `  outcomes: [${contract.outcomes.join(", ")}]`,
+                "---", "", `${marker(version)}: review the change you are given against your workflow contract.`, "",
+            ].join("\n"));
+            return dir;
+        };
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const registry = { catalog, artifactStore: new FilesystemArtifactStore(join(dirname(env.sessionStateDir), "artifacts")) };
+        const publishVersion = (version, contract) => publishAgentPackageDir(registry, {
+            dir: writeVersion(version, contract), scope: "shared", owner: OWNER, createdBy: "workflow-v2-agent-worker-test", isAdmin: false,
+        });
+        /** The interface a published version exports for the reviewer, as the registry keeps it in the version's manifest. */
+        const exportOf = outcome => outcome.manifest.agents.find(agent => agent.name === reviewer)?.workflowInterface;
+        const turns = [];
+        const turnOf = stateExecutionId => turns.find(turn => turn.id === stateExecutionId);
+        const { traces, traceWriter } = traceTail();
+        const worker = {
+            testOptions: { workflowRequests: true }, workerPool: "default", logLevel: "warning", traceWriter,
+            agentPackages: { cacheDir: join(env.baseDir, `agent-worker-contract-packages-${tag}`), refreshIntervalMs: 0 },
+        };
+        try {
+            // 1.0.0 exports review_change@1 and is the active version when the worker starts.
+            const v1 = await publishVersion("1.0.0", CONTRACT_1);
+            const export1 = exportOf(v1);
+            expect(export1).toMatchObject({ name: "review_change", version: "1", inputSchema: null, outcomes: ["accepted"] });
+            expect(export1.digest).toMatch(/^[0-9a-f]{64}$/);
+            const pinnedId = pinnedAgentPackageId(v1.packageId, v1.sha256);
+            await withScriptedModel(env, { respond: contractModel(turns), worker }, async ({ client, model, worker: running }) => {
+                const duroxide = client._getDuroxideClient();
+                const store = catalog.workflowStore();
+                const copies = () => running.sessionManager.workerDefaults.agentPromptLookup[reviewer];
+                const versionOf = copy => (!copy ? null : copy.prompt.includes(marker("1.0.0")) ? "1.0.0" : copy.prompt.includes(marker("1.1.0")) ? "1.1.0" : "other");
+                const parent = randomUUID();
+                await catalog.createSession(parent, { owner: OWNER });
+                // Published as a 1.9.0 host publishes: the agent pinned from the registry, its interface matched and pinned.
+                const host = { catalog, store, duroxideClient: duroxide, requests: true, resolveAgent: createWorkflowAgentResolver({ catalog }) };
+                const named = ref => ({ name: reviewer, package: kit, interface: ref });
+                const workflowSessionId = randomUUID();
+                const created = await createWorkflowV2(host, {
+                    workflowSessionId, parentSessionId: parent, yaml: contractedWorkflow(named("review_change@1"), CONTRACT_1), actor: ACTOR,
+                    operationId: "create", publish: true, notifyParent: false,
+                });
+                expect(created.receipt, JSON.stringify(created.receipt.diagnostics)).toMatchObject({ valid: true, state: "published", run: null });
+                const pin = { name: reviewer, package: kit, version: "1.0.0", packageId: v1.packageId, revision: v1.sha256,
+                    interface: { name: "review_change", version: "1", digest: export1.digest } };
+                expect((await store.readDefinition(workflowSessionId)).publishedAgentPins).toEqual({ review: pin });
+
+                // Republished with review_change@2: 1.1.0 is the registry's and this worker's active version. The publication keeps its pin.
+                const v11 = await publishVersion("1.1.0", CONTRACT_2);
+                const export2 = exportOf(v11);
+                expect(v11.packageId).toBe(v1.packageId);
+                expect(v11.sha256).not.toBe(v1.sha256);
+                expect(export2).toMatchObject({ name: "review_change", version: "2", outcomes: ["accepted", "changes_required"] });
+                expect(export2.digest).not.toBe(export1.digest);
+                await running.refreshAgentPackages();
+                expect(versionOf(pickAgentCopyForOwner(copies(), null))).toBe("1.1.0");
+                expect((await store.readDefinition(workflowSessionId)).publishedAgentPins).toEqual({ review: pin });
+
+                // What no longer matches the active version's interface is refused at publication and stays a draft: no run,
+                // so no child and no model turn. Nothing is inferred: neither the old name nor the new name with the old contract.
+                const refusedPublication = async (ref, contract, problems, label) => {
+                    const draftId = randomUUID();
+                    const draft = await createWorkflowV2(host, {
+                        workflowSessionId: draftId, parentSessionId: parent, yaml: contractedWorkflow(named(ref), contract), actor: ACTOR,
+                        operationId: `create-${label}`, notifyParent: false,
+                    });
+                    expect(draft.receipt, JSON.stringify(draft.receipt.diagnostics)).toMatchObject({ valid: true, state: "draft", run: null });
+                    const refusal = await updateWorkflowV2(host, draftId, { operation: "publish", expectedRevision: 1, definitionHash: draft.receipt.yamlSha256 },
+                        { actor: ACTOR, operationId: `publish-${label}` }).then(() => null, error => error);
+                    expect(refusal?.code, refusal?.message).toBe("CONTRACT_MISMATCH");
+                    expect(refusal.details).toMatchObject({ stateId: "review", agent: reviewer, package: kit, interface: ref, packageVersion: "1.1.0", problems });
+                    expect(await store.readDefinition(draftId)).toMatchObject({ state: "draft", publishedRevision: null, publishedAgentPins: null });
+                    expect(await store.listRuns(draftId)).toEqual([]);
+                };
+                await refusedPublication("review_change@1", CONTRACT_1, ["its agent exports review_change@2, not review_change@1"], "stale-name");
+                await refusedPublication("review_change@2", CONTRACT_1, [
+                    "its outcomes [accepted] are not the interface's [accepted, changes_required]",
+                    "its outputSchema is not exactly the interface's output schema",
+                    "its inputSchema is not exactly the interface's input schema",
+                ], "old-contract");
+                expect(turns).toEqual([]);
+
+                // A live run of the first publication.
+                const started = await updateWorkflowV2(host, workflowSessionId, { operation: "start", definitionHash: created.receipt.yamlSha256, inputs: {} },
+                    { actor: ACTOR, operationId: "start" });
+                const runId = started.receipt.run.runId;
+                const nodeExecutionId = nodeExecutionIdFor(runId, "root", "review", 1);
+                /** The case's own records for the evidence: the state's task, its child's binding and what the worker serves. */
+                const bindingOf = (stateExecutionId, ids) => async () => {
+                    const invocation = await store.readAgentInvocation(stateExecutionId);
+                    return {
+                        ids, task: invocation?.task ?? null,
+                        creationConfig: invocation ? await catalog.getSessionCreationConfig(invocation.childSessionId) : null,
+                        served: { active: versionOf(pickAgentCopyForOwner(copies(), null)),
+                            ...Object.fromEntries(Object.entries(ids).map(([key, id]) => [key, versionOf(pickAgentCopyByPackageIdForOwner(copies(), id, null))])) },
+                    };
+                };
+                const { boundary } = agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId, nodeExecutionId, workflowSessionId,
+                    extra: bindingOf(nodeExecutionId, { pinned: pinnedId }) });
+                await boundary("the agent state is entered", () => store.readNodeExecution(nodeExecutionId));
+                await boundary("the child is spawned", async () => (await store.readAgentInvocation(nodeExecutionId))?.spawnedAt ?? null);
+                await boundary("the child's turn reaches the model with complete_workflow_node", async () => turnOf(nodeExecutionId) ?? null);
+                await boundary("the child's turn gets both completions' answers", async () => turnOf(nodeExecutionId)?.results?.[1] ?? null);
+                const run = await boundary("the run ends", async () => {
+                    const row = await store.readRun(runId);
+                    return row && ENDED.includes(row.status) ? row : null;
+                });
+                expect(run).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, terminalOutput: { verdict: "approved" } });
+                expect(await store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "accepted", winner: "agent", output: { verdict: "approved" } });
+
+                // The run kept its publication's revision: the child is bound to it and its real turn ran that revision's prompt.
+                const invocation = await store.readAgentInvocation(nodeExecutionId);
+                expect(invocation.task).toEqual({ source: "agent", name: reviewer, package: kit, version: "1.0.0", packageId: v1.packageId, revision: v1.sha256 });
+                expect(await catalog.getSessionCreationConfig(invocation.childSessionId)).toMatchObject({ boundAgentName: reviewer, boundAgentPackageId: pinnedId });
+                const turn = turnOf(nodeExecutionId);
+                expect(turn.system).toContain(marker("1.0.0"));
+                expect(turn.system).not.toContain(marker("1.1.0"));
+                // Its wrapper carries exactly the pinned interface's contract: review_change@1's outcomes and output schema, no input schema.
+                expect(turn.invocation).toMatchObject({ nodeExecutionId, runId, stateId: "review", input: { change: "rename a field" }, inputSchema: null,
+                    outcomes: export1.outcomes, taskSource: { agent: reviewer, package: kit, version: "1.0.0" } });
+                expect(turn.invocation.schemas[turn.invocation.outputSchema]).toEqual(export1.outputSchema);
+                // A completion under the new interface (its outcome and result) is refused by the pinned contract; one under it decides the state.
+                const [tried, decided] = turn.results.map(text => JSON.parse(text));
+                expect(tried).toMatchObject({ ok: false, error: { code: "OUTPUT_INVALID", attemptsLeft: 2 } });
+                expect(tried.error.problems).toEqual(expect.arrayContaining([{ path: "outcome", message: "outcome must be one of accepted." }]));
+                expect(tried.error.problems.length).toBeGreaterThan(1);
+                expect(decided).toMatchObject({ ok: true, kind: "result", outcome: "accepted", nodeExecutionId, runId });
+                expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null))).toBe("1.0.0");
+                expect(versionOf(pickAgentCopyForOwner(copies(), null))).toBe("1.1.0");
+
+                // A later publication naming review_change@2 with exactly its contract pins the new revision and the new digest; the
+                // first publication keeps its own pin.
+                const laterSessionId = randomUUID();
+                const later = await createWorkflowV2(host, {
+                    workflowSessionId: laterSessionId, parentSessionId: parent, yaml: contractedWorkflow(named("review_change@2"), CONTRACT_2), actor: ACTOR,
+                    operationId: "create-later", publish: true, notifyParent: false,
+                });
+                expect(later.receipt, JSON.stringify(later.receipt.diagnostics)).toMatchObject({ valid: true, state: "published", run: null });
+                const laterPin = { ...pin, version: "1.1.0", revision: v11.sha256, interface: { name: "review_change", version: "2", digest: export2.digest } };
+                const laterPinnedId = pinnedAgentPackageId(v11.packageId, v11.sha256);
+                expect((await store.readDefinition(laterSessionId)).publishedAgentPins).toEqual({ review: laterPin });
+                expect((await store.readDefinition(workflowSessionId)).publishedAgentPins).toEqual({ review: pin });
+
+                const laterStarted = await updateWorkflowV2(host, laterSessionId, { operation: "start", definitionHash: later.receipt.yamlSha256, inputs: {} },
+                    { actor: ACTOR, operationId: "start-later" });
+                const laterRunId = laterStarted.receipt.run.runId;
+                const laterNode = nodeExecutionIdFor(laterRunId, "root", "review", 1);
+                const laterProbe = agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId: laterRunId, nodeExecutionId: laterNode,
+                    workflowSessionId: laterSessionId, extra: bindingOf(laterNode, { pinned: pinnedId, later: laterPinnedId }) });
+                await laterProbe.boundary("the later child is spawned", async () => (await store.readAgentInvocation(laterNode))?.spawnedAt ?? null);
+                await laterProbe.boundary("the later child's turn reaches the model with complete_workflow_node", async () => turnOf(laterNode) ?? null);
+                await laterProbe.boundary("the later child's turn gets both completions' answers", async () => turnOf(laterNode)?.results?.[1] ?? null);
+                const laterRun = await laterProbe.boundary("the later run ends", async () => {
+                    const row = await store.readRun(laterRunId);
+                    return row && ENDED.includes(row.status) ? row : null;
+                });
+                expect(laterRun).toMatchObject({ status: "completed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+                    terminalOutput: { verdict: "rework", notes: "rename it everywhere" } });
+                expect(await store.readNodeExecution(laterNode)).toMatchObject({ outcome: "changes_required", winner: "agent",
+                    output: { verdict: "rework", notes: "rename it everywhere" } });
+                const laterInvocation = await store.readAgentInvocation(laterNode);
+                expect(laterInvocation.task).toEqual({ source: "agent", name: reviewer, package: kit, version: "1.1.0", packageId: v11.packageId, revision: v11.sha256 });
+                expect(laterInvocation.childSessionId).not.toBe(invocation.childSessionId);
+                expect(await catalog.getSessionCreationConfig(laterInvocation.childSessionId))
+                    .toMatchObject({ boundAgentName: reviewer, boundAgentPackageId: laterPinnedId });
+                const laterTurn = turnOf(laterNode);
+                expect(laterTurn.system).toContain(marker("1.1.0"));
+                expect(laterTurn.system).not.toContain(marker("1.0.0"));
+                // Its wrapper carries review_change@2's contract: the input it was admitted with, its input schema, output schema and outcomes.
+                expect(laterTurn.invocation).toMatchObject({ nodeExecutionId: laterNode, runId: laterRunId, stateId: "review", input: { change: "rename a field" },
+                    outcomes: export2.outcomes, taskSource: { agent: reviewer, package: kit, version: "1.1.0" } });
+                expect(laterTurn.invocation.schemas[laterTurn.invocation.inputSchema]).toEqual(export2.inputSchema);
+                expect(laterTurn.invocation.schemas[laterTurn.invocation.outputSchema]).toEqual(export2.outputSchema);
+                // A result without @2's notes is refused; one with them decides the state.
+                const [laterTried, laterDecided] = laterTurn.results.map(text => JSON.parse(text));
+                expect(laterTried).toMatchObject({ ok: false, error: { code: "OUTPUT_INVALID", attemptsLeft: 2 } });
+                expect(laterTried.error.problems.length).toBeGreaterThan(0);
+                expect(laterTried.error.problems.some(problem => problem.path === "outcome")).toBe(false);
+                expect(laterDecided).toMatchObject({ ok: true, kind: "result", outcome: "changes_required", nodeExecutionId: laterNode, runId: laterRunId });
+                expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), laterPinnedId, null))).toBe("1.1.0");
+                expect(versionOf(pickAgentCopyByPackageIdForOwner(copies(), pinnedId, null))).toBe("1.0.0");
             });
         } finally {
             await catalog.close();

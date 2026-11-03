@@ -1,4 +1,4 @@
-// Each execution's own result in the workflow views (R06; design 02 execution history; INACTIVE as the views are): the
+// Each execution's own result in the workflow views (R01 history; design 02 node occurrences; mock M10; INACTIVE as the views are): the
 // portal's History tab chooses one execution of the shown run and state by its exact identity, and the Output tab then
 // shows that execution's own output or runtime error, never the latest in its place; the TUI's [ and ] step through the
 // selected state's visits of the shown run the same way. A loop's visits stay distinct, a choice for one run or state
