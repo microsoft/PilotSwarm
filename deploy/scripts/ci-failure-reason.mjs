@@ -21,6 +21,10 @@ export function classifyFailure(log) {
   }
   if (/ORAS registry login failed/.test(nearby)) return "Diagnostic: ORAS registry login failed.";
   if (/oras cp .*exited [1-9]/.test(nearby)) return "Diagnostic: ORAS image upload failed.";
+  // Older deploy scripts reported ENOBUFS as "Failed to spawn az: … ENOBUFS".
+  if (/Output too large: az |Failed to spawn az: .*ENOBUFS/.test(nearby)) {
+    return "Diagnostic: Azure CLI output exceeded the capture limit.";
+  }
   if (/Failed to spawn az/.test(nearby)) return "Diagnostic: Azure CLI could not start.";
   if (/AuthorizationPermissionMismatch|AuthorizationFailure|AuthorizationFailed|Forbidden|\b403\b/i.test(nearby)) {
     return "Diagnostic: Azure authorization failure.";

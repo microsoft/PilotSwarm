@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
-import { normalizeMoa, activeMoaDashboard } from "../../../ui/core/src/moa.js";
+import { normalizeMoa, activeMoaDashboard, moaLeaves } from "../../../ui/core/src/moa.js";
 
 let stub, base;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 4 }); base = `http://127.0.0.1:${stub.port}`; });
@@ -517,6 +517,8 @@ test("legacy workspace migrates into one dashboard with responsive controls", as
     }
     await panel(page, "panel-1").getByRole("button", { name: "Split right", exact: true }).click();
     await expect.poll(() => f.settings().moa.version).toBe(3);
+    // Version 3 can be saved by the migration before the split; wait for the split itself.
+    await expect.poll(() => moaLeaves(activeMoaDashboard(f.settings().moa).tree).length).toBe(3);
     expect(Object.keys(f.settings().moa).sort()).toEqual(["activeDashboardId", "composerMode", "dashboards", "version"]);
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.reload(); await open(page);

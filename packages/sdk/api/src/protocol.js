@@ -250,6 +250,12 @@ export const OPERATIONS = [
 
     // Feature keys are code-defined. Caller identity is stamped by each transport.
     { name: "listFeatureFlags", access: "authed", method: "GET", path: "/management/features/catalog", summary: "List code-defined feature flags and published defaults." },
+    { name: "getCurrentMotd", access: "authed", method: "GET", path: "/management/motd/current", summary: "Read the current message, excluding my dismissals." },
+    { name: "dismissMotd", access: "authed", method: "POST", path: "/management/motd/:motdId/dismiss", params: { motdId: path("motdId") }, summary: "Dismiss a message for myself permanently." },
+    { name: "getMotdImage", access: "authed", method: "GET", path: "/management/motd/:motdId/image", params: { motdId: path("motdId"), mobile: query("boolean") }, summary: "Read a message picture as base64. Mobile falls back to the main picture." },
+    { name: "listMotds", access: "authed", method: "GET", path: "/management/motd", params: { limit: query("number"), before: query("string") }, summary: "Read message history and overlap status. Creator identity and dismissal counts are admin-only." },
+    { name: "createMotd", access: "fleet:admin", method: "POST", path: "/management/motd", params: { startsAt: body(), endsAt: body(), fromAt: body(), toAt: body(), bodyMd: body(), mobileBodyMd: body(), image: body(), mobileImage: body(), imagePlacement: body(), requestId: body() }, summary: "Create a message. Start defaults to server creation; omit endsAt to keep it until replaced or deleted. [admin]" },
+    { name: "deleteMotd", access: "fleet:admin", method: "DELETE", path: "/management/motd/:motdId", params: { motdId: path("motdId") }, summary: "Delete a message and its pictures, without an audit record. [admin]" },
     { name: "listFeatureFlagUsers", access: "fleet:admin", method: "GET", path: "/management/features/users", params: { query: query("string") }, summary: "Find users to manage feature preferences. [admin]" },
     { name: "getClusterFeatureFlags", access: "authed", method: "GET", path: "/management/features/cluster", summary: "Read cluster feature policy." },
     { name: "setClusterFeatureFlag", access: "fleet:admin", method: "PUT", path: "/management/features/cluster/:featureKey", params: { featureKey: path("featureKey"), enabled: body(), allowUserOverride: body(), expectedRevision: body(), requestId: body() }, summary: "Set cluster feature policy atomically. [admin]" },

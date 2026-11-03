@@ -1025,6 +1025,17 @@ export class PortalRuntime {
             case "getClusterFeatureFlags":
             case "getMyFeatureFlags":
                 return this.transport.mgmt[method]({ principal: owner, isAdmin });
+            case "getCurrentMotd":
+                return this.transport.mgmt.getCurrentMotd({ principal: owner, isAdmin });
+            case "dismissMotd":
+            case "deleteMotd":
+                return this.transport.mgmt[method]({ principal: owner, isAdmin }, safeParams.motdId);
+            case "getMotdImage":
+                return this.transport.mgmt.getMotdImage({ principal: owner, isAdmin }, safeParams.motdId, safeParams.mobile);
+            case "listMotds":
+                return this.transport.mgmt.listMotds({ principal: owner, isAdmin }, safeParams.limit, safeParams.before);
+            case "createMotd":
+                return this.transport.mgmt.createMotd({ principal: owner, isAdmin }, safeParams);
             case "getUserFeatureFlags":
                 return this.transport.mgmt.getUserFeatureFlags({ principal: owner, isAdmin }, Number(safeParams.userId));
             case "setClusterFeatureFlag":

@@ -9,6 +9,8 @@ import { withWorkspaceLoad } from "./capability-catalog.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
+import { createMotdTools, MOTD_OPERATION_SPECS } from "./motd-tools.js";
+import { MotdError, MOTD_IMAGE_MAX_BYTES } from "./motd-store.js";
 import { FeatureFlagError, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
@@ -30,7 +32,7 @@ import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { resolveEffectiveSpawnOwner, SYSTEM_USER_PRINCIPAL } from "./cms.js";
-import { evaluateRoleObservation } from "../api/src/session-authz.js";
+import { evaluateRoleObservation, evaluateSessionAccess, systemSessionsReadable } from "../api/src/session-authz.js";
 import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
 
 /**
@@ -2355,10 +2357,32 @@ export class SessionManager {
             && ["resourcemgr", "pilotswarm", "agent-manager", "generic-superagent"].includes(effectiveSerializableConfig.agentIdentity ?? "")
             && (await this._resolveFeatureViewer(sessionId)).isAdmin
             ? createFeatureTools(this.sessionCatalog.features, () => this._resolveFeatureViewer(sessionId)) : [];
+        const motdViewer = this.sessionCatalog?.motds
+            && ["agent-manager", "generic-superagent"].includes(effectiveSerializableConfig.agentIdentity ?? "")
+            ? await this._resolveFeatureViewer(sessionId) : null;
+        const motdTools = this.sessionCatalog?.motds && motdViewer
+            ? createMotdTools(this.sessionCatalog.motds, () => this._resolveFeatureViewer(sessionId), async (image, viewer) => {
+                if (!this.artifactStore || !viewer.principal) throw new MotdError("MOTD_UNAVAILABLE", "Picture artifact storage is unavailable", 503);
+                const source = image.sessionId ?? sessionId;
+                if (!image.filename || /[/\\]/.test(image.filename)) throw new MotdError("MOTD_INVALID", "Picture filename must be a single path segment");
+                const snapshot = await this.sessionCatalog!.getSessionAccess(source, viewer.principal);
+                // The deployment's admin scope, even for a system agent: a
+                // picture is published fleet-wide, so a cluster-scoped admin
+                // must not reach a private user session through it. System
+                // source sessions stay readable under either scope.
+                if (!snapshot || !evaluateSessionAccess("session:read", snapshot, {
+                    isAdmin: viewer.isAdmin, adminScope: this.adminScope, systemReadable: systemSessionsReadable(),
+                }).allowed) throw new MotdError("MOTD_FORBIDDEN", "Picture source session is not readable", 403);
+                const metadata = await this.artifactStore.statArtifact(source, image.filename);
+                if (!metadata) throw new MotdError("MOTD_NOT_FOUND", "Picture artifact not found", 404);
+                if (metadata.sizeBytes > MOTD_IMAGE_MAX_BYTES) throw new MotdError("MOTD_INVALID", "A picture must be at most 2 MB");
+                const picture = await this.artifactStore.downloadArtifact(source, image.filename);
+                return { base64: picture.body.toString("base64"), contentType: picture.contentType, alt: image.alt };
+            }, { includeAdmin: motdViewer.isAdmin }) : [];
         // Handler refresh alone cannot change the CLI's tool declarations.
         // Role transitions must recreate the warm SDK handle at the next turn.
         config.featureToolFingerprint = createHash("sha256")
-            .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
+            .update(JSON.stringify([...featureTools, ...motdTools].map(({ name, description, parameters }) => ({ name, description, parameters }))))
             .digest("hex");
         const nativeOwner = catalogRow?.owner ?? null;
         // An unreadable owner must not bypass a user-level OFF by resolving
@@ -2374,11 +2398,11 @@ export class SessionManager {
         const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
-        ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name)));
+        ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name), MOTD_OPERATION_SPECS.map(spec => spec.name)));
         const getSources = this.workerDefaults.getCapabilitySources ?? (() => []);
         const capabilityCatalog = new CapabilityCatalog(getSources, this.factStore, this.workerDefaults.reservedFactPrefixes ?? []);
         const originalMcp = { ...effectiveMcpServers };
-        const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools];
+        const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools];
         // A qualified binding selects a copy; it is not that copy's authored leaf name.
         const capabilityAgent: McpAllowlistAgent | null = boundAgentCopy?.descriptor ? {
             name: boundAgentCopy.descriptor.name,
@@ -2496,6 +2520,7 @@ export class SessionManager {
             ...unlessService(graphTools),
             ...unlessService(providerTools),
             ...unlessService(featureTools),
+            ...unlessService(motdTools),
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
@@ -2506,11 +2531,12 @@ export class SessionManager {
             ...unlessService(graphTools),
             ...unlessService(providerTools),
             ...unlessService(featureTools),
+            ...unlessService(motdTools),
         ];
         config.tools = persistentSessionTools;
         const nativeTaskAccess = nativeEnabled && boundAgentCopy?.nativeTaskTools
             ? new NativeTaskAccess(boundAgentCopy.nativeTaskTools, allTools,
-                new Set([...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools].map(t => t.name)),
+                new Set([...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools, ...motdTools].map(t => t.name)),
                 effectiveMcpServers)
             : undefined;
         config.nativeTaskAccess = nativeTaskAccess;

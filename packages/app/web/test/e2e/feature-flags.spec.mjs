@@ -60,7 +60,15 @@ async function featurePage(page, { admin = true, themeId = "workspace-dark", clu
     await page.getByRole("button", { name: admin ? "Admin console" : "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Feature flags", exact: true }).click();
     await page.locator(".ps-feature-flag").waitFor();
-    return { state, stop: () => new Promise(resolve => stub.server.close(resolve)) };
+    return { state, stop: async () => {
+        await page.close();
+        const closed = new Promise(resolve => {
+            stub.server.close(resolve);
+            stub.server.closeAllConnections();
+        });
+        await page.request.dispose();
+        await closed;
+    } };
 }
 
 const saved = page => page.locator(".ps-feature-value");
@@ -358,6 +366,7 @@ for (const themeId of ["workspace-dark", "github-light"]) test(`keyboard radio c
         await discard(page).click();
         for (const width of [390, 320]) {
             await page.setViewportSize({ width, height: 844 });
+            if (width === 390) await page.getByRole("button", { name: "Feature flags", exact: true }).click();
             const panel = page.locator(".ps-feature-flags-panel");
             await expect(panel).toBeVisible();
             expect(await panel.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);

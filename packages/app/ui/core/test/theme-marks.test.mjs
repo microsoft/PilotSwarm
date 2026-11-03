@@ -35,6 +35,7 @@ const ICON_THEMES = [
     { id: "doom", label: "DOOM" },
     { id: "winamp", label: "WinAMP" },
     { id: "duroxide", label: "Duroxide" },
+    { id: "hearth", label: "Hearth" },
 ];
 
 for (const { id, label } of ICON_THEMES) {
@@ -170,6 +171,41 @@ test("Duroxide's mark is ONE path, so nonzero can punch its holes", () => {
     assert.equal(subpaths.length, 4, "hexagon outer + inner, gear/arrow outer + bore");
 });
 
+test("Hearth keeps Failed and Done off the page color and the accent", () => {
+    const theme = getTheme("hearth");
+    assert.notEqual(theme.page.background, theme.terminal.red, "the ground is not Failed");
+    assert.notEqual(theme.page.background, theme.terminal.green, "the ground is not Done");
+    assert.notEqual(theme.terminal.cyan, theme.terminal.red, "the accent is not Failed");
+    assert.notEqual(theme.terminal.cyan, theme.terminal.green, "the accent is not Done");
+    assert.ok(contrast(theme.terminal.cyan, theme.terminal.background) >= 4.5, "candle amber reads on the walnut");
+    assert.ok(contrast(theme.tui.border, theme.terminal.background) >= 3, "the copper frame divides");
+});
+
+test("Hearth's mark moves only by named motions, and its sound is described as data", () => {
+    const { icon, sound } = getTheme("hearth");
+    const motions = icon.paths.map((path) => path.motion).filter(Boolean);
+    assert.deepEqual([...new Set(motions)].sort(), ["flame", "flame-core", "glow"]);
+    for (const path of icon.paths) {
+        assert.ok(path.motion === undefined || /^[a-z-]+$/.test(path.motion), "a motion is a plain name");
+    }
+    assert.equal(sound.id, "fire");
+    assert.equal(sound.everySeconds, undefined, "the fire plays continuously");
+    assert.ok(sound.fadeInSeconds > 0 && sound.fadeOutSeconds > 0, "it fades in and out");
+});
+
+test("only Hearth remains of the holiday themes", () => {
+    assert.equal(getTheme("parcel"), null);
+    assert.equal(getTheme("string-lights"), null);
+    assert.ok(listThemes().some((entry) => entry.id === "hearth"));
+});
+
+test("themes without a sound carry null, not a default", () => {
+    for (const entry of listThemes()) {
+        if (entry.id === "hearth") continue;
+        assert.equal(getTheme(entry.id).sound, null, `${entry.id} has no sound`);
+    }
+});
+
 test("Duroxide is a different theme from Rust, not a re-skin", () => {
     // Both are warm-dark and both are Rust-adjacent; the repo already warns
     // that they must not collapse into each other. Ground and accent are the
@@ -188,4 +224,19 @@ test("Duroxide is a different theme from Rust, not a re-skin", () => {
     };
     assert.ok(sat(dx.terminal.cyan) < sat(rust.terminal.cyan),
         `duroxide accent should be the more muted pigment (${sat(dx.terminal.cyan).toFixed(2)} vs ${sat(rust.terminal.cyan).toFixed(2)})`);
+});
+
+test("Hearth's garland lights twinkle one at a time, and stand still when motion is reduced", async () => {
+    const { readFileSync } = await import("node:fs");
+    const css = readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
+    const start = css.indexOf(':root[data-ps-theme="hearth"] .portal-header::before {');
+    const rule = css.slice(start, css.indexOf("}", start));
+    const svg = decodeURIComponent(rule.slice(rule.indexOf("data:image/svg+xml,") + 19, rule.indexOf('")')));
+    const durations = [...svg.matchAll(/<animate attributeName="opacity"[^>]*dur="([\d.]+)s"/g)].map((m) => m[1]);
+    assert.ok(new Set(durations).size >= 6, `each light keeps its own rhythm: ${[...new Set(durations)].join(", ")}`);
+    const blocks = css.split("@media (prefers-reduced-motion: reduce)").slice(1).map((b) => b.slice(0, b.indexOf("\n}\n")));
+    const reduced = blocks.find((b) => b.includes(':root[data-ps-theme="hearth"] .portal-header::before'));
+    assert.ok(reduced, "a reduced-motion rule covers the strand");
+    assert.match(reduced, /:root\[data-ps-theme="hearth"\] \.portal-header::before \{\s*background: url\("data:image\/svg\+xml,/);
+    assert.doesNotMatch(reduced, /%3Canimate/, "the reduced-motion strand has no animation");
 });
