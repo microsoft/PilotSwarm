@@ -34,7 +34,7 @@ const MILESTONE = ["replace_definition", "publish", "publish_and_start", "start"
     "stop", "test", "test_respond", "test_advance"];
 const HASH = "b".repeat(64);
 const DRAFT = { state: "draft", currentRevision: 2, publishedRevision: null, publishedDefinitionHash: null };
-const SUBTREE = { operations: ["pause", "stop", "cancel"], restriction: { reason: "This workflow runs in a workflow agent state's subtree.",
+const SUBTREE = { operations: ["pause", "stop", "cancel"], restriction: { reason: "This workflow was started by an agent step of another workflow.",
     workflowSessionId: "wf-container", controllingSessionId: "parent-agent" }, run: null };
 const modelOf = ({ definition = DRAFT, revision = {}, personCommands = { operations: MILESTONE, restriction: null, run: null } } = {}) => ({
     ...readModel({ definition, revision: { revision: definition.currentRevision ?? 1, definitionHash: HASH, ...revision }, noRun: true }), personCommands });

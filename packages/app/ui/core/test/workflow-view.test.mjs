@@ -13,7 +13,7 @@ const event = (eventType, data) => ({ eventType, data });
 
 test("definition projection preserves transitions without executing source or accepting empty definitions", () => {
     assert.deepEqual(definition.states, start.data.states);
-    assert.throws(() => workflowDefinition(null), /no states/);
+    assert.throws(() => workflowDefinition(null), /no steps/);
     assert.throws(() => workflowDefinition({ states: [null, 3] }), /invalid or unsupported step/);
     assert.throws(() => workflowDefinition({ states: [start.data.states[0], start.data.states[0]] }), /repeats step/);
     assert.throws(() => workflowDefinition({ states: [start.data.states[0]] }), /step that is not defined/);

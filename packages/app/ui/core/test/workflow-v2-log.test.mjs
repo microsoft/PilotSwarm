@@ -152,7 +152,7 @@ test("the eight control events are workflow events, in the history paging types,
         [event("workflow.recovered", { runId: "r", action: "dispatched", requestedBy: "abcdef1234", operationId: "op" }),
             "↻ Recovery requested by `abcdef12`: a restart of the run was recorded; this does not show that it has started.", "recovery requested", "yellow"],
         [event("workflow.cancel_requested", { runId: "r", effects: [{ nodeExecutionId: "n", instanceId: "i", status: "Running" }, { nodeExecutionId: "m", instanceId: "j", status: "Suspended" }] }),
-            "⏹ Asked 2 running effects to stop.", "2 effects asked to stop", "yellow"],
+            "⏹ Asked 2 running actions to stop.", "2 actions asked to stop", "yellow"],
         [event("workflow.parent_notified", { runId: "r", parentSessionId: "parent-123456" }),
             "✉ The parent session was told that the run ended (`parent-1`).", "parent told the run ended", "gray"],
         [event("workflow.parent_notification_skipped", { runId: "r", reason: "Parent authority is no longer available" }),
@@ -190,7 +190,7 @@ test("pause, resume, recovery and a cancel request are rows of their own that do
         event("workflow.cancel_requested", { runId: "run-a", effects: [{ nodeExecutionId: "n", instanceId: "i", status: "Running" }] })]);
     assert.equal(progress(cancelled)[0].workflowProgress.pending, false);
     assert.deepEqual(cancelled.chat.map(item => item.workflowEvent).slice(-2), ["workflow.cancelled", "workflow.cancel_requested"]);
-    assert.match(cancelled.chat.at(-1).text, /Asked 1 running effect to stop/);
+    assert.match(cancelled.chat.at(-1).text, /Asked 1 running action to stop/);
     // The next run's start still closes the earlier summary when a control row sits between them.
     const nextRun = buildHistoryModel([started(), begin(1), done(1), event("workflow.paused", { runId: "run-a" }), started("run-b", 2), begin(1, "run-b"), done(1, "unchanged", "run-b")]);
     assert.deepEqual(counts(nextRun), [1, 1]);
@@ -206,7 +206,7 @@ test("missing or malformed control payloads still read sensibly and never throw"
     assert.equal(bare("workflow.recovered"), "↻ Recovery requested: recovery recorded.");
     assert.equal(formatWorkflowEventText(event("workflow.recovered", { action: "other" })), "↻ Recovery requested: action `other` recorded.");
     assert.ok(!/started again|was started/.test(formatWorkflowEventText(event("workflow.recovered", { action: "dispatched" }))), "the event is recorded before the start, so it never claims one");
-    assert.equal(bare("workflow.cancel_requested"), "⏹ Asked 0 running effects to stop. They may take a moment to end.");
+    assert.equal(bare("workflow.cancel_requested"), "⏹ Asked 0 running actions to stop. They may take a moment to end.");
     assert.equal(bare("workflow.parent_notified"), "✉ The parent session was told that the run ended.");
     assert.equal(bare("workflow.parent_notification_skipped"), "✉ The parent session was not told that the run ended.");
     for (const data of [null, "text", 7, [], [1, 2], { actor: 5, set: "a", deleted: { a: 1 }, effects: "x", claimedBy: 3, reason: ["r"], kvRevision: "4" }]) {

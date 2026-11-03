@@ -328,8 +328,8 @@ test("+ opens the run's virtual clock; Enter advances it by the seconds given an
     let shown = clockForm(h.store);
     assert.equal(shown.title, "Virtual clock · test run test-r…0001");
     assert.ok(texts(shown.lines).includes("Virtual clock: 1 h after the test began"));
-    assert.ok(joined(shown.lines).includes("An advance by whole seconds (1 to 30 days) decides what came due: a wait or a receive's wait elapses, an "
-        + "intercepted request or agent times out; a result that won first stands. Script clocks are real."));
+    assert.ok(joined(shown.lines).includes("An advance by whole seconds (1 to 30 days) decides what came due: a wait or a receive's wait elapses, a "
+        + "held request or agent times out; a result that won first stands. Script clocks are real."));
     assert.ok(texts(shown.lines).includes("2 held calls wait for an answer."));
     assert.deepEqual([shown.fieldShown, shown.seconds, shown.hint], [true, "60", "Enter advance · Esc back"]);
 

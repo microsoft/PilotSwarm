@@ -88,7 +88,7 @@ test("wait, receive and send states say what they wait for or did, and never cla
     const receive = byId(view, "await_ack");
     assert.equal(receive.stateLabel, "Waiting for message");
     assert.equal(receive.description[0], "Waiting for Ack@1 from any permitted sender.");
-    assert.match(receive.description[1], /routes on 'elapsed' after 2026-11-01T12:10:00.000Z/);
+    assert.match(receive.description[1], /If none arrives by 2026-11-01T12:10:00\.000Z, the step continues on 'elapsed'\./);
     const send = byId(view, "notify");
     assert.equal(send.stateLabel, "Sent · queued at recipient");
     assert.equal(send.description[0], "Alert@1 was delivered to the queue of parent-1.");

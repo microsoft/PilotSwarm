@@ -135,5 +135,5 @@ test("the TUI's workflow view shows the agent, its interface and its pin as the 
     await mocked.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     const mockedLines = detailTexts(mocked.store);
     assert.ok(mockedLines.includes("Agent in this test: Mocked: the parent or the test's answers give its typed result"), mockedLines.join("\n"));
-    assert.ok(!mockedLines.some(line => line.startsWith("Pinned")), mockedLines.join("\n"));
+    assert.ok(!mockedLines.some(line => line.startsWith("Locked")), mockedLines.join("\n"));
 });
