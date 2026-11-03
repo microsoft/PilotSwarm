@@ -68,7 +68,7 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
         },
         onPointerLeave: hide },
     h("button", { ref: buttonRef, type: "button", disabled,
-        className: `ps-mini-button ps-workflow-tool${danger ? " is-danger" : ""}`,
+        className: `ps-mini-button ps-workflow-tool-button${danger ? " is-danger" : ""}`,
         "aria-label": label, "data-title": explain ?? undefined, "aria-describedby": explain ? describedId : undefined,
         onClick, onFocus: event => { if (focusVisible(event.currentTarget)) show(); }, onBlur: hide,
         onKeyDown: event => { if (event.key === "Escape" && tip) { event.stopPropagation(); hide(); } },

@@ -4597,9 +4597,10 @@ body.is-resizing-pane-y iframe {
   margin-left: auto;
 }
 
-/* of-04: the workflow toolbar's icon buttons, in the top bar's icon style; their tooltip is .ps-icon-tooltip. */
+/* of-04: the workflow toolbar's icon buttons, in the top bar's icon style; their tooltip is .ps-icon-tooltip. Not
+   .ps-workflow-tool: that is a step's tool-call row in the step details. */
 .ps-workflow-tool-wrap { display: inline-flex; }
-.ps-mini-button.ps-workflow-tool {
+.ps-mini-button.ps-workflow-tool-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4609,11 +4610,11 @@ body.is-resizing-pane-y iframe {
   touch-action: manipulation;
 }
 .ps-workflow-tool-glyph { display: inline-flex; line-height: 1; }
-.ps-mini-button.ps-workflow-tool[aria-expanded="true"] {
+.ps-mini-button.ps-workflow-tool-button[aria-expanded="true"] {
   color: var(--ps-accent);
   border-color: var(--ps-accent);
 }
-.ps-mini-button.ps-workflow-tool:focus-visible {
+.ps-mini-button.ps-workflow-tool-button:focus-visible {
   outline: 2px solid var(--ps-accent);
   outline-offset: 1px;
 }
