@@ -144,7 +144,7 @@ function AgentChild({ agent, openSession }) {
         h("div", { className: "ps-workflow-property" }, h("span", null, "Child session"), h("strong", null, agent.childSessionId)),
         h("div", { className: "ps-workflow-property" }, h("span", null, "Lifecycle"),
             h("strong", null, `${agent.spawned ? "Created" : "Not created yet"}${agent.end ? ` · ended (${agent.end})` : ""}`)),
-        openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition",
+        openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition", "data-action": "open-agent-chat",
             onClick: () => openSession(agent.childSessionId) }, "Open the agent's chat (read-only)") : null,
         h("p", null, "People can read this chat. Only the workflow's parent agent can message it, and only the agent's typed result completes the state."));
 }

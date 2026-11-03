@@ -179,12 +179,16 @@ test("the portal's Details: a transition selects its state, the agent child open
     const selected = [];
     const opened = [];
     const tree = WorkflowV2NodeContent({ tab: "details", selected: review, nodes: projection.nodes, select: id => selected.push(id), openSession: id => opened.push(id) });
-    const transitions = elementsOf(tree, element => element.type === "button" && element.props.className === "ps-workflow-transition");
+    // The child-chat button shares the transition buttons' look (class), so each is picked by its own marker.
+    const transitions = elementsOf(tree, element => element.type === "button" && element.props.className === "ps-workflow-transition"
+        && element.props["data-action"] === undefined);
     assert.deepEqual(transitions.map(button => button.props.disabled), [false, false], "both targets are states of this graph");
     for (const button of transitions) button.props.onClick();
     assert.deepEqual(selected, ["fan", "failed"], "each transition selects exactly its target");
-    const child = elementsOf(tree, element => element.type === "button" && element.props.children === "Open the agent's chat (read-only)");
+    assert.deepEqual(opened, [], "no transition opens a session");
+    const child = elementsOf(tree, element => element.type === "button" && element.props["data-action"] === "open-agent-chat");
     assert.equal(child.length, 1);
+    assert.equal(child[0].props.children, "Open the agent's chat (read-only)");
     child[0].props.onClick();
     assert.deepEqual(opened, ["child-1"]);
     const html = renderToStaticMarkup(tree);
