@@ -18,7 +18,7 @@ import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
-import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowV2DefinitionRevision, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
+import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowV2DefinitionRevision, readWorkflowV2StepInput, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -517,6 +517,126 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             const tool = async args => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId, ...args }, { callerSessionId: parent, host: { catalog, store } }));
             expect(await tool({ definition_revision: 1 })).toMatchObject({ ok: true, workflowId: workflowSessionId, definitionRevision: { revision: 1, yaml: asJson } });
             expect(await tool({ definition_revision: 9 })).toMatchObject({ ok: false, error: { code: "DEFINITION_REVISION_NOT_FOUND" } });
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    // Owner decision q6: an agent step's input editor reads its fields (the inputSchema's, then any others its mapping
+    // writes), where each takes its value from, and the run inputs; with a new mapping it proposes the draft's YAML with
+    // only that step's input lines changed, and what compiling it says. Reading changes nothing.
+    it("reads an agent step's inputs and proposes the draft's YAML with only that step's input mapping changed", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        try {
+            const store = catalog.workflowStore();
+            const owner = { provider: "test", subject: `step-input-${randomUUID()}` };
+            const parent = randomUUID();
+            await catalog.createSession(parent, { owner });
+            const workflowSessionId = randomUUID();
+            const AGENTS = { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true };
+            const yaml = [
+                "apiVersion: pilotswarm.dev/v2-draft",
+                "kind: Workflow",
+                "metadata: { name: step-input, version: \"1.0.0\" }",
+                "inputs:",
+                "  schema:",
+                "    type: object",
+                "    properties:",
+                "      pr: { type: string }",
+                "      repo: { type: string }",
+                "initial: review",
+                "states:",
+                "  review:",
+                "    type: agent",
+                "    invoke:",
+                "      prompt: Review the change.",
+                "    # what the reviewer gets",
+                "    input:",
+                "      pr: ${inputs.pr}",
+                "      notes: ${input.notes ?? \"none\"}",
+                "    inputSchema:",
+                "      type: object",
+                "      required: [pr, depth]",
+                "      properties:",
+                "        pr: { type: string, description: The pull request }",
+                "        depth: { type: integer }",
+                "    outcomes: [done]",
+                "    transition:",
+                "      next: { done: end }",
+                "  summarize:",
+                "    type: agent",
+                "    invoke:",
+                "      prompt: Summarize.",
+                "    outcomes: [done]",
+                "    transition:",
+                "      next: { done: end }",
+                "  quick: { type: agent, invoke: { prompt: Check it. }, outcomes: [done], transition: { next: { done: end } } }",
+                "  end: { type: terminal, outcome: succeeded }",
+                "",
+            ].join("\n");
+            const compiled = compileWorkflowV2(yaml, AGENTS);
+            expect((await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner,
+                creationConfig: { workflowV2: { requestSha256: "step-input" } } })).created).toBe(true);
+            const actor = { kind: "system", name: "step-input-test" };
+            await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor,
+                operationId: "create", requestSha256: "step-input", publish: false, start: null, title: "Workflow: step-input" });
+            const host = { store, requests: true };
+            const read = (value, others = {}) => readWorkflowV2StepInput(host, workflowSessionId, value, others);
+
+            const { stepInput } = await read({ state: "review" });
+            expect(stepInput).toMatchObject({ state: "review", revision: 1, definitionHash: compiled.yamlSha256, schemaDeclared: true,
+                runInputs: ["pr", "repo"], inputShape: "fields", inputText: null });
+            expect(stepInput.proposed).toBeUndefined();
+            expect(stepInput.fields).toEqual([
+                { name: "pr", declared: true, required: true, type: "string", description: "The pull request", current: { source: "run_input", name: "pr" } },
+                { name: "depth", declared: true, required: true, type: "integer", description: null, current: null },
+                { name: "notes", declared: false, required: false, type: null, description: null, current: { source: "keep", text: "${input.notes ?? \"none\"}" } },
+            ]);
+
+            // A new mapping: only the input lines of 'review' change; its comment, the other steps and every other line stay.
+            const proposal = (await read({ state: "review", input: {
+                pr: { source: "run_input", name: "repo" }, depth: { source: "fixed", value: 2 }, notes: { source: "keep" },
+                summary: { source: "previous_step", path: "review.summary" }, label: { source: "variable", name: "release label" },
+            } })).stepInput.proposed;
+            const expected = yaml.replace("    input:\n      pr: ${inputs.pr}\n      notes: ${input.notes ?? \"none\"}\n", [
+                "    input:", "      pr: ${inputs.repo}", "      depth: 2", "      notes: \"${input.notes ?? \\\"none\\\"}\"",
+                "      summary: ${input.review.summary}", "      label: \"${kv[\\\"release label\\\"]}\"", "",
+            ].join("\n"));
+            expect(proposal.yaml).toBe(expected);
+            expect(proposal.changed).toBe(true);
+            const again = compileWorkflowV2(expected, AGENTS);
+            expect(proposal.valid).toBe(again.valid);
+            // A step with no input mapping gains one after its last field; an empty mapping is written as {}.
+            const added = (await read({ state: "summarize", input: { text: { source: "previous_step", path: "" } } })).stepInput.proposed.yaml;
+            expect(added).toBe(yaml.replace("      next: { done: end }\n  quick:", "      next: { done: end }\n    input:\n      text: ${input}\n  quick:"));
+            const emptied = (await read({ state: "review", input: {} })).stepInput.proposed.yaml;
+            expect(emptied).toContain("    # what the reviewer gets\n    input: {}\n    inputSchema:\n");
+            // Nothing was written: the draft is still revision 1 with its own text.
+            expect((await store.readDefinition(workflowSessionId)).currentRevision).toBe(1);
+            expect((await store.readRevision(workflowSessionId, 1)).yaml).toBe(yaml);
+
+            // Refusals: a step that is not an agent step, a flow-style step, an unknown step, a fixed value with an expression,
+            // keep for a field that has no value, an unknown source, and other read arguments with it.
+            for (const [value, pattern] of [
+                [{ state: "end" }, /terminal step; only an agent step/],
+                [{ state: "quick", input: {} }, /not written as a block mapping/],
+                [{ state: "missing" }, /no step 'missing'/],
+                [{ state: "review", input: { pr: { source: "fixed", value: "${inputs.pr}" } } }, /cannot contain/],
+                [{ state: "review", input: { depth: { source: "keep" } } }, /no value written for 'depth' to keep/],
+                [{ state: "review", input: { pr: { source: "guess" } } }, /source: run_input \| previous_step/],
+                [{ state: "review", input: { pr: { source: "run_input" } } }, /must name a run input/],
+                ["review", /must be \{ state, input\? \}/],
+            ]) {
+                await expect(read(value)).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(pattern) });
+            }
+            await expect(read({ state: "review" }, { limit: 5 })).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(/leave out limit\.$/) });
+            await expect(readWorkflowV2StepInput(host, randomUUID(), { state: "review" }, {})).rejects.toMatchObject({ code: "WORKFLOW_NOT_FOUND" });
+            // The agent tool reads it for the workflow's parent.
+            const tool = async args => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId, ...args }, { callerSessionId: parent, host: { catalog, store } }));
+            expect(await tool({ step_input: { state: "review" } })).toMatchObject({ ok: true, workflowId: workflowSessionId, stepInput: { state: "review", runInputs: ["pr", "repo"] } });
+            expect(await tool({ step_input: { state: "end" } })).toMatchObject({ ok: false, error: { code: "WORKFLOW_READ_INVALID" } });
         } finally {
             await catalog.close();
         }

@@ -266,7 +266,7 @@ async function requireRunsRevision(host: Pick<WorkflowV2Host, "store" | "request
 }
 
 /** A definition as a host compiles it (WorkflowV2Host.requests): a host that starts 1.9.0 runs compiles request, agent and parallel states. */
-function compileFor(host: Pick<WorkflowV2Host, "requests">, yaml: string): WorkflowCompileResult {
+export function compileWorkflowV2ForHost(host: Pick<WorkflowV2Host, "requests">, yaml: string): WorkflowCompileResult {
     return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true, enableAgents: true, enableParallel: true, enableRunLimits: true } : {});
 }
 
@@ -607,7 +607,7 @@ function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: Sessi
 export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWorkflowV2Request): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(request.operationId);
     requireStorableYaml(request.yaml);
-    const compiled = compileFor(host, request.yaml);
+    const compiled = compileWorkflowV2ForHost(host, request.yaml);
     const publish = request.publish === true || Boolean(request.start);
     const startInputs = request.start ? request.start.inputs : null;
     if (request.start) validateRunInputs(compiled, request.start.inputs);
@@ -707,7 +707,7 @@ export async function updateWorkflowV2(
     let stored: StoredOperation<WorkflowDefinitionReceipt>;
     if (command.operation === "replace_definition") {
         requireStorableYaml(command.yaml);
-        const compiled = compileFor(host, command.yaml);
+        const compiled = compileWorkflowV2ForHost(host, command.yaml);
         stored = await host.store.replaceDraft({
             workflowSessionId, expectedRevision: command.expectedRevision, yaml: command.yaml, compiled,
             declaredSemver: compiled.version ?? declaredSemver(command.yaml), actor: context.actor, operationId: context.operationId,

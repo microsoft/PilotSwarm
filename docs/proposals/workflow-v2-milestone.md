@@ -1739,3 +1739,16 @@ serves), no typed input into a running test, and no display of lineage, receipts
   …"), the restriction of a workflow under an agent step says "This workflow was started by an agent step of another
   workflow", and an agent step's child session is titled "Workflow step: <step>". Texts written for agents (tool
   descriptions, ask_user and MCP refusals) keep their wording.
+- **Change an agent step's inputs without writing YAML (q6).** The portal's draft editor has "Step inputs" for a
+  workflow with agent steps: choose the step, and for each of its input fields (the fields its `inputSchema` lists,
+  then any other field its input mapping writes) choose where the value comes from: "A run input" (its name), "The
+  previous step's result" (a field of it, or all of it), "A workflow variable" (its name), "A fixed value", "Not set",
+  or, for a value written in a way the editor does not change (a default, a value built of several parts), "As written
+  in the YAML". A field can be added by name. "Show the change" asks the server for the draft's YAML with only that
+  step's input lines changed (`read_workflow` `step_input: { state, input }`, the API's and MCP's `stepInput`; every
+  other line, comments included, stays as written), shows the changed lines and whether the draft would still be
+  valid; "Save as a new draft revision" saves exactly that text with `replace_definition` at the revision it was
+  prepared on, so a draft changed meanwhile is refused, never overwritten. Nothing is saved while the YAML box has
+  unsaved edits. Required fields left unset are named; the step's own check still runs when it starts. Only a draft's
+  agent step written as a block mapping (one field per line) is edited this way; anything else says to use the YAML
+  editor. The portal reads it only for a person who may change the workflow. The TUI keeps the YAML editor.

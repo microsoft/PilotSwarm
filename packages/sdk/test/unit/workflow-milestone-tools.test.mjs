@@ -54,7 +54,7 @@ test("on a 1.9.0 turn the descriptions and parameters add the milestone operatio
     for (const name of Object.keys(READ_WORKFLOW_TOOL_SPEC.parameters.properties)) {
         assert.deepEqual(read.properties[name], READ_WORKFLOW_TOOL_SPEC.parameters.properties[name], name);
     }
-    for (const name of ["cursor", "limit", "execution_id", "kv_revision", "kv_key", "agent_versions", "definition_revision"]) {
+    for (const name of ["cursor", "limit", "execution_id", "kv_revision", "kv_key", "agent_versions", "definition_revision", "step_input"]) {
         assert.ok(Object.hasOwn(read.properties, name), name);
         assert.equal(Object.hasOwn(READ_WORKFLOW_TOOL_SPEC.parameters.properties, name), false, `production declares no ${name}`);
         assert.ok(READ_WORKFLOW_MILESTONE_TOOL_SPEC.description.includes(name), `the description names ${name}`);

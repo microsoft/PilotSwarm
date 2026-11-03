@@ -32,7 +32,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "or error (execution.result) instead of its preview. limit: rows per page, 1 to 200. kv_revision reads that revision of the "
                 + "run's variables (each with its size and sha256), and kv_key with it one variable, whole. agent_versions: true, alone, "
                 + "reads the agent versions that publishing the current revision would lock now (it locks nothing). definition_revision, alone, "
-                + "reads that revision of the definition (its YAML as saved and formatted). Refusals carry their code: "
+                + "reads that revision of the definition (its YAML as saved and formatted). step_input ({ state, input? }), alone, reads an agent "
+                + "step's input fields in the current draft and, with input, the draft's YAML with only that step's inputs changed. Refusals carry their code: "
                 + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, DEFINITION_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to read"),
@@ -45,9 +46,11 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 kv_key: z.string().optional().describe("With kv_revision: one variable of that revision, whole"),
                 agent_versions: z.boolean().optional().describe("true: the agent versions publishing the current revision would lock now, and nothing else"),
                 definition_revision: z.number().int().optional().describe("A revision of the definition, 1 to the current one: its YAML, and nothing else"),
+                step_input: z.record(z.string(), z.unknown()).optional()
+                    .describe("{ state, input? }: an agent step's input fields in the current draft; with input, the YAML that mapping proposes"),
             },
         },
-        withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit, kv_revision, kv_key, agent_versions, definition_revision }) => {
+        withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit, kv_revision, kv_key, agent_versions, definition_revision, step_input }) => {
             try {
                 return jsonResult(await ctx.mgmt.readWorkflow(session_id, {
                     ...(run_id !== undefined ? { runId: run_id } : {}),
@@ -58,6 +61,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     ...(kv_key !== undefined ? { kvKey: kv_key } : {}),
                     ...(agent_versions !== undefined ? { agentVersions: agent_versions } : {}),
                     ...(definition_revision !== undefined ? { definitionRevision: definition_revision } : {}),
+                    ...(step_input !== undefined ? { stepInput: step_input } : {}),
                 }));
             } catch (err: unknown) {
                 return refusal(err, session_id);

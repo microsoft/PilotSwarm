@@ -779,12 +779,13 @@ export class PortalRuntime {
             // change the draft; it is left out for anyone else.
             case "readWorkflow": {
                 const readOptions = {};
-                for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey", "agentVersions", "definitionRevision"]) {
+                for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey", "agentVersions", "definitionRevision", "stepInput"]) {
                     if (safeParams[key] !== undefined && safeParams[key] !== null) readOptions[key] = safeParams[key];
                 }
-                // A definition revision's YAML (comparing two versions, owner decision q4) is for a person who may change the
-                // workflow, as the draft's YAML is; anyone else who can read the session is refused before anything is read.
-                if (readOptions.definitionRevision !== undefined) {
+                // A definition revision's YAML (comparing two versions, owner decision q4) and a step's inputs with the draft's
+                // YAML they propose (q6) are for a person who may change the workflow, as the draft's YAML is; anyone else who
+                // can read the session is refused before anything is read.
+                if (readOptions.definitionRevision !== undefined || readOptions.stepInput !== undefined) {
                     const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
                     if (!viewer.allowed) throw forbiddenError(`${viewer.reason ?? "You cannot change this workflow."} Its versions' YAML is for those who can.`);
                 }

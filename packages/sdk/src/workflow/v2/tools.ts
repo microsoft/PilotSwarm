@@ -1,9 +1,10 @@
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
-import { parseDocument, visit } from "yaml";
+import { isMap, isNode, isScalar, parseDocument, visit } from "yaml";
 import {
     assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, previewJson, sha256Hex, utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES,
     WorkflowJsonError,
+    type JsonObject,
     type JsonValue,
 } from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
@@ -15,6 +16,7 @@ import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtim
 import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import {
     advanceWorkflowV2Test,
+    compileWorkflowV2ForHost,
     controlWorkflowV2Run,
     createWorkflowV2,
     inspectWorkflowV2Controller,
@@ -188,7 +190,9 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
         + "that publishing the current revision would lock now (each named agent state's agent, package, version and exact revision, or "
         + "the problem that would refuse the publication); nothing is locked by reading. definition_revision (alone) reads that "
         + "revision of the definition: its YAML as saved and properly formatted (formatted), its hash, validity and diagnostics, "
-        + "to compare two versions.",
+        + "to compare two versions. step_input: { state, input? } (alone) reads an agent step's input fields in the current draft "
+        + "and where each takes its value from (run_input, previous_step, variable, fixed, keep); with input it also gives the "
+        + "draft's YAML with only that step's inputs changed (proposed.yaml, to save with replace_definition at revision).",
     parameters: {
         type: "object",
         properties: {
@@ -200,6 +204,7 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
             kv_key: { type: "string", description: "With kv_revision: one variable of that revision, whole." },
             agent_versions: { type: "boolean", description: "true: the agent versions publishing the current revision would lock now, and nothing else." },
             definition_revision: { type: "integer", description: "A revision of the definition, 1 to the current one: its YAML (as saved and formatted), and nothing else." },
+            step_input: { type: "object", description: "{ state, input? }: an agent step's input fields in the current draft; input (field -> { source, name | path | value }) also proposes the draft's YAML with only that step's inputs changed." },
         },
         required: ["workflow_id"],
     },
@@ -602,6 +607,210 @@ export function formattedWorkflowYaml(source: string): string | null {
     } catch {
         return null;
     }
+}
+
+/** Where one input field of an agent step takes its value from (owner decision q6), as the step-input read names it. */
+export const WORKFLOW_V2_STEP_INPUT_SOURCES = ["run_input", "previous_step", "variable", "fixed", "keep"] as const;
+const BINDING_NAME = /^[A-Za-z_$][A-Za-z0-9_$-]*$/;
+const YAML_PLAIN_KEY = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const YAML_PLAIN_BINDING = /^\$\{[A-Za-z0-9_$.[\]-]+\}$/;
+const STEP_INPUT_FIELD_MAX = 128;
+
+/** `${inputs.name}` or `${kv.name}`, with a name that is not an identifier in brackets as a JSON string. */
+function namedBinding(root: "inputs" | "kv", name: string): string {
+    return BINDING_NAME.test(name) ? `\${${root}.${name}}` : `\${${root}[${JSON.stringify(name)}]}`;
+}
+
+/**
+ * What an input field's value is, for the step-input editor: a run input (`${inputs.x}`), a field of what the previous
+ * step gave (`${input.path}`, the whole of it for an empty path), a variable (`${kv.x}`), a fixed value (JSON with no
+ * expression), or anything else (a default with `??`, a branch value, a value built of several expressions), which the
+ * editor keeps as it is written (`keep`, with its text).
+ */
+function stepInputBinding(value: JsonValue): { [key: string]: JsonValue } {
+    if (typeof value === "string" && value.includes("${")) {
+        const named = /^\$\{(inputs|kv)(?:\.([A-Za-z_$][A-Za-z0-9_$-]*)|\[("(?:[^"\\]|\\.)*")\])\}$/.exec(value);
+        if (named) {
+            let name: unknown = named[2];
+            if (name === undefined) { try { name = JSON.parse(named[3]); } catch { name = null; } }
+            if (typeof name === "string") return { source: named[1] === "inputs" ? "run_input" : "variable", name };
+        }
+        const prior = /^\$\{input((?:\.[A-Za-z_$][A-Za-z0-9_$-]*|\[(?:\d+|"(?:[^"\\]|\\.)*")\])*)\}$/.exec(value);
+        if (prior) return { source: "previous_step", path: prior[1].replace(/^\./, "") };
+        return { source: "keep", text: value };
+    }
+    if (typeof value !== "string" && canonicalJson(value).includes("${")) return { source: "keep", text: canonicalJson(value) };
+    return { source: "fixed", value };
+}
+
+/** A schema field of a definition as written: inline, or `{ $ref: "#/schemas/<name>" }` resolved in its schemas. */
+function writtenSchema(raw: unknown, schemas: unknown): Record<string, unknown> | null {
+    if (!isJsonObject(raw)) return null;
+    if (Object.keys(raw).length === 1 && typeof raw.$ref === "string" && raw.$ref.startsWith("#/schemas/")) {
+        const named = isJsonObject(schemas) ? schemas[raw.$ref.slice("#/schemas/".length)] : undefined;
+        return isJsonObject(named) ? named : null;
+    }
+    return raw;
+}
+
+/** The value one field of the new input mapping takes, from the editor's choice for it (`spec`); `current` is its value as written. */
+function stepInputValue(field: string, spec: unknown, current: JsonValue | undefined): JsonValue {
+    const at = `stepInput.input.${field}`;
+    if (!isJsonObject(spec) || typeof spec.source !== "string" || !(WORKFLOW_V2_STEP_INPUT_SOURCES as readonly string[]).includes(spec.source)) {
+        throw readInvalid(`${at} must be { source: ${WORKFLOW_V2_STEP_INPUT_SOURCES.join(" | ")}, ... }.`);
+    }
+    const named = typeof spec.name === "string" && spec.name && spec.name.length <= STEP_INPUT_FIELD_MAX && !/[\u0000-\u001f]/.test(spec.name)
+        ? spec.name : null;
+    const name = (): string => {
+        if (named === null) {
+            throw readInvalid(`${at}.name must name a ${spec.source === "run_input" ? "run input" : "variable"} (1 to ${STEP_INPUT_FIELD_MAX} characters).`);
+        }
+        return named;
+    };
+    switch (spec.source) {
+        case "run_input": return namedBinding("inputs", name());
+        case "variable": return namedBinding("kv", name());
+        case "previous_step": {
+            const path = spec.path ?? "";
+            if (typeof path !== "string" || path.length > 512 || /[}\s]|\?\?|\$\{/.test(path)) {
+                throw readInvalid(`${at}.path must be a field path of the previous step's result, such as review.summary or items[0] (empty: all of it).`);
+            }
+            return path === "" ? "${input}" : path.startsWith("[") ? `\${input${path}}` : `\${input.${path}}`;
+        }
+        case "fixed": {
+            try { assertJsonValue(spec.value, `${at}.value`); } catch (error) {
+                throw readInvalid(error instanceof Error ? error.message : `${at}.value must be a JSON value.`);
+            }
+            if (canonicalJson(spec.value).includes("${")) throw readInvalid(`${at}.value cannot contain \${: choose where the value comes from instead.`);
+            return spec.value as JsonValue;
+        }
+        default:
+            if (current === undefined) throw readInvalid(`${at}: the step has no value written for '${field}' to keep.`);
+            return current;
+    }
+}
+
+/** One mapping value as YAML text on one line: a simple expression plain, any other string, number, list or object as JSON. */
+function yamlInline(value: JsonValue): string {
+    return typeof value === "string" && YAML_PLAIN_BINDING.test(value) ? value : JSON.stringify(value);
+}
+
+/**
+ * The definition's text with only step `state`'s input mapping replaced by `input` (its lines, at the step's
+ * indentation), or added after the step's last field when it has none; every other line stays as written. A step that is
+ * not a block mapping is refused: its inputs are changed in the YAML editor.
+ */
+function spliceStepInput(source: string, document: ReturnType<typeof parseDocument>, state: string, input: Record<string, JsonValue>): string {
+    const step = document.getIn(["states", state], true);
+    const refused = () => readInvalid(`Step '${state}' is not written as a block mapping (one field per line), so its inputs are changed in the YAML editor.`);
+    if (!isMap(step) || step.flow || !step.items.length) throw refused();
+    const keyStart = (key: unknown): number => {
+        if (!isScalar(key) || !key.range) throw refused();
+        return key.range[0];
+    };
+    const valueEnd = (pair: { key: unknown; value: unknown }): number => {
+        if (isNode(pair.value) && pair.value.range) return pair.value.range[1];
+        if (isScalar(pair.key) && pair.key.range) return pair.key.range[1];
+        throw refused();
+    };
+    const lineStart = (offset: number): number => source.lastIndexOf("\n", offset - 1) + 1;
+    const lineEnd = (offset: number): number => { const at = source.indexOf("\n", offset); return at === -1 ? source.length : at; };
+    // Where a value's own text ends: a block value's range can reach past its last line's newline, onto the next line.
+    const textEnd = (offset: number): number => { let at = offset; while (at > 0 && /\s/.test(source[at - 1])) at -= 1; return at; };
+    const first = keyStart(step.items[0].key);
+    const pad = source.slice(lineStart(first), first);
+    if (!/^ *$/.test(pad)) throw refused();
+    const entries = Object.entries(input);
+    const rendered = [`${pad}input:${entries.length ? "" : " {}"}`,
+        ...entries.map(([key, value]) => `${pad}  ${YAML_PLAIN_KEY.test(key) ? key : JSON.stringify(key)}: ${yamlInline(value)}`)].join("\n");
+    const current = step.items.find(item => isScalar(item.key) && item.key.value === "input");
+    if (current) {
+        const start = keyStart(current.key);
+        if (lineStart(start) !== start - pad.length) throw refused();
+        return `${source.slice(0, lineStart(start))}${rendered}${source.slice(lineEnd(textEnd(valueEnd(current))))}`;
+    }
+    const at = lineEnd(textEnd(valueEnd(step.items[step.items.length - 1])));
+    return `${source.slice(0, at)}\n${rendered}${source.slice(at)}`;
+}
+
+/**
+ * An agent step's inputs in the current draft, for the step-input editor (owner decision q6): `step_input` on the tool,
+ * `stepInput` on the API, `{ state, input? }`, a read of its own. It gives the step's input fields (the properties of
+ * its inputSchema, with their required flag, type and description, then any field its input mapping writes that the
+ * schema does not name), where each takes its value from now (stepInputBinding), and the run inputs the definition
+ * declares. With `input` (field -> { source, name | path | value }; a field left out is removed), it also gives the
+ * draft's YAML with only that step's input mapping changed (`proposed.yaml`; every other line as written) and what
+ * compiling it says, so the editor shows the change and saves it as a new draft version with replace_definition at
+ * `revision` (a changed draft is refused). Reading changes nothing. Only a draft's agent step, written as a block
+ * mapping, is edited here; anything else is WORKFLOW_READ_INVALID with what to do instead.
+ */
+export async function readWorkflowV2StepInput(host: Pick<WorkflowV2Host, "store" | "requests">, workflowSessionId: string, value: unknown,
+    others: Record<string, unknown>): Promise<{ [key: string]: JsonValue }> {
+    if (!isJsonObject(value) || typeof value.state !== "string" || !value.state) throw readInvalid("step_input (stepInput) must be { state, input? }.");
+    const extra = Object.entries(others).filter(([, given]) => given !== undefined && given !== null && given !== false).map(([name]) => name);
+    if (extra.length) throw readInvalid(`A step's inputs are a read of their own; leave out ${extra.join(", ")}.`);
+    if (value.input !== undefined && !isJsonObject(value.input)) throw readInvalid("stepInput.input must map each input field to where its value comes from.");
+    const state = value.state;
+    const definition = await host.store.readDefinition(workflowSessionId);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    if (definition.state !== "draft") throw readInvalid("Only a draft's step inputs are edited; a published workflow does not change.");
+    const revision = await host.store.readRevision(workflowSessionId, definition.currentRevision);
+    if (!revision) throw new WorkflowStoreError("DEFINITION_REVISION_NOT_FOUND", `Workflow ${workflowSessionId} has no revision ${definition.currentRevision}.`);
+    const document = parseDocument(revision.yaml);
+    let root: unknown = null;
+    try { if (!document.errors.length) root = document.toJS(); } catch { root = null; }
+    if (!isJsonObject(root)) throw readInvalid(`Revision ${revision.revision} does not parse as YAML, so its steps are changed in the YAML editor.`);
+    const step = isJsonObject(root.states) ? root.states[state] : undefined;
+    if (!isJsonObject(step)) throw readInvalid(`Revision ${revision.revision} has no step '${state}'.`);
+    if (step.type !== "agent") throw readInvalid(`Step '${state}' is a ${String(step.type)} step; only an agent step's inputs are edited here.`);
+    const schema = writtenSchema(step.inputSchema, root.schemas);
+    const rawProperties = schema?.properties;
+    const properties: JsonObject = isJsonObject(rawProperties) ? rawProperties : {};
+    const rawRequired = schema?.required;
+    const required = Array.isArray(rawRequired) ? rawRequired.filter((name): name is string => typeof name === "string") : [];
+    const mapping = isJsonObject(step.input) ? step.input as Record<string, JsonValue> : null;
+    const fields: JsonValue[] = [];
+    for (const [name, raw] of Object.entries(properties)) {
+        const property = writtenSchema(raw, root.schemas) ?? {};
+        const type = typeof property.type === "string" ? property.type
+            : Array.isArray(property.type) ? property.type.filter(item => typeof item === "string").join(" or ") : null;
+        fields.push({ name, declared: true, required: required.includes(name), type,
+            description: typeof property.description === "string" ? property.description : null,
+            current: mapping && Object.hasOwn(mapping, name) ? stepInputBinding(mapping[name]) : null });
+    }
+    for (const [name, written] of Object.entries(mapping ?? {})) {
+        if (!Object.hasOwn(properties, name)) fields.push({ name, declared: false, required: false, type: null, description: null, current: stepInputBinding(written) });
+    }
+    const inputsSchema = writtenSchema(isJsonObject(root.inputs) ? root.inputs.schema : undefined, root.schemas);
+    const inputProperties = inputsSchema?.properties;
+    const stepInput: { [key: string]: JsonValue } = {
+        state, revision: revision.revision, definitionHash: revision.yamlSha256, schemaDeclared: schema !== null, fields,
+        runInputs: Object.keys(isJsonObject(inputProperties) ? inputProperties : {}),
+        inputShape: mapping ? "fields" : step.input === undefined ? "none" : "expression",
+        inputText: mapping || step.input === undefined ? null : canonicalJson(step.input),
+    };
+    if (isJsonObject(value.input)) {
+        const built: Record<string, JsonValue> = {};
+        for (const [field, spec] of Object.entries(value.input)) {
+            if (!field || field.length > STEP_INPUT_FIELD_MAX || /[\u0000-\u001f]/.test(field)) {
+                throw readInvalid(`An input field name has 1 to ${STEP_INPUT_FIELD_MAX} characters.`);
+            }
+            built[field] = stepInputValue(field, spec, mapping?.[field]);
+        }
+        const yaml = spliceStepInput(revision.yaml, document, state, built);
+        // The change is checked where it lands: the new text's step reads exactly the mapping built, or nothing is offered.
+        let written: unknown = undefined;
+        try {
+            const after = parseDocument(yaml);
+            written = after.errors.length ? undefined : (after.toJS() as { states?: Record<string, { input?: unknown }> })?.states?.[state]?.input;
+        } catch { written = undefined; }
+        if (written === undefined || canonicalJson(written) !== canonicalJson(built)) {
+            throw readInvalid(`Step '${state}''s inputs could not be written safely into its YAML; change them in the YAML editor.`);
+        }
+        const compiled = compileWorkflowV2ForHost(host, yaml);
+        stepInput.proposed = { yaml, changed: yaml !== revision.yaml, valid: compiled.valid, diagnostics: diagnosticsJson(compiled.diagnostics) };
+    }
+    return { workflowId: workflowSessionId, stepInput };
 }
 
 /**
@@ -1085,11 +1294,17 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
         if (args.agent_versions !== undefined && args.agent_versions !== null) {
             return payload({ ok: true, ...(await readWorkflowV2AgentVersions(context.host, workflowSessionId, args.agent_versions, {
                 run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
-                kv_revision: args.kv_revision, kv_key: args.kv_key, definition_revision: args.definition_revision,
+                kv_revision: args.kv_revision, kv_key: args.kv_key, definition_revision: args.definition_revision, step_input: args.step_input,
             })) });
         }
         if (args.definition_revision !== undefined && args.definition_revision !== null) {
             return payload({ ok: true, ...(await readWorkflowV2DefinitionRevision(context.host.store, workflowSessionId, args.definition_revision, {
+                run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
+                kv_revision: args.kv_revision, kv_key: args.kv_key, step_input: args.step_input,
+            })) });
+        }
+        if (args.step_input !== undefined && args.step_input !== null) {
+            return payload({ ok: true, ...(await readWorkflowV2StepInput(context.host, workflowSessionId, args.step_input, {
                 run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
                 kv_revision: args.kv_revision, kv_key: args.kv_key,
             })) });

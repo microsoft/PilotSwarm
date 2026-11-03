@@ -6418,6 +6418,82 @@ export class PilotSwarmUiController {
     }
 
     /**
+     * Workflow v2: an agent step's inputs in the current draft (readWorkflow stepInput; owner decision q6) into the view's
+     * `stepInput` ({ state, phase, value, error }), and any earlier proposal for another step dropped. Reading changes
+     * nothing. Never throws.
+     */
+    async loadWorkflowStepInput(sessionId, state) {
+        const current = this.getState();
+        if (!sessionId || current.sessions.byId[sessionId]?.sessionKind !== "workflow" || typeof this.transport?.readWorkflow !== "function") return null;
+        if (typeof state !== "string" || !state) return null;
+        const write = entry => {
+            if (this.getState().ui.workflowViews?.[sessionId]?.stepInput?.state !== state && entry.phase !== "loading") return entry;
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInput: entry } });
+            return entry;
+        };
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInput: { state, phase: "loading", value: null, error: null }, stepInputPreview: null } });
+        try {
+            const answer = await this.transport.readWorkflow(sessionId, { stepInput: { state } });
+            if (answer?.stepInput?.state !== state) throw new Error(`The answer was not for step '${state}'.`);
+            return write({ state, phase: "loaded", value: answer.stepInput, error: null });
+        } catch (error) {
+            return write({ state, phase: "failed", value: null, error: error?.message || String(error) });
+        }
+    }
+
+    /**
+     * Workflow v2: prepare a change to an agent step's inputs (owner decision q6): the draft's YAML with only that step's
+     * input mapping changed, as the server writes it (readWorkflow stepInput with `input`), into the view's
+     * `stepInputPreview` ({ state, revision, phase, value: { yaml, changed, valid, diagnostics }, error }). Nothing is saved.
+     * Never throws.
+     */
+    async previewWorkflowStepInput(sessionId, state, input) {
+        const loaded = this.getState().ui.workflowViews?.[sessionId]?.stepInput;
+        if (!loaded || loaded.state !== state || loaded.phase !== "loaded" || typeof this.transport?.readWorkflow !== "function") return null;
+        const revision = loaded.value?.revision ?? null;
+        const write = entry => {
+            if (this.getState().ui.workflowViews?.[sessionId]?.stepInput?.state !== state) return entry;
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInputPreview: entry } });
+            return entry;
+        };
+        write({ state, revision, phase: "loading", value: null, error: null });
+        try {
+            const answer = await this.transport.readWorkflow(sessionId, { stepInput: { state, input } });
+            const proposed = answer?.stepInput?.proposed;
+            if (answer?.stepInput?.state !== state || typeof proposed?.yaml !== "string") throw new Error("The answer held no proposed YAML.");
+            return write({ state, revision: answer.stepInput.revision ?? revision, phase: "loaded", value: proposed, error: null });
+        } catch (error) {
+            return write({ state, revision, phase: "failed", value: null, error: error?.message || String(error) });
+        }
+    }
+
+    /**
+     * Workflow v2: save the prepared change to an agent step's inputs (owner decision q6) as a new draft revision: the
+     * same replace_definition as the draft editor, at the revision the change was prepared on, so a draft changed meanwhile
+     * is refused, never overwritten. Accepted: the editor reads the step again on the new revision. Never throws.
+     */
+    async saveWorkflowStepInput(sessionId) {
+        const view = this.getState().ui.workflowViews?.[sessionId];
+        const preview = view?.stepInputPreview;
+        if (!preview || preview.phase !== "loaded" || preview.value?.changed !== true || !Number.isSafeInteger(preview.revision)) {
+            return { ok: false, reason: "invalid" };
+        }
+        const result = await this.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: preview.revision,
+            yaml: preview.value.yaml });
+        if (result.ok && Number.isSafeInteger(result.receipt?.revision)) {
+            this.dispatch({ type: "ui/status", text: `Saved the inputs of step '${preview.state}' as revision ${result.receipt.revision}` });
+            await this.loadWorkflowStepInput(sessionId, preview.state);
+        }
+        return result;
+    }
+
+    /** Workflow v2: close the step-input editor (owner decision q6); nothing is sent. */
+    closeWorkflowStepInput(sessionId) {
+        if (!sessionId || this.getState().sessions.byId[sessionId]?.sessionKind !== "workflow") return;
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInput: null, stepInputPreview: null } });
+    }
+
+    /**
      * Workflow v2: read one kept revision of a run's variables (readWorkflow with its run and kvRevision: design 02 open
      * KV; mock M15) into the view's `kvRevisions`, by run and revision (workflowV2KvRevisionKey; the six read last are
      * kept), for exactly that run; an answer for another run or revision is refused. A failure is recorded with its error.

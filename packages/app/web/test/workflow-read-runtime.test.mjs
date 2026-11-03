@@ -37,7 +37,7 @@ test("readWorkflow is one GET session:read operation: the session in the path, a
         params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string", strict: true },
             cursor: { in: "query", type: "json" }, executionId: { in: "query", type: "string", strict: true }, limit: { in: "query", type: "json" },
             kvRevision: { in: "query", type: "json" }, kvKey: { in: "query", type: "string", strict: true }, agentVersions: { in: "query", type: "json" },
-            definitionRevision: { in: "query", type: "json" } },
+            definitionRevision: { in: "query", type: "json" }, stepInput: { in: "query", type: "json" } },
     });
     // The legacy creation route is unchanged.
     const create = OPERATIONS.find((entry) => entry.name === "createWorkflowSession");
@@ -327,6 +327,8 @@ test("a section's next page and one execution's value are read through the same 
             ["?agentVersions=true&limit=5", 400, "WORKFLOW_READ_INVALID", { limit: 5, agentVersions: true }],
             // A definition revision the workflow does not have (owner decision q4: comparing versions).
             ["?definitionRevision=2", 404, "DEFINITION_REVISION_NOT_FOUND", { definitionRevision: 2 }],
+            // A step's inputs are edited only in a draft (owner decision q6); this workflow is published.
+            [`?stepInput=${encoded({ state: "review" })}`, 400, "WORKFLOW_READ_INVALID", { stepInput: { state: "review" } }],
             [`?cursor=${encoded({ ...own, workflowId: "wf-other" })}`, 400, "WORKFLOW_CURSOR_INVALID", { cursor: { ...own, workflowId: "wf-other" } }],
             [`?cursor=${encoded(own)}&executionId=nx-9`, 400, "WORKFLOW_READ_INVALID", { cursor: own, executionId: "nx-9" }],
         ]) {

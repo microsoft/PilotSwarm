@@ -6,7 +6,8 @@ import {
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
-    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare,
+    WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
+    workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "../../core/src/workflow-v2-commands.js";
 
@@ -607,7 +608,7 @@ export function WorkflowV2DraftToggle({ controller, sessionId, model, open, cont
  * it. Edits are kept across a refusal and a new read. The version (metadata.version) cannot change: a new version needs
  * a new workflow, and the server refuses it.
  */
-export function WorkflowV2DraftEditor({ controller, sessionId, model, id, revisionReads = null }) {
+export function WorkflowV2DraftEditor({ controller, sessionId, model, id, revisionReads = null, agentSteps = [], stepInput = null, stepInputPreview = null }) {
     const [base, setBase] = React.useState(() => model ? { revision: model.revision, yaml: model.yaml } : null);
     const [textValue, setTextValue] = React.useState(() => model?.yaml ?? "");
     const [comparing, setComparing] = React.useState(false);
@@ -650,7 +651,96 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id, revisi
         h("button", { type: "button", className: "ps-mini-button",
             onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: false } }) }, "Close"),
         edit.changed && !edit.conflict ? h("span", { role: "status", style: { color: "var(--ps-muted)" } }, "Unsaved changes") : null),
-    comparing && model.revision >= 2 ? h(WorkflowV2RevisionCompare, { controller, sessionId, latest: model.revision, reads: revisionReads }) : null);
+    comparing && model.revision >= 2 ? h(WorkflowV2RevisionCompare, { controller, sessionId, latest: model.revision, reads: revisionReads }) : null,
+    agentSteps.length ? h(WorkflowV2StepInputEditor, { controller, sessionId, steps: agentSteps, loaded: stepInput, preview: stepInputPreview,
+        draftRevision: model.revision, draftYaml: model.yaml, busy: model.busy, unsaved: edit.changed }) : null);
+}
+
+/**
+ * Change an agent step's inputs without writing YAML (owner decision q6): choose the step, then for each of its input
+ * fields where the value comes from (a run input, the previous step's result, a workflow variable or a fixed value; a
+ * value written in a way this editor does not change stays as written). "Show the change" asks the server to write it
+ * into the draft's YAML (only that step's input lines change) and shows the changed lines; "Save as a new draft
+ * revision" saves exactly that text, at the revision it was prepared on. Nothing is saved while the YAML box above has
+ * unsaved edits, so the two never overwrite each other.
+ */
+export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded, preview, draftRevision, draftYaml, busy, unsaved }) {
+    const [state, setState] = React.useState(steps[0]);
+    const [rows, setRows] = React.useState(() => workflowV2StepInputRows(loaded?.state === steps[0] && loaded.phase === "loaded" ? loaded.value : null));
+    const [error, setError] = React.useState(null);
+    const [newField, setNewField] = React.useState("");
+    const listId = React.useId();
+    const chosen = steps.includes(state) ? state : steps[0];
+    React.useEffect(() => { controller.loadWorkflowStepInput?.(sessionId, chosen)?.catch?.(() => {}); }, [controller, sessionId, chosen, draftRevision]);
+    const mine = loaded && loaded.state === chosen ? loaded : null;
+    const value = mine?.phase === "loaded" ? mine.value : null;
+    React.useEffect(() => { setRows(workflowV2StepInputRows(value)); setError(null); }, [value]);
+    const shown = preview && preview.state === chosen ? preview : null;
+    const summary = shown ? workflowV2StepInputSummary(chosen, shown) : null;
+    const setRow = (index, patch) => setRows(current => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+    const request = workflowV2StepInputRequest(rows);
+    const prepare = () => {
+        if (!request.ok) { setError(request.error); return; }
+        setError(null);
+        controller.previewWorkflowStepInput?.(sessionId, chosen, request.input)?.catch?.(() => {});
+    };
+    const stale = shown?.phase === "loaded" && shown.revision !== draftRevision;
+    const canSave = shown?.phase === "loaded" && shown.value?.changed === true && !stale && !busy && !unsaved;
+    const saveTitle = unsaved ? "Save or discard your YAML edits above first." : stale ? "The draft changed since this was prepared; show the change again."
+        : busy ? "Another command for this workflow is being sent." : shown?.value?.changed === true ? `Save as a new revision after revision ${draftRevision}.`
+            : "Show the change first.";
+    const changedLines = shown?.phase === "loaded" && typeof shown.value?.yaml === "string"
+        ? workflowV2LineDiff(draftYaml, shown.value.yaml).rows.filter(row => row.kind !== "same") : [];
+    const placeholder = source => source === "run_input" ? "run input name" : source === "variable" ? "variable name"
+        : source === "previous_step" ? "field of its result, such as summary (empty: all of it)" : source === "fixed" ? "value, such as 3, true or a text" : "";
+    const runInputs = Array.isArray(value?.runInputs) ? value.runInputs : [];
+    return h("section", { className: "ps-workflow-step-input", "aria-label": "Step inputs", "data-state": chosen,
+        style: { display: "grid", gap: 6, paddingTop: 6, borderTop: "1px solid var(--ps-border)" } },
+    h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, "Step inputs"),
+    h("label", { style: { display: "inline-flex", alignItems: "center", gap: 6 } }, "Agent step",
+        h("select", { value: chosen, "data-field": "step", onChange: event => setState(event.target.value) },
+            steps.map(step => h("option", { key: step, value: step }, step)))),
+    mine?.phase === "loading" ? h("p", { role: "status", style: { margin: 0 } }, "Reading the step's inputs…") : null,
+    mine?.phase === "failed" ? h("p", { role: "alert", style: { margin: 0, color: TONES.error } }, `The step's inputs could not be read: ${mine.error}`) : null,
+    value?.inputShape === "expression" ? h("p", { style: { margin: 0, color: TONES.warning } },
+        `This step's input is written as one value (${value.inputText}). Choosing fields below replaces it.`) : null,
+    value && !value.schemaDeclared ? h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
+        "This step does not list its input fields (inputSchema), so add each field by name.") : null,
+    runInputs.length ? h("datalist", { id: listId }, runInputs.map(name => h("option", { key: name, value: name }))) : null,
+    value ? h("table", null,
+        h("thead", null, h("tr", null, ["Field", "Where its value comes from", "Which one"].map(label => h("th", { key: label }, label)))),
+        h("tbody", null, rows.map((row, index) => h("tr", { key: row.name, "data-input-field": row.name },
+            h("td", null, row.name, row.required ? " (required)" : "", row.type ? ` · ${row.type}` : "",
+                row.description ? h("div", { style: { color: "var(--ps-muted)" } }, row.description) : null),
+            h("td", null, h("select", { value: row.source, "aria-label": `Where ${row.name} comes from`,
+                onChange: event => setRow(index, { source: event.target.value,
+                    detail: event.target.value === "keep" ? row.keepText ?? "" : event.target.value === row.source ? row.detail : "" }) },
+            Object.entries(WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS).filter(([source]) => source !== "keep" || row.keepable)
+                .map(([source, label]) => h("option", { key: source, value: source }, label)))),
+            h("td", null, row.source === "none" ? null : row.source === "keep"
+                ? h("code", null, row.detail)
+                : h("input", { type: "text", value: row.detail, placeholder: placeholder(row.source), "aria-label": `${row.name}: ${placeholder(row.source)}`,
+                    list: row.source === "run_input" && runInputs.length ? listId : undefined, onChange: event => setRow(index, { detail: event.target.value }) })))))) : null,
+    value ? h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 } },
+        h("input", { type: "text", value: newField, placeholder: "new field name", "aria-label": "New field name", "data-field": "new-field",
+            onChange: event => setNewField(event.target.value) }),
+        h("button", { type: "button", className: "ps-mini-button", "data-action": "add-field",
+            disabled: !newField.trim() || rows.some(row => row.name === newField.trim()),
+            onClick: () => { setRows(current => [...current, { name: newField.trim(), required: false, declared: false, type: null, description: null,
+                source: "fixed", detail: "", keepable: false, keepText: null }]); setNewField(""); } }, "Add field")) : null,
+    request.ok && request.missing.length ? h("p", { style: { margin: 0, color: TONES.warning } },
+        `Not set: ${request.missing.join(", ")} (required). The step refuses to start without them.`) : null,
+    error ? h("p", { role: "alert", style: { margin: 0, color: TONES.error } }, error) : null,
+    summary ? h("p", { role: summary.level === "error" ? "alert" : "status", style: { margin: 0, color: TONES[summary.level] ?? TONES.info } }, summary.text) : null,
+    changedLines.length ? h("pre", { className: "ps-workflow-step-input-change", style: { margin: 0, overflow: "auto" } },
+        changedLines.map((row, i) => h("div", { key: i, "data-kind": row.kind, style: { color: row.kind === "added" ? "var(--ps-success, inherit)" : TONES.error } },
+            `${row.kind === "added" ? "+" : "-"} ${row.text}`))) : null,
+    value ? h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 } },
+        h("button", { type: "button", className: "ps-mini-button", "data-action": "prepare-step-input", disabled: shown?.phase === "loading",
+            onClick: prepare }, "Show the change"),
+        h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", "data-action": "save-step-input",
+            disabled: !canSave, title: saveTitle, onClick: () => { controller.saveWorkflowStepInput?.(sessionId)?.catch?.(() => {}); } },
+        "Save as a new draft revision")) : null);
 }
 
 let diffEditorModule = null;

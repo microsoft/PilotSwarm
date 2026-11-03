@@ -961,3 +961,87 @@ export function workflowV2RevisionCompare(reads, from, to) {
                 : `Revisions ${from} and ${to} are the same.`;
     return { before, after, ready, failed, diff, summary };
 }
+
+/** What an agent step's input field can take its value from (owner decision q6), in the words the editor shows. */
+export const WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS = Object.freeze({
+    none: "Not set",
+    run_input: "A run input",
+    previous_step: "The previous step's result",
+    variable: "A workflow variable",
+    fixed: "A fixed value",
+    keep: "As written in the YAML",
+});
+
+/**
+ * The step-input editor's rows (owner decision q6), from the step-input read (`stepInput`): one per field, in the read's
+ * order, with where its value comes from now and that source's text (`detail`: the run input's or variable's name, the
+ * previous step's field path, or a fixed value as JSON, a text value as it is). `keep` is offered only for a field whose
+ * value is written in a way the editor does not change (a default, a value built of several parts). Pure.
+ */
+export function workflowV2StepInputRows(stepInput) {
+    const fields = Array.isArray(stepInput?.fields) ? stepInput.fields.filter(isRecord) : [];
+    return fields.map(field => {
+        const current = isRecord(field.current) ? field.current : null;
+        const source = current && Object.hasOwn(WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, current.source) ? current.source : "none";
+        const detail = source === "run_input" || source === "variable" ? String(current.name ?? "")
+            : source === "previous_step" ? String(current.path ?? "")
+                : source === "fixed" ? (typeof current.value === "string" && field.type === "string" ? current.value : JSON.stringify(current.value ?? null))
+                    : source === "keep" ? String(current.text ?? "") : "";
+        return { name: String(field.name ?? ""), required: field.required === true, declared: field.declared !== false, type: text(field.type),
+            description: text(field.description), source, detail, keepable: source === "keep", keepText: source === "keep" ? detail : null };
+    });
+}
+
+/**
+ * The step-input read's `input` for the editor's rows (owner decision q6): field -> { source, name | path | value }, a
+ * field "Not set" left out. A fixed value is JSON (a number, true or false, null, a list or an object), or for a text field
+ * the text as it is. { ok, input } or { ok: false, error } naming the field; `missing` lists the required fields not set
+ * (a note, not a refusal: the step's own check runs when it starts). Pure.
+ */
+export function workflowV2StepInputRequest(rows) {
+    const input = {};
+    const missing = [];
+    for (const row of Array.isArray(rows) ? rows : []) {
+        if (!isRecord(row) || typeof row.name !== "string" || !row.name) continue;
+        const detail = typeof row.detail === "string" ? row.detail : "";
+        switch (row.source) {
+            case "run_input":
+            case "variable":
+                if (!detail.trim()) return { ok: false, error: `Name the ${row.source === "run_input" ? "run input" : "variable"} for '${row.name}'.`, missing };
+                input[row.name] = { source: row.source, name: detail.trim() };
+                break;
+            case "previous_step":
+                input[row.name] = { source: "previous_step", path: detail.trim() };
+                break;
+            case "fixed": {
+                if (row.type === "string" && !detail.trimStart().startsWith("\"")) { input[row.name] = { source: "fixed", value: detail }; break; }
+                try { input[row.name] = { source: "fixed", value: JSON.parse(detail) }; } catch {
+                    // A field whose type is not known takes what was typed as text; a typed field needs its kind of value.
+                    if (!row.type && detail !== "") { input[row.name] = { source: "fixed", value: detail }; break; }
+                    return { ok: false, error: `The fixed value for '${row.name}' must be JSON: a number, true or false, null, "text", a list or an object.`, missing };
+                }
+                break;
+            }
+            case "keep":
+                input[row.name] = { source: "keep" };
+                break;
+            default:
+                if (row.required) missing.push(row.name);
+        }
+    }
+    return { ok: true, input, missing };
+}
+
+/** One line on what the proposed change to a step's inputs is (owner decision q6), from its preview. Pure. */
+export function workflowV2StepInputSummary(state, preview) {
+    if (!isRecord(preview)) return null;
+    if (preview.phase === "loading") return { level: "info", text: "Preparing the change…" };
+    if (preview.phase === "failed") return { level: "error", text: `The change could not be prepared: ${text(preview.error) ?? "no reason given"}` };
+    const proposed = isRecord(preview.value) ? preview.value : null;
+    if (!proposed) return null;
+    if (proposed.changed !== true) return { level: "info", text: `The inputs of step '${state}' are already written this way; there is nothing to save.` };
+    const errors = (Array.isArray(proposed.diagnostics) ? proposed.diagnostics : []).filter(item => isRecord(item) && item.severity !== "warning").length;
+    return proposed.valid === true
+        ? { level: "info", text: `Only the input lines of step '${state}' change. Saving makes a new draft revision.` }
+        : { level: "warning", text: `Only the input lines of step '${state}' change, but the draft would have ${errors || "unlisted"} error${errors === 1 ? "" : "s"}; you can save it and fix them later.` };
+}

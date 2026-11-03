@@ -1,0 +1,210 @@
+/**
+ * Workflow v2: a person changes an agent step's inputs without writing YAML (owner decision q6; INACTIVE: only a draft
+ * this person may change):
+ *   - each input field of the step says where its value comes from (a run input, the previous step's result, a workflow
+ *     variable, a fixed value, or as written in the YAML), in plain words
+ *   - the editor's choices become the read's request; a field that is not set is left out, and a required one is named
+ *   - "Show the change" asks the server for the draft's YAML with only that step's input lines changed; "Save as a new
+ *     draft revision" saves exactly that text with replace_definition at the revision it was prepared on
+ *   - nothing is saved while the YAML box has unsaved edits, or after the draft moved on
+ *
+ * Run: node --test test/workflow-v2-step-input.test.mjs
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
+import {
+    WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
+} from "../src/workflow-v2-commands.js";
+import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowV2StepInputEditor } from "../../react/src/workflow-v2-panels.js";
+import { readModel } from "./workflow-v2-fixtures.mjs";
+
+const SID = "wf-step-input";
+const STEP_INPUT = {
+    state: "review", revision: 2, definitionHash: "hash-2", schemaDeclared: true, runInputs: ["pr", "repo"], inputShape: "fields", inputText: null,
+    fields: [
+        { name: "pr", declared: true, required: true, type: "string", description: "The pull request", current: { source: "run_input", name: "pr" } },
+        { name: "depth", declared: true, required: true, type: "integer", description: null, current: null },
+        { name: "label", declared: true, required: false, type: "string", description: null, current: { source: "fixed", value: "release" } },
+        { name: "count", declared: true, required: false, type: "integer", description: null, current: { source: "fixed", value: 3 } },
+        { name: "summary", declared: true, required: false, type: null, description: null, current: { source: "previous_step", path: "review.summary" } },
+        { name: "notes", declared: false, required: false, type: null, description: null, current: { source: "keep", text: "${input.notes ?? \"none\"}" } },
+    ],
+};
+const YAML = "states:\n  review:\n    input:\n      pr: ${inputs.pr}\n";
+const PROPOSED = "states:\n  review:\n    input:\n      pr: ${inputs.repo}\n";
+
+test("each input field says where its value comes from, in plain words", () => {
+    assert.deepEqual(WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, { none: "Not set", run_input: "A run input", previous_step: "The previous step's result",
+        variable: "A workflow variable", fixed: "A fixed value", keep: "As written in the YAML" });
+    const rows = workflowV2StepInputRows(STEP_INPUT);
+    assert.deepEqual(rows.map(row => [row.name, row.source, row.detail, row.required, row.keepable]), [
+        ["pr", "run_input", "pr", true, false],
+        ["depth", "none", "", true, false],
+        ["label", "fixed", "release", false, false],
+        ["count", "fixed", "3", false, false],
+        ["summary", "previous_step", "review.summary", false, false],
+        ["notes", "keep", "${input.notes ?? \"none\"}", false, true],
+    ]);
+    assert.equal(rows[0].description, "The pull request");
+    assert.equal(rows[5].keepText, "${input.notes ?? \"none\"}");
+    assert.deepEqual(workflowV2StepInputRows(null), []);
+});
+
+test("the editor's choices become the read's request; a field not set is left out and a required one is named", () => {
+    const rows = workflowV2StepInputRows(STEP_INPUT);
+    const request = workflowV2StepInputRequest(rows);
+    assert.deepEqual(request, { ok: true, missing: ["depth"], input: {
+        pr: { source: "run_input", name: "pr" }, label: { source: "fixed", value: "release" }, count: { source: "fixed", value: 3 },
+        summary: { source: "previous_step", path: "review.summary" }, notes: { source: "keep" },
+    } });
+    const edit = (name, patch) => rows.map(row => (row.name === name ? { ...row, ...patch } : row));
+    // A text field takes what was typed; a typed field needs its kind of value; a field of no known type takes text too.
+    assert.deepEqual(workflowV2StepInputRequest(edit("label", { detail: "\"quoted\"" })).input.label, { source: "fixed", value: "quoted" });
+    assert.deepEqual(workflowV2StepInputRequest(edit("depth", { source: "fixed", detail: "2" })), { ok: true, missing: [], input: {
+        ...request.input, depth: { source: "fixed", value: 2 } } });
+    assert.match(workflowV2StepInputRequest(edit("count", { detail: "three" })).error, /^The fixed value for 'count' must be JSON/);
+    assert.deepEqual(workflowV2StepInputRequest(edit("summary", { source: "fixed", detail: "plain words" })).input.summary, { source: "fixed", value: "plain words" });
+    assert.deepEqual(workflowV2StepInputRequest(edit("pr", { source: "variable", detail: " release label " })).input.pr, { source: "variable", name: "release label" });
+    assert.equal(workflowV2StepInputRequest(edit("pr", { detail: "" })).error, "Name the run input for 'pr'.");
+    assert.deepEqual(workflowV2StepInputRequest(edit("summary", { detail: "" })).input.summary, { source: "previous_step", path: "" });
+});
+
+test("the change's summary says what saving does, and a draft that would have errors can still be saved", () => {
+    assert.equal(workflowV2StepInputSummary("review", null), null);
+    assert.deepEqual(workflowV2StepInputSummary("review", { phase: "loading" }), { level: "info", text: "Preparing the change…" });
+    assert.deepEqual(workflowV2StepInputSummary("review", { phase: "failed", error: "Gateway timeout" }),
+        { level: "error", text: "The change could not be prepared: Gateway timeout" });
+    assert.equal(workflowV2StepInputSummary("review", { phase: "loaded", value: { changed: false } }).text,
+        "The inputs of step 'review' are already written this way; there is nothing to save.");
+    assert.deepEqual(workflowV2StepInputSummary("review", { phase: "loaded", value: { changed: true, valid: true, diagnostics: [] } }),
+        { level: "info", text: "Only the input lines of step 'review' change. Saving makes a new draft revision." });
+    assert.deepEqual(workflowV2StepInputSummary("review", { phase: "loaded", value: { changed: true, valid: false,
+        diagnostics: [{ severity: "error" }, { severity: "warning" }] } }),
+    { level: "warning", text: "Only the input lines of step 'review' change, but the draft would have 1 error; you can save it and fix them later." });
+});
+
+function seeded({ fail = null } = {}) {
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
+    const reads = [];
+    const updates = [];
+    const transport = {
+        listSessions: async () => [],
+        subscribeSession: () => () => {},
+        getSessionEventsBefore: async () => [],
+        readWorkflow: async (sessionId, options) => {
+            reads.push([sessionId, options]);
+            if (fail) throw fail;
+            if (!options?.stepInput) return readModel({ noRun: true });
+            const revision = updates.length ? 3 : 2;
+            return { workflowId: sessionId, stepInput: { ...STEP_INPUT, revision,
+                ...(options.stepInput.input ? { proposed: { yaml: PROPOSED, changed: true, valid: true, diagnostics: [] } } : {}) } };
+        },
+        updateWorkflow: async (sessionId, command) => {
+            updates.push([sessionId, command]);
+            return { workflowId: sessionId, operation: command.operation, replayed: false, state: "draft", revision: 3, definitionHash: "hash-3", valid: true, diagnostics: [] };
+        },
+    };
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, title: "Workflow: w", status: "pending", sessionKind: "workflow", updatedAt: 1 }] });
+    store.dispatch({ type: "sessions/selected", sessionId: SID });
+    const view = () => store.getState().ui.workflowViews?.[SID] || {};
+    return { controller, store, reads, updates, view };
+}
+
+test("the controller reads a step's inputs, prepares the change and saves it as a new draft revision at the revision it was prepared on", async () => {
+    const h = seeded();
+    await h.controller.loadWorkflowStepInput(SID, "review");
+    assert.deepEqual(h.reads.at(-1), [SID, { stepInput: { state: "review" } }]);
+    assert.deepEqual([h.view().stepInput.state, h.view().stepInput.phase, h.view().stepInput.value.revision], ["review", "loaded", 2]);
+    // Nothing is saved before the change is prepared.
+    assert.deepEqual(await h.controller.saveWorkflowStepInput(SID), { ok: false, reason: "invalid" });
+    const input = { pr: { source: "run_input", name: "repo" } };
+    await h.controller.previewWorkflowStepInput(SID, "review", input);
+    assert.deepEqual(h.reads.at(-1), [SID, { stepInput: { state: "review", input } }]);
+    assert.deepEqual(h.view().stepInputPreview, { state: "review", revision: 2, phase: "loaded", error: null,
+        value: { yaml: PROPOSED, changed: true, valid: true, diagnostics: [] } });
+    // A change is prepared only for the step the editor shows.
+    assert.equal(await h.controller.previewWorkflowStepInput(SID, "other", input), null);
+
+    const saved = await h.controller.saveWorkflowStepInput(SID);
+    assert.equal(saved.ok, true);
+    assert.equal(h.updates.length, 1);
+    const [sessionId, command] = h.updates[0];
+    assert.equal(sessionId, SID);
+    assert.deepEqual([command.operation, command.expected_revision, command.yaml], ["replace_definition", 2, PROPOSED]);
+    // The step is read again on the new revision, and the prepared change is gone.
+    assert.deepEqual([h.view().stepInput.phase, h.view().stepInput.value.revision, h.view().stepInputPreview], ["loaded", 3, null]);
+    assert.equal(h.store.getState().ui.statusText, "Saved the inputs of step 'review' as revision 3");
+
+    h.controller.closeWorkflowStepInput(SID);
+    assert.deepEqual([h.view().stepInput, h.view().stepInputPreview], [null, null]);
+    assert.equal(await h.controller.loadWorkflowStepInput("not-a-workflow", "review"), null);
+    assert.equal(await h.controller.loadWorkflowStepInput(SID, ""), null);
+});
+
+test("a read that fails is shown with its reason, and nothing can be prepared from it", async () => {
+    const h = seeded({ fail: Object.assign(new Error("Only a draft's step inputs are edited; a published workflow does not change."), { status: 400 }) });
+    const read = await h.controller.loadWorkflowStepInput(SID, "review");
+    assert.deepEqual(read, { state: "review", phase: "failed", value: null, error: "Only a draft's step inputs are edited; a published workflow does not change." });
+    assert.equal(await h.controller.previewWorkflowStepInput(SID, "review", {}), null);
+});
+
+const render = props => renderToStaticMarkup(React.createElement(WorkflowV2StepInputEditor, { controller: {}, sessionId: SID, steps: ["review", "fix"],
+    loaded: { state: "review", phase: "loaded", value: STEP_INPUT, error: null }, preview: null, draftRevision: 2, draftYaml: YAML, busy: false,
+    unsaved: false, ...props }));
+
+test("the editor lists each field with where its value comes from; saving waits for the change, and never runs over unsaved YAML edits", () => {
+    const html = render();
+    assert.match(html, /<section class="ps-workflow-step-input" aria-label="Step inputs" data-state="review"/);
+    assert.match(html, /<option value="review" selected="">review<\/option><option value="fix">fix<\/option>/);
+    assert.match(html, /<tr data-input-field="pr"><td>pr \(required\) · string<div[^>]*>The pull request<\/div><\/td>/);
+    assert.match(html, /aria-label="Where pr comes from"><option value="none">Not set<\/option><option value="run_input" selected="">A run input<\/option>/);
+    assert.match(html, /value="pr" placeholder="run input name"/);
+    // "As written in the YAML" is offered only for the field written that way, and shows what is written.
+    assert.equal([...html.matchAll(/<option value="keep"/g)].length, 1);
+    assert.match(html, /<tr data-input-field="notes">.*<code>\$\{input\.notes \?\? &quot;none&quot;\}<\/code>/);
+    assert.match(html, /Not set: depth \(required\)\. The step refuses to start without them\./);
+    assert.match(html, /data-action="save-step-input" disabled="" title="Show the change first\."/);
+    assert.ok(!/contract|binding|candidate/i.test(html.replace(/data-[a-z-]+="[^"]*"/g, "")), "plain words only");
+
+    const preview = { state: "review", revision: 2, phase: "loaded", error: null, value: { yaml: PROPOSED, changed: true, valid: true, diagnostics: [] } };
+    const ready = render({ preview });
+    assert.match(ready, /data-action="save-step-input" title="Save as a new revision after revision 2\."/);
+    assert.match(ready, /Only the input lines of step &#x27;review&#x27; change\. Saving makes a new draft revision\./);
+    assert.match(ready, /<div data-kind="removed"[^>]*>- {7}pr: \$\{inputs\.pr\}<\/div><div data-kind="added"[^>]*>\+ {7}pr: \$\{inputs\.repo\}<\/div>/);
+    assert.match(render({ preview, unsaved: true }), /data-action="save-step-input" disabled="" title="Save or discard your YAML edits above first\."/);
+    assert.match(render({ preview, draftRevision: 3 }), /disabled="" title="The draft changed since this was prepared; show the change again\."/);
+    assert.match(render({ preview, busy: true }), /disabled="" title="Another command for this workflow is being sent\."/);
+
+    // A step whose input is one value: choosing fields replaces it. A step that lists no fields: add each by name.
+    const expression = render({ loaded: { state: "review", phase: "loaded", error: null,
+        value: { ...STEP_INPUT, fields: [], schemaDeclared: false, inputShape: "expression", inputText: "\"${input}\"" } } });
+    assert.match(expression, /This step&#x27;s input is written as one value \(&quot;\$\{input\}&quot;\)\. Choosing fields below replaces it\./);
+    assert.match(expression, /This step does not list its input fields \(inputSchema\), so add each field by name\./);
+    assert.match(expression, /data-action="add-field" disabled=""/);
+    assert.match(render({ loaded: { state: "review", phase: "failed", value: null, error: "Gateway timeout" } }),
+        /role="alert"[^>]*>The step&#x27;s inputs could not be read: Gateway timeout<\/p>/);
+});
+
+test("the draft editor offers step inputs only for a workflow with agent steps", () => {
+    const states = [{ id: "review", type: "agent", invoke: { source: "prompt" }, outcomes: ["done"], next: { done: "end" } },
+        { id: "end", type: "terminal", outcome: "succeeded" }];
+    const draft = { state: "draft", currentRevision: 2, publishedRevision: null, publishedDefinitionHash: null };
+    const modelOf = graph => ({ ...readModel({ definition: draft, revision: { revision: 2, definitionHash: "hash-2" }, noRun: true, graph }),
+        personCommands: { operations: ["replace_definition"], restriction: null, run: null, draft: { revision: 2, definitionHash: "hash-2", yaml: YAML } } });
+    const mount = model => {
+        const store = createStore(appReducer, createInitialState({ mode: "api" }));
+        store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
+        store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+        store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model, readModelRunId: null, draftOpen: true } });
+        return renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller: new PilotSwarmUiController({ store, transport: {} }), log: null, icon: null }));
+    };
+    const withAgent = mount(modelOf({ revision: 2, initial: "review", states }));
+    assert.ok(withAgent.includes("aria-label=\"Step inputs\""));
+    assert.match(withAgent, /<option value="review" selected="">review<\/option>/);
+    assert.ok(!mount(modelOf(undefined)).includes("aria-label=\"Step inputs\""), "no agent step, no step inputs");
+});

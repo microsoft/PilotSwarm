@@ -89,6 +89,7 @@ const SHIM_CASES = [
     { call: (c) => c.readWorkflow("s1", { agentVersions: true }), op: "readWorkflow", params: { sessionId: "s1", agentVersions: true } },
     // One definition revision's YAML (owner decision q4).
     { call: (c) => c.readWorkflow("s1", { definitionRevision: 3 }), op: "readWorkflow", params: { sessionId: "s1", definitionRevision: 3 } },
+    { call: (c) => c.readWorkflow("s1", { stepInput: { state: "review" } }), op: "readWorkflow", params: { sessionId: "s1", stepInput: { state: "review" } } },
 ];
 
 test("every shim maps its positional arguments onto the right wire call", async () => {
