@@ -110,10 +110,11 @@ async function until(check, label, timeoutMs = 120_000) {
 
 /**
  * A person's chat that delegates the workflow to a sub-agent (spawn_agent), on a worker configured as the switch in
- * `processEnv` configures it, and the chat itself started at the latest version either way (only the worker decides
- * where its sub-agents start). The sub-agent's orchestration version, its parent, and its spawn_workflow result.
+ * `processEnv` configures it. The chat starts where the switch's client starts it (1.0.83 on, 1.0.82 off), or, with
+ * `chatBeforeSwitch`, at 1.0.82 as a chat created before the switch: only the worker decides where its sub-agents start.
+ * The chat's and the sub-agent's orchestration versions, the sub-agent's parent, and its spawn_workflow result.
  */
-async function subAgentDraftsAgentWorkflow(env, processEnv) {
+async function subAgentDraftsAgentWorkflow(env, processEnv, { chatBeforeSwitch = false } = {}) {
     const results = [];
     const respond = (_body, position) => {
         if (position.firstUserText.includes(CHILD)) {
@@ -127,30 +128,42 @@ async function subAgentDraftsAgentWorkflow(env, processEnv) {
         return { content: "Delegated." };
     };
     const worker = workerOptionsForWorkflowV2TestEnvironment({ workflowScripts: { enabled: true } }, processEnv);
+    const test = workflowV2TestEnvironmentFromEnv(processEnv);
     let outcome = null;
     await withScriptedModel(env, { respond, worker }, async ({ client, qualifiedModel }) => {
+        if (test && !chatBeforeSwitch) client._startSessionsAt(test.sessionStartVersion);
         const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
         await chat.sendAndWait(DELEGATE, TIMEOUT);
-        expect(await sessionOrchestrationVersion(client, chat.sessionId)).toBe(DURABLE_SESSION_LATEST_VERSION);
         await until(() => results.length > 0, "the sub-agent's spawn_workflow");
         const result = JSON.parse(results[0]);
         const workflow = await client._catalog.getSession(result.workflowId);
         const subAgent = await client._catalog.getSession(workflow.parentSessionId);
-        outcome = { version: await sessionOrchestrationVersion(client, subAgent.sessionId), parent: subAgent.parentSessionId, chat: chat.sessionId, result };
+        outcome = { chatVersion: await sessionOrchestrationVersion(client, chat.sessionId), version: await sessionOrchestrationVersion(client, subAgent.sessionId),
+            parent: subAgent.parentSessionId, chat: chat.sessionId, result };
     });
     return outcome;
 }
 
 describe("the Workflow V2 test environment switch: where a chat's sub-agent starts", () => {
-    it("on: a sub-agent starts at 1.0.83, and its spawn_workflow saves a workflow with an agent state as a valid draft", { timeout: TIMEOUT }, async () => {
-        const { version, parent, chat, result } = await subAgentDraftsAgentWorkflow(getEnv(), ON);
+    it("on: a 1.0.83 chat's sub-agent starts at 1.0.83, and its spawn_workflow saves a workflow with an agent state as a valid draft", { timeout: TIMEOUT }, async () => {
+        const { chatVersion, version, parent, chat, result } = await subAgentDraftsAgentWorkflow(getEnv(), ON);
+        expect(chatVersion).toBe(DURABLE_SESSION_INTAKE_VERSION);
         expect(parent).toBe(chat);
         expect(version).toBe(DURABLE_SESSION_INTAKE_VERSION);
         expect(result, JSON.stringify(result)).toMatchObject({ ok: true, state: "draft", revision: 1, valid: true, run: null });
     });
 
+    it("on: a chat from before the switch (1.0.82) still gets a 1.0.83 sub-agent: the worker decides", { timeout: TIMEOUT }, async () => {
+        const { chatVersion, version, parent, chat, result } = await subAgentDraftsAgentWorkflow(getEnv(), ON, { chatBeforeSwitch: true });
+        expect(chatVersion).toBe(DURABLE_SESSION_LATEST_VERSION);
+        expect(parent).toBe(chat);
+        expect(version).toBe(DURABLE_SESSION_INTAKE_VERSION);
+        expect(result, JSON.stringify(result)).toMatchObject({ ok: true, state: "draft", revision: 1, valid: true });
+    });
+
     it("off: a sub-agent starts at 1.0.82, and the agent state is refused as before", { timeout: TIMEOUT }, async () => {
-        const { version, parent, chat, result } = await subAgentDraftsAgentWorkflow(getEnv(), OFF);
+        const { chatVersion, version, parent, chat, result } = await subAgentDraftsAgentWorkflow(getEnv(), OFF);
+        expect(chatVersion).toBe(DURABLE_SESSION_LATEST_VERSION);
         expect(parent).toBe(chat);
         expect(version).toBe(DURABLE_SESSION_LATEST_VERSION);
         expect(result, JSON.stringify(result)).toMatchObject({ ok: true, state: "draft", valid: false });
