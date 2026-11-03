@@ -142,12 +142,13 @@ Keep Kubernetes implementation distinct from Azure services so a VM provider
 can be added without altering core. Compatibility commands may delegate to an
 explicit provider. No GCP implementation is required to establish this boundary.
 
-### 8. Root workspace has an AWS dependency without a located consumer — lower priority
+### 8. Unused root AWS dependency — resolved
 
-The private root `package.json` requires `@aws-sdk/client-s3`. No matching import
-or require was found in tracked source. It is not a published SDK dependency,
-but should be removed if unused or owned by the optional integration that needs
-it. No GCP SDK dependency or concrete GCP runtime adapter was found in this scan.
+The unused `@aws-sdk/client-s3` dependency was removed from the private root
+`package.json` and lockfile after confirming there is no tracked consumer. It
+was not a published SDK dependency. Any future S3 integration must own its SDK
+dependency in an optional provider, not core or the root workspace. No GCP SDK
+dependency or concrete GCP runtime adapter was found in the original scan.
 
 ## Tracking issues
 
