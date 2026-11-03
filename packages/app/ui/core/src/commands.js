@@ -88,6 +88,9 @@ export const UI_COMMANDS = {
     WORKFLOW_TEST_ANSWER_SEND: "workflowTestAnswerSend",
     WORKFLOW_VIEW_TEST_CLOCK: "workflowViewTestClock",
     WORKFLOW_TEST_CLOCK_ADVANCE: "workflowTestClockAdvance",
+    // One visit's own result in the workflow view: the selected state's older or newer visit (the latest by default).
+    WORKFLOW_VIEW_OLDER_EXECUTION: "workflowViewOlderExecution",
+    WORKFLOW_VIEW_NEWER_EXECUTION: "workflowViewNewerExecution",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

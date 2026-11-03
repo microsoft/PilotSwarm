@@ -116,6 +116,7 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /ctrl-a agents mocked\/real, real ones spend model tokens/);
     assert.match(text, /workflow view, a test run shown: a answers an intercepted effect that waits/);
     assert.match(text, /\+ advances its virtual clock by whole seconds \(script clocks are real\)/);
+    assert.match(text, /workflow view: the selected state's own result of an older \/ newer visit of the shown run/);
 });
 
 test("the variables form takes typed text, q included; Tab, ↑↓, Enter, ctrl-r and Esc are its own keys", () => {
@@ -448,6 +449,10 @@ test("p r s c in the open workflow view send its run controls and d dismisses th
     }
     assert.match(keys, /"\+": UI_COMMANDS\.WORKFLOW_VIEW_TEST_CLOCK,/);
     assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK, "string");
+    assert.match(keys, /"\[": UI_COMMANDS\.WORKFLOW_VIEW_OLDER_EXECUTION,/);
+    assert.match(keys, /"\]": UI_COMMANDS\.WORKFLOW_VIEW_NEWER_EXECUTION,/);
+    assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_OLDER_EXECUTION, "string");
+    assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_NEWER_EXECUTION, "string");
     // j and k keep moving through the states: the view's keys are checked first, so they must not take them.
     assert.ok(!/\n\s+[jk]: UI_COMMANDS/.test(keys));
 });

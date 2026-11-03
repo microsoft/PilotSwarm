@@ -715,3 +715,44 @@ export function compactWorkflowV2Executions(executions) {
     }
     return rows;
 }
+
+/**
+ * Which execution of a state a person reads (R06; design 02 history), by its exact identity: the one `selection` names
+ * ({ runId, stateId, executionId }) when it is for exactly this run (`runId`, the run the projection overlays) and this
+ * state (`node`, a v2 node view); otherwise the state's latest completed execution, as before. A chosen execution that
+ * is not among the state's loaded executions is `missing`, and the latest result is never shown in its place. `index`
+ * is its place in `node.executions` (newest first), -1 when there is none. Pure.
+ */
+export function workflowV2ShownExecution(node, runId, selection) {
+    const executions = Array.isArray(node?.executions) ? node.executions : [];
+    const chosen = isRecord(selection) && typeof selection.executionId === "string" && selection.executionId !== ""
+        && selection.stateId === node?.id && (selection.runId ?? null) === (runId ?? null);
+    if (!chosen) {
+        const execution = isRecord(node?.result) ? node.result : null;
+        return { chosen: false, missing: false, execution, executionId: execution?.id ?? null,
+            index: execution ? executions.findIndex(item => item?.id === execution.id) : -1 };
+    }
+    const index = executions.findIndex(item => item?.id === selection.executionId);
+    return { chosen: true, missing: index < 0, execution: index < 0 ? null : executions[index], executionId: selection.executionId, index };
+}
+
+/**
+ * One execution's own result as a person reads it: `pending` (it has not ended), `error` (a runtime error: its recorded
+ * error preview, its code and any effect status), `output` (its output preview, JSON null included), `none` (it ended
+ * without an output), or `missing` (no execution). `truncated`: the read cut the preview short (it ends with "…"), so
+ * the whole value is not in the read model. Values are previews as read, never another execution's. Pure.
+ */
+export function workflowV2ExecutionResult(execution) {
+    if (!isRecord(execution)) return { kind: "missing", value: null, truncated: false, code: null, effectStatus: null };
+    const code = typeof execution.outcome === "string" && execution.outcome ? execution.outcome : null;
+    const effectStatus = typeof execution.effectStatus === "string" && execution.effectStatus ? execution.effectStatus : null;
+    if (execution.status === "pending") return { kind: "pending", value: null, truncated: false, code: null, effectStatus: null };
+    if (execution.resultKind === "runtime_error") {
+        const value = execution.errorPreview === undefined ? null : execution.errorPreview;
+        return { kind: "error", value, truncated: isTruncated(value), code, effectStatus };
+    }
+    if (execution.outputPreview !== undefined && execution.outputPreview !== null) {
+        return { kind: "output", value: execution.outputPreview, truncated: isTruncated(execution.outputPreview), code, effectStatus };
+    }
+    return { kind: "none", value: null, truncated: false, code, effectStatus };
+}

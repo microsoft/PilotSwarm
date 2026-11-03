@@ -5,7 +5,7 @@ import {
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
     workflowViewDraftRefusal, workflowViewPublicationRefusal, workflowViewTestRefusal, workflowViewVariablesFor, WORKFLOW_PUBLICATION_KEYS,
     workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin, workflowTestChange, workflowTestConfirm, workflowTestPin,
-    WORKFLOW_TEST_ANSWER_KINDS, workflowViewTestAnswerRefusal, workflowViewTestClockRefusal,
+    WORKFLOW_TEST_ANSWER_KINDS, workflowViewTestAnswerRefusal, workflowViewTestClockRefusal, workflowViewExecutionStep,
 } from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
@@ -9084,6 +9084,30 @@ export class PilotSwarmUiController {
     }
 
     /**
+     * Choose the execution whose own result the workflow views show (the
+     * portal's History tab, the TUI's [ ]): exactly `{ runId, stateId,
+     * executionId }` of the shown run, or null for the latest result again.
+     * It applies only to that run and state; nothing is read or sent.
+     */
+    selectWorkflowExecution(sessionId, selection) {
+        if (!sessionId || this.getState().sessions.byId[sessionId]?.sessionKind !== "workflow") return;
+        const valid = selection === null || (selection !== null && typeof selection === "object" && typeof selection.executionId === "string"
+            && selection.executionId !== "" && typeof selection.stateId === "string" && (selection.runId === null || typeof selection.runId === "string"));
+        if (!valid) return;
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { selectedExecution: selection === null ? null
+            : { runId: selection.runId, stateId: selection.stateId, executionId: selection.executionId } } });
+    }
+
+    /** The TUI's workflow view: show the own result of an older ([, `delta` 1) or newer (], -1) visit of the selected state (workflowViewExecutionStep). */
+    moveWorkflowViewExecution(delta) {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return;
+        const step = workflowViewExecutionStep(selection, delta);
+        if (step.ok) this.selectWorkflowExecution(selection.modal.sessionId, step.selection);
+        this.dispatch({ type: "ui/status", text: step.status });
+    }
+
+    /**
      * The workflow view: open the chosen occurrence's child session, the
      * agent's actual chat (T115), as the portal's node details open it
      * (loadSession). It changes nothing: people can read the chat, and the
@@ -13421,6 +13445,12 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_TEST_CLOCK_ADVANCE:
                 await this.advanceWorkflowTestClock();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_OLDER_EXECUTION:
+                this.moveWorkflowViewExecution(1);
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_NEWER_EXECUTION:
+                this.moveWorkflowViewExecution(-1);
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

@@ -250,7 +250,7 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
 }
 
 export function WorkflowNodePane({ controller }) {
-    const { view, selected, select, nodes, v2 } = useWorkflowView(controller);
+    const { sessionId, view, selected, select, nodes, v2 } = useWorkflowView(controller);
     const [tab, setTab] = React.useState("details");
     const tabId = React.useId();
     if (!selected && v2) return React.createElement(WorkflowV2NoGraph, { projection: v2 });
@@ -274,6 +274,10 @@ export function WorkflowNodePane({ controller }) {
                 tab, selected, nodes, select, openSession: sessionId => { controller.loadSession(sessionId).catch(() => {}); },
                 runOutput: v2?.status.terminalState === selected.id ? v2.output : null,
                 runError: v2?.status.terminalState === selected.id ? v2.error : null,
+                // One execution's own result, chosen in History for exactly the shown run and this state.
+                runId: v2?.runId ?? null, selection: view.selectedExecution ?? null, onTab: setTab,
+                onSelectExecution: executionId => controller.selectWorkflowExecution(sessionId,
+                    executionId === null ? null : { runId: v2?.runId ?? null, stateId: selected.id, executionId }),
             }) :
             tab === "details" ? React.createElement(React.Fragment, null,
                 property("Executions", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),

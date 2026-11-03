@@ -1,7 +1,8 @@
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
-    compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
+    compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
+    workflowV2RouteKind, workflowV2ShownExecution,
 } from "./workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor,
@@ -133,6 +134,8 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     return {
         definition, nodes, v2, status, live, runPicker, runControls, runNotice, runVariables, runReadModel: v2 ? readModel ?? null : null,
         draftEditor, draftBuffer, draftEdit, publication, testControls, testResponder, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
+        // The execution whose own result a person chose ({ runId, stateId, executionId }; it applies only to that run and state).
+        selectedExecution: isPlainRecord(safeView.selectedExecution) ? safeView.selectedExecution : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -1103,6 +1106,61 @@ const durationText = ms => typeof ms === "number" && Number.isFinite(ms)
     ? (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`) : "not recorded";
 
 /**
+ * The selected state's result in the view's details, of exactly one visit (R06; design 02 history): the visit chosen
+ * with [ ] for exactly the shown run and this state, else its latest result, as before. It is that visit's own output or
+ * runtime error as read (wrapped, not cut), or that it has not ended or recorded no output; a chosen visit that is no
+ * longer loaded says so and shows nothing in its place; and the read's cut is named. Entries { text, color, indent }.
+ */
+function executionResultLines(node, projection) {
+    const executions = Array.isArray(node.executions) ? node.executions : [];
+    const shown = workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution);
+    if (!shown.chosen && !shown.execution) return [];
+    const keys = executions.length > 1 ? "; [ older · ] newer" : "";
+    if (shown.missing) {
+        return [{ text: `Result of the chosen visit (${shown.executionId}): not in the loaded history of this run${keys}`, color: "cyan", indent: "" },
+            { text: "Its result is not shown, and no other visit's result is shown in its place.", color: "yellow", indent: "  " }];
+    }
+    const execution = shown.execution;
+    const visit = Number.isSafeInteger(execution.ordinal) ? `visit ${execution.ordinal}` : "a visit";
+    const lines = [{ text: `Result of ${visit} (${shown.chosen ? "chosen" : "latest"}${keys})`, color: "cyan", indent: "" }];
+    const result = workflowV2ExecutionResult(execution);
+    const shownText = value => (typeof value === "string" ? value : valueText(value)).replace(/\s+/g, " ").trim();
+    if (result.kind === "pending") lines.push({ text: "Not ended yet: it has no result.", color: "yellow", indent: "  " });
+    else if (result.kind === "error") {
+        const detail = [result.code, result.effectStatus ? `effect ${result.effectStatus}` : null].filter(Boolean).join(" · ");
+        lines.push({ text: `Runtime error${detail ? ` · ${detail}` : ""}: ${result.value === null ? "no error text was recorded" : shownText(result.value)}`,
+            color: "red", indent: "  " });
+    } else if (result.kind === "output") lines.push({ text: `Output: ${shownText(result.value)}`, color: "white", indent: "  " });
+    else lines.push({ text: "It recorded no output.", color: "gray", indent: "  " });
+    if (result.truncated) lines.push({ text: "The read keeps only the start of this value; the whole value is not in this view.", color: "gray", indent: "  " });
+    return lines;
+}
+
+/**
+ * The TUI's workflow view: which visit of the selected state the details show after [ (`delta` 1, an older visit) or ]
+ * (-1, a newer one; past the newest chosen visit, the latest result again), among that state's loaded executions of
+ * exactly the shown run: { ok, selection, status }, `selection` the view's next selectedExecution ({ runId, stateId,
+ * executionId }, null for the latest) and `status` the status line. Nothing is read or sent. Pure.
+ */
+export function workflowViewExecutionStep(selection, delta) {
+    const node = selection?.selected?.node ?? null;
+    if (!node || node.shape !== "v2") return { ok: false, selection: null, status: "This state's visits have no results of their own here" };
+    const executions = Array.isArray(node.executions) ? node.executions : [];
+    if (!executions.length) return { ok: false, selection: null, status: "No visit of this state is in the loaded history of this run" };
+    const runId = selection.projection.v2?.runId ?? null;
+    const shown = workflowV2ShownExecution(node, runId, selection.projection.selectedExecution);
+    const target = shown.index + (delta > 0 ? 1 : -1);
+    if (delta < 0 && target < 0) {
+        return shown.chosen ? { ok: true, selection: null, status: "Showing the latest result again" } : { ok: false, selection: null, status: "There is no newer visit" };
+    }
+    if (target >= executions.length) return { ok: false, selection: null, status: "No older visit in the loaded history of this run" };
+    const execution = executions[target];
+    if (typeof execution?.id !== "string" || !execution.id) return { ok: false, selection: null, status: "That visit has no identity in the loaded history" };
+    return { ok: true, selection: { runId, stateId: node.id, executionId: execution.id },
+        status: `Showing the result of visit ${Number.isSafeInteger(execution.ordinal) ? execution.ordinal : "—"}` };
+}
+
+/**
  * The selected state's executions in the loaded history, newest first, as the portal's History tab lists them: a v2
  * state's visits with neighbouring unchanged repeats combined (compactWorkflowV2Executions), a legacy state's steps.
  */
@@ -1214,13 +1272,12 @@ function detailLines(selection, width) {
         add("No child session is listed for it yet.", "gray");
     }
     const result = node.result;
-    if (node.shape === "v2" && result) {
-        if (result.resultKind === "runtime_error") {
-            add(`Runtime error: ${bounded(valueText(result.errorPreview ?? result.outcome ?? (result.effectStatus ? `effect ${result.effectStatus}` : "")), VALUE_LIMIT)}`, "red");
-        } else if (result.outputPreview !== undefined) {
-            add(`Output: ${bounded(valueText(result.outputPreview), VALUE_LIMIT)}`);
+    if (node.shape === "v2") {
+        // One visit's own result: the visit chosen with [ ] for exactly this run and state, else the latest.
+        for (const line of executionResultLines(node, projection)) {
+            for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
         }
-    } else if (node.shape !== "v2" && result) {
+    } else if (result) {
         const text = result.error || result.reason || result.outputPreview || result.summary;
         if (text) add(`Output: ${bounded(valueText(text), VALUE_LIMIT)}`);
     }

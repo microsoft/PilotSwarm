@@ -650,7 +650,7 @@ per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, one visit's own result (the latest, or an older visit chosen with [ ]), an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -945,7 +945,7 @@ by position. Each row shows the observed state and the number of
 executions. The selected state's details show its state, executions, last
 outcome and description, its transitions (an outcome, a runtime-error
 route, where a parallel state's branches start, and a transition inside a
-loop marked as one), the latest output or runtime error, and for an agent
+loop marked as one), the result of one visit (below), and for an agent
 state the child session of each occurrence, newest first. ↑↓ select a
 state, ←→ choose the run it shows, Tab chooses an occurrence, Enter opens
 that occurrence's actual chat (`loadSession`, as the portal's node details
@@ -1197,11 +1197,31 @@ reads the same policy through its session access), are unchanged.
 Not in the TUI yet (open, not waived):
 - a several-key variables update (the form sends one name at a time, as the
   portal's panel does): the API, MCP and the agent tools take it;
-- each execution's own output: the view shows the state's latest output or
-  error (bounded), as the portal's Output tab does;
 - the TUI refuses a person's prompt, answer and steer to an agent state's
   subtree locally; its other human input there (a workspace command, for
   one) is refused by the server only.
+
+**Each execution's own result (R06; design 02 execution history; portal
+and TUI).** A state's visits stay distinct, a loop's included, and each
+shows its own result, never another's. The portal's History tab gives each
+row of one execution a Result button: it chooses exactly that execution of
+the shown run and state (`selectedExecution`: run, state, execution id)
+and opens the Output tab, which then says which visit it shows, with a
+button that shows the latest result again; a row of combined repeats has
+none, and the full list below it chooses each of them. In the TUI, the
+selected state's details show the result of one visit (the latest by
+default), and `[` and `]` step to an older or newer visit of the shown run
+(past the newest chosen visit, the latest result again). Both show that
+visit's own output or runtime error (with its code and any effect status)
+as the authorized read model already carries it (its bounded preview), or
+that it has not ended or recorded no output; a preview the read cut short
+says so. A choice applies only to that run and state: another run, even
+with the same execution ids, or another state shows its own latest result.
+A chosen execution that a newer read no longer lists is said to be missing,
+and no other execution's result is shown in its place. A refused read shows
+its error and no result from another run's model. Nothing new is read or
+sent, and no read authorization or runtime behaviour changes; ordinary
+sessions are untouched.
 
 **Responses and completions stay in process (owner scope, 2026-11-02).**
 External agents are not in scope: agents run only within PilotSwarm, as

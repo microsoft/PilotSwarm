@@ -1,6 +1,7 @@
 import React from "react";
 import {
-    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
+    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
+    workflowV2RouteKind, workflowV2ShownExecution,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -113,8 +114,14 @@ function AgentChild({ agent, openSession }) {
         h("p", null, "People can read this chat. Only the workflow's parent agent can message it, and only the agent's typed result completes the state."));
 }
 
-/** The tab panel body of a v2 node. The caller owns the tab strip so its tab semantics are unchanged. */
-export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError, openSession = null }) {
+/**
+ * The tab panel body of a v2 node. The caller owns the tab strip so its tab semantics are unchanged. The Output tab
+ * shows one execution's own result: the latest by default, or the one chosen in the History tab for exactly this run
+ * (`runId`) and state (`selection`, the view's selectedExecution), never the latest in its place; `onSelectExecution`
+ * (an execution id, or null for the latest) and `onTab` let History choose one. Without them History lists as before.
+ */
+export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError, openSession = null, runId = null, selection = null,
+    onSelectExecution = null, onTab = null }) {
     const property = (label, value) => h("div", { className: "ps-workflow-property", key: label },
         h("span", null, label), h("strong", null, value));
     const current = selected.current;
@@ -145,24 +152,42 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                 h(Value, { value: current.outbox.payloadPreview, label: "Sent payload" })) : null);
     }
     if (tab === "output") {
-        const result = selected.result;
-        const terminalValue = selected.type === "terminal" ? (runError ?? runOutput) : null;
+        const shown = workflowV2ShownExecution(selected, runId, selection);
+        const result = shown.execution ? workflowV2ExecutionResult(shown.execution) : null;
+        const visit = shown.execution && Number.isSafeInteger(shown.execution.ordinal) ? `visit ${shown.execution.ordinal}` : "this visit";
+        // The run's own output belongs to its end, shown with the latest result only.
+        const terminalValue = !shown.chosen && selected.type === "terminal" ? (runError ?? runOutput) : null;
         return h(React.Fragment, null,
-            h("p", null, "Latest result in the loaded history for this node."),
-            !result && terminalValue === null ? h("pre", null, "This node has no result in the loaded history.") : null,
-            result?.resultKind === "runtime_error"
-                ? h(Value, { value: result.errorPreview ?? result.outcome ?? (result.effectStatus ? `Effect ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error" })
-                : result ? (result.outputPreview !== undefined ? h(Value, { value: result.outputPreview, label: "Output" })
-                    : h("pre", null, "This state records no output.")) : null,
+            shown.chosen
+                ? h("p", { "data-execution": shown.executionId }, shown.missing
+                    ? `The execution chosen in History (${shown.executionId}) is not in the loaded history of this run.`
+                    : `Result of ${visit}, chosen in History.`)
+                : h("p", null, "Latest result in the loaded history for this node."),
+            shown.chosen && onSelectExecution ? h("button", { type: "button", className: "ps-mini-button", "data-action": "latest-result",
+                onClick: () => onSelectExecution(null) }, "Show the latest result") : null,
+            shown.chosen && shown.missing ? h("pre", null, "Its result is not shown, and no other execution's result is shown in its place.") : null,
+            !shown.chosen && !result && terminalValue === null ? h("pre", null, "This node has no result in the loaded history.") : null,
+            result?.kind === "pending" ? h("pre", null, "This execution has not ended; it has no result yet.") : null,
+            result?.kind === "error"
+                ? h(Value, { value: result.value ?? result.code ?? (result.effectStatus ? `Effect ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error" })
+                : null,
+            result?.kind === "output" ? h(Value, { value: result.value, label: "Output" }) : null,
+            result?.kind === "none" ? h("pre", null, "This state records no output.") : null,
             terminalValue !== null ? h(Value, { value: terminalValue, label: runError !== null && runError !== undefined ? "Run error" : "Run output" }) : null);
     }
     const rows = compactWorkflowV2Executions(selected.executions);
+    const shown = workflowV2ShownExecution(selected, runId, selection);
+    // A row of one execution chooses exactly that execution's result; a row of combined repeats lists them one by one below.
+    const choose = onSelectExecution ? (execution => h("button", { type: "button", className: "ps-mini-button", "data-action": "show-result",
+        "data-execution": execution.id, "aria-pressed": shown.chosen && shown.executionId === execution.id,
+        onClick: () => { onSelectExecution(execution.id); onTab?.("output"); } }, "Result")) : null;
     const table = items => h("table", null,
-        h("thead", null, h("tr", null, ["Visit", "Result", "Outcome"].map(label => h("th", { key: label }, label)))),
+        h("thead", null, h("tr", null, [...["Visit", "Result", "Outcome"], ...(choose ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
         h("tbody", null, items.map(({ execution, count, from, to }, i) => h("tr", { key: execution.id || i },
             h("td", null, count > 1 ? `${from}–${to} (×${count})` : String(execution.ordinal ?? "—")),
             h("td", null, resultLabel(execution)),
-            h("td", null, execution.outcome || "—")))));
+            h("td", null, execution.outcome || "—"),
+            choose ? h("td", null, count === 1 && typeof execution.id === "string" ? choose(execution) : null) : null))));
     return h(React.Fragment, null,
         h("p", null, "Most recent executions available in the loaded history. Unchanged repeats are combined."),
         rows.length ? table(rows) : h("p", null, "No executions in the loaded history."),

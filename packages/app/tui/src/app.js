@@ -68,9 +68,10 @@ export function isPlainShortcutKey(key = {}) {
  * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, e, which
  * opens the draft editor, P, which opens the publication review (publish, publish and start, or start; each asks
  * first), t, which opens the test review (a test run of the current revision; it asks first), and, for a test run
- * shown, a, which answers one of its intercepted effects that waits, and +, which advances its virtual clock. INACTIVE:
- * only a deployment that takes a person's workflow commands offers them; otherwise the status line says why nothing was
- * sent.
+ * shown, a, which answers one of its intercepted effects that waits, and +, which advances its virtual clock. [ and ]
+ * show the selected state's result of an older or newer visit (the latest by default). INACTIVE (apart from [ and ],
+ * which read only): only a deployment that takes a person's workflow commands offers them; otherwise the status line says
+ * why nothing was sent.
  */
 const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     p: UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN,
@@ -84,6 +85,8 @@ const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     t: UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW,
     a: UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER,
     "+": UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK,
+    "[": UI_COMMANDS.WORKFLOW_VIEW_OLDER_EXECUTION,
+    "]": UI_COMMANDS.WORKFLOW_VIEW_NEWER_EXECUTION,
 });
 
 export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
