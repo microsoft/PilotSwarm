@@ -307,6 +307,10 @@ coordinator across management clients; a process rejects any second incompatible
 transfer configuration rather than creating another admission pool (including
 path aliases). Terminal receipts are retained for 30 minutes.
 
+Listing workspace folders validates and reports the upload part size without
+acquiring the coordinator. Transfer operations acquire it lazily; management
+clients must call `stop()` to release their coordinator lease.
+
 Every part/control re-resolves session ownership and folder binding. Assembly
 uses 64 KiB buffers in a deadline-bounded child and a private destination-side
 candidate; create-only publication uses an exclusive hard link, replacement an

@@ -8,7 +8,7 @@
  *   - no git info without the runner, outside a repository, or in a
  *     repository whose settings start a program
  */
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -89,12 +89,14 @@ describe("workspace git: the file call", () => {
     let repo;
     let first;
     let second;
+    const clients = new Set();
     const makeClient = (canvasCommands = { runner: "local", allow: ["git"] }) => {
         const client = new PilotSwarmManagementClient({
             store: "postgres://unused",
             workspaceFiles: { roots: [{ name: "a", path: path.join(base, "a") }] },
             canvasCommands,
         });
+        clients.add(client);
         client._started = true;
         client._catalog = { recordEvents: async () => {} };
         client.getSessionWorkspace = async () => ({
@@ -136,6 +138,10 @@ describe("workspace git: the file call", () => {
         fs.writeFileSync(path.join(repo, "loose.txt"), "l\n");
     });
     after(() => fs.rmSync(base, { recursive: true, force: true }));
+    afterEach(async () => {
+        await Promise.all([...clients].map((client) => client.stop()));
+        clients.clear();
+    });
 
     it("the folder list says whether git is on", async () => {
         assert.equal((await folderIds(makeClient())).listed.git, true);
@@ -208,6 +214,7 @@ describe("workspace git: the file call", () => {
                 workspaceFiles: { roots: [{ name: "a", path: path.join(base, "a") }] },
                 canvasCommands: { runner: "local", allow: ["git"] },
             });
+            clients.add(client);
             client._started = true;
             client._catalog = { recordEvents: async () => {} };
             client.getSessionWorkspace = async () => ({ workspace: { schema: 1, root: "a", folder: "repo", extra: {} }, path: "/ws/a/repo", defaults: { workingFolder: null, extra: [] } });
@@ -416,7 +423,10 @@ describe("workspace git: check out a commit, go back, put the changes back", () 
         client.getSessionWorkspace = async () => ({ workspace: { schema: 1, root: "a", folder: "repo", extra: {} }, path: "/ws/a/repo", defaults: { workingFolder: null, extra: [] } });
         work = (await client.listSessionWorkspaceFolders("s1")).folders[0].id;
     });
-    after(() => fs.rmSync(base, { recursive: true, force: true }));
+    after(async () => {
+        try { await client?.stop(); }
+        finally { fs.rmSync(base, { recursive: true, force: true }); }
+    });
 
     const gitCall = (what, extra = {}) => client.sessionWorkspaceFiles("s1", { op: "git", folder: work, what, ...extra });
     const read = (name) => (fs.existsSync(path.join(repo, name)) ? fs.readFileSync(path.join(repo, name), "utf8") : null);

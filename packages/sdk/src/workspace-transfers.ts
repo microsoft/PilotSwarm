@@ -52,6 +52,10 @@ function integer(value: number, name: string, min: number, max: number): number 
     if (!Number.isSafeInteger(value) || value < min || value > max) throw uploadError("INVALID", `${name} must be an integer from ${min} to ${max}.`, 400);
     return value;
 }
+/** @internal */
+export function workspaceUploadPartBytes(config: WorkspaceFilesConfig): number {
+    return integer(config.uploadPartBytes ?? DEFAULT_WORKSPACE_UPLOAD_PART_BYTES, "uploadPartBytes", 16_384, DEFAULT_WORKSPACE_UPLOAD_PART_BYTES);
+}
 function isMissing(error: unknown): boolean { return (error as NodeJS.ErrnoException)?.code === "ENOENT"; }
 
 const coordinators = new Map<string, { coordinator: WorkspaceTransferCoordinator; users: number }>();
@@ -111,7 +115,7 @@ export class WorkspaceTransferCoordinator {
     get lifetimeSignal(): AbortSignal { return this.lifetime.signal; }
 
     constructor(private readonly config: WorkspaceFilesConfig) {
-        this.partBytes = integer(config.uploadPartBytes ?? DEFAULT_WORKSPACE_UPLOAD_PART_BYTES, "uploadPartBytes", 16_384, DEFAULT_WORKSPACE_UPLOAD_PART_BYTES);
+        this.partBytes = workspaceUploadPartBytes(config);
         this.maxBytes = integer(config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, "maxBytes", 1, 1024 ** 3);
         this.diskBytes = integer(config.transferDiskBytes ?? 512 * 1024 ** 2, "transferDiskBytes", 4096, Number.MAX_SAFE_INTEGER);
         integer(config.timeoutMs ?? 30_000, "timeoutMs", 1, 300_000);

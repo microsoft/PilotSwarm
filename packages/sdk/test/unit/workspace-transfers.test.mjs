@@ -9,6 +9,7 @@ import { runWorkspaceTransferProcess } from "../../dist/workspace-transfer-proce
 import { WORKSPACE_UPLOAD_SCRIPT } from "../../dist/workspace-upload-process.js";
 import { WORKSPACE_FILE_ERROR_CODES } from "../../dist/workspace-files.js";
 import { watch } from "node:fs";
+import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 
 async function fixture(fn, { partBytes = 16384, maxBytes = 20971520, targetParent = os.tmpdir() } = {}) {
     const root = await fs.mkdtemp(path.join(targetParent, "ps-upload-test-"));
@@ -20,6 +21,47 @@ async function fixture(fn, { partBytes = 16384, maxBytes = 20971520, targetParen
     finally { await c.stop(); await fs.rm(root, { recursive: true }); await fs.rm(spool, { recursive: true }); }
 }
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+test("folder capabilities validate part sizes without acquiring a transfer coordinator", async () => {
+    const lease = acquireWorkspaceTransferCoordinator({ roots: [] });
+    const clients = [];
+    const makeClient = (uploadPartBytes) => {
+        const client = new PilotSwarmManagementClient({
+            store: "postgres://unused",
+            workspaceFiles: { roots: [{ name: "test", path: os.tmpdir() }], uploadPartBytes },
+        });
+        clients.push(client);
+        client._started = true;
+        client.getSessionWorkspace = async () => ({
+            workspace: null,
+            defaults: { workingFolder: { root: "test", folder: "session" }, extra: [] },
+        });
+        return client;
+    };
+    try {
+        for (const partBytes of [undefined, 16384, 524288]) {
+            const client = makeClient(partBytes);
+            const listed = await client.listSessionWorkspaceFolders("s1");
+            assert.deepEqual(listed.upload, { partBytes: partBytes ?? 524288, legacyMaxBytes: 65536 });
+            assert.equal(listed.folders[0].uploads, true);
+            assert.equal(client._workspaceTransfers, undefined);
+            await assert.rejects(
+                client.startSessionWorkspaceUpload("s1", { folder: "working", path: "target.bin", size: 0 }),
+                { code: "WORKSPACE_FILES_UPLOAD_INVALID" },
+            );
+        }
+        for (const partBytes of [0, 16383, 524289, 16384.5, NaN]) {
+            await assert.rejects(makeClient(partBytes).listSessionWorkspaceFolders("s1"), (error) => {
+                assert.equal(error.code, "WORKSPACE_FILES_UPLOAD_INVALID");
+                assert.match(error.message, /uploadPartBytes must be an integer/);
+                return true;
+            });
+        }
+    } finally {
+        await Promise.all(clients.map((client) => client.stop()));
+        await lease.release();
+    }
+});
+
 test("busy data lanes do not leak an admitted start's storage reservation", async () => fixture(async (c, ctx) => {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });

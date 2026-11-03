@@ -41,7 +41,7 @@ import type {
 import { validateWorkspaceText } from "./workspace-check.js";
 import { readDefaultsRecord } from "./workspace.js";
 import {
-    WorkspaceTransferCoordinator, acquireWorkspaceTransferCoordinator, WORKSPACE_UPLOAD_LEGACY_MAX_BYTES,
+    WorkspaceTransferCoordinator, acquireWorkspaceTransferCoordinator, workspaceUploadPartBytes, WORKSPACE_UPLOAD_LEGACY_MAX_BYTES,
     type WorkspaceUploadInput, type WorkspaceUploadResult, type WorkspaceUploadStatus, type WorkspaceTransferContext,
 } from "./workspace-transfers.js";
 import {
@@ -2012,7 +2012,7 @@ export class PilotSwarmManagementClient {
             return { ...folder, uploads: true, base: resolveWorkspaceFileFolder([folder], folder.id, config).base };
         });
         return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, git, folders, roots: config.roots.map((root) => root.name),
-            upload: { partBytes: this._getWorkspaceTransfers().partBytes, legacyMaxBytes: WORKSPACE_UPLOAD_LEGACY_MAX_BYTES } };
+            upload: { partBytes: workspaceUploadPartBytes(config), legacyMaxBytes: WORKSPACE_UPLOAD_LEGACY_MAX_BYTES } };
     }
 
     private _getWorkspaceTransfers(): WorkspaceTransferCoordinator {
