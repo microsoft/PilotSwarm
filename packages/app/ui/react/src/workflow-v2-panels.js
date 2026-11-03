@@ -6,7 +6,7 @@ import {
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
-    WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
+    WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
     workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
     workflowV2AnswerSourceText, WORKFLOW_V2_ASK_PARENT_KINDS, workflowV2AskParentSent,
@@ -589,8 +589,7 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
     return h("section", { id, className: "ps-workflow-variables", "aria-label": "Workflow variables", "data-run-id": model.runId,
         style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, model.revision === null ? "Variables" : `Variables · revision ${model.revision}`),
-    h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
-        "An open map: a new name needs no declaration. A step reads the variables as they are when it starts; work already running keeps the values it started with. They cannot change the published definition, permissions, join receipts or request winners."),
+    h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, WORKFLOW_V2_VARIABLES_HELP_TEXT),
     model.note ? h("p", { role: "status", style: { margin: 0 } }, model.note) : null,
     model.preview ? h("pre", { style: { margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "8em", overflow: "auto" } }, model.preview) : null,
     model.entries.length ? h("table", { style: { borderCollapse: "collapse", width: "100%" } },
@@ -1019,7 +1018,7 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
         h("input", { type: "radio", name: modeName, value, checked: agentMode === value, onChange: () => setAgentMode(value), "data-agent-mode": value }), label);
     return h("section", { id, className: "ps-workflow-test-review", "aria-label": "Test review", "data-revision": model.revision ?? undefined,
         style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
-    h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, "Test review · not a sandbox"),
+    h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, "Test review"),
     h("p", { role: "note", style: { margin: 0, color: TONES.warning } }, WORKFLOW_V2_TEST_NOTICE_TEXT),
     h(DefinitionSummary, { model, revisionLabel: model.state === "draft" ? "draft revision" : "revision", revision: model.revision, hash: model.definitionHash,
         validity: model.valid ? "valid" : `${model.errors || "unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be tested` }),

@@ -7,7 +7,7 @@ import {
     workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue,
 } from "./workflow-v2-view.js";
 import {
-    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
+    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
     workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2RevisionCompare, workflowV2AnswerSourceText,
 } from "./workflow-v2-commands.js";
@@ -399,8 +399,7 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
     const lines = [];
     const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, contentWidth), color, ...extra });
     const addWrapped = (text, color, indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) add(piece, color); };
-    addWrapped("An open map: a new name needs no declaration. A step reads the variables as they are when it starts; work already "
-        + "running keeps the values it started with. They cannot change the published definition, permissions, join receipts or request winners.", "gray");
+    addWrapped(WORKFLOW_V2_VARIABLES_HELP_TEXT, "gray");
     let pickLine = -1;
     if (!sameRun) {
         addWrapped("The workflow view no longer shows the run this form was opened for, so it sends nothing. Esc goes back.", "yellow");
@@ -1014,7 +1013,7 @@ export function selectWorkflowTestModal(state, maxWidth = 100, viewportHeight = 
         : "ctrl-t start the test (asks first) · ctrl-a agents mocked/real · Tab inputs/variables/scenario · Esc back";
     const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
     return {
-        title: `Test review · ${draft ? "draft " : ""}revision ${pin?.revision ?? "not known"} · not a sandbox`,
+        title: `Test review · ${draft ? "draft " : ""}revision ${pin?.revision ?? "not known"}`,
         lines, listHeight, scrollOffset: 0, changed, fields, agentMode: real ? "real" : "mocked",
         field: ["vars", "scenario"].includes(modal.field) ? modal.field : "inputs",
         inputs: String(modal.inputs ?? ""), inputsCursor: Number(modal.inputsCursor) || 0,

@@ -26,8 +26,8 @@ import {
  * live call. A test run is never evidence that a definition is safe to run
  * live.
  */
-export const WORKFLOW_V2_TEST_NOTICE = "TEST — scripts run normally; workflow tools are mocked. Direct script effects (network, files, "
-    + "processes, the clock, randomness) are real, and a test result is not evidence that the definition is safe to run live.";
+export const WORKFLOW_V2_TEST_NOTICE = "TEST — workflow tools are mocked, but scripts run normally: their files, network, processes and "
+    + "clock are real. A passing test does not show that the workflow is safe to run live.";
 
 /**
  * The agent modes of a test run: mocked (the parent supplies the agent's typed result) or real (a real agent child whose

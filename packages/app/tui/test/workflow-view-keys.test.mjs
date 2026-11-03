@@ -401,8 +401,8 @@ test("the shared Ink app draws the test review: the test notice, what is tested,
         return React.createElement("label", { "data-focused": String(focused) }, `${label}: ${value}`); } };
     const html = renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform: formPlatform },
         React.createElement(WorkflowTestModal, { state: store.getState() })));
-    assert.match(html, /data-title="Test review · draft revision 2 · not a sandbox"/);
-    assert.match(html, /<p>TEST — scripts run normally; workflow tools are mocked\./);
+    assert.match(html, /data-title="Test review · draft revision 2"/);
+    assert.match(html, /<p>TEST — workflow tools are mocked, but scripts run normally: their files, network, processes and clock are real\./);
     assert.match(html, /<p>Definition hash: hash-2<\/p>/);
     assert.match(html, /<p>Agent steps: real agents, which spend model tokens \(ctrl-a: mocked\)<\/p>/);
     assert.match(html, /Agent steps run real agent sessions: they spend model tokens/);

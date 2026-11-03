@@ -132,7 +132,7 @@ test("the view says what t reviews; the review is of the exact revision and hash
     assert.deepEqual(opener.pin, { state: "draft", revision: 2, definitionHash: hashOf(2) });
     assert.equal(statusOf(h.store), "Test review — ctrl-t start the test (asks first) · ctrl-a agents mocked/real · Esc back");
     const shown = review(h.store);
-    assert.equal(shown.title, "Test review · draft revision 2 · not a sandbox");
+    assert.equal(shown.title, "Test review · draft revision 2");
     assert.ok(joined(shown.lines).startsWith(WORKFLOW_V2_TEST_NOTICE_TEXT), "the test notice comes first");
     for (const line of ["Definition: watch-v2 1.0.0", "Draft revision: 2", `Definition hash: ${hashOf(2)}`, "Validity: Valid",
         "Agent steps: mocked; the parent answers for each agent step (ctrl-a: real agents)", "ctrl-t Start test"]) {
@@ -296,7 +296,7 @@ test("a stale revision is refused and read again: the review says it changed and
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_RELOAD);
     assert.equal(statusOf(h.store), "Reviewing revision 3 as it is now");
     shown = review(h.store);
-    assert.equal(shown.title, "Test review · draft revision 3 · not a sandbox");
+    assert.equal(shown.title, "Test review · draft revision 3");
     assert.equal(shown.inputs, '{"repo": "a"}');
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_START);
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
@@ -314,7 +314,7 @@ test("publishing the revision under review meanwhile changes nothing that is tes
     await h.controller.ensureWorkflowReadModel("wf", { force: true });
     const shown = review(h.store);
     assert.equal(shown.changed, false);
-    assert.equal(shown.title, "Test review · revision 2 · not a sandbox");
+    assert.equal(shown.title, "Test review · revision 2");
     assert.ok(texts(shown.lines).includes("Revision: 2"));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_START);
     const confirm = modalOf(h.store);

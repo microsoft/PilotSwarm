@@ -475,7 +475,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
     if (run?.test) {
         const test = run.test;
         banners.push({ level: "warning", text: typeof test.notice === "string" && test.notice
-            ? test.notice : "TEST — scripts run normally; workflow tools are mocked." });
+            ? test.notice : "TEST — workflow tools are mocked, but scripts run normally." });
         // Agent mode real: its agent states run real agent sessions (they spend model tokens), whose framework tools are mocked.
         if (test.agentMode === "real") {
             banners.push({ level: "warning", text: typeof test.agentNotice === "string" && test.agentNotice

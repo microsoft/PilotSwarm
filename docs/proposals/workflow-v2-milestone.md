@@ -889,10 +889,9 @@ KV), through the same `updateWorkflow` transport, with no new route.
   (only when the read model has `personCommands`): the revision, each name
   and its JSON value from the read model's preview of the map (canonical
   JSON, cut at 4,000 characters: a longer map shows only its start, and a
-  variable can still be named), and a note that a new name needs no
-  declaration, that a state reads the variables as they are when it
-  starts, and that they cannot change the published definition,
-  permissions, join receipts or request winners.
+  variable can still be named), and one plain note: steps read the variables when they start, and running steps keep
+  the values they started with (the flow review's words; they cannot change the published definition, permissions,
+  join receipts or request winners).
 - **Who may change them.** A person may change them when the workflow takes
   `set_vars` from people (never in a workflow agent state's subtree: the
   panel is read-only there and names the controlling agent), the run has

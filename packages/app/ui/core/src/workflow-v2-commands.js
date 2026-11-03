@@ -49,10 +49,12 @@ const RESPONSE_KINDS = new Set(["success", "error", "cancel"]);
  * shown before a test starts; the run's own notices come back with its read
  * model once it runs.
  */
-export const WORKFLOW_V2_TEST_NOTICE_TEXT = "TEST — scripts run normally; workflow tools are mocked. Direct script effects (network, files, "
-    + "processes, the clock, randomness) are real, and a test result is not evidence that the definition is safe to run live.";
+export const WORKFLOW_V2_TEST_NOTICE_TEXT = "TEST — workflow tools are mocked, but scripts run normally: their files, network, processes and "
+    + "clock are real. A passing test does not show that the workflow is safe to run live.";
 export const WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT = "Agent steps run real agent sessions: they spend model tokens and their results vary as a "
     + "model's do. Their workflow tool calls are mocked; their model's own built-in tools (shell, files) run normally; MCP tools are refused.";
+/** What the variables panel says about them, in the portal and the terminal (the flow review's plain words). */
+export const WORKFLOW_V2_VARIABLES_HELP_TEXT = "Steps read these variables when they start; running steps keep the values they started with.";
 /** The largest workflow YAML (compiler.ts WORKFLOW_V2_MAX_YAML_BYTES); the server checks it again. */
 const YAML_MAX_BYTES = 256 * 1024;
 /** The longest KV key (store.ts WORKFLOW_V2_KV_LIMITS.maxKeyLength). */
