@@ -127,10 +127,10 @@ test("what a person types is checked: a name kept exactly, a JSON value; the com
     assert.equal(workflowV2RunCommandConfirm("set_vars", RUN, { set: { a: 1 }, delete: [], expectedKvRevision: 3 }), null);
     const removal = workflowV2RunCommandConfirm("set_vars", RUN, { set: {}, delete: ["note"], expectedKvRevision: 3 });
     assert.deepEqual([removal.title, removal.confirmLabel], ["Remove Workflow Variable", "Remove"]);
-    assert.match(removal.message, /^Remove 'note' from the variables of run run-1\? States that start from now on do not see it; work already running keeps/);
+    assert.match(removal.message, /^Remove 'note' from the variables of run run-1\? Steps that start from now on do not see it; work already running keeps/);
     assert.equal(workflowV2RunCommandConfirm("set_vars", RUN, { set: {}, delete: ["a", "b"], expectedKvRevision: 3 }).title, "Remove Workflow Variables");
     assert.match(workflowV2RunCommandAccepted("set_vars", RUN, { kvRevision: 4, replayed: false }, { set: { note: "x" }, delete: [], expectedKvRevision: 3 }),
-        /^Variables of run run-1 updated: set 'note' \(revision 4\)\. States that start from now on see them\.$/);
+        /^Variables of run run-1 updated: set 'note' \(revision 4\)\. Steps that start from now on see them\.$/);
     assert.equal(workflowV2RunCommandNotice({ operation: "set_vars", runId: RUN, phase: "failed", message: "The run's KV is at revision 4, not 3." }).text,
         "The variables update was refused for run run-1: The run's KV is at revision 4, not 3.");
 });

@@ -54,7 +54,7 @@ const FAILED = event("workflow.failed", { name: "nightly-report", steps: 1, stat
 
 test("each workflow event reads as one line of an execution log", () => {
     const started = formatWorkflowEventText(STARTED);
-    assert.match(started, /Workflow \*\*nightly-report\*\* 1\.0\.0 started: 4 states, initial `collect`/);
+    assert.match(started, /Workflow \*\*nightly-report\*\* 1\.0\.0 started: 4 steps, first step `collect`/);
     assert.match(started, /\| collect \| script \(python\) \| success → report, failure → failed \|/);
     assert.match(started, /\| report \| script \(node\) \| done → published \|/);
     assert.match(started, /\| published \| terminal \| ends: succeeded \|/);

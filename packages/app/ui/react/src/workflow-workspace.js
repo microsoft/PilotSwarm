@@ -85,7 +85,7 @@ function WorkflowReadError({ controller, sessionId, message }) {
     return React.createElement("div", { className: "ps-workflow-read-error", role: "alert",
         style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", fontSize: "0.8rem", color: "var(--ps-danger)",
             borderBottom: "1px solid var(--ps-border)", overflowWrap: "anywhere" } },
-    React.createElement("span", { style: { flex: 1, minWidth: 0 } }, `The workflow's current state could not be read: ${message}`),
+    React.createElement("span", { style: { flex: 1, minWidth: 0 } }, `The workflow's current status could not be read: ${message}`),
     React.createElement("button", { type: "button", className: "ps-mini-button",
         onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry"));
 }
@@ -202,7 +202,7 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
             React.createElement(WorkflowV2DefinitionToggle, { controller, sessionId, model: publication, open: publicationOpen, controls: publicationId }),
             React.createElement(WorkflowV2TestToggle, { controller, sessionId, model: testControls, open: testOpen, controls: testId }),
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
-                onClick: () => selectNode(selected.id) }, "Node details")),
+                onClick: () => selectNode(selected.id) }, "Step details")),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
         draftOpen ? React.createElement(WorkflowV2DraftEditor, { controller, sessionId, model: draftEditor, id: draftId, revisionReads: view.definitionRevisions ?? null }) : null,
@@ -227,7 +227,7 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
                             onClick: () => controller.ensureWorkflowDefinition(sessionId, { retry: true }) }, "Retry") : null)),
             React.createElement("div", {
                 className: "ps-workflow-log-resizer", role: "separator", tabIndex: 0,
-                "aria-label": "Resize execution log", "aria-orientation": "horizontal",
+                "aria-label": "Resize the step log", "aria-orientation": "horizontal",
                 "aria-valuemin": min, "aria-valuemax": max,
                 "aria-valuenow": height,
                 onPointerDown: event => {
@@ -258,17 +258,17 @@ export function WorkflowNodePane({ controller }) {
     const tabId = React.useId();
     if (!selected && v2) return React.createElement(WorkflowV2NoGraph, { projection: v2 });
     if (!selected) return React.createElement("div", { className: "ps-workflow-empty" },
-        view.error || "Select a workflow node to inspect it.");
+        view.error || "Select a workflow step to see its details.");
     const property = (label, value) => React.createElement("div", { className: "ps-workflow-property", key: label },
         React.createElement("span", null, label), React.createElement("strong", null, value));
     const result = selected.result;
-    return React.createElement("section", { className: "ps-workflow-node-details", "aria-label": "Workflow node details" },
+    return React.createElement("section", { className: "ps-workflow-node-details", "aria-label": "Workflow step details" },
         React.createElement("header", null,
-            React.createElement("small", null, "SELECTED NODE"),
+            React.createElement("small", null, "SELECTED STEP"),
             React.createElement("h2", null, selected.id),
             React.createElement("p", null, selected.shape === "v2" ? `${selected.label} · ${selected.stateLabel}`
                 : selected.type === "script" ? `${selected.runtime || "Script"} · ${selected.state}` : `Terminal · ${selected.state}`)),
-        React.createElement("div", { className: "ps-workflow-detail-tabs", role: "tablist", "aria-label": "Node detail views" },
+        React.createElement("div", { className: "ps-workflow-detail-tabs", role: "tablist", "aria-label": "Step detail views" },
             [["details", "Details"], ["output", "Output"], ["history", "History"]].map(([id, title]) =>
                 React.createElement("button", { key: id, id: `${tabId}-${id}`, role: "tab", type: "button",
                     "aria-selected": tab === id, onClick: () => setTab(id) }, title))),
@@ -293,16 +293,16 @@ export function WorkflowNodePane({ controller }) {
                 } : null,
             }) :
             tab === "details" ? React.createElement(React.Fragment, null,
-                property("Executions", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
+                property("Visits", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
                 property("Last outcome", selected.outcome || "Not recorded"),
                 property("Duration", React.createElement(Duration, { ms: selected.durationMs })),
                 selected.timeoutSeconds ? property("Timeout", `${selected.timeoutSeconds}s`) : null,
-                React.createElement("h3", null, "Transitions"),
+                React.createElement("h3", null, "Next steps"),
                 Object.entries(selected.next || {}).map(([outcome, target]) =>
                     React.createElement("button", { key: outcome, type: "button", className: "ps-workflow-transition",
                         disabled: !nodes.some(node => node.id === target), onClick: () => select(target) },
                     outcome, " → ", target)),
-                selected.type === "terminal" ? React.createElement("p", null, String(result?.summary || "The workflow ends at this node.")) : null,
+                selected.type === "terminal" ? React.createElement("p", null, String(result?.summary || "The workflow ends at this step.")) : null,
                 React.createElement("h3", null, "Latest tools"),
                 Array.isArray(result?.toolCalls) && result.toolCalls.length
                     ? result.toolCalls.map((tool, i) => React.createElement("div", { className: "ps-workflow-tool", key: i },
@@ -310,15 +310,15 @@ export function WorkflowNodePane({ controller }) {
                     : React.createElement("p", null, "No tool details in the loaded history."))
                 : tab === "output"
                     ? React.createElement(React.Fragment, null,
-                        React.createElement("p", null, "Latest result in the loaded history for this node."),
+                        React.createElement("p", null, "Latest result in the loaded history for this step."),
                         React.createElement("pre", null, result
                             ? String(result.error || result.reason || result.outputPreview || result.summary || "No output was recorded.")
-                            : "This node has no result in the loaded history."),
+                            : "This step has no result in the loaded history."),
                         result?.stderrTail ? React.createElement(React.Fragment, null,
                             React.createElement("h3", null, "Standard error"),
                             React.createElement("pre", null, String(result.stderrTail))) : null)
                     : React.createElement(React.Fragment, null,
-                        React.createElement("p", null, "Most recent executions available in the loaded history."),
+                        React.createElement("p", null, "Most recent visits in the loaded history."),
                         selected.history.length ? React.createElement("table", null,
                             React.createElement("thead", null, React.createElement("tr", null,
                                 ["Step", "Outcome", "Duration"].map(label => React.createElement("th", { key: label }, label)))),
@@ -326,5 +326,5 @@ export function WorkflowNodePane({ controller }) {
                                 React.createElement("td", null, event.data.step ?? event.data.steps ?? "—"),
                                 React.createElement("td", null, event.data.outcome || event.eventType.split(".").at(-1)),
                                 React.createElement("td", null, React.createElement(Duration, { ms: event.data.durationMs }))))))
-                            : React.createElement("p", null, "No executions in the loaded history."))));
+                            : React.createElement("p", null, "No visits in the loaded history."))));
 }

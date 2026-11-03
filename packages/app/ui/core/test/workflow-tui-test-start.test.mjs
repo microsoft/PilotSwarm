@@ -137,7 +137,7 @@ test("the view says what t reviews; the review is of the exact revision and hash
     assert.equal(shown.title, "Test review · draft revision 2 · not a sandbox");
     assert.ok(joined(shown.lines).startsWith(WORKFLOW_V2_TEST_NOTICE_TEXT), "the test notice comes first");
     for (const line of ["Definition: watch-v2 1.0.0", "Draft revision: 2", `Definition hash: ${hashOf(2)}`, "Validity: Valid",
-        "Agent states: mocked; the parent answers each agent state (ctrl-a: real agents)", "ctrl-t Start test"]) {
+        "Agent steps: mocked; the parent answers for each agent step (ctrl-a: real agents)", "ctrl-t Start test"]) {
         assert.ok(texts(shown.lines).includes(line), line);
     }
     assert.ok(!joined(shown.lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT), "no real-agent notice for mocked agents");
@@ -149,7 +149,7 @@ test("the view says what t reviews; the review is of the exact revision and hash
     const confirm = modalOf(h.store);
     assert.deepEqual([confirm.type, confirm.title, confirm.confirmLabel], ["confirm", "Start Test Run", "Start Test"]);
     assert.equal(confirm.message, `Start a test run of draft revision 2 of watch-v2 1.0.0 (definition hash ${hashOf(2).slice(0, 12)}…) with mocked agents `
-        + `(the parent answers each agent state); inputs {}? ${WORKFLOW_V2_TEST_NOTICE_TEXT} The live run is not changed.`);
+        + `(the parent answers for each agent step); inputs {}? ${WORKFLOW_V2_TEST_NOTICE_TEXT} The live run is not changed.`);
     assert.deepEqual(confirm.workflowRunCommand, { sessionId: "wf", operation: "test", runId: null, expectedRevision: 2, definitionHash: hashOf(2),
         inputs: {}, agentMode: "mocked" });
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
@@ -174,13 +174,13 @@ test("ctrl-a chooses real agents, with their notice; the confirm and the test na
     const h = await reviewing(workflow(), [started]);
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_AGENTS);
     assert.equal(modalOf(h.store).agentMode, "real");
-    assert.equal(statusOf(h.store), "Agent states: real agents. They spend model tokens; their framework tool calls are mocked");
+    assert.equal(statusOf(h.store), "Agent steps: real agents. They spend model tokens; their framework tool calls are mocked");
     let shown = review(h.store);
-    assert.ok(texts(shown.lines).includes("Agent states: real agents, which spend model tokens (ctrl-a: mocked)"));
+    assert.ok(texts(shown.lines).includes("Agent steps: real agents, which spend model tokens (ctrl-a: mocked)"));
     assert.ok(joined(shown.lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_AGENTS);
     assert.equal(modalOf(h.store).agentMode, "mocked");
-    assert.equal(statusOf(h.store), "Agent states: mocked. The parent answers each agent state");
+    assert.equal(statusOf(h.store), "Agent steps: mocked. The parent answers for each agent step");
     assert.ok(!joined(review(h.store).lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_AGENTS);
 

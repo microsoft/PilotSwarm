@@ -77,7 +77,7 @@ test("the view lists the shown run's controls with their keys; p pauses it as th
     const { operation_id: operationId, ...wire } = sent[2];
     assert.deepEqual(wire, { operation: "pause", run_id: RUN });
     assert.match(operationId, /^ui-pause-/);
-    assert.equal(statusOf(h.store), `Paused run ${RUN}: no new state starts; work already started finishes.`);
+    assert.equal(statusOf(h.store), `Paused run ${RUN}: no new step starts; work already started finishes.`);
     assert.equal(h.store.getState().ui.modal.type, "workflowView");
     // The workflow is read again at once, so the view shows what the server now says.
     await settle();
@@ -98,7 +98,7 @@ test("stop and cancel ask first; the dialog returns to the view as it was, and a
     assert.equal(modal.type, "confirm");
     assert.equal(modal.title, "Stop Workflow Run");
     assert.equal(modal.confirmLabel, "Stop Run");
-    assert.match(modal.message, new RegExp(`^Stop run ${RUN}\\? No new state starts`));
+    assert.match(modal.message, new RegExp(`^Stop run ${RUN}\\? No new step starts`));
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.deepEqual(h.store.getState().ui.modal, view);
     assert.equal(statusOf(h.store), "Stop was not sent");
@@ -210,7 +210,7 @@ test("one command at a time, shown while it is sent; a refusal and an answer tha
     const [first, again] = h.sent();
     assert.equal(again[2].operation, "pause");
     assert.equal(again[2].operation_id, first[2].operation_id);
-    assert.equal(statusOf(h.store), `Paused run ${RUN}: no new state starts; work already started finishes.`);
+    assert.equal(statusOf(h.store), `Paused run ${RUN}: no new step starts; work already started finishes.`);
     assert.ok(!detailText(h.store).includes("may not have reached the workflow"));
 
     // A refusal: the server decided and nothing changed. d dismisses its notice; it sends and undoes nothing.

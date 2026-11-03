@@ -112,7 +112,7 @@ function controlEventView(event) {
             const from = nonEmpty(data.senderSessionId) ? ` from ${inline(String(data.senderSessionId).slice(0, 8), 20)}` : "";
             const contract = nonEmpty(data.contract) ? ` ${inline(data.contract, 80)}` : "";
             const claimed = nonEmpty(data.claimedBy);
-            return { text: `✉ Input${contract}${from} accepted by the workflow; ${claimed ? "a waiting receive state took it" : "it waits for a receive state"}.`,
+            return { text: `✉ Input${contract}${from} accepted by the workflow; ${claimed ? "a waiting receive step took it" : "it waits for a receive step"}.`,
                 summary: claimed ? "input accepted and taken" : "input accepted", color: "gray" };
         }
         case "workflow.recovered": {
@@ -179,10 +179,10 @@ export function formatWorkflowEventText(event) {
             const states = Array.isArray(data.states) ? data.states : [];
             const lines = [
                 `${WORKFLOW_SESSION_GLYPH} Workflow **${data.name ?? "workflow"}**${data.version ? ` ${data.version}` : ""} started: `
-                + `${states.length} state${states.length === 1 ? "" : "s"}, initial ${code(data.initial)}.`,
+                + `${states.length} step${states.length === 1 ? "" : "s"}, first step ${code(data.initial)}.`,
             ];
             if (states.length > 0) {
-                lines.push("", "| State | Type | Outcome → next |", "|---|---|---|");
+                lines.push("", "| Step | Type | Outcome → next |", "|---|---|---|");
                 for (const state of states) {
                     const type = stateKind(state);
                     const next = state?.type === "terminal" ? `ends: ${state.outcome ?? "?"}` : formatNext(state?.next);
@@ -253,7 +253,7 @@ export function describeWorkflowEvent(event) {
     switch (event.eventType) {
         case "workflow.started":
             return { kind: "notice", title: "Workflow", color: "magenta",
-                summary: `${data.name ?? "workflow"}${data.version ? ` ${data.version}` : ""} · ${Array.isArray(data.states) ? data.states.length : 0} states · initial ${data.initial ?? "?"}`,
+                summary: `${data.name ?? "workflow"}${data.version ? ` ${data.version}` : ""} · ${Array.isArray(data.states) ? data.states.length : 0} steps · first step ${data.initial ?? "?"}`,
                 text };
         case "workflow.completed":
             return { kind: "card", title: "Workflow result", color: "green", text };

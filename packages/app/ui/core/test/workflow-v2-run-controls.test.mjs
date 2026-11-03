@@ -119,7 +119,7 @@ test("a control is disabled with its reason: the viewer may not command, the run
 test("stop and cancel are confirmed with what they do not undo; failures are refusals or unconfirmed; the notice says which", () => {
     assert.equal(workflowV2RunCommandConfirm("pause", RUN), null);
     assert.equal(workflowV2RunCommandConfirm("resume", RUN), null);
-    assert.match(workflowV2RunCommandConfirm("stop", RUN).message, /^Stop run run-1\? No new state starts.*does not undo effects/);
+    assert.match(workflowV2RunCommandConfirm("stop", RUN).message, /^Stop run run-1\? No new step starts.*does not undo effects/);
     assert.equal(workflowV2RunCommandConfirm("cancel", RUN).confirmLabel, "Cancel Run");
     assert.match(workflowV2RunCommandConfirm("cancel", "0123456789abcdef").message, /^Cancel run 012345…cdef\? It ends now.*does not undo effects/);
 
@@ -184,7 +184,7 @@ test("a control is sent as the shown run's updateWorkflow command with a new ope
     assert.match(command.operation_id, /^ui-pause-./);
     assert.deepEqual({ ...command, operation_id: "id" }, { operation: "pause", operation_id: "id", run_id: RUN });
     assert.equal(h.view().runCommand, null);
-    assert.match(h.store.getState().ui.statusText, /^Paused run run-1: no new state starts/);
+    assert.match(h.store.getState().ui.statusText, /^Paused run run-1: no new step starts/);
     await until(() => h.reads.length === 1, "the read model read again");
     assert.deepEqual(h.reads[0], [SID, {}]);
     // Each send is a new command with its own operation id.

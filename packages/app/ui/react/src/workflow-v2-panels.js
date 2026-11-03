@@ -89,17 +89,17 @@ function IntakeOutcome({ intake }) {
     const row = (label, value) => h("div", { className: "ps-workflow-property", key: label },
         h("span", null, label), h("strong", null, value));
     return h("div", { className: "ps-workflow-intake", "data-intake": intake.kind },
-        row("Recipient intake", refused ? `Refused · ${intake.reason}`
-            : `Unrecognized outcome${intake.raw ? ` · ${intake.raw}` : ""}`),
-        row("Intake noted at", intake.at || "Time not recorded"),
+        row("Check by recipient", refused ? `Refused · ${intake.reason}`
+            : `Unrecognized result${intake.raw ? ` · ${intake.raw}` : ""}`),
+        row("Checked at", intake.at || "Time not recorded"),
         h("p", null, refused
-            ? "The recipient's intake refused this message. This does not change the recorded delivery state or show that the recipient read or acted on it."
-            : "This intake note is not recognized, so it is not shown as a result. The delivery above is as recorded."));
+            ? "The recipient refused this message when it checked it. This does not change the recorded delivery or show that the recipient read or acted on it."
+            : "This check result is not recognized, so it is not shown as a result. The delivery above is as recorded."));
 }
 
 const resultLabel = execution => execution.status === "pending" ? "Pending"
-    : execution.resultKind === "business" ? "Business result"
-        : execution.resultKind === "runtime_error" ? "Runtime error" : "Result kind not recorded";
+    : execution.resultKind === "business" ? "Outcome"
+        : execution.resultKind === "runtime_error" ? "Runtime error" : "How it ended was not recorded";
 
 function kindProperties(node, current) {
     const rows = [];
@@ -109,11 +109,11 @@ function kindProperties(node, current) {
         if (current?.deadline) rows.push(["Deadline", current.deadline]);
     }
     if (node.kind === "receive") {
-        rows.push(["Contract", node.contract], ["From", node.from === null ? "Any permitted sender" : node.from === "parent" ? "Parent session" : String(node.from)]);
+        rows.push(["Message type", node.contract], ["From", node.from === null ? "Any permitted sender" : node.from === "parent" ? "Parent session" : String(node.from)]);
         if (node.waitSeconds !== undefined) rows.push(["Wait limit", formatSeconds(node.waitSeconds)]);
     }
     if (node.kind === "send" || node.kind === "request") {
-        rows.push(["Contract", node.contract], ["Recipient", node.recipient === "parent" ? "Parent session" : String(node.recipient)]);
+        rows.push(["Message type", node.contract], ["Recipient", node.recipient === "parent" ? "Parent session" : String(node.recipient)]);
         if (node.kind === "request" && node.timeoutSeconds !== undefined) rows.push(["Response deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
     }
     if (node.kind === "agent") {
@@ -128,7 +128,7 @@ function kindProperties(node, current) {
             ["Join", `${node.join === "all_required" ? "Every branch must succeed" : String(node.join)}${node.failFast ? " · the first failure cancels the others" : ""}`]);
         if (Number.isSafeInteger(current?.branches)) rows.push(["Branches", String(current.branches)]);
     }
-    if (node.parallel) rows.push(["Parallel state", String(node.parallel)]);
+    if (node.parallel) rows.push(["Parallel step", String(node.parallel)]);
     if (current?.branch && Number.isSafeInteger(current.branch.index)) rows.push(["Branch", String(current.branch.index)]);
     return rows;
 }
@@ -146,7 +146,7 @@ function AgentChild({ agent, openSession }) {
             h("strong", null, `${agent.spawned ? "Created" : "Not created yet"}${agent.end ? ` · ended (${agent.end})` : ""}`)),
         openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition", "data-action": "open-agent-chat",
             onClick: () => openSession(agent.childSessionId) }, "Open the agent's chat (read-only)") : null,
-        h("p", null, "People can read this chat. Only the workflow's parent agent can message it, and only the agent's typed result completes the state."));
+        h("p", null, "People can read this chat. Only the workflow's parent agent can message it, and only the agent's typed result completes the step."));
 }
 
 /**
@@ -200,15 +200,15 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
     const current = selected.current;
     if (tab === "details") {
         const lastOutcome = selected.outcome
-            ? `${selected.outcome} · ${selected.resultKind === "runtime_error" ? "runtime error" : "business outcome"}` : "Not recorded";
+            ? `${selected.outcome}${selected.resultKind === "runtime_error" ? " · runtime error" : ""}` : "Not recorded";
         return h(React.Fragment, null,
-            property("State", selected.stateLabel),
-            property("Executions", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
+            property("Status", selected.stateLabel),
+            property("Visits", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
             property("Last outcome", lastOutcome),
             kindProperties(selected, current).map(([label, value]) => property(label, value)),
             selected.description.map((line, i) => h("p", { key: i }, line)),
-            selected.type === "terminal" ? h("p", null, selected.summary || "The workflow ends at this node.") : null,
-            selected.next ? h("h3", null, "Transitions") : null,
+            selected.type === "terminal" ? h("p", null, selected.summary || "The workflow ends at this step.") : null,
+            selected.next ? h("h3", null, "Next steps") : null,
             Object.entries(selected.next || {}).map(([label, target]) =>
                 h("button", { key: label, type: "button", className: "ps-workflow-transition",
                     disabled: !nodes.some(node => node.id === target), onClick: () => select(target) },
@@ -216,10 +216,10 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             current?.agent ? h(AgentChild, { agent: current.agent, openSession }) : null,
             kv ? h(KvApplied, { execution: current, runId, kv }) : null,
             current?.inbox ? h(React.Fragment, null, h("h3", null, "Message taken"),
-                property("Contract", current.inbox.contract), property("From", current.inbox.senderSessionId),
+                property("Message type", current.inbox.contract), property("From", current.inbox.senderSessionId),
                 h(Value, { value: current.inbox.payloadPreview })) : null,
             current?.outbox ? h(React.Fragment, null, h("h3", null, "Delivery"),
-                property("Delivery state", current.outbox.state),
+                property("Delivery status", current.outbox.state),
                 property("Attempts", String(current.outbox.attempts ?? "—")),
                 property("Recipient", current.outbox.recipientSessionId || "—"),
                 current.outbox.intake ? h(IntakeOutcome, { intake: current.outbox.intake }) : null,
@@ -239,20 +239,20 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
         return h(React.Fragment, null,
             shown.chosen
                 ? h("p", { "data-execution": shown.executionId }, shown.missing
-                    ? `The execution chosen in History (${shown.executionId}) is not in the loaded history of this run.`
+                    ? `The visit chosen in History (${shown.executionId}) is not in the loaded history of this run.`
                     : `Result of ${visit}, chosen in History.`)
-                : h("p", null, "Latest result in the loaded history for this node."),
+                : h("p", null, "Latest result in the loaded history for this step."),
             shown.chosen && onSelectExecution ? h("button", { type: "button", className: "ps-mini-button", "data-action": "latest-result",
                 onClick: () => onSelectExecution(null) }, "Show the latest result") : null,
-            shown.chosen && shown.missing ? h("pre", null, "Its result is not shown, and no other execution's result is shown in its place.") : null,
-            !shown.chosen && !result && terminalValue === null ? h("pre", null, "This node has no result in the loaded history.") : null,
-            result?.kind === "pending" ? h("pre", null, "This execution has not ended; it has no result yet.") : null,
+            shown.chosen && shown.missing ? h("pre", null, "Its result is not shown, and no other visit's result is shown in its place.") : null,
+            !shown.chosen && !result && terminalValue === null ? h("pre", null, "This step has no result in the loaded history.") : null,
+            result?.kind === "pending" ? h("pre", null, "This visit has not ended; it has no result yet.") : null,
             result?.kind === "error"
-                ? h(Value, { value: result.value ?? result.code ?? (result.effectStatus ? `Effect ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error",
+                ? h(Value, { value: result.value ?? result.code ?? (result.effectStatus ? `Action ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error",
                     truncatedNote: cutNote })
                 : null,
             result?.kind === "output" ? h(Value, { value: result.value, label: "Output", truncatedNote: cutNote }) : null,
-            result?.kind === "none" ? h("pre", null, "This state records no output.") : null,
+            result?.kind === "none" ? h("pre", null, "This step records no output.") : null,
             canRead ? h("button", { type: "button", className: "ps-mini-button", "data-action": "whole-value", "data-execution": executionId,
                 disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(executionId) },
             whole && whole.kind !== "loading" ? "Read the whole value again" : "Read the whole value") : null,
@@ -273,10 +273,10 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             h("td", null, execution.outcome || "—"),
             choose ? h("td", null, count === 1 && typeof execution.id === "string" ? choose(execution) : null) : null))));
     return h(React.Fragment, null,
-        h("p", null, "Most recent executions available in the loaded history. Unchanged repeats are combined."),
-        rows.length ? table(rows) : h("p", null, "No executions in the loaded history."),
+        h("p", null, "Most recent visits in the loaded history. Unchanged repeats are combined."),
+        rows.length ? table(rows) : h("p", null, "No visits in the loaded history."),
         selected.executions.length > rows.length ? h("details", null,
-            h("summary", null, `Every loaded execution (${selected.executions.length})`),
+            h("summary", null, `Every loaded visit (${selected.executions.length})`),
             table(selected.executions.map(execution => ({ execution, count: 1, from: execution.ordinal, to: execution.ordinal })))) : null,
         h(OlderHistory, { history, onLoadOlder }));
 }
@@ -325,7 +325,7 @@ export function WorkflowV2TestInterceptions({ test, controller = null, sessionId
     return h("section", { className: "ps-workflow-test", "aria-label": "Test interceptions", style: { padding: "6px 10px", fontSize: "0.75rem" } },
         h("h3", null, `Intercepted effects (${items.length})`),
         h("table", null,
-            h("thead", null, h("tr", null, [...["Effect", "State", "Answer"], ...(answerable ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
+            h("thead", null, h("tr", null, [...["Effect", "Step", "Answer"], ...(answerable ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
             h("tbody", null, items.map((item, i) => h("tr", { key: item.interceptionId || i, "data-interception": item.interceptionId },
                 h("td", { title: item.interceptionId }, item.tool ? `${item.operation} · ${item.tool}` : String(item.operation)),
                 h("td", null, item.stateId || "—"),
@@ -483,7 +483,7 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
         style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, model.revision === null ? "Variables" : `Variables · revision ${model.revision}`),
     h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
-        "An open map: a new name needs no declaration. A state reads the variables as they are when it starts; work already running keeps the values it started with. They cannot change the published definition, permissions, join receipts or request winners."),
+        "An open map: a new name needs no declaration. A step reads the variables as they are when it starts; work already running keeps the values it started with. They cannot change the published definition, permissions, join receipts or request winners."),
     model.note ? h("p", { role: "status", style: { margin: 0 } }, model.note) : null,
     model.preview ? h("pre", { style: { margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "8em", overflow: "auto" } }, model.preview) : null,
     model.entries.length ? h("table", { style: { borderCollapse: "collapse", width: "100%" } },
@@ -813,8 +813,8 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
     row("Definition hash", h("code", { style: { overflowWrap: "anywhere" }, "data-field": "definition-hash" }, model.definitionHash ?? "Not known")),
     row("Validity", model.valid ? "Valid" : `${model.errors || "Unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be tested`),
     h("fieldset", { style: { margin: 0, padding: "4px 8px", border: "1px solid var(--ps-border)" } },
-        h("legend", null, "Agent states"),
-        radio("mocked", "Mocked: the parent answers each agent state"),
+        h("legend", null, "Agent steps"),
+        radio("mocked", "Mocked: the parent answers for each agent step"),
         radio("real", "Real agents (spend model tokens)")),
     agentMode === "real" ? h("p", { role: "note", "data-notice": "real-agents", style: { margin: 0, color: TONES.warning } },
         WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT) : null,

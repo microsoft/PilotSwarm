@@ -161,7 +161,7 @@ test("V opens the form; it reviews what Enter sends, and the update goes as one 
     modal = modalOf(h.store);
     assert.deepEqual([modal.type, modal.title, modal.confirmLabel], ["confirm", "Update Workflow Variables", "Update"]);
     assert.equal(modal.message, `In one update of the variables of run ${RUN}, set 'a', 'new key' and 'n' and remove 'b c' and 'gone'? `
-        + "Every other variable stays as it is. States that start from now on see the update; work already running keeps the values it started with.");
+        + "Every other variable stays as it is. Steps that start from now on see the update; work already running keeps the values it started with.");
     // Not confirmed: back to the form as it was, and none of the update was sent.
     const theForm = modal.returnModal;
     assert.equal(theForm.type, "workflowVariableBatch");
@@ -177,7 +177,7 @@ test("V opens the form; it reviews what Enter sends, and the update goes as one 
     assert.deepEqual(withoutId(h.sent()[0]), { operation: "set_vars", run_id: RUN, set: { a: 2, "new key": { x: [1] }, n: null },
         delete: ["b c", "gone"], expected_kv_revision: 3 });
     assert.equal(statusOf(h.store), `Variables of run ${RUN} updated: set 'a', 'new key' and 'n'; removed 'b c' and 'gone' (revision 4). `
-        + "States that start from now on see them.");
+        + "Steps that start from now on see them.");
     assert.deepEqual(modalOf(h.store), view, "accepted: back to the workflow view");
 });
 

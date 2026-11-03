@@ -81,15 +81,15 @@ test("a state's history lists its visits newest first, a loop's unchanged repeat
     let lines = texts(selectWorkflowViewModal(store.getState(), 110));
     const at = lines.indexOf("History (newest first; unchanged repeats combined):");
     assert.ok(at > 0, lines.join("\n"));
-    assert.deepEqual(lines.slice(at + 1, at + 3), ["  visit 5 · Pending · —", "  visits 1–3 (×2) · Business result · rework"]);
+    assert.deepEqual(lines.slice(at + 1, at + 3), ["  visit 5 · Pending · —", "  visits 1–3 (×2) · Outcome · rework"]);
     // The fix state: two fixes, combined.
     await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
     lines = texts(selectWorkflowViewModal(store.getState(), 110));
-    assert.equal(lines[lines.indexOf("History (newest first; unchanged repeats combined):") + 1], "  visits 2–4 (×2) · Business result · fixed");
+    assert.equal(lines[lines.indexOf("History (newest first; unchanged repeats combined):") + 1], "  visits 2–4 (×2) · Outcome · fixed");
     // An end not reached has no executions.
     await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
     lines = texts(selectWorkflowViewModal(store.getState(), 110));
-    assert.ok(lines.includes("  No executions in the loaded history."));
+    assert.ok(lines.includes("  No visits in the loaded history."));
     // A live run shows no intercepted effects.
     assert.ok(!lines.some(line => line.startsWith("Intercepted effects")));
 });
@@ -120,14 +120,14 @@ test("a test run's intercepted effects are listed with their state and answer, r
     const lines = texts(view);
     assert.ok(lines.includes("! TEST — scripts run normally; framework tools are mocked."));
     assert.ok(lines.includes("Intercepted effects of this test run (2; 1 waits for the parent):"), lines.join("\n"));
-    assert.ok(lines.includes("  tool.call · read_build · state review · success · fixture ◂ this state"));
-    assert.ok(lines.includes("  tool.call · notify_1 · state review · waiting for the parent ◂ this state"));
+    assert.ok(lines.includes("  tool.call · read_build · step review · success · fixture ◂ this step"));
+    assert.ok(lines.includes("  tool.call · notify_1 · step review · waiting for the parent ◂ this step"));
     assert.ok(lines.includes("The TUI shows them; the run's parent agent, a fixture or a person in the portal answers them."));
     assert.equal(view.detailsLines.find(line => line.text.includes("notify_1")).color, "yellow");
     // Another state of the same run: the effects are the run's, without the mark.
     await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
     const other = texts(selectWorkflowViewModal(store.getState(), 110));
-    assert.ok(other.includes("  tool.call · read_build · state review · success · fixture"));
+    assert.ok(other.includes("  tool.call · read_build · step review · success · fixture"));
     // A model read for another run is never shown for this one.
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: "run-1" } });
     assert.ok(!texts(selectWorkflowViewModal(store.getState(), 110)).some(line => line.startsWith("Intercepted effects")));

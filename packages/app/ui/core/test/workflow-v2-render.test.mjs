@@ -101,7 +101,7 @@ test("output and history tabs show the right result kind, truncation, and combin
     assert.ok(output.includes("This preview was cut short"));
     const history = render("history");
     assert.ok(history.includes("1–3 (×3)"));
-    assert.ok(history.includes("Every loaded execution (4)"));
+    assert.ok(history.includes("Every loaded visit (4)"));
     assert.ok(history.includes("Runtime error"));
     const business = projectWorkflowV2({ definition: workflowDefinition(startedData), events: events.slice(0, 1) }).nodes[0];
     const businessOutput = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "output", selected: business, nodes: [], select() {}, runOutput: null, runError: null }));

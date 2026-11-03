@@ -101,7 +101,7 @@ test("a workflow session is marked in the list, shows its execution log and has 
 
     const chat = page.locator(".ps-chat-panel");
     await chat.locator(".ps-system-notice-summary", { hasText: "Workflow: nightly-report" }).click();
-    await expect(chat).toContainText("Workflow nightly-report 1.0.0 started: 5 states, initial collect");
+    await expect(chat).toContainText("Workflow nightly-report 1.0.0 started: 5 steps, first step collect");
     await expect(chat).toContainText("found → report, empty → nothing, failure → failed");
     await expect(chat).toContainText("ends: succeeded");
     await expect(chat).toContainText("Step 1: collect → found in 1.8 s · 1 tool call (read_facts)");
@@ -304,7 +304,7 @@ test("mobile Zen has one workflow footer, accurate resize bounds and reachable n
     const zen = page.locator(".ps-mobile-zen");
     await expect(zen.locator(".ps-composer-readonly")).toHaveCount(1);
     await expect(zen.locator(".ps-composer-readonly")).toHaveText("Workflow session");
-    const divider = zen.getByRole("separator", { name: "Resize execution log" });
+    const divider = zen.getByRole("separator", { name: "Resize the step log" });
     const log = zen.locator(".ps-workflow-log");
     const initialHeight = (await log.boundingBox()).height;
     const max = Number(await divider.getAttribute("aria-valuemax"));
@@ -437,7 +437,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         const main = page.locator(".ps-workflow-main");
         await expect(main.locator(".ps-workflow-graph")).toBeVisible();
         await expect(main.locator(".ps-workflow-log .ps-chat-panel")).toBeVisible();
-        const divider = main.getByRole("separator", { name: "Resize execution log" });
+        const divider = main.getByRole("separator", { name: "Resize the step log" });
         const before = await main.locator(".ps-workflow-log").boundingBox();
         await divider.focus();
         await page.keyboard.press("ArrowDown");
@@ -593,12 +593,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await controls.getByRole("button", { name: "Stop", exact: true }).click();
         const dialog = page.locator(".ps-modal.is-narrow");
         await expect(dialog.locator(".ps-modal-title")).toHaveText("Stop Workflow Run");
-        await expect(dialog.locator(".ps-modal-body p")).toHaveText("Stop run run-1? No new state starts; work already started may finish until its grace period ends, and then the run ends as stopped. A stop does not undo effects that already happened.");
+        await expect(dialog.locator(".ps-modal-body p")).toHaveText("Stop run run-1? No new step starts; work already started may finish until its grace period ends, and then the run ends as stopped. A stop does not undo effects that already happened.");
         // The confirm box is a dialog for screen readers (owner decision q17): named by its title, described by its
         // message, modal, and focused while it is open.
         const named = page.getByRole("dialog", { name: "Stop Workflow Run", exact: true });
         await expect(named).toHaveAttribute("aria-modal", "true");
-        await expect(named).toHaveAccessibleDescription(/^Stop run run-1\? No new state starts/);
+        await expect(named).toHaveAccessibleDescription(/^Stop run run-1\? No new step starts/);
         await expect(named).toBeFocused();
         await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
         await expect(dialog).toHaveCount(0);

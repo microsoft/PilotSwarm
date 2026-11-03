@@ -146,9 +146,9 @@ test("the eight control events are workflow events, in the history paging types,
         [event("workflow.vars_set", { runId: "r", kvRevision: 4, set: ["a", "b"], deleted: ["c"], actor: { kind: "system", name: "controller" } }),
             "✎ Workflow variables updated by `controller` (revision 4): set `a`, `b`; removed `c`.", "variables updated", "gray"],
         [event("workflow.input_accepted", { runId: "r", messageId: "m1", contract: "Ack@1", senderSessionId: "1234567890", claimedBy: null }),
-            "✉ Input `Ack@1` from `12345678` accepted by the workflow; it waits for a receive state.", "input accepted", "gray"],
+            "✉ Input `Ack@1` from `12345678` accepted by the workflow; it waits for a receive step.", "input accepted", "gray"],
         [event("workflow.input_accepted", { runId: "r", messageId: "m1", contract: "Ack@1", senderSessionId: "1234567890", claimedBy: "nx-1" }),
-            "a waiting receive state took it", "input accepted and taken", "gray"],
+            "a waiting receive step took it", "input accepted and taken", "gray"],
         [event("workflow.recovered", { runId: "r", action: "dispatched", requestedBy: "abcdef1234", operationId: "op" }),
             "↻ Recovery requested by `abcdef12`: a restart of the run was recorded; this does not show that it has started.", "recovery requested", "yellow"],
         [event("workflow.cancel_requested", { runId: "r", effects: [{ nodeExecutionId: "n", instanceId: "i", status: "Running" }, { nodeExecutionId: "m", instanceId: "j", status: "Suspended" }] }),
@@ -202,7 +202,7 @@ test("missing or malformed control payloads still read sensibly and never throw"
     assert.equal(bare("workflow.paused"), "⏸ Workflow paused.");
     assert.equal(bare("workflow.resumed"), "▶ Workflow resumed.");
     assert.equal(bare("workflow.vars_set"), "✎ Workflow variables updated.");
-    assert.equal(bare("workflow.input_accepted"), "✉ Input accepted by the workflow; it waits for a receive state.");
+    assert.equal(bare("workflow.input_accepted"), "✉ Input accepted by the workflow; it waits for a receive step.");
     assert.equal(bare("workflow.recovered"), "↻ Recovery requested: recovery recorded.");
     assert.equal(formatWorkflowEventText(event("workflow.recovered", { action: "other" })), "↻ Recovery requested: action `other` recorded.");
     assert.ok(!/started again|was started/.test(formatWorkflowEventText(event("workflow.recovered", { action: "dispatched" }))), "the event is recorded before the start, so it never claims one");

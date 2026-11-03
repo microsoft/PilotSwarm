@@ -160,9 +160,9 @@ test("the view says what a and + do for the shown test run; a binds the form to 
     const shown = answerForm(h.store);
     assert.equal(shown.title, "Answer · test run test-r…0001 · agent in 'review'");
     assert.ok(joined(shown.lines).startsWith(WORKFLOW_V2_TEST_NOTICE_TEXT));
-    for (const line of ["Agent states are mocked: the parent answers each agent state.", "Effect: agent in state 'review'", `Interception: ${AGENT}`,
+    for (const line of ["Agent steps are mocked: the parent answers for each agent step.", "Effect: agent in step 'review'", `Interception: ${AGENT}`,
         "Waits for an answer (reached at virtual time 2026-11-02T00:00:00.000Z).", "What it reached: {\"input\":null}",
-        "The answer must match: {\"type\":\"object\",\"required\":[\"outcome\"]}", "Its state's outcomes: accepted, rejected",
+        "The answer must match: {\"type\":\"object\",\"required\":[\"outcome\"]}", "Its step's outcomes: accepted, rejected",
         "Answer: [success] · error · cancel (Tab changes it)", "1 of 2 effects wait for an answer · ↑↓ another"]) {
         assert.ok(texts(shown.lines).includes(line), line);
     }
@@ -185,7 +185,7 @@ test("Tab changes the kind and what was typed is checked first; ↑↓ bind the 
     const errorOf = () => modalOf(h.store).error;
     let shown = answerForm(h.store);
     assert.ok(joined(shown.lines).includes(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT), "a real-agent test says so");
-    assert.ok(!texts(shown.lines).includes("Agent states are mocked: the parent answers each agent state."));
+    assert.ok(!texts(shown.lines).includes("Agent steps are mocked: the parent answers for each agent step."));
 
     h.controller.cycleWorkflowTestAnswerKind();
     shown = answerForm(h.store);
@@ -208,7 +208,7 @@ test("Tab changes the kind and what was typed is checked first; ↑↓ bind the 
     shown = answerForm(h.store);
     assert.deepEqual([modalOf(h.store).interceptionId, shown.value, shown.kind], [NOTIFY, "null", "success"], "another effect starts from its template");
     assert.equal(shown.title, "Answer · test run test-r…0001 · tool.call in 'notify'");
-    assert.ok(texts(shown.lines).includes("Effect: tool.call · notify_build in state 'notify'"));
+    assert.ok(texts(shown.lines).includes("Effect: tool.call · notify_build in step 'notify'"));
     assert.ok(texts(shown.lines).includes("2 of 2 effects wait for an answer · ↑↓ another"));
     h.controller.pickWorkflowTestInterception(1);
     assert.equal(statusOf(h.store), "No more effects that wait in this direction");

@@ -237,7 +237,7 @@ test("payloads of the wrong shape are refused with a reason, never read as anoth
     assert.equal(byId(legacyEvents, "poll").state, "idle");
     assert.equal(legacyEvents.banners[0].text, "1 workflow event had an unknown format and was ignored.");
     const rows = projectWorkflowV2({ readModel: readModel({ nodeExecutions: [{ nodeExecutionId: "x", stateId: "poll", state: "mystery" }] }) });
-    assert.equal(rows.banners.at(-1).text, "1 step run had an unknown format and was ignored.");
+    assert.equal(rows.banners.at(-1).text, "1 visit had an unknown format and was ignored.");
 });
 
 test("a run of another revision is not drawn over the graph, and other runs' events are ignored", () => {
@@ -264,7 +264,7 @@ test("history counts are marked partial unless the whole run is loaded, and trun
     const many = Array.from({ length: 200 }, (_, i) => done("poll", i + 1, "unchanged"));
     const bounded = projectWorkflowV2({ readModel: readModel({ nodeExecutions: many }) });
     assert.equal(byId(bounded, "poll").partial, true);
-    assert.ok(bounded.banners.some(banner => /first 200 step runs/.test(banner.text)));
+    assert.ok(bounded.banners.some(banner => /first 200 visits/.test(banner.text)));
     assert.deepEqual(formatWorkflowValue("abc…"), { text: "abc…", truncated: true });
     assert.deepEqual(formatWorkflowValue('{"a":1}'), { text: '{\n  "a": 1\n}', truncated: false });
     assert.deepEqual(formatWorkflowValue("<b>not json</b>"), { text: "<b>not json</b>", truncated: false });

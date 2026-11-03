@@ -74,7 +74,7 @@ test("the portal's History chooses one execution exactly; the Output tab shows t
     assert.match(pressed, /data-execution="nx-poll-3" aria-pressed="true"/);
 
     const latest = render("output", null);
-    assert.ok(latest.includes("Latest result in the loaded history for this node."));
+    assert.ok(latest.includes("Latest result in the loaded history for this step."));
     assert.ok(latest.includes("&quot;n&quot;: 3"));
     const older = render("output", { runId: RUN, stateId: "poll", executionId: "nx-poll-3" });
     assert.ok(older.includes("Result of visit 3, chosen in History."));
@@ -82,11 +82,11 @@ test("the portal's History chooses one execution exactly; the Output tab shows t
     assert.ok(!older.includes("&quot;n&quot;: 3"), "the latest output is not shown for an older visit");
     assert.ok(older.includes("data-action=\"latest-result\""));
     const missing = render("output", { runId: RUN, stateId: "poll", executionId: "nx-poll-9" });
-    assert.ok(missing.includes("The execution chosen in History (nx-poll-9) is not in the loaded history of this run."));
-    assert.ok(missing.includes("no other execution&#x27;s result is shown in its place"));
+    assert.ok(missing.includes("The visit chosen in History (nx-poll-9) is not in the loaded history of this run."));
+    assert.ok(missing.includes("no other visit&#x27;s result is shown in its place"));
     assert.ok(!missing.includes("&quot;n&quot;"), "no output at all, the latest included");
     const otherRun = render("output", { runId: OTHER, stateId: "poll", executionId: "nx-poll-3" });
-    assert.ok(otherRun.includes("Latest result in the loaded history for this node."), "a choice for another run does not apply");
+    assert.ok(otherRun.includes("Latest result in the loaded history for this step."), "a choice for another run does not apply");
     // Without the callbacks the History tab lists as before, without buttons.
     const plain = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "history", selected: poll, nodes: projection.nodes, select() {},
         runOutput: null, runError: null }));
@@ -101,7 +101,7 @@ test("combined repeats are chosen one by one: a row of several visits has no Res
     const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "history", selected: poll, nodes: projection.nodes, select() {},
         runOutput: null, runError: null, runId: projection.runId, selection: null, onSelectExecution: () => {}, onTab: () => {} }));
     assert.ok(html.includes("1–3 (×2)"));
-    assert.ok(html.includes("Every loaded execution (3)"));
+    assert.ok(html.includes("Every loaded visit (3)"));
     // One button for visit 5's row in the compact table, and one for each of the three visits in the full list.
     assert.equal([...html.matchAll(/data-action="show-result"/g)].length, 4);
     assert.equal([...html.matchAll(/data-execution="nx-poll-1"/g)].length, 1);
@@ -216,7 +216,7 @@ test("a runtime error is that visit's own, with its code; a preview the read cut
     assert.ok(lines.some(line => line.startsWith("  Output: {\"text\":\"xxx")));
     assert.ok(lines.includes("  The read keeps only the start of this value; f reads the whole value."));
     // The state's label and its history still name the later visit's error; this visit's result line does not.
-    assert.ok(lines.includes("State: Runtime error · timed_out"), lines.join("\n"));
+    assert.ok(lines.includes("Status: Runtime error · timed_out"), lines.join("\n"));
     assert.ok(!lines.some(line => line.startsWith("  Runtime error")), "the later visit's error is not shown for this one");
 });
 
@@ -233,10 +233,10 @@ test("a refused read shows its error and no result; an ordinary session is not t
     await settle();
     h.store.dispatch({ type: "ui/modal", modal: { ...h.store.getState().ui.modal, selectedNodeId: "poll" } });
     const lines = details(h.store);
-    assert.ok(lines.includes("The workflow's current state could not be read: Forbidden: you may not read this session."), lines.join("\n"));
+    assert.ok(lines.includes("The workflow's current status could not be read: Forbidden: you may not read this session."), lines.join("\n"));
     assert.ok(!lines.some(line => line.startsWith("Result of")), "no result from another run's model");
     await older(h);
-    assert.equal(statusOf(h.store), "No visit of this state is in the loaded history of this run");
+    assert.equal(statusOf(h.store), "No visit of this step is in the loaded history of this run");
     assert.equal(chosenOf(h.store), null);
 
     // An ordinary session has no workflow view: the keys change nothing, and a choice for it is ignored.

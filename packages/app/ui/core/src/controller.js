@@ -7253,8 +7253,8 @@ export class PilotSwarmUiController {
         const agentMode = modal.agentMode === "real" ? "mocked" : "real";
         this.updateWorkflowTestReview({ agentMode, error: null });
         this.dispatch({ type: "ui/status", text: agentMode === "real"
-            ? "Agent states: real agents. They spend model tokens; their framework tool calls are mocked"
-            : "Agent states: mocked. The parent answers each agent state" });
+            ? "Agent steps: real agents. They spend model tokens; their framework tool calls are mocked"
+            : "Agent steps: mocked. The parent answers for each agent step" });
     }
 
     /**
@@ -9313,7 +9313,7 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: { type: "workflowView", sessionId, selectedNodeId, occurrenceIndex: 0, previousFocus: state.ui.focusRegion },
         });
-        this.dispatch({ type: "ui/status", text: "Workflow view — ↑↓ state · ←→ run · PgUp/PgDn details · Tab agent chat · Enter open · Esc close" });
+        this.dispatch({ type: "ui/status", text: "Workflow view — ↑↓ step · ←→ run · PgUp/PgDn details · Tab agent chat · Enter open · Esc close" });
     }
 
     /** The workflow view: select the state `delta` rows away, in graph order (clamped), and its newest agent chat. */
@@ -9487,7 +9487,7 @@ export class PilotSwarmUiController {
         const execution = shown?.execution ?? null;
         if (typeof runId !== "string" || !runId || typeof execution?.id !== "string" || !execution.id) {
             this.dispatch({ type: "ui/status", text: shown?.missing ? "The chosen visit is not in the loaded history of this run, so its value is not read"
-                : "This state has no visit of the shown run whose value can be read" });
+                : "This step has no visit of the shown run whose value can be read" });
             return;
         }
         if (execution.status === "pending") {
@@ -9513,8 +9513,8 @@ export class PilotSwarmUiController {
         const occurrence = selection.occurrence;
         if (!occurrence?.childSessionId) {
             this.dispatch({ type: "ui/status", text: selection.selected
-                ? `State ${selection.selected.id} has no agent chat to open`
-                : "No state is selected" });
+                ? `Step ${selection.selected.id} has no agent chat to open`
+                : "No step is selected" });
             return;
         }
         this.dispatch({ type: "ui/modal", modal: null });

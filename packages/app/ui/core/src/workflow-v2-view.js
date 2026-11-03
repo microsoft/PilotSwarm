@@ -494,9 +494,9 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
     // current states are read however long its history is; older history is loaded on request (loadOlderWorkflowHistory).
     const history = run?.history;
     if (history && !history.paged && !history.complete) {
-        banners.push({ level: "info", text: `Only the first ${LEGACY_EXECUTION_LIMIT} step runs are listed, so counts may be incomplete.` });
+        banners.push({ level: "info", text: `Only the first ${LEGACY_EXECUTION_LIMIT} visits are listed, so counts may be incomplete.` });
     } else if (history?.next?.executions) {
-        banners.push({ level: "info", text: "Older step runs of this run are not loaded, so counts may be incomplete." });
+        banners.push({ level: "info", text: "Older visits of this run are not loaded, so counts may be incomplete." });
     }
     if (history?.paged && !history.openComplete) {
         banners.push({ level: "warning", text: "This run has more open steps, inputs, deliveries or waiting effects than one read lists (500 of each), so some of them are not shown." });
@@ -878,10 +878,10 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
         banners.push({ level: "warning", text: `Run status is not certain: the workflow's data says ${status.conflict.readModel} but its latest event says ${status.conflict.events}. Refresh to read it again.` });
     }
     if (ignoredEvents) banners.push({ level: "warning", text: `${ignoredEvents} workflow event${ignoredEvents === 1 ? "" : "s"} had an unknown format and ${ignoredEvents === 1 ? "was" : "were"} ignored.` });
-    if (ignoredRows) banners.push({ level: "warning", text: `${ignoredRows} step run${ignoredRows === 1 ? "" : "s"} had an unknown format and ${ignoredRows === 1 ? "was" : "were"} ignored.` });
+    if (ignoredRows) banners.push({ level: "warning", text: `${ignoredRows} visit${ignoredRows === 1 ? "" : "s"} had an unknown format and ${ignoredRows === 1 ? "was" : "were"} ignored.` });
     const known = new Set((active?.states || []).map(node => node.id));
     const unknown = executions.filter(item => !known.has(item.stateId)).length;
-    if (unknown) banners.push({ level: "warning", text: `${unknown} step run${unknown === 1 ? "" : "s"} belong to steps that are not in this graph.` });
+    if (unknown) banners.push({ level: "warning", text: `${unknown === 1 ? "1 visit belongs" : `${unknown} visits belong`} to steps that are not in this graph.` });
     const context = { run: status, hasRun: status.phase !== "none", terminalState: bound ? status.terminalState ?? run?.terminalState ?? null : null,
         complete: Boolean(run && bound && run.history.complete), stateless: !bound && runId ? "Not shown on the graph" : undefined,
         pins: agentPinSource(shared, run, bound, active) };

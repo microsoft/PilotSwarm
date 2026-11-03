@@ -50,7 +50,7 @@ const RESPONSE_KINDS = new Set(["success", "error", "cancel"]);
  */
 export const WORKFLOW_V2_TEST_NOTICE_TEXT = "TEST — scripts run normally; framework tools are mocked. Direct script effects (network, files, "
     + "processes, the clock, randomness) are real, and a test result is not evidence that the definition is safe to run live.";
-export const WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT = "Agent states run real agent sessions: they spend model tokens and their results vary as a "
+export const WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT = "Agent steps run real agent sessions: they spend model tokens and their results vary as a "
     + "model's do. Their framework tool calls are mocked; their model's own built-in tools (shell, files) run normally; MCP tools are refused.";
 /** The largest workflow YAML (compiler.ts WORKFLOW_V2_MAX_YAML_BYTES); the server checks it again. */
 const YAML_MAX_BYTES = 256 * 1024;
@@ -60,9 +60,9 @@ const KV_KEY_MAX = 128;
 const VALUE_DISPLAY_LIMIT = 300;
 const PENDING_LABELS = { pause: "Pausing…", resume: "Resuming…", stop: "Stopping…", cancel: "Cancelling…" };
 const TITLES = {
-    pause: "Pause the run: no new state starts; work already started finishes and its result is kept.",
-    resume: "Resume the run: states start again from where it was paused.",
-    stop: "Stop the run gracefully: no new state starts, work already started may finish until its grace period ends, and then the run ends as stopped.",
+    pause: "Pause the run: no new step starts; work already started finishes and its result is kept.",
+    resume: "Resume the run: steps start again from where it was paused.",
+    stop: "Stop the run gracefully: no new step starts, work already started may finish until its grace period ends, and then the run ends as stopped.",
     cancel: "Cancel the run: it ends now, and work in progress is interrupted.",
 };
 const MESSAGE_LIMIT = 300;
@@ -88,7 +88,7 @@ export function workflowV2RestrictionText(commands) {
 
 function restrictionText(commands) {
     if (!isRecord(commands.restriction)) return null;
-    const reason = text(commands.restriction.reason) ?? "This workflow runs in a workflow agent state's subtree: people can only pause, stop or cancel it.";
+    const reason = text(commands.restriction.reason) ?? "This workflow was started by an agent step of another workflow: people can only pause, stop or cancel it.";
     const controlling = text(commands.restriction.controllingSessionId);
     return controlling ? `${reason} Its controlling agent is session ${controlling}.` : reason;
 }
@@ -772,15 +772,15 @@ export function workflowV2RunCommandConfirm(operation, runId, args = null) {
         const set = isRecord(args?.set) ? Object.keys(args.set) : [];
         if (set.length) {
             return { title: "Update Workflow Variables", confirmLabel: "Update",
-                message: `In one update of the variables of ${run}, set ${keyNames(set)} and remove ${keyNames(removed)}? Every other variable stays as it is. States that start from now on see the update; work already running keeps the values it started with.` };
+                message: `In one update of the variables of ${run}, set ${keyNames(set)} and remove ${keyNames(removed)}? Every other variable stays as it is. Steps that start from now on see the update; work already running keeps the values it started with.` };
         }
         const plural = removed.length > 1;
         return { title: plural ? "Remove Workflow Variables" : "Remove Workflow Variable", confirmLabel: "Remove",
-            message: `Remove ${keyNames(removed)} from the variables of ${run}? States that start from now on do not see ${plural ? "them" : "it"}; work already running keeps the values it started with.` };
+            message: `Remove ${keyNames(removed)} from the variables of ${run}? Steps that start from now on do not see ${plural ? "them" : "it"}; work already running keeps the values it started with.` };
     }
     if (operation === "stop") {
         return { title: "Stop Workflow Run", confirmLabel: "Stop Run",
-            message: `Stop ${run}? No new state starts; work already started may finish until its grace period ends, and then the run ends as stopped. A stop does not undo effects that already happened.` };
+            message: `Stop ${run}? No new step starts; work already started may finish until its grace period ends, and then the run ends as stopped. A stop does not undo effects that already happened.` };
     }
     if (operation === "cancel") {
         return { title: "Cancel Workflow Run", confirmLabel: "Cancel Run",
@@ -837,11 +837,11 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
         const removed = Array.isArray(args?.delete) ? args.delete : [];
         const parts = [set.length ? `set ${keyNames(set)}` : "", removed.length ? `removed ${keyNames(removed)}` : ""].filter(Boolean).join("; ");
         const revision = isRecord(receipt) && Number.isSafeInteger(receipt.kvRevision) ? ` (revision ${receipt.kvRevision})` : "";
-        return `Variables of ${run} updated${parts ? `: ${parts}` : ""}${revision}. States that start from now on see them.${again}`;
+        return `Variables of ${run} updated${parts ? `: ${parts}` : ""}${revision}. Steps that start from now on see them.${again}`;
     }
-    if (operation === "pause") return `Paused ${run}: no new state starts; work already started finishes.${again}`;
+    if (operation === "pause") return `Paused ${run}: no new step starts; work already started finishes.${again}`;
     if (operation === "resume") return `Resumed ${run}${status ? ` (${status})` : ""}.${again}`;
-    if (operation === "stop") return `Stop accepted for ${run}: no new state starts, and the run ends as stopped after its grace period.${again}`;
+    if (operation === "stop") return `Stop accepted for ${run}: no new step starts, and the run ends as stopped after its grace period.${again}`;
     return `Cancel accepted for ${run}: the run ends when its controller applies it.${again}`;
 }
 

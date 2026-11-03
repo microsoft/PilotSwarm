@@ -1723,10 +1723,13 @@ serves), no typed input into a running test, and no display of lineage, receipts
   that asked) and is not counted.
 - **Plain words on every workflow screen (owner guidance, 3 November 2026).** The screens use common words, not the
   design's terms. What a person sees, by design term: a state is a **step** (an agent state is an agent step, the
-  initial state the first step); a node execution is a **step run**; a run admitted but not started is **waiting to
-  start**, and a stopping run says that steps already started may finish; status "not overlaid" on the graph is **not
-  shown on the graph**; a read model's unknown shape is **an unknown format**; a pin is a **lock** ("Locked by
-  publishing", "Locked for this test", "Interface fingerprint"); an unverified status is **not certain**. The wire,
-  the stored names and the YAML keep the design's terms (`states`, `initial`, `nodeExecutions`). This pass is done in
-  parts; the first covers the shared workflow view (portal and TUI): its status lines, notices, step details and the
-  definition checks.
+  initial state the first step, transitions the next steps); a node execution is a **visit** (the step's details count
+  "Visits"); a run admitted but not started is **waiting to start**, and a stopping run says that steps already
+  started may finish; status "not overlaid" on the graph is **not shown on the graph**; a read model's unknown shape
+  is **an unknown format**; a pin is a **lock** ("Locked by publishing", "Locked for this test", "Interface
+  fingerprint"); an unverified status is **not certain**; a contract is a **message type**; a recipient's intake
+  outcome is its **check** ("Check by recipient", "Checked at"); a business result is an **outcome**; the portal's
+  "Node details" and "Execution log" are "Step details" and "Step log". The wire, the stored names and the YAML keep
+  the design's terms (`states`, `initial`, `nodeExecutions`, `contract`). This pass is done in parts: the shared
+  workflow view, then the portal's and the TUI's panels, keys, help and transcript lines; the test-mode words and the
+  texts the server writes come last.

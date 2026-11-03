@@ -86,7 +86,7 @@ test("the shared Ink app draws the view: the states, the selected one's details 
     assert.match(html, /data-title="Workflow: review-once · Running"/);
     assert.match(html, /▶ ● review\s+agent · code-reviewer\s+Agent working · waiting for its typed result/);
     assert.match(html, /○ done\s+ends · succeeded/);
-    assert.match(html, /data-title="State review — ↑↓ state · ←→ run · Tab agent chat · Enter open · Esc close"/);
+    assert.match(html, /data-title="Step review — ↑↓ step · ←→ run · Tab agent chat · Enter open · Esc close"/);
     assert.match(html, /  accepted → done/);
     assert.match(html, /▸ visit 1 · working · child-1/);
     assert.match(html, /People can read these chats; the server refuses their prompts, answers and steers\./);
@@ -118,7 +118,7 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /ctrl-a agents mocked\/real, real ones spend model tokens/);
     assert.match(text, /workflow view, a test run shown: a answers an intercepted effect that waits/);
     assert.match(text, /\+ advances its virtual clock by whole seconds \(script clocks are real\)/);
-    assert.match(text, /workflow view: the selected state's own result of an older \/ newer visit of the shown run/);
+    assert.match(text, /workflow view: the selected step's own result of an older \/ newer visit of the shown run/);
     assert.match(text, /workflow view: o reads the shown run.s older history/);
     assert.match(text, /f reads the whole output or error of the visit the details show/);
     assert.match(text, /i compares the variables that visit applied with the run.s accepted ones/);
@@ -404,8 +404,8 @@ test("the shared Ink app draws the test review: the test notice, what is tested,
     assert.match(html, /data-title="Test review · draft revision 2 · not a sandbox"/);
     assert.match(html, /<p>TEST — scripts run normally; framework tools are mocked\./);
     assert.match(html, /<p>Definition hash: hash-2<\/p>/);
-    assert.match(html, /<p>Agent states: real agents, which spend model tokens \(ctrl-a: mocked\)<\/p>/);
-    assert.match(html, /Agent states run real agent sessions: they spend model tokens/);
+    assert.match(html, /<p>Agent steps: real agents, which spend model tokens \(ctrl-a: mocked\)<\/p>/);
+    assert.match(html, /Agent steps run real agent sessions: they spend model tokens/);
     assert.match(html, /<p>ctrl-t Start test<\/p>/);
     assert.deepEqual(inputs.map(input => [input.label, input.value, input.focused]), [["inputs (JSON object)", "{}", false],
         ["initial variables (JSON object, optional)", "", false], ["scenario name (optional, up to 128 characters)", "happy path", true]]);

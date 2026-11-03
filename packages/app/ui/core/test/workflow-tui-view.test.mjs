@@ -102,9 +102,9 @@ test("w opens the view on the pending agent state: its state, transitions with t
     const details = lineTexts(view);
     // The run it shows comes first (the live run here), then the selected state.
     assert.match(details[0], /^Run: Live run · running · run-1 \(1 of 2 · ←→ choose\)$/);
-    assert.ok(details.includes("review · agent · code-reviewer · initial state"));
-    assert.ok(details.includes("State: Agent working · waiting for its typed result"));
-    assert.ok(details.includes("Transitions:"));
+    assert.ok(details.includes("review · agent · code-reviewer · first step"));
+    assert.ok(details.includes("Status: Agent working · waiting for its typed result"));
+    assert.ok(details.includes("Next steps:"));
     assert.ok(details.includes("  accepted → fan"));
     assert.ok(details.includes("  rework → fix · ↺ in a loop"));
     assert.ok(details.includes("  timed_out → failed · runtime error route"));
@@ -124,7 +124,7 @@ test("↑↓ select states in graph order; the loop's other state, a parallel st
     let view = selectWorkflowViewModal(store.getState(), 110);
     assert.equal(view.selectedRowIndex, 1);
     assert.ok(lineTexts(view).includes("  fixed → review · ↺ in a loop"));
-    assert.ok(lineTexts(view).includes("Last outcome: fixed · business outcome"));
+    assert.ok(lineTexts(view).includes("Last outcome: fixed"));
     await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
     view = selectWorkflowViewModal(store.getState(), 110);
     assert.ok(lineTexts(view).includes("  each branch → work · where each branch starts"));
@@ -132,7 +132,7 @@ test("↑↓ select states in graph order; the loop's other state, a parallel st
     for (let i = 0; i < 10; i++) await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
     view = selectWorkflowViewModal(store.getState(), 110);
     assert.equal(view.selectedRowIndex, 6, "the selection stops at the last state");
-    assert.ok(lineTexts(view).includes("The workflow ends at this state."));
+    assert.ok(lineTexts(view).includes("The workflow ends at this step."));
     for (let i = 0; i < 10; i++) await controller.handleCommand(UI_COMMANDS.MODAL_PREV);
     assert.equal(selectWorkflowViewModal(store.getState(), 110).selectedRowIndex, 0, "and at the first");
 });
@@ -164,7 +164,7 @@ test("a state without an agent chat keeps the view open; another kind of session
     await controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT);
     await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     assert.equal(store.getState().ui.modal?.type, "workflowView");
-    assert.equal(store.getState().ui.statusText, "State fix has no agent chat to open");
+    assert.equal(store.getState().ui.statusText, "Step fix has no agent chat to open");
     assert.deepEqual(opened, []);
     await controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.equal(store.getState().ui.modal, null);
@@ -185,13 +185,13 @@ test("an agent state whose child is not listed yet says so; a read failure and a
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModelAttempt: { runId: null, afterSeq: 0, sessionUpdatedAt: null },
         readModelError: "Gateway timeout" } });
     details = lineTexts(selectWorkflowViewModal(store.getState(), 110));
-    assert.ok(details.includes("The workflow's current state could not be read: Gateway timeout"));
+    assert.ok(details.includes("The workflow's current status could not be read: Gateway timeout"));
 
     const empty = harness({ events: [], model: null, transport: { readWorkflow: undefined } });
     await empty.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await settle();
     const view = selectWorkflowViewModal(empty.store.getState(), 110);
-    assert.equal(view.rows.map(rowText).join(""), "No states to show.");
+    assert.equal(view.rows.map(rowText).join(""), "No steps to show.");
     assert.ok(view.detailsLines.length >= 1);
 });
 

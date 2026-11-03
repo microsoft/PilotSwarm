@@ -7485,7 +7485,7 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
 
     return React.createElement(ScrollLinesPanel, {
         controller,
-        title: workflowLog ? [{ text: "Execution log", color: "gray" }] : mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
+        title: workflowLog ? [{ text: "Step log", color: "gray" }] : mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
         titleRight: workflowLog ? null : mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         // Chat/Summary toggling lives on the top toolbar so the pane chrome
         // stays clean. The toolbar button is disabled for group sessions.
@@ -8834,7 +8834,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
             ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip" },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
                 React.createElement("span", { className: "ps-artifact-pane-type", title: onCanvas ? (view.note || undefined) : undefined },
-                    onCanvas ? (isWorkflow ? "Node details" : view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
+                    onCanvas ? (isWorkflow ? "Step details" : view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
                 onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
                 onCanvas && view.exists && !isWorkflow
                     ? React.createElement("button", {
@@ -8858,7 +8858,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
         : (maximized ? (toolbarSlot ? createPortal(React.createElement(React.Fragment, null,
             React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
             onCanvas && (view.exists || isWorkflow)
-                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, isWorkflow ? "Node details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, isWorkflow ? "Step details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                 : null,
             onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
             onCanvas && view.exists && !isWorkflow ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
@@ -8888,7 +8888,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode }),
                 onCanvas && (view.exists || isWorkflow)
                     ? React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
-                        isWorkflow ? "Node details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+                        isWorkflow ? "Step details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                     : null,
                 onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view }) : null),
             React.createElement("span", { className: "ps-artifact-pane-actions" },

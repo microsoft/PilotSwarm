@@ -49,11 +49,11 @@ test("a delivered message with a refused_full or refused_size annotation keeps i
 
 test("the selected node panel shows a distinct recipient intake line beside an unchanged delivery", () => {
     const html = panel(model(message({ intakeOutcome: "refused_full", intakeOutcomeAt: AT })));
-    assert.match(html, /Recipient intake<\/span><strong>Refused · queue full</);
-    assert.match(html, /Intake noted at<\/span><strong>2026-11-01T20:00:00.123456Z</);
-    assert.match(html, /Delivery state<\/span><strong>delivered</);
+    assert.match(html, /Check by recipient<\/span><strong>Refused · queue full</);
+    assert.match(html, /Checked at<\/span><strong>2026-11-01T20:00:00.123456Z</);
+    assert.match(html, /Delivery status<\/span><strong>delivered</);
     assert.match(html, /Attempts<\/span><strong>2</);
-    assert.match(html, /intake refused this message\. This does not change the recorded delivery state or show that the recipient read or acted on it\./);
+    assert.match(html, /refused this message when it checked it\. This does not change the recorded delivery or show that the recipient read or acted on it\./);
     assert.ok(!html.includes("after it was delivered"));
     assert.match(html, /does not show that the recipient read, answered or acted on it/);
     assert.ok(!/Delivery to .* failed/.test(html));
@@ -67,15 +67,15 @@ test("a pending or failed delivery with an annotation is shown as recorded, not 
     assert.equal(exec(pending).current.outbox.state, "pending");
     assert.equal(exec(pending).current.outbox.intake.kind, "refused_full");
     const html = panel(model(message({ state: "pending", attempts: 0, deliveredAt: null, intakeOutcome: "refused_full", intakeOutcomeAt: AT }), [row("notify", 1, "pending")]));
-    assert.match(html, /Delivery state<\/span><strong>pending</);
+    assert.match(html, /Delivery status<\/span><strong>pending</);
     assert.match(html, /Refused · queue full/);
-    assert.match(html, /intake refused this message\. This does not change the recorded delivery state/);
+    assert.match(html, /refused this message when it checked it\. This does not change the recorded delivery/);
     assert.ok(!html.includes("was delivered to the queue") && !html.includes("after it was delivered") && !html.includes("Sent · queued"),
         "a pending delivery's panel does not claim delivery");
     assert.match(html, /Delivering Alert@1 to parent-1/);
     const failedHtml = panel(model(message({ state: "failed", errorPreview: '{"code":"delivery_failed"}', intakeOutcome: "refused_size", intakeOutcomeAt: AT }),
         [done("notify", 1, "delivery_failed", { resultKind: "runtime_error" })]));
-    assert.match(failedHtml, /Delivery state<\/span><strong>failed</);
+    assert.match(failedHtml, /Delivery status<\/span><strong>failed</);
     assert.match(failedHtml, /Refused · message too large/);
     assert.match(failedHtml, /Delivery to parent-1 failed/);
     assert.ok(!failedHtml.includes("was delivered to the queue") && !failedHtml.includes("after it was delivered") && !failedHtml.includes("Sent · queued"),
@@ -94,9 +94,9 @@ test("without the optional fields nothing changes: no intake data and no intake 
         assert.ok(!("intake" in exec(view).current.outbox));
     }
     const html = panel(model(message()));
-    assert.ok(!html.includes("Recipient intake"));
-    assert.ok(!html.includes("Intake noted at"));
-    assert.match(html, /Delivery state<\/span><strong>delivered</);
+    assert.ok(!html.includes("Check by recipient"));
+    assert.ok(!html.includes("Checked at"));
+    assert.match(html, /Delivery status<\/span><strong>delivered</);
     assert.equal(workflowV2IntakeOutcome(undefined), null);
     assert.equal(workflowV2IntakeOutcome({}), null);
 });
@@ -108,22 +108,22 @@ test("an annotation on a run of another revision, or on a run that is not select
     assert.equal(mismatched.bound, false);
     assert.ok(mismatched.nodes.every(item => !item.current));
     assert.deepEqual(mismatched.outbox, []);
-    assert.ok(!panel(model(annotated, undefined, { runs: [{ runId: RUN, mode: "live", status: "running", revision: 2, outcome: null }] })).includes("Recipient intake"));
+    assert.ok(!panel(model(annotated, undefined, { runs: [{ runId: RUN, mode: "live", status: "running", revision: 2, outcome: null }] })).includes("Check by recipient"));
     const noRun = projectWorkflowV2({ readModel: readModel({ noRun: true }) });
     assert.ok(noRun.nodes.every(item => !item.current));
-    assert.ok(panel(model(annotated)).includes("Recipient intake"), "the bound control still shows it");
+    assert.ok(panel(model(annotated)).includes("Check by recipient"), "the bound control still shows it");
 });
 
 test("a missing time, an unknown outcome or a time alone are explicit, never read as success or refusal", () => {
     assert.deepEqual(workflowV2IntakeOutcome({ intakeOutcome: "refused_full" }), { kind: "refused_full", reason: "queue full", at: null });
-    assert.match(panel(model(message({ intakeOutcome: "refused_full" }))), /Intake noted at<\/span><strong>Time not recorded</);
+    assert.match(panel(model(message({ intakeOutcome: "refused_full" }))), /Checked at<\/span><strong>Time not recorded</);
     const unknown = panel(model(message({ intakeOutcome: "accepted", intakeOutcomeAt: AT })));
-    assert.match(unknown, /Recipient intake<\/span><strong>Unrecognized outcome · accepted</);
+    assert.match(unknown, /Check by recipient<\/span><strong>Unrecognized result · accepted</);
     assert.ok(!unknown.includes("Refused ·"));
     assert.ok(!unknown.includes("Received") && !unknown.includes("Executed"));
     assert.match(unknown, /not shown as a result/);
     assert.deepEqual(workflowV2IntakeOutcome({ intakeOutcomeAt: AT }), { kind: "unknown", reason: null, raw: null, at: AT });
-    assert.match(panel(model(message({ intakeOutcomeAt: AT }))), /Unrecognized outcome<\/strong>/);
+    assert.match(panel(model(message({ intakeOutcomeAt: AT }))), /Unrecognized result<\/strong>/);
     assert.equal(workflowV2IntakeOutcome({ intakeOutcome: 42, intakeOutcomeAt: 7 }).raw, null);
     assert.equal(workflowV2IntakeOutcome({ intakeOutcome: 42, intakeOutcomeAt: 7 }).at, null);
     assert.equal(workflowV2IntakeOutcome({ intakeOutcome: "", intakeOutcomeAt: "" }).kind, "unknown");

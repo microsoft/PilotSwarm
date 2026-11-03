@@ -152,7 +152,7 @@ test("while the selected run's model loads or fails, nothing of the previously r
     const failing = pane(seed({ view: viewOf({ selectedRunId: "run-test-1", readModelAttempt: { runId: "run-test-1", afterSeq: null, sessionUpdatedAt: 1 }, readModelError: "boom" }) }).controller);
     assert.ok(!failing.includes("Done · changed"));
     assert.match(failing, /This run could not be read\. Your selection is kept\./);
-    assert.match(failing, /The workflow&#x27;s current state could not be read: boom/);
+    assert.match(failing, /The workflow&#x27;s current status could not be read: boom/);
     assert.match(failing, /<option[^>]*value="run-test-1"[^>]*selected=""/);
     assert.ok(!failing.includes("Reading this run…"));
     assert.deepEqual(workflowReadModelView({ readModel: live, readModelRunId: null, selectedRunId: "run-test-1" }).readModel, null);

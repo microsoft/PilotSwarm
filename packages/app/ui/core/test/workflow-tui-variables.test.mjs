@@ -102,7 +102,7 @@ test("the view lists the shown run's variables; v opens the form, and Enter sets
     const { operation_id: operationId, ...wire } = first;
     assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, set: { "my var": { limit: 3, tags: ["a"] } }, expected_kv_revision: 3 });
     assert.match(operationId, /^ui-set_vars-/);
-    assert.equal(statusOf(h.store), `Variables of run ${RUN} updated: set 'my var' (revision 4). States that start from now on see them.`);
+    assert.equal(statusOf(h.store), `Variables of run ${RUN} updated: set 'my var' (revision 4). Steps that start from now on see them.`);
     assert.deepEqual(h.store.getState().ui.modal, view, "back to the workflow view");
 
     // Any allowed name stays plain data, spaces and "__proto__" included; a value is any JSON, null too.
@@ -197,7 +197,7 @@ test("↑↓ copy a listed variable into the form; ctrl-r removes it after the c
     const [removal] = h.sent();
     const { operation_id: _id, ...wire } = removal;
     assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, delete: ["a"], expected_kv_revision: 3 });
-    assert.equal(statusOf(h.store), `Variables of run ${RUN} updated: removed 'a' (revision 4). States that start from now on see them.`);
+    assert.equal(statusOf(h.store), `Variables of run ${RUN} updated: removed 'a' (revision 4). Steps that start from now on see them.`);
     assert.deepEqual(h.store.getState().ui.modal, view, "accepted: back to the workflow view");
 });
 

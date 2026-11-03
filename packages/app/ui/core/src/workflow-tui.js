@@ -368,7 +368,7 @@ export function workflowViewVariablesFor(selection) {
     if (!variables) {
         const model = projection?.runReadModel ?? null;
         const why = !isPlainRecord(model) ? "The shown run is not loaded yet." : !isPlainRecord(model.run) ? "No run is shown."
-            : !isPlainRecord(model.personCommands) ? "This deployment takes no workflow commands from people." : "The shown run's state is not known.";
+            : !isPlainRecord(model.personCommands) ? "This deployment takes no workflow commands from people." : "The shown run's status is not known.";
         return { ok: false, reason: `The variables cannot be changed here. ${why}` };
     }
     if (!variables.editable) return { ok: false, reason: `The variables cannot be changed here. ${variables.reason}` };
@@ -395,7 +395,7 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
     const lines = [];
     const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, contentWidth), color, ...extra });
     const addWrapped = (text, color, indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) add(piece, color); };
-    addWrapped("An open map: a new name needs no declaration. A state reads the variables as they are when it starts; work already "
+    addWrapped("An open map: a new name needs no declaration. A step reads the variables as they are when it starts; work already "
         + "running keeps the values it started with. They cannot change the published definition, permissions, join receipts or request winners.", "gray");
     let pickLine = -1;
     if (!sameRun) {
@@ -929,7 +929,7 @@ export function workflowTestConfirm(pin, tests, args = {}) {
         ? `, scenario '${args.scenario.length > CONFIRM_SCENARIO_LIMIT ? `${args.scenario.slice(0, CONFIRM_SCENARIO_LIMIT - 1)}…` : args.scenario}'` : "";
     const given = `inputs ${jsonPreview(args?.inputs ?? {})}${args?.vars !== undefined ? `, initial variables ${jsonPreview(args.vars)}` : ""}${scenario}`;
     return { title: "Start Test Run", confirmLabel: "Start Test",
-        message: `Start a test run of ${what} with ${real ? "real agents, which spend model tokens" : "mocked agents (the parent answers each agent state)"}; `
+        message: `Start a test run of ${what} with ${real ? "real agents, which spend model tokens" : "mocked agents (the parent answers for each agent step)"}; `
             + `${given}? ${WORKFLOW_V2_TEST_NOTICE_TEXT}${real ? ` ${WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT}` : ""} The live run is not changed.` };
 }
 
@@ -989,7 +989,7 @@ export function selectWorkflowTestModal(state, maxWidth = 100, viewportHeight = 
     if (!changed && tests) {
         add(`Validity: ${tests.valid ? "Valid" : `${tests.errors || "Unlisted"} error${tests.errors === 1 ? "" : "s"}: it cannot be tested`}`, tests.valid ? "white" : "red");
     }
-    add(real ? "Agent states: real agents, which spend model tokens (ctrl-a: mocked)" : "Agent states: mocked; the parent answers each agent state (ctrl-a: real agents)",
+    add(real ? "Agent steps: real agents, which spend model tokens (ctrl-a: mocked)" : "Agent steps: mocked; the parent answers for each agent step (ctrl-a: real agents)",
         real ? "yellow" : "cyan");
     if (real) add(WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, "yellow");
     if (changed) add(change, "yellow");
@@ -1086,7 +1086,7 @@ function testRunNoticeLines(test) {
     const lines = [{ text: typeof test?.notice === "string" && test.notice ? test.notice : WORKFLOW_V2_TEST_NOTICE_TEXT, color: "yellow" }];
     lines.push(test?.agentMode === "real"
         ? { text: typeof test.agentNotice === "string" && test.agentNotice ? test.agentNotice : WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, color: "yellow" }
-        : { text: "Agent states are mocked: the parent answers each agent state.", color: "gray" });
+        : { text: "Agent steps are mocked: the parent answers for each agent step.", color: "gray" });
     return lines;
 }
 
@@ -1122,19 +1122,19 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
     if (!sameRun) add(`The workflow view no longer shows test run ${shortRunId(modal.runId)}, so this form sends nothing. Esc goes back.`, "yellow");
     else if (!item) add(`Interception ${modal.interceptionId} is not one of this test run's effects, so this form sends nothing. Esc goes back.`, "yellow");
     else {
-        add(`Effect: ${item.operation ?? "effect"}${item.tool ? ` · ${item.tool}` : ""}${item.stateId ? ` in state '${item.stateId}'` : ""}`, "cyan");
+        add(`Effect: ${item.operation ?? "effect"}${item.tool ? ` · ${item.tool}` : ""}${item.stateId ? ` in step '${item.stateId}'` : ""}`, "cyan");
         add(`Interception: ${item.interceptionId}`);
         if (isPlainRecord(item.response)) {
             const value = item.response.value === undefined || item.response.value === null ? "" : `: ${testValueText(item.response.value)}`;
             add(`Answered: ${item.response.kind ?? "an answer"} · ${item.response.disposition ?? "not known"}${value}. Another answer is refused; the same answer again is the same answer.`);
         } else if (isPlainRecord(node) && node.state !== "pending") {
-            add(`Its state already ended${typeof node.outcome === "string" && node.outcome ? ` '${node.outcome}'` : ""}; an answer is refused.`, "yellow");
+            add(`Its step already ended${typeof node.outcome === "string" && node.outcome ? ` '${node.outcome}'` : ""}; an answer is refused.`, "yellow");
         } else {
             add(`Waits for an answer${typeof item.virtualAt === "string" && item.virtualAt ? ` (reached at virtual time ${item.virtualAt})` : ""}.`, "yellow");
         }
         if (item.arguments !== null && item.arguments !== undefined) add(`What it reached: ${testValueText(item.arguments)}`);
         if (item.responseSchema !== null && item.responseSchema !== undefined) add(`The answer must match: ${testValueText(item.responseSchema)}`);
-        if (waiting?.outcomes?.length) add(`Its state's outcomes: ${waiting.outcomes.join(", ")}`);
+        if (waiting?.outcomes?.length) add(`Its step's outcomes: ${waiting.outcomes.join(", ")}`);
         add(`Answer: ${WORKFLOW_TEST_ANSWER_KINDS.map(entry => (entry === kind ? `[${entry}]` : entry)).join(" · ")} (Tab changes it)`, "cyan");
         if (kind === "cancel") add("The effect ends as cancelled; a cancel has no value.", "gray");
         if (kind === "error") add('An error answer is { "code", "message", "details"? } with a message of 1 to 4,000 characters.', "gray");
@@ -1251,8 +1251,8 @@ function nodeRow(entry, selected, idWidth, labelWidth, width) {
 
 /** The portal's history wording (its Result column). */
 const resultWord = execution => execution.status === "pending" ? "Pending"
-    : execution.resultKind === "business" ? "Business result"
-        : execution.resultKind === "runtime_error" ? "Runtime error" : "Result kind not recorded";
+    : execution.resultKind === "business" ? "Outcome"
+        : execution.resultKind === "runtime_error" ? "Runtime error" : "How it ended was not recorded";
 
 const durationText = ms => typeof ms === "number" && Number.isFinite(ms)
     ? (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`) : "not recorded";
@@ -1369,9 +1369,9 @@ function kvLines(execution, projection) {
  */
 export function workflowViewExecutionStep(selection, delta) {
     const node = selection?.selected?.node ?? null;
-    if (!node || node.shape !== "v2") return { ok: false, selection: null, status: "This state's visits have no results of their own here" };
+    if (!node || node.shape !== "v2") return { ok: false, selection: null, status: "This step's visits have no results of their own here" };
     const executions = Array.isArray(node.executions) ? node.executions : [];
-    if (!executions.length) return { ok: false, selection: null, status: "No visit of this state is in the loaded history of this run" };
+    if (!executions.length) return { ok: false, selection: null, status: "No visit of this step is in the loaded history of this run" };
     const runId = selection.projection.v2?.runId ?? null;
     const shown = workflowV2ShownExecution(node, runId, selection.projection.selectedExecution);
     const target = shown.index + (delta > 0 ? 1 : -1);
@@ -1420,7 +1420,7 @@ function testEffectLines(projection, selectedId) {
         const effect = `${item.operation ?? "effect"}${item.tool ? ` · ${item.tool}` : ""}`;
         const answered = Boolean(item.response && typeof item.response === "object");
         const answer = answered ? `${item.response.kind ?? "answered"} · ${item.response.disposition ?? "—"}` : "waiting for the parent";
-        return { text: `  ${effect} · state ${item.stateId ?? "—"} · ${answer}${item.stateId && item.stateId === selectedId ? " ◂ this state" : ""}`,
+        return { text: `  ${effect} · step ${item.stateId ?? "—"} · ${answer}${item.stateId && item.stateId === selectedId ? " ◂ this step" : ""}`,
             color: answered ? "white" : "yellow" };
     });
     if (items.length > EFFECT_LIMIT) lines.push({ text: `  … ${items.length - EFFECT_LIMIT} more`, color: "gray" });
@@ -1452,19 +1452,19 @@ function detailLines(selection, width) {
         else for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }
     for (const banner of projection.banners) add(`! ${banner.text}`, banner.level === "error" ? "red" : "yellow");
-    if (projection.readError) add(`The workflow's current state could not be read: ${projection.readError}`, "red");
+    if (projection.readError) add(`The workflow's current status could not be read: ${projection.readError}`, "red");
     if (!selected) {
         if (projection.noGraph) add("This workflow has no graph to show: its definition is not valid or not available.", "yellow");
         else if (projection.error) add(projection.error, "red");
-        else add(projection.loading || !projection.definition ? "Loading workflow graph…" : "This workflow has no states.", "gray");
+        else add(projection.loading || !projection.definition ? "Loading workflow graph…" : "This workflow has no steps.", "gray");
         return lines;
     }
     const node = selected.node;
-    add(`${selected.id} · ${selected.label}${selected.initial ? " · initial state" : ""}`, "cyan", { bold: true });
-    add(`State: ${selected.stateLabel}`);
-    add(`Executions: ${selected.runs}${selected.partial ? " in loaded history" : ""}`);
+    add(`${selected.id} · ${selected.label}${selected.initial ? " · first step" : ""}`, "cyan", { bold: true });
+    add(`Status: ${selected.stateLabel}`);
+    add(`Visits: ${selected.runs}${selected.partial ? " in loaded history" : ""}`);
     if (node.shape === "v2") {
-        add(`Last outcome: ${node.outcome ? `${node.outcome} · ${node.resultKind === "runtime_error" ? "runtime error" : "business outcome"}` : "Not recorded"}`);
+        add(`Last outcome: ${node.outcome ? `${node.outcome}${node.resultKind === "runtime_error" ? " · runtime error" : ""}` : "Not recorded"}`);
         // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
         if (node.kind === "agent") {
             add(`Agent: ${workflowV2AgentTask(node)}`);
@@ -1475,14 +1475,14 @@ function detailLines(selection, width) {
         add(`Last outcome: ${node.outcome}`);
     }
     if (selected.transitions.length) {
-        add("Transitions:", "cyan");
+        add("Next steps:", "cyan");
         for (const route of selected.transitions) {
             const notes = [route.kind === "error" ? "runtime error route" : null, route.kind === "branch" ? "where each branch starts" : null,
                 route.loop ? "↺ in a loop" : null].filter(Boolean);
             add(`  ${route.label} → ${route.target}${notes.length ? ` · ${notes.join(" · ")}` : ""}`);
         }
     } else if (node.type === "terminal") {
-        add("The workflow ends at this state.", "gray");
+        add("The workflow ends at this step.", "gray");
     }
     if (occurrences.length) {
         add("Agent chats (Tab: choose · Enter: open):", "cyan");
@@ -1513,7 +1513,7 @@ function detailLines(selection, width) {
     const history = historyLines(node);
     add(history.title, "cyan");
     if (history.lines.length) for (const line of history.lines) add(line);
-    else add("  No executions in the loaded history.", "gray");
+    else add("  No visits in the loaded history.", "gray");
     // The shown run's older history: o reads its next, older page (the read model holds its newest rows and open ones).
     const runHistory = node.shape === "v2" ? projection.v2?.readModel?.run?.history ?? null : null;
     if (runHistory?.loading) add("  Reading older history…", "yellow");
@@ -1551,7 +1551,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
     const idWidth = Math.min(20, Math.max(4, ...selection.nodes.map(entry => entry.id.length)));
     const labelWidth = Math.min(24, Math.max(6, ...selection.nodes.map(entry => entry.label.length)));
     const nodeRows = selection.nodes.map((entry, index) => nodeRow(entry, index === selection.selectedIndex, idWidth, labelWidth, contentWidth));
-    const rows = nodeRows.length ? nodeRows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No states to show.", color: "gray" }]];
+    const rows = nodeRows.length ? nodeRows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No steps to show.", color: "gray" }]];
     const detailsLines = detailLines(selection, contentWidth);
     // The details scroll (PgUp/PgDn) within what its panel can show: never past its last line.
     const { listHeight, detailsHeight } = panelHeights(viewportHeight ?? state?.ui?.layout?.viewportHeight ?? 40, rows.length);
@@ -1561,7 +1561,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
         rows,
         selectedRowIndex: selection.selectedIndex,
         detailsTitle: selection.selected
-            ? `State ${bounded(selection.selected.id, 30)} — ↑↓ state · ←→ run · Tab agent chat · Enter open · Esc close` : "Workflow",
+            ? `Step ${bounded(selection.selected.id, 30)} — ↑↓ step · ←→ run · Tab agent chat · Enter open · Esc close` : "Workflow",
         detailsLines,
         listHeight,
         detailsHeight,
