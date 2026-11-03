@@ -72,22 +72,23 @@ workspace storage; they do not receive upload parts or coordinate the spool.
 
 Keep #191 as the umbrella issue. This documentation-only PR references it
 without closing it and preserves the complete target design and test plan.
-Create three implementation issues, each with its own PR. Each implementation
+Track the three implementation issues below, each with its own PR. Each implementation
 PR closes only its child issue and references #191; do not use `Fixes #191` on
 the design PR or an upload-only PR. Close the umbrella only after verifying
 its acceptance criteria, distinguishing required cleanup from extra hardening.
 
 | Increment | Deliverable | Required evidence | Explicitly deferred |
 | --- | --- | --- | --- |
-| 1. Chunked workspace uploads | Local spool/coordinator, bounded part requests and assembly, direct/Web API parity, owner-only access, conflict dialogs, large editor saves, normal failure/cancel/expiry cleanup, and compatibility. | G1/G2 upload spike, upload portions of G3-G5, P1-P4, C1/C2, upload A1/A2, L1/L2 normal lifecycle, upload U1/U2, I1, and B1. | New download endpoints/snapshots; CMS cleanup ledger; guaranteed orphan discovery after local spool loss or session deletion. |
-| 2. Bounded workspace downloads | Immutable snapshots, bounded raw ranges, release/expiry, SDK/API/UI integration, and the complete proxy round-trip. | Full G3-G5, D1/D2, download authorization/lifecycle/quota/UI coverage, direct/Web parity, and compatibility. | Durable destination-candidate cleanup and restart resumption. |
-| 3. Crash-safe transfer cleanup | CMS ledger/migration, write-ahead destination-candidate registration, durable orphan discovery, safe cleanup, explicit uncertain publication outcomes, and redacted management/tuner diagnostics. | L3, full C3 and recovery portions of G1/L1/L2, catalog/provider integration, helper-liveness and identity refusal cases. | Resumable transfers, multiple portals, exactly-once filesystem/database commits, and transactional CAS with arbitrary external writers. |
+| 1. [#241: Chunked workspace uploads](https://github.com/microsoft/PilotSwarm/issues/241) | Local spool/coordinator, bounded part requests and assembly, direct/Web API parity, owner-only access, conflict dialogs, large editor saves, normal failure/cancel/expiry cleanup, and compatibility. | G1/G2 upload spike, upload portions of G3-G5, P1-P4, C1/C2, upload A1/A2, L1/L2 normal lifecycle, upload U1/U2, I1, and B1. | New download endpoints/snapshots; CMS cleanup ledger; guaranteed orphan discovery after local spool loss or session deletion. |
+| 2. [#242: Bounded workspace downloads](https://github.com/microsoft/PilotSwarm/issues/242) | Immutable snapshots, bounded raw ranges, release/expiry, SDK/API/UI integration, and the complete proxy round-trip. | Full G3-G5, D1/D2, download authorization/lifecycle/quota/UI coverage, direct/Web parity, and compatibility. | Durable destination-candidate cleanup and restart resumption. |
+| 3. [#243: Crash-safe transfer cleanup](https://github.com/microsoft/PilotSwarm/issues/243) | CMS ledger/migration, write-ahead destination-candidate registration, durable orphan discovery, safe cleanup, explicit uncertain publication outcomes, and redacted management/tuner diagnostics. | L3, full C3 and recovery portions of G1/L1/L2, catalog/provider integration, helper-liveness and identity refusal cases. | Resumable transfers, multiple portals, exactly-once filesystem/database commits, and transactional CAS with arbitrary external writers. |
 
 The second increment reuses the first increment's transport, admission, and
 local lifecycle foundation. The third integrates with both shipped lifecycles.
 These are sequential deliveries, not a requirement to open empty or stacked
-implementation PRs before code exists. Record actual issue/PR links here as
-they become available; the table above does not imply that any were created.
+implementation PRs before code exists. The design is reviewed in
+[#240](https://github.com/microsoft/PilotSwarm/pull/240); record implementation
+PR links here as they become available.
 
 ### Safety boundary for the first two increments
 
@@ -113,6 +114,188 @@ The first two increments cannot guarantee discovery of destination-side
 orphans when local manifests disappear. Document that limitation explicitly.
 The recovery increment strengthens discovery; it still does not remove
 filesystem/database transaction or helper-liveness uncertainty.
+
+## Full process and component map
+
+This is the proposed final architecture, not implemented transfer code.
+Labels identify the delivery owner: **U = #241 uploads**, **D = #242 downloads**,
+and **R = #243 stronger recovery**. Existing components are extended rather
+than bypassed. The coordinator and transfer helpers are new responsibilities;
+their final internal filenames are implementation decisions.
+
+### End-to-end architecture
+
+```mermaid
+flowchart TB
+    User["User: pick/drop file, save editor text, or download"]
+    UI["Workspace pane: progress, conflicts, cancel, download Blob [U/D]"]
+    HTTP["Browser transport / HTTP API client [U/D]"]
+    Proxy["Existing proxy or WAF: limits unchanged"]
+    Routes["Portal server / API router: control JSON + bounded raw bytes [U/D]"]
+    Gate["PortalRuntime: authenticated owner-only session:files gate [U/D]"]
+    Direct["Trusted direct SDK caller"]
+    Mgmt["Public management client: workspace binding + transfer methods [U/D/R]"]
+    Coord["New local coordinator: lifecycle, admission, receipts [U/D/R]"]
+    Helpers["Deadline-bounded child helpers: copy, hash, validate, publish [U/D/R]"]
+    Spool[("Portal-local spool: upload parts + download snapshots [U/D]")]
+    Candidate[("Destination-side private staging: candidate + marker [U/R]")]
+    Target[("Session workspace: published user files")]
+    Catalog["Existing CMS catalog boundary: stored procedures [R]"]
+    Ledger[("New durable cleanup ledger: metadata only [R]")]
+    Sweep["Startup / periodic cleanup [U/D]; durable discovery [R]"]
+    Events["Existing workspace-files-changed event / next-turn notification [U]"]
+    Workers["Existing agent workers: normal workspace reads/writes"]
+    User --> UI --> HTTP --> Proxy --> Routes --> Gate --> Mgmt
+    Direct --> Mgmt
+    Mgmt --> Coord --> Helpers
+    Helpers -->|"U: bounded part writes"| Spool
+    Spool -->|"U: stream assembly"| Helpers
+    Helpers -->|"U: complete candidate"| Candidate
+    Candidate -->|"U: atomic link or rename through helper"| Target
+    Target -->|"D: source descriptor"| Helpers
+    Helpers -->|"D: immutable snapshot"| Spool
+    Spool -->|"D: bounded ranges via helpers and API"| HTTP
+    Coord -->|"R: register before destination creation"| Catalog --> Ledger
+    Coord -->|"U: known commit"| Events --> Workers
+    Workers <-->|"Existing shared workspace access"| Target
+    Sweep --> Coord
+    Ledger -->|"R: exact registered locations"| Sweep
+    Sweep -->|"Validated cleanup through helpers"| Helpers
+```
+
+The portal is both the browser-facing API server and the process hosting the
+local coordinator. The spool is private transfer storage, not a session's
+workspace. The destination candidate is beside the target so publication can
+remain atomic even when the spool is on a different filesystem.
+
+Workers do not receive upload chunks. They see the published file through
+their existing workspace access; the existing change event informs a later
+agent turn. CMS is the durable session catalog, not payload storage. Direct
+SDK mode is trusted; browser requests still require the runtime gate.
+
+### Upload process (#241, with #243 additions marked)
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant A as API and runtime gate
+    participant M as Management / coordinator
+    participant H as Child helpers
+    participant S as Local spool
+    participant W as Workspace
+    participant C as CMS
+    B->>A: Start: session, folder, target, size, ifMatch
+    A->>M: Authorized call with trusted actor context
+    M->>M: Bind target, reserve capacity, create local manifest
+    M-->>B: uploadId, partBytes, partCount, expiry
+    loop Sequential parts
+        B->>A: PUT bounded raw bytes
+        A->>M: Reauthorize and validate transfer binding
+        M->>H: Bounded part I/O
+        H->>S: Write exact-length immutable part
+        M-->>B: Accepted part or explicit error
+    end
+    B->>A: Complete
+    A->>M: Reauthorize; claim completion once
+    opt R: increment 3 only
+        M->>C: Register candidate before destination creation
+    end
+    M->>H: Assemble and hash; validate size and digest
+    S->>H: Accepted parts
+    H->>W: Write private destination-side candidate
+    H-->>M: Assembly finished; helper exited
+    M->>H: Revalidate target, condition, and atomic publication
+    H->>W: Exclusive create or complete-file replacement
+    H-->>M: Publication result
+    M->>M: Save receipt and clean normal staging
+    M->>C: Record existing file-change event
+    M-->>B: Known result, or explicit uncertain outcome
+```
+
+Every control/raw request repeats the relevant access and binding checks.
+The R step strengthens bookkeeping; it is not a prerequisite for #241.
+The event above already exists and does not imply a new migration in #241.
+Publication and receipt/event recording are not one transaction. See the
+completion and crash-boundary sections for failure behavior.
+
+### Download process (#242)
+
+1. Browser requests a download for a captured session/folder/path.
+2. Runtime authorizes; management resolves the source and coordinator reserves
+   snapshot capacity.
+3. A child opens the source, streams and hashes into a local snapshot, checks
+   for detected source changes, and returns immutable snapshot metadata.
+4. Browser requests successive bounded ranges. Each passes the runtime gate
+   and transfer binding checks; helpers serve snapshot bytes, not live-source
+   bytes, through the raw API path.
+5. Browser assembles its Blob and triggers Save. Release/expiry reclaims the
+   snapshot after active readers exit. No file-change event is generated.
+
+### Cleanup and failure process (#243 strengthens normal cleanup)
+
+| Trigger | #241 / #242 local behavior | #243 addition |
+| --- | --- | --- |
+| Cancel, expiry, ordinary I/O failure | Serialize lifecycle, stop/track helpers, safely reclaim known local entries and candidates, retain unresolved obligations. | Persist destination cleanup state and errors durably. |
+| Graceful portal shutdown | Stop admitting transfers; drain/stop tracked helpers and perform safe cleanup. | Preserve outstanding destination obligations independently of local manifests. |
+| Restart or lost local spool | Old IDs do not resume; unavailable is not proof of rollback. Lost candidate inventory may remain undiscoverable. | Discover candidates from CMS even after spool loss/session deletion; validate identity and liveness before cleanup. |
+| Publication result lost | Do not automatically publish again or infer success from target contents. | Keep publication outcome separate from cleanup state; preserve explicit unknown outcomes. |
+
+### Code working areas and feature/fix ownership
+
+Paths are relative to the repository root. They identify existing integration
+points, not a requirement to put all new logic into existing large modules.
+
+| Component / working area | Associated files | Feature or fix |
+| --- | --- | --- |
+| Workspace UI | `packages/app/ui/react/src/workspace-pane.js` | **U:** slice uploads, progress/cancel, preserve conflict dialogs and draft/navigation identity, chunk large saves. **D:** snapshot/range download and release. |
+| Browser adapter | `packages/app/web/src/browser-transport.js` | **U/D:** browser-facing transport integration and existing save/download conveniences; no direct filesystem access. |
+| Shared HTTP transport and client | `packages/sdk/api/src/http-api-transport.js`, `api-client.js`, `protocol.js` | **U/D:** control operations, explicit binary paths, bounded byte handling, status-preserving proxy errors; do not JSON-encode parts. |
+| Public Web SDK | `packages/sdk/src/web/web-management-client.ts` and corresponding API/type declarations | **U/D:** expose the same typed operations/results/errors as direct mode. **R:** diagnostic read parity. |
+| Portal request boundary | `packages/app/web/server.js`, `api/router.js` | **U/D:** raw routes, actual-body bounds/backpressure and disconnect handling; preserve existing JSON compatibility and global limits. |
+| Runtime authorization | `packages/app/web/runtime.js`, `packages/sdk/api/src/session-authz.js` | **U/D:** route through existing owner-only policy; pass trusted actor context, reject foreign handles and changed bindings. |
+| Direct transport adapter | `packages/app/tui/src/node-sdk-transport.js` | **U/D:** delegate through public management APIs; no imports of internal file modules or new terminal Workspace pane. |
+| Public direct management API | `packages/sdk/src/management-client.ts` | **U/D:** current folder resolution and typed transfer methods; **U:** one normal notification after known commit. **R:** typed redacted cleanup diagnostics. |
+| New local transfer coordinator | SDK implementation alongside `packages/sdk/src/workspace-files.ts`; exact module name TBD | **U:** per-transfer serialization, parts, quotas, local manifests/receipts, cancel/expiry/shutdown. **D:** snapshot lifecycle. **R:** durable cleanup integration. |
+| Filesystem helpers and shared rules | `packages/sdk/src/workspace-files.ts` plus new bounded-I/O helper module(s) as needed | **U:** path/protection reuse, streaming assembly/hash, destination staging and publication; bound replacement etag hashing too. **D:** snapshot/range I/O. **R:** validated exact-entry cleanup and helper lifecycle. |
+| Durable cleanup persistence | `packages/sdk/src/cms.ts`, `cms-migrations.ts`, `migrations/NNNN_diff.md` (next version at implementation) | **R only:** ledger capability, stored procedures, durable discovery independent of session deletion; no file bytes. |
+| Tuner diagnostics | `packages/sdk/src/inspect-tools.ts`, management/Web API diagnostic surface | **R:** expose redacted pending cleanup/outcome evidence through public methods and tuner tools. |
+| Configuration and local composition | `.env.example`, `scripts/local-pilotswarm.sh`, application workspace-files config wiring | **U:** validated local spool/part settings and writable local defaults. **D/R:** lifecycle additions as needed; no private config edits. |
+| Documentation | This proposal, `docs/user-guide/workspaces.md`, `docs/developer/building/workspace-providers.md`, Web API reference, affected builder/sample guidance | Describe shipped behavior per increment, remaining legacy limits, local operation, and recovery limitations; update UI maintenance guidance when behavior changes. |
+
+### Validation working areas
+
+| Test surface | Existing starting point / new fixture area | What it proves |
+| --- | --- | --- |
+| Filesystem and lifecycle | `packages/sdk/test/unit/workspace-files.test.mjs`; new focused coordinator/helper fixtures | G1/G2, parts, conflicts, protection, cleanup, quotas; **R:** crash/identity/liveness boundaries. |
+| SDK integration | `packages/sdk/test/local/workspace-files.test.js` | Direct/Web parity where wired, known-commit notification, catalog-backed integration; new local files must join normal suite discovery. |
+| HTTP and authorization | `packages/app/web/test/api-router.test.mjs`, `workspace-runtime.test.mjs`; new real proxy fixture | Real raw routes, owner policy, byte limits, disconnects, G3/G4 and D1. |
+| Memory | New isolated parent/child harness in normal test discovery | G5 across payload sizes and fixed concurrency; include replacement/conflict hashing, not only new-file writes. |
+| Browser UX | `packages/app/web/test/e2e/workspace-pane.spec.mjs` | Upload/download gestures, conflicts, progress/cancel, late-result isolation, legacy compatibility. Page mocks alone do not prove proxy/memory behavior. |
+| Recovery persistence | New catalog/provider integration and multi-process fixtures | **R:** migration/procedure contracts, L3 discovery after lost spool/deleted session, C3 outcomes, redacted diagnostic contracts. |
+
+### Boundaries and review follow-ups
+
+No new Duroxide activity or orchestration version is planned: transfer requests
+are management/file operations, not agent turns. No cloud SDK, new storage
+service, worker chunk receiver, proxy-limit relaxation, or shared-spool service
+is introduced. Provider-specific storage publication still requires evidence
+before rollout.
+
+The design review identified five refinements to resolve in the owning issue's
+implementation contract; the diagrams do not claim these are already solved:
+
+- **U/D editor boundary:** saves can become proxy-safe in #241, while editor
+  open/conflict-content reads still use legacy base64. Define the #241 limitation
+  and whether #242's bounded retrieval is also wired into those editor reads.
+- **U replacement hashing:** existing `stat` hashes a whole buffer. Bound the
+  etag path used by Replace and cover replacement/stale-conflict memory.
+- **U completion contract:** specify in-progress, completed, timeout, and unknown
+  responses. End requests within deadlines without prematurely releasing the
+  reservation of a helper whose exit is unconfirmed.
+- **D growing source:** enforce reserved snapshot bytes during copying, not
+  only by comparing source metadata afterward; test injected growth.
+- **U/D resource limits:** define validated part-size bounds, byte budgets,
+  receipt count/retention, disk-full handling, and empty-transfer churn tests.
 
 ## What the repository establishes
 
