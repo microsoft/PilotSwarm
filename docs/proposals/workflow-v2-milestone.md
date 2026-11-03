@@ -1691,3 +1691,10 @@ serves), no typed input into a running test, and no display of lineage, receipts
   republished before publishing changes what publishing then locks (its receipt says what it locked). The portal's and
   the TUI's publish review read it when they open and show "version now: review-kit 1.2.0 (revision …); publishing locks
   it", or "Publishing would be refused: …".
+- **Errors marked inside the YAML editor (q5).** The diagnostics of the revision being edited that name a line are marked
+  on that line (`workflowV2DraftMarks`). In the portal, the box keeps a plain text box and gains a line-number column:
+  a marked line shows "●" in the error or warning colour with its messages as the title, and below the box each marked
+  line has a button that selects it. The box no longer wraps lines, so a number stays beside its line. In the TUI, a
+  marked line's number turns red (a warning yellow) with "!". Marks belong to the saved revision: an edit does not
+  move them, and the portal says so when the text has changed; saving checks the new text. (The portal's CodeMirror
+  editor was not used for this box: the plain text box keeps what screen readers and the existing tests read.)

@@ -712,8 +712,31 @@ export function workflowV2DraftEditor(model, command = null) {
     const offered = Array.isArray(model.personCommands.operations) && model.personCommands.operations.includes("replace_definition");
     if (!offered) return null;
     const busy = isRecord(command) && command.phase === "pending";
+    // The diagnostics of exactly the revision the editor holds (the read model's current revision), for its marks (q5).
+    const diagnostics = isRecord(model.revision) && model.revision.revision === draft.revision && Array.isArray(model.revision.diagnostics)
+        ? model.revision.diagnostics.filter(isRecord) : [];
     return { revision: draft.revision, definitionHash: text(draft.definitionHash), yaml: draft.yaml, semver: text(model.definition.semver),
-        current: draft.revision === model.definition.currentRevision, busy, pending: busy && command.operation === "replace_definition" };
+        current: draft.revision === model.definition.currentRevision, busy, pending: busy && command.operation === "replace_definition", diagnostics };
+}
+
+/**
+ * The draft editor's marks (owner decision q5): the diagnostics of the revision being edited that name a line, one entry
+ * per line in line order ({ line, severity: "error" when any of its diagnostics is one, else "warning", texts: each
+ * "CODE: message" }), and how many name no line (`unplaced`). Marks belong to the saved revision: an edit does not move
+ * them, and saving checks the new text. Pure.
+ */
+export function workflowV2DraftMarks(diagnostics) {
+    const byLine = new Map();
+    let unplaced = 0;
+    for (const item of Array.isArray(diagnostics) ? diagnostics : []) {
+        if (!isRecord(item)) continue;
+        if (!Number.isSafeInteger(item.line) || item.line < 1) { unplaced += 1; continue; }
+        const entry = byLine.get(item.line) ?? { line: item.line, severity: "warning", texts: [] };
+        if (item.severity !== "warning") entry.severity = "error";
+        entry.texts.push(`${text(item.code) ? `${item.code}: ` : ""}${text(item.message) ?? "No message."}`);
+        byLine.set(item.line, entry);
+    }
+    return { lines: [...byLine.values()].sort((a, b) => a.line - b.line), unplaced };
 }
 
 /**

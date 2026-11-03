@@ -6,7 +6,7 @@ import {
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
-    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2JsonObjectDraft, workflowV2PublicationEvidenceRows,
+    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft, workflowV2PublicationEvidenceRows,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "../../core/src/workflow-v2-commands.js";
 
@@ -635,9 +635,9 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id }) {
             onClick: () => { setBase({ revision: model.revision, yaml: model.yaml }); setTextValue(model.yaml); } }, `Load revision ${model.revision}`),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "keep",
             onClick: () => setBase({ revision: model.revision, yaml: model.yaml }) }, `Keep my edits on revision ${model.revision}`)) : null,
-    h("textarea", { value: textValue, rows: 16, spellCheck: false, "aria-label": "Workflow YAML", "data-field": "yaml",
-        onChange: event => setTextValue(event.target.value),
-        style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%", resize: "vertical" } }),
+    h(WorkflowV2YamlBox, { value: textValue, onChange: setTextValue,
+        // The saved revision's errors, on their lines, while the edit is of that revision (owner decision q5).
+        marks: !edit.conflict && model.current ? workflowV2DraftMarks(model.diagnostics) : { lines: [], unplaced: 0 }, changed: edit.changed }),
     h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 } },
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", disabled: !edit.canSave,
             title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save draft"),
@@ -646,6 +646,55 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id }) {
         h("button", { type: "button", className: "ps-mini-button",
             onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: false } }) }, "Close"),
         edit.changed && !edit.conflict ? h("span", { role: "status", style: { color: "var(--ps-muted)" } }, "Unsaved changes") : null));
+}
+
+/**
+ * The draft's YAML box with its errors marked inside it (owner decision q5): a line-number column beside the text, whose
+ * marked lines show "●" in the error or warning colour with the messages as their title, and below the box one button
+ * per marked line that moves the cursor to it and selects it. The box stays a plain text box (screen readers and every
+ * test read it as one); it does not wrap lines, so each number stays beside its line. Marks are the saved revision's:
+ * after an edit they stay on their line numbers until the next save checks the text.
+ */
+function WorkflowV2YamlBox({ value, onChange, marks, changed }) {
+    const areaRef = React.useRef(null);
+    const gutterRef = React.useRef(null);
+    const listId = `wf-yaml-marks-${React.useId().replace(/:/g, "")}`;
+    const lineCount = value.split("\n").length;
+    const byLine = new Map(marks.lines.map(mark => [mark.line, mark]));
+    const mono = { fontFamily: "var(--ps-font-mono, monospace)", fontSize: "0.8rem", lineHeight: 1.45 };
+    const goTo = line => {
+        const area = areaRef.current;
+        if (!area) return;
+        const rows = area.value.split("\n");
+        const index = Math.min(Math.max(1, line), rows.length) - 1;
+        const start = rows.slice(0, index).reduce((sum, row) => sum + row.length + 1, 0);
+        area.focus();
+        area.setSelectionRange(start, start + rows[index].length);
+        area.scrollTop = Math.max(0, (area.scrollHeight / Math.max(1, rows.length)) * (index - 2));
+    };
+    return h(React.Fragment, null,
+        h("div", { className: "ps-workflow-yaml", style: { display: "flex", border: "1px solid var(--ps-border)", borderRadius: 4 } },
+            h("div", { ref: gutterRef, className: "ps-workflow-yaml-gutter", "aria-hidden": "true",
+                style: { ...mono, overflow: "hidden", textAlign: "right", padding: "2px 6px", color: "var(--ps-muted)", userSelect: "none",
+                    borderRight: "1px solid var(--ps-border)", minWidth: "3.5em" } },
+            Array.from({ length: lineCount }, (_, index) => {
+                const mark = byLine.get(index + 1);
+                return h("div", { key: index, ...(mark ? { "data-mark": mark.severity, title: mark.texts.join("\n"),
+                    style: { color: mark.severity === "error" ? TONES.error : TONES.warning, fontWeight: 700 } } : {}) },
+                mark ? `● ${index + 1}` : String(index + 1));
+            })),
+            h("textarea", { ref: areaRef, value, rows: 16, wrap: "off", spellCheck: false, "aria-label": "Workflow YAML", "data-field": "yaml",
+                ...(marks.lines.length ? { "aria-describedby": listId } : {}),
+                onChange: event => onChange(event.target.value),
+                onScroll: event => { if (gutterRef.current) gutterRef.current.scrollTop = event.target.scrollTop; },
+                style: { ...mono, flex: 1, minWidth: 0, width: "100%", resize: "vertical", border: 0, padding: "2px 6px", whiteSpace: "pre", overflow: "auto" } })),
+        marks.lines.length ? h("ul", { id: listId, className: "ps-workflow-yaml-marks", "aria-label": "Errors marked in the YAML",
+            style: { margin: 0, paddingLeft: 18, display: "grid", gap: 2 } },
+        marks.lines.map(mark => h("li", { key: mark.line, "data-mark": mark.severity },
+            h("button", { type: "button", className: "ps-mini-button", "data-line": mark.line, onClick: () => goTo(mark.line) }, `Line ${mark.line}`),
+            " ", h("span", { style: { color: mark.severity === "error" ? TONES.error : TONES.warning } }, mark.texts.join("; "))))) : null,
+        marks.lines.length && changed ? h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
+            "The marks are for the revision as saved; save to check your edits.") : null);
 }
 
 /** The header button that opens and closes the test review (the view's `testOpen`). */

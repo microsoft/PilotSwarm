@@ -21,7 +21,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import {
-    workflowV2CommandNamesRun, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2RunCommandAccepted, workflowV2RunCommandArgs,
+    workflowV2CommandNamesRun, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks, workflowV2RunCommandAccepted, workflowV2RunCommandArgs,
     workflowV2RunCommandNotice, workflowV2RunCommandWire,
 } from "../src/workflow-v2-commands.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
@@ -43,7 +43,7 @@ test("the editor exists only for a draft whose YAML the read model gives this ca
     assert.equal(workflowV2DraftEditor(modelOf({ operations: ["pause", "stop", "cancel"] })), null, "an agent state's subtree");
     assert.equal(workflowV2DraftEditor(modelOf({ draft: draftOf({ yaml: 5 }) })), null);
     assert.deepEqual(workflowV2DraftEditor(modelOf()), { revision: 2, definitionHash: "hash-2", yaml: YAML, semver: "1.0.0", current: true,
-        busy: false, pending: false });
+        busy: false, pending: false, diagnostics: [] });
     const pending = workflowV2DraftEditor(modelOf(), { operation: "replace_definition", runId: null, phase: "pending" });
     assert.deepEqual([pending.busy, pending.pending], [true, true]);
     const other = workflowV2DraftEditor(modelOf(), { operation: "publish", runId: null, phase: "pending" });
@@ -168,4 +168,39 @@ test("the editor opens from the header with the draft's YAML; nothing is offered
         const html = main(mount({ readModel: model, readModelRunId: null, draftOpen: true }));
         assert.ok(!html.includes("Edit draft") && !html.includes("Draft editor"), label);
     }
+});
+
+// Owner decision q5: the saved revision's errors are marked inside the editor, on their lines, with a button per marked
+// line that moves the cursor there; a diagnostic without a line is counted, not marked; another revision's are not shown.
+test("the editor marks the saved revision's errors on their lines, and lists a button per marked line", () => {
+    const diagnostics = [
+        { severity: "error", code: "STATE_UNKNOWN", path: "states.poll.next.changed", message: "No state 'nowhere'.", line: 2 },
+        { severity: "warning", code: "STATE_UNREACHABLE", path: "states.spare", message: "State 'spare' is never reached.", line: 3 },
+        { severity: "warning", code: "STYLE", path: "states.spare", message: "Name it plainly.", line: 3 },
+        { severity: "error", code: "NO_LINE", path: "$", message: "Somewhere." },
+        "not a diagnostic",
+    ];
+    assert.deepEqual(workflowV2DraftMarks(diagnostics), { unplaced: 1, lines: [
+        { line: 2, severity: "error", texts: ["STATE_UNKNOWN: No state 'nowhere'."] },
+        { line: 3, severity: "warning", texts: ["STATE_UNREACHABLE: State 'spare' is never reached.", "STYLE: Name it plainly."] },
+    ] });
+    assert.deepEqual(workflowV2DraftMarks(null), { lines: [], unplaced: 0 });
+    const withErrors = { ...modelOf(), revision: { revision: 2, definitionHash: "hash-2", valid: false, diagnostics } };
+    assert.deepEqual(workflowV2DraftEditor(withErrors).diagnostics, diagnostics.slice(0, 4), "the editor's own revision's diagnostics");
+    const older = { ...modelOf(), revision: { revision: 1, definitionHash: "hash-1", valid: false, diagnostics } };
+    assert.deepEqual(workflowV2DraftEditor(older).diagnostics, [], "another revision's diagnostics are not this text's");
+
+    const open = main(mount({ readModel: withErrors, readModelRunId: null, draftOpen: true }));
+    assert.match(open, /<div data-mark="error" title="STATE_UNKNOWN: No state &#x27;nowhere&#x27;\."[^>]*>● 2<\/div>/);
+    assert.match(open, /<div data-mark="warning" title="STATE_UNREACHABLE: State &#x27;spare&#x27; is never reached\.\nSTYLE: Name it plainly\."[^>]*>● 3<\/div>/);
+    assert.match(open, /<div>1<\/div>/, "an unmarked line keeps its number");
+    assert.match(open, /aria-describedby="wf-yaml-marks-[^"]+"/);
+    assert.match(open, /<ul id="wf-yaml-marks-[^"]+" class="ps-workflow-yaml-marks" aria-label="Errors marked in the YAML"/);
+    assert.match(open, /data-line="2">Line 2<\/button>/);
+    assert.match(open, /data-line="3">Line 3<\/button>/);
+    assert.ok(open.includes(`>${YAML}</textarea>`), "the YAML is still a plain text box");
+    assert.match(open, /wrap="off"/);
+    // Without diagnostics nothing is marked and no list is shown.
+    const clean = main(mount({ readModel: modelOf(), readModelRunId: null, draftOpen: true }));
+    assert.ok(!clean.includes("data-mark=") && !clean.includes("Errors marked in the YAML") && !clean.includes("aria-describedby=\"wf-yaml-marks"));
 });

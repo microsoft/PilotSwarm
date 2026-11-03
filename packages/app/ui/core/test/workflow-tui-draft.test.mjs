@@ -248,6 +248,11 @@ test("a saved revision with compile errors keeps what was typed and lists its di
         "  warning STATE_UNREACHABLE · states.spare: State 'spare' is never reached.",
     ]);
     assert.deepEqual(shown.statusLines.slice(1).map(line => line.color), ["red", "red", "yellow"]);
+    // The error's line is marked in the editor itself (owner decision q5): its number in red with "!"; the warning names no
+    // line, so nothing else is marked.
+    assert.deepEqual(shown.lines[6][0], { text: "7!", color: "red" });
+    assert.deepEqual(shown.lines.filter(line => line[0].text.endsWith("!")).length, 1);
+    assert.deepEqual(shown.lines[0][0], { text: "1 ", color: "gray" });
 });
 
 /** An edit of revision 1 that the server refused: someone else saved revision 2 meanwhile. */

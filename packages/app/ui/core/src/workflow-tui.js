@@ -6,7 +6,7 @@ import {
     workflowV2WholeValue,
 } from "./workflow-v2-view.js";
 import {
-    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor,
+    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
     workflowV2TestResponder, workflowV2VariableBatchDraft,
 } from "./workflow-v2-commands.js";
@@ -626,13 +626,18 @@ export function selectWorkflowDraftModal(state, maxWidth = 100, viewportHeight =
     const textLines = buffer.text.split("\n");
     const gutter = String(textLines.length).length + 1;
     const at = lineAndColumn(buffer.text, buffer.cursor);
-    const lines = textLines.map((line, index) => [{ text: `${String(index + 1).padStart(gutter - 1)} `, color: "gray" },
-        ...editorRow(line, Math.max(10, contentWidth - gutter), index === at.line ? at.column : null)]);
+    // A revision this person just saved, which the read model does not show yet.
+    const unread = buffer.base.revision > editor.revision;
+    // The saved revision's errors on their lines (owner decision q5): the line number in red (a warning in yellow) with "!".
+    const marks = new Map(editor.current && !unread ? workflowV2DraftMarks(editor.diagnostics).lines.map(mark => [mark.line, mark]) : []);
+    const lines = textLines.map((line, index) => {
+        const mark = marks.get(index + 1);
+        return [{ text: `${String(index + 1).padStart(gutter - 1)}${mark ? "!" : " "}`, color: mark ? (mark.severity === "error" ? "red" : "yellow") : "gray" },
+            ...editorRow(line, Math.max(10, contentWidth - gutter), index === at.line ? at.column : null)];
+    });
     const editorHeight = Math.max(8, height - 16);
     const rows = Math.max(1, editorHeight - 2);
     const scrollOffset = Math.max(0, Math.min(at.line - Math.floor(rows / 2), Math.max(0, lines.length - rows)));
-    // A revision this person just saved, which the read model does not show yet.
-    const unread = buffer.base.revision > editor.revision;
     if (edit.conflict) add(edit.reason, "yellow");
     else if (edit.changed) add(edit.reason ?? `Unsaved edits. ctrl-o saves them as a new revision after revision ${buffer.base.revision}.`, edit.reason ? "red" : "yellow");
     else add("No unsaved edits.", "gray");
