@@ -92,7 +92,11 @@ export function installJsonBodyLimits(app, { workspaceFileMb } = {}) {
     const workspaceBodyLimit = `${Math.ceil(fileMb * 1.4) + 1}mb`;
     app.use("/api/v1/management/sessions/:sessionId/workspace/files", express.json({ limit: workspaceBodyLimit }));
     app.use("/api/v1/management/sessions/:sessionId/canvas-workspace", express.json({ limit: workspaceBodyLimit }));
-    app.use(express.json({ limit: "2mb" }));
+    const json = express.json({ limit: "2mb" });
+    app.use((req, res, next) => {
+        if (/^\/api\/v1\/management\/sessions\/[^/]+\/workspace\/uploads\/[^/]+\/parts\/[^/]+\/?$/.test(req.path)) return next();
+        return json(req, res, next);
+    });
 }
 
 /**

@@ -16,6 +16,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import type { SessionWorkspaceView } from "./types.js";
+import { WORKSPACE_FILE_PATHS_SCRIPT } from "./workspace-file-paths.js";
 
 export const DEFAULT_WORKSPACE_FILE_MAX_BYTES = 20 * 1024 * 1024;
 export const DEFAULT_WORKSPACE_FILE_TIMEOUT_MS = 30_000;
@@ -51,6 +52,12 @@ export interface WorkspaceFilesConfig {
     requireMarker?: boolean;
     /** The most entries one folder listing returns. Default 5,000. */
     maxEntries?: number;
+    /** Private local transfer storage, outside all workspace roots. Default: OS temporary directory. */
+    transferDir?: string;
+    /** Binary upload part bytes, 16 KiB through 512 KiB. Default: 512 KiB. */
+    uploadPartBytes?: number;
+    /** Shared upload/download reserved disk budget. Default: 512 MiB. */
+    transferDiskBytes?: number;
 }
 
 export const WORKSPACE_FILE_ERROR_CODES = {
@@ -222,6 +229,8 @@ export interface WorkspaceFileFolder {
     opened: boolean;
     /** Opened, and this process serves the folder's root. */
     available: boolean;
+    /** This folder supports process-local bounded binary uploads. */
+    uploads?: boolean;
     /**
      * The folder's absolute path on this process's mount, the same path the
      * workers use (listSessionWorkspaceFolders only; the pane matches it
@@ -317,46 +326,9 @@ function failure(e) {
   const message = code === C.READ_ONLY ? "the folder or file is read-only" : code === C.NOT_FOUND ? "no such file or folder" : String((e && e.message) || e);
   return { ok: false, code, message };
 }
-const inside = (child, parent) => { const r = path.relative(parent, child); return r === "" || !(r === ".." || r.startsWith(".." + path.sep) || path.isAbsolute(r)); };
 const tag = (buf) => "sha256:" + crypto.createHash("sha256").update(buf).digest("hex");
 const mb = (n) => Math.round(n / 1048576) + " MB";
-// Where a path lands. \`target\` is the path as written; \`real\` is where it
-// really goes: the real path of its nearest existing part, then the rest.
-// An unmounted root is an empty local folder, so a root without its marker
-// is refused (writes would land on this machine's own disk).
-function locate(base, rootPath, rel, q) {
-  let realRoot;
-  try { realRoot = fs.realpathSync(rootPath); } catch (e) { throw err(C.ROOT_UNAVAILABLE, "the root is missing here"); }
-  if (q && q.requireMarker && !fs.existsSync(path.join(realRoot, ".pilotswarm-export"))) {
-    throw err(C.ROOT_UNAVAILABLE, "the root is not mounted here: it has no .pilotswarm-export marker (or set PORTAL_WORKSPACE_REQUIRE_MARKER=false)");
-  }
-  let realBase;
-  try { realBase = fs.realpathSync(base); } catch (e) { throw err(e.code === "ENOENT" ? C.NOT_FOUND : C.IO, "the folder is missing or unreadable"); }
-  const target = path.resolve(realBase, rel || ".");
-  if (!inside(target, realBase)) throw err(C.OUTSIDE, "the path leaves the folder");
-  let probe = target;
-  const rest = [];
-  while (probe !== realBase && !fs.existsSync(probe)) { rest.unshift(path.basename(probe)); probe = path.dirname(probe); }
-  const realProbe = fs.realpathSync(probe);
-  if (!inside(realProbe, realBase)) throw err(C.OUTSIDE, "the path resolves outside the folder");
-  const real = path.join(realProbe, ...rest);
-  // Canvas apps never go through a link: their declared paths are checked
-  // as written, so the path must be the place.
-  if (q && q.noLinks && real !== target) throw err(C.OUTSIDE, "the path goes through a link; canvas apps do not follow links");
-  return { realBase, realRoot, target, real, rel: path.relative(realBase, target) };
-}
-function protectedAt(loc, t) {
-  if (!t) return null;
-  if (path.relative(loc.realBase, t).split(path.sep).some((part) => part.toLowerCase() === ".git")) return "files inside .git are read-only here";
-  if (path.basename(t).toLowerCase() === ".pilotswarm-export" && path.dirname(t) === loc.realRoot) return "the root's marker file is read-only";
-  return null;
-}
-// Read-only: the path as written, and where it really goes (a link to .git
-// is .git; on a disk that ignores case, .GIT is .git).
-function protectedWhy(loc, target, real) {
-  if (target) return protectedAt(loc, target) || protectedAt(loc, real);
-  return protectedAt(loc, loc.target) || protectedAt(loc, loc.real);
-}
+${WORKSPACE_FILE_PATHS_SCRIPT}
 function realOr(p, fallback) { try { return fs.realpathSync(p); } catch { return fallback; } }
 function kindOf(st) { return st.isDirectory() ? "dir" : st.isFile() ? "file" : "other"; }
 function canWrite(p) { try { fs.accessSync(p, fs.constants.W_OK); return true; } catch { return false; } }
@@ -382,6 +354,7 @@ function list(loc, q) {
   // Folders first, then by name, BEFORE the cut: a long folder keeps its
   // subfolders and the first names, not whatever the disk returned first.
   const dirents = fs.readdirSync(loc.target, { withFileTypes: true })
+    .filter((d) => !d.name.startsWith(".pilotswarm-transfer-"))
     .sort((a, b) => (Number(b.isDirectory()) - Number(a.isDirectory())) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
   const readOnlyHere = Boolean(protectedWhy(loc)) || !canWrite(loc.target);
   const entries = [];
@@ -415,7 +388,20 @@ function stat(loc, q) {
   const real = fs.realpathSync(loc.target);
   const st = fs.statSync(real);
   const answer = { ok: true, kind: kindOf(st), size: st.isFile() ? st.size : 0, mtimeMs: st.mtimeMs };
-  if (st.isFile() && st.size <= q.maxBytes) answer.etag = tag(fs.readFileSync(real));
+  if (st.isFile() && st.size <= q.maxBytes) {
+    const fd = fs.openSync(real, "r"), hash = crypto.createHash("sha256"), buffer = Buffer.alloc(65536);
+    try {
+      let total = 0, n;
+      while ((n = fs.readSync(fd, buffer, 0, Math.min(buffer.length, q.maxBytes - total + 1), null)) > 0) {
+        total += n;
+        if (total > q.maxBytes) throw err(C.TOO_LARGE, "the file grew beyond the file limit");
+        hash.update(buffer.subarray(0, n));
+      }
+      const after = fs.fstatSync(fd);
+      if (after.size !== st.size || after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs || after.ino !== st.ino || after.dev !== st.dev) throw err(C.CONFLICT, "the file changed while hashing it");
+      answer.etag = "sha256:" + hash.digest("hex");
+    } finally { fs.closeSync(fd); }
+  }
   return answer;
 }
 function read(loc, q) {
@@ -551,6 +537,7 @@ function zip(loc, q) {
   function walkInto(dir, prefix) { walk(dir, prefix); }
   function walk(dir, prefix) {
     for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (d.name.startsWith(".pilotswarm-transfer-")) continue;
       if (d.name === ".git" && q.skipGit) { gitSkipped = true; continue; }
       if (d.name === ".pilotswarm-export" && dir === loc.realRoot) continue;
       const full = path.join(dir, d.name);
@@ -584,7 +571,7 @@ function repos(loc, q) {
     if (depth >= q.maxDepth) continue;
     for (const d of dirents) {
       if (++visited > q.maxVisited) { truncated = true; queue.length = 0; break; }
-      if (!d.isDirectory() || d.name === ".git" || d.name === "node_modules") continue;
+      if (!d.isDirectory() || d.name.startsWith(".pilotswarm-transfer-") || d.name === ".git" || d.name === "node_modules") continue;
       queue.push({ rel: rel ? rel + "/" + d.name : d.name, depth: depth + 1 });
     }
   }
@@ -605,6 +592,7 @@ function find(loc, q) {
     let dirents;
     try { dirents = fs.readdirSync(path.join(loc.target, rel), { withFileTypes: true }); } catch { continue; }
     for (const d of dirents) {
+      if (d.name.startsWith(".pilotswarm-transfer-")) continue;
       if (++visited > q.maxVisited) { truncated = true; queue.length = 0; break; }
       const childRel = rel ? rel + "/" + d.name : d.name;
       const isDir = d.isDirectory();
@@ -751,9 +739,15 @@ export function workspaceFilesConfigFromEnv(env: Record<string, string | undefin
     }
     const limitMb = Number(env.PORTAL_WORKSPACE_MAX_FILE_MB ?? "");
     const marker = String(env.PORTAL_WORKSPACE_REQUIRE_MARKER ?? "").trim().toLowerCase();
+    const partBytes = env.PORTAL_WORKSPACE_UPLOAD_PART_BYTES === undefined ? undefined : Number(env.PORTAL_WORKSPACE_UPLOAD_PART_BYTES);
+    if (partBytes !== undefined && (!Number.isSafeInteger(partBytes) || partBytes < 16_384 || partBytes > 524_288)) {
+        throw new Error("PORTAL_WORKSPACE_UPLOAD_PART_BYTES must be an integer from 16384 through 524288");
+    }
     return {
         roots,
         ...(Number.isFinite(limitMb) && limitMb > 0 ? { maxBytes: Math.round(limitMb * 1024 * 1024) } : {}),
         ...(["false", "0", "no", "off"].includes(marker) ? { requireMarker: false } : {}),
+        ...(env.PORTAL_WORKSPACE_TRANSFER_DIR ? { transferDir: env.PORTAL_WORKSPACE_TRANSFER_DIR } : {}),
+        ...(partBytes !== undefined ? { uploadPartBytes: partBytes } : {}),
     };
 }

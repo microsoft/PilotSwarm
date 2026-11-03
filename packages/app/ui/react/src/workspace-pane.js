@@ -1,5 +1,6 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
+import { uploadWorkspaceBlob, workspaceUploadErrorText, workspaceUploadReceiptWarning } from "./workspace-upload.js";
 
 // The Workspace tab of the side pane: the session's folders, a file tree, and
 // a viewer/editor, for the session's owner. Every call goes through the Web
@@ -179,6 +180,10 @@ export function zipNote(result) {
 
 /** What to tell the person about a failed call. */
 export function workspaceErrorText(error) {
+    const cleanup = error?.cleanupError ? ` Cleanup could not be confirmed: ${error.cleanupError.message || error.cleanupError}. Staged bytes may remain until server cleanup.` : "";
+    const uploadText = workspaceUploadErrorText(error);
+    if (uploadText) return uploadText + cleanup;
+    if (cleanup) return workspaceErrorText({ code: error.code, status: error.status, message: error.message }) + cleanup;
     const code = error?.code;
     if (error?.status === 403 && !String(code || "").startsWith("WORKSPACE_FILES")) return "Only the session's owner can see its folders.";
     if (error?.status === 404 && !String(code || "").startsWith("WORKSPACE_FILES")) return "Only the session's owner can see its folders.";
@@ -760,6 +765,13 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     const [inline, setInline] = React.useState(null);
     const [dropTarget, setDropTarget] = React.useState(null);
     const [busy, setBusy] = React.useState(0);
+    const [transfer, setTransfer] = React.useState(null);
+    // Separate from transient completion text: known-commit warnings remain
+    // until dismissed or the view changes, including through batch completion.
+    const [commitWarnings, setCommitWarnings] = React.useState([]);
+    const transferRef = React.useRef(null);
+    const transferView = React.useRef(null);
+    const mounted = React.useRef(true);
     const uploadInput = React.useRef(null);
     const uploadDir = React.useRef("");
     const fileRef = React.useRef(file);
@@ -977,8 +989,11 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     const say = React.useCallback((text, kind = "info") => setNotice({ text, kind, at: Date.now() }), []);
     const fail = React.useCallback((error) => say(workspaceErrorText(error), "error"), [say]);
     const track = React.useCallback(async (promise) => {
+        const view = transferView.current;
         setBusy((n) => n + 1);
-        try { return await promise; } finally { setBusy((n) => n - 1); }
+        try { return await promise; } finally {
+            if (mounted.current && transferView.current === view) setBusy((n) => n - 1);
+        }
     }, []);
 
     React.useEffect(() => {
@@ -996,6 +1011,31 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     // place (Set workspace). Then everything shown for the old place goes:
     // its listings, git state, open diff and open file.
     const folderPlace = folder ? `${folder.root}\u0000${folder.folder ?? ""}` : null;
+    // Identity, not just session id: leaving and returning to the same folder
+    // must not make an old await current again. Update during render so late
+    // promises cannot win the gap before effect cleanup.
+    const viewKey = JSON.stringify([sessionId, folderId, folderPlace, visible]);
+    if (transferView.current?.key !== viewKey) transferView.current = { key: viewKey, sessionId, visible };
+    const captureView = React.useCallback(() => {
+        const view = transferView.current;
+        return () => mounted.current && view === transferView.current && view.visible;
+    }, []);
+    React.useLayoutEffect(() => {
+        mounted.current = true;
+        setTransfer(null);
+        setCommitWarnings([]);
+        setNotice(null);
+        setBusy(0);
+        return () => {
+            mounted.current = false;
+            if (transferView.current.sessionId !== sessionId || !transferView.current.visible || transferView.current.key === viewKey) openToken.current += 1;
+            transferRef.current?.controller.abort();
+            transferRef.current?.resolveDialog?.("skip");
+            transferRef.current = null;
+            savingRef.current = false;
+            previousDialog.current?.resolve?.("skip");
+        };
+    }, [viewKey]);
     const places = React.useRef(new Map());
     React.useEffect(() => {
         if (!folderId || folderPlace === null) return;
@@ -1027,8 +1067,10 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     // The session's folders: at first sight of the session, then on each poll.
     const loadFolders = React.useCallback(async ({ quiet = false } = {}) => {
         if (!supported || !sessionId) return;
+        const isCurrent = captureView();
         try {
             const result = await transport.listSessionWorkspaceFolders(sessionId);
+            if (!isCurrent()) return;
             const saved = restoring.current?.sessionId === sessionId ? restoring.current.view : null;
             setInfo(result);
             setInfoError(null);
@@ -1038,15 +1080,17 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                 return remembered?.id ?? (result.folders.find((f) => f.available) ?? result.folders[0])?.id ?? null;
             });
         } catch (error) {
-            if (!quiet) setInfoError(error);
+            if (isCurrent() && !quiet) setInfoError(error);
         }
-    }, [supported, transport, sessionId]);
+    }, [supported, transport, sessionId, captureView]);
 
     const loadDir = React.useCallback(async (fid, path) => {
+        const isCurrent = captureView();
         const key = dirKey(fid, path);
         setDirs((previous) => ({ ...previous, [key]: { ...(previous[key] || {}), loading: true } }));
         try {
             const result = await call({ op: "list", folder: fid, path });
+            if (!isCurrent()) return null;
             // Changed since the last listing, and not by this pane: mark it.
             const before = dirsRef.current[key]?.entries;
             if (before) {
@@ -1064,10 +1108,10 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
             setDirs((previous) => ({ ...previous, [key]: { entries: result.entries, truncated: result.truncated, readOnly: result.readOnly, loading: false } }));
             return result;
         } catch (error) {
-            setDirs((previous) => ({ ...previous, [key]: { ...(previous[key] || {}), loading: false, error } }));
+            if (isCurrent()) setDirs((previous) => ({ ...previous, [key]: { ...(previous[key] || {}), loading: false, error } }));
             return null;
         }
-    }, [call]);
+    }, [call, captureView]);
 
     const [loadedSession, setLoadedSession] = React.useState(null);
     React.useEffect(() => {
@@ -1106,6 +1150,10 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
 
     // ── Opening a file ──
     const openFile = React.useCallback(async (fid, path, { remembered = false } = {}) => {
+        // chooseFolder may start this read before React renders the new folder.
+        // openToken handles competing file/folder choices; session and visibility
+        // guards handle navigation without rejecting that intended folder read.
+        const isCurrent = () => mounted.current && transferView.current.sessionId === sessionId && transferView.current.visible;
         const name = baseName(path);
         const token = ++openToken.current;
         closeDiff();
@@ -1114,7 +1162,7 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         setFile({ folderId: fid, path, name, kind: "loading" });
         try {
             const result = await call({ op: "read", folder: fid, path });
-            if (token !== openToken.current) return;
+            if (token !== openToken.current || !isCurrent()) return;
             const bytes = bytesFromBase64(result.contentBase64);
             const imageType = IMAGE_TYPES[extensionOf(name)];
             if (imageType) {
@@ -1141,7 +1189,7 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                 docKey: `${fid}:${path}:${Date.now()}`,
             });
         } catch (error) {
-            if (token !== openToken.current) return;
+            if (token !== openToken.current || !isCurrent()) return;
             if (remembered && error?.code === CODES.NOT_FOUND) setFile(null);
             else if (error?.code === CODES.TOO_LARGE) setFile({ folderId: fid, path, name, kind: "toolarge", size: error.size });
             else setFile({ folderId: fid, path, name, kind: "error", error });
@@ -1264,12 +1312,71 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     }, [call]);
 
     // ── Saving ──
+    // One captured target and condition per upload. Conflict choices start a
+    // NEW upload, never retarget an existing spool or replay publication.
+    const writeBlob = React.useCallback(async (target, blob, ifMatch, operation = null) => {
+        if (transferRef.current && transferRef.current !== operation) throw Object.assign(new Error("Another upload or save is active."), { code: CODES.BUSY });
+        const own = !operation;
+        const active = operation ?? { controller: new AbortController(), isCurrent: captureView() };
+        transferRef.current = active;
+        const targetFolder = info?.folders?.find((entry) => entry.id === target.folderId);
+        try {
+            const result = await uploadWorkspaceBlob({
+                transport, sessionId, folder: target.folderId, path: target.path, blob, ifMatch,
+                upload: info?.upload, uploads: targetFolder?.uploads, signal: active.controller.signal,
+                onProgress: (progress) => {
+                    if (active.isCurrent()) setTransfer({ ...progress, controller: active.controller });
+                },
+                onLegacy: () => {
+                    if (active.isCurrent()) say("This server uses whole-file JSON uploads. Large files may exceed the proxy body limit; upgrade the server for bounded uploads.");
+                },
+            });
+            // Both paths bypass `call`: exactly one announcement per known
+            // commit, never per part or for an uncertain completion.
+            announceWorkspaceChange(sessionId, "pane");
+            if (active.isCurrent()) {
+                markMine(target.folderId, target.path);
+                const warning = workspaceUploadReceiptWarning(result, own ? "saved" : "uploaded");
+                const key = dirKey(target.folderId, target.path);
+                setCommitWarnings((previous) => {
+                    if (!active.isCurrent()) return previous;
+                    const others = previous.filter((entry) => entry.key !== key);
+                    return warning ? [...others, { key, path: target.path, text: warning }] : others;
+                });
+            }
+            return result;
+        } catch (error) {
+            error.uploadPath ??= target.path;
+            if (!active.isCurrent() && error.cleanupError) console.warn("Workspace upload cleanup failed for the previous view:", error.cleanupError);
+            if (error.completionUncertain) {
+                try {
+                    const stat = await transport.sessionWorkspaceFiles(sessionId, { op: "stat", folder: target.folderId, path: target.path });
+                    if (active.isCurrent()) setFile((current) => current?.folderId === target.folderId && current.path === target.path
+                        ? { ...current, changedOnDisk: true, diskEtag: stat.etag } : current);
+                } catch (refreshError) {
+                    error.targetRefreshError = refreshError;
+                }
+                if (active.isCurrent()) await loadDir(target.folderId, parentOf(target.path));
+            }
+            throw error;
+        } finally {
+            if (own && transferRef.current === active) {
+                transferRef.current = null;
+                if (active.isCurrent()) setTransfer(null);
+            }
+        }
+    }, [transport, sessionId, info, captureView, say, markMine, loadDir]);
+
     // `replace`: the saved text replaces what the editor shows (Keep both,
     // Compare). Otherwise the editor keeps what the person typed while the
     // save was on its way, and that part stays unsaved.
     const writeText = React.useCallback(async (target, text, ifMatch, { replace = false } = {}) => {
-        markMine(target.folderId, target.path);
-        const result = await call({ op: "write", folder: target.folderId, path: target.path, contentBase64: base64FromBytes(textBytes(text, { bom: target.bom })), ifMatch });
+        const isCurrent = captureView();
+        // Text is already in browser memory. Blob slices keep the encoded
+        // transfer bounded; no whole-file base64 or WebCrypto on large saves.
+        const blob = new Blob([...(target.bom ? [new Uint8Array([0xEF, 0xBB, 0xBF])] : []), text]);
+        const result = await writeBlob(target, blob, ifMatch);
+        if (!isCurrent()) return result;
         const key = draftKey(sessionId, target.folderId, target.path);
         const now = fileRef.current;
         const same = now && now.folderId === target.folderId && now.path === target.path;
@@ -1286,7 +1393,7 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         });
         loadDir(target.folderId, parentOf(target.path));
         return result;
-    }, [call, sessionId, loadDir, markMine]);
+    }, [writeBlob, sessionId, loadDir, captureView]);
 
     const save = React.useCallback(async () => {
         const current = fileRef.current;
@@ -1294,12 +1401,14 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
         // One save at a time: a second Cmd+S would send the same version tag
         // and come back as a conflict with the person's own text.
         if (savingRef.current) return;
+        const isCurrent = captureView();
         savingRef.current = true;
         try {
             await track(writeText(current, current.text, current.etag));
-            say(`Saved ${current.name}`);
+            if (isCurrent()) say(`Saved ${current.name}`);
         } catch (error) {
-            if (error?.code !== CODES.CONFLICT) {
+            if (!isCurrent()) return;
+            if (error?.code !== CODES.CONFLICT || error.cleanupError) {
                 fail(error);
                 return;
             }
@@ -1309,33 +1418,36 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
             }
             try {
                 const theirs = await call({ op: "read", folder: current.folderId, path: current.path });
+                if (!isCurrent()) return;
                 const latest = fileRef.current;
                 if (!latest || latest.folderId !== current.folderId || latest.path !== current.path) return;
                 // Not text any more: nothing to compare or take, only mine or nothing.
                 setDialog({ kind: "conflict", theirsText: readText(bytesFromBase64(theirs.contentBase64))?.text ?? null, theirsEtag: theirs.etag });
             } catch (readError) {
-                fail(readError);
+                if (isCurrent()) fail(readError);
             }
         } finally {
-            savingRef.current = false;
+            if (isCurrent()) savingRef.current = false;
         }
-    }, [track, writeText, say, fail, call]);
+    }, [track, writeText, say, fail, call, captureView]);
 
     const resolveConflict = React.useCallback(async (choice) => {
         const current = fileRef.current;
         const conflict = dialog;
         if (!current || !conflict) return;
+        const isCurrent = captureView();
         setDialog(null);
         try {
             if (choice === "mine") {
                 await track(writeText(current, current.text, conflict.theirsEtag));
-                say(`Saved ${current.name} (your version)`);
+                if (isCurrent()) say(`Saved ${current.name} (your version)`);
             } else if (choice === "theirs") {
                 drafts.delete(draftKey(sessionId, current.folderId, current.path));
                 setFile({ ...current, text: conflict.theirsText, baseText: conflict.theirsText, etag: conflict.theirsEtag, diskEtag: conflict.theirsEtag, dirty: false, changedOnDisk: false, docKey: `${current.docKey}~` });
                 say("Took the version on disk");
             } else if (choice === "both") {
                 const module = await loadEditor();
+                if (!isCurrent()) return;
                 const merged = module.mergeThreeWay(current.baseText, current.text, conflict.theirsText);
                 if (!merged.ok) {
                     say("The changes are on the same lines. Compare them to choose.", "error");
@@ -1343,27 +1455,29 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                     return;
                 }
                 await track(writeText(current, merged.text, conflict.theirsEtag, { replace: true }));
-                say(`Saved ${current.name} with both sets of changes`);
+                if (isCurrent()) say(`Saved ${current.name} with both sets of changes`);
             } else if (choice === "compare") {
                 setCompare({ theirsText: conflict.theirsText, theirsEtag: conflict.theirsEtag });
             }
         } catch (error) {
-            fail(error);
+            if (isCurrent()) fail(error);
         }
-    }, [dialog, track, writeText, say, fail, sessionId]);
+    }, [dialog, track, writeText, say, fail, sessionId, captureView]);
 
     const saveCompared = React.useCallback(async () => {
         const current = fileRef.current;
         const merged = compareHandle.current?.getMine();
         if (!current || !compare || typeof merged !== "string") return;
+        const isCurrent = captureView();
         try {
             await track(writeText(current, merged, compare.theirsEtag, { replace: true }));
+            if (!isCurrent()) return;
             setCompare(null);
             say(`Saved ${current.name}`);
         } catch (error) {
-            fail(error);
+            if (isCurrent()) fail(error);
         }
-    }, [compare, track, writeText, say, fail]);
+    }, [compare, track, writeText, say, fail, captureView]);
 
     // ── Tree actions ──
     const toggleDir = React.useCallback((fid, path) => {
@@ -1424,47 +1538,77 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
     }, [track, call, folders, say, fail, downloadEntry]);
 
     const uploadFiles = React.useCallback(async (fid, dir, list) => {
+        if (transferRef.current) {
+            say("Another upload or save is active.", "error");
+            return;
+        }
+        const active = { controller: new AbortController(), isCurrent: captureView() };
+        transferRef.current = active;
+        const canContinue = () => active.isCurrent() && !active.controller.signal.aborted;
         const max = info?.maxBytes ?? 20 * 1024 * 1024;
         const files = Array.from(list || []);
         let done = 0;
-        for (const upload of files) {
-            if (upload.size > max) {
-                say(`${upload.name} is ${formatBytes(upload.size)}; the limit is ${formatBytes(max)}.`, "error");
-                continue;
-            }
-            const contentBase64 = base64FromBytes(new Uint8Array(await upload.arrayBuffer()));
-            let target = joinPath(dir, upload.name);
-            markMine(fid, target);
-            try {
-                await track(call({ op: "write", folder: fid, path: target, contentBase64, ifMatch: null }));
-                done++;
-            } catch (error) {
-                if (error?.code !== CODES.EXISTS) {
-                    fail(error);
+        let failed = false;
+        const send = (upload, path, ifMatch) => writeBlob({ folderId: fid, path }, upload, ifMatch, active);
+        try {
+            for (const upload of files) {
+                if (!canContinue()) break;
+                if (upload.size > max) {
+                    say(`${upload.name} is ${formatBytes(upload.size)}; the limit is ${formatBytes(max)}.`, "error");
+                    failed = true;
                     continue;
                 }
-                const choice = await new Promise((resolve) => setDialog({ kind: "exists", name: upload.name, dir, resolve }));
-                setDialog(null);
+                let target = joinPath(dir, upload.name);
                 try {
-                    if (choice === "replace") {
-                        const current = await call({ op: "stat", folder: fid, path: target });
-                        await track(call({ op: "write", folder: fid, path: target, contentBase64, ifMatch: current.etag }));
-                        done++;
-                    } else if (choice === "both") {
-                        const listing = await call({ op: "list", folder: fid, path: dir });
-                        target = joinPath(dir, freeName(upload.name, new Set(listing.entries.map((e) => e.name))));
-                        markMine(fid, target);
-                        await track(call({ op: "write", folder: fid, path: target, contentBase64, ifMatch: null }));
-                        done++;
+                    await send(upload, target, null);
+                    done++;
+                } catch (error) {
+                    if (!active.isCurrent()) break;
+                    if (error?.code !== CODES.EXISTS || !canContinue() || error.cleanupError) {
+                        fail(error);
+                        failed = true;
+                        // Never advance/retry after an uncertain publication or
+                        // cancellation. A fresh explicit user action is required.
+                        break;
                     }
-                } catch (secondError) {
-                    fail(secondError);
+                    const choice = await new Promise((resolve) => {
+                        active.resolveDialog = resolve;
+                        setTransfer(null);
+                        setDialog({ kind: "exists", name: upload.name, dir, resolve });
+                    });
+                    active.resolveDialog = null;
+                    if (!canContinue()) break;
+                    setDialog(null);
+                    try {
+                        if (choice === "replace") {
+                            const current = await call({ op: "stat", folder: fid, path: target });
+                            if (!canContinue()) break;
+                            await send(upload, target, current.etag);
+                            done++;
+                        } else if (choice === "both") {
+                            const listing = await call({ op: "list", folder: fid, path: dir });
+                            if (!canContinue()) break;
+                            target = joinPath(dir, freeName(upload.name, new Set(listing.entries.map((e) => e.name))));
+                            await send(upload, target, null);
+                            done++;
+                        }
+                    } catch (secondError) {
+                        if (active.isCurrent()) fail(secondError);
+                        failed = true;
+                        break;
+                    }
                 }
             }
+            if (!active.isCurrent()) return;
+            if (done && !failed) say(`Uploaded ${done} file${done === 1 ? "" : "s"}${!info?.upload ? ". This server uses whole-file JSON; large uploads can exceed the proxy limit." : ""}`);
+            await loadDir(fid, dir);
+        } finally {
+            if (transferRef.current === active) {
+                transferRef.current = null;
+                if (active.isCurrent()) setTransfer(null);
+            }
         }
-        if (done) say(`Uploaded ${done} file${done === 1 ? "" : "s"}`);
-        loadDir(fid, dir);
-    }, [info, say, track, call, fail, loadDir, markMine]);
+    }, [info, say, writeBlob, call, fail, loadDir, captureView]);
 
     // A moved or renamed item takes along the open file inside it, its
     // unsaved edits, the folders open inside it, and where the person was.
@@ -2844,7 +2988,20 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                 h("p", null, "It was deleted after you opened it. Save yours as a new file, or let it go."),
                 h("div", { className: "ps-ws-dialog-actions" },
                     h("button", { type: "button", className: "ps-ws-btn", onClick: () => { setDialog(null); drafts.delete(draftKey(sessionId, file.folderId, file.path)); setFile(null); } }, "Let it go"),
-                    h("button", { type: "button", className: "ps-ws-btn is-primary", onClick: async () => { setDialog(null); try { await track(writeText(file, file.text, null)); say(`Saved ${file.name}`); } catch (error) { fail(error); } } }, "Save as new")));
+                    h("button", {
+                        type: "button", className: "ps-ws-btn is-primary",
+                        onClick: async () => {
+                            const isCurrent = captureView();
+                            const target = file;
+                            setDialog(null);
+                            try {
+                                await track(writeText(target, target.text, null));
+                                if (isCurrent()) say(`Saved ${target.name}`);
+                            } catch (error) {
+                                if (isCurrent()) fail(error);
+                            }
+                        },
+                    }, "Save as new")));
         }
         if (dialog.kind === "delete") {
             const items = dialog.items || [];
@@ -2931,7 +3088,7 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
             : gitOn && reposHere && repoChoices.length === 0 ? h("span", { className: "ps-ws-pill ps-ws-no-git", title: "No git repository in this folder or the folders inside it (3 levels down)." }, "No git") : null,
             h("span", { className: "ps-ws-spacer" }),
             busy > 0 ? h("span", { className: "ps-ws-busy", "aria-live": "polite" }, "Working…") : null,
-            !rootReadOnly ? h("button", { type: "button", className: "ps-ws-icon-btn", title: "Upload files", "aria-label": "Upload files", onClick: () => { uploadDir.current = ""; uploadInput.current?.click(); } }, h(Icon, { d: UPLOAD })) : null,
+            !rootReadOnly ? h("button", { type: "button", className: "ps-ws-icon-btn", title: "Upload files", "aria-label": "Upload files", disabled: Boolean(transfer), onClick: () => { uploadDir.current = ""; uploadInput.current?.click(); } }, h(Icon, { d: UPLOAD })) : null,
             !rootReadOnly ? h("button", { type: "button", className: "ps-ws-icon-btn", title: "New file (in the picked folder)", "aria-label": "New file", onClick: () => newHere("newFile") }, h(Icon, { d: PLUS_FILE })) : null,
             !rootReadOnly ? h("button", { type: "button", className: "ps-ws-icon-btn", title: "New folder (in the picked folder)", "aria-label": "New folder", onClick: () => newHere("newFolder") }, h(Icon, { d: PLUS_FOLDER })) : null,
             h("button", {
@@ -2964,6 +3121,26 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                     event.currentTarget.value = "";
                 },
             })) : null,
+        transfer ? h("div", { className: "ps-ws-upload", "data-testid": "workspace-upload-progress", style: { display: "flex", alignItems: "center", gap: "8px", padding: "4px 8px" } },
+            h("div", {
+                style: { flex: 1, minWidth: 0, overflowWrap: "anywhere" },
+                role: "progressbar",
+                "aria-label": `Upload ${transfer.path}`,
+                "aria-valuemin": 0,
+                "aria-valuemax": transfer.size,
+                "aria-valuenow": transfer.bytes,
+                "aria-valuetext": `${transfer.bytes} of ${transfer.size} bytes`,
+            }, `${transfer.phase === "completing" ? "Finishing" : transfer.phase === "legacy" ? "Sending whole-file JSON" : "Uploading"} ${transfer.path}: ${formatBytes(transfer.bytes)} / ${formatBytes(transfer.size)}`),
+            h("button", {
+                type: "button",
+                className: "ps-ws-btn",
+                disabled: transfer.cancelling || ["completing", "completed", "legacy"].includes(transfer.phase),
+                title: ["completing", "legacy"].includes(transfer.phase) ? "Publication has started and cannot be cancelled." : "Cancel upload and clean up staged bytes",
+                onClick: () => {
+                    transfer.controller.abort();
+                    setTransfer((current) => current ? { ...current, cancelling: true } : current);
+                },
+            }, transfer.cancelling ? "Cancelling…" : "Cancel upload")) : null,
         h("div", {
             className: "ps-ws-main",
             ref: mainRef,
@@ -3064,5 +3241,13 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                     banner,
                     h("div", { className: "ps-ws-viewer-body" }, viewer)),
                 dialogBox)),
+        commitWarnings.map((warning) => h("div", {
+            key: warning.key, className: "ps-ws-notice is-error", role: "alert", "data-testid": "workspace-upload-warning",
+        },
+            `${warning.path}: ${warning.text} `,
+            h("button", {
+                type: "button", className: "ps-ws-btn", "aria-label": `Dismiss warning for ${warning.path}`,
+                onClick: () => setCommitWarnings((previous) => previous.filter((entry) => entry.key !== warning.key)),
+            }, "Dismiss"))),
         notice ? h("div", { className: `ps-ws-notice${notice.kind === "error" ? " is-error" : ""}`, role: notice.kind === "error" ? "alert" : "status" }, notice.text) : null);
 }

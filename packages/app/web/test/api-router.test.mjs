@@ -21,6 +21,8 @@ function createHarness({ callImpl, role = "user" } = {}) {
         async call(name, params, authContext) {
             calls.push({ name, params, authContext });
             if (callImpl) return callImpl(name, params);
+            if (name === "getSessionWorkspaceUpload") return { state: "open", partBytes: 524288, size: 1, partCount: 1 };
+            if (name === "putSessionWorkspaceUploadPart") return { bytes: (await params.bytes()).length };
             return { echoed: name };
         },
     };
@@ -45,11 +47,11 @@ test("every operation in the table is routable and dispatches by name", async ()
     const { baseUrl, calls, close } = await createHarness({ role: "admin" });
     try {
         for (const op of OPERATIONS) {
-            const path = op.path.replace(/:([\w]+)/g, "test-$1");
+            const path = op.path.replace(/:([\w]+)/g, (_match, key) => key === "part" ? "0" : `test-${key}`);
             const response = await fetch(`${baseUrl}/api/v1${path}`, {
                 method: op.method,
-                headers: { "content-type": "application/json" },
-                ...(op.method === "GET" || op.method === "DELETE" ? {} : { body: "{}" }),
+                headers: { "content-type": op.raw ? "application/octet-stream" : "application/json" },
+                ...(op.method === "GET" || op.method === "DELETE" ? {} : { body: op.raw ? new Uint8Array([1]) : "{}" }),
             });
             assert.equal(response.status, 200, `${op.method} ${path} should bind (${op.name})`);
             const payload = await response.json();

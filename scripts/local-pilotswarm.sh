@@ -184,6 +184,7 @@ start_portal() {
     if [[ "$WORKSPACES" == on || "$WORKSPACES" == no-defaults ]]; then
         # The Workspace tab: the portal reads and writes the same folders.
         export PORTAL_WORKSPACE_ROOTS="a=$WS/a,shared=$WS/shared,home=$WS/home"
+        export PORTAL_WORKSPACE_TRANSFER_DIR="${PORTAL_WORKSPACE_TRANSFER_DIR:-$LOCAL_DIR/transfers}"
         # Canvas apps may run the git commands their agent declared, here and
         # as you (docs/developer/building/workspace-providers.md, canvas-ws).
         export PORTAL_CANVAS_COMMANDS_RUNNER=local

@@ -241,6 +241,8 @@ export {
     workspaceFilesConfigFromEnv,
 } from "./workspace-files.js";
 export type { WorkspaceFileCall, WorkspaceFileChange, WorkspaceFileFolder, WorkspaceFilesConfig } from "./workspace-files.js";
+export type { WorkspaceUploadInput, WorkspaceUploadResult, WorkspaceUploadStatus, WorkspaceUploadState } from "./workspace-transfers.js";
+export { DEFAULT_WORKSPACE_UPLOAD_PART_BYTES, WORKSPACE_UPLOAD_LEGACY_MAX_BYTES } from "./workspace-transfers.js";
 export {
     CANVAS_WS_ERROR_CODES,
     canvasCommandsConfigFromEnv,

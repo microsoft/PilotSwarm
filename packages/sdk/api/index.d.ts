@@ -19,6 +19,7 @@ export interface Operation {
     path: string;
     params?: Record<string, OperationParamSpec>;
     summary: string;
+    raw?: boolean;
 }
 
 export declare const OPERATIONS: Operation[];
@@ -40,6 +41,8 @@ export declare class ApiError extends Error {
     etag?: string | null;
     /** Workspace files: a too-large file's size in bytes. */
     size?: number;
+    /** False for non-JSON proxy/firewall failures; never changes admission state. */
+    responseIsJson?: boolean;
     constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[]; etag?: string | null; size?: number });
 }
 
@@ -87,7 +90,8 @@ export declare class ApiClient {
     constructor(options: ApiClientOptions);
     apiUrl: string;
     call(name: string, params?: Record<string, unknown>): Promise<any>;
-    request(method: string, pathWithQuery: string, opts?: { body?: unknown; headers?: Record<string, string> }): Promise<any>;
+    request(method: string, pathWithQuery: string, opts?: { body?: unknown; headers?: Record<string, string>; raw?: boolean; signal?: AbortSignal }): Promise<any>;
+    putSessionWorkspaceUploadPart(sessionId: string, uploadId: string, part: number, bytes: Uint8Array, options?: { signal?: AbortSignal }): Promise<{ part: number; bytes: number; sha256: string }>;
     health(): Promise<any>;
     getAuthConfig(): Promise<any>;
     getAuthContext(): Promise<any>;

@@ -288,6 +288,40 @@ roots; it never asks a worker. So a deployment that wants the tab:
 Without `PORTAL_WORKSPACE_ROOTS` the portal hides the tab. A root the portal
 does not list is shown but cannot be opened.
 
+Uploads have a private, process-owned local spool, separate from mounted
+workspace roots. `PORTAL_WORKSPACE_TRANSFER_DIR` selects its parent directory
+(default: the OS temporary directory). The local launcher defaults it to
+`$PS_LOCAL_DIR/transfers`. Do not put it on a workspace share or expose it
+through another file server. `PORTAL_WORKSPACE_UPLOAD_PART_BYTES` is a validated
+integer from 16,384 through 524,288 bytes, default 524,288; configuration is
+never silently reduced to accommodate a proxy.
+
+The direct SDK configuration is `workspaceFiles.transferDir`,
+`uploadPartBytes`, and `transferDiskBytes` (default 512 MiB). Files are still
+limited by `maxBytes` (validated through 1 GiB for transfers). Admission reserves
+twice the declared bytes plus bounded part metadata; empty files consume a
+count and metadata reservation too. Limits are two transfers per principal/root,
+eight per root, 128 active claims, 256 process-local transfer/receipt records,
+and two running data-plane operations. Identical configurations share the
+coordinator across management clients; a process rejects any second incompatible
+transfer configuration rather than creating another admission pool (including
+path aliases). Terminal receipts are retained for 30 minutes.
+
+Every part/control re-resolves session ownership and folder binding. Assembly
+uses 64 KiB buffers in a deadline-bounded child and a private destination-side
+candidate; create-only publication uses an exclusive hard link, replacement an
+atomic same-filesystem rename. Thus a local spool on another filesystem never
+requires copying over the visible target. Targets must support these
+primitives. Reserved `.pilotswarm-transfer-*` staging paths are hidden and
+refused by workspace reads, traversal and canvas file calls.
+
+A bounded HTTP deadline is not proof that a helper exited. Claims remain held
+until resource promises settle and identity-checked cleanup succeeds; failures
+are logged and quarantined for retry. An uncertain publisher is never replayed.
+These are process-local handles, not resumable transfers. Durable recovery
+after process/spool loss, orphan discovery, and bounded downloads are separate
+increments; do not claim those guarantees from this upload implementation.
+
 The Azure GitOps deployment does steps 1 and 2 when `WORKSPACES_ENABLED=true`:
 the portal pod mounts the node attacher's `/mnt/ps` at `/ws`, like the
 workers (`deploy/providers/azure/gitops/portal/components/workspaces`). The

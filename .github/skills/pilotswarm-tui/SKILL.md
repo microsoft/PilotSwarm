@@ -208,6 +208,50 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Admin role is not necessarily a user-resource bypass: honor server-provided `adminScope`/package `canEdit` for session/package actions. `cluster` keeps configuration/accounting and admin system-session access, but other content follows ownership/shares. Show the policy read-only, clear revoked content and reject late responses; never infer authority from hidden buttons alone. See `docs/proposals/cluster-scoped-admin.md`.
 - Outbox items render with three visible delivery states next to the user-message label: `○` pending (client only), `✓` queued (durably enqueued), `✓✓` sent (persisted as a transcript `user.message`). Synchronous sends coalesce into a single durable enqueue; merge boundaries are not user-visible. Keep the glyph mapping in [packages/app/ui/core/src/selectors.js](../../../packages/app/ui/core/src/selectors.js) consistent across portal and TUI. Every path that delivers a receipt reconciles the outbox (live events, including ones already in history; bulk loads; the reconnect replay through `onResubscribe`; a MoA panel reconciles its loaded history when it links the parent outbox). A queued item without a receipt gets one 10 s exact-id re-read (`recheckOutboxReceipts`), also after `session.message_duplicate_suppressed`; never a text match there.
 
+## Workspace upload contract (portal-only pane)
+
+The shared React Workspace pane uses `workspace-upload.js` for file uploads
+and editor saves. Keep decoded legacy writes at most 64 KiB when the folders
+metadata advertises `upload`; larger writes require that folder's `uploads`
+capability. Old servers without `upload` retain legacy JSON writes with a
+visible proxy-limit warning. Never silently fall back after a failed transfer.
+
+Read large Files/Blobs only through advertised-size slices (default 524,288
+bytes), one sequential raw part at a time; never whole-file `arrayBuffer`,
+base64 or WebCrypto on the chunked path. Text already held by the editor can
+be wrapped in a Blob for the same upload path, preserving its BOM/line endings.
+Replace/keep-both starts a new immutable target/etag upload after the user's
+choice; never retarget an existing upload.
+
+Show byte progress and Cancel while parts are active. Abort the part request,
+then best-effort abort staging, and explicitly report cleanup errors. Once
+publication starts, cancellation cannot promise rollback. A missing completion
+receipt, `IN_PROGRESS` or `COMMIT_UNKNOWN` requires a target refresh and an
+uncertainty notice: never retry publication, infer success from target bytes,
+count it as uploaded/saved, or announce a workspace change. Only known commits
+announce once; parts announce nothing.
+Known receipts with `notificationFailed` or `receiptPersistenceFailed` still
+count as committed and announce once. Keep their inline warning separate from
+transient completion status until dismissal or view change; never turn those
+flags into uncertainty or retry publication.
+
+Capture session/folder/path before awaits. Session, folder, dashboard visibility
+changes and unmount invalidate late UI results/notices and abort open transfers;
+cleanup still addresses the original session/upload. Distinguish typed JSON
+authorization denials from raw 403 proxy/firewall blocks, and make 413 errors
+name the file/part and proxy body limit without signing the user out.
+
+This is upload-only: preview, editor-open, conflict-content reads, downloads,
+ZIPs, canvas APIs and other JSON surfaces retain their existing proxy limits.
+The native TUI has no Workspace upload UI; preserve transport API parity, not
+an invented terminal upload pane. No restart resumption or crash-ledger promise.
+Run `node --test packages/app/web/test/workspace-upload.test.mjs` for bounded
+read/cancel/error tests. `workspace-pane-upload.browser.test.mjs` in the same
+directory bundles in memory and exercises real React/CodeMirror in Chromium
+without starting a service; use the OS/runtime matching installed esbuild and
+Playwright binaries. Portal Workspace E2E additionally covers the raw API path,
+progress, replacement, large saves, cancellation and uncertain completion.
+
 ## Keybinding Rule
 
 When a keybinding changes, update all user-facing surfaces together:

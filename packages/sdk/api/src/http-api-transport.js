@@ -252,6 +252,12 @@ export class HttpApiTransport {
         return this.api.call("sessionWorkspaceFiles", { sessionId, call });
     }
 
+    startSessionWorkspaceUpload(sessionId, input) { return this.api.call("startSessionWorkspaceUpload", { sessionId, input }); }
+    getSessionWorkspaceUpload(sessionId, uploadId) { return this.api.call("getSessionWorkspaceUpload", { sessionId, uploadId }); }
+    completeSessionWorkspaceUpload(sessionId, uploadId) { return this.api.call("completeSessionWorkspaceUpload", { sessionId, uploadId }); }
+    abortSessionWorkspaceUpload(sessionId, uploadId) { return this.api.call("abortSessionWorkspaceUpload", { sessionId, uploadId }); }
+    putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, options) { return this.api.putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, options); }
+
     async canvasWorkspace(sessionId, slot, call = {}) {
         return this.api.call("canvasWorkspace", { sessionId, slot, call });
     }

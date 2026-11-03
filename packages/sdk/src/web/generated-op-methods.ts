@@ -7,6 +7,7 @@
 
 /** Every operation name in the protocol table, sorted. */
 export const GENERATED_OP_NAMES: readonly string[] = [
+    "abortSessionWorkspaceUpload",
     "adoptLegacySystemGitHubCopilotKey",
     "assignSessionsToGroup",
     "cancelPendingMessage",
@@ -17,6 +18,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "clearSystemSessionModel",
     "completeSession",
     "completeSessionGroup",
+    "completeSessionWorkspaceUpload",
     "copyArtifact",
     "createMyProvider",
     "createProvider",
@@ -89,6 +91,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getSessionTreeSkillUsage",
     "getSessionTreeStats",
     "getSessionWorkspace",
+    "getSessionWorkspaceUpload",
     "getSharedFactsStats",
     "getSystemGitHubCopilotKeyStatus",
     "getTopEventEmitters",
@@ -124,6 +127,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
     "pruneDeletedSummaries",
+    "putSessionWorkspaceUploadPart",
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
@@ -169,6 +173,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setUserFeatureFlag",
     "similarFacts",
     "startFactsEmbedder",
+    "startSessionWorkspaceUpload",
     "steerSessionTurn",
     "stopFactsEmbedder",
     "stopSessionTurn",
@@ -197,6 +202,15 @@ export const GENERATED_OP_NAMES: readonly string[] = [
  * the server generates its routes from.
  */
 export interface ManagementOps {
+    /**
+     * Abort an open upload, waiting for resource cleanup. Cannot roll back publication.
+     * @remarks `DELETE /management/sessions/:sessionId/workspace/uploads/:uploadId` — access: `session:files`
+     */
+    abortSessionWorkspaceUpload(params: {
+        sessionId: string;
+        uploadId: string;
+    }): Promise<any>;
+
     /**
      * Adopt the legacy synthetic System GHCP key into the calling admin's private, system-enabled provider. [admin]
      * @remarks `POST /management/providers/adopt-system-github-key` — access: `fleet:admin`
@@ -282,6 +296,15 @@ export interface ManagementOps {
     completeSessionGroup(params: {
         groupId: string;
         options?: any;
+    }): Promise<any>;
+
+    /**
+     * Assemble and publish once; repeated completion returns the original receipt.
+     * @remarks `POST /management/sessions/:sessionId/workspace/uploads/:uploadId/complete` — access: `session:files`
+     */
+    completeSessionWorkspaceUpload(params: {
+        sessionId: string;
+        uploadId: string;
     }): Promise<any>;
 
     /**
@@ -918,6 +941,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read upload state, accepted contiguous parts and any known completion receipt.
+     * @remarks `GET /management/sessions/:sessionId/workspace/uploads/:uploadId` — access: `session:files`
+     */
+    getSessionWorkspaceUpload(params: {
+        sessionId: string;
+        uploadId: string;
+    }): Promise<any>;
+
+    /**
      * Shared facts stats.
      * @remarks `GET /management/facts/shared-stats` — access: `fleet:read`
      */
@@ -1189,6 +1221,17 @@ export interface ManagementOps {
      */
     pruneDeletedSummaries(params: {
         olderThan?: any;
+    }): Promise<any>;
+
+    /**
+     * Raw application/octet-stream exact-length sequential part, at most the advertised 512 KiB ceiling; exact retries are idempotent.
+     * @remarks `PUT /management/sessions/:sessionId/workspace/uploads/:uploadId/parts/:part` — access: `session:files`
+     */
+    putSessionWorkspaceUploadPart(params: {
+        sessionId: string;
+        uploadId: string;
+        part: string;
+        bytes?: any;
     }): Promise<any>;
 
     /**
@@ -1643,6 +1686,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Start a process-local bounded upload, bound to the owner, folder, target, size and overwrite condition.
+     * @remarks `POST /management/sessions/:sessionId/workspace/uploads` — access: `session:files`
+     */
+    startSessionWorkspaceUpload(params: {
+        sessionId: string;
+        input?: any;
+    }): Promise<any>;
+
+    /**
      * Steer the running turn (options: { text, requestId, replacesClientMessageId? }); needs the sessions.steering feature. replacesClientMessageId converts that queued message: a delivered steer replaces it. Outcome accepted (steerId, turn, repeat?) or a refusal: no_turn | legacy_turn | not_found | too_many | request_id_reused | steering_disabled | already_received.
      * @remarks `POST /management/sessions/:sessionId/steer` — access: `session:write`
      */
@@ -1799,6 +1851,7 @@ export function createManagementOps(
     callOp: (name: string, params: Record<string, unknown>) => Promise<any>,
 ): ManagementOps {
     return {
+        abortSessionWorkspaceUpload: (params: Record<string, unknown> = {}) => callOp("abortSessionWorkspaceUpload", params),
         adoptLegacySystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("adoptLegacySystemGitHubCopilotKey", params),
         assignSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("assignSessionsToGroup", params),
         cancelPendingMessage: (params: Record<string, unknown> = {}) => callOp("cancelPendingMessage", params),
@@ -1809,6 +1862,7 @@ export function createManagementOps(
         clearSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("clearSystemSessionModel", params),
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
+        completeSessionWorkspaceUpload: (params: Record<string, unknown> = {}) => callOp("completeSessionWorkspaceUpload", params),
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
@@ -1881,6 +1935,7 @@ export function createManagementOps(
         getSessionTreeSkillUsage: (params: Record<string, unknown> = {}) => callOp("getSessionTreeSkillUsage", params),
         getSessionTreeStats: (params: Record<string, unknown> = {}) => callOp("getSessionTreeStats", params),
         getSessionWorkspace: (params: Record<string, unknown> = {}) => callOp("getSessionWorkspace", params),
+        getSessionWorkspaceUpload: (params: Record<string, unknown> = {}) => callOp("getSessionWorkspaceUpload", params),
         getSharedFactsStats: (params: Record<string, unknown> = {}) => callOp("getSharedFactsStats", params),
         getSystemGitHubCopilotKeyStatus: (params: Record<string, unknown> = {}) => callOp("getSystemGitHubCopilotKeyStatus", params),
         getTopEventEmitters: (params: Record<string, unknown> = {}) => callOp("getTopEventEmitters", params),
@@ -1916,6 +1971,7 @@ export function createManagementOps(
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
         pruneDeletedSummaries: (params: Record<string, unknown> = {}) => callOp("pruneDeletedSummaries", params),
+        putSessionWorkspaceUploadPart: (params: Record<string, unknown> = {}) => callOp("putSessionWorkspaceUploadPart", params),
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
@@ -1961,6 +2017,7 @@ export function createManagementOps(
         setUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setUserFeatureFlag", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
+        startSessionWorkspaceUpload: (params: Record<string, unknown> = {}) => callOp("startSessionWorkspaceUpload", params),
         steerSessionTurn: (params: Record<string, unknown> = {}) => callOp("steerSessionTurn", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),

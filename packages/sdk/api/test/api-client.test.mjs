@@ -33,6 +33,25 @@ test("apiUrl trailing slashes are stripped", () => {
     assert.equal(client.apiUrl, "https://portal.example.com");
 });
 
+test("upload parts use binary bodies, preserve structured conflicts and do not trigger signout", async () => {
+    let signedOut = 0;
+    const { client, calls } = createClient({
+        responses: [
+            jsonResponse({ ok: true, result: { part: 0, bytes: 2 } }),
+            { status: 403, ok: false, statusText: "Forbidden", json: async () => { throw new SyntaxError("HTML"); } },
+            { status: 413, ok: false, statusText: "Too Large", json: async () => { throw new SyntaxError("HTML"); } },
+        ],
+        onUnauthorized: () => signedOut++, onForbidden: () => signedOut++,
+    });
+    const bytes = new Uint8Array([1, 2]);
+    await client.putSessionWorkspaceUploadPart("session", "upload", 0, bytes);
+    assert.equal(calls[0].options.body, bytes);
+    assert.equal(calls[0].options.headers["content-type"], "application/octet-stream");
+    await assert.rejects(client.putSessionWorkspaceUploadPart("session", "upload", 0, bytes), (e) => e.status === 403 && e.responseIsJson === false && /proxy or firewall/.test(e.message));
+    await assert.rejects(client.putSessionWorkspaceUploadPart("session", "upload", 0, bytes), (e) => e.status === 413 && /part size/.test(e.message));
+    assert.equal(signedOut, 0);
+});
+
 test("call() builds request from the operations table and unwraps the envelope", async () => {
     const { client, calls } = createClient({
         responses: [jsonResponse({ ok: true, result: [{ sessionId: "s1" }] })],
