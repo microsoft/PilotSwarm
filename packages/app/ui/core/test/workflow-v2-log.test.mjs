@@ -141,8 +141,8 @@ test("the eight control events are workflow events, in the history paging types,
 
     const user = { kind: "user", provider: "entra", subject: "u-1" };
     const cases = [
-        [event("workflow.paused", { runId: "r", actor: user, reason: "maintenance" }), "⏸ Workflow paused by user `u-1`: `maintenance`", "paused", "yellow"],
-        [event("workflow.resumed", { runId: "r", actor: { kind: "agent", sessionId: "abcdef12-3456" } }), "▶ Workflow resumed by agent `abcdef12`.", "resumed", "gray"],
+        [event("workflow.paused", { runId: "r", actor: user, reason: "maintenance" }), "⏸ Workflow paused by `u-1`: `maintenance`", "paused", "yellow"],
+        [event("workflow.resumed", { runId: "r", actor: { kind: "agent", sessionId: "abcdef12-3456" } }), "▶ Workflow resumed by `agent session abcdef12`.", "resumed", "gray"],
         [event("workflow.vars_set", { runId: "r", kvRevision: 4, set: ["a", "b"], deleted: ["c"], actor: { kind: "system", name: "controller" } }),
             "✎ Workflow variables updated by `controller` (revision 4): set `a`, `b`; removed `c`.", "variables updated", "gray"],
         [event("workflow.input_accepted", { runId: "r", messageId: "m1", contract: "Ack@1", senderSessionId: "1234567890", claimedBy: null }),
@@ -217,7 +217,10 @@ test("missing or malformed control payloads still read sensibly and never throw"
     }
     assert.equal(formatWorkflowEventText(event("workflow.vars_set", { set: "a", deleted: { a: 1 }, kvRevision: "4" })), "✎ Workflow variables updated.");
     assert.match(formatWorkflowEventText(event("workflow.paused", { actor: { kind: "robot" } })), /^⏸ Workflow paused\.$/);
-    assert.match(formatWorkflowEventText(event("workflow.paused", { actor: { kind: "user" } })), /paused by a user\./);
+    assert.match(formatWorkflowEventText(event("workflow.paused", { actor: { kind: "user" } })), /paused by a person\./);
+    // A person is named as the activity list names them: display name, else email, else subject.
+    assert.match(formatWorkflowEventText(event("workflow.paused", { actor: { kind: "user", subject: "u-1", email: "ada@example.com", displayName: "Ada" } })),
+        /paused by `Ada`\./);
     assert.match(formatWorkflowEventText(event("workflow.vars_set", { set: ["a", "b", "c", "d", "e", "f", "g"] })), /set `a`, `b`, `c`, `d`, `e` and 2 more/);
 });
 

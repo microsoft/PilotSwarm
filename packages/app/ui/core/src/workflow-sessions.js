@@ -8,6 +8,8 @@
  * which the worker draws and updates (packages/sdk workflow/canvas.ts).
  */
 
+import { workflowV2ActorText } from "./workflow-v2-view.js";
+
 export const WORKFLOW_SESSION_GLYPH = "◇";
 
 export const WORKFLOW_EVENT_TYPES = [
@@ -70,14 +72,16 @@ function inline(value, max = 120) {
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const nonEmpty = (value) => typeof value === "string" && value.trim() !== "";
+const NOBODY_NAMED = new Set(["a person", "an agent", "the system"]);
 
-/** Who acted, from the actor record of a pause, resume or variable update; nothing when it is missing or unknown. */
-function describeActor(actor) {
-    if (!isObject(actor)) return "";
-    if (actor.kind === "user") return nonEmpty(actor.subject) ? ` by user ${inline(actor.subject, 60)}` : " by a user";
-    if (actor.kind === "agent") return nonEmpty(actor.sessionId) ? ` by agent ${inline(String(actor.sessionId).slice(0, 8), 20)}` : " by an agent";
-    if (actor.kind === "system") return nonEmpty(actor.name) ? ` by ${inline(actor.name, 60)}` : " by the system";
-    return "";
+/**
+ * " by <who>" for a pause, resume or variable update, in the activity list's words (workflowV2ActorText); nothing when
+ * the event names nobody. A name or id the event carries stays a code span, so it cannot become markup.
+ */
+function byActor(actor) {
+    const who = workflowV2ActorText(actor);
+    if (!who) return "";
+    return ` by ${NOBODY_NAMED.has(who) ? who : inline(who, 60)}`;
 }
 
 function keyList(value) {
@@ -98,14 +102,14 @@ function controlEventView(event) {
         case "workflow.resumed": {
             const paused = event.eventType === "workflow.paused";
             const reason = nonEmpty(data.reason) ? `: ${inline(data.reason, 200)}` : ".";
-            const head = `${paused ? "⏸ Workflow paused" : "▶ Workflow resumed"}${describeActor(data.actor)}`;
+            const head = `${paused ? "⏸ Workflow paused" : "▶ Workflow resumed"}${byActor(data.actor)}`;
             return { text: `${head}${reason}`, summary: paused ? "paused" : "resumed", color: paused ? "yellow" : "gray" };
         }
         case "workflow.vars_set": {
             const set = keyList(data.set), removed = keyList(data.deleted);
             const parts = [set ? `set ${set}` : "", removed ? `removed ${removed}` : ""].filter(Boolean);
             const revision = Number.isSafeInteger(data.kvRevision) ? ` (revision ${data.kvRevision})` : "";
-            return { text: `✎ Workflow variables updated${describeActor(data.actor)}${revision}${parts.length ? `: ${parts.join("; ")}` : ""}.`,
+            return { text: `✎ Workflow variables updated${byActor(data.actor)}${revision}${parts.length ? `: ${parts.join("; ")}` : ""}.`,
                 summary: "variables updated", color: "gray" };
         }
         case "workflow.input_accepted": {
