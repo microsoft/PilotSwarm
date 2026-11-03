@@ -687,7 +687,16 @@ the same agent child, branch, stop, test and pin fields. The shared UI
   effects and their answers. Answers go through the parent's tools.
 - **Human input.** A session whose access reports `canSendPrompt: false` has
   no composer; the note gives the reason and the controlling agent. The
-  server refuses the input anyway.
+  server refuses the input anyway. Every web surface that reads the session
+  access for its composer (the portal, a deep link, a MoA panel, Mobile Zen)
+  records the refusal on its controller (`recordWorkflowInputAccess`), so
+  that controller's prompt, answer, steer and canvas-action paths refuse the
+  session too, not only the hidden composer, and keep the draft. Its canvas
+  KV writes and workspace commands are refused by the server only. A
+  pending question there (none should exist: `ask_user` is refused) shows
+  the reason instead of asking for an answer below; in the TUI too. Until
+  the access read answers, or when it fails, the ordinary composer stays and
+  the server refuses the input (an open owner question).
 - **Run controls, variables, the draft editor, publication and test starts
   (R03, R04, R05, R17 to R20, R26, R28; mocks M01 to M04, M15, M16, M18 to
   M20; INACTIVE).** See below.

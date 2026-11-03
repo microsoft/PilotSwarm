@@ -6812,9 +6812,15 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
             return;
         }
         let cancelled = false;
+        const sessionId = activeSessionId;
         setState((s) => ({ ...s, loading: true }));
-        controller.transport.getSessionAccess(activeSessionId)
-            .then((access) => { if (!cancelled) setState({ access, loading: false }); })
+        controller.transport.getSessionAccess(sessionId)
+            .then((access) => {
+                // A refusal of people's input (a workflow agent state's subtree) is kept on the controller for this
+                // session, so its prompt, answer and steer paths refuse it too, whichever surface reads access here.
+                controller.recordWorkflowInputAccess?.(sessionId, access);
+                if (!cancelled) setState({ access, loading: false });
+            })
             .catch(() => { if (!cancelled) setState({ access: null, loading: false }); });
         return () => { cancelled = true; };
     }, [controller, activeSessionId, isGroup]);
@@ -7310,6 +7316,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
             inspectorTab: state.ui.inspectorTab,
+            // The session's recorded input policy: its question card says whether people may answer (T116).
+            activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
             activeSessionIsGroup: Boolean(activeSessionId && state.sessions.byId[activeSessionId]?.isGroup),
             activeSessionStatus: activeSessionId ? String(state.sessions.byId[activeSessionId]?.status || "").toLowerCase() : "",
             focused: state.ui.focusRegion === "chat",
@@ -7342,11 +7350,14 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         },
         ui: {
             inspectorTab: viewState.inspectorTab,
+            ...(viewState.activeSessionId && viewState.activeInputPolicy
+                ? { workflowInputPolicies: { [viewState.activeSessionId]: viewState.activeInputPolicy } } : {}),
         },
     }), [
         viewState.activeHistory,
         viewState.activeSessionId,
         viewState.activeOutbox,
+        viewState.activeInputPolicy,
         viewState.authPrincipal,
         viewState.branding,
         viewState.connection,

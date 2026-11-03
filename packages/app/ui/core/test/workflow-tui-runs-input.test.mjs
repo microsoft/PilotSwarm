@@ -4,7 +4,9 @@
 //     run's model as the portal's picker does;
 //   - the composer of a session in a workflow agent state's subtree is read-only: the server says so once per session
 //     (getWorkflowInputPolicy, or the session access of the Web API), only sessions that may be in such a subtree by
-//     their loaded ancestry are asked about, and a prompt, an answer or a steer to one is not sent, its draft kept.
+//     their loaded ancestry are asked about, and a prompt, an answer or a steer to one is not sent, its draft kept;
+//   - on the web surfaces, the session access their composer reads records the same refusal on their controller, which
+//     then refuses a prompt, an answer, a steer and a canvas action there; the question card says why (T116).
 //
 // Run: node --test packages/app/ui/core/test/workflow-tui-runs-input.test.mjs
 import test from "node:test";
@@ -17,6 +19,8 @@ import {
     createInitialState,
     createStore,
     normalizeWorkflowInputPolicy,
+    selectActiveChat,
+    selectChatLines,
     selectWorkflowInputNote,
     selectWorkflowViewModal,
     selectWorkflowViewSelection,
@@ -151,6 +155,7 @@ function inputHarness({ policies = { c1: DENIED, g1: DENIED, o1: ALLOWED }, apiM
     };
     const base = {
         sendMessage: async (...args) => { calls.push(["sendMessage", ...args]); },
+        sendAnswer: async (...args) => { calls.push(["sendAnswer", ...args]); },
         steerSessionTurn: async (...args) => { calls.push(["steerSessionTurn", ...args]); return { outcome: "accepted", steerId: 1, turn: 0 }; },
         getSessionEvents: async () => [],
         subscribeSession: () => () => {},
@@ -243,4 +248,70 @@ test("over the Web API the session access says it; a failed read records nothing
     assert.deepEqual(normalizeWorkflowInputPolicy({ canWrite: true }), ALLOWED);
     assert.deepEqual(normalizeWorkflowInputPolicy(DENIED), DENIED);
     for (const value of [null, undefined, "denied", 3, []]) assert.equal(normalizeWorkflowInputPolicy(value), null);
+});
+
+// T116 on the web surfaces (portal, deep link, MoA panel, Mobile Zen): each reads the session access for its composer
+// (useActiveSessionAccess) and records a refusal on its controller, so the controller's own prompt, answer and steer
+// paths refuse that session too, not only the hidden composer; the question card says why nobody answers it here.
+test("a refusal in the session access the portal read is recorded: send, answer and steer refuse it, the question card says so; an ordinary session still works", async () => {
+    const { controller, store, calls } = inputHarness({ apiMode: true });
+    const refused = { sessionId: "c1", canWrite: true, canManage: true, canSendPrompt: false, canAnswer: false, canSteer: false,
+        workflowInput: { reason: REASON, workflowSessionId: "wf", controllingSessionId: "r1" } };
+    // Nothing else is recorded: an access that refuses nothing, one for another session, a malformed one, no session.
+    assert.equal(controller.recordWorkflowInputAccess("s1", { sessionId: "s1", canWrite: true, canManage: true }), null);
+    assert.equal(controller.recordWorkflowInputAccess("g1", refused), null, "the access of another session");
+    for (const value of [null, undefined, "denied", 3]) assert.equal(controller.recordWorkflowInputAccess("c1", value), null);
+    assert.equal(controller.recordWorkflowInputAccess(null, refused), null);
+    assert.deepEqual(store.getState().ui.workflowInputPolicies, {});
+    assert.deepEqual(controller.recordWorkflowInputAccess("c1", refused), DENIED);
+    const recorded = store.getState().ui.workflowInputPolicies.c1;
+    assert.equal(controller.recordWorkflowInputAccess("c1", { ...refused }), recorded, "the same refusal read again changes nothing");
+    assert.equal(store.getState().ui.workflowInputPolicies.c1, recorded);
+    assert.deepEqual(await controller.ensureWorkflowInputPolicy("c1"), DENIED, "recorded, so it is not read again");
+    assert.deepEqual(calls, [], "recording reads nothing");
+
+    store.dispatch({ type: "sessions/selected", sessionId: "c1" });
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "c1", pendingQuestion: { question: "Which branch?", choices: ["main", "dev"] } } });
+    const card = selectActiveChat(store.getState()).find(message => message.cardTitle === "Question");
+    assert.ok(card.text.endsWith(`\n\n${NOTE}`), card.text);
+    assert.ok(!card.text.includes("below"), "no answer is asked for in a composer that is not there");
+    controller.setPrompt("main");
+    await controller.sendPrompt();
+    assert.equal(store.getState().ui.statusText, NOTE);
+    assert.equal(store.getState().ui.prompt, "main", "the draft is kept");
+    assert.equal(store.getState().sessions.byId.c1.pendingQuestion.question, "Which branch?", "the question stays unanswered");
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "c1", acceptsTurnControl: true } });
+    store.dispatch({ type: "turnControl/steering", enabled: true });
+    await controller.handleCommand(UI_COMMANDS.STEER_TURN);
+    assert.equal(store.getState().ui.statusText, NOTE);
+    // A canvas action from that session's canvas is a person's input too.
+    assert.deepEqual(await controller.submitCanvasAction("c1", { type: "canvas-action", action: "request", data: { id: "r-1" } }),
+        { ok: false, reason: NOTE });
+    assert.deepEqual(calls, [], "no prompt, answer, steer or canvas action was sent");
+
+    // The positive control: an ordinary sub-agent's question card asks for the answer, and its composer sends.
+    store.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "s1", pendingQuestion: { question: "Which branch?", choices: ["main", "dev"] } } });
+    const ordinary = selectActiveChat(store.getState()).find(message => message.cardTitle === "Question");
+    assert.ok(ordinary.text.endsWith("Reply with one of the choices above, or type a free-form answer below."), ordinary.text);
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "s1", pendingQuestion: null } });
+    controller.setPrompt("hello");
+    await controller.sendPrompt();
+    assert.equal(store.getState().ui.prompt, "", "the ordinary session's prompt left the composer");
+    assert.notEqual(store.getState().ui.statusText, NOTE);
+    assert.equal(store.getState().ui.workflowInputPolicies.s1, undefined);
+    // Its canvas action is not refused for input (this one is refused only because no canvas contract is drawn).
+    const action = await controller.submitCanvasAction("s1", { type: "canvas-action", action: "request", data: { id: "r-2" } });
+    assert.equal(action.ok, false);
+    assert.equal(action.reason, "the current canvas declares no response contract");
+
+    // The transcript's lines follow the recorded policy (their memo is keyed by it, not only by the session row).
+    const text = () => selectChatLines(store.getState(), 400)
+        .map(line => Array.isArray(line) ? line.map(run => run?.text ?? "").join("") : line?.text ?? "").join("\n");
+    store.dispatch({ type: "sessions/selected", sessionId: "g1" });
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "g1", pendingQuestion: { question: "Ship it?" } } });
+    assert.ok(text().includes("Type your answer in the prompt below and press Enter."), text());
+    controller.recordWorkflowInputAccess("g1", { ...refused, sessionId: "g1" });
+    assert.ok(text().includes("Its controlling agent is session r1."), text());
+    assert.ok(!text().includes("Type your answer in the prompt below"), text());
 });

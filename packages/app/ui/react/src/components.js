@@ -359,6 +359,8 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeSession: activeSessionId ? state.sessions.byId[activeSessionId] || null : null,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
             activeOutbox: activeSessionId ? state.outbox?.bySessionId?.[activeSessionId] || null : null,
+            // The session's recorded input policy: its question card says whether people may answer (T116).
+            activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
             // Viewer identity — so the transcript can say "You" for the viewer's
             // own messages (and tag the owner) in shared sessions.
             authPrincipal: state.auth?.principal || null,
@@ -383,7 +385,9 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
                 error: chatView.connectionError,
                 mode: chatView.connectionMode,
             },
-            ui: {},
+            ui: chatView.activeSessionId && chatView.activeInputPolicy
+                ? { workflowInputPolicies: { [chatView.activeSessionId]: chatView.activeInputPolicy } }
+                : {},
             sessions: {
                 activeSessionId: chatView.activeSessionId,
                 byId: buildSingleSessionMap(chatView.activeSessionId, chatView.activeSession),
@@ -406,6 +410,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.activeSessionId,
         chatView.activeSession,
         chatView.activeOutbox,
+        chatView.activeInputPolicy,
         chatView.authPrincipal,
         chatView.branding,
         chatView.connectionError,

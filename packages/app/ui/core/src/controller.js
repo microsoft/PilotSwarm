@@ -6183,6 +6183,10 @@ export class PilotSwarmUiController {
     submitCanvasAction(sessionId, message, slot = 1) {
         if (!sessionId) return Promise.resolve({ ok: false, reason: "no session" });
         if (!Number.isInteger(slot) || slot < 1 || slot > 5) return Promise.resolve({ ok: false, reason: "invalid canvas slot" });
+        // A session in a workflow agent state's subtree takes no person's input, a canvas action included (design 03;
+        // the server refuses it too): its recorded refusal answers here, and nothing is sent.
+        const inputNote = selectWorkflowInputNote(this.getState(), sessionId);
+        if (inputNote) return Promise.resolve({ ok: false, reason: inputNote });
         // Creator-only, mirrored from the server's enforcement (the server is
         // the authority; this is the friendly refusal). The canvas mutates —
         // a shared viewer may be looking at a different revision than the one
@@ -9449,6 +9453,26 @@ export class PilotSwarmUiController {
         })();
         this.workflowInputPolicyReads.set(sessionId, request);
         return request;
+    }
+
+    /**
+     * Human input on the web surfaces (design 03; T116 on the portal, deep links, MoA panels and Mobile Zen): record
+     * the refusal that the session access the Web API reported for `sessionId` (getSessionAccess, which the portal
+     * reads for its composer), so this controller's prompt, answer, steer and canvas-action paths refuse that session
+     * too, not only its hidden composer. The server includes canSendPrompt only to refuse it, and a session's lineage
+     * never changes, so a refusal is kept (the same one read again changes nothing); an access that refuses nothing,
+     * or that is for another session, records nothing. Reads nothing. Returns the recorded policy, or null. Never
+     * throws.
+     */
+    recordWorkflowInputAccess(sessionId, access) {
+        if (!sessionId || !access || typeof access !== "object" || access.canSendPrompt !== false) return null;
+        if (access.sessionId !== undefined && access.sessionId !== sessionId) return null;
+        const policy = normalizeWorkflowInputPolicy(access);
+        if (!policy) return null;
+        const recorded = this.getState().ui.workflowInputPolicies?.[sessionId];
+        if (recorded && Object.keys(policy).every(key => recorded[key] === policy[key])) return recorded;
+        this.dispatch({ type: "ui/workflowInputPolicy", sessionId, policy });
+        return policy;
     }
 
     openThemePicker() {

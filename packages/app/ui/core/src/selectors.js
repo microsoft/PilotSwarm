@@ -37,6 +37,7 @@ import {
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { isWorkflowSession, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
+import { selectWorkflowInputNote } from "./workflow-tui.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
@@ -1728,7 +1729,12 @@ function latestEventCreatedAtMs(events = [], eventTypes = [], predicate = () => 
     return null;
 }
 
-function buildPendingQuestionMessage(session, events = []) {
+/**
+ * The pending-question card. `inputNote` (selectWorkflowInputNote) is the server's refusal of people's input to a
+ * session in a workflow agent state's subtree (design 03, T116): the card then says why nobody answers it here
+ * instead of asking for an answer in a composer that is not there.
+ */
+function buildPendingQuestionMessage(session, events = [], inputNote = null) {
     const pendingQuestion = session?.pendingQuestion;
     if (!pendingQuestion?.question) return null;
 
@@ -1744,7 +1750,9 @@ function buildPendingQuestionMessage(session, events = []) {
         }
     }
 
-    if (choices.length > 0 && pendingQuestion.allowFreeform === false) {
+    if (inputNote) {
+        body.push("", inputNote);
+    } else if (choices.length > 0 && pendingQuestion.allowFreeform === false) {
         body.push("", "Reply with one of the choices above in the prompt below.");
     } else if (choices.length > 0) {
         body.push("", "Reply with one of the choices above, or type a free-form answer below.");
@@ -2077,7 +2085,7 @@ export function selectActiveChat(state) {
     const events = history?.events || [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
         && !chatAlreadyContainsPendingQuestion(chat, session.pendingQuestion.question)
-        ? buildPendingQuestionMessage(session, events)
+        ? buildPendingQuestionMessage(session, events, selectWorkflowInputNote(state, sessionId))
         : null;
     const answeredQuestionMessage = buildAnsweredPendingQuestionMessage(session, chat);
     // Legacy/synthetic selector callers may not have passed through the
@@ -3227,6 +3235,8 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             ? state?.history?.bySessionId?.get?.(memoSessionId)?.events ?? null : null,
         branding: state?.branding ?? null,
         principal: state?.auth?.principal ?? null,
+        // A pending question's card says whether people may answer it (the session's recorded input policy).
+        inputPolicy: memoSession?.pendingQuestion ? state?.ui?.workflowInputPolicies?.[memoSessionId] ?? null : null,
         maxWidth,
         tableMode: options?.tableMode ?? null,
     };
@@ -3236,6 +3246,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             && entry.byId === memoKey.byId
             && entry.chat === memoKey.chat
             && entry.events === memoKey.events
+            && entry.inputPolicy === memoKey.inputPolicy
             && entry.viewMode === memoKey.viewMode
             && entry.branding === memoKey.branding
             && entry.principal === memoKey.principal
