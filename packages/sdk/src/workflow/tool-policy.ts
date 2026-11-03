@@ -28,6 +28,24 @@ export interface WorkflowToolBinding {
     boundAgentFingerprint: string;
 }
 
+/**
+ * The refusal when the calling chat has no live tool context on this worker to hand to a workflow (no warm session, or
+ * none recorded for it). spawn_workflow answers it with this code and these words, which an agent can relay as they are.
+ */
+export const WORKFLOW_PARENT_CONTEXT_UNAVAILABLE = "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE";
+export const WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE = "The workflow was not created: this chat's tools were not ready to hand to a "
+    + "workflow. Nothing was started. Call spawn_workflow again; if it is refused again, tell the user.";
+
+/** The coded error captureWorkflowToolBinding throws when the parent's tool context is not available. */
+export function workflowParentContextUnavailable(): Error & { code: typeof WORKFLOW_PARENT_CONTEXT_UNAVAILABLE } {
+    return Object.assign(new Error(WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE), { code: WORKFLOW_PARENT_CONTEXT_UNAVAILABLE });
+}
+
+/** Whether an error is that refusal. */
+export function isWorkflowParentContextUnavailable(error: unknown): boolean {
+    return Boolean(error) && typeof error === "object" && (error as { code?: unknown }).code === WORKFLOW_PARENT_CONTEXT_UNAVAILABLE;
+}
+
 export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | null {
     if (value === undefined || value === null) return null;
     if (typeof value !== "object" || !("policy" in value) || value.policy !== WORKFLOW_TOOL_POLICY

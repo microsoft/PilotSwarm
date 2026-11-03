@@ -25,7 +25,7 @@ import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
-import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
+import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowParentContextUnavailable, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
 import { WORKFLOW_AUTHORING_POINTER, WORKFLOW_SESSION_GUIDANCE, workflowAuthoringSkillLoaded } from "./workflow/guidance.js";
 import { createGraphTools } from "./graph-tools.js";
@@ -2690,7 +2690,10 @@ export class SessionManager {
                 onPermissionRequest: workflowToolPermission,
             } : {}),
         };
-        this.workflowParentConfigs.set(sessionId, {
+        // What a workflow this session starts inherits (captureWorkflowToolBinding). Recorded here for the warm path and
+        // again once a new ManagedSession is stored below: the turn-0 reset, the epoch start and a rebind (a model or
+        // effort switch, a capability selection such as use_package) forget the warm session and this record with it.
+        const workflowParentConfig = {
             model: effectiveModel,
             reasoningEffort: config.reasoningEffort,
             contextTier: config.contextTier,
@@ -2704,7 +2707,8 @@ export class SessionManager {
             toolNames: effectiveSerializableConfig.toolNames ? [...effectiveSerializableConfig.toolNames] : undefined,
             agentIdentity: config.agentIdentity,
             excludedTools: [...excludedTools],
-        });
+        };
+        this.workflowParentConfigs.set(sessionId, workflowParentConfig);
 
         let copilotSession: CopilotSession;
 
@@ -2869,6 +2873,7 @@ export class SessionManager {
             agentId: effectiveSerializableConfig.agentIdentity ?? null,
         }));
         this.sessions.set(sessionId, managed);
+        this.workflowParentConfigs.set(sessionId, workflowParentConfig);
         this.sessionAgentCopies.set(sessionId, boundAgentCopy);
         this.sessionBindingFingerprints.set(sessionId, bindingFingerprint);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config, sessionOwnerKey, boundAgentCopy ?? null);
@@ -3531,7 +3536,7 @@ export class SessionManager {
         const managed = this.sessions.get(parentSessionId);
         const config = this.workflowParentConfigs.get(parentSessionId);
         const fullConfig = this.sessionConfigs.get(parentSessionId);
-        if (!managed || !config || !this.sessionCatalog) throw new Error("A live parent tool context is required to admit a workflow.");
+        if (!managed || !config || !this.sessionCatalog) throw workflowParentContextUnavailable();
         if (fullConfig?.hooks || (fullConfig && "onPermissionRequest" in fullConfig)) {
             throw new Error("This parent's in-memory tool policy cannot be delegated durably.");
         }

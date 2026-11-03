@@ -4,6 +4,7 @@ import type { WorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
 import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "./activities.js";
 import { compileWorkflow, validateWorkflowInputs, validateNodeWorkflowAdmission } from "./compiler.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
+import { isWorkflowParentContextUnavailable, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE } from "./tool-policy.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
 import { declaresWorkflowV2 } from "./v2/compiler.js";
 import { spawnWorkflowV2FromTool, type WorkflowToolHost } from "./v2/tools.js";
@@ -50,12 +51,19 @@ export async function spawnWorkflowFromTool(
             const slug = typeof args.key === "string" && args.key.trim() ? `key:${args.key.trim()}` : `call:${call?.toolCallId ?? ""}`;
             if (slug === "call:") return JSON.stringify({ ok: false, error: { code: "WORKFLOW_COMMAND_INVALID", message: "spawn_workflow needs a key or a tool call id." } });
             const owner = await deps.resolveOwner();
+            let binding: WorkflowToolBinding;
+            try {
+                binding = await deps.captureToolBinding();
+            } catch (error) {
+                if (!isWorkflowParentContextUnavailable(error)) throw error;
+                return JSON.stringify({ ok: false, error: { code: WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, message: WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE } });
+            }
             return spawnWorkflowV2FromTool(args, {
                 callerSessionId: deps.parentSessionId,
                 workflowSessionId: workflowChildSessionId(deps.parentSessionId, args.key, call?.toolCallId),
                 operationId: `spawn:${slug}`,
                 owner,
-                binding: await deps.captureToolBinding(),
+                binding,
                 host: await deps.workflowV2Host(),
             });
         }
@@ -95,6 +103,9 @@ export async function spawnWorkflowFromTool(
                 : "You will not be told when it ends; check it with read_session_info or list_sessions. ")
             + "The user can follow each step in the portal, under this session.]";
     } catch (error) {
+        if (isWorkflowParentContextUnavailable(error)) {
+            return `[SYSTEM: spawn_workflow refused (${WORKFLOW_PARENT_CONTEXT_UNAVAILABLE}) — ${WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE}]`;
+        }
         return `[SYSTEM: spawn_workflow failed — ${error instanceof Error ? error.message : String(error)}]`;
     }
 }

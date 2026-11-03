@@ -333,6 +333,27 @@ test("spawn_workflow can run without waking the parent, and reports a failed cre
     );
 });
 
+test("a chat without a live tool context gets a coded refusal in plain words, v1 and v2 alike (of-01)", async () => {
+    const lost = () => Object.assign(new Error("ignored"), { code: "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE" });
+    const v1 = spawnDeps({ captureToolBinding: async () => { throw lost(); } });
+    const text = await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "p1" }, v1.deps);
+    assert.match(text, /^\[SYSTEM: spawn_workflow refused \(WORKFLOW_PARENT_CONTEXT_UNAVAILABLE\) — The workflow was not created: /);
+    assert.match(text, /Call spawn_workflow again; if it is refused again, tell the user\.\]$/);
+    assert.equal(v1.created.length, 0);
+    const v2 = spawnDeps({ captureToolBinding: async () => { throw lost(); },
+        workflowV2Host: async () => { throw new Error("the host must not be reached"); } });
+    const v2Yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: w, version: \"1.0.0\" }\ninitial: a\n"
+        + "states:\n  a: { type: wait, seconds: 1, transition: { next: { elapsed: b } } }\n  b: { type: terminal, outcome: succeeded }\n";
+    const answer = JSON.parse(await spawnWorkflowFromTool({ yaml: v2Yaml }, { toolCallId: "p2" }, v2.deps));
+    assert.equal(answer.ok, false);
+    assert.equal(answer.error.code, "WORKFLOW_PARENT_CONTEXT_UNAVAILABLE");
+    assert.match(answer.error.message, /^The workflow was not created: this chat's tools were not ready/);
+    // Any other capture failure keeps its own words.
+    const other = spawnDeps({ captureToolBinding: async () => { throw new Error("Workflow tool delegation requires an owned, non-system parent."); } });
+    assert.equal(await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "p3" }, other.deps),
+        "[SYSTEM: spawn_workflow failed — Workflow tool delegation requires an owned, non-system parent.]");
+});
+
 // ── Live view, cancellation commands, MCP and session tools ─────────
 
 import {
