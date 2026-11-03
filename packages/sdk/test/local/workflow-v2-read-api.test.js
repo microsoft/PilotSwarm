@@ -479,7 +479,8 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             await catalog.createSession(parent, { owner });
             const workflowSessionId = randomUUID();
             const asJson = JSON.stringify({ apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "read-api", version: "1.0.0" },
-                initial: "done", states: { done: { type: "terminal", outcome: "succeeded" } } });
+                initial: "pause", states: { pause: { type: "wait", seconds: 1, transition: { next: { elapsed: "done" } } },
+                    done: { type: "terminal", outcome: "succeeded" } } });
             const first = compileWorkflowV2(asJson);
             expect(first.valid, JSON.stringify(first.diagnostics)).toBe(true);
             expect((await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner,
@@ -495,7 +496,8 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             const one = (await read(1)).definitionRevision;
             expect(one).toMatchObject({ revision: 1, definitionHash: first.yamlSha256, valid: true, current: false, published: false, yaml: asJson });
             expect(one.formatted).toBe([
-                "apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata:", "  name: read-api", "  version: 1.0.0", "initial: done", "states:",
+                "apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata:", "  name: read-api", "  version: 1.0.0", "initial: pause", "states:",
+                "  pause:", "    type: wait", "    seconds: 1", "    transition:", "      next:", "        elapsed: done",
                 "  done:", "    type: terminal", "    outcome: succeeded", "",
             ].join("\n"));
             const two = (await read(2)).definitionRevision;

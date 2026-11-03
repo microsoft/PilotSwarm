@@ -193,7 +193,10 @@ describe("workflow v2 durable intake: the owed retry on the real session lifecyc
             expect(first.error.message).toContain("fault-injection: turn.commit.before-cas");
             // Nothing was saved under T: the tip is still W's.
             expect(await h.snapshots.probe()).toMatchObject({ version: 1, turnKey: keyOf(w) });
-            await h.until(async () => (await h.snapshots.probe()).turnKey === T, "the owed retry saves P under T", 120_000);
+            // The tip moves to T when the retry's turn commits, inside its activity; the activity's result is recorded only when
+            // it returns, so the case waits for both before it reads that result.
+            await h.until(async () => turnsOf(h)[2]?.result !== undefined && (await h.snapshots.probe()).turnKey === T,
+                "the owed retry saves P under T", 120_000);
 
             const turns = turnsOf(h);
             expect(turns).toHaveLength(3);
