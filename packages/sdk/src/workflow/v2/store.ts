@@ -2158,7 +2158,7 @@ export class WorkflowStore {
         /** The published revision's agent pins as canonical JSON (migration 0099); null or absent when there are none. */
         agentPinsText?: string | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
-        requirePublishable(input.compiled, input.publish || input.start !== null);
+        requirePublishable(input.compiled, input.publish || Boolean(input.start));
         if (input.start && !input.publish) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "Starting a live run requires publication.");
         return this.transaction(async client => {
             await this.requireLiveSession(client, input.workflowSessionId);
