@@ -6,6 +6,9 @@
  * workflow with an agent state as a valid draft. With the switch off, sessions start at the latest version (1.0.82)
  * and the agent state is refused (WORKFLOW_NODE_TYPE_UNSUPPORTED), exactly as before.
  *
+ * A sub-agent the chat spawns (spawn_agent) starts where its worker serves: at 1.0.83 on a worker with the test option
+ * workflowRequests (which the switch sets), so an agent can delegate writing such a workflow; at 1.0.82 otherwise.
+ *
  * A full worker (PostgreSQL, duroxide and the Copilot CLI) with the model scripted. The worker's options and the
  * client's start version are what the switch gives the entry points (workerOptionsForWorkflowV2TestEnvironment,
  * workflowV2TestEnvironmentFromEnv(...).sessionStartVersion, passed to PilotSwarmClient._startSessionsAt as
@@ -85,6 +88,71 @@ describe("the Workflow V2 test environment switch: where a person's new chat sta
         const { version, result } = await chatDraftsAgentWorkflow(getEnv(), OFF);
         expect(version).toBe(DURABLE_SESSION_LATEST_VERSION);
         expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.82");
+        expect(result, JSON.stringify(result)).toMatchObject({ ok: true, state: "draft", valid: false });
+        expect(result.diagnostics.filter(item => item.severity === "error").map(item => [item.code, item.path]))
+            .toEqual([["WORKFLOW_NODE_TYPE_UNSUPPORTED", "states.review.type"]]);
+    });
+});
+
+const DELEGATE = "Ask a sub-agent to draft a workflow with one agent step.";
+const CHILD = "DELEGATED-WORKFLOW-AUTHOR: draft a workflow with one agent step that reviews a change.";
+
+async function until(check, label, timeoutMs = 120_000) {
+    const deadline = Date.now() + timeoutMs;
+    let last;
+    while (Date.now() < deadline) {
+        last = await check();
+        if (last) return last;
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}`);
+}
+
+/**
+ * A person's chat that delegates the workflow to a sub-agent (spawn_agent), on a worker configured as the switch in
+ * `processEnv` configures it, and the chat itself started at the latest version either way (only the worker decides
+ * where its sub-agents start). The sub-agent's orchestration version, its parent, and its spawn_workflow result.
+ */
+async function subAgentDraftsAgentWorkflow(env, processEnv) {
+    const results = [];
+    const respond = (_body, position) => {
+        if (position.firstUserText.includes(CHILD)) {
+            if (!position.lastUserText.includes(CHILD)) return { content: "ok" };
+            if (position.step === 0) return { tools: [{ name: "spawn_workflow", args: { yaml: YAML, key: "delegated-agent-step" } }] };
+            results.push(position.toolResults[0]);
+            return { content: "Saved the draft." };
+        }
+        if (!position.lastUserText.includes(DELEGATE)) return { content: "ok" };
+        if (position.step === 0) return { tools: [{ name: "spawn_agent", args: { task: CHILD } }] };
+        return { content: "Delegated." };
+    };
+    const worker = workerOptionsForWorkflowV2TestEnvironment({ workflowScripts: { enabled: true } }, processEnv);
+    let outcome = null;
+    await withScriptedModel(env, { respond, worker }, async ({ client, qualifiedModel }) => {
+        const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
+        await chat.sendAndWait(DELEGATE, TIMEOUT);
+        expect(await sessionOrchestrationVersion(client, chat.sessionId)).toBe(DURABLE_SESSION_LATEST_VERSION);
+        await until(() => results.length > 0, "the sub-agent's spawn_workflow");
+        const result = JSON.parse(results[0]);
+        const workflow = await client._catalog.getSession(result.workflowId);
+        const subAgent = await client._catalog.getSession(workflow.parentSessionId);
+        outcome = { version: await sessionOrchestrationVersion(client, subAgent.sessionId), parent: subAgent.parentSessionId, chat: chat.sessionId, result };
+    });
+    return outcome;
+}
+
+describe("the Workflow V2 test environment switch: where a chat's sub-agent starts", () => {
+    it("on: a sub-agent starts at 1.0.83, and its spawn_workflow saves a workflow with an agent state as a valid draft", { timeout: TIMEOUT }, async () => {
+        const { version, parent, chat, result } = await subAgentDraftsAgentWorkflow(getEnv(), ON);
+        expect(parent).toBe(chat);
+        expect(version).toBe(DURABLE_SESSION_INTAKE_VERSION);
+        expect(result, JSON.stringify(result)).toMatchObject({ ok: true, state: "draft", revision: 1, valid: true, run: null });
+    });
+
+    it("off: a sub-agent starts at 1.0.82, and the agent state is refused as before", { timeout: TIMEOUT }, async () => {
+        const { version, parent, chat, result } = await subAgentDraftsAgentWorkflow(getEnv(), OFF);
+        expect(parent).toBe(chat);
+        expect(version).toBe(DURABLE_SESSION_LATEST_VERSION);
         expect(result, JSON.stringify(result)).toMatchObject({ ok: true, state: "draft", valid: false });
         expect(result.diagnostics.filter(item => item.severity === "error").map(item => [item.code, item.path]))
             .toEqual([["WORKFLOW_NODE_TYPE_UNSUPPORTED", "states.review.type"]]);

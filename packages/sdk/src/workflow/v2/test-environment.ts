@@ -16,9 +16,11 @@ import { DURABLE_SESSION_INTAKE_VERSION } from "../../orchestration-version.js";
  * - the session client of the portal and of the MCP server's direct mode:
  *   new sessions start at 1.0.83 (`sessionStartVersion`), whose turns take
  *   request, agent and parallel states, so a person's own chat can create
- *   such a workflow. A session started before keeps its version: one
- *   started at 1.0.82 stays there, and its spawn_workflow refuses those
- *   states as before.
+ *   such a workflow; and a sub-agent a chat spawns starts there too (its
+ *   worker has `workflowRequests`; session-proxy spawnChildSession). A
+ *   session started before keeps its version: one started at 1.0.82 stays
+ *   there, and its spawn_workflow refuses those states as before. System
+ *   agents and their children start at the latest version.
  *
  * It is on only when PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT is exactly
  * `isolated-test-only` (no trimming, no other spelling). Unset, empty or any

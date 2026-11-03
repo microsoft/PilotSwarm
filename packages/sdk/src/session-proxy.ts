@@ -33,6 +33,7 @@ import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
 import { PilotSwarmClient } from "./client.js";
+import { DURABLE_SESSION_INTAKE_VERSION } from "./orchestration-version.js";
 import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./management-client.js";
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
@@ -1271,7 +1272,8 @@ export function registerActivities(
      * carry an invocation's `intake` field; `intakeAdmissionRetryDelaysMs`
      * replaces the in-place waits of their admission's transient retries
      * (intake-admission.ts); `workflowRequests` gives those turns the
-     * respond_session_request tool (workflow request states). INACTIVE: only
+     * respond_session_request tool (workflow request states), and starts a
+     * sub-agent (spawnChildSession, not a system child) at 1.0.83. INACTIVE: only
      * tests pass them, and a worker created with the test option
      * workflowRequests (milestone-worker.ts).
      */
@@ -5928,6 +5930,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             ...internalClientConfig(),
             traceWriter: (message: string) => trace(message),
         });
+        // On a worker that serves the durable intake's orchestration (the test option workflowRequests, which the Workflow
+        // V2 test environment switch sets; INACTIVE), an agent's sub-agent starts at 1.0.83 like the chat that spawns it,
+        // so a delegated agent can create request, agent and parallel states. System children keep the latest version.
+        if (testOptions?.workflowRequests === true && !input.isSystem) sdkClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
         try {
             const clientStartAt = Date.now();
             await sdkClient.start();

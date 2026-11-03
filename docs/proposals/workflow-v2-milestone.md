@@ -1589,8 +1589,10 @@ sessions at 1.0.83 (`sessionStartVersion`, `PilotSwarmClient._startSessionsAt`):
 only a 1.0.83 session's turns take request, agent and parallel states, so
 without it no person's chat could create such a workflow (found in the preview
 on 792c61e3). A session started before keeps its version; one at 1.0.82 still
-refuses those states. Sub-agents that a chat spawns, and system agents, still
-start at 1.0.82. Unset, empty or any other value is
+refuses those states. A sub-agent that a chat spawns (spawn_agent) starts at
+1.0.83 on a worker with `testOptions.workflowRequests` (spawnChildSession), so
+an agent can delegate writing such a workflow; system agents and their
+children still start at 1.0.82. Unset, empty or any other value is
 off, and every option is exactly as without it (unit tests prove it for the
 worker, the portal, its embedded workers and MCP; a local test runs a chat each
 way). Each entry point logs one

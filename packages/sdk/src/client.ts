@@ -1143,8 +1143,9 @@ export class PilotSwarmClient {
      * `workflowRequests`, which serves that version, for the children of
      * workflow agent states, and, with the Workflow V2 test environment
      * switch on (test-environment.ts), by the session clients of the portal
-     * and of the MCP server's direct mode, whose workers all serve it. A
-     * started session keeps its version.
+     * and of the MCP server's direct mode, whose workers all serve it, and by
+     * such a worker's spawnChildSession for a sub-agent. A started session
+     * keeps its version.
      */
     _startSessionsAt(version: string): void {
         if (version !== DURABLE_SESSION_LATEST_VERSION && version !== DURABLE_SESSION_INTAKE_VERSION) {
