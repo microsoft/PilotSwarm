@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
     workflowDefinition, workflowNodeViews, layoutWorkflowGraph, workflowShape, workflowV2Definition,
     projectWorkflowV2, projectWorkflowV2ReadModel, compactWorkflowV2Executions, formatWorkflowValue, workflowV2RouteKind,
+    workflowV2WaitingReplies, workflowV2WaitingRepliesLabel, workflowV2WaitingRepliesNotice,
 } from "../src/workflow-view.js";
 import {
     RUN, states, requestStates, startedData, legacyStartedData, ev, started, completed, runtimeError, ended, row, done, readModel,
@@ -145,6 +146,45 @@ test("admitted, paused, pausing, pending and ended runs keep their own labels", 
     assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "running", mode: "test" } }) }).status.label, "Test run · Running");
     const fromEvents = projectWorkflowV2({ definition, events: [started("poll", 1), ev("workflow.paused", { runId: RUN })] });
     assert.equal(fromEvents.status.label, "Paused");
+});
+
+test("q15 (mock M16): replies that arrived before the run was ready show beside its status and say why; taken, expired and ended ones do not", () => {
+    const now = Date.parse("2026-11-03T07:00:00Z");
+    const reply = (messageId, extra = {}) => ({ messageId, contract: "Ack@1", senderSessionId: "parent-1", correlation: null,
+        acceptedAt: "2026-11-03T06:30:00Z", expiresAt: "2026-11-03T08:00:00Z", claimedBy: null, claimedAt: null, payloadPreview: "{\"ok\":true}", ...extra });
+    const taken = reply("m-taken", { claimedBy: "nx-await_ack-1", claimedAt: "2026-11-03T06:31:00Z" });
+    const expired = reply("m-expired", { expiresAt: "2026-11-03T07:00:00Z" });
+    const pausedRun = { status: "paused", pausedFrom: "running", pauseSettled: true };
+    // The page and the open rows the read lists apart, one row per message; a taken or expired reply waits no more.
+    const paused = projectWorkflowV2({ now, readModel: readModel({ run: { ...pausedRun, openInbox: [reply("m-open"), reply("m-1")] },
+        inbox: [reply("m-1"), taken, expired] }) });
+    assert.equal(paused.status.label, "Paused · 2 replies waiting");
+    assert.deepEqual(paused.banners.filter(banner => banner.text.startsWith("Repl")), [
+        { level: "info", text: "Replies waiting: 2 replies arrived while the run is paused. The run uses them once it resumes." }]);
+    const one = projectWorkflowV2({ now, readModel: readModel({ run: pausedRun, inbox: [reply("m-1"), taken] }) });
+    assert.equal(one.status.label, "Paused · 1 reply waiting");
+    assert.ok(one.banners.some(banner => banner.text === "Reply waiting: 1 reply arrived while the run is paused. The run uses it once it resumes."));
+    const admitted = projectWorkflowV2({ now, readModel: readModel({ run: { status: "admitted" }, inbox: [reply("m-1")] }) });
+    assert.equal(admitted.status.label, "Admitted · not started · 1 reply waiting");
+    assert.ok(admitted.banners.some(banner => banner.text
+        === "Reply waiting: 1 reply arrived before the run started. The run uses it when it reaches the step that takes it."));
+    const running = projectWorkflowV2({ now, readModel: readModel({ run: { status: "running" }, inbox: [reply("m-1"), reply("m-2")] }) });
+    assert.equal(running.status.label, "Running · 2 replies waiting");
+    assert.ok(running.banners.some(banner => banner.text === "Replies waiting: 2 replies have arrived and wait for the step that takes them."));
+    // None: only taken or expired replies, a run that ended, or one that is stopping (it takes no new step).
+    const quiet = [
+        projectWorkflowV2({ now, readModel: readModel({ run: pausedRun, inbox: [taken, expired] }) }),
+        projectWorkflowV2({ now, readModel: readModel({ run: { status: "completed", outcome: "succeeded" }, inbox: [reply("m-1")] }) }),
+        projectWorkflowV2({ now, readModel: readModel({ run: { status: "running", stop: { deadline: "2026-11-03T07:05:00Z" } }, inbox: [reply("m-1")] }) }),
+    ];
+    for (const projection of quiet) {
+        assert.ok(!projection.status.label.includes("waiting"), projection.status.label);
+        assert.ok(!projection.banners.some(banner => banner.text.startsWith("Repl")), JSON.stringify(projection.banners));
+    }
+    assert.equal(quiet[0].status.label, "Paused");
+    assert.equal(workflowV2WaitingReplies(null, now).length, 0);
+    assert.equal(workflowV2WaitingRepliesLabel(0), "");
+    assert.equal(workflowV2WaitingRepliesNotice({ status: "paused" }, 0), null);
 });
 
 test("durable events outrank a stale canvas tick, and a stale read model never reverts a completed execution", () => {

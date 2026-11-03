@@ -364,14 +364,53 @@ function normalizeRun(raw, older = null) {
 const unrecognized = reason => ({ ok: false, status: "unrecognized", definition: null, diagnostics: [], run: null, overlay: false,
     banners: [{ level: "error", text: reason }] });
 
+const LIVE_RUN_STATUSES = new Set(["admitted", "running", "paused"]);
+
+/**
+ * The replies a run holds that no step has taken yet (owner decision q15, mock M16): the messages in its inbox, as a read
+ * model's run lists them (its page, `inbox`, and the open rows it lists apart, `openInbox`), that no step took and that
+ * have not expired at `now` (epoch milliseconds). A reply can arrive before the run is ready for it (paused, not started,
+ * or not yet at the step that takes it); it waits until that step takes it or it expires. Older pages a person loaded
+ * are not counted: a row they hold may have been taken since, and every reply still waiting is in the open rows. Pure.
+ */
+export function workflowV2WaitingReplies(run, now) {
+    const seen = new Set();
+    const rows = [...(Array.isArray(run?.inbox) ? run.inbox : []), ...(Array.isArray(run?.openInbox) ? run.openInbox : [])];
+    return rows.filter(row => {
+        if (!isRecord(row) || row.claimedBy || seen.has(row.messageId)) return false;
+        seen.add(row.messageId);
+        return !(typeof row.expiresAt === "string" && Date.parse(row.expiresAt) <= now);
+    });
+}
+
+/**
+ * What a person reads about replies waiting in a live run (q15), by why the run has not taken them yet; null for none, a
+ * run that has ended or one that is stopping (it takes no new step, so it will not use them). Pure.
+ */
+export function workflowV2WaitingRepliesNotice(run, count) {
+    if (!Number.isSafeInteger(count) || count < 1 || !LIVE_RUN_STATUSES.has(run?.status) || isRecord(run.stop)) return null;
+    const one = count === 1;
+    const head = one ? "Reply waiting: 1 reply" : `Replies waiting: ${count} replies`;
+    const it = one ? "it" : "them";
+    if (run.status === "paused") return `${head} arrived while the run is paused. The run uses ${it} once it resumes.`;
+    if (run.status === "admitted") return `${head} arrived before the run started. The run uses ${it} when it reaches the step that takes ${it}.`;
+    return `${head} ${one ? "has" : "have"} arrived and ${one ? "waits" : "wait"} for the step that takes ${it}.`;
+}
+
+/** The words a run's status gains while replies wait in it (q15): " · 1 reply waiting", or "" for none. Pure. */
+export function workflowV2WaitingRepliesLabel(count) {
+    return Number.isSafeInteger(count) && count > 0 ? ` · ${count === 1 ? "1 reply" : `${count} replies`} waiting` : "";
+}
+
 /**
  * Project the object `readWorkflowV2View` returns. `status` is one of ready,
  * draft, invalid (no graph can be shown), unavailable (valid but no graph),
  * invalid-graph or unrecognized. `older` is the view's olderHistory: the older
  * pages a person loaded, merged into the model's run only when they are for
- * that run (workflowV2RunRows).
+ * that run (workflowV2RunRows). `now` (epoch milliseconds, the current time
+ * unless given) decides only whether a waiting reply has expired.
  */
-export function projectWorkflowV2ReadModel(model, { older = null } = {}) {
+export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now() } = {}) {
     if (!isRecord(model) || typeof model.workflowId !== "string" || !isRecord(model.definition)
         || !isRecord(model.revision) || typeof model.revision.valid !== "boolean" || !Array.isArray(model.runs)) {
         return unrecognized("This payload is not a workflow v2 read model, so it was not shown.");
@@ -446,6 +485,11 @@ export function projectWorkflowV2ReadModel(model, { older = null } = {}) {
         const open = Array.isArray(test.coverage?.unanswered) ? test.coverage.unanswered.length : 0;
         if (open) banners.push({ level: "info", text: `${open} intercepted effect${open === 1 ? " waits" : "s wait"} for the parent's answer.` });
     }
+    // Replies that arrived before the run was ready for them (q15, mock M16): counted from the read's own rows.
+    const replies = run ? workflowV2WaitingReplies(model.run, now).length : 0;
+    const repliesNotice = workflowV2WaitingRepliesNotice(run, replies);
+    const waitingReplies = repliesNotice ? replies : 0;
+    if (repliesNotice) banners.push({ level: "info", text: repliesNotice });
     // How much of the run's history is loaded: the read pages a run newest first and lists its open rows apart, so its
     // current states are read however long its history is; older history is loaded on request (loadOlderWorkflowHistory).
     const history = run?.history;
@@ -467,7 +511,7 @@ export function projectWorkflowV2ReadModel(model, { older = null } = {}) {
     }
     if (history?.error) banners.push({ level: "warning", text: `Older history could not be read: ${history.error}` });
     return {
-        ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, workflowBanners, run, overlay, runRevision,
+        ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, workflowBanners, run, overlay, runRevision, waitingReplies,
         lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision,
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
         // What publication pinned each named agent state to (migration 0099; only a definition with any has them).
@@ -786,12 +830,13 @@ function agentPinSource(shared, run, bound, active) {
  * shows only its own events; only the live selection falls back to the
  * latest run in the events, never one known to be another kind of run.
  * `olderHistory` (the view's) is the older pages of history a person loaded;
- * they join the selection's own model only for the run it shows.
+ * they join the selection's own model only for the run it shows. `now`
+ * (epoch milliseconds) decides only whether a waiting reply has expired.
  */
 export function projectWorkflowV2({ definition = null, readModel = null, workflowModel = null, selectedRunId = null, events = [], readModelAfterSeq = null,
-    olderHistory = null } = {}) {
-    const model = readModel ? projectWorkflowV2ReadModel(readModel, { older: olderHistory }) : null;
-    const wide = model || !workflowModel ? null : projectWorkflowV2ReadModel(workflowModel);
+    olderHistory = null, now = Date.now() } = {}) {
+    const model = readModel ? projectWorkflowV2ReadModel(readModel, { older: olderHistory, now }) : null;
+    const wide = model || !workflowModel ? null : projectWorkflowV2ReadModel(workflowModel, { now });
     // The workflow-wide source: the selection's own model, else another selection's model that projects.
     const shared = model ?? (wide?.ok ? wide : null);
     const banners = model ? [...model.banners] : shared ? [...shared.workflowBanners] : [];
@@ -825,6 +870,10 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     // A selected run whose own read model is not here (yet), and none of whose events are loaded.
     if (!modelOk && selection !== null && status.phase === "none") status = { ...status, label: "Selected run not loaded" };
     if (!bound && runId) status = { ...status, terminalState: null, label: `${unboundRevision === null ? "Unbound" : `Revision ${unboundRevision}`} run · ${status.label}` };
+    // Replies waiting in the shown run beside its status (q15, mock M16: "Paused · 1 reply waiting"); the banner says why.
+    if (bound && modelOk && model.waitingReplies > 0 && !status.ended) {
+        status = { ...status, label: `${status.label}${workflowV2WaitingRepliesLabel(model.waitingReplies)}` };
+    }
     if (status.phase === "unverified") {
         banners.push({ level: "warning", text: `Run status is not verified: the read model says ${status.conflict.readModel} but the latest durable event says ${status.conflict.events}. Refresh the read model.` });
     }

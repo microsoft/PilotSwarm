@@ -1708,3 +1708,13 @@ serves), no typed input into a running test, and no display of lineage, receipts
   Workspace pane's read-only diff view (CodeMirror), with a summary of the lines added and removed; until that view
   loads, the same comparison shows as + and - lines (`workflowV2LineDiff`, `workflowV2RevisionCompare`). Not in the TUI
   yet.
+- **"Reply waiting" (q15, mock M16).** A reply can reach a run before the run is ready for it: while the run is paused,
+  before it started, or before it reaches the step that takes it. The reply waits in the run's inbox until that step
+  takes it or it expires. The workflow view now says so, in the portal and the TUI alike, from the run's read: the run's
+  status gains "· 1 reply waiting" (for example "Paused · 1 reply waiting"), and a notice says why: "Reply waiting: 1
+  reply arrived while the run is paused. The run uses it once it resumes." (before it started: "… when it reaches the
+  step that takes it"; while it runs: "… waits for the step that takes it"). It counts the replies no step took that
+  have not expired (`workflowV2WaitingReplies`: the read's page and open rows, one per message; older pages a person
+  loaded are not counted, since a step may have taken one since). A run that has ended, or is stopping, shows nothing:
+  it takes no new step, so it will not use them. A request's answer is not a reply in this sense (it goes to the step
+  that asked) and is not counted.

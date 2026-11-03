@@ -229,3 +229,21 @@ test("one command at a time, shown while it is sent; a refusal and an answer tha
     assert.equal(statusOf(h.store), "No notice to dismiss");
     assert.equal(h.sent().length, sentBefore);
 });
+
+test("q15 (mock M16): a reply that arrived while the run is paused shows beside the run's status, and the view says the run uses it once it resumes", async () => {
+    const reply = { messageId: "m-1", contract: "Ack@1", senderSessionId: "parent-1", correlation: null, acceptedAt: "2026-11-03T06:30:00Z",
+        expiresAt: "2999-01-01T00:00:00Z", claimedBy: null, claimedAt: null, payloadPreview: "{}" };
+    const h = harness(model({ status: "paused", run: { pausedFrom: "running", pauseSettled: true, inbox: [reply] } }));
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    await settle();
+    assert.match(selectWorkflowViewModal(h.store.getState(), 110).title, /^Workflow: .+ · Paused · 1 reply waiting$/);
+    assert.ok(detailText(h.store).includes("! Reply waiting: 1 reply arrived while the run is paused. The run uses it once it resumes."),
+        details(h.store).join("\n"));
+    // Resumed, the step took it: the view shows the run running, nothing more.
+    h.serve(model({ status: "running", run: { inbox: [{ ...reply, claimedBy: "nx-review-1", claimedAt: "2026-11-03T06:40:00Z" }] } }));
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_RESUME_RUN);
+    await settle();
+    await settle();
+    assert.match(selectWorkflowViewModal(h.store.getState(), 110).title, /^Workflow: .+ · Running$/);
+    assert.ok(!detailText(h.store).includes("Reply waiting"), details(h.store).join("\n"));
+});
