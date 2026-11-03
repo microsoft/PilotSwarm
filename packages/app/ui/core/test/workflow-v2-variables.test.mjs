@@ -32,18 +32,13 @@ import {
     workflowV2RunVariables, workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "../src/workflow-v2-commands.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
-import { RUN, readModel } from "./workflow-v2-fixtures.mjs";
+import { RUN, readModel, subtreeCommands } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-variables";
 const EVERY = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel",
     "stop", "test", "test_respond", "test_advance"];
 const commands = (extra = {}) => ({ operations: EVERY, restriction: null, run: { runId: RUN, stop: true }, ...extra });
-const SUBTREE = {
-    operations: ["pause", "stop", "cancel"],
-    restriction: { reason: "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling agent changes, resumes or tests it.",
-        workflowSessionId: "wf-container", controllingSessionId: "parent-agent" },
-    run: { runId: RUN, stop: true },
-};
+const SUBTREE = subtreeCommands();
 const KV = "{\"note\":\"review backup\",\"pollSeconds\":120,\"reviewer\":null}";
 const variablesOf = (run, personCommands = commands(), command = null) =>
     workflowV2RunVariables({ ...readModel({ run }), personCommands }, command);

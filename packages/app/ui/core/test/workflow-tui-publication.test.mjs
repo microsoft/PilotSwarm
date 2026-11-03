@@ -16,13 +16,11 @@ import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowPublicationModal,
     selectWorkflowViewModal, workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin,
 } from "../src/index.js";
-import { readModel, states } from "./workflow-v2-fixtures.mjs";
+import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-v2-fixtures.mjs";
 
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
     "test", "test_respond", "test_advance"];
-const SUBTREE = "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling "
-    + "agent changes, resumes or tests it.";
 /** A revision's definition hash, 64 characters as the store's SHA-256 hex. */
 const hashOf = revision => `sha${revision}`.padEnd(64, "0");
 const LIVE = "run-live-0001";

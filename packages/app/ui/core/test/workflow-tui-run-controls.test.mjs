@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal,
 } from "../src/index.js";
-import { RUN, readModel } from "./workflow-v2-fixtures.mjs";
+import { RUN, SUBTREE_REASON as SUBTREE, readModel } from "./workflow-v2-fixtures.mjs";
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600, outcomes: ["accepted"],
@@ -26,8 +26,6 @@ const graph = { revision: 1, initial: "review", states };
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
     "test", "test_respond", "test_advance"];
-const SUBTREE = "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling "
-    + "agent changes, resumes or tests it.";
 
 /** The live run in `status` (with `run`'s other fields), and the commands its workflow takes from people (`commands`; null: none). */
 function model({ status = "running", run = {}, commands = { operations: ALL, restriction: null, run: { runId: RUN, stop: true } } } = {}) {

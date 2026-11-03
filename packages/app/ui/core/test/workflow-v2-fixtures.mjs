@@ -7,6 +7,17 @@
 
 export const RUN = "run-1";
 
+/** The reason a person is given for a workflow started by another workflow's agent step (human-commands.ts), as the server words it. */
+export const SUBTREE_REASON = "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling "
+    + "agent changes, resumes or tests it.";
+
+/** A person's commands for such a workflow, as its read model reports them (personCommands); `run` is the run shown, or null. */
+export const subtreeCommands = (run = { runId: RUN, stop: true }) => ({
+    operations: ["pause", "stop", "cancel"],
+    restriction: { reason: SUBTREE_REASON, workflowSessionId: "wf-container", controllingSessionId: "parent-agent" },
+    run,
+});
+
 export const states = [
     { id: "poll", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["changed", "unchanged"],
         next: { changed: "notify", unchanged: "pause", failure: "failed", timed_out: "failed" } },

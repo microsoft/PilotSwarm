@@ -19,7 +19,7 @@ import {
     selectWorkflowViewModal,
 } from "../src/index.js";
 import { workflowV2VariableBatchDraft } from "../src/workflow-v2-commands.js";
-import { RUN, readModel } from "./workflow-v2-fixtures.mjs";
+import { RUN, SUBTREE_REASON as SUBTREE, readModel } from "./workflow-v2-fixtures.mjs";
 
 const states = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600, outcomes: ["accepted"],
@@ -31,8 +31,6 @@ const graph = { revision: 1, initial: "review", states };
 /** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
 const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
     "test", "test_respond", "test_advance"];
-const SUBTREE = "This workflow was started by an agent step of another workflow: people can pause, stop or cancel it; only its controlling "
-    + "agent changes, resumes or tests it.";
 const VIEWER = "You may read this workflow but not command it.";
 
 /** The live run with its variables (`vars`, at `revision`; `kv` overrides the preview), and what its workflow takes from people. */
