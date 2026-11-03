@@ -140,6 +140,41 @@ worker created with the test-only option
 ("A worker that runs the milestone" below); an agent state has run there
 with a scripted model, not yet with a live provider.
 
+**A real model (test layer M; authored, not run yet).**
+`test/local/workflow-v2-agent-real-model.test.js` runs an inline prompt and a
+packaged reviewer on the same input schema and typed output, on a model
+that is not scripted, and records the provider, model and effort, each
+child's model calls, tokens, turns and tools, each completion's answer, and
+errors. It spends tokens, so it runs only with
+`PS_WORKFLOW_V2_REAL_MODEL=run`; asked but unable to run as asked, it fails
+as blocked instead of skipping. Every setting comes from the environment
+(`test/helpers/workflow-v2-real-model.mjs` names them; nothing secret is in
+the repository or the receipt):
+
+| Variable | Meaning |
+|---|---|
+| `PS_WORKFLOW_V2_REAL_MODEL_REF` | The model, `provider:model` (local: else `PS_TEST_FORCE_MODEL`, else the catalog's default) |
+| `PS_WORKFLOW_V2_REAL_MODEL_EFFORT` | The reasoning effort (optional; checked against the local catalog) |
+| `PS_WORKFLOW_V2_REAL_MODEL_SAMPLES` | Runs of the workflow, 1 to 5 (default 1); none is retried |
+| `PS_WORKFLOW_V2_REAL_MODEL_RECEIPT` | A file for the JSON receipt (optional) |
+| `PS_WORKFLOW_V2_REAL_MODEL_TARGET` | `local` (default) or `deployed` |
+| `PS_WORKFLOW_V2_TARGET_STORE`, `..._DUROXIDE_SCHEMA`, `..._CMS_SCHEMA`, `..._FACTS_SCHEMA` | Deployed: the environment's database and schemas |
+| `PS_WORKFLOW_V2_TARGET_PACKAGED_REVIEWER` | Deployed: `<package>/<agent>`, already published there |
+| `PS_WORKFLOW_V2_TARGET_OWNER` | Deployed: `<provider>/<subject>` of the test's sessions (optional) |
+
+Local: a worker in the test process with the test-only option, its model
+catalog from `PS_MODEL_PROVIDERS_PATH` (a TEST-pool catalog, for one) and a
+synthetic reviewer package it publishes into its own registry; everything
+is dropped afterwards. Deployed: no worker; as a client of an isolated test
+environment whose every worker has the test-environment switch, it creates
+one parent session and one workflow and reads what the environment did. It
+publishes and deletes nothing there, and it refuses to connect when the
+environment's CMS or facts schema lacks a migration of the checkout (a
+client's start would apply it). Contract failures fail the test (each
+state completed by its agent with a declared outcome and a valid output, on
+the asked model); the verdicts themselves, the reviewers' agreement and
+whether a verdict names its outcome are recorded, not asserted.
+
 ## Human input and depth in an agent state's subtree (design 03; R12 to R14, R16)
 
 A session is in an agent state's subtree when it, or one of its ancestors,
