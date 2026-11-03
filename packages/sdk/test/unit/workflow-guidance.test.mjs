@@ -36,3 +36,12 @@ test("workflow authoring shows the actual previous-output binding and separates 
     assert.match(text, /Workflows CAN wait durably through transition\.delaySeconds/);
     assert.match(text, /Do not use sleep or JavaScript timers/);
 });
+
+test("a new v2 workflow stays a draft unless the person asks to run it now; then it publishes and starts (flow-10)", () => {
+    const text = SPAWN_WORKFLOW_TOOL_SPEC.description;
+    assert.match(text, /Keep the default draft unless the person asks to run the workflow now/);
+    assert.match(text, /When they do ask to run it now, pass state: published with start: true\./);
+    const { state, start } = SPAWN_WORKFLOW_TOOL_SPEC.parameters.properties;
+    assert.match(state.description, /draft \(default, runs nothing; keep it unless the person asks to run the workflow now\)/);
+    assert.match(start.description, /when the person asks to run the workflow now/);
+});
