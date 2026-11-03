@@ -1243,7 +1243,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Read a version 2 workflow session without changing it: definition state, current revision and its diagnostics (no YAML), graph, runs, and one run (runId, default the live run) with the newest page of its node executions, typed input inbox and outbox (and a test run's interceptions), the rows still open that a page does not hold, and how each section pages on (run.pages). cursor (JSON: a nextCursor a read returned, given back as it was) reads that section's next, older page instead; executionId reads one node execution of the run with its whole output or error; limit (a JSON integer, 1 to 200) sets the rows per page; kvRevision (a JSON integer) reads that revision of the run's variables, and kvKey with it one variable, whole. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow, RUN_NOT_FOUND for a run that is not one of its runs, EXECUTION_NOT_FOUND for an execution that is not one of the run's, KV_REVISION_NOT_FOUND for a revision the run does not have; 400 WORKFLOW_CURSOR_INVALID for a cursor that is not one a read of this workflow returned, WORKFLOW_READ_INVALID for an invalid limit or executionId, or a cursor with an executionId.
+     * Read a version 2 workflow session without changing it: definition state, current revision and its diagnostics (no YAML), graph, runs, and one run (runId, default the live run) with the newest page of its node executions, typed input inbox and outbox (and a test run's interceptions), the rows still open that a page does not hold, and how each section pages on (run.pages). cursor (JSON: a nextCursor a read returned, given back as it was) reads that section's next, older page instead; executionId reads one node execution of the run with its whole output or error; limit (a JSON integer, 1 to 200) sets the rows per page; kvRevision (a JSON integer) reads that revision of the run's variables, and kvKey with it one variable, whole; agentVersions (JSON true), alone, reads the agent versions that publishing the current revision would lock now, and locks nothing. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow, RUN_NOT_FOUND for a run that is not one of its runs, EXECUTION_NOT_FOUND for an execution that is not one of the run's, KV_REVISION_NOT_FOUND for a revision the run does not have; 400 WORKFLOW_CURSOR_INVALID for a cursor that is not one a read of this workflow returned, WORKFLOW_READ_INVALID for an invalid limit or executionId, or a cursor with an executionId.
      * @remarks `GET /sessions/:sessionId/workflow` — access: `session:read`
      */
     readWorkflow(params: {
@@ -1254,6 +1254,7 @@ export interface ManagementOps {
         limit?: any;
         kvRevision?: any;
         kvKey?: string;
+        agentVersions?: any;
     }): Promise<any>;
 
     /**

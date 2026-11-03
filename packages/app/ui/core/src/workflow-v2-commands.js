@@ -511,17 +511,25 @@ function publicationEvidence(model, state, reviewedRevision, publishedRevision) 
 /**
  * The publication review's evidence rows, `[label, value]`, in the same words in the portal and the TUI: each named
  * agent and what is pinned for it, and the tests of exactly this revision (information only: publishing requires none).
+ * For a draft, `versionsNow` (the view's `agentVersions`: the agent-versions read, controller.loadWorkflowAgentVersions)
+ * adds what publishing would lock now (owner decision q1): each agent's package, version and exact revision, or the
+ * problem that would refuse the publication, once it is read for exactly the revision and hash reviewed.
  */
-export function workflowV2PublicationEvidenceRows(publication) {
+export function workflowV2PublicationEvidenceRows(publication, versionsNow = null) {
     if (!isRecord(publication)) return [];
     const draft = publication.state === "draft";
+    const now = draft ? publicationVersionsNow(publication, versionsNow) : null;
     const rows = [];
     if (!publication.graphKnown) rows.push(["Agents", "Not known: the revision has no graph to read"]);
     else if (!publication.agents?.length) rows.push(["Agents", "None: no state runs a named agent"]);
+    else if (now?.problem) rows.push(["Publishing would be refused", now.problem]);
+    else if (now?.note) rows.push(["Agent versions", now.note]);
     for (const agent of publication.agents ?? []) {
         const pin = agent.rows.find(([label]) => label === "Pinned by publication");
-        rows.push([`Agent in '${agent.stateId}'`, `${agent.task}${draft ? " · its exact package revision is pinned when this revision is published"
-            : pin ? ` · pinned: ${pin[1]}` : " · no pin recorded"}`]);
+        const lockedNow = now?.byState?.[agent.stateId];
+        const draftText = lockedNow ? ` · version now: ${lockedNow}; publishing locks it`
+            : now?.agentText ?? " · its exact package revision is pinned when this revision is published";
+        rows.push([`Agent in '${agent.stateId}'`, `${agent.task}${draft ? draftText : pin ? ` · pinned: ${pin[1]}` : " · no pin recorded"}`]);
         for (const [label, value] of agent.rows) if (label !== "Pinned by publication") rows.push([`  ${label}`, value]);
     }
     const tests = publication.tests ?? [];
@@ -529,6 +537,36 @@ export function workflowV2PublicationEvidenceRows(publication) {
         ? tests.map(run => `${shortId(run.runId)} ${run.status}${run.outcome ? ` · ${run.outcome}` : ""}`).join("; ")
         : "None run. Publishing does not require a test"]);
     return rows;
+}
+
+/**
+ * What the agent-versions read says about the draft a publication review shows, or null when it was not read for that
+ * revision and hash: `agentText` while it is read or after it failed, `note` when the deployment locks no versions,
+ * `problem` when publishing would be refused, else `byState` (state id -> the version publishing would lock).
+ */
+function publicationVersionsNow(publication, versionsNow) {
+    if (!isRecord(versionsNow) || versionsNow.revision !== publication.revision) return null;
+    if (versionsNow.phase === "loading") return { agentText: " · reading the version publishing would lock…" };
+    if (versionsNow.phase === "failed") return { agentText: ` · the version now could not be read: ${text(versionsNow.error) ?? "no reason given"}` };
+    const value = isRecord(versionsNow.value) ? versionsNow.value : null;
+    if (!value || value.revision !== publication.revision || value.definitionHash !== publication.definitionHash) return null;
+    if (value.resolves === false) {
+        return { note: "This deployment locks no agent versions when publishing: each agent step uses the version current when it starts." };
+    }
+    if (isRecord(value.problem)) return { problem: text(value.problem.message) ?? text(value.problem.code) ?? "An agent cannot be used.", agentText: "" };
+    const byState = {};
+    for (const pin of Array.isArray(value.agents) ? value.agents : []) {
+        if (isRecord(pin) && typeof pin.stateId === "string") byState[pin.stateId] = agentVersionText(pin);
+    }
+    return { byState };
+}
+
+/** One agent version as the review says it: its package and version (or a deployment agent), its exact revision, a matched interface. */
+function agentVersionText(pin) {
+    const where = text(pin.package) ? `${pin.package}${text(pin.version) ? ` ${pin.version}` : ""}` : `deployment agent ${text(pin.name) ?? ""}`.trim();
+    const revision = text(pin.revision) ? ` (revision ${pin.revision.slice(0, 12)})` : "";
+    const matched = isRecord(pin.interface) && text(pin.interface.name) ? ` · interface ${pin.interface.name}@${pin.interface.version}` : "";
+    return `${where}${revision}${matched}`;
 }
 
 /**

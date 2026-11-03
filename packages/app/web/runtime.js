@@ -779,7 +779,7 @@ export class PortalRuntime {
             // change the draft; it is left out for anyone else.
             case "readWorkflow": {
                 const readOptions = {};
-                for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey"]) {
+                for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey", "agentVersions"]) {
                     if (safeParams[key] !== undefined && safeParams[key] !== null) readOptions[key] = safeParams[key];
                 }
                 const view = await this.transport.readWorkflow(safeParams.sessionId, readOptions);

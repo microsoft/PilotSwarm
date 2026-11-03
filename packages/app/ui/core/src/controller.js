@@ -6362,6 +6362,31 @@ export class PilotSwarmUiController {
     }
 
     /**
+     * Workflow v2: read the agent versions that publishing the current revision would lock now (readWorkflow
+     * agentVersions; owner decision q1; mock M03) into the view's `agentVersions` ({ revision, phase, value, error }), for
+     * the publication review: read when the review opens, and again when the revision it reviews changes or after a
+     * failure. Reading locks nothing. Never throws.
+     */
+    async loadWorkflowAgentVersions(sessionId, { revision = null, force = false } = {}) {
+        const state = this.getState();
+        if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow" || typeof this.transport?.readWorkflow !== "function") return null;
+        const current = state.ui.workflowViews?.[sessionId]?.agentVersions;
+        if (!force && current && current.revision === revision && current.phase !== "failed") return current;
+        const write = entry => {
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { agentVersions: entry } });
+            return entry;
+        };
+        write({ revision, phase: "loading", value: null, error: null });
+        try {
+            const value = await this.transport.readWorkflow(sessionId, { agentVersions: true });
+            if (!value || typeof value !== "object" || !Number.isSafeInteger(value.revision)) throw new Error("The answer was not an agent-versions read.");
+            return write({ revision: value.revision, phase: "loaded", value, error: null });
+        } catch (error) {
+            return write({ revision, phase: "failed", value: null, error: error?.message || String(error) });
+        }
+    }
+
+    /**
      * Workflow v2: read one kept revision of a run's variables (readWorkflow with its run and kvRevision: design 02 open
      * KV; mock M15) into the view's `kvRevisions`, by run and revision (workflowV2KvRevisionKey; the six read last are
      * kept), for exactly that run; an answer for another run or revision is refused. A failure is recorded with its error.
@@ -7015,6 +7040,10 @@ export class PilotSwarmUiController {
             returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
         const actions = publication.controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} ${control.label.toLowerCase()}`);
         this.dispatch({ type: "ui/status", text: `${publication.state === "draft" ? "Publish review" : "Start review"} — ${actions.join(" · ")} (each asks first) · Esc back` });
+        // A draft's named agents: the versions publishing would lock now (owner decision q1).
+        if (publication.state === "draft" && publication.agents?.length) {
+            this.loadWorkflowAgentVersions(selection.modal.sessionId, { revision: publication.revision }).catch(() => {});
+        }
     }
 
     /** A workflow review modal of `type` (the publication or test review): change its own state. */

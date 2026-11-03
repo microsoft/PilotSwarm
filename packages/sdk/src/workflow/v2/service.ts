@@ -1132,6 +1132,49 @@ async function testAgentPins(host: Pick<WorkflowV2Host, "store" | "resolveAgent"
 }
 
 /**
+ * The agent versions publishing would lock, shown before anyone publishes (owner decision q1; mock M03): for the
+ * current revision, what each named agent state resolves to now, exactly as publication resolves it (publicationAgentPins,
+ * for the workflow's parent): the agent, its package and version and the exact package revision, and a matched workflow
+ * interface. Read only: nothing is written or locked, and a later republish of a package can still change what
+ * publishing then locks (the publication receipt says what it locked). A state the publication would refuse is reported
+ * as `problem` (AGENT_UNAVAILABLE or CONTRACT_MISMATCH, with its message and details), not thrown. An already published
+ * current revision shows what its publication locked (`locked: true`). A host that does not resolve agents locks nothing
+ * at publication (`resolves: false`; its agent states' children are bound when they are created). An invalid revision
+ * has nothing to resolve (`agents: []`).
+ */
+export async function previewWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests">, workflowSessionId: string)
+    : Promise<{ [key: string]: JsonValue }> {
+    const definition = await host.store.readDefinition(workflowSessionId);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    const revisionNumber = definition.currentRevision;
+    const revision = await host.store.readRevision(workflowSessionId, revisionNumber);
+    if (!revision) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The current revision is missing.");
+    const head = { workflowId: workflowSessionId, revision: revisionNumber, definitionHash: revision.yamlSha256, resolves: host.resolveAgent !== undefined };
+    const listed = (pins: JsonValue): JsonValue[] => {
+        if (!isJsonObject(pins)) return [];
+        return Object.keys(pins).sort().map(stateId => {
+            const pin = pins[stateId];
+            return { stateId, ...(isJsonObject(pin) ? pin : {}) };
+        });
+    };
+    if (definition.publishedRevision === revisionNumber) {
+        return { ...head, locked: true, agents: listed(definition.publishedAgentPins), problem: null };
+    }
+    if (!revision.valid || !revision.irSha256 || !host.resolveAgent) return { ...head, locked: false, agents: [], problem: null };
+    const ir = await host.store.readRevisionIr(workflowSessionId, revisionNumber, revision.irSha256, irOptionsFor(host));
+    try {
+        const pinsText = await publicationAgentPins(host, ir, definition.parentSessionId ?? workflowSessionId);
+        return { ...head, locked: false, agents: pinsText === null ? [] : listed(JSON.parse(pinsText) as JsonValue), problem: null };
+    } catch (error) {
+        if (error instanceof WorkflowStoreError && (error.code === "AGENT_UNAVAILABLE" || error.code === "CONTRACT_MISMATCH")) {
+            return { ...head, locked: false, agents: [],
+                problem: { code: error.code, message: error.message.replace(/ Nothing was changed\.?$/, ""), details: (error.details ?? null) as JsonValue } };
+        }
+        throw error;
+    }
+}
+
+/**
  * Start a test run (design 05; R19, R20; INACTIVE): the exact current
  * revision the request names (expected_revision and definition_hash), draft
  * or published, with its inputs (checked against inputs.schema), its own

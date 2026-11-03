@@ -161,7 +161,7 @@ import {
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
-import { readWorkflowV2View } from "./workflow/v2/tools.js";
+import { readWorkflowV2AgentVersions, readWorkflowV2View } from "./workflow/v2/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/v2/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
@@ -1899,7 +1899,10 @@ export class PilotSwarmManagementClient {
      * `limit` (1 to 200) sets the rows per page, and `kvRevision` (with an
      * optional `kvKey`) reads one revision of the run's variables
      * (readWorkflowV2View; a revision it does not have is
-     * KV_REVISION_NOT_FOUND, 404).
+     * KV_REVISION_NOT_FOUND, 404). `agentVersions: true`, alone, reads the
+     * agent versions publishing the current revision would lock now
+     * (readWorkflowV2AgentVersions; owner decision q1), resolved as this
+     * client's publications resolve them; nothing is locked by reading.
      * Authorization is the caller's (the portal gates session:read, with its
      * not-found privacy, before this runs; the direct client is trusted). This
      * is the human read adapter, separate from the agent tool: it never acts
@@ -1917,7 +1920,7 @@ export class PilotSwarmManagementClient {
      * those, and, for a draft a person may change, its current YAML
      * (`personCommands.draft`); without it the view is exactly the tool's.
      */
-    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown } = {})
+    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown; agentVersions?: unknown } = {})
         : Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
@@ -1933,8 +1936,16 @@ export class PilotSwarmManagementClient {
         const executionId = options?.executionId ?? null;
         const kvRevision = options?.kvRevision ?? null;
         const kvKey = options?.kvKey ?? null;
+        const agentVersions = options?.agentVersions ?? null;
         let view: Record<string, unknown>;
         try {
+            // The agent versions publishing would lock (owner decision q1): resolved as this client's publications resolve them.
+            if (agentVersions !== null) {
+                const enabled = this.config?.workflowCommands;
+                return await readWorkflowV2AgentVersions({ store, ...(enabled?.requests === true
+                    ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, agentVersions,
+                { runId: options?.runId, cursor, executionId, limit: options?.limit, kvRevision, kvKey });
+            }
             view = await readWorkflowV2View(store, sessionId, {
                 runId, ...(cursor !== null ? { cursor } : {}), ...(executionId !== null ? { executionId } : {}),
                 ...(options?.limit !== undefined && options.limit !== null ? { limit: options.limit } : {}),

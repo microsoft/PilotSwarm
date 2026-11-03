@@ -25,7 +25,7 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflowV2, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
+import { readWorkflowV2AgentVersions, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/v2/agent-node-service.ts";
 import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
 import { registerWorkflowV2, sessionQueueTransport } from "../../src/workflow/v2/runtime.ts";
@@ -193,6 +193,46 @@ describe("workflow v2 publication pins (inactive, test-only host hook)", () => {
                 publish: true, yaml: reviewer(null, { prompt: "Review it." }) });
             expect(inline.receipt.state).toBe("published");
             expect((await h.store.readDefinition(inline.receipt.workflowSessionId)).publishedAgentPins).toBeNull();
+        } finally {
+            await h.stop();
+        }
+    });
+
+    // Owner decision q1 (mock M03): before anyone publishes, the agent versions publishing would lock, resolved exactly as
+    // publication resolves them; what would refuse it is reported, not thrown; reading locks nothing.
+    it("shows, before publishing, the agent versions publishing would lock, and what would refuse it; reading locks nothing", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const first = "a".repeat(64), second = "b".repeat(64);
+            h.visible.set("code-reviewer", { ...REVIEW_KIT, packageRevision: first });
+            const draft = await h.workflow({ name: "code-reviewer", package: "review-kit" });
+            expect(await readWorkflowV2AgentVersions(h.host, draft.workflowSessionId, true, {})).toEqual({
+                workflowId: draft.workflowSessionId, revision: 1, definitionHash: draft.definitionHash, resolves: true, locked: false,
+                agents: [{ stateId: "review", name: "code-reviewer", package: "review-kit", version: "1.2.0", packageId: "pkg-1", revision: first }],
+                problem: null,
+            });
+            expect(await h.store.readDefinition(draft.workflowSessionId)).toMatchObject({ state: "draft", publishedAgentPins: null });
+            // A republish before publishing: the read follows it, and publishing locks what is current then.
+            h.visible.set("code-reviewer", { ...REVIEW_KIT, packageVersion: "1.3.0", packageRevision: second });
+            expect((await readWorkflowV2AgentVersions(h.host, draft.workflowSessionId, true, {})).agents)
+                .toEqual([{ stateId: "review", name: "code-reviewer", package: "review-kit", version: "1.3.0", packageId: "pkg-1", revision: second }]);
+            await h.publish(draft);
+            expect(await readWorkflowV2AgentVersions(h.host, draft.workflowSessionId, true, {})).toMatchObject({
+                locked: true, problem: null, agents: [{ stateId: "review", version: "1.3.0", revision: second }] });
+            // What would refuse a publication is reported, and nothing is written.
+            const ghost = await h.workflow({ name: "ghost" });
+            const refused = await readWorkflowV2AgentVersions(h.host, ghost.workflowSessionId, true, {});
+            expect(refused).toMatchObject({ locked: false, agents: [], problem: { code: "AGENT_UNAVAILABLE", details: { stateId: "review", agent: "ghost" } } });
+            expect(refused.problem.message).toMatch(/not available to this workflow's owner/);
+            expect(await h.store.readDefinition(ghost.workflowSessionId)).toMatchObject({ state: "draft", publishedAgentPins: null });
+            // A host that does not resolve agents locks nothing when publishing.
+            expect(await readWorkflowV2AgentVersions({ store: h.store }, ghost.workflowSessionId, true, {}))
+                .toMatchObject({ resolves: false, locked: false, agents: [], problem: null });
+            // Its own read, asked for with true only.
+            await expect(readWorkflowV2AgentVersions(h.host, draft.workflowSessionId, "yes", {})).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID" });
+            await expect(readWorkflowV2AgentVersions(h.host, draft.workflowSessionId, true, { run_id: "r1", include_yaml: false }))
+                .rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(/leave out run_id\.$/) });
+            await expect(readWorkflowV2AgentVersions(h.host, randomUUID(), true, {})).rejects.toMatchObject({ code: "WORKFLOW_NOT_FOUND" });
         } finally {
             await h.stop();
         }

@@ -17,6 +17,7 @@ import {
     controlWorkflowV2Run,
     createWorkflowV2,
     inspectWorkflowV2Controller,
+    previewWorkflowV2AgentVersions,
     recoverWorkflowV2Run,
     respondWorkflowV2Test,
     sendWorkflowInputV2,
@@ -182,7 +183,9 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
         + "cursor (with limit at most) to read that section's next, older page; null means none is older. execution_id (with run_id, "
         + "default the live run) reads one node execution's whole output or error (execution.result) instead of its preview. "
         + "kv_revision (1 to the run's kvRevision) reads that revision of the run's variables (each with its size and sha256, whole "
-        + "up to 256 KiB in all); with kv_key, one variable of it, whole.",
+        + "up to 256 KiB in all); with kv_key, one variable of it, whole. agent_versions: true (alone) reads the agent versions "
+        + "that publishing the current revision would lock now (each named agent state's agent, package, version and exact revision, or "
+        + "the problem that would refuse the publication); nothing is locked by reading.",
     parameters: {
         type: "object",
         properties: {
@@ -192,6 +195,7 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
             execution_id: { type: "string", description: "A node execution of the run: its whole output or error, instead of its preview." },
             kv_revision: { type: "integer", description: "A revision of the run's variables, 1 to its kvRevision: that snapshot (each node execution's kvRevision is the one it applied)." },
             kv_key: { type: "string", description: "With kv_revision: one variable of that revision, whole." },
+            agent_versions: { type: "boolean", description: "true: the agent versions publishing the current revision would lock now, and nothing else." },
         },
         required: ["workflow_id"],
     },
@@ -535,6 +539,19 @@ export interface WorkflowV2ReadOptions {
 }
 
 const readInvalid = (message: string): WorkflowStoreError => new WorkflowStoreError("WORKFLOW_READ_INVALID", message);
+
+/**
+ * The agent versions publishing the current revision would lock, before anyone publishes (owner decision q1;
+ * previewWorkflowV2AgentVersions): `agent_versions: true` on the tool, `agentVersions: true` on the API. A read of its
+ * own: any other read argument given with it (`others`, by its name as the caller wrote it) is WORKFLOW_READ_INVALID.
+ */
+export async function readWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests">, workflowSessionId: string,
+    value: unknown, others: Record<string, unknown>): Promise<{ [key: string]: JsonValue }> {
+    if (value !== true) throw readInvalid("agent_versions (agentVersions) must be true: it reads the agent versions that publishing would lock.");
+    const extra = Object.entries(others).filter(([, given]) => given !== undefined && given !== null && given !== false).map(([name]) => name);
+    if (extra.length) throw readInvalid(`The agent versions are a read of their own; leave out ${extra.join(", ")}.`);
+    return previewWorkflowV2AgentVersions(host, workflowSessionId);
+}
 
 /**
  * A bounded JSON read of a workflow child for tools and clients; reading changes nothing. One of three reads:
@@ -1014,6 +1031,12 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+        if (args.agent_versions !== undefined && args.agent_versions !== null) {
+            return payload({ ok: true, ...(await readWorkflowV2AgentVersions(context.host, workflowSessionId, args.agent_versions, {
+                run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
+                kv_revision: args.kv_revision, kv_key: args.kv_key,
+            })) });
+        }
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
         const view = await readWorkflowV2View(context.host.store, workflowSessionId, {
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml === true,

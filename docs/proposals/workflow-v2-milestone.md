@@ -1199,8 +1199,8 @@ status and outcome, shown as information (publishing requires no test: no
 publication gate on test scenarios exists: an open owner question), and that
 publication freezes the revision, starts no run, approves no repository
 write and grants no tool (mock M03; R18, R28; the portal's review shows the
-same rows, `workflowV2PublicationEvidenceRows`; nothing is resolved before
-publishing: a pin preview is an open owner question). ctrl-p publishes only; ctrl-r
+same rows, `workflowV2PublicationEvidenceRows`). For a draft, the review also
+shows the versions publishing would lock now (owner decision q1, below). ctrl-p publishes only; ctrl-r
 publishes and starts the live run, or starts a published definition's live
 run, with the run's inputs and optional initial variables, two JSON object
 fields (Tab switches them; inputs default to `{}`). Each action asks first:
@@ -1671,3 +1671,23 @@ verified routing mechanism in the dependency) remains the open requirement
 for that; an activity tag, a heartbeat advertisement or this admission
 fence is not it. Replay of a history that a pre-release build wrote remains
 blocked (fenced), not migrated.
+
+## The owner's screen-control decisions (3 November 2026)
+
+The owner answered the open questions about the controls the design's mocks show. Deferred, with today's behaviour kept:
+no tests required before publishing, no second confirmation in the web publish review, no cancel of one step or
+request (Cancel acts on the whole workflow and asks first), no "go to the parent's chat" button (the session list
+serves), no typed input into a running test, and no display of lineage, receipts or trusted senders. Built so far:
+
+- **The confirm box is a dialog (q17).** Every web confirm has the dialog role, is marked modal, is named by its title
+  and described by its message; it takes focus when it opens and gives it back when it closes (`ModalDialog`).
+- **No message box before the server's word (q18).** See "Human input" above and the TUI composer section.
+- **The agent versions before publishing (q1).** `read_workflow` `agent_versions: true` (the API's and MCP's
+  `agentVersions`), alone, reads what publishing the current revision would lock now: each named agent state's agent,
+  package, version and exact package revision (and a matched interface), resolved exactly as publication resolves them
+  (`previewWorkflowV2AgentVersions`), or the problem that would refuse the publication (`problem`: `AGENT_UNAVAILABLE`
+  or `CONTRACT_MISMATCH` with its message), and `locked: true` with what was locked once the current revision is
+  published; a host that does not resolve agents locks nothing (`resolves: false`). Reading locks nothing, and a package
+  republished before publishing changes what publishing then locks (its receipt says what it locked). The portal's and
+  the TUI's publish review read it when they open and show "version now: review-kit 1.2.0 (revision …); publishing locks
+  it", or "Publishing would be refused: …".

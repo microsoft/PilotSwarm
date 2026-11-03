@@ -36,7 +36,7 @@ test("readWorkflow is one GET session:read operation: the session in the path, a
         access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow",
         params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string", strict: true },
             cursor: { in: "query", type: "json" }, executionId: { in: "query", type: "string", strict: true }, limit: { in: "query", type: "json" },
-            kvRevision: { in: "query", type: "json" }, kvKey: { in: "query", type: "string", strict: true } },
+            kvRevision: { in: "query", type: "json" }, kvKey: { in: "query", type: "string", strict: true }, agentVersions: { in: "query", type: "json" } },
     });
     // The legacy creation route is unchanged.
     const create = OPERATIONS.find((entry) => entry.name === "createWorkflowSession");
@@ -322,6 +322,8 @@ test("a section's next page and one execution's value are read through the same 
             // A KV revision the run does not have (the stand-in run is at revision 0), and a key without a revision.
             ["?kvRevision=1", 404, "KV_REVISION_NOT_FOUND", { kvRevision: 1 }],
             ["?kvKey=a", 400, "WORKFLOW_READ_INVALID", { kvKey: "a" }],
+            // The agent-versions read is a read of its own (owner decision q1).
+            ["?agentVersions=true&limit=5", 400, "WORKFLOW_READ_INVALID", { limit: 5, agentVersions: true }],
             [`?cursor=${encoded({ ...own, workflowId: "wf-other" })}`, 400, "WORKFLOW_CURSOR_INVALID", { cursor: { ...own, workflowId: "wf-other" } }],
             [`?cursor=${encoded(own)}&executionId=nx-9`, 400, "WORKFLOW_READ_INVALID", { cursor: own, executionId: "nx-9" }],
         ]) {
@@ -329,6 +331,11 @@ test("a section's next page and one execution's value are read through the same 
             assert.deepEqual([refused.status, refused.body.error.code], [status, code], query);
             assert.deepEqual(h.adapterCalls.at(-1), ["wf1", options], query);
         }
+        // The agent versions publishing would lock (owner decision q1): this published revision's, through the same gate.
+        const versions = await h.get("/sessions/wf1/workflow?agentVersions=true");
+        assert.equal(versions.status, 200);
+        assert.deepEqual(versions.body.result, { workflowId: "wf1", revision: 1, definitionHash: "h", resolves: false, locked: true, agents: [], problem: null });
+        assert.deepEqual(h.adapterCalls.at(-1), ["wf1", { agentVersions: true }]);
         // Someone who cannot read the session learns nothing, whatever the options: the same not-found, and nothing is read.
         const before = h.adapterCalls.length;
         for (const query of ["?executionId=nx-9", `?cursor=${encoded(own)}`, "?limit=0"]) {

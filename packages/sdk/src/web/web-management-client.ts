@@ -342,9 +342,9 @@ export class WebPilotSwarmManagementClient {
      * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
      * page. Only an absent (or null) option is omitted; any other value is sent for the server to check.
      */
-    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown } = {}): Promise<any> {
+    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown; agentVersions?: unknown } = {}): Promise<any> {
         const params: Record<string, unknown> = { sessionId };
-        for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey"] as const) {
+        for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey", "agentVersions"] as const) {
             const value = options?.[key];
             if (value !== undefined && value !== null) params[key] = value;
         }

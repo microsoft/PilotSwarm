@@ -531,12 +531,17 @@ export function WorkflowV2DefinitionToggle({ controller, sessionId, model, open,
  * objects), or Start live run for a published definition. A revision that changed meanwhile is refused by the server and
  * the workflow is read again; what the person typed stays. Publishing and starting are separate, explicit choices.
  */
-export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id }) {
+export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, versionsNow = null }) {
     const [inputs, setInputs] = React.useState("{}");
     const [vars, setVars] = React.useState("");
     const [error, setError] = React.useState(null);
     const mounted = React.useRef(true);
     React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+    // A draft's named agents: the versions publishing would lock now, read when the review opens or its revision changes (q1).
+    const reviewedRevision = model?.state === "draft" && model.agents?.length ? model.revision : null;
+    React.useEffect(() => {
+        if (reviewedRevision !== null) controller.loadWorkflowAgentVersions?.(sessionId, { revision: reviewedRevision })?.catch?.(() => {});
+    }, [controller, sessionId, reviewedRevision]);
     if (!model?.controls?.length) return null;
     const runs = model.controls.some(control => control.operation !== "publish");
     const send = async operation => {
@@ -568,7 +573,7 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id }) 
     draft ? row("Validity", model.valid ? "Valid" : `${model.errors || "Unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be published`) : null,
     row("Live effects", runs ? "Only when its live run starts" : "None until a live run starts"),
     // What publication pins for each named agent, and the tests of exactly this revision (information: no test is required).
-    workflowV2PublicationEvidenceRows(model).map(([label, value], index) => row(label, value, { key: `evidence-${index}`, "data-evidence": label.trim() })),
+    workflowV2PublicationEvidenceRows(model, versionsNow).map(([label, value], index) => row(label, value, { key: `evidence-${index}`, "data-evidence": label.trim() })),
     h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, draft
         ? "Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. Publication starts no run, approves no repository write and grants no tool."
         : "Starting runs the published revision with real effects. A workflow has one live run."),

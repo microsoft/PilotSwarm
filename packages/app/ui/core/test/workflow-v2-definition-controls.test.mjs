@@ -302,3 +302,52 @@ test("the review names each named agent and what is pinned for it, and the tests
     assert.match(fitted, /aria-pressed="true">Fit<\/button>/);
     assert.match(fitted, /aria-pressed="false">100%<\/button>/);
 });
+
+// Owner decision q1: before publishing, the review shows the version publishing would lock now (the agent-versions read
+// for exactly the revision and hash reviewed), or what would refuse the publication; a read of another revision or hash
+// says nothing, and so does no read.
+test("the draft review shows the agent versions publishing would lock now, or what would refuse it", () => {
+    const draft = workflowV2DefinitionControls({ ...draftModel(), graph: { revision: 2, initial: "review", states: AGENT_STATES }, runs: [] });
+    const read = value => ({ revision: 2, phase: "loaded", error: null,
+        value: { workflowId: SID, revision: 2, definitionHash: HASH_2, resolves: true, locked: false, agents: [], problem: null, ...value } });
+    const agentLine = versions => workflowV2PublicationEvidenceRows(draft, versions).find(([label]) => label === "Agent in 'review'")[1];
+    assert.equal(agentLine(read({ agents: [{ stateId: "review", name: "code-reviewer", package: "review-kit", version: "1.2.0", packageId: "p",
+        revision: REVISION_PIN, interface: { name: "ReviewResult", version: "1", digest: DIGEST } }] })),
+    "code-reviewer · review-kit 1.2.0 · version now: review-kit 1.2.0 (revision bbbbbbbbbbbb) · interface ReviewResult@1; publishing locks it");
+    assert.equal(agentLine({ revision: 2, phase: "loading", value: null, error: null }),
+        "code-reviewer · review-kit 1.2.0 · reading the version publishing would lock…");
+    assert.equal(agentLine({ revision: 2, phase: "failed", value: null, error: "Gateway timeout" }),
+        "code-reviewer · review-kit 1.2.0 · the version now could not be read: Gateway timeout");
+    const message = "Agent \"code-reviewer\" of state 'review' is not available at version 1.2.0 (it is at 1.3.0).";
+    assert.deepEqual(workflowV2PublicationEvidenceRows(draft, read({ problem: { code: "AGENT_UNAVAILABLE", message, details: {} } })).slice(0, 2),
+        [["Publishing would be refused", message], ["Agent in 'review'", "code-reviewer · review-kit 1.2.0"]]);
+    assert.deepEqual(workflowV2PublicationEvidenceRows(draft, read({ resolves: false }))[0],
+        ["Agent versions", "This deployment locks no agent versions when publishing: each agent step uses the version current when it starts."]);
+    const plain = "code-reviewer · review-kit 1.2.0 · its exact package revision is pinned when this revision is published";
+    assert.equal(agentLine(null), plain);
+    assert.equal(agentLine({ ...read({}), revision: 3 }), plain, "a read of another revision");
+    assert.equal(agentLine(read({ definitionHash: "d".repeat(64) })), plain, "a read of another definition hash");
+});
+
+test("the controller reads the agent versions for the review once per revision, again after a failure, and records the answer", async () => {
+    const calls = [];
+    let fail = true;
+    const answer = { workflowId: SID, revision: 2, definitionHash: HASH_2, resolves: true, locked: false, agents: [], problem: null };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport: { readWorkflow: async (sessionId, options) => {
+        calls.push([sessionId, options]);
+        if (fail) throw new Error("Gateway timeout");
+        return answer;
+    } } });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, title: "Workflow", status: "idle", sessionKind: "workflow" }] });
+    const versions = () => store.getState().ui.workflowViews[SID].agentVersions;
+    assert.deepEqual(await controller.loadWorkflowAgentVersions(SID, { revision: 2 }), { revision: 2, phase: "failed", value: null, error: "Gateway timeout" });
+    assert.deepEqual(versions(), { revision: 2, phase: "failed", value: null, error: "Gateway timeout" });
+    fail = false;
+    assert.deepEqual(await controller.loadWorkflowAgentVersions(SID, { revision: 2 }), { revision: 2, phase: "loaded", value: answer, error: null });
+    await controller.loadWorkflowAgentVersions(SID, { revision: 2 });
+    assert.deepEqual(calls, [[SID, { agentVersions: true }], [SID, { agentVersions: true }]], "loaded once for the revision; the failure was asked again");
+    await controller.loadWorkflowAgentVersions(SID, { revision: 3 });
+    assert.equal(calls.length, 3, "another revision is read again");
+    assert.equal(await controller.loadWorkflowAgentVersions("not-a-workflow", { revision: 2 }), null);
+});

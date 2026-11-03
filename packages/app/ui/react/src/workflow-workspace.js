@@ -206,7 +206,7 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
         draftOpen ? React.createElement(WorkflowV2DraftEditor, { controller, sessionId, model: draftEditor, id: draftId }) : null,
-        publicationOpen ? React.createElement(WorkflowV2DefinitionPanel, { controller, sessionId, model: publication, id: publicationId }) : null,
+        publicationOpen ? React.createElement(WorkflowV2DefinitionPanel, { controller, sessionId, model: publication, id: publicationId, versionsNow: view.agentVersions ?? null }) : null,
         testOpen ? React.createElement(WorkflowV2TestPanel, { controller, sessionId, model: testControls, id: testId }) : null,
         variablesOpen ? React.createElement(WorkflowV2Variables, { controller, sessionId, model: variables, id: variablesId }) : null,
         v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test, controller, sessionId,
