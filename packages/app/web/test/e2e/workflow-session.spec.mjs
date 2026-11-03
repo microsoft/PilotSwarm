@@ -526,3 +526,321 @@ test("a v2 workflow's read model failure is shown beside its graph, and Retry re
     await shot(page, "v2-read-model-retried");
     expect(errors).toEqual([]);
 });
+
+// A person's workflow commands in the portal (adapted from the browser test design 090ad919-r1; design 04, 07; mocks M04,
+// M16, M19; R17, R19, R26, R27; T116): the browser with a mocked backend (page.route stubs over the shared stub server), not
+// a deployed stack, no model. Run stop confirm, dismiss and refusal at 1440 and 390 pixels with a keyboard pause; an
+// unconfirmed pause retried with the same operation id; the virtual clock's checks and one exact advance; a workflow agent
+// state's chat read-only beside an ordinary one; a lost draft save kept and resent unchanged.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "v2 commands:" (from packages/app/web, after build).
+// Recorded, not asserted: the confirm modal has no role=dialog or aria-modal, and a failed access read leaves the ordinary
+// composer (open decisions; see the design's S1 and S4).
+const V2_COMMANDS_PATH = `/api/v1/sessions/${WORKFLOW_ID}/workflow/commands`;
+/** A v2 read model that offers the person's run controls for run-1 (fixture contract: personCommands shape from
+ *  workflowV2RunControls; everything else is the file's V2_READ_MODEL). */
+const V2_WITH_CONTROLS = {
+    ...V2_READ_MODEL,
+    personCommands: { operations: ["pause", "resume", "stop", "cancel"], viewer: { allowed: true }, run: { runId: "run-1", stop: true } },
+};
+
+/** routeApi for a v2 workflow whose read model is `readModel()`, plus a command route that calls `onCommand`. */
+async function routeV2(page, { readModel = () => V2_WITH_CONTROLS, onCommand, events = V2_EVENTS } = {}) {
+    const reads = { count: 0 };
+    await routeApi(page, {
+        workflowEvents: events,
+        workflowState: { title: "Workflow: watch-v2", status: "running" },
+        onReadWorkflow: (route) => { reads.count += 1; return route.fulfill({ json: { ok: true, result: readModel() } }); },
+    });
+    const commands = [];
+    await page.route(`**${V2_COMMANDS_PATH}`, async (route) => {
+        const body = route.request().postDataJSON();
+        commands.push(body.command);
+        return onCommand(route, body.command, commands.length);
+    });
+    return { reads, commands };
+}
+const refuse = (route, status, code, message, details) =>
+    route.fulfill({ status, json: { ok: false, error: { code, message, ...(details ? { details } : {}) } } });
+const accept = (route, command, extra = {}) =>
+    route.fulfill({ json: { ok: true, result: { operation: command.operation, runId: command.run_id, operationId: command.operation_id, ...extra } } });
+
+// ------------------------------------------------------------------------------------------------------------
+// B1 — run controls: review/confirm, dismiss sends nothing, confirmed stop sends one exact command, a 409 refusal
+// keeps the server's reason (no Retry) and re-reads; pause needs no confirm. 1440 and 390.
+// ------------------------------------------------------------------------------------------------------------
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`v2 commands: run controls confirm stop, keep a refusal's reason and re-read at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const { reads, commands } = await routeV2(page, {
+            onCommand: (route, command) => command.operation === "stop"
+                ? refuse(route, 409, "RUN_NOT_ACTIVE", "The run already ended.")
+                : accept(route, command, { status: "paused" }),
+        });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        const controls = main.getByRole("group", { name: "Run controls", exact: true });
+        await expect(controls).toBeVisible();
+        await expect(controls).toHaveAttribute("data-run-id", "run-1");
+        // A running run offers Pause, Stop, Cancel (not Resume), each enabled with its explanatory title.
+        await expect(controls.getByRole("button")).toHaveText(["Pause", "Stop", "Cancel"]);
+        await expect(controls.locator('[data-operation="stop"]')).toHaveAttribute("title", /^Stop the run gracefully/);
+        await expect(controls.locator('[data-operation="cancel"]')).toHaveClass(/is-danger/);
+
+        // Review: Stop opens the confirm dialog with the run named; dismissing it sends nothing (negative control).
+        await controls.getByRole("button", { name: "Stop", exact: true }).click();
+        const dialog = page.locator(".ps-modal.is-narrow");
+        await expect(dialog.locator(".ps-modal-title")).toHaveText("Stop Workflow Run");
+        await expect(dialog.locator(".ps-modal-body p")).toHaveText("Stop run run-1? No new state starts; work already started may finish until its grace period ends, and then the run ends as stopped. A stop does not undo effects that already happened.");
+        await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+        await expect(dialog).toHaveCount(0);
+        expect(commands).toEqual([]);
+
+        // Confirm: exactly one stop command for run-1, with a UI operation id.
+        const readsBefore = reads.count;
+        await controls.getByRole("button", { name: "Stop", exact: true }).click();
+        await dialog.getByRole("button", { name: "Stop Run", exact: true }).click();
+        const notice = main.locator(".ps-workflow-run-command-notice");
+        await expect(notice).toHaveAttribute("role", "alert");
+        await expect(notice).toHaveAttribute("data-level", "error");
+        await expect(notice.locator("span").first()).toHaveText("Stop was refused for run run-1: The run already ended.");
+        await expect(notice.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+        expect(commands).toHaveLength(1);
+        expect(commands[0]).toEqual({ operation: "stop", operation_id: expect.stringMatching(/^ui-stop-/), run_id: "run-1" });
+        // A 409 reads the workflow again so the view shows what the server saw.
+        await expect.poll(() => reads.count).toBeGreaterThan(readsBefore);
+        await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
+        await expect(notice).toHaveCount(0);
+
+        // Positive control + keyboard: Pause needs no confirm; Enter on the focused native button sends one pause.
+        await controls.getByRole("button", { name: "Pause", exact: true }).focus();
+        await page.keyboard.press("Enter");
+        await expect.poll(() => commands.length).toBe(2);
+        expect(commands[1]).toEqual({ operation: "pause", operation_id: expect.stringMatching(/^ui-pause-/), run_id: "run-1" });
+        expect(commands[1].operation_id).not.toBe(commands[0].operation_id);
+        await expect(page.locator(".ps-modal.is-narrow")).toHaveCount(0);
+        await expect(notice).toHaveCount(0);
+        await shot(page, `v2-run-controls-${viewport.width}`);
+        expect(errors).toEqual([]);
+    });
+}
+
+// ------------------------------------------------------------------------------------------------------------
+// B2 — a lost answer: while pending every control is disabled with the server-side reason; a 503 is "unconfirmed";
+// Retry sends the SAME command with the SAME operation id and the server's replay clears the notice.
+// ------------------------------------------------------------------------------------------------------------
+test("v2 commands: an unconfirmed pause is retried with the same operation id, never as a second command", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const { commands } = await routeV2(page, {
+        onCommand: async (route, command, n) => {
+            if (n === 1) { await held; return refuse(route, 503, "SERVICE_UNAVAILABLE", "The workflow store is not reachable."); }
+            return accept(route, command, { status: "paused", replayed: true });
+        },
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    const controls = main.getByRole("group", { name: "Run controls", exact: true });
+    await controls.getByRole("button", { name: "Pause", exact: true }).click();
+
+    // Pending: the sent control shows its pending label; every control is disabled and says why; the group is busy.
+    await expect(controls.locator('[data-operation="pause"]')).toHaveText("Pausing…");
+    await expect(controls).toHaveAttribute("aria-busy", "true");
+    await expect(controls.locator('[data-operation="pause"]')).toBeDisabled();
+    await expect(controls.locator('[data-operation="pause"]')).toHaveAttribute("title", "This command is being sent.");
+    await expect(controls.locator('[data-operation="cancel"]')).toBeDisabled();
+    await expect(controls.locator('[data-operation="cancel"]')).toHaveAttribute("title", "Another command for this workflow is being sent.");
+    release();
+
+    const notice = main.locator(".ps-workflow-run-command-notice");
+    await expect(notice).toHaveAttribute("data-level", "warning");
+    await expect(notice.locator("span").first()).toHaveText(
+        "Pause for run run-1 may not have reached the workflow: The workflow store is not reachable. Retry sends the same command again.");
+    await expect(controls.locator('[data-operation="pause"]')).toBeEnabled();
+    await notice.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(notice).toHaveCount(0);
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).toEqual(commands[0]); // same operation, run and operation id: the server de-duplicates
+    expect(commands[0]).toEqual({ operation: "pause", operation_id: expect.stringMatching(/^ui-pause-/), run_id: "run-1" });
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// B3 — a test run's virtual clock: a value outside 1..2592000 is refused in the page (no request); a valid advance
+// sends exactly {operation:test_advance, run_id, seconds}; a 4xx refusal keeps its reason in the notice.
+// ------------------------------------------------------------------------------------------------------------
+const V2_TEST_EVENTS = [{ ...V2_EVENTS[0], data: { ...V2_EVENTS[0].data, mode: "test" } }];
+const V2_TEST_MODEL = {
+    ...V2_READ_MODEL,
+    runs: [{ runId: "run-1", mode: "test", status: "running", revision: 1, outcome: null }],
+    run: { ...V2_READ_MODEL.run, mode: "test", test: { interceptions: [], virtualClock: { elapsedSeconds: 0 } } },
+    personCommands: { operations: ["test_advance"], viewer: { allowed: true } },
+};
+test("v2 commands: the virtual clock refuses an invalid advance locally and sends one exact advance", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const { commands } = await routeV2(page, {
+        events: V2_TEST_EVENTS,
+        readModel: () => V2_TEST_MODEL,
+        onCommand: (route, command, n) => n === 1
+            ? accept(route, command, { seconds: command.seconds, decided: [] })
+            : refuse(route, 409, "TEST_CLOCK_CONFLICT_ANY", "The test run ended."),
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    const clock = main.getByRole("group", { name: "Virtual clock", exact: true });
+    await expect(clock).toBeVisible();
+    await expect(clock).toContainText("Script clocks are real.");
+    // No run controls are offered: the model offers only test_advance (negative control for B1's group).
+    await expect(main.getByRole("group", { name: "Run controls", exact: true })).toHaveCount(0);
+
+    const seconds = clock.getByRole("spinbutton", { name: "Seconds to advance", exact: true });
+    for (const bad of ["0", "2592001", "1.5"]) {
+        await seconds.fill(bad);
+        await clock.getByRole("button", { name: "Advance", exact: true }).click();
+        await expect(clock.getByRole("alert")).toHaveText("Advance by a whole number of seconds from 1 to 2592000.");
+    }
+    expect(commands).toEqual([]);
+
+    await seconds.fill("120");
+    await seconds.press("Tab");
+    await page.keyboard.press("Enter"); // focus is now on the Advance button (next tabbable in the group)
+    await expect.poll(() => commands.length).toBe(1);
+    expect(commands[0]).toEqual({ operation: "test_advance", operation_id: expect.stringMatching(/^ui-test_advance-/), run_id: "run-1", seconds: 120 });
+    await expect(clock.getByRole("alert")).toHaveCount(0);
+
+    // A refusal is shown with the server's reason (generic code: the mapping is not code-specific).
+    await clock.getByRole("button", { name: "Advance", exact: true }).click();
+    const notice = main.locator(".ps-workflow-run-command-notice");
+    await expect(notice.locator("span").first()).toHaveText("The clock advance was refused for run run-1: The test run ended.");
+    expect(commands).toHaveLength(2);
+    expect(commands[1].operation_id).not.toBe(commands[0].operation_id);
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// B4 — a workflow agent state's child chat is read-only in the rendered DOM with the server's reason; the ordinary
+// agent session (positive control) keeps its prompt input; no prompt request is sent from the read-only one.
+// 1440 and 390.
+// Source: web-app.js SessionComposer / main composer: readOnly when access.canSendPrompt === false; text =
+// workflowInputNote(access) = `${workflowInput.reason} Its controlling agent is session ${controllingSessionId}.`;
+// access from GET /api/v1/sessions/:id/access (protocol getSessionAccess). An ordinary session: the stub answers
+// {ok:true} with no flags (not denied).
+// ------------------------------------------------------------------------------------------------------------
+const CHILD_ID = "99999999-2222-3333-4444-555555555555";
+const CHILD_REASON = "This session runs a workflow state. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`v2 commands: a workflow agent state's chat is read-only with the server's reason; an ordinary chat is not, at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeApi(page);
+        const child = { sessionId: CHILD_ID, title: "Workflow node: review", status: "idle", model: "test:test-model",
+            parentSessionId: WORKFLOW_ID, createdAt: now - 10_000, updatedAt: now - 10_000 };
+        const sessions = [...SESSIONS, child];
+        const prompts = [];
+        await page.route("**/api/v1/**", async (route) => {
+            const req = route.request();
+            const pathname = new URL(req.url()).pathname;
+            const answer = (result) => route.fulfill({ json: { ok: true, result } });
+            if (pathname.endsWith("/management/sessions")) return answer({ sessions, hasMore: false, nextCursor: null });
+            if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions, hasMore: false });
+            if (pathname.endsWith(`/sessions/${CHILD_ID}/access`)) {
+                return answer({ sessionId: CHILD_ID, rootSessionId: AGENT_ID, canWrite: true, canManage: true, canSendPrompt: false, canAnswer: false,
+                    canSteer: false, workflowInput: { reason: CHILD_REASON, workflowSessionId: WORKFLOW_ID, controllingSessionId: AGENT_ID } });
+            }
+            if (pathname.includes(`/sessions/${CHILD_ID}/events`)) return answer([]);
+            if (pathname.endsWith(`/sessions/${CHILD_ID}`)) return answer({ ...child, events: [], messages: [] });
+            // protocol.js: sendMessage POST /sessions/:id/messages, sendAnswer POST /sessions/:id/answers,
+            // steerSessionTurn POST /management/sessions/:id/steer. Recorded only; any such call fails the test below.
+            if (req.method() === "POST" && (pathname.endsWith(`/sessions/${CHILD_ID}/messages`) || pathname.endsWith(`/sessions/${CHILD_ID}/answers`)
+                || pathname.endsWith(`/management/sessions/${CHILD_ID}/steer`))) prompts.push(pathname);
+            return route.fallback();
+        });
+
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${CHILD_ID}`);
+        const readonly = page.locator(".ps-composer-readonly").filter({ visible: true });
+        await expect(readonly).toHaveText(`${CHILD_REASON} Its controlling agent is session ${AGENT_ID}.`);
+        await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
+        await expect(page.locator(".ps-chat-composer.is-workflow")).toHaveCount(0); // a child chat is not a workflow session
+        await shot(page, `v2-child-readonly-${viewport.width}`);
+
+        // Positive control: the ordinary agent session in the same page keeps its prompt input.
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+        await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
+        await expect(page.locator(".ps-composer-readonly").filter({ visible: true })).toHaveCount(0);
+        expect(prompts).toEqual([]);
+        expect(errors).toEqual([]);
+    });
+}
+
+// ------------------------------------------------------------------------------------------------------------
+// B5 — draft edit whose save answer is lost: the edit is kept, the notice offers Retry, and Retry sends the SAME
+// replace_definition (same operation id, expected_revision and YAML); the replayed receipt and the new read model
+// (revision 2) settle the editor. Negative control: an unchanged draft cannot be saved (button disabled, reason title).
+// Source: workflow-v2-panels.js WorkflowV2DraftToggle ("Edit draft", aria-expanded) / WorkflowV2DraftEditor
+// (section aria-label "Draft editor" data-revision; textarea aria-label "Workflow YAML"; button
+// [data-operation=replace_definition] "Save draft"/"Saving…", title = reason; status "Unsaved changes");
+// workflow-v2-commands.js workflowV2DraftEditor (needs definition.state "draft", personCommands.draft
+// {revision, yaml, definitionHash} and operations incl. replace_definition), workflowV2DraftEdit ("Nothing changed."),
+// workflowV2RunCommandWire (definition command: operation, operation_id, expected_revision, yaml), NOTICE_LABELS
+// replace_definition = "Saving the draft" (no run target).
+// Fixture contract note: the file's V2_READ_MODEL run is kept so the graph renders; a draft definition with a run is a
+// fixture simplification, not a product claim.
+// ------------------------------------------------------------------------------------------------------------
+const DRAFT_YAML_1 = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: 1.0.0 }\n";
+const DRAFT_YAML_2 = `${DRAFT_YAML_1}# edited\n`;
+const draftModel = (revision, yaml) => ({
+    ...V2_READ_MODEL,
+    definition: { state: "draft", semver: "1.0.0", currentRevision: revision, publishedRevision: null, publishedDefinitionHash: null },
+    personCommands: { operations: ["replace_definition"], viewer: { allowed: true }, draft: { revision, definitionHash: `hash-${revision}`, yaml } },
+});
+test("v2 commands: a draft save whose answer is lost keeps the edit and Retry sends the same replace_definition", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let saved = false;
+    const { commands } = await routeV2(page, {
+        readModel: () => saved ? draftModel(2, DRAFT_YAML_2) : draftModel(1, DRAFT_YAML_1),
+        onCommand: (route, command, n) => {
+            if (n === 1) return route.abort("failed"); // no answer: the browser cannot know whether it was stored
+            saved = true;
+            return route.fulfill({ json: { ok: true, result: { revision: 2, valid: true, diagnostics: [], replayed: true } } });
+        },
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    const toggle = main.getByRole("button", { name: "Edit draft", exact: true });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const editor = main.getByRole("region", { name: "Draft editor", exact: true });
+    await expect(editor).toHaveAttribute("data-revision", "1");
+    const save = editor.locator('[data-operation="replace_definition"]');
+    // Negative control: nothing changed -> cannot save, and the title says why.
+    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("title", "Nothing changed.");
+
+    const yaml = editor.getByRole("textbox", { name: "Workflow YAML", exact: true });
+    await yaml.fill(DRAFT_YAML_2);
+    await expect(editor.getByRole("status")).toHaveText("Unsaved changes");
+    await expect(save).toBeEnabled();
+    await save.click();
+
+    const notice = main.locator(".ps-workflow-run-command-notice");
+    await expect(notice).toHaveAttribute("data-level", "warning");
+    await expect(notice.locator("span").first()).toHaveText(/^Saving the draft may not have reached the workflow: .+ Retry sends the same command again\.$/);
+    await expect(yaml).toHaveValue(DRAFT_YAML_2); // the edit survives the lost answer
+    expect(commands).toEqual([{ operation: "replace_definition", operation_id: expect.stringMatching(/^ui-replace_definition-/), expected_revision: 1, yaml: DRAFT_YAML_2 }]);
+
+    await notice.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(notice).toHaveCount(0);
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).toEqual(commands[0]);
+    await expect(editor).toHaveAttribute("data-revision", "2"); // the new read model's revision is taken (edit == saved yaml)
+    await expect(yaml).toHaveValue(DRAFT_YAML_2);
+    await expect(save).toBeDisabled();
+    expect(errors).toEqual([]);
+});

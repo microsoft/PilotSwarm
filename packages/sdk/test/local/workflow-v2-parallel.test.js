@@ -15,7 +15,8 @@
  *   item, at most its concurrency at a time, each with its item and index;
  *   the joined outputs in manifest order; a blocked join that reports every
  *   branch; failFast; empty and invalid manifests; the join's outputSchema;
- *   a stop during a parallel state.
+ *   a stop during a parallel state; a worker restart while every branch
+ *   waits (each joined once, each wait's deadline kept).
  *
  * Branch scripts run as real script processes. The failFast case relies on
  * a timing margin: the failing branch waits 5 seconds before it fails, and
@@ -531,6 +532,139 @@ describe("workflow v2 parallel states: controller 1.9.0 (inactive, test-only reg
             expect((await h.store.listNodeExecutions(runId)).map(node => node.nodeId).sort()).toEqual(["fan", "hold"]);
         } finally {
             await h.stop();
+        }
+    });
+});
+
+// Adapted from the independent test design 090ad919-r2 (P1): a worker restart while every branch of a parallel state
+// waits (design 02 "Parallel scope and join": all_required, duplicates do not count; R21, R27; T101). Two runtimes run in
+// turn over one catalog and provider (the wait restart test's split); each is stopped once. The precondition is read from
+// the store, not inferred from time: if it is read after a deadline, the case is VOID (its message says so), not a pass
+// and not a product failure.
+const RESTART_SECONDS = 6;
+const RESTART_ITEMS = ["a", "b", "c"];
+
+function restartHoldOut() {
+    return {
+        ...head("hold-restart"), initialInput: { items: RESTART_ITEMS }, initial: "fan",
+        states: {
+            fan: {
+                type: "parallel", forEach: "${input.items}", concurrency: RESTART_ITEMS.length,
+                body: { initial: "hold", states: {
+                    hold: { type: "wait", seconds: RESTART_SECONDS, transition: { next: { elapsed: "done" } } },
+                    done: { type: "terminal", outcome: "succeeded", output: "${branch.item}" },
+                } },
+                transition: { next: { joined: "finished", blocked: "stuck", failure: "failed" } },
+            },
+            ...OUTER,
+        },
+    };
+}
+
+async function restartBaseOf(env) {
+    const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+    await catalog.initialize();
+    const store = catalog.workflowStore();
+    const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
+    const client = new Client(provider);
+    return { catalog, store, provider, client, host: { catalog, store, duroxideClient: client, requests: true } };
+}
+
+async function restartRuntimeOn(base) {
+    const runtime = new Runtime(base.provider, {
+        dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
+        workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000,
+    });
+    registerWorkflowV2({
+        registerActivity: (name, fn) => runtime.registerActivity(name, fn),
+        registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
+    }, {
+        store: base.store, catalog: base.catalog, enabled: () => true,
+        resolveToolBinding: async () => null,
+        openToolExecutor: async () => { throw new Error("These workflows call no tools."); },
+        authorizeParentNotification: async () => false,
+        notifyParent: async () => { throw new Error("These workflows notify no parent."); },
+        deleteSession: async sessionId => base.catalog.softDeleteSession(sessionId),
+        wakeBackstopMs: 500, workflowRequests: true,
+        sessionQueue: { ...sessionQueueTransport(base.client), version: async () => "1.0.83" },
+    });
+    await runtime.start();
+    let running = true;
+    return { async stop() { if (!running) return; running = false; await runtime.shutdown(100); } };
+}
+
+describe("workflow v2 parallel states: a worker restart while every branch waits (controller 1.9.0, test-only)", () => {
+    it("joins each branch exactly once after the runtime stops with every branch persisted as waiting, keeping each wait's deadline", { timeout: 180_000 }, async () => {
+        const base = await restartBaseOf(getEnv());
+        const workers = [await restartRuntimeOn(base)];
+        try {
+            const parent = randomUUID();
+            await base.catalog.createSession(parent, {});
+            const workflowSessionId = randomUUID();
+            const created = await createWorkflowV2(base.host, {
+                workflowSessionId, parentSessionId: parent, yaml: yamlOf(restartHoldOut()), actor: ACTOR, operationId: "start", start: { inputs: {} },
+            });
+            expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
+            const runId = created.receipt.run.runId;
+            const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
+            const at = (index, nodeId, visit = 1) => nodeExecutionIdFor(runId, branchScopeId(fan, index), nodeId, visit);
+
+            // Precondition, persisted: every branch's wait is pending with an absolute deadline RESTART_SECONDS after its entry;
+            // nothing has completed; the parallel state is pending; the run is running.
+            const before = await until(async () => {
+                const holds = await Promise.all(RESTART_ITEMS.map((_, index) => base.store.readNodeExecution(at(index, "hold"))));
+                return holds.every(node => node?.state === "pending" && node.deadlineAt instanceof Date) ? holds : null;
+            }, "every branch wait persisted as pending", 90_000);
+            RESTART_ITEMS.forEach((_, index) => {
+                expect(before[index]).toMatchObject({ scopeId: branchScopeId(fan, index), predecessorId: fan, arrivalRoute: BRANCH_ROUTE, outcome: null, completedAt: null });
+                expect(before[index].deadlineAt.getTime() - before[index].enteredAt.getTime()).toBe(RESTART_SECONDS * 1_000);
+            });
+            expect(await base.store.readNodeExecution(fan)).toMatchObject({ state: "pending" });
+            for (const index of RESTART_ITEMS.keys()) expect(await base.store.readNodeExecution(at(index, "done"))).toBeFalsy();
+            expect(await base.store.hasPendingNodes(runId)).toBe(true);
+            expect((await base.store.readRun(runId)).status).toBe("running");
+            expect(Date.now(), "VOID (not a product result): the precondition was read after a wait's deadline; run the case again")
+                .toBeLessThan(Math.min(...before.map(node => node.deadlineAt.getTime())));
+
+            // Stop the runtime, stay down 2.5 s, and start another over the same catalog and provider.
+            await workers[0].stop();
+            const stoppedAt = Date.now();
+            for (const index of RESTART_ITEMS.keys()) expect((await base.store.readNodeExecution(at(index, "hold"))).state).toBe("pending");
+            await until(async () => Date.now() - stoppedAt >= 2_500, "the outage window");
+            workers.push(await restartRuntimeOn(base));
+
+            const run = await until(async () => {
+                const current = await base.store.readRun(runId);
+                return current && ["completed", "failed", "cancelled", "stopped"].includes(current.status) ? current : null;
+            }, `run ${runId} to end`, 90_000);
+
+            // One join, in manifest order; no second visit of the parallel state or of `finished`.
+            expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalNodeId: "finished", terminalOutput: RESTART_ITEMS });
+            expect(await base.store.readNodeExecution(fan)).toMatchObject({ state: "completed", outcome: "joined", resultKind: "business", output: RESTART_ITEMS });
+            expect(await base.store.readNodeExecution(nodeExecutionIdFor(runId, "root", "fan", 2))).toBeFalsy();
+            expect(await base.store.readNodeExecution(nodeExecutionIdFor(runId, "root", "finished", 2))).toBeFalsy();
+            // One visit per branch state, each wait's deadline kept: the same rows, never admitted again.
+            for (const index of RESTART_ITEMS.keys()) {
+                const hold = await base.store.readNodeExecution(at(index, "hold"));
+                expect(hold).toMatchObject({ state: "completed", outcome: "elapsed", arrivalRoute: BRANCH_ROUTE });
+                expect(hold.enteredAt).toEqual(before[index].enteredAt);
+                expect(hold.deadlineAt).toEqual(before[index].deadlineAt);
+                const late = hold.completedAt.getTime() - hold.deadlineAt.getTime();
+                expect(late).toBeGreaterThanOrEqual(0);
+                expect(late).toBeLessThan(2_000);
+                expect(await base.store.readNodeExecution(at(index, "done"))).toMatchObject({ state: "completed", outcome: "succeeded", output: RESTART_ITEMS[index] });
+                expect(await base.store.readNodeExecution(at(index, "hold", 2))).toBeFalsy();
+                expect(await base.store.readNodeExecution(at(index, "done", 2))).toBeFalsy();
+            }
+            // One branch-ended event per branch, none repeated by the recovery.
+            const events = await base.catalog.getSessionEvents(workflowSessionId, 0, 500);
+            const branchEnds = events.filter(event => event.eventType === "workflow.state_completed" && event.data.branchEnded === true);
+            expect(branchEnds.map(event => event.data.branch).sort()).toEqual([0, 1, 2]);
+            expect(new Set(branchEnds.map(event => event.data.nodeExecutionId)).size).toBe(RESTART_ITEMS.length);
+            expect(await base.store.hasPendingNodes(runId)).toBe(false);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await base.catalog.close();
         }
     });
 });
