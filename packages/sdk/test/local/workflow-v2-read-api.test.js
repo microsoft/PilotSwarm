@@ -619,6 +619,9 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             expect(added).toBe(yaml.replace("      next: { done: end }\n  quick:", "      next: { done: end }\n    input:\n      text: ${input}\n  quick:"));
             const emptied = (await read({ state: "review", input: {} })).stepInput.proposed.yaml;
             expect(emptied).toContain("    # what the reviewer gets\n    input: {}\n    inputSchema:\n");
+            // Paths are read and written with the compiler's grammar: a quoted key may hold spaces and ?? as data.
+            const quoted = (await read({ state: "summarize", input: { text: { source: "previous_step", path: "[\"a b ?? c\"]" } } })).stepInput.proposed.yaml;
+            expect(quoted).toContain("    input:\n      text: \"${input[\\\"a b ?? c\\\"]}\"\n");
             // Nothing was written: the draft is still revision 1 with its own text.
             expect((await store.readDefinition(workflowSessionId)).currentRevision).toBe(1);
             expect((await store.readRevision(workflowSessionId, 1)).yaml).toBe(yaml);
@@ -633,6 +636,8 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
                 [{ state: "review", input: { depth: { source: "keep" } } }, /no value written for 'depth' to keep/],
                 [{ state: "review", input: { pr: { source: "guess" } } }, /source: run_input \| previous_step/],
                 [{ state: "review", input: { pr: { source: "run_input" } } }, /must name a run input/],
+                // Paths are read with the compiler's grammar: trailing text after a segment is refused.
+                [{ state: "review", input: { summary: { source: "previous_step", path: "items[0]junk" } } }, /field path of the previous step/],
                 ["review", /must be \{ state, input\? \}/],
             ]) {
                 await expect(read(value)).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(pattern) });

@@ -8,6 +8,7 @@ import {
     type JsonValue,
 } from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
+import { parseBindingExpression, WorkflowBindingError, type BindingExpression } from "./bindings.js";
 import {
     parseWorkflowReadCursor, WORKFLOW_READ_OPEN_MAX, WORKFLOW_READ_PAGE_MAX, workflowReadCursor, workflowReadLimit,
     type WorkflowReadCursor, type WorkflowReadSection,
@@ -674,22 +675,32 @@ function namedBinding(root: "inputs" | "kv", name: string): string {
  * What an input field's value is, for the step-input editor: a run input (`${inputs.x}`), a field of what the previous
  * step gave (`${input.path}`, the whole of it for an empty path), a variable (`${kv.x}`), a fixed value (JSON with no
  * expression), or anything else (a default with `??`, a branch value, a value built of several expressions), which the
- * editor keeps as it is written (`keep`, with its text).
+ * editor keeps as it is written (`keep`, with its text). Expressions are read with the compiler's own parser.
  */
 function stepInputBinding(value: JsonValue): { [key: string]: JsonValue } {
     if (typeof value === "string" && value.includes("${")) {
-        const named = /^\$\{(inputs|kv)(?:\.([A-Za-z_$][A-Za-z0-9_$-]*)|\[("(?:[^"\\]|\\.)*")\])\}$/.exec(value);
-        if (named) {
-            let name: unknown = named[2];
-            if (name === undefined) { try { name = JSON.parse(named[3]); } catch { name = null; } }
-            if (typeof name === "string") return { source: named[1] === "inputs" ? "run_input" : "variable", name };
+        const parsed = simpleBinding(value);
+        const [name] = parsed?.segments ?? [];
+        if ((parsed?.root === "inputs" || parsed?.root === "kv") && parsed.segments.length === 1 && typeof name === "string") {
+            return { source: parsed.root === "inputs" ? "run_input" : "variable", name };
         }
-        const prior = /^\$\{input((?:\.[A-Za-z_$][A-Za-z0-9_$-]*|\[(?:\d+|"(?:[^"\\]|\\.)*")\])*)\}$/.exec(value);
-        if (prior) return { source: "previous_step", path: prior[1].replace(/^\./, "") };
+        // The path as written, so a field left as it is is written back the same.
+        if (parsed?.root === "input" && value.startsWith("${input")) return { source: "previous_step", path: value.slice("${input".length, -1).replace(/^\./, "") };
         return { source: "keep", text: value };
     }
     if (typeof value !== "string" && canonicalJson(value).includes("${")) return { source: "keep", text: canonicalJson(value) };
     return { source: "fixed", value };
+}
+
+/** `text` as one simple expression (the whole string, no default), or null: another value, or one the grammar refuses. */
+function simpleBinding(text: string): BindingExpression | null {
+    try {
+        const parsed = parseBindingExpression(text, "input");
+        return parsed && !parsed.hasDefault && text.trim() === text ? parsed : null;
+    } catch (error) {
+        if (error instanceof WorkflowBindingError) return null;
+        throw error;
+    }
 }
 
 /** A schema field of a definition as written: inline, or `{ $ref: "#/schemas/<name>" }` resolved in its schemas. */
@@ -721,10 +732,11 @@ function stepInputValue(field: string, spec: unknown, current: JsonValue | undef
         case "variable": return namedBinding("kv", name());
         case "previous_step": {
             const path = spec.path ?? "";
-            if (typeof path !== "string" || path.length > 512 || /[}\s]|\?\?|\$\{/.test(path)) {
+            const text = typeof path !== "string" || path.length > 512 ? null : path === "" ? "${input}" : path.startsWith("[") ? `\${input${path}}` : `\${input.${path}}`;
+            if (text === null || simpleBinding(text)?.root !== "input") {
                 throw readInvalid(`${at}.path must be a field path of the previous step's result, such as review.summary or items[0] (empty: all of it).`);
             }
-            return path === "" ? "${input}" : path.startsWith("[") ? `\${input${path}}` : `\${input.${path}}`;
+            return text;
         }
         case "fixed": {
             try { assertJsonValue(spec.value, `${at}.value`); } catch (error) {
