@@ -3697,6 +3697,13 @@ body.is-resizing-pane-y iframe {
     content: none;
   }
 }
+/* A pane this narrow is far below any reading width: the 36px gap before the
+   column's edge only takes room from the text and the composer. */
+@container reading (max-width: 480px) {
+  .ps-chat-panel.is-reading > * {
+    --ps-reading-edge: 0px;
+  }
+}
 
 .ps-chat-panel .ps-panel-body {
   padding-top: 2px;
@@ -10491,6 +10498,9 @@ textarea.ps-link-input {
 .ps-chat-panel .ps-panel-bottom-sticky.is-reserved { min-height: calc(1.24rem + 13px); flex-shrink: 0; }
 .ps-prompt-shell.is-mobile .ps-prompt-input::placeholder { font-size: inherit; line-height: inherit; }
 .ps-prompt-shell.is-compact { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.ps-prompt-shell.is-narrow { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.ps-prompt-shell.is-narrow .ps-prompt-label.is-default { display: none; }
+.ps-prompt-shell.is-narrow .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
 .ps-prompt-shell.is-compact .ps-prompt-label.is-default { display: none; }
 .ps-prompt-shell.is-compact .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
 .ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }

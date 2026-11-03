@@ -26,6 +26,7 @@ const widths = (page) => page.evaluate(() => {
         canvas: w(".ps-canvas-layer:not(.is-hidden)"),
         diagnostics: w(".ps-workspace-column-host .ps-workspace-column:not(.is-artifact)"),
         chat: w(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child"),
+        list: w(".ps-workspace-main-grid > .ps-workspace-pane-slot:first-child:not(:last-child)") ?? 0,
     };
 });
 
@@ -66,9 +67,10 @@ test("dragging the chat seam widens the canvas, and the diagnostics column keeps
     const after = await widths(page);
     expect(after.canvas - before.canvas, "the canvas took the drag").toBeGreaterThan(100);
     expect(Math.abs(after.diagnostics - before.diagnostics), "diagnostics did not move").toBeLessThan(3);
-    // Chat gives up most of it; the sessions column (a share of the main
-    // grid) gives up the rest. What matters is that the right block grew.
-    expect(before.chat - after.chat, "chat gave up the pixels").toBeGreaterThan(60);
+    // Chat gives up its pixels down to its floor, then the session list gives
+    // way. (The list keeps one width while chat can still give.)
+    expect((before.chat - after.chat) + (before.list - after.list), "chat and then the list gave up the pixels").toBeGreaterThan(100);
+    expect(after.chat, "chat keeps its floor").toBeGreaterThanOrEqual(223);
 });
 
 test("the seam stops at chat's floor instead of inflating the stored width", async ({ page }) => {

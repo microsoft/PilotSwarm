@@ -110,6 +110,7 @@ const PORTAL_WORKSPACE_GAP_PX = 8;
 const PORTAL_MIN_CHAT_COLUMN_PX = 224;
 const PORTAL_SESSION_COMPACT_COLUMN_PX = 190;
 const PORTAL_SESSION_HIDDEN_COLUMN_PX = 48;
+const COMPOSER_NARROW_PX = 480;
 const SCROLL_ROW_HEIGHT = 16;
 const HISTORY_SCROLL_GESTURE_GAP_MS = 200;
 const SCROLL_BOTTOM_EPSILON_PX = 0.5;
@@ -774,29 +775,31 @@ const PORTAL_CANVAS_COL_DEFAULT_PX = 640;
 const PORTAL_DIAG_COL_DEFAULT_PX = 320;
 
 
-function portalSessionColumnBounds(width) {
-    const safeWidth = Math.max(0, Number(width) || 0);
-    const availableWidth = Math.max(
-        0,
-        safeWidth - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2),
-    );
-    const baseWidth = availableWidth * PORTAL_SESSION_COLUMN_RATIO;
-    const maxSessionWidth = Math.max(0, availableWidth - PORTAL_MIN_CHAT_COLUMN_PX);
+function portalSessionAvailableWidth(width) {
+    return Math.max(0, (Math.max(0, Number(width) || 0)) - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2));
+}
+
+/**
+ * The session list's width comes from the WHOLE workspace (sessions, chat and
+ * any canvas or diagnostics column), not from the share left beside those
+ * columns. A session with its canvas open used to shrink the list, so flipping
+ * between sessions made it jump. Now an open column takes its width from chat;
+ * the list gives way only where chat would fall below its floor.
+ * `mainWidth` is the sessions + chat grid; `workspaceWidth` defaults to it.
+ */
+function portalSessionColumnBounds(mainWidth, workspaceWidth = mainWidth) {
+    const baseWidth = portalSessionAvailableWidth(workspaceWidth || mainWidth) * PORTAL_SESSION_COLUMN_RATIO;
+    const maxSessionWidth = Math.max(0, portalSessionAvailableWidth(mainWidth) - PORTAL_MIN_CHAT_COLUMN_PX);
     return {
+        baseWidth,
         minAdjust: -baseWidth,
         maxAdjust: maxSessionWidth - baseWidth,
     };
 }
 
-function portalSessionColumnWidth(width, adjust) {
-    const bounds = portalSessionColumnBounds(width);
-    const safeWidth = Math.max(0, Number(width) || 0);
-    const availableWidth = Math.max(
-        0,
-        safeWidth - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2),
-    );
-    const baseWidth = availableWidth * PORTAL_SESSION_COLUMN_RATIO;
-    return clampNumber(baseWidth + (Number(adjust) || 0), 0, baseWidth + bounds.maxAdjust);
+function portalSessionColumnWidth(mainWidth, adjust, workspaceWidth = mainWidth) {
+    const bounds = portalSessionColumnBounds(mainWidth, workspaceWidth);
+    return clampNumber(bounds.baseWidth + (Number(adjust) || 0), 0, bounds.baseWidth + bounds.maxAdjust);
 }
 
 function portalSessionColumnMode(width) {
@@ -10072,14 +10075,29 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
+    const shellRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
+    // A narrow composer (the zen rail) takes the phone's layout: no "you"
+    // label and the short hint. Beside a label and three buttons, the input
+    // was ~140px wide and the long hint wrapped it to four lines. Measured
+    // on the shell, whose width the label does not change.
+    const [narrow, setNarrow] = React.useState(false);
+    React.useLayoutEffect(() => {
+        const node = shellRef.current;
+        if (!node || typeof ResizeObserver === "undefined") return undefined;
+        const update = () => setNarrow(node.clientWidth > 0 && node.clientWidth < COMPOSER_NARROW_PX);
+        update();
+        const observer = new ResizeObserver(update);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, []);
     const phone = useMediaQuery(PHONE_MEDIA_QUERY);
     const touchKeyboard = useMediaQuery(TOUCH_KEYBOARD_MEDIA_QUERY);
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
     const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     const selectedReadOnly = selectedQueued || selectedCancelling;
-    const placeholder = mobile && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
+    const placeholder = (mobile || narrow) && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
         ? "Type an answer and press Enter"
         : promptState.editingPending
             ? selectedCancelling
@@ -10114,7 +10132,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const length = String(promptState.value || "").length;
         // Equal length can still drop a wrapped line (a selection replaced by
         // as many characters), so only strict growth takes the cheap path.
-        const mayHaveShrunk = length <= lastPromptLengthRef.current;
+        // The first character also replaces the placeholder, which may have
+        // wrapped to more lines than the text needs.
+        const mayHaveShrunk = length <= lastPromptLengthRef.current || lastPromptLengthRef.current === 0;
         lastPromptLengthRef.current = length;
         growInput(mayHaveShrunk || length === 0);
         // Empty textareas measure their placeholder too. Send briefly shows
@@ -10275,7 +10295,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             : "❯";
 
     return React.createElement("div", {
-        className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
+        ref: shellRef,
+        className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${narrow && !compact && !mobile ? " is-narrow" : ""}${dragOver ? " is-drag-over" : ""}`,
         // Scopes the composer's turn-control selectors to this session (MoA
         // panels each have their own composer).
         "data-session-id": promptState.sessionId || undefined,
@@ -11217,7 +11238,8 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
             event.preventDefault();
             capturePointerForDrag(event);
             const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
-            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
+            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width,
+                gridNode?.closest?.(".ps-workspace-grid")?.getBoundingClientRect?.().width);
             dragStateRef.current = {
                 startX: event.clientX,
                 startAdjust: Number(portalSessionColumnAdjust) || 0,
@@ -11232,7 +11254,8 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
         },
         onKeyDown: (event) => {
             const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
-            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
+            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width,
+                gridNode?.closest?.(".ps-workspace-grid")?.getBoundingClientRect?.().width);
             const adjustBy = (delta) => {
                 const nextAdjust = clampNumber(
                     (Number(portalSessionColumnAdjust) || 0) + delta,
@@ -11479,13 +11502,18 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
             // give before it reaches its floor. Measured at drag start from
             // the chat slot (the main grid's last column), the same element
             // the grid template protects with its own minimum.
+            // The session list keeps its width until chat is at its floor;
+            // after that it gives way, down to its compact width.
             const chatSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child");
             const chatWidth = chatSlot ? chatSlot.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
+            const listSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:first-child:not(:last-child)");
+            const listWidth = listSlot ? listSlot.getBoundingClientRect().width : 0;
             const startAdjust = Number(adjust) || 0;
             dragStateRef.current = {
                 startX: event.clientX,
                 startAdjust,
-                maxAdjust: startAdjust + Math.max(0, chatWidth - PORTAL_MIN_CHAT_COLUMN_PX),
+                maxAdjust: startAdjust + Math.max(0, chatWidth - PORTAL_MIN_CHAT_COLUMN_PX)
+                    + Math.max(0, listWidth - PORTAL_SESSION_COMPACT_COLUMN_PX),
             };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
@@ -16105,6 +16133,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef, suspended);
     const mainGridViewport = useMeasuredViewport(mainGridRef, suspended);
+    const workspaceGridRef = React.useRef(null);
+    const workspaceGridViewport = useMeasuredViewport(workspaceGridRef, suspended);
     const gridViewport = computeGridViewport(viewport);
 
     // Publish the real viewport in character cells. Without this the ui-core
@@ -16723,13 +16753,17 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     const estimatedMainGridWidth = Math.max(0, (viewport.width || 0) * 0.68);
     const measuredMainGridWidth = mainGridViewport.width || estimatedMainGridWidth;
-    const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust);
+    const measuredWorkspaceWidth = workspaceGridViewport.width
+        || (measuredMainGridWidth + (rightSideActive ? PORTAL_SESSION_CHAT_DIVIDER_PX + rightSidePx : 0));
+    const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust, measuredWorkspaceWidth);
     const sessionColumnMode = zenActive ? "hidden" : portalSessionColumnMode(sessionColumnWidth);
+    const sessionColumnBase = portalSessionColumnBounds(measuredMainGridWidth, measuredWorkspaceWidth).baseWidth;
     const sessionColumnTrack = sessionColumnMode === "hidden"
         ? "0px"
-        : `clamp(0px, calc(${PORTAL_SESSION_COLUMN_RATIO * 100}% + ${Number(state.portalSessionColumnAdjust) || 0}px), max(0px, calc(100% - 14rem - 32px)))`;
+        : `clamp(0px, ${Math.round(sessionColumnBase + (Number(state.portalSessionColumnAdjust) || 0))}px, max(0px, calc(100% - ${PORTAL_MIN_CHAT_COLUMN_PX}px - 32px)))`;
 
     const desktopWorkspace = React.createElement("div", {
+        ref: workspaceGridRef,
         className: `ps-workspace-grid${rightSideActive ? "" : " is-right-hidden"}`,
         style: {
             // With both optional columns off there is no right side and no
@@ -16767,7 +16801,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         ref: mainGridRef,
         className: `ps-workspace-main-grid is-session-${sessionColumnMode}`,
         style: {
-            gridTemplateColumns: `${sessionColumnTrack} var(--ps-resizer-track, 16px) minmax(14rem, 1fr)`,
+            gridTemplateColumns: `${sessionColumnTrack} var(--ps-resizer-track, 16px) minmax(${PORTAL_MIN_CHAT_COLUMN_PX}px, 1fr)`,
         },
     },
     sessionColumnMode !== "hidden" ? React.createElement("div", {
