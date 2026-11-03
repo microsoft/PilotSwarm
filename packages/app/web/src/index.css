@@ -1068,10 +1068,17 @@ body.ps-kb-takeover .ps-prompt-shell.is-mobile .ps-prompt-input {
    above the pane edges it overlaps. 3, not 2: the canvas layer is
    position:absolute at z-index 2 in the same stacking context and came later
    in the DOM, so it painted over the seam's canvas-side half of the band —
-   the hairline itself could only be grabbed from the chat side. */
-.ps-column-resizer,
+   the hairline itself could only be grabbed from the chat side.
+   A column seam sits one above a row seam (F-08): where a row seam meets a
+   column seam (the inspector/activity seam against the chat/right seam, at
+   half height) the row seam's band came later in the DOM and took the column
+   seam's centre. The column seam spans the whole height, so it owns the
+   junction; the row seam keeps the rest of its band. */
 .ps-row-resizer {
   z-index: 3;
+}
+.ps-column-resizer {
+  z-index: 4;
 }
 
 .ps-column-resizer::after {

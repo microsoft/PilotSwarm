@@ -115,16 +115,12 @@ test("the seam stops at chat's floor instead of inflating the stored width", asy
 });
 
 // F-07 and F-08 (batch 4, UX resize report). Selector: npx playwright test test/e2e/right-column-resize.spec.mjs -g "F-0".
-async function openDiagnostics(page, { canvas = false } = {}) {
+async function openDiagnostics(page) {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(base);
     await page.locator(".ps-session-list-button").first().waitFor();
     await page.locator(".ps-session-list-button").first().click();
     await page.waitForTimeout(300);
-    if (canvas) {
-        const showCanvas = page.getByRole("button", { name: /^Show canvas$/i });
-        if (await showCanvas.count() > 0) await showCanvas.first().click();
-    }
     await page.getByRole("button", { name: /Show diagnostics/i }).first().click();
     await expect(page.getByRole("button", { name: "Resize the inspector and activity panes", exact: true })).toBeVisible();
 }
@@ -142,4 +138,22 @@ test("F-07: an arrow key moves the inspector/activity seam a whole step, not the
     await page.keyboard.press("ArrowDown");
     await expect.poll(async () => await height() - raised).toBeGreaterThanOrEqual(20);
     await expect(handle).toBeFocused();
+});
+
+test("F-08: where the inspector/activity seam meets a column seam, the column seam takes the pointer", async ({ page }) => {
+    const centreOwner = (seam) => seam.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest(".ps-column-resizer, .ps-row-resizer")
+            ?.getAttribute("aria-label") ?? null;
+    });
+    // Diagnostics alone: the chat/right seam's centre is level with the inspector/activity seam at its default half height.
+    await openDiagnostics(page);
+    const outer = page.getByRole("button", { name: "Resize the right column", exact: true });
+    expect(await centreOwner(outer)).toBe("Resize the right column");
+    // With the canvas open too, the canvas/diagnostics seam meets it the same way.
+    await page.getByRole("button", { name: /^Show canvas$/i }).first().click();
+    const inner = page.getByRole("button", { name: "Resize canvas and diagnostics columns", exact: true });
+    await expect(inner).toBeVisible();
+    expect(await centreOwner(inner)).toBe("Resize canvas and diagnostics columns");
+    expect(await centreOwner(page.getByRole("button", { name: "Resize the right column", exact: true }))).toBe("Resize the right column");
 });
