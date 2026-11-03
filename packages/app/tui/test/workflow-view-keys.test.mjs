@@ -122,6 +122,8 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /workflow view: o reads the shown run.s older history/);
     assert.match(text, /f reads the whole output or error of the visit the details show/);
     assert.match(text, /i compares the variables that visit applied with the run.s accepted ones/);
+    assert.match(text, /C  ,  \./);
+    assert.match(text, /C compares two versions of its YAML, formatted/);
     assert.match(text, /workflow view: several of the shown run's variables in one update — Set a JSON object of names and values, Remove a JSON list of names; every other variable stays/);
     assert.match(text, /Enter send, a removal asks first/);
 });
@@ -506,7 +508,7 @@ test("p r s c in the open workflow view send its run controls and d dismisses th
         ["c", "WORKFLOW_VIEW_CANCEL_RUN"], ["d", "WORKFLOW_VIEW_DISMISS_NOTICE"], ["v", "WORKFLOW_VIEW_EDIT_VARIABLES"],
         ["V", "WORKFLOW_VIEW_UPDATE_VARIABLES"], ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["P", "WORKFLOW_VIEW_PUBLICATION_REVIEW"],
         ["t", "WORKFLOW_VIEW_TEST_REVIEW"], ["a", "WORKFLOW_VIEW_TEST_ANSWER"], ["o", "WORKFLOW_VIEW_OLDER_HISTORY"], ["f", "WORKFLOW_VIEW_WHOLE_VALUE"],
-        ["i", "WORKFLOW_VIEW_INSPECT_VARIABLES"]]) {
+        ["i", "WORKFLOW_VIEW_INSPECT_VARIABLES"], ["C", "WORKFLOW_VIEW_COMPARE_VERSIONS"]]) {
         assert.match(keys, new RegExp(`${key}: UI_COMMANDS\\.${command},`), key);
         assert.equal(typeof UI_COMMANDS[command], "string", command);
     }
@@ -518,6 +520,10 @@ test("p r s c in the open workflow view send its run controls and d dismisses th
     assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK, "string");
     assert.match(keys, /"\[": UI_COMMANDS\.WORKFLOW_VIEW_OLDER_EXECUTION,/);
     assert.match(keys, /"\]": UI_COMMANDS\.WORKFLOW_VIEW_NEWER_EXECUTION,/);
+    assert.match(keys, /",": UI_COMMANDS\.WORKFLOW_VIEW_COMPARE_OLDER,/);
+    assert.match(keys, /"\.": UI_COMMANDS\.WORKFLOW_VIEW_COMPARE_NEWER,/);
+    assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_COMPARE_OLDER, "string");
+    assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_COMPARE_NEWER, "string");
     assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_OLDER_EXECUTION, "string");
     assert.equal(typeof UI_COMMANDS.WORKFLOW_VIEW_NEWER_EXECUTION, "string");
     // j and k keep moving through the states: the view's keys are checked first, so they must not take them.

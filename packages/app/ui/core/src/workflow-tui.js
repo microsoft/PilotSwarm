@@ -8,7 +8,7 @@ import {
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
-    workflowV2TestResponder, workflowV2VariableBatchDraft,
+    workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2RevisionCompare,
 } from "./workflow-v2-commands.js";
 
 /**
@@ -145,6 +145,9 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
         // The KV revisions read and the comparison asked for (mock M15; workflowV2KvSnapshot, workflowV2KvCompare).
         kvRevisions: isPlainRecord(safeView.kvRevisions) ? safeView.kvRevisions : null,
         kvCompare: isPlainRecord(safeView.kvCompare) ? safeView.kvCompare : null,
+        // The draft's two versions compared (owner decision q4; TUI C) and the revisions read for it.
+        revisionCompare: isPlainRecord(safeView.revisionCompare) ? safeView.revisionCompare : null,
+        definitionRevisions: isPlainRecord(safeView.definitionRevisions) ? safeView.definitionRevisions : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -555,10 +558,57 @@ export function workflowViewDraftRefusal(selection) {
 function draftLines(projection) {
     const editor = projection.draftEditor;
     if (!editor) return [];
-    const lines = [{ text: `Draft · revision ${editor.revision}${editor.semver ? ` · version ${editor.semver}` : ""} — e edits its YAML`, color: "cyan", indent: "" }];
+    const lines = [{ text: `Draft · revision ${editor.revision}${editor.semver ? ` · version ${editor.semver}` : ""} — e edits its YAML`
+        + `${editor.revision > 1 ? " · C compares versions" : ""}`, color: "cyan", indent: "" }];
     if (projection.draftEdit?.changed) {
         lines.push({ text: `Unsaved edits, started from revision ${projection.draftBuffer.base.revision}: e shows them`, color: "yellow", indent: "  " });
     }
+    return [...lines, ...revisionCompareLines(projection)];
+}
+
+const REVISION_COMPARE_CONTEXT = 2;
+const REVISION_COMPARE_ROWS = 200;
+
+/**
+ * The draft's two versions compared (owner decision q4; the portal's "Compare versions" as + and - lines), after C: the
+ * summary, then each changed line with the line numbers it has in each version and two unchanged lines around it,
+ * "…" where unchanged lines are left out; at most 200 rows (the portal shows them all). Each side is its revision's
+ * YAML properly formatted (as saved when it does not parse). Only while the comparison is of the latest revision.
+ */
+function revisionCompareLines(projection) {
+    const open = projection.revisionCompare;
+    const latest = projection.draftEditor?.revision;
+    if (!open || open.to !== latest || !Number.isSafeInteger(open.from) || open.from < 1 || open.from >= latest) return [];
+    const compare = workflowV2RevisionCompare(projection.definitionRevisions, open.from, open.to);
+    const lines = [{ text: `Compare versions: ${compare.summary}`, color: compare.failed ? "red" : compare.ready ? "white" : "yellow", indent: "  " }];
+    if (compare.failed) return [...lines, { text: "C closes; C once more reads it again", color: "gray", indent: "    " }];
+    if (!compare.ready) return lines;
+    const notes = [compare.before, compare.after].filter(side => !side.formatted).map(side => side.revision);
+    if (notes.length) lines.push({ text: `Revision ${notes.join(" and ")} is shown as saved: it is not valid YAML`, color: "yellow", indent: "    " });
+    if (compare.diff.approximate) lines.push({ text: "Large change: the changed lines are listed as removed, then added", color: "gray", indent: "    " });
+    const rows = compare.diff.rows;
+    const near = new Set();
+    rows.forEach((row, index) => {
+        if (row.kind === "same") return;
+        for (let k = index - REVISION_COMPARE_CONTEXT; k <= index + REVISION_COMPARE_CONTEXT; k++) near.add(k);
+    });
+    const number = value => (value === null ? "" : String(value)).padStart(4);
+    let shown = 0;
+    let skipped = false;
+    for (let index = 0; index < rows.length; index++) {
+        if (!near.has(index)) { skipped = true; continue; }
+        if (shown >= REVISION_COMPARE_ROWS) {
+            lines.push({ text: "… more changes (the portal shows them all)", color: "gray", indent: "    " });
+            break;
+        }
+        if (skipped) { lines.push({ text: "…", color: "gray", indent: "    " }); skipped = false; }
+        const row = rows[index];
+        const mark = row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " ";
+        lines.push({ text: `${number(row.before)} ${number(row.after)} ${mark} ${row.text}`, clip: true,
+            color: row.kind === "added" ? "green" : row.kind === "removed" ? "red" : "gray", indent: "    " });
+        shown += 1;
+    }
+    lines.push({ text: ", compares an older first version · . a newer one · C closes", color: "gray", indent: "    " });
     return lines;
 }
 

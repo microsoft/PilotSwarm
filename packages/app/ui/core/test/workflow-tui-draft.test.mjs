@@ -191,7 +191,7 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.deepEqual(modalOf(h.store), view, "back to the workflow view");
     assert.equal(statusOf(h.store), "Closed the draft editor");
-    assert.ok(details(h.store).includes("Draft · revision 2 · version 1.0.0 — e edits its YAML"));
+    assert.ok(details(h.store).includes("Draft · revision 2 · version 1.0.0 — e edits its YAML · C compares versions"), details(h.store).join("\n"));
     assert.equal(h.sent().length, 1);
 });
 
@@ -482,4 +482,68 @@ test("the kept edit: the current revision untouched, a newer revision taken whil
     assert.deepEqual(workflowDraftBuffer({ base: { revision: 1, yaml: YAML }, text: "mine", cursor: 2 }, two), { base: { revision: 1, yaml: YAML }, text: "mine", cursor: 2 });
     // Started from a revision the read model does not show yet: kept as it is, unchanged or not.
     assert.deepEqual(workflowDraftBuffer({ base: { revision: 2, yaml: THEIRS }, text: THEIRS, cursor: 3 }, one), { base: { revision: 2, yaml: THEIRS }, text: THEIRS, cursor: 3 });
+});
+
+test("q4: C compares two versions of the draft as formatted YAML in the details; , and . choose the first version; C closes; reads only", async () => {
+    const h = await opened(draft({ revision: 3 }));
+    // Revision 3 was saved as flow YAML and is compared formatted; revision 1 does not parse, so it is compared as saved.
+    const revisions = {
+        1: { yaml: "a: 1\nb: 2\n", formatted: null, valid: false },
+        2: { yaml: "a: 1\nb: 2\n", formatted: "a: 1\nb: 2\n", valid: true },
+        3: { yaml: "{ a: 1, b: 3, c: 4 }\n", formatted: "a: 1\nb: 3\nc: 4\n", valid: true },
+    };
+    const asked = [];
+    const base = h.controller.transport.readWorkflow;
+    h.controller.transport.readWorkflow = async (sessionId, options) => {
+        if (!options?.definitionRevision) return base(sessionId, options);
+        asked.push(options.definitionRevision);
+        const revision = options.definitionRevision;
+        return { workflowId: "wf-1", definitionRevision: { revision, definitionHash: `hash-${revision}`, diagnostics: [], current: revision === 3,
+            published: false, ...revisions[revision] } };
+    };
+    assert.ok(details(h.store).includes("Draft · revision 3 · version 1.0.0 — e edits its YAML · C compares versions"), details(h.store).join("\n"));
+
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS);
+    assert.deepEqual(asked, [2, 3]);
+    assert.equal(statusOf(h.store), "Revision 2 → 3: 2 lines added, 1 removed — in the details (PgUp/PgDn scroll)");
+    let lines = details(h.store);
+    assert.ok(lines.includes("  Compare versions: Revision 2 → 3: 2 lines added, 1 removed"), lines.join("\n"));
+    const rows = lines.filter(line => /^ {4}\s*\d*\s+\d*\s[ +-] /.test(line)).map(line => line.trim().replace(/\s+/g, " "));
+    assert.deepEqual(rows, ["1 1 a: 1", "2 - b: 2", "2 + b: 3", "3 + c: 4", "3 4"]);
+    assert.ok(lines.includes("    , compares an older first version · . a newer one · C closes"), lines.join("\n"));
+    assert.ok(!lines.some(line => line.includes("shown as saved")));
+
+    // , compares an older first version with the latest (revision 3 is read once); past revision 1 there is none.
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_OLDER);
+    assert.deepEqual(asked, [2, 3, 1]);
+    lines = details(h.store);
+    assert.ok(lines.includes("  Compare versions: Revision 1 → 3: 2 lines added, 1 removed"), lines.join("\n"));
+    assert.ok(lines.includes("    Revision 1 is shown as saved: it is not valid YAML"), lines.join("\n"));
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_OLDER);
+    assert.equal(statusOf(h.store), "Revision 1 is the oldest version");
+    // . a newer first version, up to the one before the latest; nothing is read again.
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_NEWER);
+    assert.ok(details(h.store).includes("  Compare versions: Revision 2 → 3: 2 lines added, 1 removed"));
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_NEWER);
+    assert.equal(statusOf(h.store), "Revision 2 is the newest version before the latest");
+    assert.deepEqual(asked, [2, 3, 1]);
+
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS);
+    assert.equal(statusOf(h.store), "Closed the comparison");
+    assert.ok(!details(h.store).some(line => line.includes("Compare versions")));
+    assert.equal(h.sent().length, 0, "comparing sends nothing");
+});
+
+test("q4: C says why there is nothing to compare: a draft with one version, a published definition, a draft this person may not change", async () => {
+    const one = await opened(draft({ revision: 1 }));
+    await one.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS);
+    assert.equal(statusOf(one.store), "This draft has one version, so there is nothing to compare yet");
+    for (const initial of [draft({ revision: 2, state: "published" }), draft({ revision: 2, commands: false }), draft({ revision: 2, yaml: null })]) {
+        const h = await opened(initial);
+        const reads = h.reads();
+        await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS);
+        assert.equal(statusOf(h.store), "Only a draft you may change has versions to compare");
+        assert.equal(h.reads(), reads, "nothing is read");
+        assert.ok(!details(h.store).some(line => line.includes("C compares versions")));
+    }
 });

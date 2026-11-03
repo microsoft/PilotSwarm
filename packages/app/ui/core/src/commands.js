@@ -99,6 +99,10 @@ export const UI_COMMANDS = {
     WORKFLOW_VIEW_WHOLE_VALUE: "workflowViewWholeValue",
     // The variables the shown visit applied, compared with the run's accepted ones (mock M15).
     WORKFLOW_VIEW_INSPECT_VARIABLES: "workflowViewInspectVariables",
+    // Two versions of the draft compared as formatted YAML (owner decision q4): open or close, and an older or newer first version.
+    WORKFLOW_VIEW_COMPARE_VERSIONS: "workflowViewCompareVersions",
+    WORKFLOW_VIEW_COMPARE_OLDER: "workflowViewCompareOlder",
+    WORKFLOW_VIEW_COMPARE_NEWER: "workflowViewCompareNewer",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

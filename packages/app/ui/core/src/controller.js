@@ -13,6 +13,7 @@ import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
     workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableBatchDraft,
     workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
+    workflowV2RevisionCompare,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -9413,6 +9414,46 @@ export class PilotSwarmUiController {
             : "The variables could not be read; the details say why" });
     }
 
+    /**
+     * The TUI's workflow view: compare two versions of the draft as formatted YAML (owner decision q4; the portal's
+     * "Compare versions"). C (`delta` 0) opens the comparison of the version before the latest with the latest, or closes
+     * it; , and . (-1, 1) compare an older or newer first version with the latest. Only a draft this person may change
+     * has versions to compare (its revisions are read as the draft's YAML, loadWorkflowDefinitionRevision). Reads only.
+     */
+    async compareWorkflowViewVersions(delta) {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return;
+        const sessionId = selection.modal.sessionId;
+        const editor = selection.projection.draftEditor;
+        if (!editor) {
+            this.dispatch({ type: "ui/status", text: "Only a draft you may change has versions to compare" });
+            return;
+        }
+        const latest = editor.revision;
+        if (latest < 2) {
+            this.dispatch({ type: "ui/status", text: "This draft has one version, so there is nothing to compare yet" });
+            return;
+        }
+        const open = selection.projection.revisionCompare;
+        const shown = open && open.to === latest && Number.isSafeInteger(open.from) && open.from >= 1 && open.from < latest ? open.from : null;
+        if (delta === 0 && shown !== null) {
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { revisionCompare: null } });
+            this.dispatch({ type: "ui/status", text: "Closed the comparison" });
+            return;
+        }
+        const from = shown === null ? latest - 1 : Math.min(latest - 1, Math.max(1, shown + delta));
+        if (shown !== null && from === shown) {
+            this.dispatch({ type: "ui/status", text: delta < 0 ? "Revision 1 is the oldest version" : `Revision ${from} is the newest version before the latest` });
+            return;
+        }
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { revisionCompare: { from, to: latest } } });
+        this.dispatch({ type: "ui/status", text: `Reading revisions ${from} and ${latest}…` });
+        await Promise.all([this.loadWorkflowDefinitionRevision(sessionId, from), this.loadWorkflowDefinitionRevision(sessionId, latest)]);
+        const reads = this.getState().ui.workflowViews?.[sessionId]?.definitionRevisions ?? null;
+        const compare = workflowV2RevisionCompare(reads, from, latest);
+        this.dispatch({ type: "ui/status", text: compare.failed ? compare.summary : `${compare.summary} — in the details (PgUp/PgDn scroll)` });
+    }
+
     /** The TUI's workflow view: show the own result of an older ([, `delta` 1) or newer (], -1) visit of the selected state (workflowViewExecutionStep). */
     moveWorkflowViewExecution(delta) {
         const selection = selectWorkflowViewSelection(this.getState());
@@ -13872,6 +13913,15 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_VIEW_INSPECT_VARIABLES:
                 await this.inspectWorkflowViewVariables();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS:
+                await this.compareWorkflowViewVersions(0);
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_COMPARE_OLDER:
+                await this.compareWorkflowViewVersions(-1);
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_COMPARE_NEWER:
+                await this.compareWorkflowViewVersions(1);
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

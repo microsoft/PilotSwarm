@@ -71,8 +71,9 @@ export function isPlainShortcutKey(key = {}) {
  * current revision; it asks first), and, for a test run shown, a, which answers one of its intercepted effects that
  * waits, and +, which advances its virtual clock. [ and ] show the selected state's result of an older or newer visit
  * (the latest by default), o reads the shown run's older history, f reads the whole value of the visit shown, and i
- * compares the variables that visit applied with the run's accepted ones.
- * INACTIVE (apart from [ ], o, f and i, which read only): only a deployment that takes a person's workflow commands offers
+ * compares the variables that visit applied with the run's accepted ones. C compares two versions of the draft as
+ * formatted YAML (the one before the latest with the latest; , and . choose an older or newer first version; C closes).
+ * INACTIVE (apart from [ ], o, f, i, C , and ., which read only): only a deployment that takes a person's workflow commands offers
  * them; otherwise the status line says why nothing was sent.
  */
 const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
@@ -93,6 +94,9 @@ const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     o: UI_COMMANDS.WORKFLOW_VIEW_OLDER_HISTORY,
     f: UI_COMMANDS.WORKFLOW_VIEW_WHOLE_VALUE,
     i: UI_COMMANDS.WORKFLOW_VIEW_INSPECT_VARIABLES,
+    C: UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS,
+    ",": UI_COMMANDS.WORKFLOW_VIEW_COMPARE_OLDER,
+    ".": UI_COMMANDS.WORKFLOW_VIEW_COMPARE_NEWER,
 });
 
 export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {

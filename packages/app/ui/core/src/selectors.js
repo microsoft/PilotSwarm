@@ -9667,6 +9667,7 @@ const KEYBINDING_HELP = [
         ["a  +", "workflow view, a test run shown: a answers an intercepted effect that waits (Enter send · Tab success/error/cancel · ↑↓ another waiting effect) · + advances its virtual clock by whole seconds (script clocks are real)"],
         ["[  ]", "workflow view: the selected state's own result of an older / newer visit of the shown run (the latest by default; past the newest, the latest again)"],
         ["o  f  i", "workflow view: o reads the shown run's older history (the next, older page of its executions, messages and test effects) · f reads the whole output or error of the visit the details show · i compares the variables that visit applied with the run's accepted ones"],
+        ["C  ,  .", "workflow view, a draft you may change: C compares two versions of its YAML, formatted (the one before the latest with the latest; C again closes) · , an older first version · . a newer one"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],
