@@ -31,8 +31,10 @@ const widths = (page) => page.evaluate(() => {
 });
 
 test("dragging the chat seam widens the canvas, and the diagnostics column keeps its width", async ({ page }) => {
-    // 1600 wide: 640 + 1 + 320 is exactly the old 60% cap, the failing case.
-    await page.setViewportSize({ width: 1600, height: 900 });
+    // 1920 wide: room for chat to give. (At 1600, 640 + 1 + 320 was exactly
+    // the old 60% cap, and chat is now already near its floor there, because
+    // the session list keeps its width.)
+    await page.setViewportSize({ width: 1920, height: 900 });
     await page.goto(base);
     await page.locator(".ps-session-list-button").first().waitFor();
     // The workspace opens as sessions + chat; open the canvas column here.
@@ -67,10 +69,9 @@ test("dragging the chat seam widens the canvas, and the diagnostics column keeps
     const after = await widths(page);
     expect(after.canvas - before.canvas, "the canvas took the drag").toBeGreaterThan(100);
     expect(Math.abs(after.diagnostics - before.diagnostics), "diagnostics did not move").toBeLessThan(3);
-    // Chat gives up its pixels down to its floor, then the session list gives
-    // way. (The list keeps one width while chat can still give.)
-    expect((before.chat - after.chat) + (before.list - after.list), "chat and then the list gave up the pixels").toBeGreaterThan(100);
-    expect(after.chat, "chat keeps its floor").toBeGreaterThanOrEqual(223);
+    // Chat gives up the pixels; the session list never does.
+    expect(before.chat - after.chat, "chat gave up the pixels").toBeGreaterThan(100);
+    expect(Math.abs(after.list - before.list), "the session list kept its width").toBeLessThan(2);
 });
 
 test("the seam stops at chat's floor instead of inflating the stored width", async ({ page }) => {

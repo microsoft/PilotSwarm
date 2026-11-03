@@ -11413,19 +11413,15 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
             // How far the right block may still grow: exactly what chat can
             // give before it reaches its floor. Measured at drag start from
             // the chat slot (the main grid's last column), the same element
-            // the grid template protects with its own minimum.
-            // The session list keeps its width until chat is at its floor;
-            // after that it gives way, down to its compact width.
+            // the grid template protects with its own minimum. The session
+            // list never gives way to the right block; see the grid template.
             const chatSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child");
             const chatWidth = chatSlot ? chatSlot.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
-            const listSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:first-child:not(:last-child)");
-            const listWidth = listSlot ? listSlot.getBoundingClientRect().width : 0;
             const startAdjust = Number(adjust) || 0;
             dragStateRef.current = {
                 startX: event.clientX,
                 startAdjust,
-                maxAdjust: startAdjust + Math.max(0, chatWidth - PORTAL_MIN_CHAT_COLUMN_PX)
-                    + Math.max(0, listWidth - PORTAL_SESSION_COMPACT_COLUMN_PX),
+                maxAdjust: startAdjust + Math.max(0, chatWidth - PORTAL_MIN_CHAT_COLUMN_PX),
             };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
@@ -16723,6 +16719,13 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust, measuredWorkspaceWidth);
     const sessionColumnMode = zenActive ? "hidden" : portalSessionColumnMode(sessionColumnWidth);
     const sessionColumnBase = portalSessionColumnBounds(measuredMainGridWidth, measuredWorkspaceWidth).baseWidth;
+    // What the main grid must keep beside the right block: the list at its
+    // width, plus the 32px the list track's own clamp (below) leaves beside
+    // chat's floor.
+    const sessionColumnReservePx = (sessionColumnMode === "hidden"
+        ? 0
+        : Math.max(0, Math.round(sessionColumnBase + (Number(state.portalSessionColumnAdjust) || 0))) + 32)
+        + PORTAL_MIN_CHAT_COLUMN_PX;
     const sessionColumnTrack = sessionColumnMode === "hidden"
         ? "0px"
         : `clamp(0px, ${Math.round(sessionColumnBase + (Number(state.portalSessionColumnAdjust) || 0))}px, max(0px, calc(100% - ${PORTAL_MIN_CHAT_COLUMN_PX}px - 32px)))`;
@@ -16758,7 +16761,14 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                         // fixed pixels and the diagnostics column, the flex
                         // one, gave them up — so the chat↔canvas seam moved
                         // the canvas↔diagnostics seam instead.
-                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, calc(100% - var(--ps-resizer-track, 16px) - ${PORTAL_MIN_CHAT_COLUMN_PX}px))`
+                        //
+                        // The block also stops short of the session list. A
+                        // canvas width is remembered per session, and some are
+                        // wider than the window can give; the list used to
+                        // pay for them, so flipping to such a session squeezed
+                        // it, even to nothing. Now the canvas shows narrower
+                        // (its remembered width is kept) and the list holds.
+                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, max(0px, calc(100% - var(--ps-resizer-track, 16px) - ${sessionColumnReservePx}px)))`
                         : "minmax(0, 1fr)")),
         },
     },

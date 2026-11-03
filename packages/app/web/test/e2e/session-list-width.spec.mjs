@@ -60,3 +60,34 @@ test("the list still gives way so chat keeps its floor on a narrow window", asyn
     expect(g.chat).toBeGreaterThanOrEqual(224 - 1);
     expect(g.listRight - g.listLeft).toBeLessThan(1000 * 0.24);
 });
+
+test("a session that remembers a wider canvas than fits still leaves the list alone", async ({ page }) => {
+    // Canvas widths are remembered per session. Session 1's is 640 + 884 px.
+    const settings = { sessionViews: {
+        [`11111110-2222-3333-4444-555555555550`]: { desktop: { at: 1, canvasOpen: false, layout: {} } },
+        [`11111111-2222-3333-4444-555555555551`]: { desktop: { at: 1, canvasOpen: true, layout: { canvasPaneAdjust: 884 } } },
+        [`11111112-2222-3333-4444-555555555552`]: { desktop: { at: 1, canvasOpen: true, layout: { canvasPaneAdjust: 0 } } },
+    } };
+    await page.route("**/api/v1/me/profile", (route) => route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: settings } } }));
+    await page.route("**/api/v1/me/profile/settings", (route) => route.fulfill({ json: { ok: true, result: { profileSettings: settings } } }));
+    for (const width of [1440, 1920]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.goto(base);
+        const rows = page.locator(".ps-session-list-button");
+        await rows.first().waitFor();
+        await rows.nth(0).click();
+        await page.waitForTimeout(300);
+        const plain = await geometry(page);
+        for (const index of [1, 2, 1, 0]) {
+            await rows.nth(index).click();
+            await page.waitForTimeout(400);
+            const now = await geometry(page);
+            expect(Math.abs(now.listRight - plain.listRight), `${width}px, session ${index}`).toBeLessThanOrEqual(1);
+            expect(now.chat, `${width}px, session ${index}: chat keeps its floor`).toBeGreaterThanOrEqual(223);
+            if (index === 1) {
+                expect(now.canvas, "the wide canvas shows narrower than remembered").toBeGreaterThan(0);
+                expect(now.canvas).toBeLessThan(640 + 884);
+            }
+        }
+    }
+});
