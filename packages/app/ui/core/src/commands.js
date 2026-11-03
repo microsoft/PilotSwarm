@@ -97,6 +97,8 @@ export const UI_COMMANDS = {
     // The shown run's older history (the next, older page of each section), and the whole value of the visit shown.
     WORKFLOW_VIEW_OLDER_HISTORY: "workflowViewOlderHistory",
     WORKFLOW_VIEW_WHOLE_VALUE: "workflowViewWholeValue",
+    // The variables the shown visit applied, compared with the run's accepted ones (mock M15).
+    WORKFLOW_VIEW_INSPECT_VARIABLES: "workflowViewInspectVariables",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

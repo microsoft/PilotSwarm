@@ -947,3 +947,56 @@ export function workflowV2WholeValue(entry) {
     return { kind: "preview", label, bytes, limitBytes: Number.isSafeInteger(result.limitBytes) ? result.limitBytes : null,
         text: typeof result.preview === "string" ? result.preview : "" };
 }
+
+/** The key of one KV revision's snapshot in the view's `kvRevisions`: its run, then the revision. */
+export function workflowV2KvRevisionKey(runId, revision) {
+    return JSON.stringify([runId ?? null, revision]);
+}
+
+/**
+ * One KV revision's snapshot as the view read it (`kvRevisions`, which the controller's loadWorkflowKvRevision writes:
+ * { runId, revision, phase: loading, loaded or failed, kv, error }), for exactly that run and revision; null when it
+ * was not read. Pure.
+ */
+export function workflowV2KvSnapshot(snapshots, runId, revision) {
+    if (!isRecord(snapshots) || !Number.isSafeInteger(revision)) return null;
+    const entry = snapshots[workflowV2KvRevisionKey(runId, revision)];
+    return isRecord(entry) && entry.revision === revision && (entry.runId ?? null) === (runId ?? null) ? entry : null;
+}
+
+/**
+ * The variables a state's visit applied and the run's accepted ones now (design 02 open KV: a state reads the revision
+ * pinned when it was admitted; mock M15 "Accepted 9 / applied 8"): { applied, accepted, same }, or null when the visit
+ * names no revision. Pure.
+ */
+export function workflowV2KvApplied(execution, run) {
+    const applied = Number.isSafeInteger(execution?.kvRevision) && execution.kvRevision >= 1 ? execution.kvRevision : null;
+    if (applied === null) return null;
+    const accepted = Number.isSafeInteger(run?.kvRevision) && run.kvRevision >= 1 ? run.kvRevision : null;
+    return { applied, accepted, same: accepted !== null && accepted === applied };
+}
+
+const kvShown = entry => (Object.hasOwn(entry, "value") ? JSON.stringify(entry.value) : typeof entry.preview === "string" ? entry.preview : "");
+
+/**
+ * Two revisions of a run's variables compared key by key (mock M15 "Compare snapshots"): from the snapshots the read
+ * returns (kv.entries: key, bytes, sha256, value or preview), each key `added`, `removed`, `changed` (another sha256)
+ * or `same`, with the value shown before and after (whole JSON when the read sent it whole, else its preview), sorted
+ * by key, and the counts. Null unless both are loaded. Pure.
+ */
+export function workflowV2KvCompare(before, after) {
+    const entriesOf = snapshot => (isRecord(snapshot?.kv) && Array.isArray(snapshot.kv.entries) ? snapshot.kv.entries.filter(isRecord) : null);
+    const from = entriesOf(before), to = entriesOf(after);
+    if (!from || !to) return null;
+    const byKey = list => new Map(list.filter(entry => typeof entry.key === "string").map(entry => [entry.key, entry]));
+    const a = byKey(from), b = byKey(to);
+    const rows = [...new Set([...a.keys(), ...b.keys()])].sort().map(key => {
+        const x = a.get(key), y = b.get(key);
+        const change = !x ? "added" : !y ? "removed" : x.sha256 === y.sha256 ? "same" : "changed";
+        return { key, change, before: x ? kvShown(x) : null, after: y ? kvShown(y) : null };
+    });
+    const counts = { added: 0, removed: 0, changed: 0, same: 0 };
+    for (const row of rows) counts[row.change] += 1;
+    return { from: before.kv.revision, to: after.kv.revision, rows, counts,
+        whole: before.kv.whole === true && after.kv.whole === true };
+}

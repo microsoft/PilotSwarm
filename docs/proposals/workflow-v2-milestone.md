@@ -659,7 +659,7 @@ most 64 KiB per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, one visit's own result (the latest, or an older visit chosen with [ ]; f reads its whole value), the run's older history (o), an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming) or of several in one update (V: a JSON object to set and a JSON list to remove; an update that removes asks first), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, one visit's own result (the latest, or an older visit chosen with [ ]; f reads its whole value; i compares the variables it applied with the accepted ones), the run's older history (o), an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables, the definition's publication and test and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming) or of several in one update (V: a JSON object to set and a JSON list to remove; an update that removes asks first), `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from), `publish`, `publish_and_start` or `start` of the exact revision and hash reviewed (P: the review; each asks first), `test` of the current revision and hash (t: the review, mocked or real agents; it asks first), and for a shown test run `test_respond` to one waiting effect (a) and `test_advance` of its virtual clock (+) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -1326,7 +1326,13 @@ revision, whole (a value is at most 256 KiB, the KV limit), or that it was
 not set. Each node execution's `kvRevision` is the revision it applied. A
 revision the run does not have is `KV_REVISION_NOT_FOUND` (404); a key
 without a revision, or a KV read mixed with a page or an execution read,
-`WORKFLOW_READ_INVALID`. Reading changes nothing.
+`WORKFLOW_READ_INVALID`. Reading changes nothing. The portal's node Details show
+the revision the current visit applied beside the run's accepted one, with
+Compare with the accepted variables (or Inspect these variables when they
+are the same); the TUI's details show the same for the visit they show, and
+`i` compares them. A comparison lists each variable added, removed or
+changed (by sha256) with its values before and after, as read, and counts
+the unchanged ones, for exactly the shown run.
 
 The portal and the TUI join older pages a person loads to the shown run's
 own read model: the portal's History tab and test effects table have Load

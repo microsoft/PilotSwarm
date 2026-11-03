@@ -14,7 +14,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal,
 } from "../src/index.js";
-import { projectWorkflowV2, workflowV2ExecutionResult, workflowV2ShownExecution } from "../src/workflow-v2-view.js";
+import { projectWorkflowV2, workflowV2ExecutionResult, workflowV2KvApplied, workflowV2KvCompare, workflowV2ShownExecution } from "../src/workflow-v2-view.js";
 import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { RUN, done, readModel, row } from "./workflow-v2-fixtures.mjs";
 
@@ -293,4 +293,57 @@ test("f reads the whole value of exactly the visit shown, of exactly the shown r
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_OLDER_HISTORY);
     assert.equal(statusOf(h.store), "This server reads no older history of a run");
     assert.equal(h.calls.length, calls);
+});
+
+// Mock M15 "Accepted 9 / applied 8", "Inspect update", "Compare snapshots" (R04, R05): a visit's applied variables beside
+// the run's accepted ones, compared key by key from the read's snapshots (by each value's sha256), for exactly that run.
+const KV = {
+    1: { revision: 1, acceptedRevision: 3, keys: 2, bytes: 15, whole: true, entries: [
+        { key: "a", bytes: 1, sha256: "s-a-1", value: 1 }, { key: "b", bytes: 3, sha256: "s-b-x", value: "x" }] },
+    3: { revision: 3, acceptedRevision: 3, keys: 2, bytes: 16, whole: true, entries: [
+        { key: "a", bytes: 1, sha256: "s-a-2", value: 2 }, { key: "c", bytes: 4, sha256: "s-c-t", value: true }] },
+};
+
+test("two revisions of a run's variables compare key by key, and a visit's applied revision is told beside the accepted one", () => {
+    const compared = workflowV2KvCompare({ kv: KV[1] }, { kv: KV[3] });
+    assert.deepEqual(compared, { from: 1, to: 3, whole: true, counts: { added: 1, removed: 1, changed: 1, same: 0 }, rows: [
+        { key: "a", change: "changed", before: "1", after: "2" },
+        { key: "b", change: "removed", before: "\"x\"", after: null },
+        { key: "c", change: "added", before: null, after: "true" },
+    ] });
+    assert.equal(workflowV2KvCompare({ kv: KV[1] }, null), null, "nothing until both are loaded");
+    assert.deepEqual(workflowV2KvApplied({ kvRevision: 1 }, { kvRevision: 3 }), { applied: 1, accepted: 3, same: false });
+    assert.deepEqual(workflowV2KvApplied({ kvRevision: 3 }, { kvRevision: 3 }), { applied: 3, accepted: 3, same: true });
+    assert.equal(workflowV2KvApplied({}, { kvRevision: 3 }), null);
+});
+
+test("i compares the variables the shown visit applied with the accepted ones, for exactly the shown run; the portal's Details offers the same", async () => {
+    const model = readModel({ run: { kvRevision: 3 }, nodeExecutions: [done("poll", 1, "changed", { outputPreview: "{\"n\":1}" })] });
+    const h = await viewing(model, "poll", { read: async (sessionId, options) => {
+        if (options?.kvRevision) return { workflowId: "wf", runId: RUN, kv: KV[options.kvRevision] };
+        return model;
+    } });
+    let lines = details(h.store);
+    assert.ok(lines.includes("Variables applied: revision 1 · accepted now: revision 3 — i compares them"), lines.join("\n"));
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_INSPECT_VARIABLES);
+    await settle();
+    assert.deepEqual(h.calls.filter(([, options]) => options?.kvRevision).map(([, options]) => options), [{ runId: RUN, kvRevision: 1 }, { runId: RUN, kvRevision: 3 }]);
+    assert.equal(statusOf(h.store), "Variables of revision 1 (applied) and 3 (accepted now) are in the details (PgUp/PgDn scroll)");
+    lines = details(h.store);
+    const at = lines.indexOf("  Revision 1 → 3: 1 added, 1 removed, 1 changed, 0 unchanged");
+    assert.ok(at > 0, lines.join("\n"));
+    assert.deepEqual(lines.slice(at + 1, at + 4), ["    ~ a: 1 → 2", "    - b: \"x\"", "    + c: true"]);
+    // Another run, even with the same execution ids, shows nothing of this comparison.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: OTHER, readModel: OTHER_RUN, readModelRunId: OTHER } });
+    assert.ok(!details(h.store).some(line => line.includes("Revision 1 → 3")));
+    // The portal's node Details: the same two revisions, and the comparison table.
+    const projection = projectWorkflowV2({ readModel: model });
+    const poll = projection.nodes.find(node => node.id === "poll");
+    const view = h.store.getState().ui.workflowViews.wf;
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "details", selected: poll, nodes: projection.nodes, select() {},
+        runOutput: null, runError: null, runId: RUN, kv: { accepted: 3, snapshots: view.kvRevisions, compare: view.kvCompare, onCompare() {} } }));
+    assert.ok(html.includes("Revision 1 · accepted now: revision 3"), html);
+    assert.ok(html.includes("data-action=\"compare-variables\""));
+    assert.ok(html.includes("Revision 1 → 3: 1 added, 1 removed, 1 changed, 0 unchanged."));
+    assert.equal([...html.matchAll(/data-change="(added|removed|changed)"/g)].length, 3);
 });

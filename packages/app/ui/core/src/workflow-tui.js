@@ -2,7 +2,8 @@ import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from ".
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
     compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
-    workflowV2ExecutionValue, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution, workflowV2WholeValue,
+    workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
+    workflowV2WholeValue,
 } from "./workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor,
@@ -141,6 +142,9 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
         selectedExecution: isPlainRecord(safeView.selectedExecution) ? safeView.selectedExecution : null,
         // The whole values read (by run and execution; workflowV2ExecutionValue picks exactly one).
         executionValues: isPlainRecord(safeView.executionValues) ? safeView.executionValues : null,
+        // The KV revisions read and the comparison asked for (mock M15; workflowV2KvSnapshot, workflowV2KvCompare).
+        kvRevisions: isPlainRecord(safeView.kvRevisions) ? safeView.kvRevisions : null,
+        kvCompare: isPlainRecord(safeView.kvCompare) ? safeView.kvCompare : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -1261,7 +1265,44 @@ function executionResultLines(node, projection) {
     else lines.push({ text: "It recorded no output.", color: "gray", indent: "  " });
     const whole = typeof execution.id === "string" ? workflowV2ExecutionValue(projection.executionValues, runId, execution.id) : null;
     if (result.truncated && !whole) lines.push({ text: "The read keeps only the start of this value; f reads the whole value.", color: "gray", indent: "  " });
-    return [...lines, ...wholeValueLines(whole)];
+    return [...lines, ...wholeValueLines(whole), ...kvLines(execution, projection)];
+}
+
+/** At most this many variables of a comparison are listed in the TUI's details (the rest are counted). */
+const KV_COMPARE_ROWS = 12;
+
+/**
+ * The variables of the visit shown (mock M15 "Accepted 9 / applied 8", "Inspect update", "Compare snapshots"): the
+ * revision it applied and the run's accepted one now, and, after i, the two compared key by key for exactly that run:
+ * + added, - removed, ~ changed (values as read: whole up to 256 KiB in all, else previews), unchanged ones counted.
+ */
+function kvLines(execution, projection) {
+    const run = projection.v2?.readModel?.run ?? null;
+    const runId = projection.v2?.runId ?? null;
+    const kv = workflowV2KvApplied(execution, run);
+    if (!kv) return [];
+    const lines = [{ text: `Variables applied: revision ${kv.applied}${kv.accepted === null ? "" : kv.same ? " (the accepted revision)" : ` · accepted now: revision ${kv.accepted}`} — i compares them`,
+        color: "cyan", indent: "" }];
+    const asked = projection.kvCompare;
+    if (!asked || asked.runId !== runId || asked.from !== kv.applied || asked.to !== kv.accepted) return lines;
+    const before = workflowV2KvSnapshot(projection.kvRevisions, runId, kv.applied);
+    const after = workflowV2KvSnapshot(projection.kvRevisions, runId, kv.accepted);
+    const failed = [before, after].find(entry => entry?.phase === "failed");
+    if (failed) return [...lines, { text: `The variables of revision ${failed.revision} could not be read: ${failed.error} (i reads them again)`, color: "red", indent: "  " }];
+    if (before?.phase !== "loaded" || after?.phase !== "loaded") return [...lines, { text: "Reading the variables…", color: "yellow", indent: "  " }];
+    const compared = workflowV2KvCompare(before, after);
+    if (!compared) return lines;
+    const { added, removed, changed, same } = compared.counts;
+    lines.push({ text: `Revision ${compared.from} → ${compared.to}: ${added} added, ${removed} removed, ${changed} changed, ${same} unchanged`
+        + `${compared.whole ? "" : " (values over 256 KiB in all are shown by their start)"}`, color: "white", indent: "  " });
+    const differing = compared.rows.filter(row => row.change !== "same");
+    for (const row of differing.slice(0, KV_COMPARE_ROWS)) {
+        const text = row.change === "added" ? `+ ${row.key}: ${row.after}` : row.change === "removed" ? `- ${row.key}: ${row.before}`
+            : `~ ${row.key}: ${row.before} → ${row.after}`;
+        lines.push({ text: bounded(text, VALUE_LIMIT), color: row.change === "removed" ? "red" : row.change === "added" ? "green" : "yellow", indent: "    " });
+    }
+    if (differing.length > KV_COMPARE_ROWS) lines.push({ text: `… ${differing.length - KV_COMPARE_ROWS} more changed variables (the portal lists them all)`, color: "gray", indent: "    " });
+    return lines;
 }
 
 /**

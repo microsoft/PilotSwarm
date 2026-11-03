@@ -1,7 +1,8 @@
 import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
-    workflowV2ExecutionValue, workflowV2RouteKind, workflowV2ShownExecution, workflowV2WholeValue,
+    workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2ShownExecution,
+    workflowV2WholeValue,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -149,16 +150,51 @@ function AgentChild({ agent, openSession }) {
 }
 
 /**
+ * The variables a visit applied and the run's accepted ones (mock M15 "Accepted 9 / applied 8", "Inspect update",
+ * "Compare snapshots"): the two revisions, a button that reads and compares them for exactly this run, and the
+ * comparison key by key (added, removed, changed; unchanged counted). Values are as read: whole up to 256 KiB in all,
+ * else their start. Every value is a React text child. Nothing without `kv.onCompare`.
+ */
+function KvApplied({ execution, runId, kv }) {
+    const applied = workflowV2KvApplied(execution, { kvRevision: kv?.accepted });
+    if (!applied || !runId) return null;
+    const from = applied.applied, to = applied.accepted ?? applied.applied;
+    const asked = kv.compare && kv.compare.runId === runId && kv.compare.from === from && kv.compare.to === to;
+    const before = asked ? workflowV2KvSnapshot(kv.snapshots, runId, from) : null;
+    const after = asked ? workflowV2KvSnapshot(kv.snapshots, runId, to) : null;
+    const failed = [before, after].find(entry => entry?.phase === "failed") ?? null;
+    const loading = asked && !failed && (before?.phase !== "loaded" || after?.phase !== "loaded");
+    const compared = asked && !failed && !loading ? workflowV2KvCompare(before, after) : null;
+    const rows = compared ? compared.rows.filter(row => row.change !== "same") : [];
+    return h("div", { className: "ps-workflow-kv", "data-kv-applied": String(from) },
+        h("div", { className: "ps-workflow-property" }, h("span", null, "Variables applied"),
+            h("strong", null, `Revision ${from}${applied.accepted === null ? "" : applied.same ? " (the accepted revision)" : ` · accepted now: revision ${applied.accepted}`}`)),
+        kv.onCompare ? h("button", { type: "button", className: "ps-mini-button", "data-action": "compare-variables", disabled: loading,
+            onClick: () => kv.onCompare(from, to) }, loading ? "Reading the variables…" : applied.same ? "Inspect these variables" : "Compare with the accepted variables") : null,
+        failed ? h("p", { role: "alert" }, `The variables of revision ${failed.revision} could not be read: ${failed.error}`) : null,
+        compared ? h(React.Fragment, null,
+            h("p", { role: "status" }, `Revision ${compared.from} → ${compared.to}: ${compared.counts.added} added, ${compared.counts.removed} removed, `
+                + `${compared.counts.changed} changed, ${compared.counts.same} unchanged.${compared.whole ? "" : " Values over 256 KiB in all are shown by their start."}`),
+            rows.length ? h("table", null,
+                h("thead", null, h("tr", null, ["Variable", "Change", `Revision ${compared.from}`, `Revision ${compared.to}`].map((label, i) => h("th", { key: i }, label)))),
+                h("tbody", null, rows.map(row => h("tr", { key: row.key, "data-change": row.change },
+                    h("td", null, row.key), h("td", null, row.change),
+                    h("td", null, row.before === null ? "—" : h("code", { style: { overflowWrap: "anywhere" } }, row.before)),
+                    h("td", null, row.after === null ? "—" : h("code", { style: { overflowWrap: "anywhere" } }, row.after)))))) : null) : null);
+}
+
+/**
  * The tab panel body of a v2 node. The caller owns the tab strip so its tab semantics are unchanged. The Output tab
  * shows one execution's own result: the latest by default, or the one chosen in the History tab for exactly this run
  * (`runId`) and state (`selection`, the view's selectedExecution), never the latest in its place; `onSelectExecution`
  * (an execution id, or null for the latest) and `onTab` let History choose one. Without them History lists as before.
  * `onReadWholeValue` (an execution id) reads that execution's whole output or error, shown from `executionValues` for
  * exactly this run and execution; `history` (the run's, workflowV2RunHistory) and `onLoadOlder` (restart) let History
- * read the run's older history. Without them neither is offered.
+ * read the run's older history. `kv` ({ accepted, snapshots, compare, onCompare }) shows in Details the variables the
+ * current visit applied beside the accepted ones and compares them. Without them neither is offered.
  */
 export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError, openSession = null, runId = null, selection = null,
-    onSelectExecution = null, onTab = null, executionValues = null, onReadWholeValue = null, history = null, onLoadOlder = null }) {
+    onSelectExecution = null, onTab = null, executionValues = null, onReadWholeValue = null, history = null, onLoadOlder = null, kv = null }) {
     const property = (label, value) => h("div", { className: "ps-workflow-property", key: label },
         h("span", null, label), h("strong", null, value));
     const current = selected.current;
@@ -178,6 +214,7 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                     disabled: !nodes.some(node => node.id === target), onClick: () => select(target) },
                 label, " → ", target, workflowV2RouteKind(selected, label) === "error" ? " · runtime error route" : "")),
             current?.agent ? h(AgentChild, { agent: current.agent, openSession }) : null,
+            kv ? h(KvApplied, { execution: current, runId, kv }) : null,
             current?.inbox ? h(React.Fragment, null, h("h3", null, "Message taken"),
                 property("Contract", current.inbox.contract), property("From", current.inbox.senderSessionId),
                 h(Value, { value: current.inbox.payloadPreview })) : null,

@@ -286,6 +286,11 @@ export function WorkflowNodePane({ controller }) {
                 onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId: v2?.runId ?? null, executionId }).catch(() => {}); },
                 history: v2?.bound ? v2?.readModel?.run?.history ?? null : null,
                 onLoadOlder: restart => { controller.loadOlderWorkflowHistory(sessionId, { restart }).catch(() => {}); },
+                // The variables the current visit applied and the accepted ones, compared on request (mock M15).
+                kv: v2?.bound && v2?.runId ? {
+                    accepted: v2.readModel?.run?.kvRevision ?? null, snapshots: view.kvRevisions ?? null, compare: view.kvCompare ?? null,
+                    onCompare: (from, to) => { controller.compareWorkflowKvRevisions(sessionId, { runId: v2.runId, from, to }).catch(() => {}); },
+                } : null,
             }) :
             tab === "details" ? React.createElement(React.Fragment, null,
                 property("Executions", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),

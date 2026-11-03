@@ -1,5 +1,6 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
-import { workflowDefinition, workflowReadModelView, workflowV2ExecutionValueKey, workflowV2OlderStart, workflowV2RunHistory, workflowV2RunRows,
+import { workflowDefinition, workflowReadModelView, workflowV2ExecutionValueKey, workflowV2KvApplied, workflowV2KvRevisionKey, workflowV2OlderStart,
+    workflowV2RunHistory, workflowV2RunRows,
     workflowV2ShownExecution } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
@@ -6356,6 +6357,55 @@ export class PilotSwarmUiController {
         return entry.inFlight;
     }
 
+    /**
+     * Workflow v2: read one kept revision of a run's variables (readWorkflow with its run and kvRevision: design 02 open
+     * KV; mock M15) into the view's `kvRevisions`, by run and revision (workflowV2KvRevisionKey; the six read last are
+     * kept), for exactly that run; an answer for another run or revision is refused. A failure is recorded with its error.
+     * Reading changes nothing. Never throws.
+     */
+    async loadWorkflowKvRevision(sessionId, { runId = null, revision = null } = {}) {
+        const state = this.getState();
+        if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow" || typeof this.transport?.readWorkflow !== "function") {
+            return { ok: false, reason: "unsupported" };
+        }
+        if (typeof runId !== "string" || !runId || !Number.isSafeInteger(revision) || revision < 1) return { ok: false, reason: "invalid" };
+        const key = workflowV2KvRevisionKey(runId, revision);
+        const write = entry => {
+            const snapshots = { ...(this.getState().ui.workflowViews?.[sessionId]?.kvRevisions ?? {}) };
+            delete snapshots[key];
+            snapshots[key] = { runId, revision, ...entry };
+            const keys = Object.keys(snapshots);
+            for (const old of keys.slice(0, Math.max(0, keys.length - 6))) delete snapshots[old];
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { kvRevisions: snapshots } });
+        };
+        write({ phase: "loading", kv: null, error: null });
+        try {
+            const read = await this.transport.readWorkflow(sessionId, { runId, kvRevision: revision });
+            if (read?.runId !== runId || read?.kv?.revision !== revision || !Array.isArray(read.kv.entries)) {
+                throw new Error(`The read did not answer with revision ${revision} of run ${runId}'s variables.`);
+            }
+            write({ phase: "loaded", kv: read.kv, error: null });
+            return { ok: true };
+        } catch (error) {
+            write({ phase: "failed", kv: null, error: boundedWorkflowReadError(error) });
+            return { ok: false, reason: "failed", error };
+        }
+    }
+
+    /**
+     * Workflow v2: compare two revisions of a run's variables (mock M15 "Compare snapshots"): records the comparison in
+     * the view (`kvCompare`: { runId, from, to }) and reads both revisions (loadWorkflowKvRevision). Never throws.
+     */
+    async compareWorkflowKvRevisions(sessionId, { runId = null, from = null, to = null } = {}) {
+        if (typeof runId !== "string" || !runId || !Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 1 || to < 1) {
+            return { ok: false, reason: "invalid" };
+        }
+        if (this.getState().sessions.byId[sessionId]?.sessionKind !== "workflow") return { ok: false, reason: "unsupported" };
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { kvCompare: { runId, from, to } } });
+        const reads = await Promise.all([...new Set([from, to])].map(revision => this.loadWorkflowKvRevision(sessionId, { runId, revision })));
+        return reads.every(read => read.ok) ? { ok: true } : { ok: false, reason: "failed" };
+    }
+
     /** Discard any read model response still in flight for a session (a newer request, or none, will be applied). */
     invalidateWorkflowReadModel(sessionId) {
         const entry = this.workflowReadModels?.get(sessionId);
@@ -9270,6 +9320,27 @@ export class PilotSwarmUiController {
         if (!valid) return;
         this.dispatch({ type: "ui/workflowView", sessionId, view: { selectedExecution: selection === null ? null
             : { runId: selection.runId, stateId: selection.stateId, executionId: selection.executionId } } });
+    }
+
+    /**
+     * The TUI's workflow view: i compares the variables the visit the details show applied with the run's accepted ones
+     * (mock M15 "Inspect update", "Compare snapshots"; compareWorkflowKvRevisions), for exactly the shown run.
+     */
+    async inspectWorkflowViewVariables() {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return;
+        const node = selection.selected?.node ?? null;
+        const runId = selection.projection.v2?.runId ?? null;
+        const shown = node?.shape === "v2" ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
+        const kv = workflowV2KvApplied(shown?.execution, selection.projection.v2?.readModel?.run);
+        if (typeof runId !== "string" || !runId || !kv || kv.accepted === null) {
+            this.dispatch({ type: "ui/status", text: "This visit names no variables revision of the shown run to inspect" });
+            return;
+        }
+        const read = await this.compareWorkflowKvRevisions(selection.modal.sessionId, { runId, from: kv.applied, to: kv.accepted });
+        this.dispatch({ type: "ui/status", text: read.ok
+            ? `Variables of revision ${kv.applied} (applied) and ${kv.accepted} (accepted now) are in the details (PgUp/PgDn scroll)`
+            : "The variables could not be read; the details say why" });
     }
 
     /** The TUI's workflow view: show the own result of an older ([, `delta` 1) or newer (], -1) visit of the selected state (workflowViewExecutionStep). */
@@ -13682,6 +13753,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_VIEW_WHOLE_VALUE:
                 await this.loadWorkflowViewExecutionValue();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_INSPECT_VARIABLES:
+                await this.inspectWorkflowViewVariables();
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);
