@@ -1959,7 +1959,7 @@ export class PilotSwarmManagementClient {
         const definition = view.definition as { state?: unknown; currentRevision?: unknown } | null | undefined;
         const draftRevision = definition?.state === "draft" && typeof definition.currentRevision === "number" ? definition.currentRevision : null;
         return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId,
-            { requests: enabled.requests === true, runId: shown, draftRevision }) };
+            { requests: enabled.requests === true, runId: shown, draftRevision, published: definition?.state === "published" }) };
     }
 
     /**

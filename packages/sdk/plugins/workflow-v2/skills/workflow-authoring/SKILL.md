@@ -186,7 +186,8 @@ the branches.
 2. Show the user the draft, its graph (`read_workflow`) and its diagnostics.
    Revise with `update_workflow` `replace_definition` and the
    `expected_revision` you reviewed.
-3. Test the exact revision with mocked effects (`workflow-testing`).
+3. Test the exact revision with mocked effects while it is still a draft
+   (`workflow-testing`); a published workflow is not tested.
 4. Publish the exact reviewed revision: `publish` with `expected_revision`
    and its `definition_hash`. A published definition never changes; a new
    version needs a new workflow child.

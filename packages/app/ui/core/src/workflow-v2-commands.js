@@ -55,6 +55,8 @@ export const WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT = "Agent steps run real age
     + "model's do. Their workflow tool calls are mocked; their model's own built-in tools (shell, files) run normally; MCP tools are refused.";
 /** What the variables panel says about them, in the portal and the terminal (the flow review's plain words). */
 export const WORKFLOW_V2_VARIABLES_HELP_TEXT = "Steps read these variables when they start; running steps keep the values they started with.";
+/** Why a published workflow offers no test (of-06; the server's TEST_NEEDS_DRAFT says the same). */
+export const WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT = "Only a draft can be tested, and this workflow is published. To test a change, create a new workflow as a draft.";
 /** The largest workflow YAML (compiler.ts WORKFLOW_V2_MAX_YAML_BYTES); the server checks it again. */
 const YAML_MAX_BYTES = 256 * 1024;
 /** The longest KV key (store.ts WORKFLOW_V2_KV_LIMITS.maxKeyLength). */
@@ -577,17 +579,17 @@ function agentVersionText(pin) {
  * view's last command, or null: without `personCommands` (the deployment
  * takes no person's commands), when the workflow takes no test from people (a
  * host that does not run controller 1.9.0, or a workflow agent state's
- * subtree) or without a definition in a recognized state. Never throws.
+ * subtree), and unless the definition is a draft (of-06, the owner's decision:
+ * a published workflow is not tested). Never throws.
  *
- * A test runs the exact current revision (draft or published) with its
- * definition hash, beside the live run, which it never changes. Start is
- * disabled, with the reason as its title, for a revision with compile errors,
- * a viewer who may not command the workflow, an unknown revision or hash, and
- * while a command is being sent.
+ * A test runs the exact current revision of the draft with its definition
+ * hash. Start is disabled, with the reason as its title, for a revision with
+ * compile errors, a viewer who may not command the workflow, an unknown
+ * revision or hash, and while a command is being sent.
  */
 export function workflowV2TestControls(model, command = null) {
     if (!isRecord(model) || !isRecord(model.personCommands) || !isRecord(model.definition) || !isRecord(model.revision)) return null;
-    const state = model.definition.state === "draft" || model.definition.state === "published" ? model.definition.state : null;
+    const state = model.definition.state === "draft" ? "draft" : null;
     const commands = model.personCommands;
     if (state === null || !Array.isArray(commands.operations) || !commands.operations.includes("test")) return null;
     const viewer = isRecord(commands.viewer) ? commands.viewer : null;
@@ -604,7 +606,7 @@ export function workflowV2TestControls(model, command = null) {
             : revision === null || definitionHash === null ? "The revision or its definition hash is not known; read the workflow again." : null);
     return { state, name: text(model.revision.name), semver: text(model.definition.semver), revision, definitionHash, valid, errors,
         control: { operation: "test", label: pending ? "Starting test…" : "Start test", enabled: reason === null, pending,
-            title: reason ?? `Test revision ${revision} beside the live run, which it never changes.` },
+            title: reason ?? `Test draft revision ${revision}.` },
         busy, viewerReason: denied };
 }
 

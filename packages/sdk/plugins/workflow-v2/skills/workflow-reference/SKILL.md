@@ -204,7 +204,7 @@ and the route `timeout`, and text around a binding.
 | `pause`, `resume`, `cancel` | `reason?`, `run_id?` | Run control. |
 | `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; then the run ends `stopped`. |
 | `recover` | `run_id?` | Ends or starts a run that `read_workflow` shows as `needsRecovery`. |
-| `test` | `expected_revision`, `definition_hash`, `inputs`, `vars?`, `agent_mode?`, `fixtures?`, `scenario?` | Starts a mocked test run (`workflow-testing`). |
+| `test` | `expected_revision`, `definition_hash`, `inputs`, `vars?`, `agent_mode?`, `fixtures?`, `scenario?` | Starts a mocked test run of a draft (`workflow-testing`); a published workflow is refused with `TEST_NEEDS_DRAFT`. |
 | `test_respond` | `run_id`, `interception_id`, `response` | Answers one intercepted effect. |
 | `test_advance` | `run_id`, `seconds` | Moves a test run's virtual clock. |
 

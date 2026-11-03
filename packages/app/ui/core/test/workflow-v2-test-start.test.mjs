@@ -4,9 +4,10 @@
  *   - no test review without `personCommands`, when the workflow takes no
  *     test from people (a host without controller 1.9.0, or a workflow agent
  *     state's subtree), or for a deleted definition
- *   - a draft or published definition offers Start test for its current
- *     revision and definition hash; compile errors, a viewer who may not
- *     command it, an unknown hash or a command in flight disable it
+ *   - only a draft offers Start test for its current revision and definition
+ *     hash (of-06: a published workflow is not tested); compile errors, a
+ *     viewer who may not command it, an unknown hash or a command in flight
+ *     disable it
  *   - the command names no run (the test makes its own) and carries the
  *     revision, the hash, the inputs, optional initial variables, the agent
  *     mode (mocked by default; real agents spend model tokens) and an
@@ -46,14 +47,14 @@ test("no test review without personCommands, without the test operation (1.8.0 h
     assert.equal(workflowV2TestControls(modelOf({ definition: { state: "deleted", currentRevision: 2 } })), null);
 });
 
-test("a draft or published definition offers Start test of its current revision; errors, a viewer who may not command, an unknown hash or a command in flight disable it", () => {
+test("only a draft offers Start test of its current revision (of-06); errors, a viewer who may not command, an unknown hash or a command in flight disable it", () => {
     const draft = workflowV2TestControls(modelOf());
     assert.deepEqual({ state: draft.state, revision: draft.revision, definitionHash: draft.definitionHash, valid: draft.valid, name: draft.name, semver: draft.semver },
         { state: "draft", revision: 2, definitionHash: HASH, valid: true, name: "watch-v2", semver: "1.0.0" });
     assert.deepEqual(draft.control, { operation: "test", label: "Start test", enabled: true, pending: false,
-        title: "Test revision 2 beside the live run, which it never changes." });
-    const published = workflowV2TestControls(modelOf({ definition: { state: "published", currentRevision: 1 } }));
-    assert.deepEqual([published.state, published.revision, published.control.enabled], ["published", 1, true]);
+        title: "Test draft revision 2." });
+    // A published workflow is not tested, even when an older server still lists the test operation.
+    assert.equal(workflowV2TestControls(modelOf({ definition: { state: "published", currentRevision: 1 } })), null);
 
     const invalid = workflowV2TestControls(modelOf({ revision: { valid: false, diagnostics: [{ severity: "error", code: "E1" }] } }));
     assert.deepEqual([invalid.control.enabled, invalid.control.title], [false, "Revision 2 has 1 error and cannot be tested; fix them first."]);
@@ -167,10 +168,11 @@ test("the test review opens from the header with the test notice, the exact revi
     assert.doesNotMatch(radios.find(input => input.includes('value="real"')), /checked=""/);
     assert.ok(!open.includes("their results vary"), "the real-agent cost notice shows only once real agents are chosen");
     assert.ok(open.includes("data-field=\"inputs\"") && open.includes("data-field=\"scenario\""));
-    assert.match(open, /data-operation="test" title="Test revision 2 beside the live run, which it never changes\.">Start test</);
+    assert.match(open, /data-operation="test" title="Test draft revision 2\.">Start test</);
 
     for (const [label, model] of [["1.8.0 host", modelOf({ personCommands: { operations: MILESTONE.slice(0, 8), restriction: null, run: null } })],
-        ["subtree", modelOf({ personCommands: SUBTREE })], ["no personCommands", readModel({ definition: DRAFT, noRun: true })]]) {
+        ["subtree", modelOf({ personCommands: SUBTREE })], ["no personCommands", readModel({ definition: DRAFT, noRun: true })],
+        ["published (of-06)", modelOf({ definition: { state: "published", currentRevision: 2 } })]]) {
         const html = main(mount({ readModel: model, readModelRunId: null, testOpen: true }));
         assert.ok(!html.includes(">Test…</button>") && !html.includes("Test review"), label);
     }

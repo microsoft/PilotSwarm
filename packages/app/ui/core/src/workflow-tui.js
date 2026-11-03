@@ -7,7 +7,7 @@ import {
     workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue,
 } from "./workflow-v2-view.js";
 import {
-    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
+    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
     workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2RevisionCompare, workflowV2AnswerSourceText,
 } from "./workflow-v2-commands.js";
@@ -948,8 +948,10 @@ export function workflowViewTestRefusal(selection) {
     const offered = Array.isArray(commands?.operations) && commands.operations.includes("test");
     const why = !isPlainRecord(model) ? "The workflow is not loaded yet."
         : !commands ? "This deployment takes no workflow commands from people."
-            : !offered ? workflowV2RestrictionText(commands) ?? "This workflow takes no test from people."
-                : `The definition is ${typeof model.definition?.state === "string" && model.definition.state ? model.definition.state : "in no known state"}.`;
+            // of-06: only a draft is tested.
+            : model.definition?.state === "published" ? WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT
+                : !offered ? workflowV2RestrictionText(commands) ?? "This workflow takes no test from people."
+                    : `The definition is ${typeof model.definition?.state === "string" && model.definition.state ? model.definition.state : "in no known state"}.`;
     return `A test cannot be started here. ${why}`;
 }
 
@@ -958,7 +960,7 @@ function testLines(projection) {
     const tests = projection.testControls;
     if (!tests) return [];
     return [{ text: `Test: ${tests.state === "draft" ? "draft " : ""}revision ${tests.revision ?? "not known"}${tests.valid ? "" : " (it has errors)"}`
-        + " — t reviews a test run beside the live run", color: tests.busy ? "yellow" : "cyan", indent: "" }];
+        + " — t reviews a test run", color: tests.busy ? "yellow" : "cyan", indent: "" }];
 }
 
 /**

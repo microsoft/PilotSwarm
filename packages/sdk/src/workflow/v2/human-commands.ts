@@ -116,11 +116,14 @@ export function workflowCapabilities(options: { read: boolean; commands: { reque
  *   for them (the portal does).
  */
 export async function workflowCommandsForPerson(store: Pick<WorkflowStore, "readWorkflowLineage" | "readRun" | "readRevision">, workflowSessionId: string,
-    options: { requests: boolean; runId: string | null; draftRevision?: number | null }): Promise<{ [key: string]: JsonValue }> {
+    options: { requests: boolean; runId: string | null; draftRevision?: number | null; published?: boolean }): Promise<{ [key: string]: JsonValue }> {
     const offered = options.requests ? [...WORKFLOW_HUMAN_OPERATIONS, ...WORKFLOW_HUMAN_MILESTONE_OPERATIONS] : [...WORKFLOW_HUMAN_OPERATIONS];
     const [lineage, run] = await Promise.all([store.readWorkflowLineage(workflowSessionId), options.runId ? store.readRun(options.runId) : null]);
     const root = lineage?.agentRoot ?? null;
-    const operations = root ? WORKFLOW_HUMAN_BRAKE_OPERATIONS.filter(operation => offered.includes(operation)) : offered;
+    // of-06: only a draft is tested. A published workflow offers no new test; the answers and clock of a test run that
+    // began while it was a draft stay offered, so that run can finish.
+    const operations = (root ? WORKFLOW_HUMAN_BRAKE_OPERATIONS.filter(operation => offered.includes(operation)) : offered)
+        .filter(operation => !(options.published === true && operation === "test"));
     const shown = run !== null && run.workflowSessionId === workflowSessionId ? run : null;
     const draftRevision = options.draftRevision ?? null;
     const revision = draftRevision !== null && operations.includes("replace_definition") ? await store.readRevision(workflowSessionId, draftRevision) : null;

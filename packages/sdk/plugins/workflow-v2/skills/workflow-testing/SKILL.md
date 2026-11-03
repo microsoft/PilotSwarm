@@ -6,7 +6,10 @@ description: Load before you test a version 2 workflow with mocked effects — t
 # Workflow testing
 
 A test run executes the exact current revision of one of your workflow
-children, draft or published, beside its live run. Scripts run normally.
+children while it is a **draft**. A published workflow is not tested: `test`
+refuses it with `TEST_NEEDS_DRAFT`; test a change as a new draft. (A test run
+you began as a draft can still be answered after you publish, so it can
+finish.) Scripts run normally.
 What the framework brokers is intercepted: a script's tool calls, an agent
 state's agent, a send's delivery and a request's exchange. You, or a fixture,
 answer each interception. Every deadline of the run counts on a virtual

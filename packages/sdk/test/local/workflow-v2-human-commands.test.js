@@ -242,10 +242,11 @@ describe("workflow v2: a person's workflow command (direct management client, in
             expect(await mgmt.updateWorkflow(nested.workflowSessionId, { operation: "stop", operation_id: "s-1", grace_seconds: 0 }, { principal: PERSON }))
                 .toMatchObject({ operation: "stop", runId: nested.runId });
 
-            // The container is not in an agent state's subtree: the person commands it, every operation of a 1.9.0 host.
+            // The container is not in an agent state's subtree: the person commands it, every operation of a 1.9.0 host except a new
+            // test, since it is published (of-06; answers to a test run begun as a draft stay offered).
             expect((await mgmt.readWorkflow(container.workflowSessionId)).personCommands).toEqual({
                 operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel",
-                    "stop", "test", "test_respond", "test_advance"],
+                    "stop", "test_respond", "test_advance"],
                 restriction: null, run: { runId: container.runId, stop: true },
             });
             expect(await mgmt.updateWorkflow(container.workflowSessionId, { operation: "set_vars", operation_id: "kv-1", set: { note: "go" },

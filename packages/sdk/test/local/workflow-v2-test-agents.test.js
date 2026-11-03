@@ -377,24 +377,20 @@ describe("workflow v2 real-agent test runs: controller 1.9.0 (inactive, test-onl
             expect(await h.complete(invocation.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "done-1" })).toMatchObject({ ok: true });
             expect(await ended(h, runId)).toMatchObject({ status: "completed" });
 
-            // A test of the published revision takes the publication's pins, also after the package is republished.
+            // A published revision is not tested (of-06): the test is refused, and nothing is written. Its live run's child runs the
+            // revision its publication pinned, also after the package is republished, and is not under a test.
             const published = await h.workflow({ agent: { name: "code-reviewer" } }, { publish: true });
             expect((await h.store.readDefinition(published.workflowSessionId)).publishedAgentPins).toEqual(pinned);
             h.visible.set("code-reviewer", { ...REVIEW_KIT, packageVersion: "1.3.0", packageRevision: NEW });
-            const ofPublished = await h.test(published, "pin-4");
-            expect((await h.store.readRun(ofPublished)).testAgentPins).toEqual(pinned);
-            const testChild = await spawned(h, nodeExecutionIdFor(ofPublished, "root", "review", 1));
-            expect(testChild.task).toMatchObject({ packageId: "pkg-1", revision: OLD });
-            expect(h.children.at(-1)).toMatchObject({ boundAgentPackageId: `pkg-1@${OLD}` });
+            expect(await h.update(published, { operation: "test", operation_id: "pin-4", expected_revision: 1, definition_hash: published.definitionHash,
+                inputs: {}, agent_mode: "real" })).toMatchObject({ ok: false, error: { code: "TEST_NEEDS_DRAFT" } });
+            expect((await h.read(published)).runs).toEqual([]);
 
-            // A live run's child is not under a test: its tools are its own.
             const live = await h.update(published, { operation: "start", operation_id: "start-1", definition_hash: published.definitionHash, inputs: {} });
             expect(live).toMatchObject({ ok: true, run: { mode: "live" } });
             const liveChild = await spawned(h, nodeExecutionIdFor(live.run.runId, "root", "review", 1));
+            expect(liveChild.task).toMatchObject({ packageId: "pkg-1", revision: OLD });
             expect(await workflowTestAgentScope(h.store, await h.store.readWorkflowLineage(liveChild.childSessionId))).toBeNull();
-            expect(await workflowTestAgentScope(h.store, await h.store.readWorkflowLineage(testChild.childSessionId)))
-                .toEqual({ workflowSessionId: published.workflowSessionId, runId: ofPublished, nodeExecutionId: testChild.nodeExecutionId, stateId: "review",
-                    agentSessionId: testChild.childSessionId });
         } finally {
             await h.stop();
         }

@@ -16,7 +16,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowTestModal,
-    selectWorkflowViewModal, workflowTestChange, workflowTestConfirm, workflowTestPin,
+    selectWorkflowViewModal, workflowTestChange, workflowTestConfirm, workflowTestPin, workflowViewTestRefusal,
 } from "../src/index.js";
 import { WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT } from "../src/workflow-v2-commands.js";
 import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-v2-fixtures.mjs";
@@ -122,7 +122,7 @@ async function reviewing(initial, answers = []) {
 
 test("the view says what t reviews; the review is of the exact revision and hash with mocked agents; ctrl-t asks first, then the view shows the new test run", async () => {
     const h = await opened(workflow(), [started]);
-    assert.ok(details(h.store).includes("Test: draft revision 2 — t reviews a test run beside the live run"), details(h.store).join("\n"));
+    assert.ok(details(h.store).includes("Test: draft revision 2 — t reviews a test run"), details(h.store).join("\n"));
     const view = modalOf(h.store);
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW);
@@ -233,7 +233,7 @@ test("what is typed is checked first: JSON-object inputs and variables, a scenar
 
 test("a start not available now is not sent and the review says why: compile errors, a viewer the portal refuses, another command being sent", async () => {
     const broken = await opened(workflow({ valid: false, diagnostics: [{ severity: "error", code: "STATE_UNKNOWN", path: "states.poll", message: "No state." }] }));
-    assert.ok(details(broken.store).includes("Test: draft revision 2 (it has errors) — t reviews a test run beside the live run"));
+    assert.ok(details(broken.store).includes("Test: draft revision 2 (it has errors) — t reviews a test run"));
     await broken.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW);
     const shown = review(broken.store);
     assert.deepEqual(shown.lines.find(line => line.text.startsWith("Validity")), { text: "Validity: 1 error: it cannot be tested", color: "red" });
@@ -308,20 +308,22 @@ test("a stale revision is refused and read again: the review says it changed and
     await settle();
 });
 
-test("publishing the revision under review meanwhile changes nothing that is tested: the review still starts it", async () => {
+test("publishing the revision under review meanwhile ends the review: a published workflow is not tested, and nothing is sent (of-06)", async () => {
     const h = await reviewing(workflow());
     h.serve(workflow({ state: "published" }));
     await h.controller.ensureWorkflowReadModel("wf", { force: true });
     const shown = review(h.store);
-    assert.equal(shown.changed, false);
-    assert.equal(shown.title, "Test review · revision 2");
-    assert.ok(texts(shown.lines).includes("Revision: 2"));
+    assert.equal(shown.changed, true);
+    assert.ok(texts(shown.lines).includes("The workflow can no longer be tested here, so nothing is sent. Esc goes back."), texts(shown.lines).join("\n"));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_START);
-    const confirm = modalOf(h.store);
-    assert.equal(confirm.type, "confirm");
-    assert.match(confirm.message, /^Start a test run of revision 2 of watch-v2 1\.0\.0 /);
-    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    assert.equal(statusOf(h.store), "The workflow can no longer be tested here, so nothing is sent. Esc goes back.");
     assert.deepEqual(h.sent(), []);
+});
+
+test("a published workflow offers no test: t says why in plain words (of-06)", () => {
+    const published = { definition: { state: "published" }, personCommands: { operations: ["pause", "test_respond", "test_advance"] } };
+    assert.equal(workflowViewTestRefusal({ projection: { testControls: null, definitionModel: published } }),
+        "A test cannot be started here. Only a draft can be tested, and this workflow is published. To test a change, create a new workflow as a draft.");
 });
 
 test("a refusal keeps what was typed, with the schema's problems; while the test is sent nothing else is; an answer that never came is sent again as itself", async () => {

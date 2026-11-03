@@ -146,12 +146,14 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
     description: UPDATE_WORKFLOW_TOOL_SPEC.description
         + " This host also takes: stop (run_id optional, reason, grace_seconds 0 to 3600, default 60: no new step starts; work already "
         + "started may finish until the grace ends, then the run ends stopped); "
-        + "test (expected_revision and definition_hash of the exact current revision, inputs, optional vars, agent_mode mocked or real, "
-        + "fixtures and scenario): a test run beside the live run whose workflow tool calls, agents, sends and requests are held for you or a "
+        + "test (a draft only: expected_revision and definition_hash of its exact current revision, inputs, optional vars, agent_mode mocked "
+        + "or real, fixtures and scenario): a test run of the draft whose workflow tool calls, agents, sends and requests are held for you or a "
         + "fixture to answer (with agent_mode real, each agent step runs a real agent whose workflow tool calls are held), and whose deadlines "
-        + "run on a virtual clock. A test is not a sandbox: a script's own effects are real, and a test result is not a live result; "
+        + "run on a virtual clock. A published workflow is not tested (TEST_NEEDS_DRAFT); test a change as a new draft. "
+        + "A test is not a sandbox: a script's own effects are real, and a test result is not a live result; "
         + "test_respond (run_id of the test run, interception_id, response { kind: success, error or cancel, value }) answers one held call "
-        + "once; test_advance (run_id of the test run, seconds 1 to 2592000) moves its virtual clock and decides what came due.",
+        + "once; test_advance (run_id of the test run, seconds 1 to 2592000) moves its virtual clock and decides what came due. Both also "
+        + "work for a test run that began before the workflow was published, so it can finish.",
     parameters: {
         type: "object",
         properties: {

@@ -48,6 +48,10 @@ export function runNotBegun(run: { status: WorkflowRunStatus; pausedFrom: "admit
 /** Open KV limits (design D07: proposed defaults, enforced on every update). */
 export const WORKFLOW_V2_KV_LIMITS = { maxKeys: 1_000, maxKeyLength: 128, maxValueBytes: 256 * 1024, maxTotalBytes: 1024 * 1024 } as const;
 
+/** of-06: the refusal of a test of a workflow that is not a draft (code TEST_NEEDS_DRAFT). */
+export const WORKFLOW_V2_TEST_NEEDS_DRAFT_MESSAGE = "Only a draft can be tested, and this workflow is published. "
+    + "To test a change, create a new workflow as a draft.";
+
 export class WorkflowStoreError extends Error {
     constructor(readonly code: string, message: string, readonly details: JsonValue = null) {
         super(message);
@@ -5905,6 +5909,10 @@ export class WorkflowStore {
             const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "test", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
             assertNotDeleted(definition);
+            // of-06 (owner decision): only a draft is tested. A published definition runs live; a change is tested as a new draft.
+            if (definition.state !== "draft") {
+                throw new WorkflowStoreError("TEST_NEEDS_DRAFT", WORKFLOW_V2_TEST_NEEDS_DRAFT_MESSAGE, { state: definition.state });
+            }
             if (definition.currentRevision !== input.expectedRevision) {
                 throw new WorkflowStoreError("REVISION_CONFLICT", `The definition is at revision ${definition.currentRevision}, not ${input.expectedRevision}.`,
                     { currentRevision: definition.currentRevision });

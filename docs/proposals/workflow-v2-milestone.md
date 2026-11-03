@@ -304,8 +304,10 @@ the join.
 
 ## Test runs: intercepted tools, mocked agents and a virtual clock (design 05; R19, R20, R28)
 
-A test run executes the exact current revision of a definition, draft or
-published, with its scripts running normally and every framework effect
+A test run executes the exact current revision of a **draft** (owner decision of-06, 3 November 2026: a published
+workflow is not tested; `test` refuses it with `TEST_NEEDS_DRAFT`, 409 for a person, and the read model's
+`personCommands` stops offering `test` once the workflow is published, while `test_respond` and `test_advance` stay
+offered so a test run begun as a draft can finish), with its scripts running normally and every framework effect
 intercepted. It runs at controller 1.9.0 under its own controller instance
 (`wft-<run id>`), with its own KV, inbox and outbox, beside the live run,
 which it never changes. Any number of test runs may exist. Migration 0098

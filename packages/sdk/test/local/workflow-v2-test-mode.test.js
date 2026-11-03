@@ -593,4 +593,19 @@ describe("workflow v2 test runs: retention (design 05 cleanup)", () => {
             await h.stop();
         }
     });
+
+    it("tests only a draft: a published workflow's test is refused with TEST_NEEDS_DRAFT and nothing is written (of-06)", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const draft = await draftOf(h, retainedDoc());
+            const published = await draft.update({ operation: "publish", operation_id: "pub", expected_revision: 1, definition_hash: draft.definitionHash });
+            expect(published, JSON.stringify(published)).toMatchObject({ ok: true, state: "published" });
+            expect(await draft.update({ operation: "test", operation_id: "t-after", expected_revision: 1, definition_hash: draft.definitionHash, inputs: {} }))
+                .toMatchObject({ ok: false, error: { code: "TEST_NEEDS_DRAFT",
+                    message: "Only a draft can be tested, and this workflow is published. To test a change, create a new workflow as a draft." } });
+            expect((await draft.read()).runs).toEqual([]);
+        } finally {
+            await h.stop();
+        }
+    });
 });
