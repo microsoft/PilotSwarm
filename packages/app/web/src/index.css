@@ -3901,6 +3901,11 @@ body.is-resizing-pane-y iframe {
   width: min(560px, 100%);
 }
 
+/* A dialog takes focus when it opens (ModalDialog) so screen readers announce it; the frame itself shows no ring. */
+.ps-modal[role="dialog"]:focus {
+  outline: none;
+}
+
 .ps-modal.is-wide {
   width: min(980px, 100%);
 }

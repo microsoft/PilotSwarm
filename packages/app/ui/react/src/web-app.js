@@ -4,6 +4,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowMainPane, WorkflowNodePane } from "./workflow-workspace.js";
+import { ModalDialog } from "./modal-dialog.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -13556,6 +13557,8 @@ function WorkflowCreateEditor({ controller, view, theme, close }) {
 function ModalLayer({ controller }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, (state) => Boolean(state.ui.touchScale));
+    // The confirm box's title and message ids, for its dialog name and description (ModalDialog).
+    const confirmDialogId = React.useId();
     const theme = getTheme(themeId);
     const modalState = useControllerSelector(controller, (state) => ({
         rawModal: state.ui.modal,
@@ -13785,14 +13788,15 @@ function ModalLayer({ controller }) {
         // an optional distilling-instructions textarea, bound to modal.extras.
         const isRegen = modal.action === "regenerateSession";
         const extras = modal.extras || {};
+        const titleId = `${confirmDialogId}-title`, messageId = `${confirmDialogId}-message`;
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-            React.createElement("div", { className: "ps-modal is-narrow", onClick: (event) => event.stopPropagation() },
+            React.createElement(ModalDialog, { className: "ps-modal is-narrow", titleId, messageId },
                 React.createElement("div", { className: "ps-modal-header" },
-                    React.createElement("div", { className: "ps-modal-title" }, modalState.confirm.title),
+                    React.createElement("div", { className: "ps-modal-title", id: titleId }, modalState.confirm.title),
                     React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
                 ),
                 React.createElement("div", { className: "ps-modal-body", style: { padding: "16px 20px" } },
-                    React.createElement("p", { style: { color: "#94a3b8", margin: 0 } }, modalState.confirm.message),
+                    React.createElement("p", { id: messageId, style: { color: "#94a3b8", margin: 0 } }, modalState.confirm.message),
                 ),
                 isRegen
                     ? React.createElement("div", { className: "ps-modal-body", style: { padding: "0 20px 12px", display: "flex", flexDirection: "column", gap: 10 } },

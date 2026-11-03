@@ -533,8 +533,8 @@ test("a v2 workflow's read model failure is shown beside its graph, and Retry re
 // unconfirmed pause retried with the same operation id; the virtual clock's checks and one exact advance; a workflow agent
 // state's chat read-only beside an ordinary one; a lost draft save kept and resent unchanged.
 // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "v2 commands:" (from packages/app/web, after build).
-// Recorded, not asserted: the confirm modal has no role=dialog or aria-modal, and a failed access read leaves the ordinary
-// composer (open decisions; see the design's S1 and S4).
+// Recorded, not asserted: a failed access read leaves the ordinary composer (an open decision; see the design's S4).
+// The confirm modal's dialog role, modal marking, name, description and focus are asserted (owner decision q17).
 const V2_COMMANDS_PATH = `/api/v1/sessions/${WORKFLOW_ID}/workflow/commands`;
 /** A v2 read model that offers the person's run controls for run-1 (fixture contract: personCommands shape from
  *  workflowV2RunControls; everything else is the file's V2_READ_MODEL). */
@@ -593,8 +593,16 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         const dialog = page.locator(".ps-modal.is-narrow");
         await expect(dialog.locator(".ps-modal-title")).toHaveText("Stop Workflow Run");
         await expect(dialog.locator(".ps-modal-body p")).toHaveText("Stop run run-1? No new state starts; work already started may finish until its grace period ends, and then the run ends as stopped. A stop does not undo effects that already happened.");
+        // The confirm box is a dialog for screen readers (owner decision q17): named by its title, described by its
+        // message, modal, and focused while it is open.
+        const named = page.getByRole("dialog", { name: "Stop Workflow Run", exact: true });
+        await expect(named).toHaveAttribute("aria-modal", "true");
+        await expect(named).toHaveAccessibleDescription(/^Stop run run-1\? No new state starts/);
+        await expect(named).toBeFocused();
         await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
         await expect(dialog).toHaveCount(0);
+        // Focus goes back to the control that opened it.
+        await expect(controls.getByRole("button", { name: "Stop", exact: true })).toBeFocused();
         expect(commands).toEqual([]);
 
         // Confirm: exactly one stop command for run-1, with a UI operation id.
