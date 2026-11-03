@@ -71,7 +71,8 @@ test("an agent state's node names its child session and opens its actual chat; a
     const review = byId(projection, "review");
     assert.equal(review.stateLabel, "Agent working · waiting for its typed result");
     assert.deepEqual(review.current.agent, { childSessionId: "child-1", spawned: true, spawnAttempts: 1, end: null, endSent: false });
-    assert.ok(review.description.some(line => line.includes("child session child-1")));
+    // flow-07: the chat's id and who may write to it are said once, in Agent session; the description only says how the step completes.
+    assert.ok(!review.description.some(line => line.includes("child-1")), review.description.join("\n"));
     const opened = [];
     const html = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, {
         tab: "details", selected: review, nodes: projection.nodes, select: () => {}, openSession: id => opened.push(id),
@@ -79,6 +80,10 @@ test("an agent state's node names its child session and opens its actual chat; a
     assert.ok(html.includes("Open the agent&#x27;s chat (read-only)"));
     assert.ok(html.includes("code-reviewer · review-kit 1.2.0"));
     assert.ok(html.includes("People can read this chat"));
+    assert.equal(html.split("child-1").length - 1, 1, "the child session id is shown once");
+    assert.equal(html.split("typed result completes").length - 1, 1, "how the step completes is said once");
+    // Deadline at reads like the activity list, not raw ISO.
+    assert.ok(html.includes("2026-11-02 10:10:00 UTC") && !html.includes("2026-11-02T10:10:00"), html);
 
     const branched = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
         done("review", 1, "accepted"),

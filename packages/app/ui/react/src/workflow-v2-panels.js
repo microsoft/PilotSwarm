@@ -2,7 +2,7 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
-    workflowV2VisitEnding, workflowV2WholeValue, WORKFLOW_V2_ASK_PARENT_KINDS,
+    workflowV2EventTime, workflowV2VisitEnding, workflowV2WholeValue, WORKFLOW_V2_ASK_PARENT_KINDS,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -108,7 +108,7 @@ function kindProperties(node, current) {
     if (node.kind === "script") rows.push(["Timeout", `${node.timeoutSeconds} s`]);
     if (node.kind === "wait") {
         rows.push(["Duration", typeof node.seconds === "number" ? formatSeconds(node.seconds) : String(node.seconds)]);
-        if (current?.deadline) rows.push(["Deadline", current.deadline]);
+        if (current?.deadline) rows.push(["Deadline", workflowV2EventTime(current.deadline) ?? current.deadline]);
     }
     if (node.kind === "receive") {
         rows.push(["Message type", node.contract], ["From", node.from === null ? "Any permitted sender" : node.from === "parent" ? "Parent session" : String(node.from)]);
@@ -122,7 +122,7 @@ function kindProperties(node, current) {
         // The workflow interface the state names and what the shown run pins it to (package revision, interface digest).
         rows.push(["Agent", workflowV2AgentTask(node)], ...workflowV2AgentBindingRows(node.binding), ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
         if (node.timeoutSeconds !== undefined) rows.push(["Deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
-        if (current?.deadline) rows.push(["Deadline at", current.deadline]);
+        if (current?.deadline) rows.push(["Deadline at", workflowV2EventTime(current.deadline) ?? current.deadline]);
     }
     if (node.kind === "parallel") {
         rows.push(["Branches start at", String(node.body?.initial ?? "—")],
@@ -150,7 +150,8 @@ function AgentChild({ agent, openSession, subtree = [] }) {
             h("strong", null, `${agent.spawned ? "Created" : "Not created yet"}${agent.end ? ` · ended (${agent.end === "cancel" ? "cancelled" : agent.end === "done" ? "finished" : agent.end})` : ""}`)),
         openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition", "data-action": "open-agent-chat",
             onClick: () => openSession(agent.childSessionId) }, "Open the agent's chat (read-only)") : null,
-        h("p", null, "People can read this chat. Only the workflow's parent agent can message it, and only the agent's typed result completes the step."),
+        // While the step waits, its description already says only the typed result completes it.
+        h("p", null, "People can read this chat. Only the workflow's parent agent can message it."),
         under.length ? h("div", { className: "ps-workflow-subtree", "aria-label": "Sessions under this step" },
             h("h3", null, `Sessions under this step (${under.length})`),
             h("ul", { style: { margin: 0, paddingLeft: 16 } }, under.map(entry => h("li", { key: entry.sessionId, "data-session": entry.sessionId,

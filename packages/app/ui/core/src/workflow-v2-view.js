@@ -715,13 +715,13 @@ export function describeWorkflowV2Execution(node, execution) {
     if (!execution) return lines;
     const pending = execution.status === "pending";
     if (kind === "wait") {
-        if (pending) lines.push(execution.deadline ? `Waiting until ${execution.deadline}.` : `Waiting ${typeof node.seconds === "number" ? formatSeconds(node.seconds) : "for its bound duration"}.`);
+        if (pending) lines.push(execution.deadline ? `Waiting until ${workflowV2EventTime(execution.deadline) ?? execution.deadline}.` : `Waiting ${typeof node.seconds === "number" ? formatSeconds(node.seconds) : "for its bound duration"}.`);
         else if (execution.outcome === "elapsed") lines.push("The wait elapsed.");
     } else if (kind === "receive") {
         const wanted = execution.receive ? { contract: execution.receive.contract, from: execution.receive.from } : { contract: node.contract, from: node.from };
         if (pending) {
             lines.push(`Waiting for ${wanted.contract} from ${party(wanted.from)}.`);
-            if (execution.deadline) lines.push(`If none arrives by ${execution.deadline}, the step continues on 'elapsed'.`);
+            if (execution.deadline) lines.push(`If none arrives by ${workflowV2EventTime(execution.deadline) ?? execution.deadline}, the step continues on 'elapsed'.`);
         } else if (execution.outcome === "received") {
             lines.push(`Received ${execution.contract || wanted.contract}${execution.senderSessionId ? ` from ${execution.senderSessionId}` : ""}.`);
         } else if (execution.outcome === "elapsed") lines.push("The wait limit passed before a matching message arrived.");
@@ -739,7 +739,7 @@ export function describeWorkflowV2Execution(node, execution) {
         else if (execution.outcome === "responded") lines.push(`${execution.responderSessionId || to} responded.`);
         else if (execution.outcome === "declined") lines.push(`${execution.responderSessionId || to} declined the request.`);
     } else if (kind === "agent") {
-        if (execution.agent?.childSessionId) lines.push(`Its agent works in child session ${execution.agent.childSessionId}; open it to read the actual chat.`);
+        // Its agent chat (id, open, who may write) is shown once, beside the step: the portal's Agent session, the terminal's Agent chats.
         if (pending) lines.push("Only the agent's typed result completes this step; its chat messages do not.");
     } else if (kind === "parallel") {
         if (Number.isSafeInteger(execution.branches)) lines.push(`${execution.branches} branch${execution.branches === 1 ? "" : "es"} from its manifest.`);

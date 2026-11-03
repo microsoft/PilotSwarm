@@ -83,12 +83,12 @@ test("wait, receive and send states say what they wait for or did, and never cla
     const view = projectWorkflowV2({ readModel: model });
     const wait = byId(view, "pause");
     assert.deepEqual([wait.state, wait.phase, wait.stateLabel], ["running", "waiting", "Waiting"]);
-    assert.deepEqual(wait.description, ["Waiting until 2026-11-01T12:00:30.000Z."]);
+    assert.deepEqual(wait.description, ["Waiting until 2026-11-01 12:00:30 UTC."]);
     assert.equal(wait.label, "wait · 30 s");
     const receive = byId(view, "await_ack");
     assert.equal(receive.stateLabel, "Waiting for message");
     assert.equal(receive.description[0], "Waiting for Ack@1 from any permitted sender.");
-    assert.match(receive.description[1], /If none arrives by 2026-11-01T12:10:00\.000Z, the step continues on 'elapsed'\./);
+    assert.match(receive.description[1], /If none arrives by 2026-11-01 12:10:00 UTC, the step continues on 'elapsed'\./);
     const send = byId(view, "notify");
     assert.equal(send.stateLabel, "Sent · queued at recipient");
     assert.equal(send.description[0], "Alert@1 was delivered to the queue of parent-1.");
