@@ -307,9 +307,10 @@ function requireStorableYaml(yaml: string): void {
     }
 }
 
-function validateRunInputs(compiled: WorkflowCompileResult, inputs: JsonValue): void {
-    if (!compiled.ir || !compiled.irSha256 || !compiled.ir.inputsSchema) return;
-    const problems = schemaSetFor(compiled.irSha256, compiled.ir.schemaDefs).validate(compiled.ir.inputsSchema, inputs);
+/** A run's inputs checked against its revision's inputs.schema (`ir` and its hash; nothing to check without a schema). */
+function validateRunInputs(ir: WorkflowIR | null, irSha256: string | null, inputs: JsonValue): void {
+    if (!ir || !irSha256 || !ir.inputsSchema) return;
+    const problems = schemaSetFor(irSha256, ir.schemaDefs).validate(ir.inputsSchema, inputs);
     if (problems.length) {
         throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
             problems.map(problem => ({ path: problem.path, message: problem.message })));
@@ -610,7 +611,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     const compiled = compileWorkflowV2ForHost(host, request.yaml);
     const publish = request.publish === true || Boolean(request.start);
     const startInputs = request.start ? request.start.inputs : null;
-    if (request.start) validateRunInputs(compiled, request.start.inputs);
+    if (request.start) validateRunInputs(compiled.ir, compiled.irSha256, request.start.inputs);
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
     const admission = request.start ? liveAdmission(host, request.workflowSessionId, request.start.inputs, request.start.vars ?? null) : null;
     // A definition published at creation pins its named agents first: one that cannot be resolved refuses the request
@@ -727,11 +728,7 @@ export async function updateWorkflowV2(
         const revisionIr = revision?.valid && revision.irSha256
             ? await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host)) : null;
         if (command.operation === "publish_and_start" && revisionIr && revision?.irSha256) {
-            const problems = revisionIr.inputsSchema ? schemaSetFor(revision.irSha256, revisionIr.schemaDefs).validate(revisionIr.inputsSchema, command.inputs) : [];
-            if (problems.length) {
-                throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
-                    problems.map(problem => ({ path: problem.path, message: problem.message })));
-            }
+            validateRunInputs(revisionIr, revision.irSha256, command.inputs);
         }
         const definition = revisionIr ? await host.store.readDefinition(workflowSessionId) : null;
         const agentPinsText = revisionIr && definition?.state === "draft"
@@ -750,11 +747,7 @@ export async function updateWorkflowV2(
         await requireRunsRevision(host, workflowSessionId, definition?.publishedRevision ?? null);
         if (definition?.state === "published" && definition.publishedRevision !== null && definition.publishedIrSha256) {
             const ir = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256, irOptionsFor(host));
-            const problems = ir.inputsSchema ? schemaSetFor(definition.publishedIrSha256, ir.schemaDefs).validate(ir.inputsSchema, command.inputs) : [];
-            if (problems.length) {
-                throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
-                    problems.map(problem => ({ path: problem.path, message: problem.message })));
-            }
+            validateRunInputs(ir, definition.publishedIrSha256, command.inputs);
         }
         stored = await host.store.startLive({
             workflowSessionId, definitionHash: command.definitionHash, operationId: context.operationId,
@@ -1205,11 +1198,7 @@ export async function startWorkflowV2Test(host: WorkflowV2Host, workflowSessionI
     let ir: WorkflowIR | null = null;
     if (revision?.valid && revision.irSha256) {
         ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host));
-        const problems = ir.inputsSchema ? schemaSetFor(revision.irSha256, ir.schemaDefs).validate(ir.inputsSchema, command.inputs) : [];
-        if (problems.length) {
-            throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
-                problems.map(problem => ({ path: problem.path, message: problem.message })));
-        }
+        validateRunInputs(ir, revision.irSha256, command.inputs);
     }
     const fixturesText = canonicalJson(command.fixtures);
     const requestSha256 = jsonSha256({ kind: "test", expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
