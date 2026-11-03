@@ -26,6 +26,8 @@ export const WORKSPACE_ORCHESTRATION_MIN_VERSION = "1.0.80";
  * INACTIVE): not in the registry and never the latest version. Only a worker
  * created with the test option `workflowRequests` serves it, and starts the
  * children of workflow agent states at it (their turns can complete their
- * state). See PilotSwarmWorkerOptions.testOptions.
+ * state). With the Workflow V2 test environment switch on, the portal's and
+ * the MCP server's direct-mode clients also start new sessions at it
+ * (test-environment.ts). See PilotSwarmWorkerOptions.testOptions.
  */
 export const DURABLE_SESSION_INTAKE_VERSION = "1.0.83";

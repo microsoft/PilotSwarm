@@ -517,7 +517,7 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions, sessionStartVersion } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
@@ -526,6 +526,9 @@ export class NodeSdkTransport {
         // The embedded workers' testOptions (test-only; the Workflow V2 test environment switch, portalRuntimeOptions): unset,
         // they are created exactly as before.
         this.workerTestOptions = workerTestOptions || null;
+        // Where new sessions start (test-only; the same switch: 1.0.83, which the environment's workers serve). Unset, the
+        // latest version, as before.
+        this.sessionStartVersion = sessionStartVersion || null;
         this.pluginDirs = getPluginDirsFromEnv();
         // Optional EnhancedFactStore (HorizonDB) target. The client and
         // management client each build their own fact store, so they MUST
@@ -616,6 +619,7 @@ export class NodeSdkTransport {
             ...(this.sessionPolicy ? { sessionPolicy: this.sessionPolicy } : {}),
             ...(this.allowedAgentNames.length > 0 ? { allowedAgentNames: this.allowedAgentNames } : {}),
         });
+        if (this.sessionStartVersion) this.client._startSessionsAt(this.sessionStartVersion);
         await this.client.start();
         await this.mgmt.start();
     }

@@ -159,13 +159,18 @@ test("the portal's runtime options are exactly its storage options and mode unle
         assert.deepEqual(Object.keys(options), [...Object.keys(storageOptions), "mode"], JSON.stringify(value));
     }
     const on = portalRuntimeOptions(storageOptions, "remote", { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" });
-    assert.deepEqual(on, { ...storageOptions, mode: "remote", workflowCommands: { requests: true }, workerTestOptions: { workflowRequests: true } });
+    assert.deepEqual(on, { ...storageOptions, mode: "remote", workflowCommands: { requests: true }, workerTestOptions: { workflowRequests: true },
+        sessionStartVersion: "1.0.83" });
 
-    // The runtime they build: off, no person's commands and embedded workers as before; on, both, and the bootstrap says so.
+    // The runtime they build: off, no person's commands, embedded workers and new sessions as before; on, all three, and the
+    // bootstrap says so. (Its session client starts new sessions there: NodeSdkTransport.start passes the version to
+    // PilotSwarmClient._startSessionsAt; the SDK's workflow-v2-test-environment-sessions test runs such a client.)
     const off = new PortalRuntime(portalRuntimeOptions(storageOptions, "local", {}));
     assert.equal(off.transport.workerTestOptions, null);
+    assert.equal(off.transport.sessionStartVersion, null);
     assert.equal(Object.hasOwn(off.transport.mgmt.config, "workflowCommands"), false);
     const enabled = new PortalRuntime(on);
     assert.deepEqual(enabled.transport.workerTestOptions, { workflowRequests: true });
+    assert.equal(enabled.transport.sessionStartVersion, "1.0.83");
     assert.deepEqual(enabled.transport.mgmt.config.workflowCommands, { requests: true });
 });

@@ -161,7 +161,7 @@ test("the Workflow V2 test environment switch is on only for its exact enabling 
         assert.equal(sdk.workflowV2TestEnvironmentFromEnv(envOf(value)), null, JSON.stringify(value));
     }
     assert.deepEqual(sdk.workflowV2TestEnvironmentFromEnv(envOf("isolated-test-only")),
-        { workerTestOptions: { workflowRequests: true }, workflowCommands: { requests: true } });
+        { workerTestOptions: { workflowRequests: true }, workflowCommands: { requests: true }, sessionStartVersion: "1.0.83" });
     // The notice: none when unset or empty; ON for the enabling value; "ignored" for any other value.
     assert.equal(sdk.workflowV2TestEnvironmentNotice({}), null);
     assert.equal(sdk.workflowV2TestEnvironmentNotice(envOf("")), null);

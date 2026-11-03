@@ -1138,10 +1138,13 @@ export class PilotSwarmClient {
     /**
      * @internal INACTIVE (workflow v2 milestone; test-only): start this
      * client's new sessions at the durable intake's orchestration
-     * (DURABLE_SESSION_INTAKE_VERSION) instead of the latest version. Only
-     * the agent host of a worker created with the test option
-     * `workflowRequests`, which serves that version, calls it for the
-     * children of workflow agent states. A started session keeps its version.
+     * (DURABLE_SESSION_INTAKE_VERSION) instead of the latest version. Called
+     * by the agent host of a worker created with the test option
+     * `workflowRequests`, which serves that version, for the children of
+     * workflow agent states, and, with the Workflow V2 test environment
+     * switch on (test-environment.ts), by the session clients of the portal
+     * and of the MCP server's direct mode, whose workers all serve it. A
+     * started session keeps its version.
      */
     _startSessionsAt(version: string): void {
         if (version !== DURABLE_SESSION_LATEST_VERSION && version !== DURABLE_SESSION_INTAKE_VERSION) {

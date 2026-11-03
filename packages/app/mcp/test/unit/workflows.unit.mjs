@@ -303,5 +303,6 @@ console.log("✅ update_workflow: exact registration gate, duplicate delivery fo
 for (const value of [undefined, "", "1", "true", "on", "ISOLATED-TEST-ONLY", " isolated-test-only", "isolated-test-only "]) {
     assert.deepEqual(workflowContextOptionsFromEnv(value === undefined ? {} : { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: value }), {}, JSON.stringify(value));
 }
-assert.deepEqual(workflowContextOptionsFromEnv({ PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" }), { workflowCommands: { requests: true } });
+assert.deepEqual(workflowContextOptionsFromEnv({ PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" }),
+    { workflowCommands: { requests: true }, sessionStartVersion: "1.0.83" });
 console.log("✅ the Workflow V2 test environment switch: off for every value but the exact enabling one");

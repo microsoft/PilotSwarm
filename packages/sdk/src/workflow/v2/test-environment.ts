@@ -1,4 +1,5 @@
 import type { PilotSwarmWorkerOptions } from "../../types.js";
+import { DURABLE_SESSION_INTAKE_VERSION } from "../../orchestration-version.js";
 
 /**
  * Workflow V2 in an isolated test environment (INACTIVE everywhere else):
@@ -11,7 +12,13 @@ import type { PilotSwarmWorkerOptions } from "../../types.js";
  *   orchestration 1.0.83 its agent children start at; milestone-worker.ts);
  * - the management client of the portal and of the MCP server's direct
  *   mode: `workflowCommands: { requests: true }` (a person's workflow
- *   commands, stop and the test operations included).
+ *   commands, stop and the test operations included);
+ * - the session client of the portal and of the MCP server's direct mode:
+ *   new sessions start at 1.0.83 (`sessionStartVersion`), whose turns take
+ *   request, agent and parallel states, so a person's own chat can create
+ *   such a workflow. A session started before keeps its version: one
+ *   started at 1.0.82 stays there, and its spawn_workflow refuses those
+ *   states as before.
  *
  * It is on only when PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT is exactly
  * `isolated-test-only` (no trimming, no other spelling). Unset, empty or any
@@ -34,12 +41,14 @@ export interface WorkflowV2TestEnvironment {
     workerTestOptions: { workflowRequests: true };
     /** For the management client of the portal and of the MCP server's direct mode. */
     workflowCommands: { requests: true };
+    /** For the session client of the portal and of the MCP server's direct mode: where new sessions start (PilotSwarmClient._startSessionsAt). */
+    sessionStartVersion: typeof DURABLE_SESSION_INTAKE_VERSION;
 }
 
 /** The switch as `env` sets it: null (off) unless it is exactly the enabling value. Pure. */
 export function workflowV2TestEnvironmentFromEnv(env: Record<string, string | undefined> = process.env): WorkflowV2TestEnvironment | null {
     return env[WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE] === WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED
-        ? { workerTestOptions: { workflowRequests: true }, workflowCommands: { requests: true } }
+        ? { workerTestOptions: { workflowRequests: true }, workflowCommands: { requests: true }, sessionStartVersion: DURABLE_SESSION_INTAKE_VERSION }
         : null;
 }
 
@@ -58,6 +67,6 @@ export function workflowV2TestEnvironmentNotice(env: Record<string, string | und
     const value = env[WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE];
     if (value === undefined || value === "") return null;
     return value === WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED
-        ? `Workflow V2 test environment ON (${WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE}=${WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED}): controller 1.9.0 and session orchestration 1.0.83 are served and people's workflow commands are taken. Test-only; every worker must run the same switch.`
+        ? `Workflow V2 test environment ON (${WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE}=${WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED}): controller 1.9.0 and session orchestration 1.0.83 are served, new sessions start at 1.0.83, and people's workflow commands are taken. Test-only; every worker must run the same switch.`
         : `${WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE} is set but not to ${WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED}: ignored, Workflow V2 test environment OFF.`;
 }

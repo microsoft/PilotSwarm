@@ -186,22 +186,26 @@ function providerNames(raw) {
 /**
  * The PortalRuntime options the portal server builds (server.js): its storage options and mode, exactly, and with the
  * Workflow V2 test environment switch on (PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only; test-only, never an
- * activation) also a person's workflow commands and its embedded workers' test options. Off (unset or any other value),
- * the options are exactly `{ ...storageOptions, mode }`. Pure.
+ * activation) also a person's workflow commands, its embedded workers' test options and where its new sessions start
+ * (1.0.83, which the environment's workers serve). Off (unset or any other value), the options are exactly
+ * `{ ...storageOptions, mode }`. Pure.
  */
 export function portalRuntimeOptions(storageOptions, mode, env = process.env) {
     const test = workflowV2TestEnvironmentFromEnv(env);
     return test
-        ? { ...storageOptions, mode, workflowCommands: test.workflowCommands, workerTestOptions: test.workerTestOptions }
+        ? { ...storageOptions, mode, workflowCommands: test.workflowCommands, workerTestOptions: test.workerTestOptions,
+            sessionStartVersion: test.sessionStartVersion }
         : { ...storageOptions, mode };
 }
 
 export class PortalRuntime {
-    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions } = {}) {
+    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions, sessionStartVersion } = {}) {
         // workflowCommands (Workflow v2, INACTIVE; test-only): a person's workflow commands. Unset, updateWorkflow answers 501.
         // workerTestOptions (test-only): the embedded workers' testOptions, so they serve what the environment's workers do.
+        // sessionStartVersion (test-only): where new sessions start; unset, the latest version.
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser,
-            ...(workflowCommands ? { workflowCommands } : {}), ...(workerTestOptions ? { workerTestOptions } : {}) });
+            ...(workflowCommands ? { workflowCommands } : {}), ...(workerTestOptions ? { workerTestOptions } : {}),
+            ...(sessionStartVersion ? { sessionStartVersion } : {}) });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;

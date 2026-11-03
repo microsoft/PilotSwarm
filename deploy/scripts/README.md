@@ -505,7 +505,7 @@ way on every PilotSwarm workload of that environment:
 
 | Variable | Enabling value | Effect when it is exactly that value |
 |---|---|---|
-| `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | `isolated-test-only` | Workers (the `worker` image's `packages/sdk/examples/worker.js`, and the portal's embedded workers in local mode) serve controller 1.9.0 and session orchestration 1.0.83 (`testOptions.workflowRequests`). The portal and the MCP server take a person's workflow commands (`workflowCommands: { requests: true }`): stop, test, test answers and the virtual clock included. |
+| `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | `isolated-test-only` | Workers (the `worker` image's `packages/sdk/examples/worker.js`, and the portal's embedded workers in local mode) serve controller 1.9.0 and session orchestration 1.0.83 (`testOptions.workflowRequests`). The portal and the MCP server take a person's workflow commands (`workflowCommands: { requests: true }`): stop, test, test answers and the virtual clock included. The portal's and the MCP server's direct-mode clients start new sessions at 1.0.83; sessions started before keep 1.0.82. |
 
 - Unset, empty or any other value (`1`, `true`, `on`, another case, extra
   spaces) is off: every option is exactly as without the variable. Each

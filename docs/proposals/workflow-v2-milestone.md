@@ -1583,9 +1583,17 @@ embedded workers get `testOptions.workflowRequests`; the portal
 (`packages/app/web/server.js`, `portalRuntimeOptions`) and the MCP server
 (`workflowContextOptionsFromEnv`) get `workflowCommands: { requests: true }`,
 so a person's commands, stop and the test operations included, are taken and
-advertised (`workflows.v2.commands`). Unset, empty or any other value is
+advertised (`workflows.v2.commands`). The portal's session client
+(`NodeSdkTransport`) and the MCP server's direct-mode client also start new
+sessions at 1.0.83 (`sessionStartVersion`, `PilotSwarmClient._startSessionsAt`):
+only a 1.0.83 session's turns take request, agent and parallel states, so
+without it no person's chat could create such a workflow (found in the preview
+on 792c61e3). A session started before keeps its version; one at 1.0.82 still
+refuses those states. Sub-agents that a chat spawns, and system agents, still
+start at 1.0.82. Unset, empty or any other value is
 off, and every option is exactly as without it (unit tests prove it for the
-worker, the portal, its embedded workers and MCP). Each entry point logs one
+worker, the portal, its embedded workers and MCP; a local test runs a chat each
+way). Each entry point logs one
 line when the variable is set (ON, or ignored). Production defaults,
 `DURABLE_SESSION_LATEST_VERSION` (1.0.82) and the orchestration registry do
 not change, so this is not an activation; every worker that shares the

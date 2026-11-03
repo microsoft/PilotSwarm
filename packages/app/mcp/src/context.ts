@@ -147,17 +147,23 @@ export interface CreateContextOptions {
      * deployment decides (501 unless it enables them).
      */
     workflowCommands?: { requests?: boolean } | null;
+    /**
+     * Workflow v2 (INACTIVE; test-only): in direct mode, where new sessions
+     * start (1.0.83 when the workers serve it). Unset, the latest version.
+     * In web mode the deployment starts them.
+     */
+    sessionStartVersion?: string | null;
 }
 
 /**
  * The context options the Workflow V2 test environment switch adds (PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT, exactly
  * `isolated-test-only`; test-only, never an activation): a person's workflow commands (update_workflow registered; in
- * direct mode the management client takes them, stop and the test operations included). Off: nothing, so the context is
- * created exactly as before. Pure.
+ * direct mode the management client takes them, stop and the test operations included), and in direct mode new sessions
+ * at 1.0.83. Off: nothing, so the context is created exactly as before. Pure.
  */
-export function workflowContextOptionsFromEnv(env: Record<string, string | undefined> = process.env): Pick<CreateContextOptions, "workflowCommands"> {
+export function workflowContextOptionsFromEnv(env: Record<string, string | undefined> = process.env): Pick<CreateContextOptions, "workflowCommands" | "sessionStartVersion"> {
     const test = workflowV2TestEnvironmentFromEnv(env);
-    return test ? { workflowCommands: test.workflowCommands } : {};
+    return test ? { workflowCommands: test.workflowCommands, sessionStartVersion: test.sessionStartVersion } : {};
 }
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
@@ -247,6 +253,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         admin = true;
         ctxRole = "admin";
         client = new PilotSwarmClient({ store: opts.store });
+        if (opts.sessionStartVersion) client._startSessionsAt(opts.sessionStartVersion);
         await client.start();
         mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands ? { workflowCommands: opts.workflowCommands } : {}) });
         await mgmt.start();
