@@ -17,7 +17,7 @@ import { DURABLE_SESSION_INTAKE_VERSION } from "../../orchestration-version.js";
  *   new sessions start at 1.0.83 (`sessionStartVersion`), whose turns take
  *   request, agent and parallel states, so a person's own chat can create
  *   such a workflow; and a sub-agent a chat spawns starts there too (its
- *   worker has `workflowRequests`; session-proxy spawnChildSession). A
+ *   worker has `workflowRequests`; session-proxy's turn client). A
  *   session started before keeps its version: one started at 1.0.82 stays
  *   there, and its spawn_workflow refuses those states as before. System
  *   agents and their children start at the latest version.

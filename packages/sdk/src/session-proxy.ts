@@ -1272,8 +1272,10 @@ export function registerActivities(
      * carry an invocation's `intake` field; `intakeAdmissionRetryDelaysMs`
      * replaces the in-place waits of their admission's transient retries
      * (intake-admission.ts); `workflowRequests` gives those turns the
-     * respond_session_request tool (workflow request states), and starts a
-     * sub-agent (spawnChildSession, not a system child) at 1.0.83. INACTIVE: only
+     * respond_session_request tool (workflow request states), and starts the
+     * sessions a turn creates (spawn_agent, create_agent_session) and a
+     * non-system child the orchestration spawns (spawnChildSession) at 1.0.83.
+     * INACTIVE: only
      * tests pass them, and a worker created with the test option
      * workflowRequests (milestone-worker.ts).
      */
@@ -2487,6 +2489,11 @@ export function registerActivities(
             if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
             inlineSdkClientPromise = (async () => {
                 const startedClient = new PilotSwarmClient(internalClientConfig());
+                // The turn's own client creates its sub-agents (spawn_agent) and agent sessions (create_agent_session). On a
+                // worker that serves the durable intake's orchestration (the test option workflowRequests, which the Workflow
+                // V2 test environment switch sets; INACTIVE) they start at 1.0.83, as a person's new chat does, so an agent
+                // can delegate writing request, agent and parallel states. Elsewhere they start at the latest version.
+                if (testOptions?.workflowRequests === true) startedClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
                 await startedClient.start();
                 inlineSdkClient = startedClient;
                 return startedClient;
@@ -5931,8 +5938,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             traceWriter: (message: string) => trace(message),
         });
         // On a worker that serves the durable intake's orchestration (the test option workflowRequests, which the Workflow
-        // V2 test environment switch sets; INACTIVE), an agent's sub-agent starts at 1.0.83 like the chat that spawns it,
-        // so a delegated agent can create request, agent and parallel states. System children keep the latest version.
+        // V2 test environment switch sets; INACTIVE), a non-system child the orchestration spawns starts at 1.0.83, as the
+        // sub-agents a turn spawns do (getInlineClient). System children keep the latest version.
         if (testOptions?.workflowRequests === true && !input.isSystem) sdkClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
         try {
             const clientStartAt = Date.now();
