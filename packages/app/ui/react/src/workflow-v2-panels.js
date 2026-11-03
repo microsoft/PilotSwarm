@@ -5,7 +5,7 @@ import {
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
-    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2JsonObjectDraft,
+    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2JsonObjectDraft, workflowV2PublicationEvidenceRows,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "../../core/src/workflow-v2-commands.js";
 
@@ -530,6 +530,8 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id }) 
     row("Definition hash", h("code", { style: { overflowWrap: "anywhere" }, "data-field": "definition-hash" }, shownHash ?? "Not known")),
     draft ? row("Validity", model.valid ? "Valid" : `${model.errors || "Unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be published`) : null,
     row("Live effects", runs ? "Only when its live run starts" : "None until a live run starts"),
+    // What publication pins for each named agent, and the tests of exactly this revision (information: no test is required).
+    workflowV2PublicationEvidenceRows(model).map(([label, value], index) => row(label, value, { key: `evidence-${index}`, "data-evidence": label.trim() })),
     h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, draft
         ? "Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. Publication starts no run, approves no repository write and grants no tool."
         : "Starting runs the published revision with real effects. A workflow has one live run."),

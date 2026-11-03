@@ -655,7 +655,7 @@ most 64 KiB per schema file).
 | Portal workflow view draft editor (INACTIVE: only with `personCommands.draft`) | the draft's current revision and YAML, for a caller who may change it | a person's `replace_definition` at the revision the edit started from |
 | Portal workflow view test review (INACTIVE: only with `personCommands` listing `test`) | the definition's current revision, definition hash and validity | a person's `test` of that exact revision, with inputs, agent mode and an optional scenario name |
 | Portal workflow view test answers and clock (INACTIVE: only with `personCommands` listing `test_respond` or `test_advance`) | the shown test run's interceptions, what each reached and must match, its virtual clock | a person's `test_respond` to one waiting interception, and `test_advance` of the run's virtual clock |
-| Portal workflow view publication review (INACTIVE: only with `personCommands`) | the definition's state, revision, definition hash, validity and runs | a person's `publish`, `publish_and_start` (exact revision and hash) or `start` (published hash), with JSON inputs and optional initial variables |
+| Portal workflow view publication review (INACTIVE: only with `personCommands`) | the definition's state, revision, definition hash, validity and runs; each named agent as written and, once published, its pin; the tests of exactly that revision (information) | a person's `publish`, `publish_and_start` (exact revision and hash) or `start` (published hash), with JSON inputs and optional initial variables |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
@@ -1121,8 +1121,15 @@ revision, or a published revision without its live run) when the portal's
 publication panel would offer it (`workflowV2DefinitionControls`). `P` opens
 the review of exactly what the view shows then (its pin): the definition,
 the revision and its full definition hash, its validity, what has live
-effects, and that publication freezes the revision, starts no run, approves
-no repository write and grants no tool. ctrl-p publishes only; ctrl-r
+effects, each named agent state's agent as written (package and version)
+and, once published, what publication pinned for it (the package revision
+and the interface digest), the tests of exactly this revision with their
+status and outcome, shown as information (publishing requires no test: no
+publication gate on test scenarios exists, inventory C6-2), and that
+publication freezes the revision, starts no run, approves no repository
+write and grants no tool (mock M03; R18, R28; the portal's review shows the
+same rows, `workflowV2PublicationEvidenceRows`; nothing is resolved before
+publishing: a pin preview is inventory C6-1). ctrl-p publishes only; ctrl-r
 publishes and starts the live run, or starts a published definition's live
 run, with the run's inputs and optional initial variables, two JSON object
 fields (Tab switches them; inputs default to `{}`). Each action asks first:

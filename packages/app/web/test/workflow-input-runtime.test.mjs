@@ -153,7 +153,13 @@ test("answer, steer and event to an agent state's subtree keep the SDK refusal; 
     assert.equal(steerOptions.caller.sender.kind, "user");
     assert.equal(steerOptions.caller.sender.subject, "alice");
     assert.equal(steerOptions.caller.sender.origin, "tui");
-    assert.deepEqual(steerOptions.caller.viewer.principal, { provider: "dev", subject: "alice" }, "forged viewer overwritten");
+    // The viewer is the runtime's own (normalizeOwnerPrincipal of the signed-in caller: provider, subject, email, displayName)
+    // and its role decision; nothing of the forged caller survives anywhere in what reaches the transport.
+    assert.deepEqual(Object.keys(steerOptions.caller).sort(), ["sender", "viewer"]);
+    assert.deepEqual(steerOptions.caller.viewer, { principal: { provider: "dev", subject: "alice", email: null, displayName: null }, isAdmin: false },
+        "forged viewer overwritten");
+    assert.equal(JSON.stringify(steerOptions).includes("mallory"), false, "no forged principal value survives");
+    assert.notEqual(steerOptions.caller.sender.kind, "agent", "no forged sender kind survives");
 
     const event = calls.find(([m, s]) => m === "sendSessionEvent" && s === "plain");
     assert.deepEqual(event, ["sendSessionEvent", "plain", "nudge", { a: 1 }], "events carry no sender at 090ad919 (SDK decides)");

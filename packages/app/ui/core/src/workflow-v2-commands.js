@@ -1,4 +1,4 @@
-import { workflowV2RunRows } from "./workflow-v2-view.js";
+import { workflowV2AgentBinding, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RunRows } from "./workflow-v2-view.js";
 
 /**
  * Workflow v2: a person's workflow commands in the workflow view (design 04
@@ -485,8 +485,50 @@ export function workflowV2DefinitionControls(model, command = null) {
     const note = controls.length ? null
         : restriction ?? (state === "published" && liveRun ? "This workflow has its live run; a new live run needs a new workflow."
             : "This workflow takes no publication commands from people.");
+    const evidence = publicationEvidence(model, state, state === "draft" ? revision : publishedRevision, publishedRevision);
     return { state, name: text(model.revision.name), semver: text(definition.semver), revision, definitionHash, valid, errors,
-        publishedRevision, publishedDefinitionHash, liveRun, controls, busy, note, viewerReason: denied };
+        publishedRevision, publishedDefinitionHash, liveRun, controls, busy, note, viewerReason: denied, ...evidence };
+}
+
+/**
+ * What a publication review shows beside the revision (mock M03 "Pinned package", "Required test evidence"; R18, R28):
+ * each named agent state with the agent it names as written and, for a published definition, what publication pinned
+ * (`agents`: { stateId, task, rows }); and the test runs of exactly the revision reviewed (`tests`: { runId, status,
+ * outcome }), shown as information: publishing requires no test. Read from the model only; nothing is resolved.
+ */
+function publicationEvidence(model, state, reviewedRevision, publishedRevision) {
+    const graph = isRecord(model.graph) && Array.isArray(model.graph.states) ? model.graph : null;
+    const pins = state === "published" && isRecord(model.definition.publishedAgentPins) && graph?.revision === publishedRevision
+        ? { by: "publication", pins: model.definition.publishedAgentPins } : null;
+    const agents = (graph ? graph.states : []).filter(node => isRecord(node) && node.type === "agent" && node.invoke?.source === "agent")
+        .map(node => ({ stateId: node.id, task: workflowV2AgentTask(node), rows: workflowV2AgentBindingRows(workflowV2AgentBinding(node, pins)) }));
+    const tests = reviewedRevision === null || !Array.isArray(model.runs) ? []
+        : model.runs.filter(run => isRecord(run) && run.mode === "test" && run.revision === reviewedRevision && typeof run.runId === "string")
+            .map(run => ({ runId: run.runId, status: text(run.status) ?? "unknown", outcome: text(run.outcome) }));
+    return { agents, tests, graphKnown: graph !== null };
+}
+
+/**
+ * The publication review's evidence rows, `[label, value]`, in the same words in the portal and the TUI: each named
+ * agent and what is pinned for it, and the tests of exactly this revision (information only: publishing requires none).
+ */
+export function workflowV2PublicationEvidenceRows(publication) {
+    if (!isRecord(publication)) return [];
+    const draft = publication.state === "draft";
+    const rows = [];
+    if (!publication.graphKnown) rows.push(["Agents", "Not known: the revision has no graph to read"]);
+    else if (!publication.agents?.length) rows.push(["Agents", "None: no state runs a named agent"]);
+    for (const agent of publication.agents ?? []) {
+        const pin = agent.rows.find(([label]) => label === "Pinned by publication");
+        rows.push([`Agent in '${agent.stateId}'`, `${agent.task}${draft ? " · its exact package revision is pinned when this revision is published"
+            : pin ? ` · pinned: ${pin[1]}` : " · no pin recorded"}`]);
+        for (const [label, value] of agent.rows) if (label !== "Pinned by publication") rows.push([`  ${label}`, value]);
+    }
+    const tests = publication.tests ?? [];
+    rows.push(["Tests of this revision", tests.length
+        ? tests.map(run => `${shortId(run.runId)} ${run.status}${run.outcome ? ` · ${run.outcome}` : ""}`).join("; ")
+        : "None run. Publishing does not require a test"]);
+    return rows;
 }
 
 /**

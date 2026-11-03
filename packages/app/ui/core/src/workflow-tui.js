@@ -6,7 +6,7 @@ import {
 } from "./workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor,
-    workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
+    workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
     workflowV2TestResponder, workflowV2VariableBatchDraft,
 } from "./workflow-v2-commands.js";
 
@@ -796,6 +796,8 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
             publication.valid ? "white" : "red");
     }
     add(`Live effects: ${runs ? "Only when its live run starts" : "None until a live run starts"}`);
+    // What publication pins for each named agent, and the tests of exactly this revision (as the portal's review says them).
+    if (!changed && publication) for (const [label, value] of workflowV2PublicationEvidenceRows(publication)) add(`${label.trim()}: ${value}`, "white", label.startsWith(" ") ? "  " : "");
     add(draft
         ? "Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. Publication starts no run, approves no repository write and grants no tool."
         : "Starting runs the published revision with real effects. A workflow has one live run.", "gray");

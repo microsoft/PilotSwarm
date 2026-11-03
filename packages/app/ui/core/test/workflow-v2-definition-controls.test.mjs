@@ -25,7 +25,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import {
     workflowV2CommandNamesRun, workflowV2DefinitionControls, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs,
-    workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire,
+    workflowV2PublicationEvidenceRows, workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire,
 } from "../src/workflow-v2-commands.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
 import { readModel } from "./workflow-v2-fixtures.mjs";
@@ -245,4 +245,55 @@ test("the review panel opens from the header: the exact revision and hash with P
     assert.ok(!live.includes("Start…") && !live.includes("Start the live run"), "no start once the live run exists");
     const subtree = main(mount({ readModel: draftModel({}, SUBTREE), readModelRunId: null, definitionOpen: true }));
     assert.ok(!subtree.includes("Publish…") && !subtree.includes("Publish review"), "nothing to publish in an agent state's subtree");
+});
+
+// Mock M03 (R18, R28): the review names each named agent as written and, once published, what publication pinned; and it
+// lists the tests of exactly the revision reviewed, as information (publishing requires none). Nothing is resolved here.
+const AGENT_STATES = [
+    { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer", package: "review-kit", version: "1.2.0", interface: "ReviewResult@1" },
+        timeoutSeconds: 600, outcomes: ["accepted"], next: { accepted: "done", timed_out: "failed" } },
+    { id: "summarize", type: "agent", invoke: { source: "prompt" }, outcomes: ["done"], next: { done: "done" } },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+    { id: "failed", type: "terminal", outcome: "failed" },
+];
+const REVISION_PIN = "b".repeat(64);
+const DIGEST = "c".repeat(64);
+
+test("the review names each named agent and what is pinned for it, and the tests of exactly this revision, as information", () => {
+    const testRuns = [
+        { runId: "test-run-0001", mode: "test", status: "completed", revision: 2, outcome: "succeeded" },
+        { runId: "test-run-0002", mode: "test", status: "running", revision: 2, outcome: null },
+        { runId: "test-run-0003", mode: "test", status: "completed", revision: 1, outcome: "failed" },
+    ];
+    const draft = workflowV2DefinitionControls({ ...draftModel(), graph: { revision: 2, initial: "review", states: AGENT_STATES }, runs: testRuns });
+    assert.deepEqual(draft.agents, [{ stateId: "review", task: "code-reviewer · review-kit 1.2.0", rows: [["Interface", "ReviewResult@1"]] }],
+        "an inline prompt names no agent");
+    assert.deepEqual(draft.tests, [{ runId: "test-run-0001", status: "completed", outcome: "succeeded" }, { runId: "test-run-0002", status: "running", outcome: null }],
+        "a test of another revision is not this revision's evidence");
+    assert.deepEqual(workflowV2PublicationEvidenceRows(draft), [
+        ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · its exact package revision is pinned when this revision is published"],
+        ["  Interface", "ReviewResult@1"],
+        ["Tests of this revision", "test-r…0001 completed · succeeded; test-r…0002 running"],
+    ]);
+
+    const pins = { review: { name: "code-reviewer", package: "review-kit", version: "1.2.0", revision: REVISION_PIN,
+        interface: { name: "ReviewResult", version: "1", digest: DIGEST } } };
+    const published = workflowV2DefinitionControls({ ...publishedModel(), definition: { ...publishedModel().definition, publishedAgentPins: pins },
+        graph: { revision: 1, initial: "review", states: AGENT_STATES }, runs: [] });
+    assert.deepEqual(workflowV2PublicationEvidenceRows(published), [
+        ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · pinned: review-kit 1.2.0 · revision bbbbbbbbbbbb…"],
+        ["  Interface", "ReviewResult@1"],
+        ["  Interface digest", "ReviewResult@1 · cccccccccccc…"],
+        ["Tests of this revision", "None run. Publishing does not require a test"],
+    ]);
+    // Without a graph, nothing is said about agents; a revision with no named agent says so.
+    assert.deepEqual(workflowV2PublicationEvidenceRows(workflowV2DefinitionControls({ ...draftModel(), graph: null, runs: [] }))[0],
+        ["Agents", "Not known: the revision has no graph to read"]);
+    assert.deepEqual(workflowV2PublicationEvidenceRows(workflowV2DefinitionControls({ ...draftModel(), runs: [] }))[0], ["Agents", "None: no state runs a named agent"]);
+    // The portal's review shows the same rows.
+    const open = main(mount({ readModel: { ...draftModel(), graph: { revision: 2, initial: "review", states: AGENT_STATES }, runs: testRuns },
+        readModelRunId: null, definitionOpen: true }));
+    assert.ok(open.includes("data-evidence=\"Agent in &#x27;review&#x27;\""), open);
+    assert.ok(open.includes("its exact package revision is pinned when this revision is published"));
+    assert.ok(open.includes("test-r…0001 completed · succeeded; test-r…0002 running"));
 });
