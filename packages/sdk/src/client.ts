@@ -3,11 +3,10 @@ import {
     sanitizePromptAttachmentRefs,
     systemSessionProtectedError,
 } from "./types.js";
-import {
-    DURABLE_SESSION_LATEST_VERSION,
-    DURABLE_SESSION_ORCHESTRATION_NAME,
-} from "./orchestration-registry.js";
-import { DURABLE_SESSION_INTAKE_VERSION } from "./orchestration-version.js";
+import { DURABLE_SESSION_ORCHESTRATION_NAME } from "./orchestration-registry.js";
+// From the leaf module, not the registry's re-export: the registry sits on an import cycle
+// (registry -> orchestration_1_0_47 -> session-proxy -> client -> registry).
+import { DURABLE_SESSION_INTAKE_VERSION, DURABLE_SESSION_LATEST_VERSION } from "./orchestration-version.js";
 import type {
     PilotSwarmClientOptions,
     ManagedSessionConfig,
@@ -153,8 +152,11 @@ export class PilotSwarmClient {
     /** System session flag. */
     systemSessions = new Set<string>();
     private activeOrchestrations = new Map<string, string>();
-    /** The orchestration version new sessions start at (_startSessionsAt). */
-    private sessionStartVersion: string = DURABLE_SESSION_LATEST_VERSION;
+    /**
+     * The orchestration version _startSessionsAt chose for new sessions; null = the latest version,
+     * read when a session starts (never captured at construction, so no import order can freeze it).
+     */
+    private sessionStartVersion: string | null = null;
     private lastSeenStatusVersion = new Map<string, number>();
     private lastSeenIteration = new Map<string, number>();
     private lastSeenResponseVersion = new Map<string, number>();
@@ -1018,10 +1020,11 @@ export class PilotSwarmClient {
             // Explicit local identity keeps its precedence; another process
             // reconstructs the named agent's startup contract from the row.
             const agentId = this.sessionAgentIds.get(sessionId) ?? cmsRow?.agentId;
+            const startVersion = this.sessionStartVersion ?? DURABLE_SESSION_LATEST_VERSION;
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,
-                sourceOrchestrationVersion: this.sessionStartVersion,
+                sourceOrchestrationVersion: startVersion,
                 iteration: 0,
                 // Client-created sessions are always durable. The worker's
                 // configured session store determines how that durability is
@@ -1046,7 +1049,7 @@ export class PilotSwarmClient {
                 orchestrationId,
                 DURABLE_SESSION_ORCHESTRATION_NAME,
                 input,
-                this.sessionStartVersion,
+                startVersion,
             );
             this.activeOrchestrations.set(sessionId, orchestrationId);
             trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
@@ -1668,8 +1671,9 @@ export class PilotSwarmSession {
         if (reserved(data)) throw refusal();
         const serialized = JSON.stringify(data);
         if (serialized !== undefined && reserved(JSON.parse(serialized))) throw refusal();
-        // A person's custom event cannot feed a workflow agent state's subtree either (design 03, R13).
-        await assertWorkflowHumanInputAllowed(this.client._workflowStoreOrNull(), this.sessionId, "event");
+        // A person's custom event cannot feed a workflow agent state's subtree either (design 03, R13). A client that
+        // offers no workflow store (no lineage to read) has no agent states: the policy's own rule for a null store.
+        await assertWorkflowHumanInputAllowed(this.client._workflowStoreOrNull?.() ?? null, this.sessionId, "event");
         const duroxideClient = this.client._getDuroxideClient();
         const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
         if (duroxideClient) {
