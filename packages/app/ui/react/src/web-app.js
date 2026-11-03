@@ -737,6 +737,54 @@ const PORTAL_CANVAS_MIN_PX = 480;
  */
 const PORTAL_CANVAS_COL_DEFAULT_PX = 640;
 const PORTAL_DIAG_COL_DEFAULT_PX = 320;
+/** The zen chat rail's width until a person drags it (and what a double-click on its seam restores). */
+const PORTAL_ZEN_RAIL_DEFAULT_PX = 380;
+/** How far one arrow key moves a column seam. */
+const PORTAL_COLUMN_KEY_STEP_PX = 24;
+
+/**
+ * The right block's columns as they are ON SCREEN, as pixel deltas from each column's opening width (of-03), and how
+ * far the block may still grow: what chat can give before it reaches its floor.
+ *
+ * A stored width can be larger than the width shown. The grid caps the right block at the window minus chat's floor,
+ * and with both columns open diagnostics only gets what the canvas's fixed width leaves; so a narrower window, a wide
+ * sessions column, a key press past the cap, or opening both columns on a small screen leaves the stored widths ahead
+ * of the screen. The seams used to start from the stored widths: the seam a person dragged then did not move until the
+ * hidden excess was unwound, or the other seam moved instead. Every seam now starts from these shown widths.
+ * Null for a column that is not on screen.
+ */
+function measureRightBlock(handle) {
+    const grid = handle?.closest?.(".ps-workspace-grid");
+    if (!grid) return null;
+    const box = (element) => (element ? element.getBoundingClientRect().width : null);
+    const host = grid.querySelector(":scope > .ps-workspace-column-host");
+    const hostWidth = box(host) ?? 0;
+    const canvas = box(host?.querySelector(":scope > .ps-canvas-layer:not(.is-hidden):not(.is-maximized)"));
+    const diagnostics = box(host?.querySelector(":scope > .ps-workspace-column:not(.is-artifact)"));
+    const chat = box(grid.querySelector(":scope > .ps-workspace-main-grid > .ps-workspace-pane-slot:last-child"));
+    return {
+        // A canvas wider than its host is cut off by the grid: only the part on screen counts.
+        canvasAdjust: canvas === null ? null : Math.round(Math.min(canvas, hostWidth)) - PORTAL_CANVAS_COL_DEFAULT_PX,
+        diagnosticsAdjust: diagnostics === null ? null : Math.round(diagnostics) - PORTAL_DIAG_COL_DEFAULT_PX,
+        chatSpare: chat === null ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(chat - PORTAL_MIN_CHAT_COLUMN_PX)),
+    };
+}
+
+/**
+ * Store the shown widths (measureRightBlock) for the columns on screen, so a seam moves from where it is. A difference
+ * under 2px is rounding, not a hidden excess, and is left alone. Nothing on screen changes: the block already shows
+ * these widths.
+ */
+function adoptShownRightWidths(controller, shown) {
+    if (!shown) return;
+    const layout = controller.getState()?.ui?.layout || {};
+    if (shown.canvasAdjust !== null && Math.abs(shown.canvasAdjust - (Number(layout.canvasPaneAdjust) || 0)) >= 2) {
+        controller.dispatch({ type: "ui/canvasPaneAdjust", canvasPaneAdjust: shown.canvasAdjust });
+    }
+    if (shown.diagnosticsAdjust !== null && Math.abs(shown.diagnosticsAdjust - (Number(layout.diagnosticsPaneAdjust) || 0)) >= 2) {
+        controller.dispatch({ type: "ui/diagnosticsPaneAdjust", diagnosticsPaneAdjust: shown.diagnosticsAdjust });
+    }
+}
 
 
 function portalSessionColumnBounds(width) {
@@ -11277,6 +11325,10 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
  * toggled back on". The adjust is reset at the same time, so re-opening from
  * the toolbar comes back at the even split rather than at the sliver that
  * closed it.
+ *
+ * Every drag and key press starts from the widths on screen (of-03, see
+ * measureRightBlock). The keyboard never closes a column: it stops at the
+ * narrowest width a drag would keep, so the focused seam stays on screen.
  */
 function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagnosticsPaneAdjust = 0 }) {
     const dragStateRef = React.useRef(null);
@@ -11342,10 +11394,12 @@ function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagn
             if (event.button !== 0) return;
             event.preventDefault();
             capturePointerForDrag(event);
+            const shown = measureRightBlock(event.currentTarget);
+            adoptShownRightWidths(controller, shown);
             dragStateRef.current = {
                 startX: event.clientX,
-                startCanvas: Number(canvasPaneAdjust) || 0,
-                startDiag: Number(diagnosticsPaneAdjust) || 0,
+                startCanvas: shown?.canvasAdjust ?? (Number(canvasPaneAdjust) || 0),
+                startDiag: shown?.diagnosticsAdjust ?? (Number(diagnosticsPaneAdjust) || 0),
             };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
@@ -11357,8 +11411,14 @@ function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagn
         onKeyDown: (event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
             event.preventDefault();
-            const dx = event.key === "ArrowRight" ? 24 : -24;
-            commit((Number(canvasPaneAdjust) || 0) + dx, (Number(diagnosticsPaneAdjust) || 0) - dx);
+            const shown = measureRightBlock(event.currentTarget);
+            adoptShownRightWidths(controller, shown);
+            const dx = event.key === "ArrowRight" ? PORTAL_COLUMN_KEY_STEP_PX : -PORTAL_COLUMN_KEY_STEP_PX;
+            const ca = (shown?.canvasAdjust ?? (Number(canvasPaneAdjust) || 0)) + dx;
+            const da = (shown?.diagnosticsAdjust ?? (Number(diagnosticsPaneAdjust) || 0)) - dx;
+            const w = widths(ca, da);
+            if (w.canvas < PORTAL_COLUMN_SNAP_CLOSED_PX || w.diag < PORTAL_COLUMN_SNAP_CLOSED_PX) return;
+            commit(ca, da);
         },
     },
     React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
@@ -11367,8 +11427,11 @@ function CanvasDiagnosticsResizeHandle({ controller, canvasPaneAdjust = 0, diagn
         React.createElement("span", { className: "ps-column-resizer-dot" })));
 }
 
-/** The zen seam: drags the chat rail, remembered per session. */
-function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
+/**
+ * The zen seam: drags the chat rail, remembered per session. Double-click
+ * puts the rail back at its default width (of-03).
+ */
+function ZenRailResizeHandle({ controller, sessionId, railPx = PORTAL_ZEN_RAIL_DEFAULT_PX }) {
     const dragStateRef = React.useRef(null);
     const [dragging, setDragging] = React.useState(false);
     React.useEffect(() => {
@@ -11395,7 +11458,7 @@ function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
     return React.createElement("button", {
         type: "button",
         className: `ps-column-resizer${dragging ? " is-dragging" : ""}`,
-        title: "Drag to resize chat against the canvas (remembered for this session)",
+        title: "Drag to resize chat against the canvas (remembered for this session). Double-click to reset.",
         "aria-label": "Resize the zen chat rail",
         onPointerDown: (event) => {
             if (event.button !== 0) return;
@@ -11405,10 +11468,12 @@ function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
         },
+        onDoubleClick: () => controller.dispatch({ type: "canvas/zenRail", sessionId, px: PORTAL_ZEN_RAIL_DEFAULT_PX }),
         onKeyDown: (event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
             event.preventDefault();
-            controller.dispatch({ type: "canvas/zenRail", sessionId, px: railPx + (event.key === "ArrowRight" ? 24 : -24) });
+            controller.dispatch({ type: "canvas/zenRail", sessionId,
+                px: railPx + (event.key === "ArrowRight" ? PORTAL_COLUMN_KEY_STEP_PX : -PORTAL_COLUMN_KEY_STEP_PX) });
         },
     },
     React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
@@ -11421,6 +11486,14 @@ function ZenRailResizeHandle({ controller, sessionId, railPx = 380 }) {
  * The seam between chat and the right block. Chat flexes, so this drags the
  * width of the column beside it — canvas when open, else diagnostics. The
  * other column never moves: growing chat shrinks only its neighbour.
+ *
+ * Every drag and key press starts from the widths on screen and stores them
+ * for both columns first (of-03, see measureRightBlock), so the seam moves
+ * at once and moves itself, never the seam between canvas and diagnostics.
+ * It grows the block until chat reaches its floor; a drag that leaves the
+ * column narrower than the snap width closes it on release; the keyboard
+ * stops at the snap width instead, so the focused seam stays on screen.
+ * Double-click resets.
  */
 function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
     const dragStateRef = React.useRef(null);
@@ -11428,6 +11501,14 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
     const actionType = target === "canvas" ? "ui/canvasPaneAdjust" : "ui/diagnosticsPaneAdjust";
     const key = target === "canvas" ? "canvasPaneAdjust" : "diagnosticsPaneAdjust";
     const base = target === "canvas" ? PORTAL_CANVAS_COL_DEFAULT_PX : PORTAL_DIAG_COL_DEFAULT_PX;
+
+    // Where the seam is and how far the block may still grow, from the screen.
+    const startFrom = (element) => {
+        const shown = measureRightBlock(element);
+        adoptShownRightWidths(controller, shown);
+        const startAdjust = (target === "canvas" ? shown?.canvasAdjust : shown?.diagnosticsAdjust) ?? (Number(adjust) || 0);
+        return { startAdjust, maxAdjust: startAdjust + (shown ? shown.chatSpare : Number.POSITIVE_INFINITY) };
+    };
 
     const commit = (next) => {
         if (base + next < PORTAL_COLUMN_SNAP_CLOSED_PX) {
@@ -11483,14 +11564,8 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
             // give before it reaches its floor. Measured at drag start from
             // the chat slot (the main grid's last column), the same element
             // the grid template protects with its own minimum.
-            const chatSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child");
-            const chatWidth = chatSlot ? chatSlot.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
-            const startAdjust = Number(adjust) || 0;
-            dragStateRef.current = {
-                startX: event.clientX,
-                startAdjust,
-                maxAdjust: startAdjust + Math.max(0, chatWidth - PORTAL_MIN_CHAT_COLUMN_PX),
-            };
+            const { startAdjust, maxAdjust } = startFrom(event.currentTarget);
+            dragStateRef.current = { startX: event.clientX, startAdjust, maxAdjust };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
         },
@@ -11498,7 +11573,11 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
         onKeyDown: (event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
             event.preventDefault();
-            commit((Number(adjust) || 0) - (event.key === "ArrowRight" ? 24 : -24));
+            const { startAdjust, maxAdjust } = startFrom(event.currentTarget);
+            const next = event.key === "ArrowLeft"
+                ? Math.min(startAdjust + PORTAL_COLUMN_KEY_STEP_PX, Math.max(startAdjust, maxAdjust))
+                : Math.max(startAdjust - PORTAL_COLUMN_KEY_STEP_PX, PORTAL_COLUMN_SNAP_CLOSED_PX - base);
+            if (next !== startAdjust) controller.dispatch({ type: actionType, [key]: next });
         },
     },
     React.createElement("span", { className: "ps-column-resizer-handle", "aria-hidden": "true" },
@@ -16332,7 +16411,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // its stored toggle; the session list hides entirely.
     const zenActive = state.canvasZen && canvasModeActive && !artifactPaneActive;
     const zenRailPx = Math.max(260, Math.min(720,
-        Number(state.canvasPrefs?.[state.activeSessionId]?.zenRailPx) || 380));
+        Number(state.canvasPrefs?.[state.activeSessionId]?.zenRailPx) || PORTAL_ZEN_RAIL_DEFAULT_PX));
     // Escape steps down one rung: full screen -> zen -> normal workspace.
     React.useEffect(() => {
         if (suspended || (!canvasMaximized && !zenActive)) return undefined;

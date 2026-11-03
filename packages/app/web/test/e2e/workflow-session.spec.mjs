@@ -468,6 +468,125 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     });
 }
 
+// of-03: the right-most pane (Step details beside the workflow) resizes. The seam between the workflow and Step details
+// moves the pane at once while dragging, and the width is remembered for this session across a reload (the profile
+// store below keeps what the page saves). The arrow keys move it by 24 pixels and stop at chat's floor without storing
+// a width the screen cannot show, so the first key back moves it; a double-click puts it back at its opening width.
+// With Diagnostics open too on a window too narrow for both opening widths, the seam moves itself (the canvas gives up
+// the pixels) and Diagnostics keeps its width; it used to move the inner seam instead, or nothing at all.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "of-03" (from packages/app/web, after build).
+const rightBlock = (page) => page.evaluate(() => {
+    const width = (selector) => document.querySelector(selector)?.getBoundingClientRect().width ?? null;
+    return {
+        host: width(".ps-workspace-column-host"),
+        canvas: width(".ps-canvas-layer:not(.is-hidden)"),
+        diagnostics: width(".ps-workspace-column-host > .ps-workspace-column:not(.is-artifact)"),
+        chat: width(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child"),
+    };
+});
+/** A profile store for one test, so what the page saves comes back after a reload. Registered after routeApi: it answers first. */
+async function routeProfile(page) {
+    const store = { settings: {} };
+    await page.route("**/api/v1/**", async (route) => {
+        const req = route.request();
+        const pathname = new URL(req.url()).pathname;
+        const reply = (result) => route.fulfill({ json: { ok: true, result } });
+        if (pathname.endsWith("/me/profile/settings")) { store.settings = req.postDataJSON().settings; return reply({ profileSettings: store.settings }); }
+        if (pathname.endsWith("/me/profile")) return reply({ isAdmin: false, profileSettings: store.settings });
+        return route.fallback();
+    });
+    return store;
+}
+async function dragSeam(page, seam, dx, check = null) {
+    const box = await seam.boundingBox();
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + dx / 2, y, { steps: 5 });
+    if (check) await check();
+    await page.mouse.move(x + dx, y, { steps: 5 });
+    await page.mouse.up();
+}
+
+test("of-03: the Step details pane resizes by drag, keys and double-click at 1440px, and keeps its width after a reload", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page);
+    const profile = await routeProfile(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
+    const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
+    await expect(details.locator("h2")).toHaveText("collect");
+    const pane = async () => Math.round((await rightBlock(page)).canvas ?? 0);
+    await expect.poll(pane).toBe(640);
+    const seam = page.getByRole("button", { name: "Resize the right column", exact: true });
+    // Both halves of the seam's grab band are the seam's, beside the workflow and beside Step details.
+    const box = await seam.boundingBox();
+    const hits = await page.evaluate(([cx, cy]) => [cx - 3, cx + 3]
+        .map((px) => Boolean(document.elementFromPoint(px, cy)?.closest(".ps-column-resizer"))), [box.x + box.width / 2, box.y + box.height / 2]);
+    expect(hits).toEqual([true, true]);
+
+    // Drag: the pane follows the pointer while dragging, and 150 pixels to the left widen it by 150.
+    await dragSeam(page, seam, -150, async () => { await expect.poll(pane).toBeGreaterThan(700); });
+    await expect.poll(pane).toBeGreaterThanOrEqual(788);
+    expect(await pane()).toBeLessThanOrEqual(792);
+
+    // Keys: one step each way.
+    await seam.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(pane).toBeLessThanOrEqual(768);
+    await page.keyboard.press("ArrowLeft");
+    await expect.poll(pane).toBeGreaterThanOrEqual(788);
+    // Growing by keys stops at chat's floor, and the first key back moves the pane at once: nothing hidden was stored.
+    for (let i = 0; i < 40; i += 1) await page.keyboard.press("ArrowLeft");
+    const widest = await rightBlock(page);
+    expect(widest.chat).toBeGreaterThanOrEqual(200);
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(pane).toBeLessThanOrEqual(Math.round(widest.canvas) - 22);
+    await expect(seam).toBeFocused();
+
+    // Double-click: back to the opening width.
+    await seam.dblclick();
+    await expect.poll(pane).toBe(640);
+
+    // Remembered: drag again, let the page save, reload, and the pane comes back at the dragged width.
+    await dragSeam(page, seam, -150);
+    await expect.poll(pane).toBeGreaterThanOrEqual(788);
+    await expect.poll(() => profile.settings?.sessionViews?.[WORKFLOW_ID]?.desktop?.layout?.canvasPaneAdjust ?? 0).toBeGreaterThanOrEqual(148);
+    await shot(page, "of-03-step-details-widened");
+    await page.reload();
+    await expect(details.locator("h2")).toHaveText("collect");
+    await expect.poll(pane).toBeGreaterThanOrEqual(788);
+    expect(await pane()).toBeLessThanOrEqual(792);
+    expect(errors).toEqual([]);
+});
+
+test("of-03: with Diagnostics open on a narrow window the seam beside Step details moves itself, and Diagnostics keeps its width", async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height: 800 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await page.locator(".ps-workflow-main").getByRole("button", { name: "Inspect collect", exact: true }).click();
+    await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("collect");
+    await page.getByRole("button", { name: /Show diagnostics/i }).first().click();
+    await expect.poll(async () => (await rightBlock(page)).diagnostics ?? 0).toBeGreaterThan(50);
+    const before = await rightBlock(page);
+    // The window cannot show both opening widths (640 + 320): the grid gives Diagnostics less than its own width.
+    expect(before.diagnostics).toBeLessThan(318);
+    const seam = page.getByRole("button", { name: "Resize the right column", exact: true });
+    await dragSeam(page, seam, 100);
+    await expect.poll(async () => before.host - ((await rightBlock(page)).host ?? 0)).toBeGreaterThanOrEqual(90);
+    const after = await rightBlock(page);
+    expect(before.canvas - after.canvas).toBeGreaterThanOrEqual(90);
+    expect(Math.abs(after.diagnostics - before.diagnostics)).toBeLessThanOrEqual(3);
+    await shot(page, "of-03-both-columns-narrow");
+    expect(errors).toEqual([]);
+});
+
 // READ-WIRE-02: a version 2 workflow whose authorized read model (GET /sessions/:id/workflow) cannot be read shows the
 // failure beside its graph, drawn from its events, and Retry reads it again at once, in a mounted browser.
 const V2_STATES = [

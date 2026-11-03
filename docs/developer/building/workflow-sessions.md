@@ -28,9 +28,12 @@ sharing, and a transcript.
   detail. Skip edges and loops route around nodes, never through an unrelated
   terminal.
   Select a node to inspect its outcome, tools, output and recent history in
-  the right-hand canvas pane. On a phone, node details open as a separate
-  layer; return to Main to see the graph and log again. The worker's original
-  canvas artifact remains available without changing running workflows.
+  the right-hand canvas pane. Drag the divider between the workflow and that
+  pane to resize it, use the divider's arrow keys, or double-click it to reset
+  its width; the width is kept for this session. On a phone, node details open
+  as a separate layer; return to Main to see the graph and log again. The
+  worker's original canvas artifact remains available without changing
+  running workflows.
 - The **execution log** sits below the graph. Drag its divider, use the
   divider's arrow keys, or double-click to reset its height.
 - The **transcript** starts with a compact, expandable definition. Repeated
@@ -38,8 +41,8 @@ sharing, and a transcript.
   the last outcome and check time. Expand it for the most recent 40 checks
   and latest output. Changes, errors and terminal results remain separate.
   Raw execution events are unchanged; partial history labels its count as
-  loaded checks rather than claiming the whole run. The read-only footer
-  says only "Workflow session".
+  loaded checks rather than claiming the whole run. The workflow screen has
+  no message box: nobody types into a workflow.
 
 ## Example
 
