@@ -81,6 +81,10 @@ const SHIM_CASES = [
     { call: (c) => c.readWorkflow("s1", { runId: null }), op: "readWorkflow", params: { sessionId: "s1" } },
     { call: (c) => c.readWorkflow("s1", { runId: "run-1" }), op: "readWorkflow", params: { sessionId: "s1", runId: "run-1" } },
     { call: (c) => c.readWorkflow("s1", { runId: "" }), op: "readWorkflow", params: { sessionId: "s1", runId: "" } },
+    // A section's next page and one execution's whole value: only the options given are sent.
+    { call: (c) => c.readWorkflow("s1", { runId: "run-1", cursor: { v: 1, section: "inbox" }, limit: 5 }), op: "readWorkflow",
+        params: { sessionId: "s1", runId: "run-1", cursor: { v: 1, section: "inbox" }, limit: 5 } },
+    { call: (c) => c.readWorkflow("s1", { executionId: "nx-1", cursor: null, limit: undefined }), op: "readWorkflow", params: { sessionId: "s1", executionId: "nx-1" } },
 ];
 
 test("every shim maps its positional arguments onto the right wire call", async () => {
@@ -93,20 +97,28 @@ test("every shim maps its positional arguments onto the right wire call", async 
     }
 });
 
-test("getWorkflowCapabilities reads the server's bootstrap advertisement, or null from a server that has none", async () => {
+test("getWorkflowCapabilities reads the server's bootstrap advertisement, null from a server that has none, and rejects one that is not an object", async () => {
     const workflows = { schema: 1, v2: { read: true, commands: { available: false } } };
     for (const [bootstrap, expected] of [
         [{ ok: true, workflows }, workflows],
         [{ ok: true }, null],
         [{ ok: true, workflows: null }, null],
-        [{ ok: true, workflows: ["v2"] }, null],
-        [{ ok: true, workflows: "v2" }, null],
     ]) {
         const { client, calls } = clientWithFakeApi();
         client._api.getBootstrap = async () => bootstrap;
         assert.deepEqual(await client.getWorkflowCapabilities(), expected);
         assert.deepEqual(calls, [], "no operation call: the bootstrap is the source");
     }
+    // A malformed advertisement, or a bootstrap that cannot be read, is not an older server.
+    for (const [bootstrap, kind] of [[{ ok: true, workflows: ["v2"] }, "a list"], [{ ok: true, workflows: "v2" }, "a string"], [{ ok: true, workflows: 2 }, "a number"]]) {
+        const { client } = clientWithFakeApi();
+        client._api.getBootstrap = async () => bootstrap;
+        await assert.rejects(client.getWorkflowCapabilities(),
+            (error) => error.code === "WORKFLOW_CAPABILITIES_MALFORMED" && error.message.includes(`advertises workflows as ${kind}`), kind);
+    }
+    const { client } = clientWithFakeApi();
+    client._api.getBootstrap = async () => { throw Object.assign(new Error("HTTP 503"), { status: 503 }); };
+    await assert.rejects(client.getWorkflowCapabilities(), (error) => error.status === 503);
 });
 
 test("placeSessionsInGroup accepts both calling conventions", async () => {

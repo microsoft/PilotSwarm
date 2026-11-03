@@ -1,5 +1,6 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
-import { workflowDefinition } from "./workflow-view.js";
+import { workflowDefinition, workflowReadModelView, workflowV2ExecutionValueKey, workflowV2OlderStart, workflowV2RunHistory, workflowV2RunRows,
+    workflowV2ShownExecution } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
@@ -6362,6 +6363,108 @@ export class PilotSwarmUiController {
     }
 
     /**
+     * Workflow v2: read the next, older page of each section of the shown run's history (readWorkflow with the section's
+     * cursor, for that run: design 04 read_workflow "Bounded history pagination"; R01 history) into the view's
+     * `olderHistory` ({ runId, sections: { [section]: { items, nextCursor } }, loading, error }), which the projection
+     * joins to that run's own read model only (workflowV2RunRows). The first read keeps the read model's own pages as
+     * where the older pages continue from, so a newer read model never leaves a gap between them; later reads continue
+     * from the last older page. A section whose oldest row is loaded is not read again. `restart` reads from the read
+     * model's cursors again and discards what was loaded (after loaded rows changed: staleOlder). A read whose answer is
+     * not the page of that run and section is refused. A failure keeps what was loaded and records its error. One read
+     * per session at a time; a newer read (another run, or a restart) discards an older one's answer. Reading changes
+     * nothing. Never throws.
+     */
+    async loadOlderWorkflowHistory(sessionId, { restart = false } = {}) {
+        const state = this.getState();
+        if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow" || typeof this.transport?.readWorkflow !== "function") {
+            return { ok: false, reason: "unsupported" };
+        }
+        const view = state.ui.workflowViews?.[sessionId] || {};
+        const run = workflowReadModelView(view).readModel?.run;
+        if (!run || typeof run !== "object" || typeof run.runId !== "string" || !run.runId) {
+            this.dispatch({ type: "ui/status", text: "No run of this workflow is shown, so it has no older history to read" });
+            return { ok: false, reason: "no run" };
+        }
+        const previous = !restart && view.olderHistory?.runId === run.runId ? view.olderHistory : null;
+        if (previous?.loading) return { ok: false, reason: "pending" };
+        // The loaded older pages that still join the read model's page, else the page itself (workflowV2OlderStart): the next
+        // older page always follows rows already read, never leaving a gap after newer rows arrived.
+        const start = { runId: run.runId, sections: workflowV2OlderStart(run, previous) };
+        const history = workflowV2RunHistory(run, start);
+        if (!history.more) {
+            this.dispatch({ type: "ui/status", text: history.paged ? `The whole history of run ${run.runId} is loaded`
+                : "This server reads no older history of a run" });
+            return { ok: false, reason: "none" };
+        }
+        if (!this.workflowOlderHistoryReads) this.workflowOlderHistoryReads = new Map();
+        const generation = (this.workflowOlderHistoryReads.get(sessionId) ?? 0) + 1;
+        this.workflowOlderHistoryReads.set(sessionId, generation);
+        const sections = { ...start.sections };
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { olderHistory: { runId: run.runId, sections, loading: true, error: null } } });
+        let error = null;
+        let rows = 0;
+        for (const [section, cursor] of Object.entries(history.next)) {
+            try {
+                const page = await this.transport.readWorkflow(sessionId, { runId: run.runId, cursor });
+                if (!page || typeof page !== "object" || page.runId !== run.runId || page.section !== section || !Array.isArray(page.items)) {
+                    throw new Error(`The read did not answer with the ${section} page of run ${run.runId}.`);
+                }
+                const items = page.items.filter(item => item !== null && typeof item === "object" && !Array.isArray(item));
+                const nextCursor = page.nextCursor && typeof page.nextCursor === "object" && !Array.isArray(page.nextCursor) ? page.nextCursor : null;
+                sections[section] = { items: [...items, ...(sections[section]?.items ?? [])], nextCursor };
+                rows += items.length;
+            } catch (failure) {
+                error = boundedWorkflowReadError(failure);
+                break;
+            }
+        }
+        // A newer read (another run, or a restart) began meanwhile: its answer is the one kept.
+        if (this.workflowOlderHistoryReads.get(sessionId) !== generation) return { ok: false, reason: "discarded" };
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { olderHistory: { runId: run.runId, sections, loading: false, error } } });
+        this.dispatch({ type: "ui/status", text: error ? `Older history of run ${run.runId} could not be read: ${error}`
+            : `Read ${rows} older row${rows === 1 ? "" : "s"} of run ${run.runId}` });
+        return error ? { ok: false, reason: "failed", error } : { ok: true, rows };
+    }
+
+    /**
+     * Workflow v2: read one execution's whole output or error (readWorkflow with its run and execution id: design 04
+     * read_workflow; mock M10 "Inspect typed output"; D07, at most 256 KiB) into the view's `executionValues`, by run
+     * and execution (workflowV2ExecutionValueKey; the four read last are kept). It is read for exactly that run, never
+     * the live run in its place, and an answer for another execution or run is refused. A failure is recorded with its
+     * error; reading it again retries. Reading changes nothing. Never throws.
+     */
+    async loadWorkflowExecutionValue(sessionId, { runId = null, executionId = null } = {}) {
+        const state = this.getState();
+        if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow" || typeof this.transport?.readWorkflow !== "function") {
+            return { ok: false, reason: "unsupported" };
+        }
+        if (typeof runId !== "string" || !runId || typeof executionId !== "string" || !executionId) return { ok: false, reason: "invalid" };
+        const key = workflowV2ExecutionValueKey(runId, executionId);
+        if (state.ui.workflowViews?.[sessionId]?.executionValues?.[key]?.phase === "loading") return { ok: false, reason: "pending" };
+        const write = entry => {
+            const values = { ...(this.getState().ui.workflowViews?.[sessionId]?.executionValues ?? {}) };
+            delete values[key];
+            values[key] = { runId, executionId, ...entry };
+            const keys = Object.keys(values);
+            for (const old of keys.slice(0, Math.max(0, keys.length - 4))) delete values[old];
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { executionValues: values } });
+        };
+        write({ phase: "loading", result: null, error: null });
+        try {
+            const read = await this.transport.readWorkflow(sessionId, { runId, executionId });
+            const execution = read?.execution;
+            if (!execution || typeof execution !== "object" || read.runId !== runId || execution.nodeExecutionId !== executionId) {
+                throw new Error(`The read did not answer with execution ${executionId} of run ${runId}.`);
+            }
+            write({ phase: "loaded", result: execution.result && typeof execution.result === "object" ? execution.result : null, error: null });
+            return { ok: true };
+        } catch (error) {
+            write({ phase: "failed", result: null, error: boundedWorkflowReadError(error) });
+            return { ok: false, reason: "failed", error };
+        }
+    }
+
+    /**
      * Workflow v2 (INACTIVE unless the deployment takes a person's workflow
      * commands): a person's workflow command, sent as an updateWorkflow
      * command through the transport (POST /sessions/:id/workflow/commands,
@@ -7230,7 +7333,7 @@ export class PilotSwarmUiController {
         if (!responder || responder.runId !== modal.runId) {
             return refuse("The workflow view no longer shows the test run this form was opened for, so nothing was sent. Esc goes back.");
         }
-        const items = Array.isArray(projection.runReadModel?.run?.test?.interceptions) ? projection.runReadModel.run.test.interceptions : [];
+        const items = workflowV2RunRows(projection.runReadModel?.run ?? null).interceptions;
         if (!items.some(item => item?.interceptionId === modal.interceptionId)) {
             return refuse(`Interception ${modal.interceptionId} is not one of this test run's effects, so nothing was sent.`);
         }
@@ -9176,6 +9279,43 @@ export class PilotSwarmUiController {
         const step = workflowViewExecutionStep(selection, delta);
         if (step.ok) this.selectWorkflowExecution(selection.modal.sessionId, step.selection);
         this.dispatch({ type: "ui/status", text: step.status });
+    }
+
+    /**
+     * The TUI's workflow view: o reads the shown run's older history (loadOlderWorkflowHistory), from the read model's
+     * cursors again when rows loaded before have changed since (staleOlder).
+     */
+    async loadWorkflowViewOlderHistory() {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return;
+        const history = selection.projection.v2?.readModel?.run?.history ?? null;
+        await this.loadOlderWorkflowHistory(selection.modal.sessionId, { restart: Boolean(history?.staleOlder) });
+    }
+
+    /**
+     * The TUI's workflow view: f reads the whole output or error of the visit whose result the details show (the one
+     * chosen with [ ], else the latest), for exactly the shown run (loadWorkflowExecutionValue).
+     */
+    async loadWorkflowViewExecutionValue() {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return;
+        const node = selection.selected?.node ?? null;
+        const runId = selection.projection.v2?.runId ?? null;
+        const shown = node?.shape === "v2" ? workflowV2ShownExecution(node, runId, selection.projection.selectedExecution) : null;
+        const execution = shown?.execution ?? null;
+        if (typeof runId !== "string" || !runId || typeof execution?.id !== "string" || !execution.id) {
+            this.dispatch({ type: "ui/status", text: shown?.missing ? "The chosen visit is not in the loaded history of this run, so its value is not read"
+                : "This state has no visit of the shown run whose value can be read" });
+            return;
+        }
+        if (execution.status === "pending") {
+            this.dispatch({ type: "ui/status", text: "This visit has not ended; it has no value yet" });
+            return;
+        }
+        this.dispatch({ type: "ui/status", text: `Reading the whole value of visit ${Number.isSafeInteger(execution.ordinal) ? execution.ordinal : "—"}…` });
+        const read = await this.loadWorkflowExecutionValue(selection.modal.sessionId, { runId, executionId: execution.id });
+        this.dispatch({ type: "ui/status", text: read.ok ? "Read the whole value; it is in the details (PgUp/PgDn scroll)"
+            : read.reason === "pending" ? "That value is being read" : "The whole value could not be read; the details say why" });
     }
 
     /**
@@ -13536,6 +13676,12 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_VIEW_NEWER_EXECUTION:
                 this.moveWorkflowViewExecution(-1);
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_OLDER_HISTORY:
+                await this.loadWorkflowViewOlderHistory();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_WHOLE_VALUE:
+                await this.loadWorkflowViewExecutionValue();
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

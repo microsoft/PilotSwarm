@@ -46,10 +46,20 @@ test("on a 1.9.0 turn the descriptions and parameters add the milestone operatio
     }
     assert.deepEqual(update.parameters.required, UPDATE_WORKFLOW_TOOL_SPEC.parameters.required);
     assert.ok(READ_WORKFLOW_MILESTONE_TOOL_SPEC.description.startsWith(READ_WORKFLOW_TOOL_SPEC.description));
-    for (const field of ["run.test", "agent.childSessionId", "publishedAgentPins", "graceSeconds"]) {
+    for (const field of ["run.test", "agent.childSessionId", "publishedAgentPins", "graceSeconds", "openExecutions", "run.pages", "nextCursor"]) {
         assert.ok(READ_WORKFLOW_MILESTONE_TOOL_SPEC.description.includes(field), field);
     }
-    assert.equal(READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters, READ_WORKFLOW_TOOL_SPEC.parameters);
+    // The paging and whole-value arguments are declared on this host only; every production argument is declared as it is.
+    const read = READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters;
+    for (const name of Object.keys(READ_WORKFLOW_TOOL_SPEC.parameters.properties)) {
+        assert.deepEqual(read.properties[name], READ_WORKFLOW_TOOL_SPEC.parameters.properties[name], name);
+    }
+    for (const name of ["cursor", "limit", "execution_id"]) {
+        assert.ok(Object.hasOwn(read.properties, name), name);
+        assert.equal(Object.hasOwn(READ_WORKFLOW_TOOL_SPEC.parameters.properties, name), false, `production declares no ${name}`);
+        assert.ok(READ_WORKFLOW_MILESTONE_TOOL_SPEC.description.includes(name), `the description names ${name}`);
+    }
+    assert.deepEqual(read.required, READ_WORKFLOW_TOOL_SPEC.parameters.required);
     const spawn = SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.description;
     assert.ok(!spawn.includes("not supported yet"));
     for (const phrase of ["mode: request", "respond_session_request", "invoke:", "complete_workflow_node", "forEach:", "all_required", "${branch.item}"]) {

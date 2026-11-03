@@ -9655,6 +9655,7 @@ const KEYBINDING_HELP = [
         ["t", "workflow view: test review of the current revision and hash, not a sandbox (ctrl-t start the test, asks first · ctrl-a agents mocked/real, real ones spend model tokens · Tab inputs/variables/scenario · ctrl-l review it again after a change · Esc back)"],
         ["a  +", "workflow view, a test run shown: a answers an intercepted effect that waits (Enter send · Tab success/error/cancel · ↑↓ another waiting effect) · + advances its virtual clock by whole seconds (script clocks are real)"],
         ["[  ]", "workflow view: the selected state's own result of an older / newer visit of the shown run (the latest by default; past the newest, the latest again)"],
+        ["o  f", "workflow view: o reads the shown run's older history (the next, older page of its executions, messages and test effects) · f reads the whole output or error of the visit the details show"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],

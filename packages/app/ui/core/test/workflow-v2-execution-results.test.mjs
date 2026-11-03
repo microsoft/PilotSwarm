@@ -214,7 +214,7 @@ test("a runtime error is that visit's own, with its code; a preview the read cut
     await older(h);
     lines = details(h.store);
     assert.ok(lines.some(line => line.startsWith("  Output: {\"text\":\"xxx")));
-    assert.ok(lines.includes("  The read keeps only the start of this value; the whole value is not in this view."));
+    assert.ok(lines.includes("  The read keeps only the start of this value; f reads the whole value."));
     // The state's label and its history still name the later visit's error; this visit's result line does not.
     assert.ok(lines.includes("State: Runtime error · timed_out"), lines.join("\n"));
     assert.ok(!lines.some(line => line.startsWith("  Runtime error")), "the later visit's error is not shown for this one");
@@ -247,4 +247,50 @@ test("a refused read shows its error and no result; an ordinary session is not t
     assert.equal(statusOf(h.store), before);
     h.controller.selectWorkflowExecution("chat", { runId: RUN, stateId: "poll", executionId: "nx-poll-3" });
     assert.equal(h.store.getState().ui.workflowViews?.chat, undefined);
+});
+
+test("f reads the whole value of exactly the visit shown, of exactly the shown run; o says when the server reads no older history", async () => {
+    const whole = { n: 3, text: "line" };
+    const h = await viewing(LOOP, "poll", { read: async (sessionId, options) => {
+        if (options?.executionId === "nx-poll-5") return { workflowId: "wf", runId: RUN, execution: { nodeExecutionId: "nx-poll-5", result: { kind: "output", bytes: 23, whole: true, value: whole } } };
+        if (options?.executionId === "nx-poll-3") throw Object.assign(new Error("Execution nx-poll-3 is not a node execution of run run-1."), { code: "EXECUTION_NOT_FOUND", status: 404 });
+        return LOOP;
+    } });
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_WHOLE_VALUE);
+    await settle();
+    assert.deepEqual(h.calls.at(-1), ["wf", { runId: RUN, executionId: "nx-poll-5" }]);
+    assert.equal(statusOf(h.store), "Read the whole value; it is in the details (PgUp/PgDn scroll)");
+    let lines = details(h.store);
+    const at = lines.indexOf("  Whole output (23 bytes):");
+    assert.ok(at > 0, lines.join("\n"));
+    assert.deepEqual(lines.slice(at + 1, at + 5), ["    {", "      \"n\": 3,", "      \"text\": \"line\"", "    }"]);
+
+    // An older visit shows its own result, not visit 5's whole value; its read fails and says so, and nothing else is shown.
+    await older(h);
+    lines = details(h.store);
+    assert.ok(!lines.some(line => line.startsWith("  Whole output")), lines.join("\n"));
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_WHOLE_VALUE);
+    await settle();
+    lines = details(h.store);
+    assert.ok(lines.some(line => line.startsWith("  Its whole value could not be read: Execution nx-poll-3 is not a node execution")), lines.join("\n"));
+    assert.equal(statusOf(h.store), "The whole value could not be read; the details say why");
+
+    // The same execution id in another run is that run's own: visit 5's whole value of the live run is not shown there.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: OTHER, readModel: OTHER_RUN, readModelRunId: OTHER, selectedExecution: null } });
+    assert.ok(!details(h.store).some(line => line.startsWith("  Whole output")));
+
+    // A pending visit has no value to read, and nothing is read.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: null, readModel: LOOP, readModelRunId: null, selectedExecution: null } });
+    h.store.dispatch({ type: "ui/modal", modal: { ...h.store.getState().ui.modal, selectedNodeId: "pause" } });
+    await newer(h);
+    const calls = h.calls.length;
+    h.controller.selectWorkflowExecution("wf", { runId: RUN, stateId: "pause", executionId: "nx-pause-6" });
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_WHOLE_VALUE);
+    assert.equal(statusOf(h.store), "This visit has not ended; it has no value yet");
+    assert.equal(h.calls.length, calls);
+
+    // o: this read model has no pages (an older server), so no older history is read.
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_OLDER_HISTORY);
+    assert.equal(statusOf(h.store), "This server reads no older history of a run");
+    assert.equal(h.calls.length, calls);
 });

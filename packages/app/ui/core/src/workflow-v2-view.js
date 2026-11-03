@@ -22,8 +22,15 @@ const RUN_STATUSES = new Set(["admitted", "running", "paused", "completed", "fai
 const STATE_EVENTS = new Set(["workflow.state_started", "workflow.state_completed", "workflow.state_failed", "workflow.state_cancelled"]);
 const END_EVENTS = { "workflow.completed": "completed", "workflow.failed": "failed", "workflow.cancelled": "cancelled", "workflow.stopped": "stopped" };
 
-/** The read view lists at most this many node executions, 50 inbox rows and 50 outbox rows (tools.ts). */
-export const WORKFLOW_V2_READ_LIMITS = { nodeExecutions: 200, inbox: 50, outbox: 50 };
+/**
+ * The sections of a run that the read pages (design 04 read_workflow "Bounded history pagination"; readWorkflowV2View
+ * run.pages): node executions, inbox, outbox and a test run's intercepted effects. A read model without run.pages is an
+ * older server's, which listed a run's first rows by entry and paged no further.
+ */
+export const WORKFLOW_V2_READ_SECTIONS = Object.freeze(["executions", "inbox", "outbox", "interceptions"]);
+/** An older server's read model lists at most this many node executions of a run. */
+const LEGACY_EXECUTION_LIMIT = 200;
+const ROW_KEYS = { executions: "nodeExecutionId", inbox: "messageId", outbox: "exchangeId", interceptions: "interceptionId" };
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const definedOnly = object => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
@@ -224,20 +231,133 @@ export function formatWorkflowValue(value) {
     }
 }
 
-function normalizeRun(raw) {
-    if (!isRecord(raw) || typeof raw.runId !== "string" || !RUN_STATUSES.has(raw.status)) return null;
+/**
+ * The older pages a person loaded for run `runId` (the view's `olderHistory`, which the controller's
+ * loadOlderWorkflowHistory writes: { runId, sections: { [section]: { items, nextCursor } }, loading, error }), or null
+ * when there are none for exactly that run. Pure.
+ */
+export function workflowV2OlderSections(older, runId) {
+    return isRecord(older) && typeof runId === "string" && older.runId === runId && isRecord(older.sections) ? older.sections : null;
+}
+
+/**
+ * Whether a section's loaded older pages (`loaded`: { items, nextCursor }) still join the read model's page of it: the
+ * page has no older row, or its oldest row is among the loaded ones. When newer rows pushed the page past every loaded
+ * row, they do not: what lies between was never read, so the loaded rows are not shown with the page and older history
+ * starts again from the page (workflowV2OlderStart). Pure.
+ */
+function joinsPage(run, section, loaded) {
+    if (!isRecord(loaded) || !Array.isArray(loaded.items)) return false;
+    const pageRows = workflowV2RunPageRows(run, section);
+    const cursor = isRecord(run?.pages) && isRecord(run.pages[section]) ? run.pages[section].nextCursor : null;
+    if (!pageRows.length || !isRecord(cursor)) return true;
+    const key = ROW_KEYS[section];
+    return loaded.items.some(row => isRecord(row) && row[key] === pageRows[0][key]);
+}
+
+/**
+ * Where reading a run's older history starts (loadOlderWorkflowHistory), per section the read model pages: the older
+ * pages already loaded for this run when they still join its page (joinsPage), otherwise the page itself with its
+ * cursor, so the next older page follows the newest rows without a gap. Pure.
+ */
+export function workflowV2OlderStart(run, older = null) {
+    const pages = isRecord(run?.pages) ? run.pages : null;
+    const loaded = isRecord(run) ? workflowV2OlderSections(older, run.runId) : null;
+    const sections = {};
+    for (const section of WORKFLOW_V2_READ_SECTIONS) {
+        if (!isRecord(pages?.[section])) continue;
+        sections[section] = joinsPage(run, section, loaded?.[section]) && isRecord(loaded?.[section])
+            ? loaded[section] : { items: workflowV2RunPageRows(run, section), nextCursor: isRecord(pages[section].nextCursor) ? pages[section].nextCursor : null };
+    }
+    return sections;
+}
+
+/**
+ * One run's rows of each section as one list (R01 history; design 04 read_workflow): before them the rows of the older
+ * pages a person loaded for exactly this run (`older`) that still join the page (joinsPage; otherwise they are left out
+ * and the section counted in `gaps`), then the open rows the read model lists apart from its page (openExecutions,
+ * openInbox, openOutbox, test.openInterceptions: older than the page), then the page. One row per id; what the read
+ * model holds wins over an older page. An older page's row that was still open when it was read (pending, or waiting
+ * for an answer), and that the read model now neither holds nor lists as open while its open list is complete, has
+ * changed since: it is left out and counted (`staleOlder`), never shown as it was. Pure.
+ */
+export function workflowV2RunRows(run, older = null) {
     const list = value => Array.isArray(value) ? value.filter(isRecord) : [];
-    const nodeExecutions = list(raw.nodeExecutions), inbox = list(raw.inbox), outbox = list(raw.outbox);
+    const loaded = isRecord(run) ? workflowV2OlderSections(older, run.runId) : null;
+    const pages = isRecord(run?.pages) ? run.pages : null;
+    let staleOlder = 0;
+    let gaps = 0;
+    const merge = (section, page, open, stillOpen) => {
+        const key = ROW_KEYS[section];
+        const pageRows = list(page);
+        const paged = new Set(pageRows.map(row => row[key]));
+        const fresh = [...list(open).filter(row => !paged.has(row[key])), ...pageRows];
+        const seen = new Set(fresh.map(row => row[key]));
+        const openComplete = pages?.[section]?.openComplete === true;
+        const before = [];
+        const joined = isRecord(loaded?.[section]) && joinsPage(run, section, loaded[section]);
+        if (isRecord(loaded?.[section]) && !joined) gaps++;
+        for (const row of joined ? list(loaded[section].items) : []) {
+            const id = row[key];
+            if (typeof id !== "string" || seen.has(id)) continue;
+            seen.add(id);
+            if (stillOpen && stillOpen(row) && openComplete) { staleOlder++; continue; }
+            before.push(row);
+        }
+        return [...before, ...fresh];
+    };
+    const test = isRecord(run?.test) ? run.test : null;
+    const nodeExecutions = merge("executions", run?.nodeExecutions, run?.openExecutions, row => row.state === "pending");
+    const inbox = merge("inbox", run?.inbox, run?.openInbox, null);
+    const outbox = merge("outbox", run?.outbox, run?.openOutbox, row => row.state === "pending");
+    const interceptions = test ? merge("interceptions", test.interceptions, test.openInterceptions, row => row.state === "awaiting_parent") : [];
+    return { nodeExecutions, inbox, outbox, interceptions, staleOlder, gaps };
+}
+
+/**
+ * How much of a run's history is loaded (readWorkflowV2View run.pages, with the older pages a person loaded for exactly
+ * this run): `next` names, per section, the cursor of the next older page (the last loaded older page's while it joins
+ * the read model's page, else the read model's), absent once its oldest row is loaded; `complete` says every node
+ * execution of the run is loaded (no older page, and every open one listed); `openComplete` that every open row of
+ * every section is listed (at most 500 each); `loading` and `error` are the last older-page read's. A read model
+ * without pages (an older server) lists a run's first node executions and pages no further: complete only below its
+ * limit of 200. Pure.
+ */
+export function workflowV2RunHistory(run, older = null) {
+    const pages = isRecord(run?.pages) ? run.pages : null;
+    const loaded = isRecord(run) ? workflowV2OlderSections(older, run.runId) : null;
+    const next = {};
+    for (const section of WORKFLOW_V2_READ_SECTIONS) {
+        const own = isRecord(loaded?.[section]) && joinsPage(run, section, loaded[section]) && Object.hasOwn(loaded[section], "nextCursor")
+            ? loaded[section].nextCursor : undefined;
+        const cursor = own !== undefined ? own : pages?.[section]?.nextCursor;
+        if (isRecord(cursor)) next[section] = cursor;
+    }
+    const mine = isRecord(older) && isRecord(run) && older.runId === run.runId;
+    const executions = Array.isArray(run?.nodeExecutions) ? run.nodeExecutions.length : 0;
+    return {
+        paged: pages !== null,
+        next,
+        more: Object.keys(next).length > 0,
+        complete: pages ? !next.executions && pages.executions?.openComplete !== false : executions < LEGACY_EXECUTION_LIMIT,
+        openComplete: pages ? WORKFLOW_V2_READ_SECTIONS.every(section => pages[section]?.openComplete !== false) : true,
+        loading: mine && older.loading === true,
+        error: mine && typeof older.error === "string" && older.error ? older.error : null,
+    };
+}
+
+function normalizeRun(raw, older = null) {
+    if (!isRecord(raw) || typeof raw.runId !== "string" || !RUN_STATUSES.has(raw.status)) return null;
+    const rows = workflowV2RunRows(raw, older);
     return {
         runId: raw.runId, mode: raw.mode, status: raw.status, outcome: raw.outcome ?? null,
         pausedFrom: raw.pausedFrom ?? null, pauseSettled: typeof raw.pauseSettled === "boolean" ? raw.pauseSettled : null,
-        // A graceful stop (controller 1.9.0) and a test run's evidence (notice, virtual clock, interceptions, coverage).
-        stop: isRecord(raw.stop) ? raw.stop : null, test: isRecord(raw.test) ? raw.test : null,
+        // A graceful stop (controller 1.9.0) and a test run's evidence (notice, virtual clock, interceptions, coverage); its
+        // interceptions are its page, the waiting ones the page does not hold and any older pages loaded, as one list.
+        stop: isRecord(raw.stop) ? raw.stop : null, test: isRecord(raw.test) ? { ...raw.test, interceptions: rows.interceptions } : null,
         terminalState: raw.terminalState ?? null, output: raw.output ?? null, error: raw.error ?? null,
-        kvRevision: raw.kvRevision, kv: raw.kv, nodeExecutions, inbox, outbox,
-        executionsTruncated: nodeExecutions.length >= WORKFLOW_V2_READ_LIMITS.nodeExecutions,
-        inboxTruncated: inbox.length >= WORKFLOW_V2_READ_LIMITS.inbox,
-        outboxTruncated: outbox.length >= WORKFLOW_V2_READ_LIMITS.outbox,
+        kvRevision: raw.kvRevision, kv: raw.kv, nodeExecutions: rows.nodeExecutions, inbox: rows.inbox, outbox: rows.outbox,
+        history: { ...workflowV2RunHistory(raw, older), staleOlder: rows.staleOlder, gaps: rows.gaps },
     };
 }
 
@@ -247,9 +367,11 @@ const unrecognized = reason => ({ ok: false, status: "unrecognized", definition:
 /**
  * Project the object `readWorkflowV2View` returns. `status` is one of ready,
  * draft, invalid (no graph can be shown), unavailable (valid but no graph),
- * invalid-graph or unrecognized.
+ * invalid-graph or unrecognized. `older` is the view's olderHistory: the older
+ * pages a person loaded, merged into the model's run only when they are for
+ * that run (workflowV2RunRows).
  */
-export function projectWorkflowV2ReadModel(model) {
+export function projectWorkflowV2ReadModel(model, { older = null } = {}) {
     if (!isRecord(model) || typeof model.workflowId !== "string" || !isRecord(model.definition)
         || !isRecord(model.revision) || typeof model.revision.valid !== "boolean" || !Array.isArray(model.runs)) {
         return unrecognized("This payload is not a workflow v2 read model, so it was not shown.");
@@ -287,7 +409,7 @@ export function projectWorkflowV2ReadModel(model) {
     }
     // Everything above is the workflow's (its definition, revision and graph), whichever run was asked for; what follows is the run's.
     const workflowBanners = [...banners];
-    const run = normalizeRun(model.run);
+    const run = normalizeRun(model.run, older);
     const runInfo = run ? model.runs.find(item => item?.runId === run.runId) : null;
     const runRevision = Number.isSafeInteger(runInfo?.revision) ? runInfo.revision : null;
     let overlay = Boolean(run && graph);
@@ -324,7 +446,26 @@ export function projectWorkflowV2ReadModel(model) {
         const open = Array.isArray(test.coverage?.unanswered) ? test.coverage.unanswered.length : 0;
         if (open) banners.push({ level: "info", text: `${open} intercepted effect${open === 1 ? " waits" : "s wait"} for the parent's answer.` });
     }
-    if (run?.executionsTruncated) banners.push({ level: "info", text: `Only the first ${WORKFLOW_V2_READ_LIMITS.nodeExecutions} node executions are listed, so counts may be incomplete.` });
+    // How much of the run's history is loaded: the read pages a run newest first and lists its open rows apart, so its
+    // current states are read however long its history is; older history is loaded on request (loadOlderWorkflowHistory).
+    const history = run?.history;
+    if (history && !history.paged && !history.complete) {
+        banners.push({ level: "info", text: `Only the first ${LEGACY_EXECUTION_LIMIT} node executions are listed, so counts may be incomplete.` });
+    } else if (history?.next?.executions) {
+        banners.push({ level: "info", text: "Older node executions of this run are not loaded, so counts may be incomplete." });
+    }
+    if (history?.paged && !history.openComplete) {
+        banners.push({ level: "warning", text: "This run has more open states, inputs, deliveries or waiting effects than a read lists (500 of each), so some of them are not shown." });
+    }
+    if (history?.staleOlder) {
+        banners.push({ level: "info", text: history.staleOlder === 1
+            ? "1 row loaded from older history changed after it was read and is left out; read older history again to see it now."
+            : `${history.staleOlder} rows loaded from older history changed after they were read and are left out; read older history again to see them now.` });
+    }
+    if (history?.gaps) {
+        banners.push({ level: "info", text: "Newer rows arrived after older history was loaded, so the older rows no longer join them and are not shown; read older history again to see them." });
+    }
+    if (history?.error) banners.push({ level: "warning", text: `Older history could not be read: ${history.error}` });
     return {
         ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, workflowBanners, run, overlay, runRevision,
         lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision,
@@ -603,7 +744,8 @@ function nodeView(node, executions, context) {
         state = node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done";
         phase = "done"; outcome = node.outcome; resultKind = "business"; stateLabel = `Ended · ${node.outcome}`;
     }
-    const history = [...list].reverse().slice(0, 40);
+    // Every loaded visit, newest first: older history a person loaded reaches any visit of the state.
+    const history = [...list].reverse();
     const binding = workflowV2AgentBinding(node, context.pins);
     return {
         ...node, shape: "v2", kind, label: workflowV2NodeLabel(node), state, phase, stateLabel, runs,
@@ -643,9 +785,12 @@ function agentPinSource(shared, run, bound, active) {
  * drawn, and its run is never shown. Without its own model a selected run
  * shows only its own events; only the live selection falls back to the
  * latest run in the events, never one known to be another kind of run.
+ * `olderHistory` (the view's) is the older pages of history a person loaded;
+ * they join the selection's own model only for the run it shows.
  */
-export function projectWorkflowV2({ definition = null, readModel = null, workflowModel = null, selectedRunId = null, events = [], readModelAfterSeq = null } = {}) {
-    const model = readModel ? projectWorkflowV2ReadModel(readModel) : null;
+export function projectWorkflowV2({ definition = null, readModel = null, workflowModel = null, selectedRunId = null, events = [], readModelAfterSeq = null,
+    olderHistory = null } = {}) {
+    const model = readModel ? projectWorkflowV2ReadModel(readModel, { older: olderHistory }) : null;
     const wide = model || !workflowModel ? null : projectWorkflowV2ReadModel(workflowModel);
     // The workflow-wide source: the selection's own model, else another selection's model that projects.
     const shared = model ?? (wide?.ok ? wide : null);
@@ -689,7 +834,7 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     const unknown = executions.filter(item => !known.has(item.stateId)).length;
     if (unknown) banners.push({ level: "warning", text: `${unknown} execution${unknown === 1 ? "" : "s"} belong to states that are not in this graph.` });
     const context = { run: status, hasRun: status.phase !== "none", terminalState: bound ? status.terminalState ?? run?.terminalState ?? null : null,
-        complete: Boolean(run && bound && !run.executionsTruncated), stateless: !bound && runId ? "Run not overlaid" : undefined,
+        complete: Boolean(run && bound && run.history.complete), stateless: !bound && runId ? "Run not overlaid" : undefined,
         pins: agentPinSource(shared, run, bound, active) };
     const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
     return {
@@ -755,4 +900,50 @@ export function workflowV2ExecutionResult(execution) {
         return { kind: "output", value: execution.outputPreview, truncated: isTruncated(execution.outputPreview), code, effectStatus };
     }
     return { kind: "none", value: null, truncated: false, code, effectStatus };
+}
+
+/** The rows of one section's page in a read model's run, before any older page: its node executions, inbox, outbox or a test run's interceptions. Pure. */
+export function workflowV2RunPageRows(run, section) {
+    const value = section === "executions" ? run?.nodeExecutions : section === "inbox" ? run?.inbox : section === "outbox" ? run?.outbox
+        : section === "interceptions" ? run?.test?.interceptions : null;
+    return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+/** The key of one execution's whole value in the view's `executionValues`: its run, then the execution. */
+export function workflowV2ExecutionValueKey(runId, executionId) {
+    return JSON.stringify([runId ?? null, executionId]);
+}
+
+/**
+ * One execution's whole value as the view read it (`executionValues`, which the controller's loadWorkflowExecutionValue
+ * writes: { runId, executionId, phase: loading, loaded or failed, result, error }), for exactly that run and execution;
+ * null when it was not read. Pure.
+ */
+export function workflowV2ExecutionValue(values, runId, executionId) {
+    if (!isRecord(values) || typeof executionId !== "string" || !executionId) return null;
+    const entry = values[workflowV2ExecutionValueKey(runId, executionId)];
+    return isRecord(entry) && entry.executionId === executionId && (entry.runId ?? null) === (runId ?? null) ? entry : null;
+}
+
+/**
+ * What one execution's whole value shows (design 04 read_workflow execution_id; mock M10 "Inspect typed output"; D07):
+ * `loading`; `failed` with its error; `none` (it has no result: it has not ended); `value`, the whole output or runtime
+ * error (`label`) as read, a string as it is and any other JSON indented, with its size in bytes; or `preview`, a stored
+ * value larger than a read returns (none is written), its bounded preview with its size and the limit. Null without an
+ * entry. Never another execution's value. Pure.
+ */
+export function workflowV2WholeValue(entry) {
+    if (!isRecord(entry)) return null;
+    if (entry.phase === "loading") return { kind: "loading" };
+    if (entry.phase === "failed") return { kind: "failed", error: typeof entry.error === "string" && entry.error ? entry.error : "The value could not be read." };
+    const result = isRecord(entry.result) ? entry.result : null;
+    if (!result) return { kind: "none" };
+    const label = result.kind === "error" ? "Runtime error" : "Output";
+    const bytes = Number.isSafeInteger(result.bytes) ? result.bytes : null;
+    if (result.whole === true) {
+        const value = result.value ?? null;
+        return { kind: "value", label, bytes, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) };
+    }
+    return { kind: "preview", label, bytes, limitBytes: Number.isSafeInteger(result.limitBytes) ? result.limitBytes : null,
+        text: typeof result.preview === "string" ? result.preview : "" };
 }

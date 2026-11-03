@@ -1038,7 +1038,7 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
         try {
             const run = await h.workflow();
             // 55 durable messages, each with an outcome as the refusal transaction writes it (alternating, so a lookup that
-            // mixed rows up would show it); the view shows 50 of them.
+            // mixed rows up would show it); all still pending: the view shows the newest 50 and, apart, the five older ones.
             const outcomes = new Map();
             for (let ordinal = 1; ordinal <= 55; ordinal += 1) {
                 const exchangeId = await h.durable(run, { ordinal, payload: { n: ordinal } });
@@ -1051,8 +1051,10 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
             const view = await readWorkflowV2View(h.hooked, run.workflowSessionId, { runId: run.runId });
             const lookups = h.control.reads.filter(read => read.sql.includes("intake_outcome IS NOT NULL"));
             h.control.reads = null;
-            const shown = view.run.outbox.map(entry => entry.exchangeId);
-            expect(shown).toHaveLength(50);
+            expect(view.run.outbox).toHaveLength(50);
+            expect(view.run.openOutbox).toHaveLength(5);
+            const shown = [...view.run.openOutbox, ...view.run.outbox].map(entry => entry.exchangeId);
+            expect(new Set(shown).size).toBe(55);
             // One lookup, scoped to the run and to exactly the shown exchanges; no other refusal of the run is read.
             expect(lookups).toHaveLength(1);
             expect(lookups[0].params[0]).toBe(run.runId);
@@ -1060,7 +1062,7 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
             expect(lookups[0].sql).toMatch(/exchange_id = ANY/);
             expect(lookups[0].sql).not.toMatch(/LIMIT/i);
             // Each shown entry carries its own outcome.
-            for (const entry of view.run.outbox) {
+            for (const entry of [...view.run.openOutbox, ...view.run.outbox]) {
                 expect(entry.intakeOutcome, entry.exchangeId).toBe(outcomes.get(entry.exchangeId));
                 expect(entry.intakeOutcomeAt).toMatch(EXACT_TIME);
             }
@@ -1069,6 +1071,7 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
             h.control.reads = [];
             const emptyView = await readWorkflowV2View(h.hooked, empty.workflowSessionId, { runId: empty.runId });
             expect(emptyView.run.outbox).toEqual([]);
+            expect(emptyView.run.openOutbox).toEqual([]);
             expect(h.control.reads.filter(read => read.sql.includes("intake_outcome IS NOT NULL"))).toHaveLength(0);
             h.control.reads = null;
         } finally { await h.stop(); }

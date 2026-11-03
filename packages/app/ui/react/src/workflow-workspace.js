@@ -35,13 +35,15 @@ function useWorkflowView(controller) {
     // and its run is never shown. Its watermark (`readModelAfterSeq`) is the highest event sequence the controller had
     // loaded before it fetched that read model; it only lets older pause/resume events stop contradicting the snapshot.
     const { readModel, readModelAfterSeq, workflowModel, error: readError } = workflowReadModelView(view);
+    // The older history a person loaded (loadOlderWorkflowHistory) joins the selection's own model, for the run it shows only.
+    const olderHistory = view.olderHistory ?? null;
     const v2 = React.useMemo(() => {
         if (view.definition?.shape !== "v2" && !readModel && !workflowModel) return null;
-        const projected = projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq });
+        const projected = projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq, olderHistory });
         // Only a legacy definition falls back to the legacy view. A v2 definition is never redrawn once the
         // read model says there is no graph (invalid or unavailable); the no-graph panel explains why.
         return !projected.definition && view.definition && view.definition.shape !== "v2" ? null : projected;
-    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events]);
+    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events, olderHistory]);
     const definition = v2 ? v2.definition : view.definition;
     const legacyNodes = React.useMemo(() => v2 ? [] : workflowNodeViews(view.definition, events, live), [v2, view.definition, events, live]);
     const nodes = v2 ? v2.nodes : legacyNodes;
@@ -208,7 +210,8 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
         testOpen ? React.createElement(WorkflowV2TestPanel, { controller, sessionId, model: testControls, id: testId }) : null,
         variablesOpen ? React.createElement(WorkflowV2Variables, { controller, sessionId, model: variables, id: variablesId }) : null,
         v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test, controller, sessionId,
-            responder: testResponder, answering: view.answeringInterceptionId ?? null }) : null,
+            responder: testResponder, answering: view.answeringInterceptionId ?? null, history: v2.readModel.run.history ?? null,
+            onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }) }) : null,
         testResponder?.advance ? React.createElement(WorkflowV2TestClock, { controller, sessionId, responder: testResponder }) : null,
         testResponder?.respond && view.answeringInterceptionId
             ? React.createElement(WorkflowV2TestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId }) : null,
@@ -278,6 +281,11 @@ export function WorkflowNodePane({ controller }) {
                 runId: v2?.runId ?? null, selection: view.selectedExecution ?? null, onTab: setTab,
                 onSelectExecution: executionId => controller.selectWorkflowExecution(sessionId,
                     executionId === null ? null : { runId: v2?.runId ?? null, stateId: selected.id, executionId }),
+                // That execution's whole value (read for exactly the shown run), and the run's older history.
+                executionValues: view.executionValues ?? null,
+                onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId: v2?.runId ?? null, executionId }).catch(() => {}); },
+                history: v2?.bound ? v2?.readModel?.run?.history ?? null : null,
+                onLoadOlder: restart => { controller.loadOlderWorkflowHistory(sessionId, { restart }).catch(() => {}); },
             }) :
             tab === "details" ? React.createElement(React.Fragment, null,
                 property("Executions", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),

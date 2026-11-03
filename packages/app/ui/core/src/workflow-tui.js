@@ -2,7 +2,7 @@ import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from ".
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
     compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
-    workflowV2RouteKind, workflowV2ShownExecution,
+    workflowV2ExecutionValue, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution, workflowV2WholeValue,
 } from "./workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor,
@@ -99,7 +99,8 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const { readModel, readModelAfterSeq, workflowModel, error, selectedRunId } = workflowReadModelView(safeView);
     let v2 = null;
     if (safeView.definition?.shape === "v2" || readModel || workflowModel) {
-        const projected = projectWorkflowV2({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq });
+        const projected = projectWorkflowV2({ definition: safeView.definition, readModel, workflowModel, selectedRunId, events: list, readModelAfterSeq,
+            olderHistory: safeView.olderHistory ?? null });
         v2 = !projected.definition && safeView.definition && safeView.definition.shape !== "v2" ? null : projected;
     }
     const definition = v2 ? v2.definition : safeView.definition ?? null;
@@ -138,6 +139,8 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
         draftEditor, draftBuffer, draftEdit, publication, testControls, testResponder, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
         // The execution whose own result a person chose ({ runId, stateId, executionId }; it applies only to that run and state).
         selectedExecution: isPlainRecord(safeView.selectedExecution) ? safeView.selectedExecution : null,
+        // The whole values read (by run and execution; workflowV2ExecutionValue picks exactly one).
+        executionValues: isPlainRecord(safeView.executionValues) ? safeView.executionValues : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -1041,11 +1044,13 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
     const run = projection.runReadModel?.run ?? null;
     const test = isPlainRecord(run?.test) ? run.test : null;
     const sameRun = Boolean(responder) && responder.runId === modal.runId;
-    const items = sameRun && Array.isArray(test?.interceptions) ? test.interceptions.filter(isPlainRecord) : [];
+    // The run's interceptions and node executions as one list each: its newest page and the open ones the page does not hold.
+    const rows = workflowV2RunRows(run);
+    const items = sameRun && test ? rows.interceptions : [];
     const item = items.find(entry => entry.interceptionId === modal.interceptionId) ?? null;
     const at = sameRun ? responder.waiting.findIndex(entry => entry.interceptionId === modal.interceptionId) : -1;
     const waiting = at >= 0 ? responder.waiting[at] : null;
-    const node = item && Array.isArray(run?.nodeExecutions) ? run.nodeExecutions.find(entry => entry?.nodeExecutionId === item.nodeExecutionId) ?? null : null;
+    const node = item ? rows.nodeExecutions.find(entry => entry?.nodeExecutionId === item.nodeExecutionId) ?? null : null;
     const kind = WORKFLOW_TEST_ANSWER_KINDS.includes(modal.kind) ? modal.kind : "success";
     const width = Math.max(40, Number(maxWidth) || 100);
     const contentWidth = width - 4;
@@ -1190,15 +1195,50 @@ const resultWord = execution => execution.status === "pending" ? "Pending"
 const durationText = ms => typeof ms === "number" && Number.isFinite(ms)
     ? (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`) : "not recorded";
 
+/** The most characters of a whole value the TUI's details show (the portal's Output tab shows it all). */
+const WHOLE_VALUE_CHAR_LIMIT = 40_000;
+const withThousands = value => Number(value).toLocaleString("en-US");
+
+/**
+ * The whole value of the visit shown, as f read it (workflowV2WholeValue): being read, its failure, that it had no value,
+ * or the value itself line by line with its indentation, up to WHOLE_VALUE_CHAR_LIMIT characters (the rest is counted).
+ * Entries { text, color, indent }; none until f reads it.
+ */
+function wholeValueLines(entry) {
+    const whole = workflowV2WholeValue(entry);
+    if (!whole) return [];
+    if (whole.kind === "loading") return [{ text: "Reading its whole value…", color: "yellow", indent: "  " }];
+    if (whole.kind === "failed") return [{ text: `Its whole value could not be read: ${whole.error} (f reads it again)`, color: "red", indent: "  " }];
+    if (whole.kind === "none") return [{ text: "It had no value when it was read: it had not ended (f reads it again).", color: "gray", indent: "  " }];
+    const what = whole.label === "Runtime error" ? "runtime error" : "output";
+    const size = whole.bytes === null ? "" : ` (${withThousands(whole.bytes)} bytes)`;
+    const lines = [whole.kind === "preview"
+        ? { text: `Its stored ${what}${size} is more than a read returns${whole.limitBytes === null ? "" : ` (${withThousands(whole.limitBytes)} bytes)`}; only its start is shown:`,
+            color: "yellow", indent: "  " }
+        : { text: `Whole ${what}${size}:`, color: "cyan", indent: "  " }];
+    const shown = whole.text.length > WHOLE_VALUE_CHAR_LIMIT ? whole.text.slice(0, WHOLE_VALUE_CHAR_LIMIT) : whole.text;
+    for (const line of shown.split("\n")) {
+        const lead = line.length - line.trimStart().length;
+        if (line.trim()) lines.push({ text: line.trim(), color: "white", indent: `    ${" ".repeat(Math.min(lead, 24))}` });
+    }
+    if (whole.text.length > WHOLE_VALUE_CHAR_LIMIT) {
+        lines.push({ text: `… ${withThousands(whole.text.length - WHOLE_VALUE_CHAR_LIMIT)} more characters are not shown here; the portal's Output tab shows the whole value.`,
+            color: "gray", indent: "  " });
+    }
+    return lines;
+}
+
 /**
  * The selected state's result in the view's details, of exactly one visit (R01 history; design 02 node occurrences): the visit chosen
  * with [ ] for exactly the shown run and this state, else its latest result, as before. It is that visit's own output or
  * runtime error as read (wrapped, not cut), or that it has not ended or recorded no output; a chosen visit that is no
- * longer loaded says so and shows nothing in its place; and the read's cut is named. Entries { text, color, indent }.
+ * longer loaded says so and shows nothing in its place; and the read's cut is named. f reads that visit's whole value
+ * (mock M10), shown below it for exactly that run and visit. Entries { text, color, indent }.
  */
 function executionResultLines(node, projection) {
     const executions = Array.isArray(node.executions) ? node.executions : [];
-    const shown = workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution);
+    const runId = projection.v2?.runId ?? null;
+    const shown = workflowV2ShownExecution(node, runId, projection.selectedExecution);
     if (!shown.chosen && !shown.execution) return [];
     const keys = executions.length > 1 ? "; [ older · ] newer" : "";
     if (shown.missing) {
@@ -1217,8 +1257,9 @@ function executionResultLines(node, projection) {
             color: "red", indent: "  " });
     } else if (result.kind === "output") lines.push({ text: `Output: ${shownText(result.value)}`, color: "white", indent: "  " });
     else lines.push({ text: "It recorded no output.", color: "gray", indent: "  " });
-    if (result.truncated) lines.push({ text: "The read keeps only the start of this value; the whole value is not in this view.", color: "gray", indent: "  " });
-    return lines;
+    const whole = typeof execution.id === "string" ? workflowV2ExecutionValue(projection.executionValues, runId, execution.id) : null;
+    if (result.truncated && !whole) lines.push({ text: "The read keeps only the start of this value; f reads the whole value.", color: "gray", indent: "  " });
+    return [...lines, ...wholeValueLines(whole)];
 }
 
 /**
@@ -1374,6 +1415,10 @@ function detailLines(selection, width) {
     add(history.title, "cyan");
     if (history.lines.length) for (const line of history.lines) add(line);
     else add("  No executions in the loaded history.", "gray");
+    // The shown run's older history: o reads its next, older page (the read model holds its newest rows and open ones).
+    const runHistory = node.shape === "v2" ? projection.v2?.readModel?.run?.history ?? null : null;
+    if (runHistory?.loading) add("  Reading older history…", "yellow");
+    else if (runHistory?.more) add("  Older history of this run is not loaded: o reads its next, older page.", "gray");
     const effects = testEffectLines(projection, selected.id);
     if (effects) {
         add(effects.title, "cyan");

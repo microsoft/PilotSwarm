@@ -1,7 +1,14 @@
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
-import { assertJsonValue, isJsonObject, isStorableText, jsonbSafeText, previewJson, WorkflowJsonError, type JsonValue } from "./json.js";
+import {
+    assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, previewJson, utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError,
+    type JsonValue,
+} from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
+import {
+    parseWorkflowReadCursor, WORKFLOW_READ_OPEN_MAX, WORKFLOW_READ_PAGE_MAX, workflowReadCursor, workflowReadLimit,
+    type WorkflowReadCursor, type WorkflowReadSection,
+} from "./read-pages.js";
 import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import {
@@ -30,7 +37,9 @@ import {
     type WorkflowRunCommandReceipt,
     type WorkflowStore,
     type WorkflowAgentInvocation,
+    type WorkflowInboxMessage,
     type WorkflowNodeExecutionRow,
+    type WorkflowOutboxMessage,
     type WorkflowRunRow,
     type WorkflowTestInterception,
 } from "./store.js";
@@ -152,15 +161,34 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
     },
 } as const;
 
-/** read_workflow as a turn of a worker that runs controller 1.9.0 shows it (R26): the run's milestone fields are named too. */
+/**
+ * read_workflow as a turn of a worker that runs controller 1.9.0 shows it (R26): the run's milestone fields are named
+ * too, and its paging and whole-value arguments (design 04 read_workflow "Bounded history pagination"; R01; mock M10).
+ * Every turn's handler reads a run's sections newest first and lists its open rows apart; only this declaration names
+ * the arguments that page further and read one execution's whole value, as the production one stays byte for byte.
+ */
 export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
     description: READ_WORKFLOW_TOOL_SPEC.description
         + " On this host a run also shows its stop (requestedAt, deadline, graceSeconds, reason and, while it runs, settled), each agent "
         + "state's child session (agent.childSessionId, the chat to open) and its lifecycle, each parallel branch's states (scopeId, branch) and "
         + "a parallel state's number of branches, and for a test run (give its run_id) run.test: the notice, the tested revision and whether "
         + "it is stale, the virtual clock, every interception with its arguments, the schema its answer must match and its answer, and the "
-        + "coverage. definition.publishedAgentPins shows the agent versions a publication pinned.",
-    parameters: READ_WORKFLOW_TOOL_SPEC.parameters,
+        + "coverage. definition.publishedAgentPins shows the agent versions a publication pinned."
+        + " Each section of a run (nodeExecutions, inbox, outbox, run.test.interceptions) holds its newest rows, oldest first, and "
+        + "openExecutions, openInbox, openOutbox and run.test.openInterceptions hold the rows still open that the page does not, however "
+        + `old; limit (1 to ${WORKFLOW_READ_PAGE_MAX}) sets the rows per page. run.pages names each section's nextCursor: give it back as `
+        + "cursor (with limit at most) to read that section's next, older page; null means none is older. execution_id (with run_id, "
+        + "default the live run) reads one node execution's whole output or error (execution.result) instead of its preview.",
+    parameters: {
+        type: "object",
+        properties: {
+            ...READ_WORKFLOW_TOOL_SPEC.parameters.properties,
+            limit: { type: "integer", description: `Rows per page of each section, 1 to ${WORKFLOW_READ_PAGE_MAX}. Default: 200 executions, 50 inputs, 50 sent messages, 200 interceptions.` },
+            cursor: { type: "object", description: "A nextCursor from run.pages (or from a page), given back as it was: that section's next, older page." },
+            execution_id: { type: "string", description: "A node execution of the run: its whole output or error, instead of its preview." },
+        },
+        required: ["workflow_id"],
+    },
 } as const;
 
 export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {
@@ -482,10 +510,56 @@ export async function updateWorkflowFromTool(args: Record<string, unknown>, cont
     }
 }
 
-/** A bounded JSON view of a workflow child for tools and clients. */
-export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId: string, options: { runId?: string | null; includeYaml?: boolean } = {}): Promise<{ [key: string]: JsonValue }> {
+/** What a read of a workflow child asks for (design 04 read_workflow; R01 history; mock M04, M10). */
+export interface WorkflowV2ReadOptions {
+    /** The run read (default: the live run). */
+    runId?: string | null;
+    /** The current revision's YAML; the view only. */
+    includeYaml?: boolean;
+    /** The next page of one section: a nextCursor a read returned, given back as it was (read-pages.ts). */
+    cursor?: unknown;
+    /** One node execution of the run: its whole output or error. */
+    executionId?: unknown;
+    /** The rows of each page, 1 to WORKFLOW_READ_PAGE_MAX; by default each section's own (WORKFLOW_READ_PAGE_DEFAULTS). */
+    limit?: unknown;
+}
+
+const readInvalid = (message: string): WorkflowStoreError => new WorkflowStoreError("WORKFLOW_READ_INVALID", message);
+
+/**
+ * A bounded JSON read of a workflow child for tools and clients; reading changes nothing. One of three reads:
+ * - the view (no cursor, no execution id): the definition, its current revision, graph and runs, and one run (default
+ *   the live run) with the newest page of each of its sections (node executions, inbox, outbox and, for a test run, its
+ *   intercepted effects), each page's rows oldest first; the rows still open that a page does not hold, however old
+ *   (openExecutions, openInbox, openOutbox, test.openInterceptions; at most WORKFLOW_READ_OPEN_MAX each); and how each
+ *   section pages on (run.pages: its limit, its nextCursor, null when no older row exists, and whether every open row
+ *   is listed). A run of at most `limit` rows per section reads as before: the same rows in the same order.
+ * - a section's next page (`cursor`): its rows, oldest first within the page, and the cursor of the page after it.
+ * - one node execution of the run (`executionId`; default the live run): its whole output or error as stored, within
+ *   WORKFLOW_PAYLOAD_MAX_BYTES.
+ * Refusals: WORKFLOW_READ_INVALID (the reads mixed, an invalid limit or execution id), WORKFLOW_CURSOR_INVALID (a cursor
+ * that is not one a read of this workflow returned, or that names another run than the one named), EXECUTION_NOT_FOUND
+ * (an execution that is not one of the run's), and as before WORKFLOW_NOT_FOUND and RUN_NOT_FOUND.
+ */
+export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId: string, options: WorkflowV2ReadOptions = {}): Promise<{ [key: string]: JsonValue }> {
+    const paging = options.cursor !== undefined && options.cursor !== null;
+    const execution = options.executionId !== undefined && options.executionId !== null;
+    if (paging && execution) throw readInvalid("A read takes a cursor (the next page of a section) or an execution id (one execution's whole value), not both.");
+    if ((paging || execution) && options.includeYaml === true) throw readInvalid("include_yaml belongs to the workflow's view, not to a page or to an execution's value.");
+    if (execution && options.limit !== undefined && options.limit !== null) throw readInvalid("limit belongs to the view and its pages, not to an execution's value.");
+    if (execution) return readExecution(store, workflowSessionId, options.runId ?? null, options.executionId);
+    if (paging) return readSectionPage(store, workflowSessionId, options.runId ?? null, options.cursor, options.limit);
+    return readOverview(store, workflowSessionId, options);
+}
+
+async function readOverview(store: WorkflowStore, workflowSessionId: string, options: WorkflowV2ReadOptions): Promise<{ [key: string]: JsonValue }> {
     const definition = await store.readDefinition(workflowSessionId);
     if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    // Each section's page size, checked before anything else is read.
+    const limits: Record<WorkflowReadSection, number> = {
+        executions: workflowReadLimit(options.limit, "executions"), inbox: workflowReadLimit(options.limit, "inbox"),
+        outbox: workflowReadLimit(options.limit, "outbox"), interceptions: workflowReadLimit(options.limit, "interceptions"),
+    };
     const revision = await store.readRevision(workflowSessionId, definition.currentRevision);
     if (!revision) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "The current revision is missing.");
     const graphRevision = definition.publishedRevision ?? definition.currentRevision;
@@ -496,23 +570,15 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     const runs = await store.listRuns(workflowSessionId);
     const selected = options.runId ? runs.find(run => run.runId === options.runId) : runs.find(run => run.mode === "live");
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
-    const nodes = selected ? await store.listNodeExecutions(selected.runId, 200) : [];
-    // An agent state's child session and its lifecycle (IR 8, INACTIVE): read only for a run that has one.
-    const agents = selected && nodes.some(node => node.nodeType === "agent")
-        ? new Map((await store.listAgentInvocations(selected.runId)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
-        : new Map<string, WorkflowAgentInvocation>();
-    const inbox = selected ? await store.listInbox(selected.runId, 50) : [];
-    const outbox = selected ? await store.listOutbox(selected.runId, 50) : [];
-    // A recipient's later intake refusal of a delivered message (design 5.6), shown beside the delivery, which it never rewrites;
-    // looked up for exactly the bounded page of messages shown.
-    const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = selected && outbox.length > 0
-        ? await store.listOutboxIntakeOutcomes(selected.runId, outbox.map(message => message.exchangeId)) : new Map();
+    const sections = selected ? await runSectionsOf(store, selected, limits) : null;
     // A paused run has settled once no state it admitted is still running; so has a stopping run (migration 0096).
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     const stopping = selected?.stop && ACTIVE_RUN_STATUSES.includes(selected.status) ? selected.stop : null;
     const stopSettled = stopping !== null ? !await store.hasPendingNodes(selected!.runId) : null;
     // A test run (migration 0098, INACTIVE): its notice, virtual clock, interceptions and coverage.
-    const test = selected?.mode === "test" ? await testViewOf(store, workflowSessionId, selected, definition.currentRevision, nodes) : null;
+    const test = selected && sections && selected.mode === "test"
+        ? await testViewOf(store, workflowSessionId, selected, definition.currentRevision, [...sections.executions.rows, ...sections.openExecutions], limits.interceptions)
+        : null;
     return {
         workflowId: workflowSessionId,
         definition: {
@@ -528,7 +594,7 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
         },
         graph: ir ? { revision: graphRevision, initial: ir.initial, states: describeWorkflowV2States(ir) } : null,
         runs: runs.map(run => ({ runId: run.runId, mode: run.mode, status: run.status, revision: run.revision, outcome: run.terminalOutcome })),
-        run: selected ? {
+        run: selected && sections ? {
             runId: selected.runId, mode: selected.mode, status: selected.status, outcome: selected.terminalOutcome,
             ...(selected.pausedFrom !== null ? { pausedFrom: selected.pausedFrom, pauseSettled } : {}),
             // A graceful stop (controller 1.9.0; only such a run has one): when it was accepted, its deadline, and while the run is
@@ -538,7 +604,7 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 graceSeconds: selected.stop.graceSeconds, reason: selected.stop.reason,
                 ...(stopping !== null ? { settled: stopSettled } : {}),
             } } : {}),
-            ...(test !== null ? { test } : {}),
+            ...(test !== null ? { test: test.view } : {}),
             // A run deadline (migration 0100; limits.timeoutSeconds, controller 1.9.0): only a run with one shows it (a test
             // run's is on its virtual clock).
             ...(selected.deadlineAt ? { deadline: selected.deadlineAt.toISOString() } : {}),
@@ -547,81 +613,294 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
             error: selected.terminalError === null ? null : previewJson(selected.terminalError, 2_000),
             kvRevision: selected.kvRevision,
             kv: previewJson(selected.kv, 4_000),
-            nodeExecutions: nodes.map(node => ({
-                nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
-                outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
-                // A parallel branch's state (IR 8, INACTIVE): its branch's parallel state execution and index.
-                ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
-                ...(node.nodeType === "parallel" && Array.isArray(node.input) ? { branches: node.input.length } : {}),
-                ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
-                ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
-                ...(agents.has(node.nodeExecutionId) ? { agent: agentViewOf(agents.get(node.nodeExecutionId)!) } : {}),
-                ...(node.resultKind === "business" ? { outputPreview: previewJson(node.output, 500) } : {}),
-                ...(node.resultKind === "runtime_error" ? { errorPreview: previewJson(node.error, 500) } : {}),
-            })),
-            inbox: inbox.map(message => ({
-                messageId: message.messageId, contract: message.contract, senderSessionId: message.senderSessionId,
-                correlation: message.correlation, acceptedAt: message.acceptedAt, expiresAt: message.expiresAt,
-                claimedBy: message.consumedBy, claimedAt: message.consumedAt, payloadPreview: previewJson(message.payload, 300),
-            })),
-            outbox: outbox.map(message => ({
-                exchangeId: message.exchangeId, nodeExecutionId: message.nodeExecutionId, recipientSessionId: message.recipientSessionId,
-                recipientKind: message.recipientKind, contract: message.contract, state: message.state, attempts: message.attempts,
-                createdAt: message.createdAt, deliveredAt: message.receipt?.deliveredAt ?? null, payloadPreview: previewJson(message.payload, 300),
-                ...(message.receipt?.input ? { inputMessageId: message.receipt.input.messageId, claimedBy: message.receipt.input.claimedBy?.nodeExecutionId ?? null } : {}),
-                ...(message.error !== null ? { errorPreview: previewJson(message.error, 500) } : {}),
-                ...(intakeOutcomes.has(message.exchangeId) ? { ...intakeOutcomes.get(message.exchangeId) } : {}),
-            })),
+            nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(node, sections.agents)),
+            openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(node, sections.agents)),
+            inbox: sections.inbox.rows.map(inboxViewOf),
+            openInbox: sections.openInbox.map(inboxViewOf),
+            outbox: sections.outbox.rows.map(message => outboxViewOf(message, sections.intakeOutcomes)),
+            openOutbox: sections.openOutbox.map(message => outboxViewOf(message, sections.intakeOutcomes)),
+            pages: {
+                executions: pageViewOf(limits.executions, sections.executions.nextCursor, sections.openExecutionsComplete),
+                inbox: pageViewOf(limits.inbox, sections.inbox.nextCursor, sections.openInboxComplete),
+                outbox: pageViewOf(limits.outbox, sections.outbox.nextCursor, sections.openOutboxComplete),
+                ...(test !== null ? { interceptions: test.page } : {}),
+            },
         } : null,
     };
+}
+
+/** How a section pages on, as the view shows it in run.pages. */
+function pageViewOf(limit: number, nextCursor: WorkflowReadCursor | null, openComplete: boolean): { [key: string]: JsonValue } {
+    return { order: "newest_first", limit, nextCursor, openComplete };
+}
+
+/** One page of rows (oldest first within the page) and the cursor of the page after it (null when none is older). */
+interface RowPage<T> {
+    rows: T[];
+    nextCursor: WorkflowReadCursor | null;
+}
+
+async function executionsPageOf(store: WorkflowStore, run: WorkflowRunRow, limit: number, after: { enteredAt: string; nodeExecutionId: string } | null)
+    : Promise<RowPage<WorkflowNodeExecutionRow>> {
+    const page = await store.pageNodeExecutions(run.runId, limit, after);
+    const last = page.rows.at(-1);
+    return {
+        rows: page.rows.map(row => row.node).reverse(),
+        nextCursor: page.more && last ? workflowReadCursor(run.workflowSessionId, run.runId, "executions", { enteredAt: last.enteredAt, nodeExecutionId: last.node.nodeExecutionId }) : null,
+    };
+}
+
+async function inboxPageOf(store: WorkflowStore, run: WorkflowRunRow, limit: number, afterSeq: string | null): Promise<RowPage<WorkflowInboxMessage>> {
+    const page = await store.pageInbox(run.runId, limit, afterSeq);
+    const last = page.rows.at(-1);
+    return {
+        rows: [...page.rows].reverse(),
+        nextCursor: page.more && last ? workflowReadCursor(run.workflowSessionId, run.runId, "inbox", { seq: String(last.seq) }) : null,
+    };
+}
+
+async function outboxPageOf(store: WorkflowStore, run: WorkflowRunRow, limit: number, after: { createdAt: string; exchangeId: string } | null)
+    : Promise<RowPage<WorkflowOutboxMessage>> {
+    const page = await store.pageOutbox(run.runId, limit, after);
+    const last = page.rows.at(-1);
+    return {
+        rows: [...page.rows].reverse(),
+        nextCursor: page.more && last ? workflowReadCursor(run.workflowSessionId, run.runId, "outbox", { createdAt: last.createdAt, exchangeId: last.exchangeId }) : null,
+    };
+}
+
+async function interceptionsPageOf(store: WorkflowStore, run: WorkflowRunRow, limit: number, afterSeq: string | null): Promise<RowPage<WorkflowTestInterception>> {
+    const page = await store.pageInterceptions(run.runId, limit, afterSeq);
+    const last = page.rows.at(-1);
+    return {
+        rows: [...page.rows].reverse(),
+        nextCursor: page.more && last ? workflowReadCursor(run.workflowSessionId, run.runId, "interceptions", { seq: String(last.seq) }) : null,
+    };
+}
+
+/**
+ * A run's sections as the view shows them: the newest page of each, and its open rows that the page does not hold
+ * (each read apart, at most WORKFLOW_READ_OPEN_MAX), with the agent children and delivery outcomes of the rows shown.
+ */
+async function runSectionsOf(store: WorkflowStore, run: WorkflowRunRow, limits: Record<WorkflowReadSection, number>) {
+    const executions = await executionsPageOf(store, run, limits.executions, null);
+    const openNodes = await store.listOpenNodeExecutions(run.runId, WORKFLOW_READ_OPEN_MAX);
+    const pagedNodes = new Set(executions.rows.map(node => node.nodeExecutionId));
+    const openExecutions = openNodes.rows.filter(node => !pagedNodes.has(node.nodeExecutionId));
+    // An agent state's child session and its lifecycle (IR 8, INACTIVE): read only for the agent states shown.
+    const agentIds = [...executions.rows, ...openExecutions].filter(node => node.nodeType === "agent").map(node => node.nodeExecutionId);
+    const agents = agentIds.length > 0
+        ? new Map((await store.listAgentInvocationsFor(run.runId, agentIds)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
+        : new Map<string, WorkflowAgentInvocation>();
+    const inbox = await inboxPageOf(store, run, limits.inbox, null);
+    const openInputs = await store.listOpenInbox(run.runId, WORKFLOW_READ_OPEN_MAX);
+    const pagedInputs = new Set(inbox.rows.map(message => message.messageId));
+    const outbox = await outboxPageOf(store, run, limits.outbox, null);
+    const openSent = await store.listOpenOutbox(run.runId, WORKFLOW_READ_OPEN_MAX);
+    const pagedSent = new Set(outbox.rows.map(message => message.exchangeId));
+    const openOutbox = openSent.rows.filter(message => !pagedSent.has(message.exchangeId));
+    // A recipient's later intake refusal of a delivered message (design 5.6), shown beside the delivery, which it never rewrites;
+    // looked up for exactly the messages shown.
+    const shownSent = [...outbox.rows, ...openOutbox];
+    const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = shownSent.length > 0
+        ? await store.listOutboxIntakeOutcomes(run.runId, shownSent.map(message => message.exchangeId)) : new Map();
+    return {
+        executions, openExecutions, openExecutionsComplete: !openNodes.more, agents,
+        inbox, openInbox: openInputs.rows.filter(message => !pagedInputs.has(message.messageId)), openInboxComplete: !openInputs.more,
+        outbox, openOutbox, openOutboxComplete: !openSent.more, intakeOutcomes,
+    };
+}
+
+/** One node execution as a read shows it: its result as bounded previews (an execution read gives the whole value). */
+function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, WorkflowAgentInvocation>): { [key: string]: JsonValue } {
+    const agent = agents.get(node.nodeExecutionId);
+    return {
+        nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
+        outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
+        // A parallel branch's state (IR 8, INACTIVE): its branch's parallel state execution and index.
+        ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
+        ...(node.nodeType === "parallel" && Array.isArray(node.input) ? { branches: node.input.length } : {}),
+        ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
+        ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
+        ...(agent !== undefined ? { agent: agentViewOf(agent) } : {}),
+        ...(node.resultKind === "business" ? { outputPreview: previewJson(node.output, 500) } : {}),
+        ...(node.resultKind === "runtime_error" ? { errorPreview: previewJson(node.error, 500) } : {}),
+    };
+}
+
+/** One typed input of a run's inbox, as a read shows it. */
+function inboxViewOf(message: WorkflowInboxMessage): { [key: string]: JsonValue } {
+    return {
+        messageId: message.messageId, contract: message.contract, senderSessionId: message.senderSessionId,
+        correlation: message.correlation, acceptedAt: message.acceptedAt, expiresAt: message.expiresAt,
+        claimedBy: message.consumedBy, claimedAt: message.consumedAt, payloadPreview: previewJson(message.payload, 300),
+    };
+}
+
+/** One message a run sent, as a read shows it, with the recipient's later intake refusal when there is one. */
+function outboxViewOf(message: WorkflowOutboxMessage, intakeOutcomes: ReadonlyMap<string, { intakeOutcome: string; intakeOutcomeAt: string }>)
+    : { [key: string]: JsonValue } {
+    const intake = intakeOutcomes.get(message.exchangeId);
+    return {
+        exchangeId: message.exchangeId, nodeExecutionId: message.nodeExecutionId, recipientSessionId: message.recipientSessionId,
+        recipientKind: message.recipientKind, contract: message.contract, state: message.state, attempts: message.attempts,
+        createdAt: message.createdAt, deliveredAt: message.receipt?.deliveredAt ?? null, payloadPreview: previewJson(message.payload, 300),
+        ...(message.receipt?.input ? { inputMessageId: message.receipt.input.messageId, claimedBy: message.receipt.input.claimedBy?.nodeExecutionId ?? null } : {}),
+        ...(message.error !== null ? { errorPreview: previewJson(message.error, 500) } : {}),
+        ...(intake !== undefined ? { ...intake } : {}),
+    };
+}
+
+/** The next page of one section of a run (read-pages.ts): its rows, oldest first, and the cursor of the page after it. */
+async function readSectionPage(store: WorkflowStore, workflowSessionId: string, runId: string | null, cursorValue: unknown, limitValue: unknown)
+    : Promise<{ [key: string]: JsonValue }> {
+    if (!await store.readDefinition(workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    const cursor = parseWorkflowReadCursor(cursorValue, workflowSessionId, runId);
+    const limit = workflowReadLimit(limitValue, cursor.section);
+    const run = await store.readRun(cursor.runId);
+    if (!run || run.workflowSessionId !== workflowSessionId) {
+        throw new WorkflowStoreError("WORKFLOW_CURSOR_INVALID", "This cursor names a run that is not a run of this workflow.");
+    }
+    const page = (items: JsonValue[], nextCursor: WorkflowReadCursor | null): { [key: string]: JsonValue } => ({
+        workflowId: workflowSessionId, runId: run.runId, section: cursor.section, order: "newest_first", limit, items, nextCursor,
+    });
+    const after = cursor.after;
+    if (cursor.section === "executions" && "enteredAt" in after) {
+        const read = await executionsPageOf(store, run, limit, after);
+        const agentIds = read.rows.filter(node => node.nodeType === "agent").map(node => node.nodeExecutionId);
+        const agents = agentIds.length > 0
+            ? new Map((await store.listAgentInvocationsFor(run.runId, agentIds)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
+            : new Map<string, WorkflowAgentInvocation>();
+        return page(read.rows.map(node => nodeExecutionViewOf(node, agents)), read.nextCursor);
+    }
+    if (cursor.section === "outbox" && "createdAt" in after) {
+        const read = await outboxPageOf(store, run, limit, after);
+        const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = read.rows.length > 0
+            ? await store.listOutboxIntakeOutcomes(run.runId, read.rows.map(message => message.exchangeId)) : new Map();
+        return page(read.rows.map(message => outboxViewOf(message, intakeOutcomes)), read.nextCursor);
+    }
+    if (cursor.section === "inbox" && "seq" in after) {
+        const read = await inboxPageOf(store, run, limit, after.seq);
+        return page(read.rows.map(inboxViewOf), read.nextCursor);
+    }
+    if (cursor.section === "interceptions" && "seq" in after) {
+        if (run.mode !== "test") throw new WorkflowStoreError("WORKFLOW_CURSOR_INVALID", "Only a test run has intercepted effects to page.");
+        const read = await interceptionsPageOf(store, run, limit, after.seq);
+        const nodes = await interceptedNodesOf(store, run.runId, read.rows, []);
+        return page(read.rows.map(item => interceptionViewOf(item, nodes.get(item.nodeExecutionId))), read.nextCursor);
+    }
+    // parseWorkflowReadCursor gives each section its own position; anything else is not a cursor a read returned.
+    throw new WorkflowStoreError("WORKFLOW_CURSOR_INVALID", "This cursor's position is not one of its section's.");
+}
+
+/**
+ * One node execution of a run (default the live run) with its whole output or error as stored (design 04 read_workflow;
+ * mock M10 "Inspect typed output"; D07): `result` is null while it is pending; otherwise its kind (output for a
+ * business result, error for a runtime error), its size in bytes (UTF-8 canonical JSON) and the value itself. The
+ * runtime stores no larger value than WORKFLOW_PAYLOAD_MAX_BYTES; a larger one (none is written) is not sent whole: its
+ * bounded preview is, marked whole: false. Only an execution of the run read is shown (EXECUTION_NOT_FOUND otherwise),
+ * whatever workflow or run the id belongs to.
+ */
+async function readExecution(store: WorkflowStore, workflowSessionId: string, runId: string | null, executionIdValue: unknown)
+    : Promise<{ [key: string]: JsonValue }> {
+    if (typeof executionIdValue !== "string" || !executionIdValue.trim() || executionIdValue.length > 256) {
+        throw readInvalid("execution_id must be a node execution id of 1 to 256 characters.");
+    }
+    const definition = await store.readDefinition(workflowSessionId);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    const runs = await store.listRuns(workflowSessionId);
+    const run = runId ? runs.find(item => item.runId === runId) : runs.find(item => item.mode === "live");
+    if (runId && !run) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${runId} is not a run of this workflow.`);
+    const node = run ? await store.readNodeExecution(executionIdValue) : null;
+    if (!run || !node || node.runId !== run.runId) {
+        throw new WorkflowStoreError("EXECUTION_NOT_FOUND", run
+            ? `Execution ${executionIdValue} is not a node execution of run ${run.runId}.`
+            : "This workflow has no live run; name the run whose execution to read (run_id).");
+    }
+    return {
+        workflowId: workflowSessionId,
+        runId: run.runId,
+        execution: {
+            nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
+            outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts,
+            ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
+            enteredAt: node.enteredAt.toISOString(), completedAt: node.completedAt === null ? null : node.completedAt.toISOString(),
+            result: executionResultOf(node),
+        },
+    };
+}
+
+/** An execution's stored result, whole within WORKFLOW_PAYLOAD_MAX_BYTES; null while it is pending. */
+function executionResultOf(node: WorkflowNodeExecutionRow): { [key: string]: JsonValue } | null {
+    if (node.state !== "completed" || node.resultKind === null) return null;
+    const kind = node.resultKind === "business" ? "output" : "error";
+    const value = node.resultKind === "business" ? node.output : node.error;
+    const bytes = utf8ByteLength(canonicalJson(value));
+    return bytes <= WORKFLOW_PAYLOAD_MAX_BYTES
+        ? { kind, bytes, whole: true, value }
+        : { kind, bytes, whole: false, limitBytes: WORKFLOW_PAYLOAD_MAX_BYTES, preview: previewJson(value, 4_000) };
 }
 
 /**
  * A test run as read_workflow shows it (design 05; R28): the permanent notice
  * (scripts run normally; framework tools are mocked), its agent mode, the
  * revision it tested and whether a newer one makes its result stale, its
- * virtual clock, each intercepted effect with its arguments, the schema an
- * answer must match and its answer (kind, disposition, value), and its
- * coverage: the states it entered and did not, the routes it took, and the
- * effects still waiting for an answer. Bounded; reading changes nothing.
+ * virtual clock, the newest page of its intercepted effects and those still
+ * waiting for an answer that the page does not hold (each with its
+ * arguments, the schema an answer must match and its answer: kind,
+ * disposition, value), and its coverage over all its node executions: the
+ * states it entered and did not, the routes it took, each state's outcomes,
+ * and the effects still waiting for an answer. Bounded; reading changes
+ * nothing. `known` are node executions already read (the others an
+ * interception names are read by id).
  */
 async function testViewOf(store: WorkflowStore, workflowSessionId: string, run: WorkflowRunRow, currentRevision: number,
-    nodes: WorkflowNodeExecutionRow[]): Promise<{ [key: string]: JsonValue }> {
-    const interceptions = await store.listInterceptions(run.runId, 200);
+    known: readonly WorkflowNodeExecutionRow[], limit: number): Promise<{ view: { [key: string]: JsonValue }; page: { [key: string]: JsonValue } }> {
+    const page = await interceptionsPageOf(store, run, limit, null);
+    const open = await store.listOpenInterceptions(run.runId, WORKFLOW_READ_OPEN_MAX);
+    const paged = new Set(page.rows.map(item => item.interceptionId));
+    const openApart = open.rows.filter(item => !paged.has(item.interceptionId));
+    const nodes = await interceptedNodesOf(store, run.runId, [...page.rows, ...openApart], known);
     const ir = await store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
-    const byId = new Map(nodes.map(node => [node.nodeExecutionId, node] as const));
-    const visited = new Set(nodes.map(node => node.nodeId));
-    const edges = new Map<string, { from: string; route: string; to: string; count: number }>();
+    const coverage = await store.testCoverage(run.runId);
+    const entered = new Set(coverage.entered);
     const outcomes = new Map<string, Set<string>>();
-    for (const node of nodes) {
-        if (node.outcome !== null) outcomes.set(node.nodeId, (outcomes.get(node.nodeId) ?? new Set<string>()).add(node.outcome));
-        const from = node.predecessorId === null ? undefined : byId.get(node.predecessorId);
-        if (from === undefined || node.arrivalRoute === null) continue;
-        const key = canonicalKey(from.nodeId, node.arrivalRoute, node.nodeId);
-        const edge = edges.get(key) ?? { from: from.nodeId, route: node.arrivalRoute, to: node.nodeId, count: 0 };
-        edge.count += 1;
-        edges.set(key, edge);
-    }
+    for (const { stateId, outcome } of coverage.outcomes) outcomes.set(stateId, (outcomes.get(stateId) ?? new Set<string>()).add(outcome));
     const virtualSeconds = run.virtualNow === null ? null : Math.round((run.virtualNow.getTime() - Date.parse(WORKFLOW_V2_TEST_EPOCH)) / 1000);
     return {
-        notice: WORKFLOW_V2_TEST_NOTICE,
-        agentMode: run.testAgentMode,
-        // What a real-agent test pinned its named agents to when it was admitted (migration 0101; R18, R28).
-        ...(run.testAgentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE, agentPins: run.testAgentPins } : {}),
-        scenario: run.testScenario,
-        testedRevision: run.revision,
-        stale: run.revision !== currentRevision,
-        virtualClock: run.virtualNow === null ? null : { now: run.virtualNow.toISOString(), elapsedSeconds: virtualSeconds },
-        interceptions: interceptions.map(item => interceptionViewOf(item, byId.get(item.nodeExecutionId))),
-        coverage: {
-            complete: nodes.length < 200,
-            entered: [...visited].sort(),
-            notEntered: Object.keys(ir.nodes).filter(id => !visited.has(id)).sort(),
-            routes: [...edges.values()].sort((a, b) => canonicalKey(a.from, a.route, a.to).localeCompare(canonicalKey(b.from, b.route, b.to))),
-            outcomes: Object.fromEntries([...outcomes.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, seen]) => [id, [...seen].sort()])),
-            unanswered: interceptions.filter(item => item.state === "awaiting_parent").map(item => item.interceptionId),
+        view: {
+            notice: WORKFLOW_V2_TEST_NOTICE,
+            agentMode: run.testAgentMode,
+            // What a real-agent test pinned its named agents to when it was admitted (migration 0101; R18, R28).
+            ...(run.testAgentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE, agentPins: run.testAgentPins } : {}),
+            scenario: run.testScenario,
+            testedRevision: run.revision,
+            stale: run.revision !== currentRevision,
+            virtualClock: run.virtualNow === null ? null : { now: run.virtualNow.toISOString(), elapsedSeconds: virtualSeconds },
+            interceptions: page.rows.map(item => interceptionViewOf(item, nodes.get(item.nodeExecutionId))),
+            openInterceptions: openApart.map(item => interceptionViewOf(item, nodes.get(item.nodeExecutionId))),
+            coverage: {
+                // Counted over every node execution of the run (store.testCoverage), however long its history.
+                complete: true,
+                entered: [...entered].sort(),
+                notEntered: Object.keys(ir.nodes).filter(id => !entered.has(id)).sort(),
+                routes: [...coverage.routes].sort((a, b) => canonicalKey(a.from, a.route, a.to).localeCompare(canonicalKey(b.from, b.route, b.to))),
+                outcomes: Object.fromEntries([...outcomes.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, seen]) => [id, [...seen].sort()])),
+                // Every effect still waiting (at most WORKFLOW_READ_OPEN_MAX; run.pages.interceptions.openComplete says whether all).
+                unanswered: open.rows.map(item => item.interceptionId),
+            },
         },
+        page: pageViewOf(limit, page.nextCursor, !open.more),
     };
+}
+
+/** The node executions of the given intercepted effects, by id: those already read, and the others read now by id. */
+async function interceptedNodesOf(store: WorkflowStore, runId: string, items: readonly WorkflowTestInterception[], known: readonly WorkflowNodeExecutionRow[])
+    : Promise<Map<string, WorkflowNodeExecutionRow>> {
+    const byId = new Map(known.map(node => [node.nodeExecutionId, node] as const));
+    const missing = [...new Set(items.map(item => item.nodeExecutionId))].filter(id => !byId.has(id));
+    if (missing.length > 0) for (const node of await store.listNodeExecutionsByIds(runId, missing)) byId.set(node.nodeExecutionId, node);
+    return byId;
 }
 
 function canonicalKey(...parts: string[]): string {
@@ -668,10 +947,13 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+        // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
         const view = await readWorkflowV2View(context.host.store, workflowSessionId, {
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml === true,
+            cursor: args.cursor, limit: args.limit, executionId: args.execution_id,
         });
-        // Report (never change) whether an active run's controller can still end it.
+        // Report (never change) whether an active run's controller can still end it; the view only (a page or an execution's value
+        // has no run object).
         const shown = isJsonObject(view.run) && typeof view.run.runId === "string" ? await context.host.store.readRun(view.run.runId) : null;
         if (shown && isJsonObject(view.run) && ACTIVE_RUN_STATUSES.includes(shown.status)) {
             const controller = await inspectWorkflowV2Controller(context.host, shown);

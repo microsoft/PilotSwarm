@@ -337,10 +337,18 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionWorkspace", { sessionId });
     }
 
-    /** Workflow v2: the read-only view of a workflow session (readWorkflow, session:read). Only an absent runId is omitted. */
-    async readWorkflow(sessionId: string, options: { runId?: string | null } = {}): Promise<any> {
-        const runId = options?.runId;
-        return this._api.call("readWorkflow", { sessionId, ...(runId === undefined || runId === null ? {} : { runId }) });
+    /**
+     * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
+     * page. Only an absent (or null) option is omitted; any other value is sent for the server to check.
+     */
+    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown } = {}): Promise<any> {
+        const params: Record<string, unknown> = { sessionId };
+        for (const key of ["runId", "cursor", "executionId", "limit"] as const) {
+            const value = options?.[key];
+            if (value !== undefined && value !== null) params[key] = value;
+        }
+        return this._api.call("readWorkflow", params);
     }
 
     /**
@@ -357,11 +365,17 @@ export class WebPilotSwarmManagementClient {
     /**
      * Workflow support as the server advertises it in its bootstrap (design
      * 04, D11; the direct client's getWorkflowCapabilities): its `workflows`
-     * field, or null from a server that advertises none (an older server).
+     * field, or null from a server that advertises none (an older server: no
+     * field, or null). A bootstrap that cannot be read rejects as it failed,
+     * and a `workflows` that is not an object rejects
+     * WORKFLOW_CAPABILITIES_MALFORMED: neither is read as an older server.
      */
     async getWorkflowCapabilities(): Promise<Record<string, unknown> | null> {
         const workflows = (await this._api.getBootstrap())?.workflows;
-        return workflows !== null && typeof workflows === "object" && !Array.isArray(workflows) ? workflows : null;
+        if (workflows === undefined || workflows === null) return null;
+        if (typeof workflows === "object" && !Array.isArray(workflows)) return workflows;
+        throw Object.assign(new Error(`The server's bootstrap advertises workflows as ${Array.isArray(workflows) ? "a list" : `a ${typeof workflows}`}, `
+            + "not an object, so its workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
     }
 
     /** Session workspaces: set or clear the workspace (external flow). */

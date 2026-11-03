@@ -3212,6 +3212,115 @@ export class WorkflowStore {
         return rows.map(nodeFrom);
     }
 
+    // ─── Read pages (design 04 read_workflow "bounded history pagination"; R01) ───
+    //
+    // Each page lists a run's rows newest first in one stable order (an immutable key, then a unique id, so rows written
+    // at the same instant keep their order). A page starts strictly after the last row of the previous page (its exact
+    // key), so no row is listed twice. The pages are separate reads, not one snapshot: over a stable result set (no row
+    // added below a position already passed, none removed) following them lists each row exactly once. A row committed
+    // later is listed by a later read (one whose key sorts below a position already passed, because its transaction read
+    // the clock or took its sequence earlier, by a new pass only). Each page reads at most `limit + 1` rows (the extra one
+    // only says whether more follow). Open rows (still running or still waiting) are read apart, at most `limit + 1`, so
+    // a run's current state is listed on every read whatever the pages passed.
+
+    /** One page of a run's node executions, newest first by entry time, then by id; with each one's exact entry time. */
+    async pageNodeExecutions(runId: string, limit: number, after: { enteredAt: string; nodeExecutionId: string } | null)
+        : Promise<{ rows: Array<{ node: WorkflowNodeExecutionRow; enteredAt: string }>; more: boolean }> {
+        const { rows } = await this.pool.query(
+            `SELECT *, ${isoUtc("entered_at")} AS entered_at_key FROM ${this.t.nodes}
+              WHERE run_id = $1 AND ($2::timestamptz IS NULL OR (entered_at, node_execution_id) < ($2::timestamptz, $3::text))
+              ORDER BY entered_at DESC, node_execution_id DESC LIMIT $4`,
+            [runId, after?.enteredAt ?? null, after?.nodeExecutionId ?? null, limit + 1]);
+        return { rows: rows.slice(0, limit).map(row => ({ node: nodeFrom(row), enteredAt: str(row, "entered_at_key") })), more: rows.length > limit };
+    }
+
+    /** A run's node executions still pending (its current states, however long ago they were entered), oldest first. */
+    async listOpenNodeExecutions(runId: string, limit: number): Promise<{ rows: WorkflowNodeExecutionRow[]; more: boolean }> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending' ORDER BY entered_at, node_execution_id LIMIT $2`, [runId, limit + 1]);
+        return { rows: rows.slice(0, limit).map(nodeFrom), more: rows.length > limit };
+    }
+
+    /** The node executions of a run among `nodeExecutionIds` (as many as the ids given; unknown ids are left out). */
+    async listNodeExecutionsByIds(runId: string, nodeExecutionIds: readonly string[]): Promise<WorkflowNodeExecutionRow[]> {
+        if (nodeExecutionIds.length === 0) return [];
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.nodes} WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`, [runId, [...new Set(nodeExecutionIds)]]);
+        return rows.map(nodeFrom);
+    }
+
+    /** One page of a run's typed input inbox, newest first by its sequence. */
+    async pageInbox(runId: string, limit: number, afterSeq: string | null): Promise<{ rows: WorkflowInboxMessage[]; more: boolean }> {
+        const { rows } = await this.pool.query(
+            `SELECT ${INBOX_COLUMNS} FROM ${this.t.inbox} WHERE run_id = $1 AND ($2::bigint IS NULL OR seq < $2::bigint) ORDER BY seq DESC LIMIT $3`,
+            [runId, afterSeq, limit + 1]);
+        return { rows: rows.slice(0, limit).map(inboxFrom), more: rows.length > limit };
+    }
+
+    /** A run's typed input that no receive state has taken and that has not expired (its current input), oldest first. */
+    async listOpenInbox(runId: string, limit: number): Promise<{ rows: WorkflowInboxMessage[]; more: boolean }> {
+        const { rows } = await this.pool.query(
+            `SELECT ${INBOX_COLUMNS} FROM ${this.t.inbox} WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > now() ORDER BY seq LIMIT $2`,
+            [runId, limit + 1]);
+        return { rows: rows.slice(0, limit).map(inboxFrom), more: rows.length > limit };
+    }
+
+    /** One page of a run's sent messages, newest first by creation time, then by exchange id. */
+    async pageOutbox(runId: string, limit: number, after: { createdAt: string; exchangeId: string } | null)
+        : Promise<{ rows: WorkflowOutboxMessage[]; more: boolean }> {
+        const { rows } = await this.pool.query(
+            `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox}
+              WHERE run_id = $1 AND ($2::timestamptz IS NULL OR (created_at, exchange_id) < ($2::timestamptz, $3::text))
+              ORDER BY created_at DESC, exchange_id DESC LIMIT $4`,
+            [runId, after?.createdAt ?? null, after?.exchangeId ?? null, limit + 1]);
+        return { rows: rows.slice(0, limit).map(outboxFrom), more: rows.length > limit };
+    }
+
+    /** A run's sent messages whose delivery is still pending, oldest first. */
+    async listOpenOutbox(runId: string, limit: number): Promise<{ rows: WorkflowOutboxMessage[]; more: boolean }> {
+        const { rows } = await this.pool.query(
+            `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox} WHERE run_id = $1 AND state = 'pending' ORDER BY created_at, exchange_id LIMIT $2`,
+            [runId, limit + 1]);
+        return { rows: rows.slice(0, limit).map(outboxFrom), more: rows.length > limit };
+    }
+
+    /** One page of a test run's intercepted effects, newest first by the order they were reached. */
+    async pageInterceptions(runId: string, limit: number, afterSeq: string | null): Promise<{ rows: WorkflowTestInterception[]; more: boolean }> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.testInterceptions} WHERE run_id = $1 AND ($2::bigint IS NULL OR seq < $2::bigint) ORDER BY seq DESC LIMIT $3`,
+            [runId, afterSeq, limit + 1]);
+        return { rows: rows.slice(0, limit).map(interceptionFrom), more: rows.length > limit };
+    }
+
+    /** A test run's intercepted effects that still wait for an answer, oldest first. */
+    async listOpenInterceptions(runId: string, limit: number): Promise<{ rows: WorkflowTestInterception[]; more: boolean }> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.testInterceptions} WHERE run_id = $1 AND state = 'awaiting_parent' ORDER BY seq LIMIT $2`, [runId, limit + 1]);
+        return { rows: rows.slice(0, limit).map(interceptionFrom), more: rows.length > limit };
+    }
+
+    /**
+     * A test run's coverage over all its node executions (design 05; bounded by its graph, not by its history): the
+     * states it entered, each route taken (from the predecessor's state, by its label, to the state) with how often, and
+     * each state's outcomes.
+     */
+    async testCoverage(runId: string): Promise<{ entered: string[]; routes: Array<{ from: string; route: string; to: string; count: number }>;
+        outcomes: Array<{ stateId: string; outcome: string }> }> {
+        const [entered, routes, outcomes] = await Promise.all([
+            this.pool.query(`SELECT DISTINCT node_id FROM ${this.t.nodes} WHERE run_id = $1`, [runId]),
+            this.pool.query(
+                `SELECT p.node_id AS from_id, n.arrival_route AS route, n.node_id AS to_id, count(*)::int AS n
+                   FROM ${this.t.nodes} n JOIN ${this.t.nodes} p ON p.node_execution_id = n.predecessor_id AND p.run_id = n.run_id
+                  WHERE n.run_id = $1 AND n.arrival_route IS NOT NULL GROUP BY p.node_id, n.arrival_route, n.node_id`, [runId]),
+            this.pool.query(`SELECT DISTINCT node_id, outcome FROM ${this.t.nodes} WHERE run_id = $1 AND outcome IS NOT NULL`, [runId]),
+        ]);
+        return {
+            entered: entered.rows.map(row => str(row, "node_id")),
+            routes: routes.rows.map(row => ({ from: str(row, "from_id"), route: str(row, "route"), to: str(row, "to_id"), count: int(row, "n") })),
+            outcomes: outcomes.rows.map(row => ({ stateId: str(row, "node_id"), outcome: str(row, "outcome") })),
+        };
+    }
+
     /**
      * The entry boundary of a script. In one transaction under the session,
      * run and node locks: count the attempt of a pending node execution of an
@@ -5141,6 +5250,14 @@ export class WorkflowStore {
     async listAgentInvocations(runId: string, limit = 200): Promise<WorkflowAgentInvocation[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.t.agentInvocations} WHERE run_id = $1 ORDER BY created_at, node_execution_id LIMIT $2`, [runId, limit]);
+        return rows.map(agentInvocationFrom);
+    }
+
+    /** The agent invocations of a run's node executions among `nodeExecutionIds` (as many as the ids given). */
+    async listAgentInvocationsFor(runId: string, nodeExecutionIds: readonly string[]): Promise<WorkflowAgentInvocation[]> {
+        if (nodeExecutionIds.length === 0) return [];
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.agentInvocations} WHERE run_id = $1 AND node_execution_id = ANY($2::text[])`, [runId, [...new Set(nodeExecutionIds)]]);
         return rows.map(agentInvocationFrom);
     }
 

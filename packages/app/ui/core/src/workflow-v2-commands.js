@@ -1,3 +1,5 @@
+import { workflowV2RunRows } from "./workflow-v2-view.js";
+
 /**
  * Workflow v2: a person's workflow commands in the workflow view (design 04
  * and 07, mocks M03, M04, M15 and M16; R04, R05, R17, R18, R26; INACTIVE): the
@@ -553,7 +555,8 @@ export function workflowV2TestResponder(model, command = null) {
     const denied = viewer?.allowed === false ? text(viewer.reason) ?? "You cannot command this workflow." : null;
     const reason = !ACTIVE.has(run.status) ? `Test run ${shortId(run.runId)} has ended (${run.status}); its open interceptions stay unanswered.` : denied;
     const states = Array.isArray(model.graph?.states) ? model.graph.states : [];
-    const waiting = (Array.isArray(run.test.interceptions) ? run.test.interceptions : [])
+    // The run's interceptions as one list: its newest page and the waiting ones the page does not hold (workflowV2RunRows).
+    const waiting = workflowV2RunRows(run).interceptions
         .filter(item => isRecord(item) && item.state === "awaiting_parent" && typeof item.interceptionId === "string" && item.interceptionId)
         .map(item => {
             const state = states.find(entry => isRecord(entry) && entry.id === item.stateId);

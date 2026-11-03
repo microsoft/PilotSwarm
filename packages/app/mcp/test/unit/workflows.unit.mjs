@@ -1,17 +1,19 @@
-// Unit test: update_workflow, a person's workflow command over MCP (Workflow v2, INACTIVE), and the workflow support
-// get_capabilities and the pilotswarm://capabilities resource describe (design 04 "Advertise capability/version in
-// bootstrap", D11; R26).
+// Unit test: read_workflow, a person's workflow read over MCP (always registered: the view, a section's next page, one
+// execution's whole value), update_workflow, a person's workflow command over MCP (Workflow v2, INACTIVE), and the
+// workflow support get_capabilities and the pilotswarm://capabilities resource describe (design 04 "Advertise
+// capability/version in bootstrap", D11; R01, R26).
 //
-// The tool is registered only when the server context enables workflow
+// update_workflow is registered only when the server context enables workflow
 // commands (test-only); it sends { session_id, command } to the management
 // client's updateWorkflow and answers its receipt; every refusal with a code
 // (an invalid command, the subtree denial, a 501 while the deployment has it
-// off) answers in one JSON shape with its code, status and details.
+// off) answers in one JSON shape with its code, status and details. read_workflow refuses in the same shape.
 //
 // The descriptor carries the deployment's workflow support exactly as its bootstrap advertises it: the management
 // client's own getWorkflowCapabilities (direct mode: this process's configuration, the answer its server advertises;
-// web mode: the server's bootstrap), null from a host that advertises none or cannot be asked; and, beside it, the
-// workflow tools this server registers, so a client sees where they differ.
+// web mode: the server's bootstrap), null only from a host that advertises none (no getter, or a null answer); a host
+// that cannot be asked, or whose answer is not an advertisement, answers an error; and, beside it, the workflow tools
+// this server registers, so a client sees where they differ.
 //
 // No DB, no SDK client connection: `mgmt` is a fake, or the SDK's own getter over a stand-in. Run after `npm run build:mcp`.
 import assert from "node:assert/strict";
@@ -112,8 +114,8 @@ const webClient = (bootstrap) => new WebPilotSwarmManagementClient({ api: { getB
     const { tool, resource } = await describedBy(capabilityCtx(mgmt));
     assert.deepEqual(tool.workflows, advertised, "the management client's own answer, which a bootstrap carries");
     assert.deepEqual(resource.workflows, advertised);
-    assert.deepEqual(tool.workflow_tools, { read: false, commands: false });
-    assert.deepEqual(resource.workflow_tools, { read: false, commands: false });
+    assert.deepEqual(tool.workflow_tools, { read: true, commands: false });
+    assert.deepEqual(resource.workflow_tools, { read: true, commands: false });
     assert.equal(toolsWith({ mgmt }).has("update_workflow"), false);
 }
 
@@ -127,13 +129,13 @@ for (const [requests, controllerVersion, stop] of [[false, "1.8.0", false], [tru
     assert.equal(tool.workflows.v2.commands.available, true);
     assert.equal(tool.workflows.v2.commands.controllerVersion, controllerVersion);
     assert.equal(tool.workflows.v2.commands.operations.includes("stop"), stop);
-    assert.deepEqual(tool.workflow_tools, { read: false, commands: true });
+    assert.deepEqual(tool.workflow_tools, { read: true, commands: true });
     assert.equal(toolsWith({ mgmt, workflowCommands: true }).has("update_workflow"), true);
 }
 
 // 5c. Web mode: the server's bootstrap through the SDK's web client, said as it is. Where this server and the deployment
-//     differ (update_workflow registered here while the deployment refuses commands; reads on there, no read tool here),
-//     the descriptor shows both; nothing is merged or inferred.
+//     differ (update_workflow registered here while the deployment refuses commands), the descriptor shows both;
+//     nothing is merged or inferred.
 {
     const advertised = {
         schema: 1,
@@ -145,24 +147,84 @@ for (const [requests, controllerVersion, stop] of [[false, "1.8.0", false], [tru
     assert.equal(tool.mode, "web");
     assert.deepEqual(tool.workflows, advertised);
     assert.deepEqual(resource.workflows, advertised);
-    assert.deepEqual(tool.workflow_tools, { read: false, commands: true });
+    assert.deepEqual(tool.workflow_tools, { read: true, commands: true });
     assert.equal(tool.workflows.v2.commands.available, false);
     assert.equal(tool.workflows.v2.read, true);
 }
 
-// 5d. An older host advertises none, and a host that cannot be asked now gives none: null, and the rest still answers.
+// 5d. An older host advertises none: null, and the rest still answers. A host whose getter answers null is an older one too.
 for (const mgmt of [
     webClient({ ok: true }),
+    webClient({ ok: true, workflows: null }),
     webClient(null),
     {},
-    { getWorkflowCapabilities: async () => { throw new Error("bootstrap unavailable"); } },
-    { getWorkflowCapabilities: async () => ["not", "an", "advertisement"] },
+    { getWorkflowCapabilities: async () => null },
 ]) {
     const { tool, resource } = await describedBy(capabilityCtx(mgmt, { webMode: true }));
     assert.equal(tool.workflows, null);
     assert.equal(resource.workflows, null);
     assert.equal(tool.mode, "web");
-    assert.deepEqual(tool.workflow_tools, { read: false, commands: false });
+    assert.deepEqual(tool.workflow_tools, { read: true, commands: false });
 }
 
-console.log("✅ get_capabilities and the capabilities resource: the bootstrap's workflow advertisement, default off, test-only, web, older host");
+// 5e. A host that cannot be asked now, or whose answer is not an advertisement, is not an older host: get_capabilities
+//     answers the error (its standard error result) and the capabilities resource read rejects; nothing says null.
+for (const [mgmt, message] of [
+    [{ getWorkflowCapabilities: async () => { throw new Error("bootstrap unavailable"); } }, /bootstrap unavailable/],
+    [{ getWorkflowCapabilities: async () => ["not", "an", "advertisement"] }, /The workflow advertisement is a list, not an object/],
+    [{ getWorkflowCapabilities: async () => "v2" }, /The workflow advertisement is a string, not an object/],
+    [webClient({ ok: true, workflows: ["v2"] }), /bootstrap advertises workflows as a list/],
+    [new WebPilotSwarmManagementClient({ api: { getBootstrap: async () => { throw Object.assign(new Error("HTTP 503"), { status: 503 }); } } }), /HTTP 503/],
+]) {
+    const ctx = capabilityCtx(mgmt, { webMode: true });
+    const tools = new Map();
+    registerCapabilityTools({ registerTool: (name, _spec, handler) => { tools.set(name, handler); } }, ctx);
+    const answer = await tools.get("get_capabilities")({});
+    assert.equal(answer.isError, true, answer.content?.[0]?.text);
+    assert.match(answer.content[0].text, message);
+    let readResource = null;
+    registerCapabilityResources({ registerResource: (_name, _uri, _meta, handler) => { readResource = handler; } }, ctx);
+    await assert.rejects(readResource(new URL("pilotswarm://capabilities")), message);
+}
+
+console.log("✅ get_capabilities and the capabilities resource: the bootstrap's workflow advertisement, default off, test-only, web, older host, failures");
+
+// 6. read_workflow: always registered; the read goes to the management client as given (only the arguments given), its
+//    answer is the read's; a refusal with a code answers in update_workflow's JSON shape.
+{
+    const calls = [];
+    const page = { workflowId: SID, runId: "r1", section: "inbox", order: "newest_first", limit: 5, items: [], nextCursor: null };
+    const tools = toolsWith({ mgmt: { readWorkflow: async (...args) => { calls.push(args); return page; } } });
+    assert.equal(tools.has("read_workflow"), true, "registered without the test-only option");
+    assert.equal(tools.has("update_workflow"), false);
+    const read = tools.get("read_workflow");
+    const cursor = { v: 1, workflowId: SID, runId: "r1", section: "inbox", order: "newest_first", after: { seq: "9" } };
+    assert.deepEqual(JSON.parse((await read({ session_id: SID })).content[0].text), page);
+    await read({ session_id: SID, run_id: "r1", cursor, limit: 5 });
+    await read({ session_id: SID, execution_id: "nx-1" });
+    assert.deepEqual(calls, [[SID, {}], [SID, { runId: "r1", cursor, limit: 5 }], [SID, { executionId: "nx-1" }]]);
+    for (const [error, expected] of [
+        [Object.assign(new Error("This cursor is for another workflow."), { code: "WORKFLOW_CURSOR_INVALID", status: 400 }),
+            { code: "WORKFLOW_CURSOR_INVALID", status: 400 }],
+        [Object.assign(new Error("Execution nx-9 is not a node execution of run r1."), { code: "EXECUTION_NOT_FOUND", status: 404 }),
+            { code: "EXECUTION_NOT_FOUND", status: 404 }],
+        [Object.assign(new Error("limit must be an integer from 1 to 200."), { code: "WORKFLOW_READ_INVALID", status: 400 }),
+            { code: "WORKFLOW_READ_INVALID", status: 400 }],
+    ]) {
+        const refused = await toolsWith({ mgmt: { readWorkflow: async () => { throw error; } } }).get("read_workflow")({ session_id: SID, cursor });
+        assert.equal(refused.isError, true);
+        assert.deepEqual(JSON.parse(refused.content[0].text), { error: error.message, session_id: SID, ...expected });
+    }
+    // The portal's not-found privacy answers its code and status as any refusal does; a bare 403 keeps the standard answer,
+    // and an error without a code too.
+    const hidden = await toolsWith({ mgmt: { readWorkflow: async () => { throw Object.assign(new Error("Session not found."), { code: "NOT_FOUND", status: 404 }); } } })
+        .get("read_workflow")({ session_id: SID });
+    assert.deepEqual(JSON.parse(hidden.content[0].text), { error: "Session not found.", session_id: SID, code: "NOT_FOUND", status: 404 });
+    const forbidden = await toolsWith({ mgmt: { readWorkflow: async () => { throw Object.assign(new Error("Forbidden"), { code: "FORBIDDEN", status: 403 }); } } })
+        .get("read_workflow")({ session_id: SID });
+    assert.deepEqual(JSON.parse(forbidden.content[0].text), { error: "The server refused this call (HTTP 403) and gave no reason.", status: 403, code: "FORBIDDEN" });
+    const plain = await toolsWith({ mgmt: { readWorkflow: async () => { throw new Error("boom"); } } }).get("read_workflow")({ session_id: SID });
+    assert.equal(plain.content[0].text, "Error: boom");
+}
+
+console.log("✅ read_workflow: always registered, arguments as given, the read's answer and refusal shapes");

@@ -28,13 +28,14 @@ import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
 import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
 
-test("readWorkflow is one GET session:read operation: the session in the path, an optional run in the query", async () => {
+test("readWorkflow is one GET session:read operation: the session in the path, an optional run, cursor, execution and limit in the query", async () => {
     const { OPERATIONS } = await import("../../../sdk/api/src/protocol.js");
     const op = OPERATIONS.find((entry) => entry.name === "readWorkflow");
     assert.ok(op, "readWorkflow is a protocol operation");
     assert.deepEqual({ access: op.access, method: op.method, path: op.path, params: op.params }, {
         access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow",
-        params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string", strict: true } },
+        params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string", strict: true },
+            cursor: { in: "query", type: "json" }, executionId: { in: "query", type: "string", strict: true }, limit: { in: "query", type: "json" } },
     });
     // The legacy creation route is unchanged.
     const create = OPERATIONS.find((entry) => entry.name === "createWorkflowSession");
@@ -127,10 +128,17 @@ async function routeHarness({ config } = {}) {
         // Only a test run's coverage reads its revision's graph here (the definition's own revision has no stored graph).
         readRevisionIr: async () => ({ nodes: {} }),
         listRuns: async () => runs,
-        listNodeExecutions: async () => [],
-        listInbox: async () => [],
-        listOutbox: async () => [],
-        listInterceptions: async () => [],
+        // The read's pages: these runs have no executions, messages or intercepted effects yet.
+        pageNodeExecutions: async () => ({ rows: [], more: false }),
+        listOpenNodeExecutions: async () => ({ rows: [], more: false }),
+        pageInbox: async () => ({ rows: [], more: false }),
+        listOpenInbox: async () => ({ rows: [], more: false }),
+        pageOutbox: async () => ({ rows: [], more: false }),
+        listOpenOutbox: async () => ({ rows: [], more: false }),
+        pageInterceptions: async () => ({ rows: [], more: false }),
+        listOpenInterceptions: async () => ({ rows: [], more: false }),
+        testCoverage: async () => ({ entered: [], routes: [], outcomes: [] }),
+        readNodeExecution: async () => null,
         // Read only for the commands a person may send (workflowCommands): wf1 is in no agent state's subtree.
         readWorkflowLineage: async () => null,
         readRun: async (runId) => runs.find((item) => item.runId === runId) ?? null,
@@ -290,6 +298,46 @@ test("with the test-only workflowCommands option, the real adapter says which co
         const hidden = await h.get("/sessions/wf1/workflow", "bob");
         assert.deepEqual([hidden.status, hidden.body.error.code], [404, "NOT_FOUND"]);
         assert.deepEqual(h.adapterCalls, [["wf1", {}], ["wf1", { runId: "R" }], ["wf1", { runId: "" }]]);
+    } finally {
+        await h.close();
+    }
+});
+
+test("a section's next page and one execution's value are read through the same session:read gate; the read's refusals keep their codes and statuses", async () => {
+    const h = await routeHarness();
+    try {
+        const encoded = (cursor) => encodeURIComponent(JSON.stringify(cursor));
+        const own = { v: 1, workflowId: "wf1", runId: "R", section: "inbox", order: "newest_first", after: { seq: "3" } };
+        // A page of this workflow's run, as the read gives it.
+        const page = await h.get(`/sessions/wf1/workflow?cursor=${encoded(own)}`);
+        assert.equal(page.status, 200);
+        assert.deepEqual(page.body.result, { workflowId: "wf1", runId: "R", section: "inbox", order: "newest_first", limit: 50, items: [], nextCursor: null });
+        assert.deepEqual(h.adapterCalls.at(-1), ["wf1", { cursor: own }]);
+        // The read's own refusals: an execution that is not the run's, a limit out of range, a cursor of another workflow,
+        // and a cursor with an execution id.
+        for (const [query, status, code, options] of [
+            ["?executionId=nx-9", 404, "EXECUTION_NOT_FOUND", { executionId: "nx-9" }],
+            ["?limit=0", 400, "WORKFLOW_READ_INVALID", { limit: 0 }],
+            [`?cursor=${encoded({ ...own, workflowId: "wf-other" })}`, 400, "WORKFLOW_CURSOR_INVALID", { cursor: { ...own, workflowId: "wf-other" } }],
+            [`?cursor=${encoded(own)}&executionId=nx-9`, 400, "WORKFLOW_READ_INVALID", { cursor: own, executionId: "nx-9" }],
+        ]) {
+            const refused = await h.get(`/sessions/wf1/workflow${query}`);
+            assert.deepEqual([refused.status, refused.body.error.code], [status, code], query);
+            assert.deepEqual(h.adapterCalls.at(-1), ["wf1", options], query);
+        }
+        // Someone who cannot read the session learns nothing, whatever the options: the same not-found, and nothing is read.
+        const before = h.adapterCalls.length;
+        for (const query of ["?executionId=nx-9", `?cursor=${encoded(own)}`, "?limit=0"]) {
+            const hidden = await h.get(`/sessions/wf1/workflow${query}`, "bob");
+            assert.deepEqual([hidden.status, hidden.body.error.code, hidden.body.error.message], [404, "NOT_FOUND", "Session not found."], query);
+        }
+        assert.equal(h.adapterCalls.length, before);
+        // Both HTTP-backed clients send only the options given, and read the page.
+        for (const client of [new HttpApiTransport({ api: new ApiClient({ apiUrl: h.origin }) }), new WebPilotSwarmManagementClient({ api: new ApiClient({ apiUrl: h.origin }) })]) {
+            const read = await client.readWorkflow("wf1", { runId: "R", cursor: own, limit: 5, executionId: null });
+            assert.deepEqual(read, { workflowId: "wf1", runId: "R", section: "inbox", order: "newest_first", limit: 5, items: [], nextCursor: null });
+            assert.deepEqual(h.adapterCalls.at(-1), ["wf1", { runId: "R", cursor: own, limit: 5 }]);
+        }
     } finally {
         await h.close();
     }

@@ -130,6 +130,8 @@ const ALWAYS_TOOLS = [
     // Security model: sharing management + the grantee-lookup helper.
     "set_session_visibility", "grant_session_share", "revoke_session_share",
     "list_session_shares", "list_known_users",
+    // Workflow v2: the read (a person's commands, update_workflow, only with the test-only option).
+    "read_workflow",
 ];
 
 function expectAll(names, tools, present, label) {
@@ -146,6 +148,7 @@ async function main() {
         expectAll(names, [...GRAPH_TOOLS, ...GRAPH_ADMIN], false, "bare ctx: no graph tools");
         expectAll(names, WEB_TOOLS, false, "bare ctx: no web-only tools");
         expectAll(names, ADMIN_TOOLS, false, "bare ctx: no admin tools");
+        expectAll(names, ["update_workflow"], false, "bare ctx: no workflow commands (test-only option)");
     }
 
     // 2. Fully-loaded admin web ctx: everything present.

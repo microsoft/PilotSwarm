@@ -107,11 +107,16 @@ export class HttpApiTransport {
     /**
      * Workflow support as the server advertised it in its bootstrap (design
      * 04, D11): its `workflows` field from the snapshot taken at start, or
-     * null from a server that advertises none.
+     * null from a server that advertises none (no field, or null). A
+     * `workflows` that is not an object rejects
+     * WORKFLOW_CAPABILITIES_MALFORMED rather than reading as an older server.
      */
     async getWorkflowCapabilities() {
         const workflows = this.bootstrap?.workflows;
-        return workflows !== null && typeof workflows === "object" && !Array.isArray(workflows) ? workflows : null;
+        if (workflows === undefined || workflows === null) return null;
+        if (typeof workflows === "object" && !Array.isArray(workflows)) return workflows;
+        throw Object.assign(new Error(`The server's bootstrap advertises workflows as ${Array.isArray(workflows) ? "a list" : `a ${typeof workflows}`}, `
+            + "not an object, so its workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
     }
 
     getAuthContext() {
@@ -254,10 +259,18 @@ export class HttpApiTransport {
         return this.api.call("getSessionWorkspace", { sessionId });
     }
 
-    /** Workflow v2: the read-only view of a workflow session (readWorkflow, session:read). Only an absent runId is omitted. */
+    /**
+     * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
+     * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
+     * page. Only an absent (or null) option is omitted; any other value is sent for the server to check.
+     */
     async readWorkflow(sessionId, options = {}) {
-        const runId = options?.runId;
-        return this.api.call("readWorkflow", { sessionId, ...(runId === undefined || runId === null ? {} : { runId }) });
+        const params = { sessionId };
+        for (const key of ["runId", "cursor", "executionId", "limit"]) {
+            const value = options?.[key];
+            if (value !== undefined && value !== null) params[key] = value;
+        }
+        return this.api.call("readWorkflow", params);
     }
 
     /** Workflow v2: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */

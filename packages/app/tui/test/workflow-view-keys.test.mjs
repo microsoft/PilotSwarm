@@ -119,6 +119,8 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /workflow view, a test run shown: a answers an intercepted effect that waits/);
     assert.match(text, /\+ advances its virtual clock by whole seconds \(script clocks are real\)/);
     assert.match(text, /workflow view: the selected state's own result of an older \/ newer visit of the shown run/);
+    assert.match(text, /workflow view: o reads the shown run.s older history/);
+    assert.match(text, /f reads the whole output or error of the visit the details show/);
     assert.match(text, /workflow view: several of the shown run's variables in one update — Set a JSON object of names and values, Remove a JSON list of names; every other variable stays/);
     assert.match(text, /Enter send, a removal asks first/);
 });
@@ -502,7 +504,7 @@ test("p r s c in the open workflow view send its run controls and d dismisses th
     for (const [key, command] of [["p", "WORKFLOW_VIEW_PAUSE_RUN"], ["r", "WORKFLOW_VIEW_RESUME_RUN"], ["s", "WORKFLOW_VIEW_STOP_RUN"],
         ["c", "WORKFLOW_VIEW_CANCEL_RUN"], ["d", "WORKFLOW_VIEW_DISMISS_NOTICE"], ["v", "WORKFLOW_VIEW_EDIT_VARIABLES"],
         ["V", "WORKFLOW_VIEW_UPDATE_VARIABLES"], ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["P", "WORKFLOW_VIEW_PUBLICATION_REVIEW"],
-        ["t", "WORKFLOW_VIEW_TEST_REVIEW"], ["a", "WORKFLOW_VIEW_TEST_ANSWER"]]) {
+        ["t", "WORKFLOW_VIEW_TEST_REVIEW"], ["a", "WORKFLOW_VIEW_TEST_ANSWER"], ["o", "WORKFLOW_VIEW_OLDER_HISTORY"], ["f", "WORKFLOW_VIEW_WHOLE_VALUE"]]) {
         assert.match(keys, new RegExp(`${key}: UI_COMMANDS\\.${command},`), key);
         assert.equal(typeof UI_COMMANDS[command], "string", command);
     }

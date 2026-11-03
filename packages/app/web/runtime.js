@@ -756,13 +756,18 @@ export class PortalRuntime {
             // Workflow v2: the read-only view of a workflow session, after the session:read gate above (its not-found
             // privacy comes first). Only an absent run is omitted: a run given, empty or not a string included, reaches the
             // adapter's own validation unchanged. The run is looked up within the authorized workflow; nothing is changed.
+            // A section's next page (cursor) and one execution's whole value (executionId) are reads of the same workflow
+            // under the same gate; each option is passed only when given, and the adapter checks it.
             // When the deployment takes a person's workflow commands (INACTIVE), the view says which ones this workflow
             // takes, and this adds whether the caller may send them (updateWorkflow's own gate, decided on this read's access).
             // A draft's YAML (personCommands.draft: the scripts and prompts the graph does not show) is for a caller who may
             // change the draft; it is left out for anyone else.
             case "readWorkflow": {
-                const view = await this.transport.readWorkflow(safeParams.sessionId,
-                    safeParams.runId === undefined || safeParams.runId === null ? {} : { runId: safeParams.runId });
+                const readOptions = {};
+                for (const key of ["runId", "cursor", "executionId", "limit"]) {
+                    if (safeParams[key] !== undefined && safeParams[key] !== null) readOptions[key] = safeParams[key];
+                }
+                const view = await this.transport.readWorkflow(safeParams.sessionId, readOptions);
                 if (!view || typeof view !== "object" || !view.personCommands || typeof view.personCommands !== "object") return view;
                 const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
                 const { draft, ...personCommands } = view.personCommands;

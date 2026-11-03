@@ -125,6 +125,24 @@ test("a strict string query param (readWorkflow's runId) is carried only as one 
     assert.equal(getOperation("getProviderUsageSummary").params.providers.strict, undefined);
 });
 
+test("readWorkflow's cursor and limit travel as JSON and its execution id as one string, each only when given", () => {
+    const op = getOperation("readWorkflow");
+    assert.deepEqual([op.params.cursor, op.params.limit, op.params.executionId],
+        [{ in: "query", type: "json" }, { in: "query", type: "json" }, { in: "query", type: "string", strict: true }]);
+    const cursor = { v: 1, workflowId: "wf", runId: "R", section: "inbox", order: "newest_first", after: { seq: "3" } };
+    const sent = buildOperationRequest("readWorkflow", { sessionId: "s1", cursor, limit: 5, executionId: "nx-1" }).query;
+    assert.deepEqual(JSON.parse(sent.get("cursor")), cursor);
+    assert.equal(sent.get("limit"), "5");
+    assert.equal(sent.get("executionId"), "nx-1");
+    assert.equal(buildOperationRequest("readWorkflow", { sessionId: "s1", executionId: ["nx-1"] }).query.get("executionId"), "", "a list is never an id");
+    const none = buildOperationRequest("readWorkflow", { sessionId: "s1" }).query;
+    assert.deepEqual([none.has("cursor"), none.has("limit"), none.has("executionId")], [false, false, false]);
+    // The server reads them back as they were sent; a cursor that is not JSON is refused before anything is read.
+    assert.deepEqual(coerceQueryValue(sent.get("cursor"), "json"), cursor);
+    assert.equal(coerceQueryValue("5", "json"), 5);
+    assert.throws(() => coerceQueryValue("{next", "json"), (error) => error.code === "INVALID_REQUEST");
+});
+
 test("artifactDownloadPath encodes segments", () => {
     assert.equal(
         artifactDownloadPath("s 1", "a/b.txt"),

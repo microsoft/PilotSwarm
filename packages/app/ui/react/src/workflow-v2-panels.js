@@ -1,7 +1,7 @@
 import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
-    workflowV2RouteKind, workflowV2ShownExecution,
+    workflowV2ExecutionValue, workflowV2RouteKind, workflowV2ShownExecution, workflowV2WholeValue,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -39,13 +39,47 @@ export function WorkflowV2NoGraph({ projection }) {
         h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics }));
 }
 
-function Value({ value, label }) {
+function Value({ value, label, truncatedNote = "This preview was cut short; the full value is not in this view." }) {
     const { text, truncated } = formatWorkflowValue(value);
     if (!text) return null;
     return h(React.Fragment, null,
         label ? h("h3", null, label) : null,
         h("pre", null, text),
-        truncated ? h("p", null, "This preview was cut short; the full value is not in this view.") : null);
+        truncated ? h("p", null, truncatedNote) : null);
+}
+
+const withThousands = value => Number(value).toLocaleString("en-US");
+
+/**
+ * One execution's whole value as it was read (workflowV2WholeValue; mock M10 "Inspect typed output"): being read, its
+ * failure, that it had no value, or the whole output or runtime error with its size; a stored value larger than a read
+ * returns (none is written) shows its start and says so. Every value is a React text child.
+ */
+function WholeValue({ whole }) {
+    if (whole.kind === "loading") return h("p", { role: "status" }, "Reading the whole value…");
+    if (whole.kind === "failed") return h("p", { role: "alert" }, `The whole value could not be read: ${whole.error}`);
+    if (whole.kind === "none") return h("p", null, "It had no value when it was read: it had not ended.");
+    const size = whole.bytes === null ? "" : ` (${withThousands(whole.bytes)} bytes)`;
+    return h(React.Fragment, null,
+        h("h3", null, `Whole ${whole.label === "Runtime error" ? "runtime error" : "output"}${size}`),
+        whole.kind === "preview" ? h("p", null, `This stored value is more than a read returns${whole.limitBytes === null ? "" : ` (${withThousands(whole.limitBytes)} bytes)`}; only its start is shown.`) : null,
+        h("pre", { "data-whole-value": whole.kind }, whole.text));
+}
+
+/**
+ * The shown run's older history (design 04 read_workflow "Bounded history pagination"): Load older history reads the
+ * next, older page of its executions, messages and test effects; after loaded rows changed it reads them again from
+ * the start. Nothing when the whole history is loaded and nothing changed.
+ */
+function OlderHistory({ history, onLoadOlder, section = null }) {
+    if (!history || !onLoadOlder) return null;
+    const more = section ? Boolean(history.next?.[section]) : history.more;
+    if (!more && !history.staleOlder) return null;
+    return h("div", { className: "ps-workflow-older", style: { display: "grid", gap: 4 } },
+        h("button", { type: "button", className: "ps-mini-button", "data-action": "older-history", disabled: history.loading,
+            onClick: () => onLoadOlder(Boolean(history.staleOlder)) },
+        history.loading ? "Reading older history…" : history.staleOlder ? "Read older history again" : "Load older history"),
+        history.error ? h("p", { role: "alert" }, `Older history could not be read: ${history.error}`) : null);
 }
 
 /** The recipient's intake line. It sits beside the delivery rows and never replaces them; every value is text. */
@@ -119,9 +153,12 @@ function AgentChild({ agent, openSession }) {
  * shows one execution's own result: the latest by default, or the one chosen in the History tab for exactly this run
  * (`runId`) and state (`selection`, the view's selectedExecution), never the latest in its place; `onSelectExecution`
  * (an execution id, or null for the latest) and `onTab` let History choose one. Without them History lists as before.
+ * `onReadWholeValue` (an execution id) reads that execution's whole output or error, shown from `executionValues` for
+ * exactly this run and execution; `history` (the run's, workflowV2RunHistory) and `onLoadOlder` (restart) let History
+ * read the run's older history. Without them neither is offered.
  */
 export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError, openSession = null, runId = null, selection = null,
-    onSelectExecution = null, onTab = null }) {
+    onSelectExecution = null, onTab = null, executionValues = null, onReadWholeValue = null, history = null, onLoadOlder = null }) {
     const property = (label, value) => h("div", { className: "ps-workflow-property", key: label },
         h("span", null, label), h("strong", null, value));
     const current = selected.current;
@@ -157,6 +194,11 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
         const visit = shown.execution && Number.isSafeInteger(shown.execution.ordinal) ? `visit ${shown.execution.ordinal}` : "this visit";
         // The run's own output belongs to its end, shown with the latest result only.
         const terminalValue = !shown.chosen && selected.type === "terminal" ? (runError ?? runOutput) : null;
+        // That execution's whole value (mock M10), read for exactly this run and execution, never another's in its place.
+        const executionId = typeof shown.execution?.id === "string" && shown.execution.id ? shown.execution.id : null;
+        const canRead = Boolean(onReadWholeValue && runId && executionId && result && result.kind !== "pending");
+        const whole = executionId ? workflowV2WholeValue(workflowV2ExecutionValue(executionValues, runId, executionId)) : null;
+        const cutNote = canRead ? "This preview was cut short; Read the whole value shows all of it." : undefined;
         return h(React.Fragment, null,
             shown.chosen
                 ? h("p", { "data-execution": shown.executionId }, shown.missing
@@ -169,10 +211,15 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             !shown.chosen && !result && terminalValue === null ? h("pre", null, "This node has no result in the loaded history.") : null,
             result?.kind === "pending" ? h("pre", null, "This execution has not ended; it has no result yet.") : null,
             result?.kind === "error"
-                ? h(Value, { value: result.value ?? result.code ?? (result.effectStatus ? `Effect ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error" })
+                ? h(Value, { value: result.value ?? result.code ?? (result.effectStatus ? `Effect ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error",
+                    truncatedNote: cutNote })
                 : null,
-            result?.kind === "output" ? h(Value, { value: result.value, label: "Output" }) : null,
+            result?.kind === "output" ? h(Value, { value: result.value, label: "Output", truncatedNote: cutNote }) : null,
             result?.kind === "none" ? h("pre", null, "This state records no output.") : null,
+            canRead ? h("button", { type: "button", className: "ps-mini-button", "data-action": "whole-value", "data-execution": executionId,
+                disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(executionId) },
+            whole && whole.kind !== "loading" ? "Read the whole value again" : "Read the whole value") : null,
+            whole ? h(WholeValue, { whole }) : null,
             terminalValue !== null ? h(Value, { value: terminalValue, label: runError !== null && runError !== undefined ? "Run error" : "Run output" }) : null);
     }
     const rows = compactWorkflowV2Executions(selected.executions);
@@ -193,7 +240,8 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
         rows.length ? table(rows) : h("p", null, "No executions in the loaded history."),
         selected.executions.length > rows.length ? h("details", null,
             h("summary", null, `Every loaded execution (${selected.executions.length})`),
-            table(selected.executions.map(execution => ({ execution, count: 1, from: execution.ordinal, to: execution.ordinal })))) : null);
+            table(selected.executions.map(execution => ({ execution, count: 1, from: execution.ordinal, to: execution.ordinal })))) : null,
+        h(OlderHistory, { history, onLoadOlder }));
 }
 
 // ── Run picker ──────────────────────────────────────────────────────────────
@@ -232,7 +280,7 @@ export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, sele
  * waits only when `responder` (workflowV2TestResponder's answer) says so: its Answer button opens the answer form for it.
  * The notice that scripts run normally stays in the banners above.
  */
-export function WorkflowV2TestInterceptions({ test, controller = null, sessionId = null, responder = null, answering = null }) {
+export function WorkflowV2TestInterceptions({ test, controller = null, sessionId = null, responder = null, answering = null, history = null, onLoadOlder = null }) {
     const items = Array.isArray(test?.interceptions) ? test.interceptions : [];
     if (!items.length) return null;
     const answerable = Boolean(controller && responder?.respond);
@@ -248,7 +296,9 @@ export function WorkflowV2TestInterceptions({ test, controller = null, sessionId
                 answerable ? h("td", null, waits(item.interceptionId) ? h("button", { type: "button", className: "ps-mini-button", "data-action": "answer",
                     disabled: responder.busy, "aria-pressed": answering === item.interceptionId,
                     onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { answeringInterceptionId: item.interceptionId } }) },
-                "Answer") : null) : null)))));
+                "Answer") : null) : null)))),
+        // Older intercepted effects of this run than the read holds: the run's older history reads them.
+        h(OlderHistory, { history, onLoadOlder, section: "interceptions" }));
 }
 
 /**

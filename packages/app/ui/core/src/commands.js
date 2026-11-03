@@ -94,6 +94,9 @@ export const UI_COMMANDS = {
     // One visit's own result in the workflow view: the selected state's older or newer visit (the latest by default).
     WORKFLOW_VIEW_OLDER_EXECUTION: "workflowViewOlderExecution",
     WORKFLOW_VIEW_NEWER_EXECUTION: "workflowViewNewerExecution",
+    // The shown run's older history (the next, older page of each section), and the whole value of the visit shown.
+    WORKFLOW_VIEW_OLDER_HISTORY: "workflowViewOlderHistory",
+    WORKFLOW_VIEW_WHOLE_VALUE: "workflowViewWholeValue",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

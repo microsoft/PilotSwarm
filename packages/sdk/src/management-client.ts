@@ -162,6 +162,7 @@ import {
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2View } from "./workflow/v2/tools.js";
+import { WORKFLOW_READ_STATUS } from "./workflow/v2/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
@@ -1888,23 +1889,33 @@ export class PilotSwarmManagementClient {
      * Workflow v2: the read-only view of a workflow session (readWorkflow,
      * GET /api/v1/sessions/:sessionId/workflow, access session:read): its
      * definition state, current revision with its diagnostics, graph, runs,
-     * and one run (runId, default the live run) with its node executions,
-     * typed input inbox and outbox, bounded as the read_workflow tool bounds
-     * them; the YAML is omitted. Authorization is the caller's (the portal
-     * gates session:read, with its not-found privacy, before this runs; the
-     * direct client is trusted). This is the human read adapter, separate
-     * from the agent tool: it never acts as the workflow's parent, and it
-     * changes nothing. A missing or deleted session is NOT_FOUND (404), a
-     * session that is not a version 2 workflow WORKFLOW_NOT_FOUND (404), a
-     * run that is not one of its runs RUN_NOT_FOUND (404), and an invalid run
-     * id INVALID_REQUEST (400). A client created with the test-only option
-     * `workflowCommands` (INACTIVE) also reports the commands the workflow
-     * takes from a person (`personCommands`, human-commands.ts), so a screen
-     * offers only those, and, for a draft a person may change, its current
-     * YAML (`personCommands.draft`); without it the view is exactly the
-     * tool's.
+     * and one run (runId, default the live run) with the newest page of its
+     * node executions, typed input inbox and outbox (and a test run's
+     * interceptions), the rows still open that a page does not hold, and how
+     * each section pages on (run.pages), bounded as the read_workflow tool
+     * bounds them; the YAML is omitted. `cursor` (a nextCursor a read
+     * returned, given back as it was) reads that section's next, older page
+     * instead, and `executionId` one node execution's whole output or error;
+     * `limit` (1 to 200) sets the rows per page (readWorkflowV2View).
+     * Authorization is the caller's (the portal gates session:read, with its
+     * not-found privacy, before this runs; the direct client is trusted). This
+     * is the human read adapter, separate from the agent tool: it never acts
+     * as the workflow's parent, and it changes nothing. A missing or deleted
+     * session is NOT_FOUND (404), a session that is not a version 2 workflow
+     * WORKFLOW_NOT_FOUND (404), a run that is not one of its runs
+     * RUN_NOT_FOUND (404), an execution that is not one of the run's
+     * EXECUTION_NOT_FOUND (404), an invalid run id INVALID_REQUEST (400), a
+     * cursor that is not one a read of this workflow returned
+     * WORKFLOW_CURSOR_INVALID (400), and an invalid limit or execution id, or
+     * a cursor and an execution id together, WORKFLOW_READ_INVALID (400). A
+     * client created with the test-only option `workflowCommands` (INACTIVE)
+     * also reports, with the view, the commands the workflow takes from a
+     * person (`personCommands`, human-commands.ts), so a screen offers only
+     * those, and, for a draft a person may change, its current YAML
+     * (`personCommands.draft`); without it the view is exactly the tool's.
      */
-    async readWorkflow(sessionId: string, options: { runId?: string | null } = {}): Promise<Record<string, unknown>> {
+    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown } = {})
+        : Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
         const runId = options?.runId ?? null;
@@ -1915,19 +1926,23 @@ export class PilotSwarmManagementClient {
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
         const store = this._catalog!.workflowStore?.();
         if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
+        const cursor = options?.cursor ?? null;
+        const executionId = options?.executionId ?? null;
         let view: Record<string, unknown>;
         try {
-            view = await readWorkflowV2View(store, sessionId, { runId });
+            view = await readWorkflowV2View(store, sessionId, {
+                runId, ...(cursor !== null ? { cursor } : {}), ...(executionId !== null ? { executionId } : {}),
+                ...(options?.limit !== undefined && options.limit !== null ? { limit: options.limit } : {}),
+            });
         } catch (error) {
-            if (error instanceof WorkflowStoreError && (error.code === "WORKFLOW_NOT_FOUND" || error.code === "RUN_NOT_FOUND")) {
-                throw failure(error.code, 404, error.message);
-            }
+            const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
+            if (error instanceof WorkflowStoreError && status !== undefined) throw failure(error.code, status, error.message);
             throw error;
         }
         // The read never depends on the option: absent (or no options at all, as for a host that lends this adapter its
-        // catalog), the view is exactly the tool's.
+        // catalog), the view is exactly the tool's. A page or an execution's value is not the view: it has no commands.
         const enabled = this.config?.workflowCommands;
-        if (!enabled) return view;
+        if (!enabled || cursor !== null || executionId !== null) return view;
         const run = view.run as { runId?: unknown } | null | undefined;
         const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
         // A draft's current revision: its YAML is what a person who may change the draft edits.

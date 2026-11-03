@@ -7,19 +7,21 @@ import { jsonResult, withToolErrors } from "../util/respond.js";
  * capability/version in bootstrap", D11; R26): the management client's own
  * answer, which is exactly what a bootstrap carries as `workflows` (web mode:
  * the server's bootstrap; direct mode: this process's own configuration, the
- * answer its server would advertise). Null from a host that advertises none
- * (an older server, or a client without the getter) or that cannot be asked
- * now. It reports configuration only: the server decides every call again.
+ * answer its server would advertise). Null only from a host that advertises
+ * none: a client without the getter, or one whose getter answers null (an
+ * older server). A getter that fails, or answers anything but an object or
+ * null, is not read as an older host: the failure, or
+ * WORKFLOW_CAPABILITIES_MALFORMED, is thrown for the caller's error answer.
+ * It reports configuration only: the server decides every call again.
  */
 export async function workflowAdvertisement(ctx: ServerContext): Promise<Record<string, unknown> | null> {
-    const mgmt = ctx.mgmt as { getWorkflowCapabilities?: () => Promise<Record<string, unknown> | null> };
+    const mgmt = ctx.mgmt as { getWorkflowCapabilities?: () => Promise<unknown> };
     if (typeof mgmt.getWorkflowCapabilities !== "function") return null;
-    try {
-        const advertised = await mgmt.getWorkflowCapabilities();
-        return advertised !== null && typeof advertised === "object" && !Array.isArray(advertised) ? advertised : null;
-    } catch {
-        return null;
-    }
+    const advertised = await mgmt.getWorkflowCapabilities();
+    if (advertised === null || advertised === undefined) return null;
+    if (typeof advertised === "object" && !Array.isArray(advertised)) return advertised as Record<string, unknown>;
+    throw Object.assign(new Error(`The workflow advertisement is ${Array.isArray(advertised) ? "a list" : `a ${typeof advertised}`}, not an object, `
+        + "so this deployment's workflow support is unknown."), { code: "WORKFLOW_CAPABILITIES_MALFORMED" });
 }
 
 /**
@@ -70,10 +72,12 @@ export function buildCapabilities(ctx: ServerContext) {
         prompt: { imageAttachments: ctx.webMode },
         // The workflow tools this server registers, keyed as the deployment's
         // advertisement (`workflows.v2`, which get_capabilities and the
-        // capabilities resource add) so a client compares them: no workflow
-        // read tool here (the Web API's GET /sessions/:id/workflow reads),
-        // and update_workflow only with the test-only option workflowCommands.
-        workflow_tools: { read: false, commands: ctx.workflowCommands === true },
+        // capabilities resource add) so a client compares them: read_workflow
+        // always (the Web API's GET /sessions/:id/workflow and the direct
+        // client's readWorkflow: the view, its pages and an execution's whole
+        // value), and update_workflow only with the test-only option
+        // workflowCommands.
+        workflow_tools: { read: true, commands: ctx.workflowCommands === true },
     };
 }
 
@@ -86,9 +90,9 @@ export function registerCapabilityTools(server: McpServer, ctx: ServerContext) {
                 "Describe this PilotSwarm MCP server's capability surface: mode (web/direct), whether the caller's "
                 + "credential carries the admin role, enhanced-facts search/embedder availability, graph availability, "
                 + "and counts of registered agents/skills; the deployment's workflow support exactly as its bootstrap "
-                + "advertises it (workflows: null from a host that advertises none) and the workflow tools this server "
-                + "registers (workflow_tools). Use this before planning multi-step operations — tools for "
-                + "absent capabilities are not registered at all.",
+                + "advertises it (workflows: null from a host that advertises none; one that cannot be read or is not an object "
+                + "answers an error) and the workflow tools this server registers (workflow_tools). Use this before planning "
+                + "multi-step operations — tools for absent capabilities are not registered at all.",
             inputSchema: {},
         },
         withToolErrors(async () => {

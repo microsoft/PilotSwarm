@@ -133,3 +133,19 @@ test("both HTTP-backed clients read the advertisement back, and an older host ad
         await older.close();
     }
 });
+
+test("an advertisement that is not an object is malformed, never an older host: both HTTP-backed clients reject it", async () => {
+    for (const workflows of [["v2"], "v2", 2, true]) {
+        const transport = new HttpApiTransport({ apiUrl: "http://127.0.0.1:9" });
+        transport.bootstrap = { ok: true, workflows };
+        await assert.rejects(transport.getWorkflowCapabilities(), (error) => error.code === "WORKFLOW_CAPABILITIES_MALFORMED", JSON.stringify(workflows));
+        const client = new WebPilotSwarmManagementClient({ api: { getBootstrap: async () => ({ ok: true, workflows }) } });
+        await assert.rejects(client.getWorkflowCapabilities(), (error) => error.code === "WORKFLOW_CAPABILITIES_MALFORMED", JSON.stringify(workflows));
+    }
+    for (const bootstrap of [{ ok: true }, { ok: true, workflows: null }]) {
+        const transport = new HttpApiTransport({ apiUrl: "http://127.0.0.1:9" });
+        transport.bootstrap = bootstrap;
+        assert.equal(await transport.getWorkflowCapabilities(), null);
+        assert.equal(await new WebPilotSwarmManagementClient({ api: { getBootstrap: async () => bootstrap } }).getWorkflowCapabilities(), null);
+    }
+});
