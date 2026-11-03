@@ -4,7 +4,7 @@ import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowMainPane, WorkflowNodePane } from "./workflow-workspace.js";
-import { ModalDialog } from "./modal-dialog.js";
+import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
 import { WorkflowInputWait, workflowInputWait } from "./workflow-input-wait.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -6151,7 +6151,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const revealedRowKeyRef = React.useRef(null);
     const activeRowRevealKey = `${viewState.activeSessionId || ""}${viewState.focused ? 1 : 0}${viewState.modalOpen ? 1 : 0}`;
 
+    // Whether a ui.modal was open when the reveal last ran, to see one close.
+    const modalWasOpenRef = React.useRef(false);
     React.useEffect(() => {
+        const modalClosed = modalWasOpenRef.current && !viewState.modalOpen;
+        modalWasOpenRef.current = viewState.modalOpen;
         if (viewState.modalOpen || !viewState.focused || !viewState.activeSessionId) {
             // Disarm, so returning from a modal (or refocusing the pane) counts
             // as a fresh arming. Without this the ref still holds the key from
@@ -6191,7 +6195,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             || focused.tagName === "SELECT"
             || focused.isContentEditable
         ));
-        if (viewState.focused && focused !== activeButton && !isTypingTarget) {
+        // Nor from the control a closing dialog has just given it back to (ModalDialog, the confirm box): the dialog
+        // returns focus to what opened it just before this runs. A list modal leaves focus on the page, and the row
+        // takes it as before.
+        if (viewState.focused && focused !== activeButton && !isTypingTarget && !focusGivenBack(modalClosed)) {
             activeButton.focus({ preventScroll: true });
         }
     }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
@@ -10171,7 +10178,11 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         return result?.accepted || 0;
     }, [controller, canAttachImages]);
 
+    // Whether a ui.modal was open when the effect below last ran, to see one close.
+    const modalWasOpenRef = React.useRef(false);
     React.useEffect(() => {
+        const modalClosed = modalWasOpenRef.current && !promptState.modalOpen;
+        modalWasOpenRef.current = promptState.modalOpen;
         const inputNode = inputRef.current;
         if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;
         if (document.activeElement !== inputNode) {
@@ -10179,6 +10190,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // Programmatic focus pops the on-screen keyboard on touch devices;
             // there, focus only ever comes from the user's own tap.
             if (mobile) return;
+            // A closing dialog has just given focus back to the control that
+            // opened it (ModalDialog, the confirm box): leave it there.
+            if (focusGivenBack(modalClosed)) return;
             try {
                 inputNode.focus({ preventScroll: true });
             } catch {

@@ -24,3 +24,14 @@ export function ModalDialog({ className, titleId, messageId = null, children }) 
         tabIndex: -1, onClick: event => event.stopPropagation(),
     }, children);
 }
+
+/**
+ * Whether an effect that moves focus when a portal modal closes must leave it where it is: a modal closed since the
+ * effect last ran (`modalClosed`) and focus is on an element, not on the page itself. ModalDialog gives focus back to the
+ * control that opened it as it closes, before such an effect runs. A modal that gives nothing back leaves focus on the
+ * page (its controls went with it), and the effect moves focus as before.
+ */
+export function focusGivenBack(modalClosed, doc = typeof document === "undefined" ? null : document) {
+    const active = doc?.activeElement ?? null;
+    return Boolean(modalClosed && active && active !== doc.body && active !== doc.documentElement);
+}
