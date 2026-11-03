@@ -102,14 +102,16 @@ export class ApiClient {
         return headers;
     }
 
-    async request(method, pathWithQuery, { body, headers, authProbe = false } = {}) {
+    async request(method, pathWithQuery, { body, headers, authProbe = false, signal } = {}) {
         const requestHeaders = await this.authHeaders(headers || {});
+        signal?.throwIfAborted();
         if (body !== undefined && !requestHeaders["content-type"]) {
             requestHeaders["content-type"] = "application/json";
         }
         const response = await this.fetchImpl(`${this.apiUrl}${pathWithQuery}`, {
             method,
             headers: requestHeaders,
+            ...(signal ? { signal } : {}),
             ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         });
         if (response.status === 401) {
@@ -144,13 +146,13 @@ export class ApiClient {
     }
 
     /** Invoke a protocol operation by name with rpc-shaped params. */
-    async call(name, params = {}) {
+    async call(name, params = {}, { signal } = {}) {
         const { method, path, query, body } = buildOperationRequest(name, params);
         // Avoid URLSearchParams.prototype.size (absent on Safari 16 / iOS 16,
         // which the portal build targets); toString() is universally supported.
         const queryString = query.toString();
         const suffix = queryString ? `?${queryString}` : "";
-        return this.request(method, `${path}${suffix}`, body !== null ? { body } : {});
+        return this.request(method, `${path}${suffix}`, { ...(body !== null ? { body } : {}), ...(signal ? { signal } : {}) });
     }
 
     // ── Bespoke (non-table) endpoints ───────────────────────────────────

@@ -76,19 +76,33 @@ export function validateFoundryDeployments({ deployments, availableModels, regio
   return errors;
 }
 
-// Live `az cognitiveservices model list` shell-out. Separated from the pure
-// validator so tests can mock `availableModels` without spawning az.
-export function listAvailableFoundryModels(region, subscriptionId) {
-  return runJson("az", [
+// Keep only the fields the callers read: model.format, model.name and
+// model.version (this validator and the new-env scaffolder). The full
+// regional list can be larger than 1 MiB; this query makes it about 20 times
+// smaller. The spaces make run() quote the value for cmd.exe on Windows.
+export const FOUNDRY_MODEL_LIST_QUERY =
+  "[].{model: {format: model.format, name: model.name, version: model.version}}";
+
+// Arguments for `az cognitiveservices model list`. Exported for tests.
+export function foundryModelListArgs(region, subscriptionId) {
+  return [
     "cognitiveservices",
     "model",
     "list",
     "--location",
     region,
     ...(subscriptionId ? ["--subscription", subscriptionId] : []),
+    "--query",
+    FOUNDRY_MODEL_LIST_QUERY,
     "-o",
     "json",
-  ]);
+  ];
+}
+
+// Live `az cognitiveservices model list` shell-out. Separated from the pure
+// validator so tests can mock `availableModels` without spawning az.
+export function listAvailableFoundryModels(region, subscriptionId) {
+  return runJson("az", foundryModelListArgs(region, subscriptionId));
 }
 
 // One-shot helper used by the bicep stage. Throws with a single consolidated

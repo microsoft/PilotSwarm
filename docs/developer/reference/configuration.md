@@ -657,6 +657,53 @@ catalog is checked when it loads. A `wireApi` other than `"completions"` or
 fails the load with an error that names the `provider:model`. A hot reload
 that fails this way keeps the previous catalog.
 
+### Request Headers (`headers`)
+
+`headers` adds fixed HTTP headers to every model request a provider sends.
+Use it for an endpoint that needs a header besides the credential, such as an
+integration id or an API-gateway routing header:
+
+```json
+{
+  "id": "gateway",
+  "type": "openai",
+  "baseUrl": "https://gateway.example.com/v1",
+  "wireApi": "completions",
+  "headers": { "X-Gateway-Route": "inference" },
+  "models": [{ "name": "example-model" }]
+}
+```
+
+Set it on the provider entry only. Every shared and personal instance of the
+type sends the same headers, and an instance cannot add or change them.
+
+Header values are sent exactly as written. They are not for secrets:
+
+```
+1. A personal instance may set its own baseUrl
+2. The type's headers go to that baseUrl with every request
+3. So a secret in a header would reach a host the instance owner chose
+```
+
+For the same reason the catalog load refuses:
+
+- an `env:` reference as a value
+- a credential header: `Authorization`, `Proxy-Authorization`, `api-key`,
+  `x-api-key`. The credential comes from `apiKey`, the instance, or workload
+  identity.
+- a header the HTTP client sets: `Host`, `Content-Length`, `Content-Type`,
+  `Transfer-Encoding`, `Connection`
+- an invalid header name, the same name twice in a different case, or a value
+  that is not a single-line string
+- `headers` on a `github` provider. The native Copilot transport takes no
+  provider config.
+
+The error names the provider. A hot reload that fails this way keeps the
+previous catalog.
+
+`openai`, `openai-proxy`, `azure`, `foundry-wif`, `anthropic` and
+`anthropic-wif` providers all accept `headers`.
+
 ### Tool Catalog Overflow (`toolCatalog`)
 
 Overflow dispatch is **off by default**. A cluster operator can opt a model

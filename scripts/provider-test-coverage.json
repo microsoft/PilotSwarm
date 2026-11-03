@@ -33,6 +33,7 @@
     "test/local/context-usage-contracts.test.js",
     "test/local/context-usage-ui.test.js",
     "test/local/context-usage.test.js",
+    "test/local/copilot-chat-completions-live.test.js",
     "test/local/copilot-provider-compatibility.test.js",
     "test/local/cron-at-schedule.test.js",
     "test/local/cron-tool.test.js",

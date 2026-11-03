@@ -1,4 +1,5 @@
 import { FEATURE_OPERATION_SPECS } from "./feature-tools.js";
+import { MOTD_OPERATION_SPECS } from "./motd-tools.js";
 import { PROVIDER_TOOL_NAMES } from "./provider-tools.js";
 
 const COPILOT_NATIVE_TOOL_NAMES = [
@@ -92,6 +93,7 @@ export function reservedPlatformToolNames(baseToolNames: Iterable<string> = []):
         ...SESSION_ATTACHED_TOOL_NAMES,
         ...PROVIDER_TOOL_NAMES,
         ...FEATURE_OPERATION_SPECS.map(spec => spec.name),
+        ...MOTD_OPERATION_SPECS.map(spec => spec.name),
     ]);
 }
 

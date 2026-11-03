@@ -37,6 +37,10 @@ export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./f
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";
 export { FeatureStore } from "./feature-store.js";
+export { MotdStore, MotdError, MOTD_IMAGE_MAX_BYTES, MOTD_BODY_MAX_BYTES, MOTD_IMAGE_TYPES } from "./motd-store.js";
+export type { MotdViewer, MotdCreateInput, MotdMessage, MotdHistoryMessage, MotdImageInput } from "./motd-store.js";
+export { MOTD_OPERATION_SPECS, motdToolParameters, motdCreateInput, runMotdStoreOperation, createMotdTools } from "./motd-tools.js";
+export type { MotdArgs, MotdOperationSpec, MotdArtifactImage, MotdToolProperty } from "./motd-tools.js";
 export { FEATURE_OPERATION_SPECS, featureToolParameters } from "./feature-tools.js";
 export type { FeatureViewer, FeatureView, FeatureMutation, FeatureMutationResult } from "./feature-store.js";
 export { PilotSwarmManagementClient, createManagementClient } from "./management-client.js";
@@ -415,6 +419,7 @@ export type {
     AgentPrincipal,
     AgentPackageSummary,
     AgentPackageDetail,
+    AgentPackageContributor,
     AgentPackageEditorInfo,
     AgentPackageVersionRow,
     AgentPackageInstallEntry,
