@@ -3,6 +3,15 @@ import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
+import type { ManagementOps } from "./web/generated-op-methods.js";
+
+type ReadWorkflowParams = Parameters<ManagementOps["readWorkflow"]>[0];
+/**
+ * Workflow v2 readWorkflow's options: the operation's declared parameters (protocol.js, through the generated
+ * surface) other than the session id, which is the call's own argument. An absent or null option is left out; any
+ * other value reaches the server's checks as it is.
+ */
+export type WorkflowReadOptions = { [K in Exclude<keyof ReadWorkflowParams, "sessionId">]?: ReadWorkflowParams[K] | null };
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 /**

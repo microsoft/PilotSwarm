@@ -6,7 +6,7 @@ import {
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
-import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
+import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult, WorkflowReadOptions } from "../types.js";
 import type { WorkflowInputCapabilities } from "../workflow/v2/input-policy.js";
 
 const WAIT_SLICE_MS = 25_000;
@@ -340,15 +340,11 @@ export class WebPilotSwarmManagementClient {
     /**
      * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
      * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
-     * page. Only an absent (or null) option is omitted; any other value is sent for the server to check.
+     * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
+     * and any other value is sent for the server to check. The session id is always the argument's.
      */
-    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown; agentVersions?: unknown; definitionRevision?: unknown; stepInput?: unknown } = {}): Promise<any> {
-        const params: Record<string, unknown> = { sessionId };
-        for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey", "agentVersions", "definitionRevision", "stepInput"] as const) {
-            const value = options?.[key];
-            if (value !== undefined && value !== null) params[key] = value;
-        }
-        return this._api.call("readWorkflow", params);
+    async readWorkflow(sessionId: string, options: WorkflowReadOptions = {}): Promise<any> {
+        return this._api.call("readWorkflow", { ...options, sessionId });
     }
 
     /**

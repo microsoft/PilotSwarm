@@ -37,6 +37,7 @@ import type {
     PromptAttachmentRef,
     SessionWorkspace,
     SessionWorkspaceView,
+    WorkflowReadOptions,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import { readDefaultsRecord } from "./workspace.js";
@@ -1920,7 +1921,7 @@ export class PilotSwarmManagementClient {
      * those, and, for a draft a person may change, its current YAML
      * (`personCommands.draft`); without it the view is exactly the tool's.
      */
-    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown; agentVersions?: unknown; definitionRevision?: unknown; stepInput?: unknown } = {})
+    async readWorkflow(sessionId: string, options: WorkflowReadOptions = {})
         : Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });

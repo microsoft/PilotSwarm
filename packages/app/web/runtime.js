@@ -1,6 +1,6 @@
 import { NodeSdkTransport } from "pilotswarm/host";
 import { workflowV2TestEnvironmentFromEnv } from "pilotswarm-sdk";
-import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION } from "pilotswarm-sdk/api";
+import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION, getOperation } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
     loadAuthzConfig,
@@ -778,9 +778,10 @@ export class PortalRuntime {
             // A draft's YAML (personCommands.draft: the scripts and prompts the graph does not show) is for a caller who may
             // change the draft; it is left out for anyone else.
             case "readWorkflow": {
+                // The read's options are the operation's declared query parameters (protocol.js), each passed only when given.
                 const readOptions = {};
-                for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey", "agentVersions", "definitionRevision", "stepInput"]) {
-                    if (safeParams[key] !== undefined && safeParams[key] !== null) readOptions[key] = safeParams[key];
+                for (const [key, spec] of Object.entries(getOperation("readWorkflow").params)) {
+                    if (spec.in !== "path" && safeParams[key] !== undefined && safeParams[key] !== null) readOptions[key] = safeParams[key];
                 }
                 // A definition revision's YAML (comparing two versions, owner decision q4) and a step's inputs with the draft's
                 // YAML they propose (q6) are for a person who may change the workflow, as the draft's YAML is; anyone else who

@@ -262,15 +262,11 @@ export class HttpApiTransport {
     /**
      * Workflow v2: the read-only view of a workflow session (readWorkflow, session:read), a section's next page
      * (`cursor`, a nextCursor a read returned) or one execution's whole value (`executionId`); `limit` sets the rows per
-     * page. Only an absent (or null) option is omitted; any other value is sent for the server to check.
+     * page. The options are the operation's declared parameters: the request builder leaves out an absent (or null) one,
+     * and any other value is sent for the server to check. The session id is always the argument's.
      */
     async readWorkflow(sessionId, options = {}) {
-        const params = { sessionId };
-        for (const key of ["runId", "cursor", "executionId", "limit", "kvRevision", "kvKey", "agentVersions", "definitionRevision", "stepInput"]) {
-            const value = options?.[key];
-            if (value !== undefined && value !== null) params[key] = value;
-        }
-        return this.api.call("readWorkflow", params);
+        return this.api.call("readWorkflow", { ...options, sessionId });
     }
 
     /** Workflow v2: a person's command to a workflow session (updateWorkflow, session:manage; inactive unless the deployment enables it). */
