@@ -2,14 +2,14 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
-    workflowV2EventTime, workflowV2VisitEnding, workflowV2WholeValue, WORKFLOW_V2_ASK_PARENT_KINDS,
+    workflowV2EventTime, workflowV2VisitEnding, workflowV2WholeValue,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
     workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
-    workflowV2AnswerSourceText,
+    workflowV2AnswerSourceText, WORKFLOW_V2_ASK_PARENT_KINDS, workflowV2AskParentSent,
 } from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
@@ -190,7 +190,7 @@ function AskParent({ onAskParent, executionId }) {
     const [sent, setSent] = React.useState(null);
     const send = async () => {
         const result = await onAskParent(kind, note, executionId);
-        setSent(result?.ok ? "Sent to the parent agent's chat." : result?.reason ?? "It was not sent.");
+        setSent(result?.ok ? workflowV2AskParentSent(result.parentSessionId) : result?.reason ?? "It was not sent.");
         if (result?.ok) setNote("");
     };
     return h("div", { className: "ps-workflow-ask-parent", "aria-label": "Ask the parent agent", style: { display: "grid", gap: 4 } },

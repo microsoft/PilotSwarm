@@ -1,5 +1,5 @@
 import { shortRunId as shortId, shortSessionId as shortSession } from "./formatting.js";
-import { workflowV2AgentBinding, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RunRows } from "./workflow-v2-view.js";
+import { workflowV2AgentBinding, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2Clipped, workflowV2RunRows, workflowV2VisitEnding } from "./workflow-v2-view.js";
 
 /**
  * Workflow v2: a person's workflow commands in the workflow view (design 04
@@ -1078,6 +1078,32 @@ export function workflowV2AskParentMessage({ workflowName = null, workflowSessio
     if (typeof note === "string" && note.trim()) lines.push(`My note: ${note.trim()}`);
     if (text(action)) lines.push(`If you agree, ${action}`);
     return lines.join("\n");
+}
+
+/** What a person can ask the parent agent about a step (owner decision q16), with the words its button and message use. */
+export const WORKFLOW_V2_ASK_PARENT_KINDS = Object.freeze({
+    findings: { label: "Send findings", about: "here is what it found", action: "pass these findings to whoever needs them (for example the author of the change), or act on them." },
+    rework: { label: "Ask for rework", about: "it needs rework", action: "arrange the rework: for example change the draft or its inputs and start a new run, or ask whoever owns the work to change it." },
+    approval: { label: "Ask for approval", about: "it asks for your approval", action: "approve it and continue the workflow accordingly (for example answer the request it waits on)." },
+});
+
+/**
+ * The message that asks the workflow's parent agent about one visit of a step (owner decision q16; mocks M22 "Send
+ * findings", M23 "Request scoped rework", M24 "Ask parent for approval"): which run, step, visit and branch, how it
+ * ended and its result, what the person asks (`kind`: findings, rework or approval) and their note, written by
+ * workflowV2AskParentMessage. Null for an unknown kind. Pure.
+ */
+export function workflowV2StepQuestion({ workflowName = null, workflowSessionId, runId, stateId, execution = null, kind, note = "" } = {}) {
+    const asked = WORKFLOW_V2_ASK_PARENT_KINDS[kind];
+    if (!asked) return null;
+    const visit = Number.isSafeInteger(execution?.ordinal) ? ` (visit ${execution.ordinal})` : "";
+    const branch = isRecord(execution?.branch) && Number.isSafeInteger(execution.branch.index) ? ` in branch ${execution.branch.index}` : "";
+    const ending = workflowV2VisitEnding(execution);
+    const result = typeof execution?.outputPreview === "string" && execution.outputPreview && execution.outputPreview !== "null"
+        ? ` Its result: ${workflowV2Clipped(execution.outputPreview, 1_000)}` : "";
+    const about = `in run ${runId}, step '${stateId}'${visit}${branch}: ${asked.about}.`
+        + `${ending ? ` ${ending.text}` : execution?.status === "pending" ? " It is still running." : ""}${result}`;
+    return workflowV2AskParentMessage({ workflowName, workflowSessionId, about, note, action: asked.action });
 }
 
 /**

@@ -1,7 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { workflowDefinition, workflowReadModelView, workflowV2ExecutionValueKey, workflowV2KvApplied, workflowV2KvRevisionKey, workflowV2OlderStart,
     workflowV2RunHistory, workflowV2RunRows,
-    workflowV2ShownExecution, workflowV2StepQuestion } from "./workflow-view.js";
+    workflowV2ShownExecution } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
@@ -13,7 +13,7 @@ import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
     workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableBatchDraft,
     workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
-    workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId, workflowV2StepInputKey,
+    workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId, workflowV2StepInputKey, workflowV2StepQuestion,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -7614,8 +7614,8 @@ export class PilotSwarmUiController {
         if (!draft.ok) return refuse(draft.error);
         const result = await this.askParentAboutHeldCall(modal.sessionId, { runId: modal.runId, interceptionId: modal.interceptionId, response: draft.response });
         if (!result.ok) return refuse(result.reason);
+        // askWorkflowParent already said where it was sent.
         this.afterWorkflowTestCommand(modal, { ok: true });
-        this.dispatch({ type: "ui/status", text: workflowV2AskParentSent(result.parentSessionId) });
         return result;
     }
 

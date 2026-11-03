@@ -14,7 +14,8 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal } from "../src/index.js";
-import { WORKFLOW_V2_ASK_PARENT_KINDS, projectWorkflowV2, workflowV2BranchEvidence, workflowV2StepQuestion } from "../src/workflow-v2-view.js";
+import { projectWorkflowV2, workflowV2BranchEvidence } from "../src/workflow-v2-view.js";
+import { WORKFLOW_V2_ASK_PARENT_KINDS, workflowV2StepQuestion } from "../src/workflow-v2-commands.js";
 import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { RUN, done, readModel } from "./workflow-v2-fixtures.mjs";
 
@@ -70,16 +71,16 @@ test("the question to the parent agent names the run, step, visit and branch, ho
         note: " the release needs it " }), [
         "About workflow \"watch-v2\" (session wf): in run run-1, step 'fan' (visit 1): it asks for your approval. It ended 'blocked'.",
         "My note: the release needs it",
-        "Please decide whether it is approved and continue the workflow accordingly (for example answer the request it waits on).",
+        "If you agree, approve it and continue the workflow accordingly (for example answer the request it waits on).",
     ].join("\n"));
     const done0 = { id: "nx-done-b0", stateId: "branch_done", ordinal: 2, status: "completed", outcome: "succeeded", resultKind: "business",
         outputPreview: "{\"ok\":true}", ...branch(0) };
     assert.equal(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "branch_done", execution: done0, kind: "findings" }), [
         "About workflow (session wf): in run run-1, step 'branch_done' (visit 2) in branch 0: here is what it found. It ended 'succeeded'. Its result: {\"ok\":true}",
-        "Please pass these findings to whoever needs them (for example the author of the change), or act on them.",
+        "If you agree, pass these findings to whoever needs them (for example the author of the change), or act on them.",
     ].join("\n"));
     assert.match(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "work", execution: { id: "p", ordinal: 3, status: "pending" }, kind: "rework" }),
-        /^About workflow \(session wf\): in run run-1, step 'work' \(visit 3\): it needs rework\. It is still running\.\nPlease arrange the rework/);
+        /^About workflow \(session wf\): in run run-1, step 'work' \(visit 3\): it needs rework\. It is still running\.\nIf you agree, arrange the rework/);
     assert.equal(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "work", execution: null, kind: "other" }), null);
 });
 
@@ -103,7 +104,7 @@ test("the controller sends the question to the parent's chat as an ordinary mess
     const [parent, text, options] = h.sent[0];
     assert.deepEqual([parent, options], ["parent-1", { enqueueOnly: true }]);
     assert.ok(text.startsWith("About workflow \"watch-v2\" (session wf): in run run-1, step 'fan' (visit 1): it needs rework."), text);
-    assert.ok(text.includes("\nMy note: branch 1 crashed\nPlease arrange the rework"), text);
+    assert.ok(text.includes("\nMy note: branch 1 crashed\nIf you agree, arrange the rework"), text);
     // A visit chosen by id, an unknown kind, a step with no visit, a workflow without a parent.
     assert.equal((await h.controller.askParentAboutStep("wf", { stateId: "work", executionId: "nx-work-b1", kind: "findings" })).ok, true);
     assert.ok(h.sent[1][1].includes("step 'work' (visit 1) in branch 1: here is what it found. A runtime error (crashed). exit code 1"), h.sent[1][1]);

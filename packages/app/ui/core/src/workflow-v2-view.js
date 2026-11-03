@@ -1099,13 +1099,19 @@ function branchProgressLines(node, execution, context) {
     return [];
 }
 
+/**
+ * One line, its whitespace collapsed, cut to `max` characters with "…" (the activity list, the reasons and results it
+ * shows, and the question to the parent agent). Pure.
+ */
+export function workflowV2Clipped(value, max = 200) {
+    const one = String(value ?? "").replace(/\s+/g, " ").trim();
+    return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+}
+
 // ── Activity, why a run or a step ended, and the sessions under a step (owner decision q14; mocks M09, M14) ──────────
 
 const ACTIVITY_LIMIT = 50;
-const clipped = (value, max = 200) => {
-    const one = String(value ?? "").replace(/\s+/g, " ").trim();
-    return one.length > max ? `${one.slice(0, max - 1)}…` : one;
-};
+const clipped = workflowV2Clipped;
 const parsedJson = value => {
     if (isRecord(value)) return value;
     if (typeof value !== "string") return null;
@@ -1356,32 +1362,4 @@ export function workflowV2BranchEvidence(executions, states, parallel, complete 
         total: parallel.branches, succeeded: rows.filter(row => row.status === "succeeded").length, running: rows.filter(row => row.status === "running").length,
         blocked, blocking: blocked ? rows.filter(row => row.status !== "succeeded").map(row => row.index) : [], rows,
     };
-}
-
-/** What a person can ask the parent agent about a step (owner decision q16), with the words its button and message use. */
-export const WORKFLOW_V2_ASK_PARENT_KINDS = Object.freeze({
-    findings: { label: "Send findings", about: "here is what it found", action: "pass these findings to whoever needs them (for example the author of the change), or act on them." },
-    rework: { label: "Ask for rework", about: "it needs rework", action: "arrange the rework: for example change the draft or its inputs and start a new run, or ask whoever owns the work to change it." },
-    approval: { label: "Ask for approval", about: "it asks for your approval", action: "decide whether it is approved and continue the workflow accordingly (for example answer the request it waits on)." },
-});
-
-/**
- * The message that asks the workflow's parent agent about one visit of a step (owner decision q16; mocks M22 "Send
- * findings", M23 "Request scoped rework", M24 "Ask parent for approval"): which run, step, visit and branch, how it
- * ended and its result, what the person asks (`kind`: findings, rework or approval) and their note. Built with
- * workflowV2AskParentMessage's shape, sent as an ordinary message to the parent's chat. Null for an unknown kind. Pure.
- */
-export function workflowV2StepQuestion({ workflowName = null, workflowSessionId, runId, stateId, execution = null, kind, note = "" } = {}) {
-    const asked = WORKFLOW_V2_ASK_PARENT_KINDS[kind];
-    if (!asked) return null;
-    const visit = Number.isSafeInteger(execution?.ordinal) ? ` (visit ${execution.ordinal})` : "";
-    const branch = isRecord(execution?.branch) && Number.isSafeInteger(execution.branch.index) ? ` in branch ${execution.branch.index}` : "";
-    const ending = workflowV2VisitEnding(execution);
-    const result = typeof execution?.outputPreview === "string" && execution.outputPreview && execution.outputPreview !== "null"
-        ? ` Its result: ${clipped(execution.outputPreview, 1_000)}` : "";
-    const lines = [`About workflow ${workflowName ? `"${workflowName}" ` : ""}(session ${workflowSessionId}): in run ${runId}, step '${stateId}'${visit}${branch}: ${asked.about}.`
-        + `${ending ? ` ${ending.text}` : execution?.status === "pending" ? " It is still running." : ""}${result}`];
-    if (typeof note === "string" && note.trim()) lines.push(`My note: ${note.trim()}`);
-    lines.push(`Please ${asked.action}`);
-    return lines.join("\n");
 }
