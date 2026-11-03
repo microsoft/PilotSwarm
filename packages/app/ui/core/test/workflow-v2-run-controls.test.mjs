@@ -76,13 +76,14 @@ test("a workflow in an agent state's subtree offers only a person's brakes, neve
     assert.deepEqual(operations(controlsOf({ status: "running" }, SUBTREE)), ["pause", "stop", "cancel"]);
     const paused = controlsOf({ status: "paused", pausedFrom: "running" }, SUBTREE);
     assert.deepEqual(operations(paused), ["stop", "cancel"]);
-    assert.equal(paused.restriction, `${SUBTREE.restriction.reason} Its controlling agent is session parent-agent.`);
+    assert.equal(paused.restriction, `${SUBTREE.restriction.reason} Its controlling agent is session parent-a.`);
     // A host without a graceful stop (controller 1.8.0) offers no Stop, here or anywhere.
     const plain = commands({ operations: EVERY.filter(operation => !["stop", "test", "test_respond", "test_advance"].includes(operation)), run: { runId: RUN, stop: false } });
     assert.deepEqual(operations(controlsOf({ status: "running" }, plain)), ["pause", "cancel"]);
     assert.deepEqual(operations(controlsOf({ status: "paused", pausedFrom: "admitted" }, plain)), ["resume", "cancel"]);
     // A restriction without its fields still says what it means.
-    assert.match(controlsOf({ status: "running" }, { ...SUBTREE, restriction: {} }).restriction, /only pause, stop or cancel/);
+    // ui-07: with no reason from the server, one short line, the same in the portal and the terminal.
+    assert.equal(controlsOf({ status: "running" }, { ...SUBTREE, restriction: {} }).restriction, "People can only pause, stop or cancel this workflow.");
 });
 
 test("a control is disabled with its reason: the viewer may not command, the run cannot stop gracefully, a command is in flight", () => {
@@ -294,7 +295,7 @@ test("the workflow pane shows the controls in its header only when the read mode
     const restricted = main(mount({ readModel: { ...readModel({ run: { status: "paused", pausedFrom: "running" } }), personCommands: SUBTREE },
         readModelRunId: null }));
     assert.deepEqual([...restricted.matchAll(/data-operation="([a-z]+)"/g)].map(match => match[1]), ["stop", "cancel"]);
-    assert.ok(restricted.includes("Its controlling agent is session parent-agent."));
+    assert.ok(restricted.includes("Its controlling agent is session parent-a."));
 
     // A model read for another selection offers no controls for this one.
     const other = main(mount({ readModel: { ...readModel({ run: { status: "running" } }), personCommands: commands() }, readModelRunId: "run-other" }));

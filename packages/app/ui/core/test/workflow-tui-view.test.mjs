@@ -111,7 +111,7 @@ test("w opens the view on the pending agent state: its state, transitions with t
     assert.ok(details.includes("Agent chats (Tab: choose · Enter: open):"));
     assert.ok(details.includes("▸ visit 3 · working · child-r2"), details.join("\n"));
     assert.ok(details.includes("  visit 1 · completed · rework · child-r1"), details.join("\n"));
-    assert.ok(details.includes("People can read these chats; the server refuses their prompts, answers and steers."));
+    assert.ok(details.includes("People can read these chats; the server refuses their prompts, answers and instructions."));
     // It read the workflow as the portal's pane does, and called nothing that changes anything.
     assert.ok(calls.some(call => call[0] === "readWorkflow" && call[1] === "wf"));
     assert.deepEqual(calls.filter(call => WRITES.test(call[0])), []);

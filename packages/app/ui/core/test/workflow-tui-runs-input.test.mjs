@@ -27,6 +27,8 @@ import {
     selectWorkflowViewModal,
     selectWorkflowViewSelection,
     workflowInputPolicyApplies,
+    workflowInputNoteText,
+    WORKFLOW_INPUT_DENIED_TEXT,
 } from "../src/index.js";
 import { workflowV2RunPickerModel as coreRunPicker } from "../src/workflow-v2-run-picker.js";
 import { workflowV2RunPickerModel as portalRunPicker } from "../../react/src/workflow-v2-panels.js";
@@ -179,6 +181,13 @@ function inputHarness({ policies = { c1: DENIED, g1: DENIED, o1: ALLOWED }, apiM
 }
 
 const NOTE = `${REASON} Its controlling agent is session r1.`;
+
+test("the read-only note: the server's reason, else one short fallback; the controlling agent by its 8-character id (ui-07)", () => {
+    assert.equal(WORKFLOW_INPUT_DENIED_TEXT, "This session runs a step of a workflow. People cannot send it prompts, answers or instructions. Message the parent agent instead.");
+    assert.equal(workflowInputNoteText(null, "fb6e5d1e-d82d-4f3a-bf95-ca578b222530"), `${WORKFLOW_INPUT_DENIED_TEXT} Its controlling agent is session fb6e5d1e.`);
+    assert.equal(workflowInputNoteText(REASON, null), REASON);
+    assert.equal(workflowInputNoteText("", ""), WORKFLOW_INPUT_DENIED_TEXT);
+});
 
 test("only a session that may be in an agent state's subtree, by its loaded ancestry, is asked about, once", async () => {
     const { controller, store, calls } = inputHarness();

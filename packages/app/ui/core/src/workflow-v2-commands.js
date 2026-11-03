@@ -88,9 +88,10 @@ export function workflowV2RestrictionText(commands) {
 
 function restrictionText(commands) {
     if (!isRecord(commands.restriction)) return null;
-    const reason = text(commands.restriction.reason) ?? "This workflow was started by an agent step of another workflow: people can only pause, stop or cancel it.";
+    // The server's reason when it sends one; else one short line, the same in the portal and the terminal.
+    const reason = text(commands.restriction.reason) ?? "People can only pause, stop or cancel this workflow.";
     const controlling = text(commands.restriction.controllingSessionId);
-    return controlling ? `${reason} Its controlling agent is session ${controlling}.` : reason;
+    return controlling ? `${reason} Its controlling agent is session ${shortSession(controlling)}.` : reason;
 }
 
 /** Whether the run's status admits the control (a stopping run takes only cancel). */

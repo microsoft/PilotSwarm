@@ -89,7 +89,7 @@ test("the shared Ink app draws the view: the states, the selected one's details 
     assert.match(html, /data-title="Step review — ↑↓ step · ←→ run · Tab agent chat · Enter open · Esc close"/);
     assert.match(html, /  accepted → done/);
     assert.match(html, /▸ visit 1 · working · child-1/);
-    assert.match(html, /People can read these chats; the server refuses their prompts, answers and steers\./);
+    assert.match(html, /People can read these chats; the server refuses their prompts, answers and instructions\./);
     assert.deepEqual(calls.map(call => call[0]), ["readWorkflow"], "it reads the workflow and nothing else");
 });
 

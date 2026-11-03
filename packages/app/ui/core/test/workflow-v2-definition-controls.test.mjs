@@ -49,7 +49,7 @@ test("no publication controls without personCommands, for a deleted definition, 
     assert.equal(workflowV2DefinitionControls({ workflowId: "w", personCommands: commands() }), null);
     const subtree = workflowV2DefinitionControls(draftModel({}, SUBTREE));
     assert.deepEqual(operations(subtree), []);
-    assert.equal(subtree.note, `${SUBTREE.restriction.reason} Its controlling agent is session parent-agent.`);
+    assert.equal(subtree.note, `${SUBTREE.restriction.reason} Its controlling agent is session parent-a.`);
 });
 
 test("a draft offers Publish only and Publish and start for the exact revision shown; errors block publishing", () => {

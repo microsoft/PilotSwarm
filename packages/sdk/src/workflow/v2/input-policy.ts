@@ -95,7 +95,7 @@ export function workflowInputCapabilities(lineage: WorkflowLineage | null): Work
     if (root === null) return { canSendPrompt: true, canAnswer: true, canSteer: true, reason: null, workflowSessionId: null, controllingSessionId: null };
     return {
         canSendPrompt: false, canAnswer: false, canSteer: false,
-        reason: "This session runs a step of a workflow. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.",
+        reason: "This session runs a step of a workflow. People cannot send it prompts, answers or instructions; message the workflow's parent agent instead.",
         workflowSessionId: root.workflowSessionId, controllingSessionId: root.controllingSessionId,
     };
 }

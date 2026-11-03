@@ -1,4 +1,4 @@
-import { shortRunId } from "./formatting.js";
+import { shortRunId, shortSessionId } from "./formatting.js";
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
@@ -1518,7 +1518,7 @@ function detailLines(selection, width) {
             const result = occurrence.status === "pending" ? "working" : occurrence.outcome ? `${occurrence.status} · ${occurrence.outcome}` : occurrence.status || "—";
             add(`${chosen ? "▸" : " "} ${visit} · ${result} · ${occurrence.childSessionId}`, chosen ? "white" : "gray", chosen ? { bold: true } : {});
         });
-        add("People can read these chats; the server refuses their prompts, answers and steers.", "gray");
+        add("People can read these chats; the server refuses their prompts, answers and instructions.", "gray");
         // The sessions the chosen chat started (owner decision q14; mock M14 "View owned subtree"), as loaded here.
         const under = selection.occurrence?.childSessionId
             ? workflowV2SessionSubtree(selection.sessionsById, selection.occurrence.childSessionId).filter(entry => entry.depth > 0) : [];
@@ -1617,8 +1617,21 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
     };
 }
 
-/** The note a read-only composer shows when the session's input policy (normalizeWorkflowInputPolicy) refuses prompts. */
-export const WORKFLOW_INPUT_DENIED_TEXT = "This session runs a step of a workflow. People cannot send it prompts, answers or steers.";
+/**
+ * The note a read-only composer shows when the session's input policy (normalizeWorkflowInputPolicy) refuses prompts
+ * and the server sent no reason. The portal and the terminal show the same words.
+ */
+export const WORKFLOW_INPUT_DENIED_TEXT = "This session runs a step of a workflow. People cannot send it prompts, answers or instructions. Message the parent agent instead.";
+
+/**
+ * The read-only composer's note, in the portal and the terminal alike: the server's reason (else
+ * WORKFLOW_INPUT_DENIED_TEXT) and the controlling agent's session, by its short id. Pure.
+ */
+export function workflowInputNoteText(reason, controllingSessionId) {
+    const note = typeof reason === "string" && reason ? reason : WORKFLOW_INPUT_DENIED_TEXT;
+    return typeof controllingSessionId === "string" && controllingSessionId
+        ? `${note} Its controlling agent is session ${shortSessionId(controllingSessionId)}.` : note;
+}
 
 /**
  * What a person may send to a session, as the server reports it: getWorkflowInputPolicy's answer (the TUI's direct
@@ -1667,8 +1680,7 @@ export function workflowInputPolicyApplies(state, sessionId) {
 export function selectWorkflowInputNote(state, sessionId) {
     const policy = sessionId ? state?.ui?.workflowInputPolicies?.[sessionId] : null;
     if (!policy || policy.canSendPrompt !== false) return null;
-    const reason = policy.reason || WORKFLOW_INPUT_DENIED_TEXT;
-    return policy.controllingSessionId ? `${reason} Its controlling agent is session ${policy.controllingSessionId}.` : reason;
+    return workflowInputNoteText(policy.reason, policy.controllingSessionId);
 }
 
 /**

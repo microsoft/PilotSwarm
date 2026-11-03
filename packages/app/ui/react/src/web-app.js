@@ -91,6 +91,7 @@ import {
     normalizeStoredSessionOrder,
     computeFitWidthColumnLayout,
     normalizeTableCellText,
+    workflowInputNoteText,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
@@ -7157,14 +7158,10 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
 
 /**
  * Why a session in a workflow agent state's subtree has no composer (design 03 human-input denial): the reason the
- * server reports, and where to go instead. Text only.
+ * server reports, and where to go instead, in the terminal's words (workflowInputNoteText). Text only.
  */
 function workflowInputNote(access) {
-    const reason = typeof access?.workflowInput?.reason === "string" && access.workflowInput.reason
-        ? access.workflowInput.reason
-        : "This session runs a step of a workflow. People cannot send it prompts, answers or steers.";
-    const parent = access?.workflowInput?.controllingSessionId;
-    return parent ? `${reason} Its controlling agent is session ${parent}.` : reason;
+    return workflowInputNoteText(access?.workflowInput?.reason, access?.workflowInput?.controllingSessionId);
 }
 
 function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, compact = false, autoFocus = !mobile }) {

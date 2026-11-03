@@ -77,7 +77,7 @@ test("the list is read from the preview of the map: names and JSON values, a cut
 test("a person may change them only where the workflow takes set_vars, the run is active, the viewer may command it and the revision is known", () => {
     const subtree = variablesOf({ kv: KV, kvRevision: 3 }, SUBTREE);
     assert.equal(subtree.editable, false);
-    assert.equal(subtree.reason, `${SUBTREE.restriction.reason} Its controlling agent is session parent-agent.`);
+    assert.equal(subtree.reason, `${SUBTREE.restriction.reason} Its controlling agent is session parent-a.`);
     assert.equal(subtree.entries.length, 3, "people can still read them");
     assert.match(variablesOf({ status: "completed", kv: KV, kvRevision: 3 }).reason, /^This run has ended \(completed\); its variables no longer change\./);
     assert.equal(variablesOf({ kv: KV, kvRevision: 3 }, commands({ viewer: { allowed: false, reason: "Only the session owner (Alice) or an admin can do this." } })).reason,
@@ -252,7 +252,7 @@ test("the panel opens from the header's Variables button: a form where a person 
     assert.ok(subtree.includes("aria-label=\"Workflow variables\""));
     assert.ok(!subtree.includes("Set or remove a variable"), "no form where people cannot change them");
     assert.ok(!subtree.includes("aria-label=\"Edit note\""));
-    assert.ok(subtree.includes("Its controlling agent is session parent-agent."));
+    assert.ok(subtree.includes("Its controlling agent is session parent-a."));
 
     const ended = main(mount({ readModel: withCommands({ status: "completed", kv: KV, kvRevision: 3 }), readModelRunId: null, variablesOpen: true }));
     assert.ok(ended.includes("This run has ended (completed); its variables no longer change."));

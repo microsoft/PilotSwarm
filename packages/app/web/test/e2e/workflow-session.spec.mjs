@@ -730,12 +730,12 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
 // agent session (positive control) keeps its prompt input; no prompt request is sent from the read-only one.
 // 1440 and 390.
 // Source: web-app.js SessionComposer / main composer: readOnly when access.canSendPrompt === false; text =
-// workflowInputNote(access) = `${workflowInput.reason} Its controlling agent is session ${controllingSessionId}.`;
+// workflowInputNote(access) = `${workflowInput.reason} Its controlling agent is session ${shortSessionId(controllingSessionId)}.`;
 // access from GET /api/v1/sessions/:id/access (protocol getSessionAccess). An ordinary session: the stub answers
 // {ok:true} with no flags (not denied).
 // ------------------------------------------------------------------------------------------------------------
 const CHILD_ID = "99999999-2222-3333-4444-555555555555";
-const CHILD_REASON = "This session runs a step of a workflow. People cannot send it prompts, answers or steers; message the workflow's parent agent instead.";
+const CHILD_REASON = "This session runs a step of a workflow. People cannot send it prompts, answers or instructions; message the workflow's parent agent instead.";
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     test(`v2 commands: a workflow agent state's chat is read-only with the server's reason; an ordinary chat is not, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
@@ -767,7 +767,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
 
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${CHILD_ID}`);
         const readonly = page.locator(".ps-composer-readonly").filter({ visible: true });
-        await expect(readonly).toHaveText(`${CHILD_REASON} Its controlling agent is session ${AGENT_ID}.`);
+        await expect(readonly).toHaveText(`${CHILD_REASON} Its controlling agent is session ${AGENT_ID.slice(0, 8)}.`);
         await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
         await expect(page.locator(".ps-chat-composer.is-workflow")).toHaveCount(0); // a child chat is not a workflow session
         await shot(page, `v2-child-readonly-${viewport.width}`);
@@ -816,7 +816,7 @@ test("v2 commands: a failed access check says it could not check, with Retry, an
     const failedReads = accessReads;
     failAccess = false;
     await readonly.getByRole("button", { name: "Retry", exact: true }).click();
-    await expect(readonly).toHaveText(`${CHILD_REASON} Its controlling agent is session ${AGENT_ID}.`);
+    await expect(readonly).toHaveText(`${CHILD_REASON} Its controlling agent is session ${AGENT_ID.slice(0, 8)}.`);
     expect(accessReads).toBeGreaterThan(failedReads);
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toHaveCount(0);
     expect(errors).toEqual([]);
