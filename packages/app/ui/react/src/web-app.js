@@ -11657,10 +11657,13 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
             const columnHeight = Math.max(0, col?.getBoundingClientRect?.().height || 0);
             const dividerHeight = Math.max(0, event.currentTarget.getBoundingClientRect().height || 0);
             const { minAdjust, maxAdjust } = getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight);
+            // One key moves the seam a fixed step, as on every other seam (F-07). It used to move by the divider's own
+            // height, which was the 18px gutter and is now the 1px hairline (--ps-resizer-track).
+            const start = clampNumber(Number(splitAdjust) || 0, minAdjust, maxAdjust);
             controller.dispatch({
                 type: "ui/diagnosticsSplitAdjust",
                 diagnosticsSplitAdjust: clampNumber(
-                    (Number(splitAdjust) || 0) + (event.key === "ArrowDown" ? dividerHeight : -dividerHeight),
+                    start + (event.key === "ArrowDown" ? PORTAL_COLUMN_KEY_STEP_PX : -PORTAL_COLUMN_KEY_STEP_PX),
                     minAdjust,
                     maxAdjust,
                 ),

@@ -113,3 +113,33 @@ test("the seam stops at chat's floor instead of inflating the stored width", asy
     const released = await widths(page);
     expect(pinned.canvas - released.canvas, "the canvas gives back width on the first drag back").toBeGreaterThan(50);
 });
+
+// F-07 and F-08 (batch 4, UX resize report). Selector: npx playwright test test/e2e/right-column-resize.spec.mjs -g "F-0".
+async function openDiagnostics(page, { canvas = false } = {}) {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(base);
+    await page.locator(".ps-session-list-button").first().waitFor();
+    await page.locator(".ps-session-list-button").first().click();
+    await page.waitForTimeout(300);
+    if (canvas) {
+        const showCanvas = page.getByRole("button", { name: /^Show canvas$/i });
+        if (await showCanvas.count() > 0) await showCanvas.first().click();
+    }
+    await page.getByRole("button", { name: /Show diagnostics/i }).first().click();
+    await expect(page.getByRole("button", { name: "Resize the inspector and activity panes", exact: true })).toBeVisible();
+}
+
+test("F-07: an arrow key moves the inspector/activity seam a whole step, not the 1px divider's height", async ({ page }) => {
+    await openDiagnostics(page);
+    const handle = page.getByRole("button", { name: "Resize the inspector and activity panes", exact: true });
+    const inspector = handle.locator("xpath=../..").locator(":scope > .ps-workspace-pane-slot").first();
+    const height = async () => (await inspector.boundingBox()).height;
+    const before = await height();
+    await handle.focus();
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(async () => before - await height()).toBeGreaterThanOrEqual(20);
+    const raised = await height();
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(async () => await height() - raised).toBeGreaterThanOrEqual(20);
+    await expect(handle).toBeFocused();
+});
