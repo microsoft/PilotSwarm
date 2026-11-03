@@ -1155,7 +1155,7 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
     const valueShown = sameRun && Boolean(item) && kind !== "cancel";
     const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
     const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - (valueShown ? 14 : 10))));
-    const hint = "Enter send · Tab success/error/cancel · ↑↓ another waiting call · Esc back";
+    const hint = "Enter send · ctrl-p to the parent agent · Tab success/error/cancel · ↑↓ another waiting call · Esc back";
     const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
     return {
         title: `Answer · test run ${shortRunId(modal.runId)}${item ? ` · ${item.operation ?? "call"}${item.stateId ? ` in '${item.stateId}'` : ""}` : ""}`,

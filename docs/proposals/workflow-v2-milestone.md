@@ -1752,3 +1752,12 @@ serves), no typed input into a running test, and no display of lineage, receipts
   unsaved edits. Required fields left unset are named; the step's own check still runs when it starts. Only a draft's
   agent step written as a block mapping (one field per line) is edited this way; anything else says to use the YAML
   editor. The portal reads it only for a person who may change the workflow. The TUI keeps the YAML editor.
+- **Send a test answer through the parent agent (q12, mock M18).** In a test run, a held call that waits for an
+  answer offers "Ask the parent agent" in the portal's held-call list, and the answer form offers "Send to the parent
+  agent instead" (the TUI's answer form: ctrl-p). Either sends an ordinary message to the workflow's parent session's
+  chat (`askWorkflowParent`, `workflowV2HeldCallQuestion`): which workflow and test run, which held call in which
+  step, the answer the person suggests (from the form, checked as for sending it), and, for the agent, the exact
+  `update_workflow` `test_respond` call that would give that answer. The parent decides and answers with its own tool;
+  nothing is sent to the test run, and people still cannot write to a step's own chat. Offered only for a workflow
+  with a parent session; the parent's own input rule still applies, and the server decides. The same helper
+  (`workflowV2AskParentMessage`) serves the other "ask the parent agent" texts.

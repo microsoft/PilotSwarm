@@ -13,7 +13,7 @@ import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
     workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableBatchDraft,
     workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
-    workflowV2RevisionCompare,
+    workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -7450,7 +7450,7 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/modal", modal: { type: "workflowTestAnswer", sessionId: selection.modal.sessionId, runId: responder.runId,
             interceptionId: waiting.interceptionId, kind: "success", value, valueCursor: value.length, error: null,
             returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
-        this.dispatch({ type: "ui/status", text: "Answer — Enter send · Tab success/error/cancel · ↑↓ another waiting call · Esc back" });
+        this.dispatch({ type: "ui/status", text: "Answer — Enter send · ctrl-p to the parent agent · Tab success/error/cancel · ↑↓ another waiting call · Esc back" });
     }
 
     /** The answer form's JSON value: type, delete, move the cursor (editWorkflowModalField). */
@@ -7536,6 +7536,83 @@ export class PilotSwarmUiController {
             interceptionId: modal.interceptionId, response: draft.response });
         this.afterWorkflowTestCommand(modal, result);
         return result;
+    }
+
+    /**
+     * Workflow v2: send a person's message to the workflow's parent agent (owner decisions q12, q16): an ordinary message
+     * in the parent's chat (`text`, built by workflowV2AskParentMessage), which the parent answers with its own tools.
+     * People still cannot write to a step's own chat. Refused before anything is sent for a session that is not a
+     * workflow, a workflow with no parent, an empty message, or a parent whose input policy refuses a person; the server
+     * decides again. Never throws.
+     */
+    async askWorkflowParent(sessionId, text) {
+        const state = this.getState();
+        if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return { ok: false, reason: "not a workflow" };
+        const parentSessionId = workflowV2ParentSessionId(state.sessions.byId, sessionId);
+        const refuse = reason => {
+            this.dispatch({ type: "ui/status", text: reason });
+            return { ok: false, reason };
+        };
+        if (!parentSessionId) return refuse("This workflow has no parent agent to ask.");
+        if (typeof text !== "string" || !text.trim()) return refuse("There is nothing to send to the parent agent.");
+        if (typeof this.transport?.sendMessage !== "function") return refuse("This connection cannot send messages.");
+        const inputNote = selectWorkflowInputNote(state, parentSessionId);
+        if (inputNote) return refuse(inputNote);
+        try {
+            await this.transport.sendMessage(parentSessionId, text, { enqueueOnly: true });
+        } catch (error) {
+            return refuse(`The message to the parent agent was not sent: ${error?.message || String(error)}`);
+        }
+        this.syncSessionEvents(parentSessionId).catch(() => {});
+        this.dispatch({ type: "ui/status", text: workflowV2AskParentSent(parentSessionId) });
+        return { ok: true, parentSessionId };
+    }
+
+    /**
+     * The answer form (TUI, ctrl-p; the portal's "Send to the parent agent instead"): send the answer drafted in the form
+     * to the workflow's parent agent as a suggestion instead of answering the held call (owner decision q12; mock M18).
+     * The draft is checked first, as for Enter; the form closes once the message is sent. Nothing is sent to the test run.
+     */
+    async askParentAboutWorkflowTestAnswer() {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowTestAnswer") return { ok: false, reason: "closed" };
+        const refuse = error => {
+            this.updateWorkflowModal("workflowTestAnswer", { error });
+            this.dispatch({ type: "ui/status", text: error });
+            return { ok: false, reason: "invalid" };
+        };
+        const projection = workflowViewProjectionFor(state, modal.sessionId);
+        const items = workflowV2RunRows(projection.runReadModel?.run ?? null).interceptions;
+        const call = items.find(item => item?.interceptionId === modal.interceptionId) ?? null;
+        if (!call) return refuse(`Held call ${modal.interceptionId} is not one of this test run's held calls, so nothing was sent.`);
+        const draft = workflowV2TestResponseDraft(modal.kind, modal.value);
+        if (!draft.ok) return refuse(draft.error);
+        const result = await this.askParentAboutHeldCall(modal.sessionId, { runId: modal.runId, interceptionId: modal.interceptionId, response: draft.response });
+        if (!result.ok) return refuse(result.reason);
+        this.afterWorkflowTestCommand(modal, { ok: true });
+        this.dispatch({ type: "ui/status", text: workflowV2AskParentSent(result.parentSessionId) });
+        return result;
+    }
+
+    /**
+     * Workflow v2: ask the workflow's parent agent about one held call of the test run the view shows (owner decision
+     * q12; mock M18), with the answer a person suggests (`response`, as workflowV2TestResponseDraft drafts it; null for
+     * none): workflowV2HeldCallQuestion's message, sent by askWorkflowParent. Only a held call of exactly that run, as
+     * the view's read shows it. Never throws.
+     */
+    async askParentAboutHeldCall(sessionId, { runId = null, interceptionId = null, response = null, note = "" } = {}) {
+        const projection = workflowViewProjectionFor(this.getState(), sessionId);
+        const run = projection.runReadModel?.run ?? null;
+        const call = run && run.runId === runId
+            ? workflowV2RunRows(run).interceptions.find(item => item?.interceptionId === interceptionId) ?? null : null;
+        if (!call) {
+            const reason = `Held call ${interceptionId} is not one of the shown test run's held calls, so nothing was sent.`;
+            this.dispatch({ type: "ui/status", text: reason });
+            return { ok: false, reason };
+        }
+        return this.askWorkflowParent(sessionId, workflowV2HeldCallQuestion({ workflowName: projection.name, workflowSessionId: sessionId, runId,
+            call, response, note }));
     }
 
     /**
@@ -13968,6 +14045,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND:
                 await this.sendWorkflowTestAnswer();
+                return;
+            case UI_COMMANDS.WORKFLOW_TEST_ANSWER_ASK_PARENT:
+                await this.askParentAboutWorkflowTestAnswer();
                 return;
             case UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK:
                 this.openWorkflowTestClock();

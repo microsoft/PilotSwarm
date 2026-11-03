@@ -706,6 +706,11 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND).catch(() => {});
                     return;
                 }
+                // ctrl-p: send the answer drafted here to the workflow's parent agent instead (owner decision q12).
+                if (matchesCtrlKey("p", "\u0010")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_ASK_PARENT).catch(() => {});
+                    return;
+                }
                 if (key.tab) {
                     controller.cycleWorkflowTestAnswerKind();
                     return;

@@ -25,6 +25,7 @@ import { PilotSwarmUiController, appReducer, createInitialState, createStore } f
 import {
     workflowV2AdvanceDraft, workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandFailure,
     workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2TestAnswerTemplate, workflowV2TestResponder, workflowV2TestResponseDraft,
+    workflowV2AskParentMessage, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId,
 } from "../src/workflow-v2-commands.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
 import { RUN, readModel } from "./workflow-v2-fixtures.mjs";
@@ -209,4 +210,87 @@ test("a waiting interception has an Answer button that opens its form; the clock
         assert.ok(page.includes("Held calls (2)"), `${label}: the interceptions stay readable`);
         assert.ok(!page.includes("data-action=\"answer\"") && !page.includes("Answer a held call") && !page.includes("aria-label=\"Virtual clock\""), label);
     }
+});
+
+// Owner decision q12 (mock M18): a person may send a held call's answer to the workflow's parent agent instead, as an
+// ordinary message in the parent's chat that names the workflow, the test run, the call and the suggested answer; the
+// parent answers with its own tool. People still cannot write to a step's chat.
+const QUESTION = [
+    "About workflow \"watch-v2\" (session wf): in test run run-1, the held call agent in step 'review' (held call nx-review-1/agent) waits for an answer.",
+    "My suggested answer: success with {\"outcome\":\"accepted\",\"output\":null}",
+    "If you agree, answer it with update_workflow (operation test_respond, run_id run-1, interception_id nx-review-1/agent, "
+        + "response {\"kind\":\"success\",\"value\":{\"outcome\":\"accepted\",\"output\":null}}).",
+].join("\n");
+
+test("q12: the message to the parent agent names the workflow, the test run, the held call and the suggested answer", () => {
+    const call = testView().interceptions[1];
+    const response = { kind: "success", value: { outcome: "accepted", output: null } };
+    assert.equal(workflowV2HeldCallQuestion({ workflowName: "watch-v2", workflowSessionId: "wf", runId: RUN, call, response }), QUESTION);
+    assert.equal(workflowV2HeldCallQuestion({ workflowSessionId: "wf", runId: RUN, call, response: { kind: "cancel" }, note: "  the reviewer is away  " }), [
+        "About workflow (session wf): in test run run-1, the held call agent in step 'review' (held call nx-review-1/agent) waits for an answer.",
+        "My suggested answer: cancel it", "My note: the reviewer is away",
+        "If you agree, answer it with update_workflow (operation test_respond, run_id run-1, interception_id nx-review-1/agent, response {\"kind\":\"cancel\"}).",
+    ].join("\n"));
+    const none = workflowV2HeldCallQuestion({ workflowSessionId: "wf", runId: RUN, call: testView().interceptions[0] });
+    assert.equal(none, ["About workflow (session wf): in test run run-1, the held call tool.call · read_build in step 'fetch' (held call nx-fetch-1/call-1) waits for an answer.",
+        "If you agree, answer it with update_workflow (operation test_respond, run_id run-1, interception_id nx-fetch-1/call-1)."].join("\n"));
+    const long = workflowV2HeldCallQuestion({ workflowSessionId: "wf", runId: RUN, call, response: { kind: "success", value: "x".repeat(5_000) } });
+    assert.ok(long.split("\n")[1].length < 4_100, "a long value is cut");
+    assert.equal(workflowV2AskParentMessage({ workflowSessionId: "wf", about: "step 'build' needs rework." }), "About workflow (session wf): step 'build' needs rework.");
+    assert.equal(workflowV2ParentSessionId({ wf: { sessionKind: "workflow", parentSessionId: "parent-1" } }, "wf"), "parent-1");
+    assert.equal(workflowV2ParentSessionId({ s: { sessionKind: "chat", parentSessionId: "p" } }, "s"), null);
+    assert.equal(workflowV2ParentSessionId({ wf: { sessionKind: "workflow", parentSessionId: null } }, "wf"), null);
+    assert.equal(workflowV2AskParentSent("4f9d2c1e-0000-0000-0000-000000000000"),
+        "Sent to the parent agent's chat (session 4f9d2c1e…). It answers with its own tools; open its chat from the session list.");
+});
+
+function asking({ parent = "parent-1", sendMessage } = {}) {
+    const sent = [];
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch", parentSessionId: parent }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, readModel: testModel() } });
+    const transport = { sendMessage: sendMessage ?? (async (...args) => { sent.push(args); }), getSessionEventsBefore: async () => [] };
+    return { controller: new PilotSwarmUiController({ store, transport }), store, sent };
+}
+
+test("q12: the controller sends the question to the parent's chat as an ordinary message, and says why when it cannot", async () => {
+    const h = asking();
+    const response = { kind: "success", value: { outcome: "accepted", output: null } };
+    const result = await h.controller.askParentAboutHeldCall("wf", { runId: RUN, interceptionId: AGENT, response });
+    assert.deepEqual(result, { ok: true, parentSessionId: "parent-1" });
+    assert.deepEqual(h.sent, [["parent-1", QUESTION, { enqueueOnly: true }]]);
+    assert.equal(h.store.getState().ui.statusText, workflowV2AskParentSent("parent-1"));
+
+    // A call that is not one of the shown run's, a workflow without a parent, a message that could not be sent.
+    assert.equal((await h.controller.askParentAboutHeldCall("wf", { runId: "other-run", interceptionId: AGENT })).ok, false);
+    assert.equal((await h.controller.askParentAboutHeldCall("wf", { runId: RUN, interceptionId: "nx-missing/call" })).reason,
+        "Held call nx-missing/call is not one of the shown test run's held calls, so nothing was sent.");
+    assert.equal(h.sent.length, 1);
+    const orphan = asking({ parent: null });
+    assert.deepEqual(await orphan.controller.askParentAboutHeldCall("wf", { runId: RUN, interceptionId: AGENT }),
+        { ok: false, reason: "This workflow has no parent agent to ask." });
+    assert.equal(orphan.sent.length, 0);
+    const down = asking({ sendMessage: async () => { throw new Error("Gateway timeout"); } });
+    assert.deepEqual(await down.controller.askParentAboutHeldCall("wf", { runId: RUN, interceptionId: AGENT }),
+        { ok: false, reason: "The message to the parent agent was not sent: Gateway timeout" });
+    assert.deepEqual(await h.controller.askWorkflowParent("not-a-workflow", "x"), { ok: false, reason: "not a workflow" });
+});
+
+test("q12: a held call that waits offers 'Ask the parent agent', and the answer form sends its answer there instead; only with a parent", () => {
+    const withParent = view => {
+        const store = createStore(appReducer, createInitialState({ mode: "api" }));
+        store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch", parentSessionId: "parent-1" }] });
+        store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+        store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, ...view } });
+        return main(new PilotSwarmUiController({ store, transport: {} }));
+    };
+    const html = withParent({ readModel: testModel() });
+    assert.equal([...html.matchAll(/data-action="ask-parent"/g)].length, 1, "only the call that waits");
+    assert.match(html, /<tr data-interception="nx-review-1\/agent">.*data-action="ask-parent"[^>]*>Ask the parent agent<\/button>/);
+    const open = withParent({ readModel: testModel(), answeringInterceptionId: AGENT });
+    assert.match(open, /data-action="ask-parent" title="Send this answer to the parent agent&#x27;s chat as a suggestion; it answers the call with its own tools\.">Send to the parent agent instead<\/button>/);
+    // Without a parent nothing is offered.
+    const plain = main(mount({ readModel: testModel(), answeringInterceptionId: AGENT }));
+    assert.ok(!plain.includes("data-action=\"ask-parent\""));
 });

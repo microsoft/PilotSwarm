@@ -1045,3 +1045,58 @@ export function workflowV2StepInputSummary(state, preview) {
         ? { level: "info", text: `Only the input lines of step '${state}' change. Saving makes a new draft revision.` }
         : { level: "warning", text: `Only the input lines of step '${state}' change, but the draft would have ${errors || "unlisted"} error${errors === 1 ? "" : "s"}; you can save it and fix them later.` };
 }
+
+const ASK_PARENT_VALUE_LIMIT = 4_000;
+const shortSession = value => (typeof value === "string" && value.length > 12 ? `${value.slice(0, 8)}…` : String(value ?? ""));
+
+/**
+ * The parent session of a workflow, which runs it and answers for it (owner decisions q12, q16), from the session rows
+ * loaded (`byId`); null when it has none or the row is not a workflow. Pure.
+ */
+export function workflowV2ParentSessionId(byId, workflowSessionId) {
+    const row = isRecord(byId) ? byId[workflowSessionId] : null;
+    return isRecord(row) && row.sessionKind === "workflow" ? text(row.parentSessionId) : null;
+}
+
+/**
+ * A message for the workflow's parent agent, written by a person (owner decisions q12, q16): an ordinary message in the
+ * parent's chat that names the workflow and what it is about (`about`), the person's suggestion and note when given, and,
+ * for the agent, what it can do with it (`action`). People still cannot write to a step's own chat; the parent decides.
+ * Pure.
+ */
+export function workflowV2AskParentMessage({ workflowName = null, workflowSessionId, about, suggestion = null, note = "", action = null } = {}) {
+    const lines = [`About workflow ${workflowName ? `"${workflowName}" ` : ""}(session ${workflowSessionId}): ${about}`];
+    if (text(suggestion)) lines.push(`My suggested answer: ${suggestion}`);
+    if (typeof note === "string" && note.trim()) lines.push(`My note: ${note.trim()}`);
+    if (text(action)) lines.push(`If you agree, ${action}`);
+    return lines.join("\n");
+}
+
+/**
+ * The message that sends a person's answer to a test's held call through the parent agent (owner decision q12; mock
+ * M18): the test run, the held call and its step, the answer the person suggests (a success value, an error or a
+ * cancel, as the answer form drafted it, `response`; null for none) and the parent's own way to answer it
+ * (update_workflow test_respond with exactly these ids and that answer). A long value is cut. Pure.
+ */
+export function workflowV2HeldCallQuestion({ workflowName = null, workflowSessionId, runId, call, response = null, note = "" } = {}) {
+    const what = `${call?.operation ?? "call"}${call?.tool ? ` · ${call.tool}` : ""}`;
+    const about = `in test run ${runId}, the held call ${what}${call?.stateId ? ` in step '${call.stateId}'` : ""} (held call ${call?.interceptionId}) `
+        + "waits for an answer.";
+    const json = value => {
+        const written = JSON.stringify(value ?? null);
+        return written.length > ASK_PARENT_VALUE_LIMIT ? `${written.slice(0, ASK_PARENT_VALUE_LIMIT - 1)}…` : written;
+    };
+    const suggestion = !isRecord(response) ? null
+        : response.kind === "cancel" ? "cancel it"
+            : `${response.kind === "error" ? "an error" : "success"} with ${json(response.value)}`;
+    const ids = `operation test_respond, run_id ${runId}, interception_id ${call?.interceptionId}`;
+    const action = isRecord(response)
+        ? `answer it with update_workflow (${ids}, response ${json(response)}).`
+        : `answer it with update_workflow (${ids}).`;
+    return workflowV2AskParentMessage({ workflowName, workflowSessionId, about, suggestion, note, action });
+}
+
+/** What the status line says once a message reached the parent agent's chat (q12, q16). Pure. */
+export function workflowV2AskParentSent(parentSessionId) {
+    return `Sent to the parent agent's chat (session ${shortSession(parentSessionId)}). It answers with its own tools; open its chat from the session list.`;
+}

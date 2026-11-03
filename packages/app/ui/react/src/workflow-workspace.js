@@ -214,10 +214,11 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
         variablesOpen ? React.createElement(WorkflowV2Variables, { controller, sessionId, model: variables, id: variablesId }) : null,
         v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test, controller, sessionId,
             responder: testResponder, answering: view.answeringInterceptionId ?? null, history: v2.readModel.run.history ?? null,
-            onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }) }) : null,
+            onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }), parentSessionId: session?.parentSessionId ?? null }) : null,
         testResponder?.advance ? React.createElement(WorkflowV2TestClock, { controller, sessionId, responder: testResponder }) : null,
         testResponder?.respond && view.answeringInterceptionId
-            ? React.createElement(WorkflowV2TestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId }) : null,
+            ? React.createElement(WorkflowV2TestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId,
+                parentSessionId: session?.parentSessionId ?? null }) : null,
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
             style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
             React.createElement("div", { className: "ps-workflow-graph-region" },

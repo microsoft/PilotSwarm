@@ -156,7 +156,7 @@ test("the view says what a and + do for the shown test run; a binds the form to 
     assert.deepEqual([form.type, form.runId, form.interceptionId, form.kind, form.value], ["workflowTestAnswer", TEST_RUN, AGENT, "success",
         "{\"outcome\":\"accepted\",\"output\":null}"]);
     assert.deepEqual(form.returnModal, view);
-    assert.equal(statusOf(h.store), "Answer — Enter send · Tab success/error/cancel · ↑↓ another waiting call · Esc back");
+    assert.equal(statusOf(h.store), "Answer — Enter send · ctrl-p to the parent agent · Tab success/error/cancel · ↑↓ another waiting call · Esc back");
     const shown = answerForm(h.store);
     assert.equal(shown.title, "Answer · test run test-r…0001 · agent in 'review'");
     assert.ok(joined(shown.lines).startsWith(WORKFLOW_V2_TEST_NOTICE_TEXT));
@@ -167,7 +167,7 @@ test("the view says what a and + do for the shown test run; a binds the form to 
         assert.ok(texts(shown.lines).includes(line), line);
     }
     assert.deepEqual([shown.valueShown, shown.kind, shown.value], [true, "success", "{\"outcome\":\"accepted\",\"output\":null}"]);
-    assert.equal(shown.hint, "Enter send · Tab success/error/cancel · ↑↓ another waiting call · Esc back");
+    assert.equal(shown.hint, "Enter send · ctrl-p to the parent agent · Tab success/error/cancel · ↑↓ another waiting call · Esc back");
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND);
     const [first] = h.sent();
@@ -383,4 +383,35 @@ test("a form whose run the view no longer shows sends nothing; Esc goes back to 
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.deepEqual(modalOf(h.store), view);
     assert.equal(statusOf(h.store), "Back to the workflow view");
+});
+
+test("q12: ctrl-p sends the answer drafted in the form to the parent agent's chat instead, and the form returns to the view; nothing goes to the test run", async () => {
+    const h = harness(workflow());
+    const messages = [];
+    h.controller.transport.sendMessage = async (...args) => { messages.push(args); };
+    h.store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow",
+        parentSessionId: "parent-1" }] });
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    await settle();
+    const view = modalOf(h.store);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER);
+    assert.equal(modalOf(h.store).type, "workflowTestAnswer");
+    // An answer that is not JSON is refused before anything is sent.
+    clear(h, edit => h.controller.editWorkflowTestAnswerField(edit));
+    typeAnswer(h, "{not json");
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_ASK_PARENT);
+    assert.equal(messages.length, 0);
+    assert.match(modalOf(h.store).error, /^The answer must be JSON/);
+    clear(h, edit => h.controller.editWorkflowTestAnswerField(edit));
+    typeAnswer(h, "{\"outcome\":\"rejected\"}");
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_ASK_PARENT);
+    assert.equal(messages.length, 1);
+    const [parent, text, options] = messages[0];
+    assert.deepEqual([parent, options], ["parent-1", { enqueueOnly: true }]);
+    assert.ok(text.startsWith(`About workflow "watch-v2" (session wf): in test run ${TEST_RUN}, the held call agent in step 'review' (held call ${AGENT}) waits for an answer.`), text);
+    assert.ok(text.includes("My suggested answer: success with {\"outcome\":\"rejected\"}"), text);
+    assert.ok(text.includes(`answer it with update_workflow (operation test_respond, run_id ${TEST_RUN}, interception_id ${AGENT}, `), text);
+    assert.deepEqual(modalOf(h.store), view, "back to the view");
+    assert.equal(statusOf(h.store), "Sent to the parent agent's chat (session parent-1). It answers with its own tools; open its chat from the session list.");
+    assert.equal(h.sent().length, 0, "nothing was sent to the test run");
 });

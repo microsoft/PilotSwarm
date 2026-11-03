@@ -89,6 +89,8 @@ export const UI_COMMANDS = {
     // clock form and advance it.
     WORKFLOW_VIEW_TEST_ANSWER: "workflowViewTestAnswer",
     WORKFLOW_TEST_ANSWER_SEND: "workflowTestAnswerSend",
+    // Send the answer drafted in the form to the workflow's parent agent instead (owner decision q12).
+    WORKFLOW_TEST_ANSWER_ASK_PARENT: "workflowTestAnswerAskParent",
     WORKFLOW_VIEW_TEST_CLOCK: "workflowViewTestClock",
     WORKFLOW_TEST_CLOCK_ADVANCE: "workflowTestClockAdvance",
     // One visit's own result in the workflow view: the selected state's older or newer visit (the latest by default).

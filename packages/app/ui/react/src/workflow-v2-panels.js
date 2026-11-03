@@ -318,23 +318,32 @@ export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, sele
  * waits only when `responder` (workflowV2TestResponder's answer) says so: its Answer button opens the answer form for it.
  * The notice that scripts run normally stays in the banners above.
  */
-export function WorkflowV2TestInterceptions({ test, controller = null, sessionId = null, responder = null, answering = null, history = null, onLoadOlder = null }) {
+export function WorkflowV2TestInterceptions({ test, controller = null, sessionId = null, responder = null, answering = null, history = null, onLoadOlder = null,
+    parentSessionId = null }) {
     const items = Array.isArray(test?.interceptions) ? test.interceptions : [];
     if (!items.length) return null;
     const answerable = Boolean(controller && responder?.respond);
     const waits = id => answerable && responder.waiting.some(item => item.interceptionId === id);
+    // Asking the workflow's parent agent about a held call that waits (owner decision q12): a message in its chat.
+    const askable = Boolean(controller && parentSessionId && responder?.runId);
+    const asks = item => askable && item.state === "awaiting_parent";
     return h("section", { className: "ps-workflow-test", "aria-label": "Test held calls", style: { padding: "6px 10px", fontSize: "0.75rem" } },
         h("h3", null, `Held calls (${items.length})`),
         h("table", null,
-            h("thead", null, h("tr", null, [...["Call", "Step", "Answer"], ...(answerable ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
+            h("thead", null, h("tr", null, [...["Call", "Step", "Answer"], ...(answerable || askable ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
             h("tbody", null, items.map((item, i) => h("tr", { key: item.interceptionId || i, "data-interception": item.interceptionId },
                 h("td", { title: item.interceptionId }, item.tool ? `${item.operation} · ${item.tool}` : String(item.operation)),
                 h("td", null, item.stateId || "—"),
                 h("td", null, item.response ? `${item.response.kind} · ${item.response.disposition}` : "Waiting for the parent"),
-                answerable ? h("td", null, waits(item.interceptionId) ? h("button", { type: "button", className: "ps-mini-button", "data-action": "answer",
-                    disabled: responder.busy, "aria-pressed": answering === item.interceptionId,
-                    onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { answeringInterceptionId: item.interceptionId } }) },
-                "Answer") : null) : null)))),
+                answerable || askable ? h("td", null,
+                    waits(item.interceptionId) ? h("button", { type: "button", className: "ps-mini-button", "data-action": "answer",
+                        disabled: responder.busy, "aria-pressed": answering === item.interceptionId,
+                        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { answeringInterceptionId: item.interceptionId } }) },
+                    "Answer") : null,
+                    asks(item) ? h("button", { type: "button", className: "ps-mini-button", "data-action": "ask-parent",
+                        title: "Send a message about this call to the parent agent's chat; it answers with its own tools.",
+                        onClick: () => { controller.askParentAboutHeldCall?.(sessionId, { runId: responder.runId, interceptionId: item.interceptionId })?.catch?.(() => {}); } },
+                    "Ask the parent agent") : null) : null)))),
         // Older held calls of this run than the read holds: the run's older history reads them.
         h(OlderHistory, { history, onLoadOlder, section: "interceptions" }));
 }
@@ -346,7 +355,7 @@ export function WorkflowV2TestInterceptions({ test, controller = null, sessionId
  * the server checks it against the effect's contract and says which fields it refuses, and the same answer sent again is
  * the same answer. Once it is accepted the form closes.
  */
-export function WorkflowV2TestAnswer({ controller, sessionId, responder, interceptionId }) {
+export function WorkflowV2TestAnswer({ controller, sessionId, responder, interceptionId, parentSessionId = null }) {
     const waiting = responder?.waiting.find(item => item.interceptionId === interceptionId) ?? null;
     const [kind, setKind] = React.useState("success");
     const [valueText, setValueText] = React.useState(() => workflowV2TestAnswerTemplate(waiting));
@@ -363,6 +372,15 @@ export function WorkflowV2TestAnswer({ controller, sessionId, responder, interce
         const result = await controller.sendWorkflowRunCommand(sessionId, { operation: "test_respond", runId: responder.runId, interceptionId,
             response: draft.response });
         if (result?.ok) close();
+    };
+    // The same answer as a suggestion in the parent agent's chat instead (owner decision q12; mock M18).
+    const askParent = async () => {
+        const draft = workflowV2TestResponseDraft(kind, valueText);
+        setError(draft.ok ? null : draft.error);
+        if (!draft.ok) return;
+        const result = await controller.askParentAboutHeldCall?.(sessionId, { runId: responder.runId, interceptionId, response: draft.response });
+        if (result?.ok) close();
+        else if (result?.reason) setError(result.reason);
     };
     const radio = (value, label) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 } },
         h("input", { type: "radio", name: kindName, value, checked: kind === value, onChange: () => setKind(value), "data-answer-kind": value }), label);
@@ -383,6 +401,9 @@ export function WorkflowV2TestAnswer({ controller, sessionId, responder, interce
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "test_respond", disabled: !responder.respond || responder.busy,
             title: responder.reason ?? (responder.busy ? "Another command for this workflow is being sent." : "Send this answer to the test run."),
             onClick: () => { send(); } }, responder.pending === "test_respond" ? "Sending…" : "Send answer"),
+        parentSessionId ? h("button", { type: "button", className: "ps-mini-button", "data-action": "ask-parent",
+            title: "Send this answer to the parent agent's chat as a suggestion; it answers the call with its own tools.",
+            onClick: () => { askParent(); } }, "Send to the parent agent instead") : null,
         h("button", { type: "button", className: "ps-mini-button", onClick: close }, "Close")),
     error ? h("span", { role: "alert", style: { color: TONES.error } }, error) : null);
 }
