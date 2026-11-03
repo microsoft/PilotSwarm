@@ -79,7 +79,8 @@ async function chatWithEndedWorkflow(env, onNotification, then) {
         }
         return { content: "Started it." };
     };
-    const worker = workerOptionsForWorkflowV2TestEnvironment({}, ON);
+    // spawn_workflow is offered only where workflow scripts are on, as in the other workflow tests.
+    const worker = workerOptionsForWorkflowV2TestEnvironment({ workflowScripts: { enabled: true } }, ON);
     await withScriptedModel(env, { respond, worker }, async ({ client, qualifiedModel }) => {
         client._startSessionsAt(workflowV2TestEnvironmentFromEnv(ON).sessionStartVersion);
         const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
