@@ -1,8 +1,9 @@
 # Workflow v2 milestone: implementation notes (inactive)
 
 Status: **inactive**. Everything in this note runs only on controller 1.9.0
-and the orchestrations it starts, which only tests register (the worker
-option `workflowRequests`) and only a test host starts runs at
+and the orchestrations it starts, which only tests and an isolated test
+environment register (the worker option `workflowRequests`; "The test
+environment switch" below) and only such a host starts runs at
 (`WorkflowV2Host.requests`). Production workers keep controller 1.8.0, its
 activities and its tool surface unchanged. One exception applies on every
 worker: the names of the two workflow turn tools are reserved, so packages
@@ -60,8 +61,12 @@ The tool takes `stop` only on a host that starts runs at 1.9.0; elsewhere it
 is refused as an unknown operation, exactly as before. The tool's published
 description and parameter enum are unchanged.
 
-Not yet covered: the UI read model's `stopped` label, REST/MCP parity and
-the formal lifecycle model's stop transitions.
+Covered since: the UI read model's `stopped` label ("Stopped · no new state
+was started after the stop") and the portal's and the TUI's Stop with its
+confirmation; a person's `stop` through the portal's and the API's
+`updateWorkflow` command and MCP's `update_workflow` (on a 1.9.0 host, as the
+tool). Not yet covered: the formal lifecycle model's stop transitions (the
+final formal phase).
 
 ## Agent states (design 03 agent node; R09 to R11, R14, R15, R23)
 
@@ -529,7 +534,8 @@ binds a publication and a test to the exact versions they used
 Still open (not waived): a worker builds its agent host (the same
 resolver, so a run binds what its publication pinned) only behind the
 test-only option `testOptions.workflowRequests` ("A worker that runs the
-milestone" below); no deployment sets it. The full worker test
+milestone" below); no production deployment sets it (an isolated test
+environment's switch does, for that environment only). The full worker test
 (`workflow-v2-agent-worker.test.js`, the model scripted) runs a child bound
 to an exact earlier package revision end to end on such a worker: the
 publication pins the package's revision, the package is republished, the
@@ -739,6 +745,15 @@ the same agent child, branch, stop, test and pin fields. The shared UI
 - **Run controls, variables, the draft editor, publication and test starts
   (R03, R04, R05, R17 to R20, R26, R28; mocks M01 to M04, M15, M16, M18 to
   M20; INACTIVE).** See below.
+- **Browser checks** (`web/test/e2e/workflow-session.spec.mjs`, the tests
+  named `v2 commands:`, against its stub server): Stop's confirmation and
+  its dismissal (nothing sent), a 409's reason and the re-read, and Pause by
+  keyboard, at 1440 and 390 px; an unconfirmed pause sent again with the
+  same operation id; the virtual clock's local
+  refusal and one exact advance; an agent state's read-only chat beside an
+  ordinary one at 1440 and 390 px; a lost draft save kept and retried as
+  the same `replace_definition`. They need a browser runtime; whether they
+  ran is in the run receipts, not here.
 
 **Capability advertisement (design 04 "Advertise capability/version in
 bootstrap"; D11).** The bootstrap carries `workflows`, what the deployment
@@ -1177,11 +1192,11 @@ effects, each named agent state's agent as written (package and version)
 and, once published, what publication pinned for it (the package revision
 and the interface digest), the tests of exactly this revision with their
 status and outcome, shown as information (publishing requires no test: no
-publication gate on test scenarios exists, inventory C6-2), and that
+publication gate on test scenarios exists: an open owner question), and that
 publication freezes the revision, starts no run, approves no repository
 write and grants no tool (mock M03; R18, R28; the portal's review shows the
 same rows, `workflowV2PublicationEvidenceRows`; nothing is resolved before
-publishing: a pin preview is inventory C6-1). ctrl-p publishes only; ctrl-r
+publishing: a pin preview is an open owner question). ctrl-p publishes only; ctrl-r
 publishes and starts the live run, or starts a published definition's live
 run, with the run's inputs and optional initial variables, two JSON object
 fields (Tab switches them; inputs default to `{}`). Each action asks first:
@@ -1504,8 +1519,10 @@ unchanged. Unit and local regressions check each path.
 Such a turn's publications pin their named agents from the agent registry
 (`resolveAgent`, `agent-resolver.ts`). A worker created with the test-only
 option `testOptions.workflowRequests` also creates agent states' children
-(below); on any other host an agent state fails `unavailable`. No deployed
-worker enables controller 1.9.0: that is an activation decision.
+(below); on any other host an agent state fails `unavailable`. No
+production deployment enables controller 1.9.0: that is an activation
+decision. Only an isolated test environment does, with the test-environment
+switch below.
 
 ## A worker that runs the milestone (test-only option; R09 to R11, R18)
 
