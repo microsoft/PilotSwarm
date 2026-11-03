@@ -55,6 +55,24 @@ import {
  * calling agent's session id comes from the host, never from arguments.
  */
 
+/**
+ * update_workflow's operations, declared once (design 04): the definition commands, the run commands, recover (the
+ * parent agent's only; a person's adapter refuses it), and the milestone operations a host that runs controller 1.9.0
+ * also takes (stop, then the test operations). The tool's operation enums, a person's lists (human-commands.ts), the
+ * dispatch below and its refusals are made from these.
+ */
+export const UPDATE_WORKFLOW_OPERATIONS = {
+    definition: ["replace_definition", "publish", "publish_and_start", "start"],
+    run: ["set_vars", "pause", "resume", "cancel"],
+    agent: ["recover"],
+    milestone: ["stop", "test", "test_respond", "test_advance"],
+} as const;
+
+/** Operations as a sentence names them: "a, b or c". */
+export function operationWords(operations: readonly string[]): string {
+    return operations.length < 2 ? operations.join("") : `${operations.slice(0, -1).join(", ")} or ${operations.at(-1)}`;
+}
+
 export const UPDATE_WORKFLOW_TOOL_SPEC = {
     description:
         "Change a workflow child you created with spawn_workflow (apiVersion pilotswarm.dev/v2-draft). "
@@ -75,7 +93,7 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         type: "object",
         properties: {
             workflow_id: { type: "string", description: "The workflow session id from spawn_workflow." },
-            operation: { type: "string", enum: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "recover"] },
+            operation: { type: "string", enum: [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run, ...UPDATE_WORKFLOW_OPERATIONS.agent] },
             operation_id: { type: "string", description: "Idempotency id for this change." },
             yaml: { type: "string", description: "replace_definition: the complete new Workflow YAML." },
             expected_revision: { type: "integer", description: "replace_definition/publish: the draft revision you reviewed." },
@@ -117,7 +135,7 @@ export const READ_WORKFLOW_TOOL_SPEC = {
  * controller 1.9.0 (WorkflowV2Host.requests; INACTIVE: only a turn of a worker
  * that runs it, which only tests register).
  */
-export const UPDATE_WORKFLOW_MILESTONE_OPERATIONS = ["stop", "test", "test_respond", "test_advance"] as const;
+export const UPDATE_WORKFLOW_MILESTONE_OPERATIONS = UPDATE_WORKFLOW_OPERATIONS.milestone;
 
 /**
  * update_workflow as such a turn shows it (R26, T125): the production
@@ -357,37 +375,25 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: 
         command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args), ...(vars !== null ? { vars } : {}) };
     } else {
         // A host that takes the milestone operations names them too, as its tool description does.
-        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", options.milestone === true
-            ? "operation must be replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel, recover, stop, test, test_respond or test_advance."
-            : "operation must be replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel or recover.");
+        const { definition, run, agent, milestone } = UPDATE_WORKFLOW_OPERATIONS;
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+            `operation must be ${operationWords([...definition, ...run, ...agent, ...(options.milestone === true ? milestone : [])])}.`);
     }
     return { workflowSessionId, operationId, command };
 }
 
-const RUN_COMMANDS: ReadonlySet<string> = new Set(["set_vars", "pause", "resume", "cancel"]);
-
-/**
- * Whether a host takes a graceful stop (operation stop): only one that
- * starts runs at controller 1.9.0 (WorkflowV2Host.requests; INACTIVE, test
- * hosts only). Elsewhere the operation is refused exactly as before.
- */
-function hostStops(host: Pick<WorkflowToolHost, "requests">): boolean {
-    return host.requests === true;
-}
+const RUN_COMMANDS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.run);
 
 /**
  * The test operations of update_workflow (design 05; INACTIVE): test (start a
  * test run of the exact current revision), test_respond (answer an
  * intercepted effect by its interception id) and test_advance (move a test
- * run's virtual clock). Taken only by a host that starts runs at controller
- * 1.9.0 (WorkflowV2Host.requests); elsewhere they are refused exactly as
- * before. The tool's published description and operation enum are unchanged.
+ * run's virtual clock). Taken, like a graceful stop (operation stop), only by
+ * a host that starts runs at controller 1.9.0 (WorkflowV2Host.requests;
+ * INACTIVE, test hosts only); elsewhere they are refused exactly as before.
+ * The tool's published description and operation enum are unchanged.
  */
-const TEST_OPERATIONS: ReadonlySet<string> = new Set(["test", "test_respond", "test_advance"]);
-
-function hostTests(host: Pick<WorkflowToolHost, "requests">): boolean {
-    return host.requests === true;
-}
+const TEST_OPERATIONS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.milestone.filter(operation => operation !== "stop"));
 
 async function testOperation(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor, authorize: (workflowSessionId: string) => Promise<void>)
     : Promise<{ [key: string]: JsonValue }> {
@@ -443,7 +449,8 @@ function graceSecondsArg(args: Record<string, unknown>): number | null {
 
 /**
  * Parse the update_workflow arguments of a run command. `stop` (a graceful
- * stop: optional reason and grace_seconds) only when `options.stop` (hostStops).
+ * stop: optional reason and grace_seconds) only when `options.stop` (a host
+ * that runs controller 1.9.0).
  */
 export function parseRunCommandArgs(args: Record<string, unknown>, options: { stop?: boolean } = {}): { workflowSessionId: string; operationId: string; command: WorkflowV2RunCommand } {
     const workflowSessionId = requiredString(args, "workflow_id");
@@ -462,7 +469,8 @@ export function parseRunCommandArgs(args: Record<string, unknown>, options: { st
         if (operation === "stop") return { workflowSessionId, operationId, command: { operation, runId, reason, graceSeconds: graceSecondsArg(args) } };
         return { workflowSessionId, operationId, command: { operation, runId, reason } };
     }
-    throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be set_vars, pause, resume or cancel.");
+    throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+        `operation must be ${operationWords([...UPDATE_WORKFLOW_OPERATIONS.run, ...(options.stop === true ? ["stop"] : [])])}.`);
 }
 
 function runCommandJson(receipt: WorkflowRunCommandReceipt, replayed: boolean): { [key: string]: JsonValue } {
@@ -501,17 +509,18 @@ async function recoverWorkflowFromTool(args: Record<string, unknown>, context: {
  */
 export async function runUpdateWorkflowCommand(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor,
     authorize: (workflowSessionId: string) => Promise<void>): Promise<{ [key: string]: JsonValue }> {
-    if (typeof args.operation === "string" && TEST_OPERATIONS.has(args.operation) && hostTests(host)) {
+    // A host that starts runs at controller 1.9.0 (WorkflowV2Host.requests) also takes stop and the test operations.
+    const milestone = host.requests === true;
+    if (typeof args.operation === "string" && TEST_OPERATIONS.has(args.operation) && milestone) {
         return await testOperation(args, host, actor, authorize);
     }
-    const stop = hostStops(host);
-    if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || (stop && args.operation === "stop"))) {
-        const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop });
+    if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || (milestone && args.operation === "stop"))) {
+        const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop: milestone });
         await authorize(workflowSessionId);
         const stored = await controlWorkflowV2Run(host, workflowSessionId, command, { actor, operationId });
         return runCommandJson(stored.receipt, stored.replayed);
     }
-    const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone: hostTests(host) });
+    const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone });
     await authorize(workflowSessionId);
     const stored = await updateWorkflowV2(host, workflowSessionId, command, { actor, operationId });
     return receiptJson(stored.receipt, stored.replayed);

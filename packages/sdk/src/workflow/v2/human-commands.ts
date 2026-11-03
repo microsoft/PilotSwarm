@@ -4,7 +4,7 @@ import { jsonbSafeText, type JsonValue } from "./json.js";
 import { WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, WORKFLOW_V2_STOP_CONTROLLER_VERSIONS } from "./runtime.js";
 import type { WorkflowV2Host } from "./service.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowStore } from "./store.js";
-import { runUpdateWorkflowCommand } from "./tools.js";
+import { UPDATE_WORKFLOW_OPERATIONS, operationWords, runUpdateWorkflowCommand } from "./tools.js";
 
 /**
  * Workflow v2: a person's command to a workflow session (design 04 REST/SDK/MCP
@@ -38,10 +38,10 @@ import { runUpdateWorkflowCommand } from "./tools.js";
 export const WORKFLOW_HUMAN_BRAKE_OPERATIONS: readonly string[] = ["pause", "stop", "cancel"];
 
 /** A person's operations on every host: the update_workflow tool's, without recover (the agent's path). */
-export const WORKFLOW_HUMAN_OPERATIONS: readonly string[] = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"];
+export const WORKFLOW_HUMAN_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.definition, ...UPDATE_WORKFLOW_OPERATIONS.run];
 
 /** A person's further operations on a host that runs controller 1.9.0 (WorkflowV2Host.requests): stop and the test operations. */
-export const WORKFLOW_HUMAN_MILESTONE_OPERATIONS: readonly string[] = ["stop", "test", "test_respond", "test_advance"];
+export const WORKFLOW_HUMAN_MILESTONE_OPERATIONS: readonly string[] = [...UPDATE_WORKFLOW_OPERATIONS.milestone];
 
 /** The shape version of workflowCapabilities' answer; a client that does not know a version ignores the field. */
 export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
@@ -91,11 +91,6 @@ export function workflowCapabilities(options: { read: boolean; commands: { reque
         },
         legacyCreate: { workflowVersion: 1, draft: false },
     };
-}
-
-/** "pause, stop or cancel". */
-function operationWords(operations: readonly string[]): string {
-    return operations.length < 2 ? operations.join("") : `${operations.slice(0, -1).join(", ")} or ${operations.at(-1)}`;
 }
 
 /**
