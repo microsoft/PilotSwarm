@@ -1,4 +1,5 @@
 import { NodeSdkTransport } from "pilotswarm/host";
+import { workflowV2TestEnvironmentFromEnv } from "pilotswarm-sdk";
 import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
@@ -182,11 +183,25 @@ function providerNames(raw) {
     return list.map((name) => String(name || "").trim()).filter(Boolean);
 }
 
+/**
+ * The PortalRuntime options the portal server builds (server.js): its storage options and mode, exactly, and with the
+ * Workflow V2 test environment switch on (PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only; test-only, never an
+ * activation) also a person's workflow commands and its embedded workers' test options. Off (unset or any other value),
+ * the options are exactly `{ ...storageOptions, mode }`. Pure.
+ */
+export function portalRuntimeOptions(storageOptions, mode, env = process.env) {
+    const test = workflowV2TestEnvironmentFromEnv(env);
+    return test
+        ? { ...storageOptions, mode, workflowCommands: test.workflowCommands, workerTestOptions: test.workerTestOptions }
+        : { ...storageOptions, mode };
+}
+
 export class PortalRuntime {
-    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
+    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions } = {}) {
         // workflowCommands (Workflow v2, INACTIVE; test-only): a person's workflow commands. Unset, updateWorkflow answers 501.
+        // workerTestOptions (test-only): the embedded workers' testOptions, so they serve what the environment's workers do.
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser,
-            ...(workflowCommands ? { workflowCommands } : {}) });
+            ...(workflowCommands ? { workflowCommands } : {}), ...(workerTestOptions ? { workerTestOptions } : {}) });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;

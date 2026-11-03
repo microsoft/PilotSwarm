@@ -15,7 +15,8 @@ import type { WorkflowStore } from "./store.js";
 /**
  * What a worker created with the test option `workflowRequests` serves
  * (INACTIVE; PilotSwarmWorkerOptions.testOptions). No deployment sets the
- * option, nothing reads it from the environment, and the worker loads this
+ * option by default (only the Workflow V2 test environment switch does,
+ * test-environment.ts, through the entry points), and the worker loads this
  * module only when it is set; no other source imports it.
  *
  * - The workflow-request activity tag: controller 1.9.0's activities and the

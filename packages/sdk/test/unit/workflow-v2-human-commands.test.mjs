@@ -29,6 +29,7 @@ import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../dist/workflow/v2/input-policy
 import { WORKFLOW_V2_API_VERSION } from "../../dist/workflow/v2/compiler.js";
 import { WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION } from "../../dist/workflow/v2/runtime.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
+import * as sdk from "../../dist/index.js";
 
 const PERSON = { kind: "user", provider: "test", subject: "alice" };
 const ROOT = { childSessionId: "C", nodeExecutionId: "nx-1", workflowSessionId: "W1", controllingSessionId: "P", distance: 1 };
@@ -145,4 +146,49 @@ test("the management client answers from its own configuration and catalog, befo
     // A real client, constructed as a deployment constructs it: commands off.
     const client = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none" });
     assert.equal((await client.getWorkflowCapabilities()).v2.commands.available, false);
+});
+
+// The Workflow V2 test environment switch (test-only; test-environment.ts): exactly one enabling value; anything else is off
+// and leaves every option exactly as it was.
+const OFF_VALUES = [undefined, "", "1", "true", "on", "yes", "enabled", "ISOLATED-TEST-ONLY", " isolated-test-only", "isolated-test-only ",
+    "isolated-test-only\n", "isolated_test_only", "0"];
+
+test("the Workflow V2 test environment switch is on only for its exact enabling value, from the SDK's public exports", () => {
+    assert.equal(sdk.WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE, "PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT");
+    assert.equal(sdk.WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED, "isolated-test-only");
+    const envOf = value => (value === undefined ? {} : { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: value });
+    for (const value of OFF_VALUES) {
+        assert.equal(sdk.workflowV2TestEnvironmentFromEnv(envOf(value)), null, JSON.stringify(value));
+    }
+    assert.deepEqual(sdk.workflowV2TestEnvironmentFromEnv(envOf("isolated-test-only")),
+        { workerTestOptions: { workflowRequests: true }, workflowCommands: { requests: true } });
+    // The notice: none when unset or empty; ON for the enabling value; "ignored" for any other value.
+    assert.equal(sdk.workflowV2TestEnvironmentNotice({}), null);
+    assert.equal(sdk.workflowV2TestEnvironmentNotice(envOf("")), null);
+    assert.match(sdk.workflowV2TestEnvironmentNotice(envOf("isolated-test-only")), /^Workflow V2 test environment ON/);
+    assert.match(sdk.workflowV2TestEnvironmentNotice(envOf("true")), /is set but not to isolated-test-only: ignored, Workflow V2 test environment OFF\.$/);
+});
+
+test("a worker's options are the same object when the switch is off, and gain only testOptions.workflowRequests when it is on", () => {
+    const options = { store: "postgres://example/db", workerNodeId: "w-1", pluginDirs: ["/app/plugin"], agentPackages: { cacheDir: undefined } };
+    const frozen = structuredClone(options);
+    for (const value of OFF_VALUES) {
+        const built = sdk.workerOptionsForWorkflowV2TestEnvironment(options, value === undefined ? {} : { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: value });
+        assert.equal(built, options, `off (${JSON.stringify(value)}): the very same options object`);
+        assert.equal(Object.hasOwn(built, "testOptions"), false);
+    }
+    const on = { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" };
+    const built = sdk.workerOptionsForWorkflowV2TestEnvironment(options, on);
+    assert.notEqual(built, options);
+    assert.deepEqual(built, { ...frozen, testOptions: { workflowRequests: true } });
+    assert.deepEqual(options, frozen, "the input is not changed");
+    // Other test options are kept.
+    assert.deepEqual(sdk.workerOptionsForWorkflowV2TestEnvironment({ store: "s", testOptions: { other: 1 } }, on).testOptions, { other: 1, workflowRequests: true });
+    // The management client the switch configures answers the 1.9.0 commands in its advertisement.
+    const client = Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
+        config: { workflowCommands: sdk.workflowV2TestEnvironmentFromEnv(on).workflowCommands }, _catalog: { workflowStore: () => ({}) } });
+    return client.getWorkflowCapabilities().then(advertised => {
+        assert.equal(advertised.v2.commands.available, true);
+        assert.equal(advertised.v2.commands.controllerVersion, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
+    });
 });

@@ -5,11 +5,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WS_PATH } from "pilotswarm-sdk/api";
-import { buildSessionCatalogPgClientConfig } from "pilotswarm-sdk";
+import { buildSessionCatalogPgClientConfig, workflowV2TestEnvironmentNotice } from "pilotswarm-sdk";
 import { getPortalAssetFile, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
 import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
-import { PortalRuntime } from "./runtime.js";
+import { PortalRuntime, portalRuntimeOptions } from "./runtime.js";
 import { createApiRouter } from "./api/router.js";
 import { errorDetail } from "./api/error-detail.js";
 import { attachWebSockets } from "./api/ws.js";
@@ -152,7 +152,10 @@ export async function startServer(opts = {}) {
         cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
         aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
     };
-    const runtime = new PortalRuntime({ ...storageOptions, mode });
+    // Exactly { ...storageOptions, mode } unless the Workflow V2 test environment switch is on (test-only; runtime.js).
+    const runtime = new PortalRuntime(portalRuntimeOptions(storageOptions, mode, process.env));
+    const workflowV2TestNotice = workflowV2TestEnvironmentNotice(process.env);
+    if (workflowV2TestNotice) console.log(`[portal] ${workflowV2TestNotice}`);
 
     const app = express();
     app.set("trust proxy", true);

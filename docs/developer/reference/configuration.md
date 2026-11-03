@@ -851,5 +851,6 @@ See [Workflow sessions](../building/workflow-sessions.md).
 | Variable | Default | Effect |
 |---|---|---|
 | `PILOTSWARM_WORKFLOW_SCRIPTS` | off | `1` runs workflow script states on this worker. The `workflowScripts.enabled` option wins. |
+| `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` | off | Test-only, for an isolated test environment. Exactly `isolated-test-only` (no other spelling, no spaces) makes the headless worker and the portal's embedded workers serve Workflow V2 controller 1.9.0 and session orchestration 1.0.83 (`testOptions.workflowRequests`), and the portal and the MCP server take a person's workflow commands (`workflowCommands: { requests: true }`). Any other value is off and changes nothing. Every worker that shares the database must run the same image with the same value. Not an activation. |
 | `PILOTSWARM_WORKFLOW_PYTHON` | `python3` | The Python program for `runtime: python`. |
 | `PILOTSWARM_WORKFLOW_PWSH` | `pwsh` | The PowerShell 7 program for `runtime: powershell`. |

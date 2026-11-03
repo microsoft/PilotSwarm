@@ -517,12 +517,15 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workerTestOptions } = {}) {
         this.store = store;
         this.mode = mode;
         this.useManagedIdentity = useManagedIdentity;
         this.cmsFactsDatabaseUrl = cmsFactsDatabaseUrl;
         this.aadDbUser = aadDbUser;
+        // The embedded workers' testOptions (test-only; the Workflow V2 test environment switch, portalRuntimeOptions): unset,
+        // they are created exactly as before.
+        this.workerTestOptions = workerTestOptions || null;
         this.pluginDirs = getPluginDirsFromEnv();
         // Optional EnhancedFactStore (HorizonDB) target. The client and
         // management client each build their own fact store, so they MUST
@@ -597,6 +600,7 @@ export class NodeSdkTransport {
             this.workers = await startEmbeddedWorkers({
                 count: workerCount,
                 store: this.store,
+                ...(this.workerTestOptions ? { testOptions: this.workerTestOptions } : {}),
             });
         }
         const sessionCreationMetadata = this.resolveSessionCreationMetadata();

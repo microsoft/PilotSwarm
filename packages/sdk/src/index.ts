@@ -72,6 +72,10 @@ export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";
 // Convenience: map HORIZON_* env vars to worker enhanced-facts/graph config.
 export { horizonConfigFromEnv } from "./horizon-env.js";
+export {
+    WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED, WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE, workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentFromEnv,
+    workflowV2TestEnvironmentNotice, type WorkflowV2TestEnvironment,
+} from "./workflow/v2/test-environment.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";
 export { resolveStorageConfig, DEFAULT_DUROXIDE_SCHEMA, DEFAULT_RUNTIME_STORAGE_PROVIDER, DEFAULT_DUROXIDE_STORAGE_PROVIDER } from "./storage-config.js";
 // The pg.Client config for LISTEN connections to the session catalog database.

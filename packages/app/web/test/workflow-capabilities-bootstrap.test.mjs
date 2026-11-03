@@ -27,7 +27,7 @@ import { PilotSwarmManagementClient, WebPilotSwarmManagementClient } from "pilot
 import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
 
 import { createApiRouter } from "../api/router.js";
-import { PortalRuntime } from "../runtime.js";
+import { PortalRuntime, portalRuntimeOptions } from "../runtime.js";
 
 const EVERY_HOST = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"];
 const MILESTONE = ["stop", "test", "test_respond", "test_advance"];
@@ -148,4 +148,24 @@ test("an advertisement that is not an object is malformed, never an older host: 
         assert.equal(await transport.getWorkflowCapabilities(), null);
         assert.equal(await new WebPilotSwarmManagementClient({ api: { getBootstrap: async () => bootstrap } }).getWorkflowCapabilities(), null);
     }
+});
+
+test("the portal's runtime options are exactly its storage options and mode unless the Workflow V2 test environment switch is on", async () => {
+    const storageOptions = { store: "sqlite::memory:", useManagedIdentity: false, cmsFactsDatabaseUrl: undefined, aadDbUser: undefined };
+    for (const value of [undefined, "", "1", "true", "on", "ISOLATED-TEST-ONLY", " isolated-test-only", "isolated-test-only "]) {
+        const env = value === undefined ? {} : { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: value };
+        const options = portalRuntimeOptions(storageOptions, "local", env);
+        assert.deepEqual(options, { ...storageOptions, mode: "local" }, JSON.stringify(value));
+        assert.deepEqual(Object.keys(options), [...Object.keys(storageOptions), "mode"], JSON.stringify(value));
+    }
+    const on = portalRuntimeOptions(storageOptions, "remote", { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" });
+    assert.deepEqual(on, { ...storageOptions, mode: "remote", workflowCommands: { requests: true }, workerTestOptions: { workflowRequests: true } });
+
+    // The runtime they build: off, no person's commands and embedded workers as before; on, both, and the bootstrap says so.
+    const off = new PortalRuntime(portalRuntimeOptions(storageOptions, "local", {}));
+    assert.equal(off.transport.workerTestOptions, null);
+    assert.equal(Object.hasOwn(off.transport.mgmt.config, "workflowCommands"), false);
+    const enabled = new PortalRuntime(on);
+    assert.deepEqual(enabled.transport.workerTestOptions, { workflowRequests: true });
+    assert.deepEqual(enabled.transport.mgmt.config.workflowCommands, { requests: true });
 });

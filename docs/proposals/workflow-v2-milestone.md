@@ -1436,8 +1436,9 @@ worker enables controller 1.9.0: that is an activation decision.
 
 ## A worker that runs the milestone (test-only option; R09 to R11, R18)
 
-`PilotSwarmWorkerOptions.testOptions.workflowRequests` (default off; no
-deployment or environment variable sets it) makes a `PilotSwarmWorker` run
+`PilotSwarmWorkerOptions.testOptions.workflowRequests` (default off; the SDK
+reads no environment variable for it; the deployed entry points set it only
+for the test environment switch below) makes a `PilotSwarmWorker` run
 controller 1.9.0. The worker then loads `workflow/v2/milestone-worker.ts`,
 which nothing else imports, and:
 
@@ -1474,6 +1475,26 @@ option.
 Not an activation: duroxide cannot route orchestration items by version, so
 every worker that can fetch 1.9.0 or 1.0.83 work must run the same option
 (the request design's activation gate, 8.4, stays required).
+
+**The test environment switch (test-only; isolated test environments
+only).** `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT`, exactly
+`isolated-test-only` (no other spelling, no spaces), is read by the deployed
+entry points and passes the options above (`test-environment.ts`,
+`workflowV2TestEnvironmentFromEnv`): the headless worker
+(`packages/sdk/examples/worker.js`, the `worker` image) and the portal's
+embedded workers get `testOptions.workflowRequests`; the portal
+(`packages/app/web/server.js`, `portalRuntimeOptions`) and the MCP server
+(`workflowContextOptionsFromEnv`) get `workflowCommands: { requests: true }`,
+so a person's commands, stop and the test operations included, are taken and
+advertised (`workflows.v2.commands`). Unset, empty or any other value is
+off, and every option is exactly as without it (unit tests prove it for the
+worker, the portal, its embedded workers and MCP). Each entry point logs one
+line when the variable is set (ON, or ignored). Production defaults,
+`DURABLE_SESSION_LATEST_VERSION` (1.0.82) and the orchestration registry do
+not change, so this is not an activation; every worker that shares the
+environment's database must run the same image with the same value. Script
+states still need `PILOTSWARM_WORKFLOW_SCRIPTS=1`. The deploy README
+(`deploy/scripts/README.md`) and the configuration reference name it.
 
 ## Run deadline (design 02 run lifecycle, D03; canonical `limits`)
 

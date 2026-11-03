@@ -9,6 +9,7 @@ import {
     createWebGraphStore,
     isEnhancedFactStore,
     horizonConfigFromEnv,
+    workflowV2TestEnvironmentFromEnv,
     loadModelProviders,
     ModelProviderRegistry,
     loadSkills,
@@ -146,6 +147,17 @@ export interface CreateContextOptions {
      * deployment decides (501 unless it enables them).
      */
     workflowCommands?: { requests?: boolean } | null;
+}
+
+/**
+ * The context options the Workflow V2 test environment switch adds (PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT, exactly
+ * `isolated-test-only`; test-only, never an activation): a person's workflow commands (update_workflow registered; in
+ * direct mode the management client takes them, stop and the test operations included). Off: nothing, so the context is
+ * created exactly as before. Pure.
+ */
+export function workflowContextOptionsFromEnv(env: Record<string, string | undefined> = process.env): Pick<CreateContextOptions, "workflowCommands"> {
+    const test = workflowV2TestEnvironmentFromEnv(env);
+    return test ? { workflowCommands: test.workflowCommands } : {};
 }
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {

@@ -21,6 +21,7 @@ import { PilotSwarmManagementClient, WebPilotSwarmManagementClient } from "pilot
 import { registerWorkflowTools } from "../../dist/src/tools/workflows.js";
 import { registerCapabilityTools } from "../../dist/src/tools/capabilities.js";
 import { registerCapabilityResources } from "../../dist/src/resources/capabilities.js";
+import { workflowContextOptionsFromEnv } from "../../dist/src/context.js";
 
 const SID = "a7f23cda-5cfd-4f0e-aff1-d6b0400b8da5";
 
@@ -290,3 +291,11 @@ console.log("✅ read_workflow: always registered, arguments as given, the read'
 }
 
 console.log("✅ update_workflow: exact registration gate, duplicate delivery forwarded unchanged, generic refusal mapping (tester r2 M0-M2)");
+
+// 8. The Workflow V2 test environment switch (test-only): the MCP server's context gains a person's workflow commands
+//    only for the exact enabling value; otherwise nothing, so the context is created exactly as before.
+for (const value of [undefined, "", "1", "true", "on", "ISOLATED-TEST-ONLY", " isolated-test-only", "isolated-test-only "]) {
+    assert.deepEqual(workflowContextOptionsFromEnv(value === undefined ? {} : { PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: value }), {}, JSON.stringify(value));
+}
+assert.deepEqual(workflowContextOptionsFromEnv({ PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" }), { workflowCommands: { requests: true } });
+console.log("✅ the Workflow V2 test environment switch: off for every value but the exact enabling one");

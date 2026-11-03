@@ -1438,8 +1438,9 @@ export interface PilotSwarmWorkerOptions {
         executables?: Partial<Record<"node" | "python" | "powershell", string>>;
     };
     /**
-     * @internal Test-only switches (INACTIVE): no deployment sets them, and no
-     * environment variable does. `workflowRequests` runs workflow v2
+     * @internal Test-only switches (INACTIVE): no deployment sets them by default. The SDK itself reads no
+     * environment variable for them; the deployed entry points set `workflowRequests` only for the Workflow V2 test
+     * environment switch (PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT=isolated-test-only; test-environment.ts). `workflowRequests` runs workflow v2
      * controller 1.9.0 on this worker (request, agent and parallel states),
      * with its agent host for agent states' children: definitions from the
      * agent registry and this worker's agents, each child created through a
