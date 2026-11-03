@@ -1185,7 +1185,7 @@ function activityLine(type, data) {
             return { text: `Agent chat for ${step} created${text(data.childSessionId) ? ` (session ${shortId(data.childSessionId)})` : ""}`
                 + `${text(data.deadline) ? `; its time limit is ${data.deadline}` : ""}` };
         case "workflow.agent_ended":
-            return { text: `Agent chat for ${step} ended${data.end === "cancel" ? " (cancelled)" : data.end === "done" ? " (its result was taken)" : ""}` };
+            return { text: `Agent chat for ${step} ended${workflowV2AgentEndText(data.end) ? ` (${workflowV2AgentEndText(data.end)})` : ""}` };
         case "workflow.agent_end_failed": return { text: `Ending the agent chat for ${step} did not succeed yet; it is tried again`, level: "warning" };
         case "workflow.request_delivered":
             return { text: `Request${text(data.contract) ? ` ${data.contract}` : ""} sent${text(data.responderSessionId) ? ` to session ${shortId(data.responderSessionId)}` : ""}`
@@ -1284,9 +1284,14 @@ export function workflowV2VisitEnding(execution) {
     else if (execution.resultKind === "runtime_error") why = `A runtime error (${execution.outcome ?? text(error?.code) ?? "not recorded"})`;
     else why = "How it ended was not recorded";
     const detail = !byWinner && execution.resultKind === "runtime_error" && text(error?.message) ? clipped(error.message) : null;
-    const end = isRecord(execution.agent) ? execution.agent.end : null;
-    const agent = end === "cancel" ? "Its agent chat was ended." : end === "done" ? "Its agent chat finished after its result was taken." : null;
+    const end = isRecord(execution.agent) ? workflowV2AgentEndText(execution.agent.end) : null;
+    const agent = end ? `Its agent chat ended (${end}).` : null;
     return { why, detail, agent, text: `${why}.${detail ? ` ${detail}` : ""}${agent ? ` ${agent}` : ""}` };
+}
+
+/** How an agent step's chat ended, in the words every screen uses: "cancelled" or "its result was taken"; null for none. Pure. */
+export function workflowV2AgentEndText(end) {
+    return end === "cancel" ? "cancelled" : end === "done" ? "its result was taken" : null;
 }
 
 /**

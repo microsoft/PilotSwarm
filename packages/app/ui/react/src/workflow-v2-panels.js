@@ -2,7 +2,7 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
-    workflowV2EventTime, workflowV2VisitEnding, workflowV2WholeValue,
+    workflowV2AgentEndText, workflowV2EventTime, workflowV2VisitEnding, workflowV2WholeValue,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -145,9 +145,9 @@ function AgentChild({ agent, openSession, subtree = [] }) {
     const under = subtree.filter(entry => entry.depth > 0);
     return h("div", { className: "ps-workflow-agent-child" },
         h("h3", null, "Agent session"),
-        h("div", { className: "ps-workflow-property" }, h("span", null, "Child session"), h("strong", null, agent.childSessionId)),
-        h("div", { className: "ps-workflow-property" }, h("span", null, "Lifecycle"),
-            h("strong", null, `${agent.spawned ? "Created" : "Not created yet"}${agent.end ? ` · ended (${agent.end === "cancel" ? "cancelled" : agent.end === "done" ? "finished" : agent.end})` : ""}`)),
+        h("div", { className: "ps-workflow-property" }, h("span", null, "Agent chat"), h("strong", null, agent.childSessionId)),
+        h("div", { className: "ps-workflow-property" }, h("span", null, "Status"),
+            h("strong", null, agent.end ? `Ended (${workflowV2AgentEndText(agent.end) ?? agent.end})` : agent.spawned ? "Created" : "Not created yet")),
         openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition", "data-action": "open-agent-chat",
             onClick: () => openSession(agent.childSessionId) }, "Open the agent's chat (read-only)") : null,
         // While the step waits, its description already says only the typed result completes it.

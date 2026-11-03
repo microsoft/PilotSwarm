@@ -95,11 +95,11 @@ test("a visit that ended says why, and how its agent chat ended", () => {
     assert.equal(workflowV2VisitEnding({ status: "pending" }), null);
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "timed_out", resultKind: "runtime_error", winner: "controller",
         errorPreview: JSON.stringify({ code: "timed_out", message: "The agent did not finish in 600 s." }), agent: { end: "cancel" } }).text,
-    "Its time limit passed. The agent did not finish in 600 s. Its agent chat was ended.");
+    "Its time limit passed. The agent did not finish in 600 s. Its agent chat ended (cancelled).");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "cancel",
         errorPreview: JSON.stringify({ code: "cancelled", message: "The workflow run was cancelled." }) }).text, "The run was cancelled while it ran.");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "accepted", resultKind: "business", winner: "agent", agent: { end: "done" } }).text,
-        "It ended 'accepted'. Its agent chat finished after its result was taken.");
+        "It ended 'accepted'. Its agent chat ended (its result was taken).");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "crashed", resultKind: "runtime_error", winner: "controller",
         errorPreview: JSON.stringify({ code: "crashed", message: "exit code 1" }) }).text, "A runtime error (crashed). exit code 1");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "fail_fast" }).why,

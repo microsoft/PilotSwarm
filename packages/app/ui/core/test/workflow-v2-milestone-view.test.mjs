@@ -85,6 +85,15 @@ test("an agent state's node names its child session and opens its actual chat; a
     // Deadline at reads like the activity list, not raw ISO.
     assert.ok(html.includes("2026-11-02 10:10:00 UTC") && !html.includes("2026-11-02T10:10:00"), html);
 
+    // Mock M14 / ui-02: the chat's own block uses plain labels, and an ended chat says how, in the activity list's words.
+    const ended = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [done("review", 1, "accepted",
+        { agent: { childSessionId: "child-1", spawned: true, spawnAttempts: 1, end: "done", endSent: true } })] }) });
+    const endedHtml = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, {
+        tab: "details", selected: byId(ended, "review"), nodes: ended.nodes, select: () => {} }));
+    assert.match(endedHtml, /<span>Agent chat<\/span><strong>child-1<\/strong>/);
+    assert.match(endedHtml, /<span>Status<\/span><strong>Ended \(its result was taken\)<\/strong>/);
+    assert.ok(!endedHtml.includes("Child session") && !endedHtml.includes("Lifecycle"), endedHtml);
+
     const branched = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
         done("review", 1, "accepted"),
         row("fan", 1, "pending", { branches: 3 }),
