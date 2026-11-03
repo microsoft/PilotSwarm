@@ -1926,9 +1926,12 @@ body.is-resizing-pane-y iframe {
 .ps-chat-panel .ps-native-task {
   background: transparent;
 }
+/* The card is a button, so width:auto sizes it to its content: a long file
+   name made it wider than a phone's chat, and the whole chat scrolled
+   sideways. Cap it at the line, less its margins, so the title ellipsizes. */
 .ps-chat-panel .ps-artifact-card {
   width: auto;
-  max-width: 36rem;
+  max-width: min(36rem, calc(100% - 28px));
   margin: 8px 14px;
   padding: 7px 12px;
   border: 0;
@@ -3647,6 +3650,17 @@ body.is-resizing-pane-y iframe {
     calc(100% - var(--ps-reading-edge)),
     calc(var(--ps-reading-width, 720px) - var(--ps-reading-edge))
   );
+}
+/* The column moves tool runs to the text edge (above). Tiles inside a
+   message, an artifact card in its line or a Thought in an answer, keep the
+   14px transcript indent unless they move too, and then sit 14px to the
+   right of the runs. */
+.ps-chat-panel.is-reading .ps-scroll-panel > * .ps-artifact-card,
+.ps-chat-panel.is-reading .ps-scroll-panel > * .is-live-reasoning {
+  margin-left: 0;
+}
+.ps-chat-panel.is-reading .ps-scroll-panel > * .ps-artifact-card {
+  max-width: min(36rem, calc(100% - 14px));
 }
 .ps-chat-panel.is-reading .ps-panel-body {
   position: relative;
