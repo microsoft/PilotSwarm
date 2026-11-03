@@ -232,7 +232,7 @@ const withCommands = (run, personCommands = commands()) => ({ ...readModel({ run
 
 test("the panel opens from the header's Variables button: a form where a person may change them, the reason where not", () => {
     const plain = main(mount({ readModel: readModel({ run: { kv: KV, kvRevision: 3 } }), readModelRunId: null, variablesOpen: true }));
-    assert.ok(!plain.includes(">Variables<") && !plain.includes("Workflow variables"), "no panel without personCommands");
+    assert.ok(!plain.includes("aria-label=\"Variables\"") && !plain.includes("Workflow variables"), "no button and no panel without personCommands");
 
     const closed = main(mount({ readModel: withCommands({ kv: KV, kvRevision: 3 }), readModelRunId: null }));
     assert.ok(closed.includes("aria-label=\"Variables\""), "an icon button named by its old text (of-04)");

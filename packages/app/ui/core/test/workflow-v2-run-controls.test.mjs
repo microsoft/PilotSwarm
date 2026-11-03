@@ -290,7 +290,10 @@ test("the workflow pane shows the controls in its header only when the read mode
     assert.ok(html.includes("aria-label=\"Run controls\""));
     assert.ok(html.includes(`data-run-id="${RUN}"`));
     assert.deepEqual([...html.matchAll(/data-operation="([a-z]+)"/g)].map(match => match[1]), ["pause", "stop", "cancel"]);
-    assert.ok(html.includes("ps-mini-button is-danger"), "cancel is styled as a danger");
+    // Each button's own markup, whatever the order of its attributes (of-04: icon buttons with the shared toolbar class).
+    const buttonOf = operation => [...html.matchAll(/<button\b[^>]*>/g)].map(match => match[0]).find(tag => tag.includes(`data-operation="${operation}"`));
+    assert.match(buttonOf("cancel"), /class="[^"]*\bps-mini-button\b[^"]*\bis-danger\b[^"]*"/, "cancel is styled as a danger");
+    for (const operation of ["pause", "stop"]) assert.doesNotMatch(buttonOf(operation), /\bis-danger\b/, `${operation} is not a danger`);
 
     const restricted = main(mount({ readModel: { ...readModel({ run: { status: "paused", pausedFrom: "running" } }), personCommands: SUBTREE },
         readModelRunId: null }));

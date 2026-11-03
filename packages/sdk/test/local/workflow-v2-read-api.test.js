@@ -44,8 +44,12 @@ async function refused(call, code, status) {
     expect(caught?.status).toBe(status);
 }
 
-/** A published workflow child of a new parent with its admitted live run (nothing runs it): its ids. */
-async function liveWorkflow(catalog, label) {
+/**
+ * A published workflow child of a new parent with its admitted live run (nothing runs it): its ids. With `testRunId`, the
+ * workflow is first a draft with that test run admitted (of-06: only a draft is tested), then published with its live run,
+ * so the test run stands beside the live run as one begun before publication does.
+ */
+async function liveWorkflow(catalog, label, { testRunId = null } = {}) {
     const store = catalog.workflowStore();
     const owner = { provider: "test", subject: `${label}-${randomUUID()}` };
     const parent = randomUUID();
@@ -56,12 +60,22 @@ async function liveWorkflow(catalog, label) {
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     expect((await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner,
         creationConfig: { workflowV2: { requestSha256: label } } })).created).toBe(true);
+    const live = { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId), inputsText: "{}", kvText: "{}",
+        testAgentMode: null };
     await store.createDefinition({
         workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: YAML, compiled, actor: { kind: "system", name: `${label}-test` },
-        operationId: "create", requestSha256: label, publish: true, title: `Workflow: ${label}`,
-        start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId), inputsText: "{}", kvText: "{}",
-            testAgentMode: null },
+        operationId: "create", requestSha256: label, publish: testRunId === null, title: `Workflow: ${label}`,
+        start: testRunId === null ? live : null,
     });
+    if (testRunId !== null) {
+        await store.startTest({
+            workflowSessionId, expectedRevision: 1, definitionHash: compiled.yamlSha256, operationId: "test-1", requestSha256: label,
+            start: { runId: testRunId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(testRunId), inputsText: "{}", kvText: "{}",
+                testAgentMode: "mocked", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
+        });
+        await store.publish({ workflowSessionId, expectedRevision: 1, definitionHash: compiled.yamlSha256, operationId: "publish",
+            requestSha256: label, start: live });
+    }
     return { parent, workflowSessionId, runId, definitionHash: compiled.yamlSha256 };
 }
 
@@ -252,7 +266,9 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
         const ids = (rows, key) => rows.map(row => row[key]);
         try {
             const store = catalog.workflowStore();
-            const a = await liveWorkflow(catalog, "read-long");
+            // Its test run (of-06: begun while the workflow was a draft) is read beside the live run at the end.
+            const testRun = randomUUID();
+            const a = await liveWorkflow(catalog, "read-long", { testRunId: testRun });
             const b = await liveWorkflow(catalog, "read-private");
             const s = `"${env.cmsSchema}"`;
             const exec = g => `${a.runId}-${g}`;
@@ -369,13 +385,8 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             expect(await tool(a.parent, { cursor: view.run.pages.inbox.nextCursor, limit: 5 })).toMatchObject({ ok: true, section: "inbox", limit: 5,
                 items: range(6, 10, g => expect.objectContaining({ messageId: `${a.runId}-m${g}` })) });
 
-            // A test run beside the live run, with 210 intercepted effects: the five oldest still wait for an answer.
-            const testRun = randomUUID();
-            await store.startTest({
-                workflowSessionId: a.workflowSessionId, expectedRevision: 1, definitionHash: a.definitionHash, operationId: "test-1", requestSha256: "read-long",
-                start: { runId: testRun, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(testRun), inputsText: "{}", kvText: "{}",
-                    testAgentMode: "mocked", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION },
-            });
+            // A test run beside the live run, with 210 intercepted effects: the five oldest still wait for an answer. It was admitted
+            // while the workflow was a draft (liveWorkflow), as of-06 requires.
             await db.query(`INSERT INTO ${s}.workflow_node_executions (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, input,
                     input_sha256, state, entered_at)
                 VALUES ($1::text || '-1', $1::text, 'root', 'step', 1, 'script', '{}', 'x', 'pending', timestamptz '2026-01-01T00:00:00Z')`, [testRun]);
