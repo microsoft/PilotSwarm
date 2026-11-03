@@ -6387,6 +6387,36 @@ export class PilotSwarmUiController {
     }
 
     /**
+     * Workflow v2: read one definition revision's YAML (readWorkflow definitionRevision; owner decision q4: comparing two
+     * versions) into the view's `definitionRevisions`, by revision (at most 32, the newest). A revision is never
+     * changed once saved, so one read is kept; a failure is read again. Reading changes nothing. Never throws.
+     */
+    async loadWorkflowDefinitionRevision(sessionId, revision) {
+        const state = this.getState();
+        if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow" || typeof this.transport?.readWorkflow !== "function") return null;
+        if (!Number.isSafeInteger(revision) || revision < 1) return null;
+        const current = state.ui.workflowViews?.[sessionId]?.definitionRevisions?.[revision];
+        if (current && current.phase !== "failed") return current;
+        const write = entry => {
+            const reads = { ...(this.getState().ui.workflowViews?.[sessionId]?.definitionRevisions ?? {}) };
+            delete reads[revision];
+            reads[revision] = entry;
+            const keys = Object.keys(reads);
+            for (const old of keys.filter(key => Number(key) !== revision).slice(0, Math.max(0, keys.length - 32))) delete reads[old];
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { definitionRevisions: reads } });
+            return entry;
+        };
+        write({ phase: "loading", value: null, error: null });
+        try {
+            const value = await this.transport.readWorkflow(sessionId, { definitionRevision: revision });
+            if (value?.definitionRevision?.revision !== revision) throw new Error(`The answer was not revision ${revision}.`);
+            return write({ phase: "loaded", value, error: null });
+        } catch (error) {
+            return write({ phase: "failed", value: null, error: error?.message || String(error) });
+        }
+    }
+
+    /**
      * Workflow v2: read one kept revision of a run's variables (readWorkflow with its run and kvRevision: design 02 open
      * KV; mock M15) into the view's `kvRevisions`, by run and revision (workflowV2KvRevisionKey; the six read last are
      * kept), for exactly that run; an answer for another run or revision is refused. A failure is recorded with its error.

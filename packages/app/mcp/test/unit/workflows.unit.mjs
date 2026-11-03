@@ -211,8 +211,9 @@ console.log("✅ get_capabilities and the capabilities resource: the bootstrap's
     await read({ session_id: SID, execution_id: "nx-1" });
     await read({ session_id: SID, run_id: "r1", kv_revision: 3, kv_key: "a" });
     await read({ session_id: SID, agent_versions: true });
+    await read({ session_id: SID, definition_revision: 2 });
     assert.deepEqual(calls, [[SID, {}], [SID, { runId: "r1", cursor, limit: 5 }], [SID, { executionId: "nx-1" }], [SID, { runId: "r1", kvRevision: 3, kvKey: "a" }],
-        [SID, { agentVersions: true }]]);
+        [SID, { agentVersions: true }], [SID, { definitionRevision: 2 }]]);
     for (const [error, expected] of [
         [Object.assign(new Error("This cursor is for another workflow."), { code: "WORKFLOW_CURSOR_INVALID", status: 400 }),
             { code: "WORKFLOW_CURSOR_INVALID", status: 400 }],

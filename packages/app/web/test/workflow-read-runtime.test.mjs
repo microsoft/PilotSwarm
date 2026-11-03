@@ -36,7 +36,8 @@ test("readWorkflow is one GET session:read operation: the session in the path, a
         access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow",
         params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string", strict: true },
             cursor: { in: "query", type: "json" }, executionId: { in: "query", type: "string", strict: true }, limit: { in: "query", type: "json" },
-            kvRevision: { in: "query", type: "json" }, kvKey: { in: "query", type: "string", strict: true }, agentVersions: { in: "query", type: "json" } },
+            kvRevision: { in: "query", type: "json" }, kvKey: { in: "query", type: "string", strict: true }, agentVersions: { in: "query", type: "json" },
+            definitionRevision: { in: "query", type: "json" } },
     });
     // The legacy creation route is unchanged.
     const create = OPERATIONS.find((entry) => entry.name === "createWorkflowSession");
@@ -324,6 +325,8 @@ test("a section's next page and one execution's value are read through the same 
             ["?kvKey=a", 400, "WORKFLOW_READ_INVALID", { kvKey: "a" }],
             // The agent-versions read is a read of its own (owner decision q1).
             ["?agentVersions=true&limit=5", 400, "WORKFLOW_READ_INVALID", { limit: 5, agentVersions: true }],
+            // A definition revision the workflow does not have (owner decision q4: comparing versions).
+            ["?definitionRevision=2", 404, "DEFINITION_REVISION_NOT_FOUND", { definitionRevision: 2 }],
             [`?cursor=${encoded({ ...own, workflowId: "wf-other" })}`, 400, "WORKFLOW_CURSOR_INVALID", { cursor: { ...own, workflowId: "wf-other" } }],
             [`?cursor=${encoded(own)}&executionId=nx-9`, 400, "WORKFLOW_READ_INVALID", { cursor: own, executionId: "nx-9" }],
         ]) {
@@ -336,6 +339,12 @@ test("a section's next page and one execution's value are read through the same 
         assert.equal(versions.status, 200);
         assert.deepEqual(versions.body.result, { workflowId: "wf1", revision: 1, definitionHash: "h", resolves: false, locked: true, agents: [], problem: null });
         assert.deepEqual(h.adapterCalls.at(-1), ["wf1", { agentVersions: true }]);
+        // One revision's YAML, for its owner (who may change the workflow): read through the same gate.
+        const revision = await h.get("/sessions/wf1/workflow?definitionRevision=1");
+        assert.equal(revision.status, 200);
+        assert.deepEqual([revision.body.result.workflowId, revision.body.result.definitionRevision.revision, revision.body.result.definitionRevision.yaml],
+            ["wf1", 1, ""]);
+        assert.deepEqual(h.adapterCalls.at(-1), ["wf1", { definitionRevision: 1 }]);
         // Someone who cannot read the session learns nothing, whatever the options: the same not-found, and nothing is read.
         const before = h.adapterCalls.length;
         for (const query of ["?executionId=nx-9", `?cursor=${encoded(own)}`, "?limit=0"]) {

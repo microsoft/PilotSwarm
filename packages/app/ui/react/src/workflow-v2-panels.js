@@ -6,7 +6,7 @@ import {
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
-    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft, workflowV2PublicationEvidenceRows,
+    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "../../core/src/workflow-v2-commands.js";
 
@@ -607,9 +607,10 @@ export function WorkflowV2DraftToggle({ controller, sessionId, model, open, cont
  * it. Edits are kept across a refusal and a new read. The version (metadata.version) cannot change: a new version needs
  * a new workflow, and the server refuses it.
  */
-export function WorkflowV2DraftEditor({ controller, sessionId, model, id }) {
+export function WorkflowV2DraftEditor({ controller, sessionId, model, id, revisionReads = null }) {
     const [base, setBase] = React.useState(() => model ? { revision: model.revision, yaml: model.yaml } : null);
     const [textValue, setTextValue] = React.useState(() => model?.yaml ?? "");
+    const [comparing, setComparing] = React.useState(false);
     // A new revision read while nothing was edited (or one that is exactly this edit, once saved) is taken as it is.
     React.useEffect(() => {
         if (!model || !base || model.revision === base.revision) return;
@@ -643,9 +644,71 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id }) {
             title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save draft"),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "discard", disabled: !edit.changed,
             onClick: () => setTextValue(base.yaml) }, "Discard edits"),
+        h("button", { type: "button", className: "ps-mini-button", "data-action": "compare", "aria-expanded": comparing,
+            disabled: model.revision < 2, title: model.revision < 2 ? "There is only one version so far." : "Compare two saved versions of this draft.",
+            onClick: () => setComparing(open => !open) }, "Compare versions"),
         h("button", { type: "button", className: "ps-mini-button",
             onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: false } }) }, "Close"),
-        edit.changed && !edit.conflict ? h("span", { role: "status", style: { color: "var(--ps-muted)" } }, "Unsaved changes") : null));
+        edit.changed && !edit.conflict ? h("span", { role: "status", style: { color: "var(--ps-muted)" } }, "Unsaved changes") : null),
+    comparing && model.revision >= 2 ? h(WorkflowV2RevisionCompare, { controller, sessionId, latest: model.revision, reads: revisionReads }) : null);
+}
+
+let diffEditorModule = null;
+const loadDiffEditor = () => (diffEditorModule ??= import("./workspace-editor.js"));
+
+/**
+ * Compare two saved versions of the draft (owner decision q4; mocks M01, M02, M20 "Compare revisions"): pick the two
+ * revisions (by default the one before the latest and the latest), side by side or in one column, both shown as properly
+ * formatted YAML (a draft written as JSON compares as YAML) in the Workspace pane's read-only diff view, with a summary
+ * of the lines added and removed. Until that view has loaded (and wherever it cannot load), the same comparison shows as
+ * lines marked + and -. Each revision is read once (controller.loadWorkflowDefinitionRevision); reading changes nothing.
+ */
+export function WorkflowV2RevisionCompare({ controller, sessionId, latest, reads }) {
+    const [from, setFrom] = React.useState(Math.max(1, latest - 1));
+    const [to, setTo] = React.useState(latest);
+    const [layout, setLayout] = React.useState("split");
+    const [viewer, setViewer] = React.useState("pending");
+    const hostRef = React.useRef(null);
+    React.useEffect(() => {
+        controller.loadWorkflowDefinitionRevision?.(sessionId, from)?.catch?.(() => {});
+        controller.loadWorkflowDefinitionRevision?.(sessionId, to)?.catch?.(() => {});
+    }, [controller, sessionId, from, to]);
+    const compared = workflowV2RevisionCompare(reads, from, to);
+    const beforeText = compared.before.text, afterText = compared.after.text;
+    React.useEffect(() => {
+        if (!compared.ready || !hostRef.current) return undefined;
+        let disposed = false;
+        let handle = null;
+        setViewer("pending");
+        loadDiffEditor().then(module => {
+            if (disposed || !hostRef.current) return undefined;
+            return module.createDiff(hostRef.current, { original: beforeText, modified: afterText, name: "workflow.yaml", layout }).then(made => {
+                if (disposed) made.destroy();
+                else { handle = made; setViewer("ready"); }
+            });
+        }).catch(() => { if (!disposed) setViewer("failed"); });
+        return () => { disposed = true; handle?.destroy(); };
+    }, [compared.ready, beforeText, afterText, layout]);
+    const options = Array.from({ length: latest }, (_, index) => index + 1);
+    const pick = (label, value, onChange, field) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4 } }, label,
+        h("select", { value, "data-field": field, onChange: event => onChange(Number(event.target.value)) },
+            options.map(revision => h("option", { key: revision, value: revision }, `Revision ${revision}${revision === latest ? " (latest)" : ""}`))));
+    return h("section", { className: "ps-workflow-compare", "aria-label": "Compare versions", "data-from": from, "data-to": to,
+        style: { display: "grid", gap: 6 } },
+    h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 } },
+        pick("From", from, setFrom, "compare-from"), pick("To", to, setTo, "compare-to"),
+        h("button", { type: "button", className: "ps-mini-button", "aria-pressed": layout === "split", onClick: () => setLayout("split") }, "Side by side"),
+        h("button", { type: "button", className: "ps-mini-button", "aria-pressed": layout === "inline", onClick: () => setLayout("inline") }, "One column")),
+    h("p", { role: compared.failed ? "alert" : "status", style: { margin: 0, color: compared.failed ? TONES.error : "var(--ps-muted)" } }, compared.summary,
+        compared.ready && !(compared.before.formatted && compared.after.formatted) ? " A revision that does not parse is shown as saved." : ""),
+    // The diff view's own element (CodeMirror fills it; React renders nothing into it), shown once it is ready.
+    compared.ready ? h("div", { ref: hostRef, className: "ps-workflow-compare-view",
+        style: viewer === "ready" ? { maxHeight: "28em", overflow: "auto", border: "1px solid var(--ps-border)" } : { display: "none" } }) : null,
+    compared.ready && viewer !== "ready" ? h("pre", { "data-diff": "lines", style: { margin: 0, padding: "4px 6px", maxHeight: "28em", overflow: "auto",
+        border: "1px solid var(--ps-border)", fontFamily: "var(--ps-font-mono, monospace)", fontSize: "0.8rem" } },
+    compared.diff.rows.map((row, index) => h("div", { key: index, "data-kind": row.kind,
+        style: row.kind === "added" ? { color: TONES.success ?? "var(--ps-code-inserted)" } : row.kind === "removed" ? { color: TONES.error } : undefined },
+    `${row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "} ${row.text}`))) : null);
 }
 
 /**

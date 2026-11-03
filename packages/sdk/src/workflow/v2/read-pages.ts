@@ -145,6 +145,6 @@ export function workflowReadLimit(limit: unknown, section: WorkflowReadSection):
  * answers the code itself): what does not exist 404, an invalid read 400.
  */
 export const WORKFLOW_READ_STATUS: Readonly<Record<string, number>> = Object.freeze({
-    WORKFLOW_NOT_FOUND: 404, RUN_NOT_FOUND: 404, EXECUTION_NOT_FOUND: 404, KV_REVISION_NOT_FOUND: 404, WORKFLOW_CURSOR_INVALID: 400,
+    WORKFLOW_NOT_FOUND: 404, RUN_NOT_FOUND: 404, EXECUTION_NOT_FOUND: 404, KV_REVISION_NOT_FOUND: 404, DEFINITION_REVISION_NOT_FOUND: 404, WORKFLOW_CURSOR_INVALID: 400,
     WORKFLOW_READ_INVALID: 400,
 });

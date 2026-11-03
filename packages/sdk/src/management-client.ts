@@ -161,7 +161,7 @@ import {
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
-import { readWorkflowV2AgentVersions, readWorkflowV2View } from "./workflow/v2/tools.js";
+import { readWorkflowV2AgentVersions, readWorkflowV2DefinitionRevision, readWorkflowV2View } from "./workflow/v2/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/v2/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
@@ -1920,7 +1920,7 @@ export class PilotSwarmManagementClient {
      * those, and, for a draft a person may change, its current YAML
      * (`personCommands.draft`); without it the view is exactly the tool's.
      */
-    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown; agentVersions?: unknown } = {})
+    async readWorkflow(sessionId: string, options: { runId?: string | null; cursor?: unknown; executionId?: unknown; limit?: unknown; kvRevision?: unknown; kvKey?: unknown; agentVersions?: unknown; definitionRevision?: unknown } = {})
         : Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
@@ -1937,6 +1937,7 @@ export class PilotSwarmManagementClient {
         const kvRevision = options?.kvRevision ?? null;
         const kvKey = options?.kvKey ?? null;
         const agentVersions = options?.agentVersions ?? null;
+        const definitionRevision = options?.definitionRevision ?? null;
         let view: Record<string, unknown>;
         try {
             // The agent versions publishing would lock (owner decision q1): resolved as this client's publications resolve them.
@@ -1944,7 +1945,13 @@ export class PilotSwarmManagementClient {
                 const enabled = this.config?.workflowCommands;
                 return await readWorkflowV2AgentVersions({ store, ...(enabled?.requests === true
                     ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, agentVersions,
-                { runId: options?.runId, cursor, executionId, limit: options?.limit, kvRevision, kvKey });
+                { runId: options?.runId, cursor, executionId, limit: options?.limit, kvRevision, kvKey, definitionRevision });
+            }
+            // One definition revision's YAML, to compare two versions (owner decision q4). The portal reads it only for a person
+            // who may change the workflow; this client is trusted.
+            if (definitionRevision !== null) {
+                return await readWorkflowV2DefinitionRevision(store, sessionId, definitionRevision,
+                    { runId: options?.runId, cursor, executionId, limit: options?.limit, kvRevision, kvKey });
             }
             view = await readWorkflowV2View(store, sessionId, {
                 runId, ...(cursor !== null ? { cursor } : {}), ...(executionId !== null ? { executionId } : {}),

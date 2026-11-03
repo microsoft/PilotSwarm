@@ -87,6 +87,8 @@ const SHIM_CASES = [
     { call: (c) => c.readWorkflow("s1", { executionId: "nx-1", cursor: null, limit: undefined }), op: "readWorkflow", params: { sessionId: "s1", executionId: "nx-1" } },
     // The agent versions publishing would lock (owner decision q1).
     { call: (c) => c.readWorkflow("s1", { agentVersions: true }), op: "readWorkflow", params: { sessionId: "s1", agentVersions: true } },
+    // One definition revision's YAML (owner decision q4).
+    { call: (c) => c.readWorkflow("s1", { definitionRevision: 3 }), op: "readWorkflow", params: { sessionId: "s1", definitionRevision: 3 } },
 ];
 
 test("every shim maps its positional arguments onto the right wire call", async () => {

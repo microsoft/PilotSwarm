@@ -31,8 +31,9 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "means none is older. execution_id (with run_id, default the live run) reads one node execution with its whole output "
                 + "or error (execution.result) instead of its preview. limit: rows per page, 1 to 200. kv_revision reads that revision of the "
                 + "run's variables (each with its size and sha256), and kv_key with it one variable, whole. agent_versions: true, alone, "
-                + "reads the agent versions that publishing the current revision would lock now (it locks nothing). Refusals carry their code: "
-                + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID.",
+                + "reads the agent versions that publishing the current revision would lock now (it locks nothing). definition_revision, alone, "
+                + "reads that revision of the definition (its YAML as saved and formatted). Refusals carry their code: "
+                + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, DEFINITION_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to read"),
                 run_id: z.string().optional().describe("A run of the workflow; default the live run"),
@@ -43,9 +44,10 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 kv_revision: z.number().int().optional().describe("A revision of the run's variables, 1 to its kvRevision"),
                 kv_key: z.string().optional().describe("With kv_revision: one variable of that revision, whole"),
                 agent_versions: z.boolean().optional().describe("true: the agent versions publishing the current revision would lock now, and nothing else"),
+                definition_revision: z.number().int().optional().describe("A revision of the definition, 1 to the current one: its YAML, and nothing else"),
             },
         },
-        withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit, kv_revision, kv_key, agent_versions }) => {
+        withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit, kv_revision, kv_key, agent_versions, definition_revision }) => {
             try {
                 return jsonResult(await ctx.mgmt.readWorkflow(session_id, {
                     ...(run_id !== undefined ? { runId: run_id } : {}),
@@ -55,6 +57,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                     ...(kv_revision !== undefined ? { kvRevision: kv_revision } : {}),
                     ...(kv_key !== undefined ? { kvKey: kv_key } : {}),
                     ...(agent_versions !== undefined ? { agentVersions: agent_versions } : {}),
+                    ...(definition_revision !== undefined ? { definitionRevision: definition_revision } : {}),
                 }));
             } catch (err: unknown) {
                 return refusal(err, session_id);

@@ -1698,3 +1698,13 @@ serves), no typed input into a running test, and no display of lineage, receipts
   marked line's number turns red (a warning yellow) with "!". Marks belong to the saved revision: an edit does not
   move them, and the portal says so when the text has changed; saving checks the new text. (The portal's CodeMirror
   editor was not used for this box: the plain text box keeps what screen readers and the existing tests read.)
+- **Compare two versions of a draft (q4).** `read_workflow` `definition_revision: n` (the API's and MCP's
+  `definitionRevision`), alone, reads that revision of the definition: its YAML as saved and properly formatted
+  (`formatted`: block style, two-space indent, comments kept, strings unquoted where they read the same, so a draft
+  written as JSON compares as YAML; null when it does not parse), its hash, validity and diagnostics, and whether it is
+  the current or the published revision (`DEFINITION_REVISION_NOT_FOUND`, 404, for one it does not have). The portal
+  reads it only for a person who may change the workflow, as the draft's YAML. The portal's draft editor has "Compare
+  versions": two revisions (by default the one before the latest and the latest), side by side or in one column, in the
+  Workspace pane's read-only diff view (CodeMirror), with a summary of the lines added and removed; until that view
+  loads, the same comparison shows as + and - lines (`workflowV2LineDiff`, `workflowV2RevisionCompare`). Not in the TUI
+  yet.

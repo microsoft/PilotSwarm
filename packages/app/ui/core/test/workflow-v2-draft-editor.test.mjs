@@ -21,10 +21,12 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import {
-    workflowV2CommandNamesRun, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks, workflowV2RunCommandAccepted, workflowV2RunCommandArgs,
+    workflowV2CommandNamesRun, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks, workflowV2LineDiff, workflowV2RevisionCompare,
+    workflowV2RunCommandAccepted, workflowV2RunCommandArgs,
     workflowV2RunCommandNotice, workflowV2RunCommandWire,
 } from "../src/workflow-v2-commands.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowV2RevisionCompare } from "../../react/src/workflow-v2-panels.js";
 import { readModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-draft-editor";
@@ -203,4 +205,65 @@ test("the editor marks the saved revision's errors on their lines, and lists a b
     // Without diagnostics nothing is marked and no list is shown.
     const clean = main(mount({ readModel: modelOf(), readModelRunId: null, draftOpen: true }));
     assert.ok(!clean.includes("data-mark=") && !clean.includes("Errors marked in the YAML") && !clean.includes("aria-describedby=\"wf-yaml-marks"));
+});
+
+// Owner decision q4: two saved versions compared line by line, as formatted YAML from the revision read; until the
+// diff view loads (and in a server render) the same comparison shows as + and - lines.
+test("two versions compare line by line: removals before additions, line numbers on each side, a summary", () => {
+    const diff = workflowV2LineDiff("a: 1\nb: 2\nc: 3\n", "a: 1\nb: 20\nc: 3\nd: 4\n");
+    assert.deepEqual(diff.rows, [
+        { kind: "same", text: "a: 1", before: 1, after: 1 },
+        { kind: "removed", text: "b: 2", before: 2, after: null },
+        { kind: "added", text: "b: 20", before: null, after: 2 },
+        { kind: "same", text: "c: 3", before: 3, after: 3 },
+        { kind: "added", text: "d: 4", before: null, after: 4 },
+        { kind: "same", text: "", before: 4, after: 5 },
+    ]);
+    assert.deepEqual([diff.added, diff.removed, diff.approximate], [2, 1, false]);
+    assert.deepEqual(workflowV2LineDiff("x", "x"), { rows: [{ kind: "same", text: "x", before: 1, after: 1 }], added: 0, removed: 0, approximate: false });
+    const big = workflowV2LineDiff(Array.from({ length: 1600 }, (_, i) => `a${i}`).join("\n"), Array.from({ length: 1600 }, (_, i) => `b${i}`).join("\n"));
+    assert.deepEqual([big.approximate, big.removed, big.added, big.rows[0].kind, big.rows[1600].kind], [true, 1600, 1600, "removed", "added"]);
+
+    const read = (revision, formatted, yaml = formatted ?? "x: [") => ({ phase: "loaded", error: null,
+        value: { workflowId: SID, definitionRevision: { revision, definitionHash: `h${revision}`, valid: true, yaml, formatted } } });
+    const reads = { 1: read(1, "a: 1\n"), 2: read(2, "a: 2\n") };
+    const compared = workflowV2RevisionCompare(reads, 1, 2);
+    assert.equal(compared.summary, "Revision 1 → 2: 1 line added, 1 removed");
+    assert.deepEqual([compared.ready, compared.before.formatted, compared.after.text], [true, true, "a: 2\n"]);
+    assert.equal(workflowV2RevisionCompare({ 1: read(1, "a\n"), 2: read(2, "a\n") }, 1, 2).summary, "Revisions 1 and 2 are the same.");
+    assert.equal(workflowV2RevisionCompare({ 1: read(1, "a\n") }, 1, 2).summary, "Reading revisions 1 and 2…");
+    assert.equal(workflowV2RevisionCompare({ 1: read(1, "a\n"), 2: { phase: "failed", value: null, error: "Gateway timeout" } }, 1, 2).summary,
+        "Revision 2 could not be read: Gateway timeout");
+    // A revision that does not parse is compared as saved.
+    const unparsed = workflowV2RevisionCompare({ 1: read(1, null, "x: [\n"), 2: read(2, "x: 1\n") }, 1, 2);
+    assert.deepEqual([unparsed.before.text, unparsed.before.formatted], ["x: [\n", false]);
+
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2RevisionCompare, { controller: {}, sessionId: SID, latest: 2, reads }));
+    assert.match(html, /<section class="ps-workflow-compare" aria-label="Compare versions" data-from="1" data-to="2"/);
+    assert.match(html, /role="status"[^>]*>Revision 1 → 2: 1 line added, 1 removed<\/p>/);
+    assert.match(html, /<div data-kind="removed"[^>]*>- a: 1<\/div><div data-kind="added"[^>]*>\+ a: 2<\/div>/);
+    assert.match(html, /<option value="2" selected="">Revision 2 \(latest\)<\/option>/);
+});
+
+test("the controller reads each definition revision once, again after a failure, and keeps it by revision", async () => {
+    const calls = [];
+    let fail = true;
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport: { readWorkflow: async (sessionId, options) => {
+        calls.push([sessionId, options]);
+        if (fail) throw new Error("Gateway timeout");
+        return { workflowId: sessionId, definitionRevision: { revision: options.definitionRevision, yaml: "a: 1\n", formatted: "a: 1\n", valid: true } };
+    } } });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, title: "Workflow", status: "idle", sessionKind: "workflow" }] });
+    const reads = () => store.getState().ui.workflowViews[SID].definitionRevisions;
+    assert.equal((await controller.loadWorkflowDefinitionRevision(SID, 1)).phase, "failed");
+    assert.equal(reads()[1].error, "Gateway timeout");
+    fail = false;
+    assert.equal((await controller.loadWorkflowDefinitionRevision(SID, 1)).phase, "loaded");
+    await controller.loadWorkflowDefinitionRevision(SID, 1);
+    await controller.loadWorkflowDefinitionRevision(SID, 2);
+    assert.deepEqual(calls.map(call => call[1]), [{ definitionRevision: 1 }, { definitionRevision: 1 }, { definitionRevision: 2 }]);
+    assert.deepEqual(Object.keys(reads()), ["1", "2"]);
+    assert.equal(await controller.loadWorkflowDefinitionRevision(SID, 0), null);
+    assert.equal(await controller.loadWorkflowDefinitionRevision("not-a-workflow", 1), null);
 });

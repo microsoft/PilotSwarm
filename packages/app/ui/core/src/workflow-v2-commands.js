@@ -888,3 +888,76 @@ export function workflowV2RunCommandNotice(command) {
         : { level: "warning", operation: command.operation, runId: run, retry: true,
             text: `${label}${target} may not have reached the workflow: ${message} Retry sends the same command again.` };
 }
+
+/** Lines of the middle of two texts compared by longest common subsequence; past this, the middle shows as removed then added. */
+const LINE_DIFF_MAX_MIDDLE = 1_500;
+
+/**
+ * Two versions of a definition's YAML compared line by line (owner decision q4; mocks M01, M02, M20): `rows` in order,
+ * each { kind: "same" | "removed" | "added", text, before, after } with its line number on each side (null where it has
+ * none), and the counts of `added` and `removed` lines. Lines common to both ends are matched first; the middle is
+ * compared by longest common subsequence up to 1500 lines a side, and beyond that shown as removed then added
+ * (`approximate`). Pure.
+ */
+export function workflowV2LineDiff(before, after) {
+    const a = String(before ?? "").split("\n");
+    const b = String(after ?? "").split("\n");
+    let start = 0;
+    while (start < a.length && start < b.length && a[start] === b[start]) start += 1;
+    let endA = a.length, endB = b.length;
+    while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA -= 1; endB -= 1; }
+    const rows = [];
+    for (let i = 0; i < start; i++) rows.push({ kind: "same", text: a[i], before: i + 1, after: i + 1 });
+    const midA = a.slice(start, endA), midB = b.slice(start, endB);
+    const approximate = midA.length > LINE_DIFF_MAX_MIDDLE || midB.length > LINE_DIFF_MAX_MIDDLE;
+    if (approximate) {
+        midA.forEach((text, i) => rows.push({ kind: "removed", text, before: start + i + 1, after: null }));
+        midB.forEach((text, i) => rows.push({ kind: "added", text, before: null, after: start + i + 1 }));
+    } else {
+        // lengths[i][j]: the longest common subsequence of midA[i..] and midB[j..].
+        const lengths = Array.from({ length: midA.length + 1 }, () => new Uint32Array(midB.length + 1));
+        for (let i = midA.length - 1; i >= 0; i--) {
+            for (let j = midB.length - 1; j >= 0; j--) {
+                lengths[i][j] = midA[i] === midB[j] ? lengths[i + 1][j + 1] + 1 : Math.max(lengths[i + 1][j], lengths[i][j + 1]);
+            }
+        }
+        let i = 0, j = 0;
+        while (i < midA.length || j < midB.length) {
+            if (i < midA.length && j < midB.length && midA[i] === midB[j]) {
+                rows.push({ kind: "same", text: midA[i], before: start + i + 1, after: start + j + 1 });
+                i += 1; j += 1;
+            } else if (i < midA.length && (j >= midB.length || lengths[i + 1][j] >= lengths[i][j + 1])) {
+                rows.push({ kind: "removed", text: midA[i], before: start + i + 1, after: null });
+                i += 1;
+            } else {
+                rows.push({ kind: "added", text: midB[j], before: null, after: start + j + 1 });
+                j += 1;
+            }
+        }
+    }
+    for (let k = 0; k < a.length - endA; k++) rows.push({ kind: "same", text: a[endA + k], before: endA + k + 1, after: endB + k + 1 });
+    return { rows, added: rows.filter(row => row.kind === "added").length, removed: rows.filter(row => row.kind === "removed").length, approximate };
+}
+
+/**
+ * What a comparison of two definition revisions shows (owner decision q4), from the view's `definitionRevisions` (the
+ * revision reads, controller.loadWorkflowDefinitionRevision): each side's text (properly formatted YAML, or the YAML as
+ * saved when it does not parse), whether both are read, the first failure, and a one-line summary. Pure.
+ */
+export function workflowV2RevisionCompare(reads, from, to) {
+    const side = revision => {
+        const entry = isRecord(reads) ? reads[revision] : null;
+        const value = isRecord(entry?.value?.definitionRevision) ? entry.value.definitionRevision : null;
+        return { revision, phase: entry?.phase ?? "missing", error: text(entry?.error), text: value ? (text(value.formatted) ?? String(value.yaml ?? "")) : null,
+            formatted: Boolean(value && text(value.formatted)), valid: value ? value.valid === true : null };
+    };
+    const before = side(from), after = side(to);
+    const failed = [before, after].find(item => item.phase === "failed") ?? null;
+    const ready = before.text !== null && after.text !== null;
+    const diff = ready ? workflowV2LineDiff(before.text, after.text) : null;
+    const summary = failed ? `Revision ${failed.revision} could not be read: ${failed.error ?? "no reason given"}`
+        : !ready ? `Reading revisions ${from} and ${to}…`
+            : diff.added || diff.removed ? `Revision ${from} → ${to}: ${diff.added} line${diff.added === 1 ? "" : "s"} added, ${diff.removed} removed`
+                : `Revisions ${from} and ${to} are the same.`;
+    return { before, after, ready, failed, diff, summary };
+}

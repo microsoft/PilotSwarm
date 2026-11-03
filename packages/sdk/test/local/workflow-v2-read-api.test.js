@@ -18,7 +18,7 @@ import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
-import { readWorkflowFromTool, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
+import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowV2DefinitionRevision, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -461,6 +461,61 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             expect(await tool(other.parent, { kv_revision: 3 })).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
         } finally {
             await db.end();
+            await catalog.close();
+        }
+    });
+
+    // Owner decision q4: comparing two versions of a draft reads each revision's YAML, as saved and properly formatted (a
+    // draft written as JSON reads as block YAML, comments kept), with its hash and validity; a revision it does not have is
+    // DEFINITION_REVISION_NOT_FOUND, and it is a read of its own.
+    it("reads one definition revision's YAML as saved and formatted, for comparing versions; refuses a revision it does not have", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        try {
+            const store = catalog.workflowStore();
+            const owner = { provider: "test", subject: `revisions-${randomUUID()}` };
+            const parent = randomUUID();
+            await catalog.createSession(parent, { owner });
+            const workflowSessionId = randomUUID();
+            const asJson = JSON.stringify({ apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "read-api", version: "1.0.0" },
+                initial: "done", states: { done: { type: "terminal", outcome: "succeeded" } } });
+            const first = compileWorkflowV2(asJson);
+            expect(first.valid, JSON.stringify(first.diagnostics)).toBe(true);
+            expect((await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner,
+                creationConfig: { workflowV2: { requestSha256: "revisions" } } })).created).toBe(true);
+            const actor = { kind: "system", name: "revisions-test" };
+            await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: asJson, compiled: first, actor,
+                operationId: "create", requestSha256: "revisions", publish: false, start: null, title: "Workflow: read-api" });
+            const second = compileWorkflowV2(YAML);
+            await store.replaceDraft({ workflowSessionId, expectedRevision: 1, yaml: YAML, compiled: second, declaredSemver: "1.0.0", actor,
+                operationId: "replace", requestSha256: "replace", title: "Workflow: read-api" });
+            const read = (value, others = {}) => readWorkflowV2DefinitionRevision(store, workflowSessionId, value, others);
+
+            const one = (await read(1)).definitionRevision;
+            expect(one).toMatchObject({ revision: 1, definitionHash: first.yamlSha256, valid: true, current: false, published: false, yaml: asJson });
+            expect(one.formatted).toBe([
+                "apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata:", "  name: read-api", "  version: 1.0.0", "initial: done", "states:",
+                "  done:", "    type: terminal", "    outcome: succeeded", "",
+            ].join("\n"));
+            const two = (await read(2)).definitionRevision;
+            expect(two).toMatchObject({ revision: 2, definitionHash: second.yamlSha256, current: true, published: false, yaml: YAML });
+            expect(two.formatted).toContain("metadata:\n  name: read-api\n");
+            expect(two.formatted).toContain("source: |\n");
+            const list = formattedWorkflowYaml("a: [1, \"two\", \"3\"] # the list\n");
+            expect(list).toMatch(/^a:\n  - 1\n  - two\n  - "3"/);
+            expect(list).toContain("# the list");
+            expect(formattedWorkflowYaml("a: [1, 2\n")).toBeNull();
+            // Refusals: a revision the workflow does not have, an invalid one, and other read arguments with it.
+            await expect(read(3)).rejects.toMatchObject({ code: "DEFINITION_REVISION_NOT_FOUND" });
+            await expect(readWorkflowV2DefinitionRevision(store, randomUUID(), 1, {})).rejects.toMatchObject({ code: "WORKFLOW_NOT_FOUND" });
+            for (const value of [0, -1, 1.5, "1"]) await expect(read(value)).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID" });
+            await expect(read(1, { limit: 5 })).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(/leave out limit\.$/) });
+            // The agent tool reads it for the workflow's parent.
+            const tool = async args => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId, ...args }, { callerSessionId: parent, host: { catalog, store } }));
+            expect(await tool({ definition_revision: 1 })).toMatchObject({ ok: true, workflowId: workflowSessionId, definitionRevision: { revision: 1, yaml: asJson } });
+            expect(await tool({ definition_revision: 9 })).toMatchObject({ ok: false, error: { code: "DEFINITION_REVISION_NOT_FOUND" } });
+        } finally {
             await catalog.close();
         }
     });

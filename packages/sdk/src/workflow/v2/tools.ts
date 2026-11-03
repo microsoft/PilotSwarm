@@ -1,5 +1,6 @@
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
+import { parseDocument, visit } from "yaml";
 import {
     assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, previewJson, sha256Hex, utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES,
     WorkflowJsonError,
@@ -185,7 +186,9 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
         + "kv_revision (1 to the run's kvRevision) reads that revision of the run's variables (each with its size and sha256, whole "
         + "up to 256 KiB in all); with kv_key, one variable of it, whole. agent_versions: true (alone) reads the agent versions "
         + "that publishing the current revision would lock now (each named agent state's agent, package, version and exact revision, or "
-        + "the problem that would refuse the publication); nothing is locked by reading.",
+        + "the problem that would refuse the publication); nothing is locked by reading. definition_revision (alone) reads that "
+        + "revision of the definition: its YAML as saved and properly formatted (formatted), its hash, validity and diagnostics, "
+        + "to compare two versions.",
     parameters: {
         type: "object",
         properties: {
@@ -196,6 +199,7 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
             kv_revision: { type: "integer", description: "A revision of the run's variables, 1 to its kvRevision: that snapshot (each node execution's kvRevision is the one it applied)." },
             kv_key: { type: "string", description: "With kv_revision: one variable of that revision, whole." },
             agent_versions: { type: "boolean", description: "true: the agent versions publishing the current revision would lock now, and nothing else." },
+            definition_revision: { type: "integer", description: "A revision of the definition, 1 to the current one: its YAML (as saved and formatted), and nothing else." },
         },
         required: ["workflow_id"],
     },
@@ -551,6 +555,53 @@ export async function readWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "st
     const extra = Object.entries(others).filter(([, given]) => given !== undefined && given !== null && given !== false).map(([name]) => name);
     if (extra.length) throw readInvalid(`The agent versions are a read of their own; leave out ${extra.join(", ")}.`);
     return previewWorkflowV2AgentVersions(host, workflowSessionId);
+}
+
+/**
+ * A definition revision's YAML, to compare two versions of a draft (owner decision q4; mocks M01, M02, M20 "Compare
+ * revision"): `definition_revision` on the tool, `definitionRevision` on the API, a read of its own. The YAML as it was
+ * saved (`yaml`) and properly formatted (`formatted`: block style, two-space indent, its comments kept, so a draft written
+ * as JSON compares as YAML; null when the text does not parse), with the revision's hash, validity, diagnostics and
+ * whether it is the current or the published one. A revision the workflow does not have is DEFINITION_REVISION_NOT_FOUND.
+ * Reading changes nothing. Who may read the YAML is the caller's gate (the agent tool: the workflow's parent; the portal:
+ * a person who may change the workflow).
+ */
+export async function readWorkflowV2DefinitionRevision(store: WorkflowStore, workflowSessionId: string, value: unknown,
+    others: Record<string, unknown>): Promise<{ [key: string]: JsonValue }> {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw readInvalid("definition_revision (definitionRevision) must be a positive integer.");
+    const extra = Object.entries(others).filter(([, given]) => given !== undefined && given !== null && given !== false).map(([name]) => name);
+    if (extra.length) throw readInvalid(`A definition revision is a read of its own; leave out ${extra.join(", ")}.`);
+    const definition = await store.readDefinition(workflowSessionId);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
+    const revision = value <= definition.currentRevision ? await store.readRevision(workflowSessionId, value) : null;
+    if (!revision) {
+        throw new WorkflowStoreError("DEFINITION_REVISION_NOT_FOUND", `Workflow ${workflowSessionId} has revisions 1 to ${definition.currentRevision}, not ${value}.`);
+    }
+    return { workflowId: workflowSessionId, definitionRevision: {
+        revision: revision.revision, definitionHash: revision.yamlSha256, valid: revision.valid, diagnostics: diagnosticsJson(revision.diagnostics),
+        current: revision.revision === definition.currentRevision, published: revision.revision === definition.publishedRevision,
+        yaml: revision.yaml, formatted: formattedWorkflowYaml(revision.yaml),
+    } };
+}
+
+/**
+ * YAML properly formatted for reading and comparing: every mapping and list in block style and every string unquoted
+ * where it reads the same unquoted, its comments kept; null when it does not parse.
+ */
+export function formattedWorkflowYaml(source: string): string | null {
+    try {
+        const document = parseDocument(source);
+        if (document.errors.length) return null;
+        visit(document, {
+            Map(_key, node) { node.flow = false; },
+            Seq(_key, node) { node.flow = false; },
+            // The stringifier quotes again any string that would read differently plain.
+            Scalar(_key, node) { if (node.type === "QUOTE_DOUBLE" || node.type === "QUOTE_SINGLE") node.type = undefined; },
+        });
+        return document.toString({ indent: 2, lineWidth: 0 });
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -1033,6 +1084,12 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
         if (args.agent_versions !== undefined && args.agent_versions !== null) {
             return payload({ ok: true, ...(await readWorkflowV2AgentVersions(context.host, workflowSessionId, args.agent_versions, {
+                run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
+                kv_revision: args.kv_revision, kv_key: args.kv_key, definition_revision: args.definition_revision,
+            })) });
+        }
+        if (args.definition_revision !== undefined && args.definition_revision !== null) {
+            return payload({ ok: true, ...(await readWorkflowV2DefinitionRevision(context.host.store, workflowSessionId, args.definition_revision, {
                 run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
                 kv_revision: args.kv_revision, kv_key: args.kv_key,
             })) });
