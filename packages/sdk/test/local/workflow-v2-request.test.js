@@ -423,6 +423,8 @@ describe("workflow v2 request states: the definition path refuses them", () => {
                 await expectCode(createWorkflowV2(h, { workflowSessionId: id, parentSessionId: null, yaml, actor: ACTOR, operationId: "create", ...request }),
                     "DEFINITION_INVALID");
                 expect(await h.store.listRuns(id)).toEqual([]);
+                // Refused before anything is written: no session row and no claim on the id (preview finding, ux-capture-r5).
+                expect(await h.catalog.getSession(id)).toBeNull();
             }
         });
     });

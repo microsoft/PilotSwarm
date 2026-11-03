@@ -1562,6 +1562,14 @@ export function diagnosticsJson(diagnostics: WorkflowDiagnostic[]): JsonValue {
     }));
 }
 
+/** A definition with compile errors is saved only as a draft: publishing or starting it is DEFINITION_INVALID. */
+export function requirePublishable(compiled: Pick<WorkflowCompileResult, "valid" | "diagnostics">, publish: boolean): void {
+    if (publish && !compiled.valid) {
+        throw new WorkflowStoreError("DEFINITION_INVALID", "An invalid definition can be saved as a draft but not published or started.",
+            { diagnostics: diagnosticsJson(compiled.diagnostics) });
+    }
+}
+
 function corrupt(message: string): never {
     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", message);
 }
@@ -2150,10 +2158,7 @@ export class WorkflowStore {
         /** The published revision's agent pins as canonical JSON (migration 0099); null or absent when there are none. */
         agentPinsText?: string | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
-        if ((input.publish || input.start) && !input.compiled.valid) {
-            throw new WorkflowStoreError("DEFINITION_INVALID", "An invalid definition can be saved as a draft but not published or started.",
-                { diagnostics: diagnosticsJson(input.compiled.diagnostics) });
-        }
+        requirePublishable(input.compiled, input.publish || input.start !== null);
         if (input.start && !input.publish) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "Starting a live run requires publication.");
         return this.transaction(async client => {
             await this.requireLiveSession(client, input.workflowSessionId);

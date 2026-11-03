@@ -52,6 +52,7 @@ import {
     type WorkflowNodeExecutionRow,
     type WorkflowTestAdvanceReceipt,
     type WorkflowTestInterception,
+    requirePublishable,
 } from "./store.js";
 
 export { WORKFLOW_V2_INPUT_TTL_SECONDS } from "./store.js";
@@ -610,6 +611,10 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     requireStorableYaml(request.yaml);
     const compiled = compileWorkflowV2ForHost(host, request.yaml);
     const publish = request.publish === true || Boolean(request.start);
+    // Every refusal of the request itself comes before the claim below, so a refused request leaves no session row and no
+    // claim on its key: the corrected request may use the same key (a definition published or started with compile errors
+    // is refused here, as the store refuses it).
+    requirePublishable(compiled, publish);
     const startInputs = request.start ? request.start.inputs : null;
     if (request.start) validateRunInputs(compiled.ir, compiled.irSha256, request.start.inputs);
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
