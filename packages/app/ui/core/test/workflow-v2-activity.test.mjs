@@ -4,7 +4,7 @@
  *   - the activity is the workflow session's own events, newest first, in plain words, with who acted where the event
  *     names them, for one run and, in a step's details, one visit
  *   - a run that ended says why (completed, failed, cancelled with its reason and who asked, deleted, stopped with what
- *     the grace period cut off); a visit that ended says why (its time limit, the run's cancel or stop, its outcome, a
+ *     the time to finish cut off); a visit that ended says why (its time limit, the run's cancel or stop, its outcome, a
  *     runtime error with its message) and how its agent chat ended
  *   - an agent step lists the sessions its chat started, as loaded, each openable read-only
  *
@@ -16,7 +16,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal } from "../src/index.js";
 import {
-    projectWorkflowV2, workflowV2Activity, workflowV2ActorText, workflowV2EventTime, workflowV2RunEnding, workflowV2SessionSubtree, workflowV2VisitEnding,
+    projectWorkflowV2, workflowEventText, workflowV2Activity, workflowV2ActorText, workflowV2EventTime, workflowV2RunEnding, workflowV2SessionSubtree, workflowV2VisitEnding,
 } from "../src/workflow-v2-view.js";
 import { WorkflowV2NodeContent, WorkflowV2RunActivity } from "../../react/src/workflow-v2-panels.js";
 import { RUN, done, readModel } from "./workflow-v2-fixtures.mjs";
@@ -57,7 +57,7 @@ test("the activity lists who did what, newest first, for one run and one visit",
     const one = (type, data) => workflowV2Activity([event(1, type, data)], { runId: RUN })[0]?.what;
     assert.equal(one("workflow.stop_requested", { deadlineAt: "2026-11-03T09:00:00Z", reason: "release" }),
         "Stop asked; steps already started may finish until 2026-11-03T09:00:00Z: release");
-    assert.equal(one("workflow.stopped", { graceExpired: true, cancelledCount: 2 }), "Run stopped; 2 steps still running when the grace period ended were cancelled");
+    assert.equal(one("workflow.stopped", { graceExpired: true, cancelledCount: 2 }), "Run stopped; 2 steps were still running when the time to finish ended, so they were cancelled");
     assert.equal(one("workflow.cancelled", { command: "delete", deleted: true }), "Run cancelled (the workflow was deleted)");
     assert.equal(one("workflow.agent_spawned", { stateId: "review", childSessionId: "child-1234567890", deadline: "2026-11-03T10:00:00Z" }),
         "Agent chat for step 'review' created (session child-12); its time limit is 2026-11-03T10:00:00Z");
@@ -68,6 +68,24 @@ test("the activity lists who did what, newest first, for one run and one visit",
     assert.equal(one("workflow.state_completed", { stateId: "review", outcome: "accepted" }), "Step 'review' ended 'accepted'");
     assert.equal(one("workflow.completed", { outcome: "succeeded", stateId: "done" }), "Run ended succeeded at 'done'");
     assert.equal(one("workflow.unknown_kind", {}), undefined);
+    // ui-05: a failed step with no error text says what happened to its action, as the step log does.
+    assert.equal(one("workflow.state_failed", { stateId: "poll", effectStatus: "Failed", resultKind: "runtime_error" }), "Step 'poll' failed: the action Failed");
+});
+
+test("one sentence table: each event says the same thing on every screen that shows it, and only those screens show it (ui-05)", () => {
+    // Activity-only events have no step-log line; log-only events have no activity line; the run's control events have both.
+    assert.equal(workflowEventText("workflow.stop_requested", {}, "long"), null);
+    assert.equal(workflowEventText("workflow.parent_notified", {}, "short"), null);
+    for (const type of ["workflow.paused", "workflow.resumed", "workflow.vars_set", "workflow.input_accepted", "workflow.recovered", "workflow.cancel_requested"]) {
+        assert.ok(workflowEventText(type, {}, "short")?.text, `${type} short`);
+        assert.ok(workflowEventText(type, {}, "long")?.text, `${type} long`);
+    }
+    // The pause both screens show names the same person.
+    assert.equal(workflowEventText("workflow.paused", { actor: ALICE, reason: "lunch" }, "long").text, "⏸ Workflow paused by `Alice`: `lunch`");
+    assert.equal(workflowV2Activity([event(1, "workflow.paused", { actor: ALICE, reason: "lunch" })], { runId: RUN })[0].who, "Alice");
+    assert.equal(workflowEventText("workflow.unknown_kind", {}, "short"), null);
+    assert.equal(workflowEventText("workflow.paused", null, "other"), null);
+    assert.equal(workflowEventText(7, {}, "short"), null);
 });
 
 test("a run that ended says why: completed, failed, cancelled with its reason and who asked, deleted, stopped", () => {
@@ -87,7 +105,7 @@ test("a run that ended says why: completed, failed, cancelled with its reason an
         event(1, "workflow.stop_requested", { actor: ALICE, reason: "release freeze" }),
         event(2, "workflow.stopped", { reason: "release freeze", graceExpired: true, cancelledCount: 1 }),
     ]);
-    assert.equal(stopped.text, "Why it ended: It was stopped: release freeze; 1 step still running when the grace period ended was cancelled. "
+    assert.equal(stopped.text, "Why it ended: It was stopped: release freeze; 1 step was still running when the time to finish ended, so it was cancelled. "
         + "Asked by Alice. (2026-11-03 08:02:00 UTC)");
 });
 

@@ -8,7 +8,7 @@
  * which the worker draws and updates (packages/sdk workflow/canvas.ts).
  */
 
-import { workflowV2ActorText } from "./workflow-v2-view.js";
+import { workflowEventText } from "./workflow-v2-view.js";
 
 export const WORKFLOW_SESSION_GLYPH = "◇";
 
@@ -70,77 +70,15 @@ function inline(value, max = 120) {
     return code(text.length > max ? `${text.slice(0, max - 1)}…` : text);
 }
 
-const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const nonEmpty = (value) => typeof value === "string" && value.trim() !== "";
-const NOBODY_NAMED = new Set(["a person", "an agent", "the system"]);
 
 /**
- * " by <who>" for a pause, resume or variable update, in the activity list's words (workflowV2ActorText); nothing when
- * the event names nobody. A name or id the event carries stays a code span, so it cannot become markup.
- */
-function byActor(actor) {
-    const who = workflowV2ActorText(actor);
-    if (!who) return "";
-    return ` by ${NOBODY_NAMED.has(who) ? who : inline(who, 60)}`;
-}
-
-function keyList(value) {
-    const keys = Array.isArray(value) ? value.filter((key) => typeof key === "string" && key !== "") : [];
-    if (keys.length === 0) return "";
-    const shown = keys.slice(0, 5).map((key) => inline(key, 40)).join(", ");
-    return keys.length > 5 ? `${shown} and ${keys.length - 5} more` : shown;
-}
-
-/**
- * Text, a one-line summary and a colour for a workflow v2 control event, built only from the fields the runtime writes.
- * Missing or malformed fields leave a part out; nothing here throws. Null for any other event.
+ * Text, a one-line summary and a colour for a workflow v2 control event: its long form in the one sentence table the
+ * activity list also uses (workflowEventText). Missing or malformed fields leave a part out; nothing here throws. Null
+ * for any other event.
  */
 function controlEventView(event) {
-    const data = isObject(event?.data) ? event.data : {};
-    switch (event?.eventType) {
-        case "workflow.paused":
-        case "workflow.resumed": {
-            const paused = event.eventType === "workflow.paused";
-            const reason = nonEmpty(data.reason) ? `: ${inline(data.reason, 200)}` : ".";
-            const head = `${paused ? "⏸ Workflow paused" : "▶ Workflow resumed"}${byActor(data.actor)}`;
-            return { text: `${head}${reason}`, summary: paused ? "paused" : "resumed", color: paused ? "yellow" : "gray" };
-        }
-        case "workflow.vars_set": {
-            const set = keyList(data.set), removed = keyList(data.deleted);
-            const parts = [set ? `set ${set}` : "", removed ? `removed ${removed}` : ""].filter(Boolean);
-            const revision = Number.isSafeInteger(data.kvRevision) ? ` (revision ${data.kvRevision})` : "";
-            return { text: `✎ Workflow variables updated${byActor(data.actor)}${revision}${parts.length ? `: ${parts.join("; ")}` : ""}.`,
-                summary: "variables updated", color: "gray" };
-        }
-        case "workflow.input_accepted": {
-            const from = nonEmpty(data.senderSessionId) ? ` from ${inline(String(data.senderSessionId).slice(0, 8), 20)}` : "";
-            const contract = nonEmpty(data.contract) ? ` ${inline(data.contract, 80)}` : "";
-            const claimed = nonEmpty(data.claimedBy);
-            return { text: `✉ Input${contract}${from} accepted by the workflow; ${claimed ? "a waiting receive step took it" : "it waits for a receive step"}.`,
-                summary: claimed ? "input accepted and taken" : "input accepted", color: "gray" };
-        }
-        case "workflow.recovered": {
-            const action = nonEmpty(data.action) ? data.action : null;
-            // The event and its receipt are stored before the controller is started (service.ts), so it records a request, not a start.
-            const text = action === "dispatched" ? "a restart of the run was recorded; this does not show that it has started"
-                : action ? `action ${inline(action, 60)} recorded` : "recovery recorded";
-            const by = nonEmpty(data.requestedBy) ? ` by ${inline(String(data.requestedBy).slice(0, 8), 20)}` : "";
-            return { text: `↻ Recovery requested${by}: ${text}.`, summary: "recovery requested", color: "yellow" };
-        }
-        case "workflow.cancel_requested": {
-            const count = Array.isArray(data.effects) ? data.effects.length : 0;
-            return { text: `⏹ Asked ${count} running action${count === 1 ? "" : "s"} to stop. They may take a moment to end.`,
-                summary: `${count} action${count === 1 ? "" : "s"} asked to stop`, color: "yellow" };
-        }
-        case "workflow.parent_notified":
-            return { text: `✉ The parent session was told that the run ended${nonEmpty(data.parentSessionId) ? ` (${inline(String(data.parentSessionId).slice(0, 8), 20)})` : ""}.`,
-                summary: "parent told the run ended", color: "gray" };
-        case "workflow.parent_notification_skipped":
-            return { text: `✉ The parent session was not told that the run ended${nonEmpty(data.reason) ? `: ${inline(data.reason, 200)}` : "."}`,
-                summary: "parent not told", color: "yellow" };
-        default:
-            return null;
-    }
+    return workflowEventText(event?.eventType, event?.data, "long");
 }
 
 function formatNext(next) {
