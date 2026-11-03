@@ -25,6 +25,7 @@ import {
     createInitialState,
     buildPortalLinks,
     formatPortalLinksForCopy,
+    withCanvasTarget,
     createStore,
     AUTO_HISTORY_EVENT_SOFT_CAP,
     formatCompactNumber,
@@ -5648,7 +5649,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // session:share), so the button is disabled for anyone else — the server
     // enforces too, but a disabled button is clearer than a 403.
     const [manageOpen, setManageOpen] = React.useState(false);
-    const [linkModal, setLinkModal] = React.useState(null); // { url, warn } | null
+    const [linkModal, setLinkModal] = React.useState(null); // { url, warn, canvasSlots, canvasSlot } | null
     // The model picker is a separate (controller-owned) modal that would render
     // behind the Manage modal, so we close Manage while it is open and reopen
     // it when the picker closes — cancelling returns the user to Manage.
@@ -6288,7 +6289,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 const url = buildSessionLinkUrl(sid);
                 if (!url) return;
                 copySessionLinkText(url);
-                setLinkModal({ url, warn: false });
+                // The session's drawn canvases, for the dialog's "Include
+                // canvas" option. Read once at click time: the dialog is a
+                // snapshot of what exists now, and the plain link above is
+                // what lands on the clipboard until the sharer opts in.
+                const canvas = selectCanvasView(controller.getState());
+                const canvasSlots = canvas.sessionId === sid ? canvas.slots.map((s) => ({ slot: s.slot, name: s.name })) : [];
+                const canvasSlot = canvasSlots.some((s) => s.slot === canvas.slot) ? canvas.slot : (canvasSlots[0]?.slot ?? null);
+                setLinkModal({ url, warn: false, canvasSlots, canvasSlot });
                 resolveSessionLinkWarn(controller, sid).then((warn) => {
                     setLinkModal((cur) => (cur && cur.url === url ? { ...cur, warn } : cur));
                 }).catch(() => {});
@@ -6473,8 +6481,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         ? React.createElement(SessionLinkModal, {
             url: linkModal.url,
             warn: linkModal.warn,
-            onCopyAgain: () => {
-                copySessionLinkText(linkModal.url);
+            canvasSlots: linkModal.canvasSlots,
+            defaultCanvasSlot: linkModal.canvasSlot,
+            onCopyAgain: (url) => {
+                copySessionLinkText(url || linkModal.url);
                 controller.dispatch({ type: "ui/status", text: SESSION_LINK_COPIED_STATUS });
             },
             onClose: () => setLinkModal(null),
@@ -6485,18 +6495,35 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 // Compact confirmation dialog for the Copy link button: shows the copied URL
 // (selectable), confirms the copy, and warns when the link points at a private
 // session no one else can open yet.
-function SessionLinkModal({ url, warn, onCopyAgain, onClose }) {
+function SessionLinkModal({ url: baseUrl, warn, canvasSlots = [], defaultCanvasSlot = null, onCopyAgain, onClose }) {
     const [copied, setCopied] = React.useState("");
+    // "Include canvas" is off by default: the link this dialog copies on open
+    // is the plain session link it has always been. Checked, every row (and
+    // the clipboard) switches to `&view=canvas&slot=<n>` — the session with
+    // that canvas open beside the chat.
+    const slots = Array.isArray(canvasSlots) ? canvasSlots : [];
+    const [includeCanvas, setIncludeCanvas] = React.useState(false);
+    const [canvasSlot, setCanvasSlot] = React.useState(() => (
+        slots.some((s) => s.slot === defaultCanvasSlot) ? defaultCanvasSlot : (slots[0]?.slot ?? null)));
+    const url = includeCanvas && canvasSlot ? withCanvasTarget(baseUrl, canvasSlot) : baseUrl;
     const multi = buildPortalLinks(url, portalLinkOrigins).length > 1;
     const copy = React.useCallback((key, text) => {
         // onCopyAgain owns the single-origin clipboard write (and its status
         // line); the per-origin buttons write their own one URL.
-        if (key === "session" && !multi) { onCopyAgain?.(); }
+        if (key === "session" && !multi) { onCopyAgain?.(text); }
         else if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
         setCopied(key);
         window.setTimeout(() => setCopied(""), 1500);
     }, [multi, onCopyAgain]);
+    // The header says the link is on the clipboard, so changing which link
+    // it is re-copies it. Otherwise the box and the clipboard disagree, and
+    // the sharer pastes the link they just turned off.
+    const recopy = (nextInclude, nextSlot) => {
+        const next = nextInclude && nextSlot ? withCanvasTarget(baseUrl, nextSlot) : baseUrl;
+        onCopyAgain?.(next);
+    };
     const stop = (e) => e.stopPropagation();
+    const slotLabel = (s) => (s.name ? `Canvas ${s.slot} — ${s.name}` : `Canvas ${s.slot}`);
     return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-link-modal", onClick: stop },
             React.createElement("div", { className: "ps-share-modal-head" },
@@ -6507,6 +6534,39 @@ function SessionLinkModal({ url, warn, onCopyAgain, onClose }) {
                     ? "All entry-point links were copied. Copy just the one your recipient's network can reach, or take both."
                     : "Copied to your clipboard — anyone with access can open the session from this link."),
             React.createElement(MultiOriginLinkRows, { url, keyPrefix: "session", copied, onCopy: copy }),
+            React.createElement("div", { className: "ps-link-canvas" },
+                React.createElement("label", { className: "ps-canvas-share-check" },
+                    React.createElement("input", {
+                        type: "checkbox",
+                        checked: includeCanvas,
+                        disabled: slots.length === 0,
+                        onChange: (event) => {
+                            setIncludeCanvas(event.target.checked);
+                            recopy(event.target.checked, canvasSlot);
+                        },
+                    }),
+                    "Include canvas"),
+                slots.length > 1
+                    ? React.createElement("select", {
+                        className: "ps-canvas-slot-select ps-link-canvas-slot",
+                        "aria-label": "Canvas to open",
+                        value: canvasSlot ?? "",
+                        disabled: !includeCanvas,
+                        onChange: (event) => {
+                            const next = Number(event.target.value);
+                            setCanvasSlot(next);
+                            recopy(includeCanvas, next);
+                        },
+                    }, slots.map((s) => React.createElement("option", { key: s.slot, value: s.slot }, slotLabel(s))))
+                    : null,
+                slots.length === 1
+                    ? React.createElement("span", { className: "ps-link-canvas-name" }, slotLabel(slots[0]))
+                    : null),
+            slots.length === 0
+                ? React.createElement("div", { className: "ps-share-section-sub" }, "This session has no canvas yet.")
+                : includeCanvas
+                    ? React.createElement("div", { className: "ps-share-section-sub" }, "Opens the session with this canvas beside the chat.")
+                    : null,
             warn
                 ? React.createElement("div", { className: "ps-link-warn" }, SESSION_LINK_PRIVATE_WARNING)
                 : null));

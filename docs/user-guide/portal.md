@@ -254,8 +254,13 @@ changes anywhere, your browser reflects it within a poll cycle.
   shared read / shared write), and per-person grants. The toolbar also
   has a standalone **Copy link** button. A link is a *locator, not a
   grant*: if the session is private with no grants, the copy
-  confirmation warns "Only people with access can open this link." Who
-  can see and act on what is covered in
+  confirmation warns "Only people with access can open this link." The
+  copy confirmation also has an **Include canvas** checkbox (off by
+  default). Checked, the link becomes
+  `?session=<id>&view=canvas&slot=<n>`, which opens the session with that
+  canvas beside the chat; a session with more than one canvas shows a
+  picker for which one. Changing either option copies the new link again.
+  Who can see and act on what is covered in
   [Access, sharing & security](./security-and-sharing.md).
 - Deep links are explicit about failure: opening `?session=<id>` for a
   session that doesn't exist **or isn't shared with you** shows a clear
@@ -645,7 +650,7 @@ as your app's portal.
 | Rename session | Row menu → Rename |
 | Pin session | Row menu → Pin |
 | Group sessions | Select one or more non-system sessions, then click **Group** / **Group (n)** in the Sessions pane header (groups are private to you; any session you can read can be placed) |
-| Copy session link | **Copy link** button in the Sessions pane toolbar (also inside Share & settings). The link locates the session; it does not grant access |
+| Copy session link | **Copy link** button in the Sessions pane toolbar (also inside Share & settings). Tick **Include canvas** in the confirmation to open the session with a chosen canvas beside the chat. The link locates the session; it does not grant access |
 | Share / manage access | **Share** button in the Sessions pane toolbar → Share & settings (rename, copy link, visibility, per-person grants) |
 | Cancel session | Row menu → Cancel |
 | Multi-select | Toolbar toggle, click rows, then **Cancel selected** |

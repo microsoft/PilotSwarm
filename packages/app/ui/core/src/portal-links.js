@@ -35,6 +35,23 @@ export function buildPortalLinks(url, linkOrigins) {
 }
 
 /**
+ * Point a session link at one of the session's canvases:
+ * `?session=<id>` becomes `?session=<id>&view=canvas&slot=<n>`.
+ *
+ * The recipient lands on the session with that canvas open beside the chat —
+ * not `max=1`, which covers the chat and is the canvas Share dialog's link.
+ * A slot outside 1..5 (or none) returns the link unchanged, so "include
+ * canvas" with nothing to include can never produce a link to slot 1 by
+ * accident.
+ */
+export function withCanvasTarget(url, slot) {
+    const text = String(url || "");
+    const n = Number(slot);
+    if (!text || !Number.isInteger(n) || n < 1 || n > 5) return text;
+    return `${text}${text.includes("?") ? "&" : "?"}view=canvas&slot=${n}`;
+}
+
+/**
  * Clipboard shape: a bare URL for the single-origin case; one labeled line
  * per origin otherwise, so the sender pastes both and the recipient picks
  * the one their network can reach.

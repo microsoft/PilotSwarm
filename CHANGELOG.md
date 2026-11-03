@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+**Copy link can include a canvas.** The session Copy link confirmation has an
+**Include canvas** checkbox, off by default, so the copied link is unchanged
+unless you tick it. Ticked, the link adds `view=canvas&slot=<n>` and opens the
+session with that canvas beside the chat. A session with several canvases
+shows a picker; the one on screen is preselected. Changing either option
+copies the new link again. A session with no canvas shows the checkbox
+disabled.
+
 **Azure deploy: large Azure CLI output.** The base-infra step checks each
 Foundry deployment against `az cognitiveservices model list`. In some
 subscriptions that list is now larger than 1 MiB, which is Node's default

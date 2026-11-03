@@ -2,7 +2,7 @@
 // replaces waldemort's bundle monkey patch.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPortalLinks, formatPortalLinksForCopy } from "../src/portal-links.js";
+import { buildPortalLinks, formatPortalLinksForCopy, withCanvasTarget } from "../src/portal-links.js";
 
 const TWO = [
     { label: "Corporate", origin: "https://corp.example.com" },
@@ -45,4 +45,11 @@ test("clipboard format: bare URL alone; labeled lines when multiple", () => {
         formatPortalLinksForCopy(buildPortalLinks("https://x.test/p?q=1", TWO)),
         "Corporate: https://corp.example.com/p?q=1\nPrivate/VPN: https://vpn.example.com/p?q=1",
     );
+});
+
+test("withCanvasTarget adds view=canvas and the slot, and only for slots 1..5", () => {
+    assert.equal(withCanvasTarget("https://p/?session=s", 1), "https://p/?session=s&view=canvas&slot=1");
+    assert.equal(withCanvasTarget("https://p/?session=s", 5), "https://p/?session=s&view=canvas&slot=5");
+    assert.equal(withCanvasTarget("https://p/?session=s", 0), "https://p/?session=s");
+    assert.equal(withCanvasTarget("https://p/?session=s", null), "https://p/?session=s");
 });

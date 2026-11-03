@@ -5015,6 +5015,36 @@ body.is-resizing-pane-y iframe {
   margin-top: 8px;
 }
 
+/* "Include canvas" row in the Copy link dialog: the checkbox, then the slot
+   picker (several canvases) or the canvas name (one). */
+.ps-link-canvas {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.ps-link-canvas .ps-canvas-share-check {
+  margin-top: 0;
+}
+
+.ps-link-canvas .ps-link-canvas-slot {
+  max-width: 100%;
+  height: 26px;
+  font-size: 0.84rem;
+}
+
+.ps-link-canvas-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.84rem;
+  color: var(--ps-muted);
+}
+
 .ps-link-warn {
   margin-top: 12px;
   padding: 8px 10px;

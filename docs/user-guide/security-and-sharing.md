@@ -121,7 +121,8 @@ owner" message when you try to act.
 
 ### Links are locators, not grants
 
-The portal's **Copy link** puts a `?session=<id>` deep link on your clipboard.
+The portal's **Copy link** puts a `?session=<id>` deep link on your clipboard
+(with **Include canvas** ticked, `?session=<id>&view=canvas&slot=<n>`).
 The link only *points at* the session — opening it never grants access. If the
 session is private with no grants, only the owner and admins can open the link
 (the portal warns you when you copy a link in that state); share the session
