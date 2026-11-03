@@ -229,6 +229,35 @@ test('slow artifact completion never reopens it over Back, and Forward restores 
     } finally { release(); }
 });
 
+// The reader belongs to its artifact's session. Switching sessions used to
+// leave it open, titled with the other session's file and empty.
+test('the artifact reader steps aside for another session and comes back with its own', async ({page}) => {
+    await page.route('**/sessions/*/events*', route => {
+        const match = /\/sessions\/([^/]+)\/events$/.exec(new URL(route.request().url()).pathname);
+        if (!match) return route.fallback();
+        return route.fulfill({json:{ok:true,result:[{seq:1,eventType:'assistant.message',timestamp:1785000000000,data:{content:`Review [changes.csv](artifact://${match[1]}/changes.csv)`}}]}});
+    });
+    const f = await fixture(page); await select(page,1);
+    const reader = page.locator('.ps-artifact-pane');
+    await main(page).locator('.ps-artifact-card').first().click();
+    await expect(reader).toBeVisible();
+    await expect(reader).toContainText('Bulk pgindent');
+    await select(page,2);
+    // Let the switch settle: the reader can blink out while the session loads
+    // and come back empty, which a polling assertion would miss.
+    await page.waitForTimeout(1000);
+    expect(await reader.count(), 'no reader over the other session').toBe(0);
+    await select(page,1);
+    await expect(reader).toBeVisible();
+    await expect(reader).toContainText('Bulk pgindent');
+    // Opening the second session's own artifact shows that one there.
+    await select(page,2);
+    await main(page).locator('.ps-artifact-card').first().click();
+    await expect(reader).toBeVisible();
+    await expect(reader.locator('.ps-artifact-pane-name')).toHaveAttribute('title', 'changes.csv');
+    expect(f.errors).toEqual([]);
+});
+
 test('a revoked session fails closed and Forward still reaches the accessible session', async ({page}) => {
     await fixture(page); await select(page,1); await select(page,2);
     await page.route(new RegExp(`/sessions/${sid(1)}(?:/.*)?(?:\\?.*)?$`), route => route.fulfill({status:403,json:{ok:false,error:{code:'FORBIDDEN',message:'Access revoked'}}}));

@@ -53,6 +53,7 @@ import {
     selectOutboxOverlayBlocks,
     selectCanvasView,
     selectFileBrowserItems,
+    selectArtifactPaneShown,
     selectFilesFilterModal,
     selectFilesScope,
     selectFilesView,
@@ -10741,7 +10742,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     // The artifact reader takes over the right side; while it is up, the
     // surface on screen is NOT the canvas, so the canvas toggle must not
     // read as active (its next press still shows the canvas).
-    const artifactReaderOpen = useControllerSelector(controller, (s) => Boolean(s?.files?.paneOpen && s?.files?.selectedArtifactId));
+    const artifactReaderOpen = useControllerSelector(controller, selectArtifactPaneShown);
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
@@ -16273,7 +16274,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
         selectedArtifactId: rootState.files.selectedArtifactId || null,
-        artifactPaneOpen: Boolean(rootState.files.paneOpen),
+        artifactPaneOpen: selectArtifactPaneShown(rootState),
         adminVisible: Boolean(rootState.admin?.visible),
         // Providers & Budgets takes the workspace, like the admin console. The
         // reducer keeps the two apart — opening either closes the other — so
