@@ -549,22 +549,63 @@ export interface WorkflowV2ReadOptions {
 
 const readInvalid = (message: string): WorkflowStoreError => new WorkflowStoreError("WORKFLOW_READ_INVALID", message);
 
+/** A read's options as an adapter received them (read_workflow's arguments, or readWorkflow's options), for readWorkflowV2. */
+export interface WorkflowV2ReadRequest extends Omit<WorkflowV2ReadOptions, "includeYaml"> {
+    includeYaml?: unknown; agentVersions?: unknown; definitionRevision?: unknown; stepInput?: unknown;
+}
+
+/** Each read option as read_workflow spells it, in the order a refusal names them; readWorkflow's refusals use the option's own name. */
+const READ_TOOL_NAMES: { readonly [K in keyof Required<WorkflowV2ReadRequest>]: string } = {
+    runId: "run_id", includeYaml: "include_yaml", cursor: "cursor", limit: "limit", executionId: "execution_id", kvRevision: "kv_revision",
+    kvKey: "kv_key", agentVersions: "agent_versions", definitionRevision: "definition_revision", stepInput: "step_input",
+};
+
+/** Whether a read option is given: an absent or null one is not, nor include_yaml false (the view's default). */
+const readOptionGiven = (request: WorkflowV2ReadRequest, key: keyof WorkflowV2ReadRequest): boolean =>
+    request[key] !== undefined && request[key] !== null && !(key === "includeYaml" && request[key] === false);
+
+/** The read of its own asked for, the first given of agent versions (q1), a definition revision (q4), a step's inputs (q6); else null. Pure. */
+export function workflowV2ExclusiveRead(request: WorkflowV2ReadRequest): "agentVersions" | "definitionRevision" | "stepInput" | null {
+    return (["agentVersions", "definitionRevision", "stepInput"] as const).find(key => readOptionGiven(request, key)) ?? null;
+}
+
+/**
+ * One read of a workflow child, as both adapters dispatch it (read_workflow: `names` "tool"; readWorkflow: "api"): a read
+ * of its own, any other given option refused by the caller's name for it, or the view, a page or a value. Who may read
+ * is decided before this, and what an adapter adds to the view, after it.
+ */
+export async function readWorkflowV2(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests">, workflowSessionId: string,
+    request: WorkflowV2ReadRequest, names: "tool" | "api"): Promise<{ [key: string]: JsonValue }> {
+    const own = workflowV2ExclusiveRead(request);
+    const extra = (Object.keys(READ_TOOL_NAMES) as (keyof WorkflowV2ReadRequest)[])
+        .filter(key => key !== own && readOptionGiven(request, key)).map(key => (names === "tool" ? READ_TOOL_NAMES[key] : key));
+    if (own === "agentVersions") return readWorkflowV2AgentVersions(host, workflowSessionId, request.agentVersions, extra);
+    if (own === "definitionRevision") return readWorkflowV2DefinitionRevision(host.store, workflowSessionId, request.definitionRevision, extra);
+    if (own === "stepInput") return readWorkflowV2StepInput(host, workflowSessionId, request.stepInput, extra);
+    return readWorkflowV2View(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true });
+}
+
+/** A read of its own given with other read options (`extra`, by the caller's names): WORKFLOW_READ_INVALID naming them. */
+const readAlone = (what: string, extra: readonly string[]): void => {
+    if (extra.length) throw readInvalid(`${what}; leave out ${extra.join(", ")}.`);
+};
+
 /**
  * The agent versions publishing the current revision would lock, before anyone publishes (owner decision q1;
  * previewWorkflowV2AgentVersions): `agent_versions: true` on the tool, `agentVersions: true` on the API. A read of its
- * own: any other read argument given with it (`others`, by its name as the caller wrote it) is WORKFLOW_READ_INVALID.
+ * own: any other read argument given with it (`extra`, by its name as the caller wrote it) is WORKFLOW_READ_INVALID.
  */
 export async function readWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests">, workflowSessionId: string,
-    value: unknown, others: Record<string, unknown>): Promise<{ [key: string]: JsonValue }> {
+    value: unknown, extra: readonly string[] = []): Promise<{ [key: string]: JsonValue }> {
     if (value !== true) throw readInvalid("agent_versions (agentVersions) must be true: it reads the agent versions that publishing would lock.");
-    const extra = Object.entries(others).filter(([, given]) => given !== undefined && given !== null && given !== false).map(([name]) => name);
-    if (extra.length) throw readInvalid(`The agent versions are a read of their own; leave out ${extra.join(", ")}.`);
+    readAlone("The agent versions are a read of their own", extra);
     return previewWorkflowV2AgentVersions(host, workflowSessionId);
 }
 
 /**
  * A definition revision's YAML, to compare two versions of a draft (owner decision q4; mocks M01, M02, M20 "Compare
- * revision"): `definition_revision` on the tool, `definitionRevision` on the API, a read of its own. The YAML as it was
+ * revision"): `definition_revision` on the tool, `definitionRevision` on the API, a read of its own (`extra`: the other
+ * read options given with it). The YAML as it was
  * saved (`yaml`) and properly formatted (`formatted`: block style, two-space indent, its comments kept, so a draft written
  * as JSON compares as YAML; null when the text does not parse), with the revision's hash, validity, diagnostics and
  * whether it is the current or the published one. A revision the workflow does not have is DEFINITION_REVISION_NOT_FOUND.
@@ -572,10 +613,9 @@ export async function readWorkflowV2AgentVersions(host: Pick<WorkflowV2Host, "st
  * a person who may change the workflow).
  */
 export async function readWorkflowV2DefinitionRevision(store: WorkflowStore, workflowSessionId: string, value: unknown,
-    others: Record<string, unknown>): Promise<{ [key: string]: JsonValue }> {
+    extra: readonly string[] = []): Promise<{ [key: string]: JsonValue }> {
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw readInvalid("definition_revision (definitionRevision) must be a positive integer.");
-    const extra = Object.entries(others).filter(([, given]) => given !== undefined && given !== null && given !== false).map(([name]) => name);
-    if (extra.length) throw readInvalid(`A definition revision is a read of its own; leave out ${extra.join(", ")}.`);
+    readAlone("A definition revision is a read of its own", extra);
     const definition = await store.readDefinition(workflowSessionId);
     if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
     const revision = value <= definition.currentRevision ? await store.readRevision(workflowSessionId, value) : null;
@@ -745,10 +785,9 @@ function spliceStepInput(source: string, document: ReturnType<typeof parseDocume
  * mapping, is edited here; anything else is WORKFLOW_READ_INVALID with what to do instead.
  */
 export async function readWorkflowV2StepInput(host: Pick<WorkflowV2Host, "store" | "requests">, workflowSessionId: string, value: unknown,
-    others: Record<string, unknown>): Promise<{ [key: string]: JsonValue }> {
+    extra: readonly string[] = []): Promise<{ [key: string]: JsonValue }> {
     if (!isJsonObject(value) || typeof value.state !== "string" || !value.state) throw readInvalid("step_input (stepInput) must be { state, input? }.");
-    const extra = Object.entries(others).filter(([, given]) => given !== undefined && given !== null && given !== false).map(([name]) => name);
-    if (extra.length) throw readInvalid(`A step's inputs are a read of their own; leave out ${extra.join(", ")}.`);
+    readAlone("A step's inputs are a read of their own", extra);
     if (value.input !== undefined && !isJsonObject(value.input)) throw readInvalid("stepInput.input must map each input field to where its value comes from.");
     const state = value.state;
     const definition = await host.store.readDefinition(workflowSessionId);
@@ -1291,31 +1330,14 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
-        if (args.agent_versions !== undefined && args.agent_versions !== null) {
-            return payload({ ok: true, ...(await readWorkflowV2AgentVersions(context.host, workflowSessionId, args.agent_versions, {
-                run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
-                kv_revision: args.kv_revision, kv_key: args.kv_key, definition_revision: args.definition_revision, step_input: args.step_input,
-            })) });
-        }
-        if (args.definition_revision !== undefined && args.definition_revision !== null) {
-            return payload({ ok: true, ...(await readWorkflowV2DefinitionRevision(context.host.store, workflowSessionId, args.definition_revision, {
-                run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
-                kv_revision: args.kv_revision, kv_key: args.kv_key, step_input: args.step_input,
-            })) });
-        }
-        if (args.step_input !== undefined && args.step_input !== null) {
-            return payload({ ok: true, ...(await readWorkflowV2StepInput(context.host, workflowSessionId, args.step_input, {
-                run_id: args.run_id, include_yaml: args.include_yaml, cursor: args.cursor, limit: args.limit, execution_id: args.execution_id,
-                kv_revision: args.kv_revision, kv_key: args.kv_key,
-            })) });
-        }
         // cursor, limit and execution_id are passed as they came: the read checks them (WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID).
-        const view = await readWorkflowV2View(context.host.store, workflowSessionId, {
-            runId: optionalString(args, "run_id"), includeYaml: args.include_yaml === true,
-            cursor: args.cursor, limit: args.limit, executionId: args.execution_id, kvRevision: args.kv_revision, kvKey: args.kv_key,
-        });
-        // Report (never change) whether an active run's controller can still end it; the view only (a page or an execution's value
-        // has no run object).
+        const view = await readWorkflowV2(context.host, workflowSessionId, {
+            runId: optionalString(args, "run_id"), includeYaml: args.include_yaml, cursor: args.cursor, limit: args.limit,
+            executionId: args.execution_id, kvRevision: args.kv_revision, kvKey: args.kv_key, agentVersions: args.agent_versions,
+            definitionRevision: args.definition_revision, stepInput: args.step_input,
+        }, "tool");
+        // Report (never change) whether an active run's controller can still end it; the view only (a page, an execution's value
+        // or a read of its own has no run object).
         const shown = isJsonObject(view.run) && typeof view.run.runId === "string" ? await context.host.store.readRun(view.run.runId) : null;
         if (shown && isJsonObject(view.run) && ACTIVE_RUN_STATUSES.includes(shown.status)) {
             const controller = await inspectWorkflowV2Controller(context.host, shown);

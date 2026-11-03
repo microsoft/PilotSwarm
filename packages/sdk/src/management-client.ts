@@ -162,7 +162,7 @@ import {
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
-import { readWorkflowV2AgentVersions, readWorkflowV2DefinitionRevision, readWorkflowV2StepInput, readWorkflowV2View } from "./workflow/v2/tools.js";
+import { readWorkflowV2, workflowV2ExclusiveRead } from "./workflow/v2/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/v2/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
@@ -1933,48 +1933,26 @@ export class PilotSwarmManagementClient {
         if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
         const store = this._catalog!.workflowStore?.();
         if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
-        const cursor = options?.cursor ?? null;
-        const executionId = options?.executionId ?? null;
-        const kvRevision = options?.kvRevision ?? null;
-        const kvKey = options?.kvKey ?? null;
-        const agentVersions = options?.agentVersions ?? null;
-        const definitionRevision = options?.definitionRevision ?? null;
-        const stepInput = options?.stepInput ?? null;
+        const request = { ...options, runId };
+        const enabled = this.config?.workflowCommands;
         let view: Record<string, unknown>;
         try {
-            // The agent versions publishing would lock (owner decision q1): resolved as this client's publications resolve them.
-            if (agentVersions !== null) {
-                const enabled = this.config?.workflowCommands;
-                return await readWorkflowV2AgentVersions({ store, ...(enabled?.requests === true
-                    ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, agentVersions,
-                { runId: options?.runId, cursor, executionId, limit: options?.limit, kvRevision, kvKey, definitionRevision, stepInput });
-            }
-            // One definition revision's YAML, to compare two versions (owner decision q4). The portal reads it only for a person
-            // who may change the workflow; this client is trusted.
-            if (definitionRevision !== null) {
-                return await readWorkflowV2DefinitionRevision(store, sessionId, definitionRevision,
-                    { runId: options?.runId, cursor, executionId, limit: options?.limit, kvRevision, kvKey, stepInput });
-            }
-            // An agent step's inputs and the draft's YAML a new mapping proposes (owner decision q6), compiled as this client's
-            // saves compile it. The portal reads it only for a person who may change the workflow; this client is trusted.
-            if (stepInput !== null) {
-                return await readWorkflowV2StepInput({ store, ...(this.config?.workflowCommands?.requests === true ? { requests: true } : {}) },
-                    sessionId, stepInput, { runId: options?.runId, cursor, executionId, limit: options?.limit, kvRevision, kvKey });
-            }
-            view = await readWorkflowV2View(store, sessionId, {
-                runId, ...(cursor !== null ? { cursor } : {}), ...(executionId !== null ? { executionId } : {}),
-                ...(options?.limit !== undefined && options.limit !== null ? { limit: options.limit } : {}),
-                ...(kvRevision !== null ? { kvRevision } : {}), ...(kvKey !== null ? { kvKey } : {}),
-            });
+            // The agent versions publishing would lock (owner decision q1) are resolved as this client's publications resolve them,
+            // and a step's proposed inputs (q6) compiled as its saves compile them. The portal reads a definition revision's and a
+            // step's YAML only for a person who may change the workflow; this client is trusted.
+            view = await readWorkflowV2({ store, ...(enabled?.requests === true
+                ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
         } catch (error) {
             const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;
             if (error instanceof WorkflowStoreError && status !== undefined) throw failure(error.code, status, error.message);
             throw error;
         }
         // The read never depends on the option: absent (or no options at all, as for a host that lends this adapter its
-        // catalog), the view is exactly the tool's. A page or an execution's value is not the view: it has no commands.
-        const enabled = this.config?.workflowCommands;
-        if (!enabled || cursor !== null || executionId !== null || kvRevision !== null || kvKey !== null) return view;
+        // catalog), the view is exactly the tool's. A page, an execution's value or a read of its own is not the view: it has
+        // no commands.
+        const given = (value: unknown) => value !== undefined && value !== null;
+        if (!enabled || workflowV2ExclusiveRead(request) !== null || given(request.cursor) || given(request.executionId)
+            || given(request.kvRevision) || given(request.kvKey)) return view;
         const run = view.run as { runId?: unknown } | null | undefined;
         const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
         // A draft's current revision: its YAML is what a person who may change the draft edits.

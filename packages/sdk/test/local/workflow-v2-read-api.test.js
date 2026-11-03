@@ -18,7 +18,7 @@ import { createManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
-import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowV2DefinitionRevision, readWorkflowV2StepInput, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
+import { formattedWorkflowYaml, readWorkflowFromTool, readWorkflowV2, readWorkflowV2DefinitionRevision, readWorkflowV2StepInput, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -491,7 +491,8 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             const second = compileWorkflowV2(YAML);
             await store.replaceDraft({ workflowSessionId, expectedRevision: 1, yaml: YAML, compiled: second, declaredSemver: "1.0.0", actor,
                 operationId: "replace", requestSha256: "replace", title: "Workflow: read-api" });
-            const read = (value, others = {}) => readWorkflowV2DefinitionRevision(store, workflowSessionId, value, others);
+            // Read through the one dispatcher both adapters use (readWorkflowV2), with the API's option names.
+            const read = (value, others = {}) => readWorkflowV2({ store }, workflowSessionId, { ...others, definitionRevision: value }, "api");
 
             const one = (await read(1)).definitionRevision;
             expect(one).toMatchObject({ revision: 1, definitionHash: first.yamlSha256, valid: true, current: false, published: false, yaml: asJson });
@@ -510,12 +511,17 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             expect(formattedWorkflowYaml("a: [1, 2\n")).toBeNull();
             // Refusals: a revision the workflow does not have, an invalid one, and other read arguments with it.
             await expect(read(3)).rejects.toMatchObject({ code: "DEFINITION_REVISION_NOT_FOUND" });
-            await expect(readWorkflowV2DefinitionRevision(store, randomUUID(), 1, {})).rejects.toMatchObject({ code: "WORKFLOW_NOT_FOUND" });
+            await expect(readWorkflowV2DefinitionRevision(store, randomUUID(), 1)).rejects.toMatchObject({ code: "WORKFLOW_NOT_FOUND" });
             for (const value of [0, -1, 1.5, "1"]) await expect(read(value)).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID" });
             await expect(read(1, { limit: 5 })).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(/leave out limit\.$/) });
-            // The agent tool reads it for the workflow's parent.
+            // Only an absent or null option is absent: a limit of false is given, and refused like any other.
+            await expect(read(1, { limit: false, kvKey: null })).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(/leave out limit\.$/) });
+            // The agent tool reads it for the workflow's parent; its refusals name its own arguments, and include_yaml false is its default.
             const tool = async args => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId, ...args }, { callerSessionId: parent, host: { catalog, store } }));
             expect(await tool({ definition_revision: 1 })).toMatchObject({ ok: true, workflowId: workflowSessionId, definitionRevision: { revision: 1, yaml: asJson } });
+            expect(await tool({ definition_revision: 1, include_yaml: false })).toMatchObject({ ok: true, definitionRevision: { revision: 1 } });
+            expect(await tool({ definition_revision: 1, kv_key: "x", execution_id: "e" })).toMatchObject({ ok: false,
+                error: { code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(/leave out execution_id, kv_key\.$/) } });
             expect(await tool({ definition_revision: 9 })).toMatchObject({ ok: false, error: { code: "DEFINITION_REVISION_NOT_FOUND" } });
         } finally {
             await catalog.close();
@@ -583,7 +589,7 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled, actor,
                 operationId: "create", requestSha256: "step-input", publish: false, start: null, title: "Workflow: step-input" });
             const host = { store, requests: true };
-            const read = (value, others = {}) => readWorkflowV2StepInput(host, workflowSessionId, value, others);
+            const read = (value, others = {}) => readWorkflowV2(host, workflowSessionId, { ...others, stepInput: value }, "api");
 
             const { stepInput } = await read({ state: "review" });
             expect(stepInput).toMatchObject({ state: "review", revision: 1, definitionHash: compiled.yamlSha256, schemaDeclared: true,
@@ -632,7 +638,7 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
                 await expect(read(value)).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(pattern) });
             }
             await expect(read({ state: "review" }, { limit: 5 })).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(/leave out limit\.$/) });
-            await expect(readWorkflowV2StepInput(host, randomUUID(), { state: "review" }, {})).rejects.toMatchObject({ code: "WORKFLOW_NOT_FOUND" });
+            await expect(readWorkflowV2StepInput(host, randomUUID(), { state: "review" })).rejects.toMatchObject({ code: "WORKFLOW_NOT_FOUND" });
             // The agent tool reads it for the workflow's parent.
             const tool = async args => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId, ...args }, { callerSessionId: parent, host: { catalog, store } }));
             expect(await tool({ step_input: { state: "review" } })).toMatchObject({ ok: true, workflowId: workflowSessionId, stepInput: { state: "review", runInputs: ["pr", "repo"] } });
