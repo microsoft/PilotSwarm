@@ -23,31 +23,26 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
         {
             title: "Read Workflow",
             description:
-                "Read a version 2 workflow session without changing it, as a person: its definition state, current revision and "
-                + "diagnostics, graph and runs, and one run (run_id, default the live run) with the newest page of its node executions, "
-                + "inbox and outbox (and a test run's interceptions), each page oldest first, the rows still open that a page does not hold "
-                + "(openExecutions, openInbox, openOutbox, run.test.openInterceptions), and run.pages: each section's nextCursor. Give a "
-                + "nextCursor back as cursor (it is a JSON object; limit may go with it) to read that section's next, older page; null "
-                + "means none is older. execution_id (with run_id, default the live run) reads one node execution with its whole output "
-                + "or error (execution.result) instead of its preview. limit: rows per page, 1 to 200. kv_revision reads that revision of the "
-                + "run's variables (each with its size and sha256), and kv_key with it one variable, whole. agent_versions: true, alone, "
-                + "reads the agent versions that publishing the current revision would lock now (it locks nothing). definition_revision, alone, "
-                + "reads that revision of the definition (its YAML as saved and formatted). step_input ({ state, input? }), alone, reads an agent "
-                + "step's input fields in the current draft and, with input, the draft's YAML with only that step's inputs changed. Refusals carry their code: "
+                "Read a version 2 workflow session without changing it, as a person: its definition (state, current revision, "
+                + "diagnostics), graph and runs, and one run (run_id, default the live run). Each section of the run holds its newest rows, "
+                + "oldest first; rows still open are listed apart, however old (openExecutions, openInbox, openOutbox, "
+                + "run.test.openInterceptions). run.pages gives each section's nextCursor: give it back as cursor (a JSON object; limit may "
+                + "go with it) for that section's next, older page; null means none is older. execution_id, kv_revision, agent_versions, "
+                + "definition_revision and step_input are separate reads: each argument says what it returns. Refusals carry their code: "
                 + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, DEFINITION_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to read"),
                 run_id: z.string().optional().describe("A run of the workflow; default the live run"),
                 cursor: z.record(z.string(), z.unknown()).optional()
                     .describe("A nextCursor from run.pages (or from a page), given back as it was: that section's next, older page"),
-                execution_id: z.string().optional().describe("A node execution of the run: its whole output or error"),
+                execution_id: z.string().optional().describe("With run_id, not with cursor: one step execution's whole output or error instead of its preview"),
                 limit: z.number().int().optional().describe("Rows per page of each section, 1 to 200"),
-                kv_revision: z.number().int().optional().describe("A revision of the run's variables, 1 to its kvRevision"),
+                kv_revision: z.number().int().optional().describe("A revision of the run's variables, 1 to its kvRevision, each with its size and sha256"),
                 kv_key: z.string().optional().describe("With kv_revision: one variable of that revision, whole"),
-                agent_versions: z.boolean().optional().describe("true: the agent versions publishing the current revision would lock now, and nothing else"),
-                definition_revision: z.number().int().optional().describe("A revision of the definition, 1 to the current one: its YAML, and nothing else"),
+                agent_versions: z.boolean().optional().describe("true, alone: the agent versions publishing the current revision would lock now; it locks nothing"),
+                definition_revision: z.number().int().optional().describe("Alone: a revision of the definition, 1 to the current one: its YAML as saved and formatted"),
                 step_input: z.record(z.string(), z.unknown()).optional()
-                    .describe("{ state, input? }: an agent step's input fields in the current draft; with input, the YAML that mapping proposes"),
+                    .describe("{ state, input? }, alone: an agent step's input fields in the current draft; with input, the YAML that mapping proposes"),
             },
         },
         withToolErrors(async ({ session_id, run_id, cursor, execution_id, limit, kv_revision, kv_key, agent_versions, definition_revision, step_input }) => {
@@ -81,7 +76,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "and test_advance when the workers run controller 1.9.0), operation_id (repeat it to retry the same command) and the "
                 + "operation's arguments (expected_revision, definition_hash, yaml, inputs, vars, set, delete, expected_kv_revision, run_id, "
                 + "reason, grace_seconds, agent_mode, fixtures, scenario, interception_id, response, seconds). Answers the command's receipt. "
-                + "A workflow inside a workflow agent state's subtree takes only pause, stop and cancel; read a workflow with read_workflow "
+                + "A workflow started under another workflow's agent step takes only pause, stop and cancel; read a workflow with read_workflow "
                 + "first.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to command"),
