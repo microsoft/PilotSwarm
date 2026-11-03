@@ -9,7 +9,7 @@ import {
 import {
     WorkflowV2Banners, WorkflowV2DefinitionPanel, WorkflowV2DefinitionToggle, WorkflowV2DraftEditor, WorkflowV2DraftToggle, WorkflowV2NoGraph,
     WorkflowV2NodeContent, WorkflowV2RunCommandNotice, WorkflowV2RunControls, WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock,
-    WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2TestToggle, WorkflowV2Variables, WorkflowV2VariablesToggle,
+    WorkflowV2RunActivity, WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2TestToggle, WorkflowV2Variables, WorkflowV2VariablesToggle,
 } from "./workflow-v2-panels.js";
 
 const EMPTY_EVENTS = [];
@@ -76,7 +76,7 @@ function useWorkflowView(controller) {
     const runNotice = workflowV2RunCommandNotice(runCommand);
     return { sessionId, session, view, nodes, selected, select, live, status, v2, definition, readError,
         workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, draftEditor, testControls, testResponder,
-        runNotice };
+        runNotice, events };
 }
 
 /** The read model's last failure for the selected run, beside the graph, with a Retry that asks again now. */
@@ -163,7 +163,7 @@ function WorkflowGraph({ definition, nodes, selected, select, banners }) {
 
 export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
     const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded,
-        runControls, variables, publication, draftEditor, testControls, testResponder, runNotice } = useWorkflowView(controller);
+        runControls, variables, publication, draftEditor, testControls, testResponder, runNotice, events } = useWorkflowView(controller);
     const variablesId = `wf-vars-${React.useId().replace(/:/g, "")}`;
     const variablesOpen = Boolean(variables && view.variablesOpen);
     const publicationId = `wf-publish-${React.useId().replace(/:/g, "")}`;
@@ -205,6 +205,8 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
                 onClick: () => selectNode(selected.id) }, "Step details")),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
+        // Why the shown run ended, and who did what in it (owner decision q14; mocks M09, M14).
+        v2?.bound && v2.runId ? React.createElement(WorkflowV2RunActivity, { ending: v2.ending, events, runId: v2.runId }) : null,
         draftOpen ? React.createElement(WorkflowV2DraftEditor, { controller, sessionId, model: draftEditor, id: draftId, revisionReads: view.definitionRevisions ?? null,
             // The agent steps whose inputs the step-input editor changes (owner decision q6), and what it has read.
             agentSteps: (definition?.states || []).filter(state => state?.type === "agent").map(state => state.id),
@@ -257,7 +259,9 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
 }
 
 export function WorkflowNodePane({ controller }) {
-    const { sessionId, view, selected, select, nodes, v2 } = useWorkflowView(controller);
+    const { sessionId, view, selected, select, nodes, v2, events } = useWorkflowView(controller);
+    // The session rows loaded: the sessions under an agent step (owner decision q14; mock M14 "View owned subtree").
+    const sessionsById = useControllerSelector(controller, state => state.sessions.byId);
     const [tab, setTab] = React.useState("details");
     const tabId = React.useId();
     if (!selected && v2) return React.createElement(WorkflowV2NoGraph, { projection: v2 });
@@ -283,6 +287,8 @@ export function WorkflowNodePane({ controller }) {
                 runError: v2?.status.terminalState === selected.id ? v2.error : null,
                 // One execution's own result, chosen in History for exactly the shown run and this state.
                 runId: v2?.runId ?? null, selection: view.selectedExecution ?? null, onTab: setTab,
+                // Why the visit ended, its activity and the sessions under an agent step (owner decision q14).
+                events: v2?.bound ? events : null, sessionsById,
                 onSelectExecution: executionId => controller.selectWorkflowExecution(sessionId,
                     executionId === null ? null : { runId: v2?.runId ?? null, stateId: selected.id, executionId }),
                 // That execution's whole value (read for exactly the shown run), and the run's older history.

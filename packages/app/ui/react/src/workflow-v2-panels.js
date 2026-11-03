@@ -1,8 +1,8 @@
 import React from "react";
 import {
-    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
-    workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2ShownExecution,
-    workflowV2WholeValue,
+    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
+    workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
+    workflowV2VisitEnding, workflowV2WholeValue,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -138,16 +138,47 @@ function kindProperties(node, current) {
  * An agent state's child session (design 03, R23): a click opens its actual chat, which people read but cannot
  * write to. Nothing is opened when the child has not been created yet.
  */
-function AgentChild({ agent, openSession }) {
+function AgentChild({ agent, openSession, subtree = [] }) {
     if (!agent?.childSessionId) return null;
+    // Every session under this step: its agent chat and what that chat started (mock M14 "View owned subtree").
+    const under = subtree.filter(entry => entry.depth > 0);
     return h("div", { className: "ps-workflow-agent-child" },
         h("h3", null, "Agent session"),
         h("div", { className: "ps-workflow-property" }, h("span", null, "Child session"), h("strong", null, agent.childSessionId)),
         h("div", { className: "ps-workflow-property" }, h("span", null, "Lifecycle"),
-            h("strong", null, `${agent.spawned ? "Created" : "Not created yet"}${agent.end ? ` · ended (${agent.end})` : ""}`)),
+            h("strong", null, `${agent.spawned ? "Created" : "Not created yet"}${agent.end ? ` · ended (${agent.end === "cancel" ? "cancelled" : agent.end === "done" ? "finished" : agent.end})` : ""}`)),
         openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition", "data-action": "open-agent-chat",
             onClick: () => openSession(agent.childSessionId) }, "Open the agent's chat (read-only)") : null,
-        h("p", null, "People can read this chat. Only the workflow's parent agent can message it, and only the agent's typed result completes the step."));
+        h("p", null, "People can read this chat. Only the workflow's parent agent can message it, and only the agent's typed result completes the step."),
+        under.length ? h("div", { className: "ps-workflow-subtree", "aria-label": "Sessions under this step" },
+            h("h3", null, `Sessions under this step (${under.length})`),
+            h("ul", { style: { margin: 0, paddingLeft: 16 } }, under.map(entry => h("li", { key: entry.sessionId, "data-session": entry.sessionId,
+                style: { marginLeft: (entry.depth - 1) * 12 } },
+            `${entry.title ?? entry.sessionId} · ${entry.status}`,
+            openSession ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-session", style: { marginLeft: 6 },
+                onClick: () => openSession(entry.sessionId) }, "Open (read-only)") : null)))) : null);
+}
+
+/** A collapsed list of activity rows (owner decision q14): time, what happened, who, newest first. */
+function ActivityDetails({ rows, label }) {
+    if (!rows.length) return null;
+    return h("details", { className: "ps-workflow-activity" },
+        h("summary", null, `${label} (${rows.length})`),
+        h("ol", { style: { margin: 0, paddingLeft: 18 } }, rows.map((row, index) => h("li", { key: row.seq ?? index, "data-level": row.level,
+            style: { color: TONES[row.level] ?? "inherit" } }, `${row.at ? `${row.at} · ` : ""}${row.what}${row.who ? ` · by ${row.who}` : ""}`))));
+}
+
+/**
+ * Why the shown run ended and who did what in it (owner decision q14; mocks M09 "Inspect audit", M14 "Inspect
+ * cancellation"): one line once it ended, then its activity, newest first, from the workflow's own events.
+ */
+export function WorkflowV2RunActivity({ ending, events, runId }) {
+    const rows = workflowV2Activity(events, { runId });
+    if (!ending && !rows.length) return null;
+    return h("section", { className: "ps-workflow-run-activity", "aria-label": "Run activity",
+        style: { display: "grid", gap: 4, padding: "4px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
+    ending ? h("p", { role: "status", "data-ending": ending.status, style: { margin: 0 } }, ending.text) : null,
+    h(ActivityDetails, { rows, label: "Activity of this run" }));
 }
 
 /**
@@ -195,7 +226,8 @@ function KvApplied({ execution, runId, kv }) {
  * current visit applied beside the accepted ones and compares them. Without them neither is offered.
  */
 export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError, openSession = null, runId = null, selection = null,
-    onSelectExecution = null, onTab = null, executionValues = null, onReadWholeValue = null, history = null, onLoadOlder = null, kv = null }) {
+    onSelectExecution = null, onTab = null, executionValues = null, onReadWholeValue = null, history = null, onLoadOlder = null, kv = null,
+    events = null, sessionsById = null }) {
     const property = (label, value) => h("div", { className: "ps-workflow-property", key: label },
         h("span", null, label), h("strong", null, value));
     const current = selected.current;
@@ -206,6 +238,8 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             property("Status", selected.stateLabel),
             property("Visits", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
             property("Last outcome", lastOutcome),
+            // Why the latest visit ended (owner decision q14; mock M14 "Inspect cancellation").
+            workflowV2VisitEnding(current) ? property("Why it ended", workflowV2VisitEnding(current).text) : null,
             kindProperties(selected, current).map(([label, value]) => property(label, value)),
             selected.description.map((line, i) => h("p", { key: i }, line)),
             selected.type === "terminal" ? h("p", null, selected.summary || "The workflow ends at this step.") : null,
@@ -214,7 +248,7 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                 h("button", { key: label, type: "button", className: "ps-workflow-transition",
                     disabled: !nodes.some(node => node.id === target), onClick: () => select(target) },
                 label, " → ", target, workflowV2RouteKind(selected, label) === "error" ? " · runtime error route" : "")),
-            current?.agent ? h(AgentChild, { agent: current.agent, openSession }) : null,
+            current?.agent ? h(AgentChild, { agent: current.agent, openSession, subtree: workflowV2SessionSubtree(sessionsById, current.agent.childSessionId) }) : null,
             kv ? h(KvApplied, { execution: current, runId, kv }) : null,
             current?.inbox ? h(React.Fragment, null, h("h3", null, "Message taken"),
                 property("Message type", current.inbox.contract), property("From", current.inbox.senderSessionId),
@@ -224,7 +258,9 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                 property("Attempts", String(current.outbox.attempts ?? "—")),
                 property("Recipient", current.outbox.recipientSessionId || "—"),
                 current.outbox.intake ? h(IntakeOutcome, { intake: current.outbox.intake }) : null,
-                h(Value, { value: current.outbox.payloadPreview, label: "Sent payload" })) : null);
+                h(Value, { value: current.outbox.payloadPreview, label: "Sent payload" })) : null,
+            // Who did what in this visit, from the workflow's events (owner decision q14; mock M09 "Inspect audit").
+            events && current?.id ? h(ActivityDetails, { rows: workflowV2Activity(events, { runId, nodeExecutionId: current.id }), label: "Activity of this visit" }) : null);
     }
     if (tab === "output") {
         const shown = workflowV2ShownExecution(selected, runId, selection);

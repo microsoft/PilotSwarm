@@ -3,7 +3,7 @@ import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
     compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
-    workflowV2WholeValue,
+    workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue,
 } from "./workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
@@ -154,6 +154,8 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
         loading: Boolean(safeView.loading) && !definition,
         error: typeof safeView.error === "string" && safeView.error ? safeView.error : null,
         noGraph: Boolean(v2 && !v2.definition),
+        // The workflow's events as loaded: the activity of a run and of one visit (owner decision q14).
+        events: list,
     };
 }
 
@@ -261,7 +263,9 @@ export function selectWorkflowViewSelection(state) {
     const selected = nodes[selectedIndex] || null;
     const occurrences = selected?.occurrences || [];
     const occurrenceIndex = occurrences.length ? Math.max(0, Math.min(Number(modal.occurrenceIndex) || 0, occurrences.length - 1)) : 0;
-    return { modal, projection, nodes, selectedIndex, selected, occurrences, occurrenceIndex, occurrence: occurrences[occurrenceIndex] || null };
+    return { modal, projection, nodes, selectedIndex, selected, occurrences, occurrenceIndex, occurrence: occurrences[occurrenceIndex] || null,
+        // The session rows loaded: the sessions under an agent step (owner decision q14).
+        sessionsById: state?.sessions?.byId ?? null };
 }
 
 /** The keys of a person's run controls in the workflow view. */
@@ -1326,6 +1330,8 @@ function executionResultLines(node, projection) {
 
 /** At most this many variables of a comparison are listed in the TUI's details (the rest are counted). */
 const KV_COMPARE_ROWS = 12;
+const SUBTREE_ROWS = 8;
+const ACTIVITY_ROWS = 6;
 
 /**
  * The variables of the visit shown (mock M15 "Accepted 9 / applied 8", "Inspect update", "Compare snapshots"): the
@@ -1452,6 +1458,8 @@ function detailLines(selection, width) {
         else for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }
     for (const banner of projection.banners) add(`! ${banner.text}`, banner.level === "error" ? "red" : "yellow");
+    // Why the shown run ended (owner decision q14), wrapped: it is read whole.
+    if (projection.v2?.ending) for (const text of wrapped(projection.v2.ending.text, Math.max(20, width))) add(text, "yellow");
     if (projection.readError) add(`The workflow's current status could not be read: ${projection.readError}`, "red");
     if (!selected) {
         if (projection.noGraph) add("This workflow has no graph to show: its definition is not valid or not available.", "yellow");
@@ -1465,6 +1473,9 @@ function detailLines(selection, width) {
     add(`Visits: ${selected.runs}${selected.partial ? " in loaded history" : ""}`);
     if (node.shape === "v2") {
         add(`Last outcome: ${node.outcome ? `${node.outcome}${node.resultKind === "runtime_error" ? " · runtime error" : ""}` : "Not recorded"}`);
+        // Why the visit the details show ended (owner decision q14; mock M14 "Inspect cancellation").
+        const ending = workflowV2VisitEnding(workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution).execution);
+        if (ending) for (const text of wrapped(`Why it ended: ${ending.text}`, Math.max(20, width))) add(text);
         // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
         if (node.kind === "agent") {
             add(`Agent: ${workflowV2AgentTask(node)}`);
@@ -1493,6 +1504,14 @@ function detailLines(selection, width) {
             add(`${chosen ? "▸" : " "} ${visit} · ${result} · ${occurrence.childSessionId}`, chosen ? "white" : "gray", chosen ? { bold: true } : {});
         });
         add("People can read these chats; the server refuses their prompts, answers and steers.", "gray");
+        // The sessions the chosen chat started (owner decision q14; mock M14 "View owned subtree"), as loaded here.
+        const under = selection.occurrence?.childSessionId
+            ? workflowV2SessionSubtree(selection.sessionsById, selection.occurrence.childSessionId).filter(entry => entry.depth > 0) : [];
+        if (under.length) {
+            add(`Sessions under this chat (${under.length}):`, "cyan");
+            for (const entry of under.slice(0, SUBTREE_ROWS)) add(`${"  ".repeat(entry.depth)}${entry.title ?? entry.sessionId} · ${entry.status}`, "gray");
+            if (under.length > SUBTREE_ROWS) add(`  … ${under.length - SUBTREE_ROWS} more (the portal lists them all)`, "gray");
+        }
     } else if (node.shape === "v2" && node.kind === "agent") {
         add("No child session is listed for it yet.", "gray");
     }
@@ -1514,6 +1533,16 @@ function detailLines(selection, width) {
     add(history.title, "cyan");
     if (history.lines.length) for (const line of history.lines) add(line);
     else add("  No visits in the loaded history.", "gray");
+    // Who did what in the visit the details show, from the workflow's events (owner decision q14; mock M09 "Inspect audit").
+    const shownVisit = node.shape === "v2" ? workflowV2ShownExecution(node, projection.v2?.runId ?? null, projection.selectedExecution).execution : null;
+    const activity = shownVisit?.id && projection.v2?.bound
+        ? workflowV2Activity(projection.events, { runId: projection.v2.runId, nodeExecutionId: shownVisit.id, limit: ACTIVITY_ROWS }) : [];
+    if (activity.length) {
+        add("Activity of this visit (newest first):", "cyan");
+        for (const row of activity) {
+            add(`  ${row.at ? `${row.at} · ` : ""}${row.what}${row.who ? ` · by ${row.who}` : ""}`, row.level === "error" ? "red" : row.level === "warning" ? "yellow" : "white");
+        }
+    }
     // The shown run's older history: o reads its next, older page (the read model holds its newest rows and open ones).
     const runHistory = node.shape === "v2" ? projection.v2?.readModel?.run?.history ?? null : null;
     if (runHistory?.loading) add("  Reading older history…", "yellow");

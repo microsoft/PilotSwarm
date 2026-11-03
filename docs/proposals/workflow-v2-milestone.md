@@ -1761,3 +1761,16 @@ serves), no typed input into a running test, and no display of lineage, receipts
   nothing is sent to the test run, and people still cannot write to a step's own chat. Offered only for a workflow
   with a parent session; the parent's own input rule still applies, and the server decides. The same helper
   (`workflowV2AskParentMessage`) serves the other "ask the parent agent" texts.
+- **Activity, why it ended, and the sessions under a step (q14, mocks M09, M14).** The portal's workflow view shows,
+  for the run it shows, "Why it ended" once the run has ended, and "Activity of this run": the workflow session's own
+  events, newest first, in plain words, with who acted where the event names them (a pause, a resume, a variables
+  change, a stop), and when (`workflowV2Activity`, `workflowV2RunEnding`). A cancelled run says its reason and which
+  session asked; a deleted workflow says so; a stopped run says its reason, who asked and how many steps the grace
+  period cut off; a failed run gives its runtime error. A step's details say why its latest visit ended (its time
+  limit, the run's cancel, stop or time limit, another branch's failure, its outcome, or a runtime error with its
+  message) and how its agent chat ended (`workflowV2VisitEnding`), with "Activity of this visit". An agent step lists
+  "Sessions under this step": every session its chat started, as loaded here, with its status and an "Open
+  (read-only)" button (`workflowV2SessionSubtree`). The TUI shows the same in the details (the run's line, the visit's
+  line, the visit's last six events, and the sessions under the chosen chat, up to eight). Only what the events and
+  the read record is shown: a response that arrives after its request timed out is not recorded as an event, so it is
+  not listed.

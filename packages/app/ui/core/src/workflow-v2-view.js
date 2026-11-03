@@ -892,6 +892,8 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
         shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
         diagnostics: shared?.diagnostics || [], inbox: bound ? run?.inbox || [] : [], outbox: bound ? run?.outbox || [] : [],
         output: bound ? run?.output ?? null : null, error: bound ? run?.error ?? null : null, modelStatus: shared?.status ?? null,
+        // Why the shown run ended (owner decision q14), from its read and its end events; null while it runs.
+        ending: bound && run && status.ended ? workflowV2RunEnding(run, events) : null,
     };
 }
 
@@ -1090,4 +1092,215 @@ function branchProgressLines(node, execution, context) {
     }
     if (execution.outcome === "blocked") return [`Join blocked${note}: ${progress.succeeded} of ${execution.branches} branches succeeded.`];
     return [];
+}
+
+// ── Activity, why a run or a step ended, and the sessions under a step (owner decision q14; mocks M09, M14) ──────────
+
+const ACTIVITY_LIMIT = 50;
+const shortId = value => (typeof value === "string" && value.length > 12 ? value.slice(0, 8) : String(value ?? ""));
+const clipped = (value, max = 200) => {
+    const one = String(value ?? "").replace(/\s+/g, " ").trim();
+    return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+};
+const parsedJson = value => {
+    if (isRecord(value)) return value;
+    if (typeof value !== "string") return null;
+    try { const parsed = JSON.parse(value); return isRecord(parsed) ? parsed : null; } catch { return null; }
+};
+
+/** Who acted, from an event's actor record, in plain words; null when the event names nobody. Pure. */
+export function workflowV2ActorText(actor) {
+    if (!isRecord(actor)) return null;
+    if (actor.kind === "user") return text(actor.displayName) ?? text(actor.email) ?? text(actor.subject) ?? "a person";
+    if (actor.kind === "agent") return text(actor.sessionId) ? `agent session ${shortId(actor.sessionId)}` : "an agent";
+    if (actor.kind === "system") return text(actor.name) ?? "the system";
+    return null;
+}
+
+/** An event's time as "YYYY-MM-DD HH:MM:SS UTC", or null. Pure. */
+export function workflowV2EventTime(value) {
+    const ms = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
+    return Number.isFinite(ms) ? `${new Date(ms).toISOString().slice(0, 19).replace("T", " ")} UTC` : null;
+}
+
+const names = value => {
+    const keys = Array.isArray(value) ? value.filter(key => typeof key === "string" && key) : [];
+    return keys.length > 5 ? `${keys.slice(0, 5).join(", ")} and ${keys.length - 5} more` : keys.join(", ");
+};
+const because = value => (text(value) ? `: ${clipped(value)}` : "");
+
+/** One workflow event as one plain line of the activity list ({ text, level }), or null for an event it does not list. */
+function activityLine(type, data) {
+    const step = text(data.stateId) ? `step '${data.stateId}'` : "a step";
+    switch (type) {
+        case "workflow.started": return { text: `${data.mode === "test" ? "Test run" : "Run"} started${Number.isSafeInteger(data.revision) ? ` (revision ${data.revision})` : ""}` };
+        case "workflow.paused": return { text: `Paused${because(data.reason)}`, level: "warning" };
+        case "workflow.resumed": return { text: `Resumed${because(data.reason)}` };
+        case "workflow.vars_set": {
+            const parts = [names(data.set) ? `set ${names(data.set)}` : "", names(data.deleted) ? `removed ${names(data.deleted)}` : ""].filter(Boolean);
+            return { text: `Variables changed${parts.length ? `: ${parts.join("; ")}` : ""}` };
+        }
+        case "workflow.stop_requested":
+            return { text: `Stop asked; steps already started may finish${text(data.deadlineAt) ? ` until ${data.deadlineAt}` : ""}${because(data.reason)}`, level: "warning" };
+        case "workflow.stopped": {
+            const count = Number.isSafeInteger(data.cancelledCount) ? data.cancelledCount : 0;
+            return { text: `Run stopped${because(data.reason)}${data.graceExpired === true && count
+                ? `; ${count === 1 ? "1 step" : `${count} steps`} still running when the grace period ended ${count === 1 ? "was" : "were"} cancelled` : ""}`, level: "warning" };
+        }
+        case "workflow.cancel_requested": {
+            const count = Array.isArray(data.effects) ? data.effects.length : 0;
+            return { text: `Asked ${count === 1 ? "1 running action" : `${count} running actions`} to stop`, level: "warning" };
+        }
+        case "workflow.cancelled":
+            return { text: `Run cancelled${data.deleted === true || data.command === "delete" ? " (the workflow was deleted)" : ""}${because(data.reason)}`, level: "warning" };
+        case "workflow.completed":
+            return { text: `Run ended${text(data.outcome) ? ` ${data.outcome}` : ""}${text(data.stateId) ? ` at '${data.stateId}'` : ""}` };
+        case "workflow.failed":
+            return { text: `Run failed${text(data.stateId) ? ` at '${data.stateId}'` : ""}${because(data.error)}`, level: "error" };
+        case "workflow.input_accepted":
+            return { text: `Input${text(data.contract) ? ` ${data.contract}` : ""} accepted${text(data.senderSessionId) ? ` from session ${shortId(data.senderSessionId)}` : ""}` };
+        case "workflow.recovered":
+            return { text: `Restart asked${text(data.requestedBy) ? ` by session ${shortId(data.requestedBy)}` : ""}`, level: "warning" };
+        case "workflow.state_started":
+            return { text: `${step[0].toUpperCase()}${step.slice(1)} started${Number.isSafeInteger(data.ordinal) ? ` (visit ${data.ordinal})` : ""}` };
+        case "workflow.state_completed":
+            return { text: `${step[0].toUpperCase()}${step.slice(1)} ended${text(data.outcome) ? ` '${data.outcome}'` : ""}` };
+        case "workflow.state_failed": {
+            const error = parsedJson(data.error);
+            return { text: `${step[0].toUpperCase()}${step.slice(1)} failed${text(data.outcome) ? ` (${data.outcome})` : ""}${because(error?.message ?? (error ? null : data.error))}`,
+                level: "error" };
+        }
+        case "workflow.state_cancelled": return { text: `${step[0].toUpperCase()}${step.slice(1)} stopped`, level: "warning" };
+        case "workflow.agent_spawned":
+            return { text: `Agent chat for ${step} created${text(data.childSessionId) ? ` (session ${shortId(data.childSessionId)})` : ""}`
+                + `${text(data.deadline) ? `; its time limit is ${data.deadline}` : ""}` };
+        case "workflow.agent_ended":
+            return { text: `Agent chat for ${step} ended${data.end === "cancel" ? " (cancelled)" : data.end === "done" ? " (its result was taken)" : ""}` };
+        case "workflow.agent_end_failed": return { text: `Ending the agent chat for ${step} did not succeed yet; it is tried again`, level: "warning" };
+        case "workflow.request_delivered":
+            return { text: `Request${text(data.contract) ? ` ${data.contract}` : ""} sent${text(data.responderSessionId) ? ` to session ${shortId(data.responderSessionId)}` : ""}`
+                + `${text(data.deadlineAt) ? `; answer due by ${data.deadlineAt}` : ""}` };
+        case "workflow.response_wake_abandoned":
+            return { text: "An answer arrived, but waking the run was not confirmed; the run collects the answer later", level: "warning" };
+        case "workflow.branches_cancelled": return { text: "The other branches were cancelled", level: "warning" };
+        case "workflow.test_intercepted":
+            return { text: `Held call${text(data.operation) ? ` ${data.operation}` : ""}${text(data.tool) ? ` · ${data.tool}` : ""}${text(data.stateId) ? ` in ${step}` : ""}` };
+        case "workflow.test_clock_advanced":
+            return { text: `Test clock advanced${Number.isSafeInteger(data.seconds) ? ` by ${formatSeconds(data.seconds)}` : ""}` };
+        default: return null;
+    }
+}
+
+/**
+ * Who did what and when in a workflow (owner decision q14; mock M09 "Inspect audit"): the workflow session's own events,
+ * newest first, as plain lines { seq, at, what, who, level }, for one run (`runId`) and, when given, one visit of a step
+ * (`nodeExecutionId`); at most `limit`. Only what the events record is shown: who acted is named where the event names
+ * them (a pause, a resume, a variables change, a stop). Pure.
+ */
+export function workflowV2Activity(events, { runId = null, nodeExecutionId = null, limit = ACTIVITY_LIMIT } = {}) {
+    const rows = [];
+    for (const event of Array.isArray(events) ? events : []) {
+        if (!isRecord(event) || typeof event.eventType !== "string") continue;
+        const data = isRecord(event.data) ? event.data : {};
+        if (runId !== null && data.runId !== runId) continue;
+        if (nodeExecutionId !== null && data.nodeExecutionId !== nodeExecutionId) continue;
+        const line = activityLine(event.eventType, data);
+        if (!line) continue;
+        rows.push({ seq: Number.isSafeInteger(event.seq) ? event.seq : null, at: workflowV2EventTime(event.createdAt), what: line.text,
+            who: workflowV2ActorText(data.actor), level: line.level ?? "info" });
+    }
+    return rows.reverse().slice(0, Math.max(0, limit));
+}
+
+const ENDED_STATUSES = new Set(["completed", "failed", "cancelled", "stopped"]);
+
+/**
+ * Why a run ended (owner decision q14; mock M14 "Inspect cancellation"): from the run as the read shows it and its end
+ * events: completed at its last step; failed at a step or by a runtime error (its message); cancelled, with the reason
+ * and who asked when the record names them, or because the workflow was deleted; stopped, with the reason, who asked
+ * and what was still running when the grace period ended. { status, why, who, at, text }, or null while it runs. Pure.
+ */
+export function workflowV2RunEnding(run, events = []) {
+    if (!isRecord(run) || !ENDED_STATUSES.has(run.status)) return null;
+    const mine = (Array.isArray(events) ? events : []).filter(event => isRecord(event) && isRecord(event.data) && event.data.runId === run.runId);
+    const last = type => mine.findLast(event => event.eventType === type) ?? null;
+    const envelope = parsedJson(run.error);
+    const details = isRecord(envelope?.details) ? envelope.details : {};
+    let why, who = null, end = null;
+    if (run.status === "completed") {
+        end = last("workflow.completed");
+        why = `It reached '${run.terminalState ?? "its last step"}'${text(run.outcome) ? ` (${run.outcome})` : ""}`;
+    } else if (run.status === "failed") {
+        end = last("workflow.failed");
+        why = text(run.terminalState) ? `It reached '${run.terminalState}' (${run.outcome ?? "failed"})`
+            : `A runtime error${text(envelope?.code) ? ` (${envelope.code})` : ""}${because(envelope?.message)}`;
+    } else if (run.status === "cancelled") {
+        end = last("workflow.cancelled");
+        const deleted = end?.data.deleted === true || end?.data.command === "delete" || details.command === "delete";
+        why = `${deleted ? "The workflow was deleted" : "It was cancelled"}${because(end?.data.reason ?? envelope?.message)}`;
+        who = text(details.requestedBy) ? `session ${shortId(details.requestedBy)}` : null;
+    } else {
+        end = last("workflow.stopped");
+        const asked = last("workflow.stop_requested");
+        const count = Number.isSafeInteger(end?.data.cancelledCount) ? end.data.cancelledCount : 0;
+        why = `It was stopped${because(end?.data.reason ?? asked?.data.reason ?? run.stop?.reason)}`
+            + `${end?.data.graceExpired === true && count ? `; ${count === 1 ? "1 step" : `${count} steps`} still running when the grace period ended ${count === 1 ? "was" : "were"} cancelled` : ""}`;
+        who = workflowV2ActorText(asked?.data.actor);
+    }
+    const at = workflowV2EventTime(end?.createdAt);
+    return { status: run.status, why, who, at, text: `Why it ended: ${why}.${who ? ` Asked by ${who}.` : ""}${at ? ` (${at})` : ""}` };
+}
+
+const VISIT_WINNERS = {
+    cancel: "The run was cancelled while it ran",
+    stop: "The run was stopped, and this step was still running when the grace period ended",
+    deadline: "The run's time limit passed",
+    fail_fast: "Another branch failed, so this one was cancelled",
+};
+
+/**
+ * Why one visit of a step ended (owner decision q14; mock M14): its time limit, the run's cancellation, stop or time
+ * limit, another branch's failure, its outcome, or a runtime error with its message; for an agent step, how its chat was
+ * ended. { why, detail, agent, text }, or null for a visit that has not ended. Pure.
+ */
+export function workflowV2VisitEnding(execution) {
+    if (!isRecord(execution) || execution.status !== "completed") return null;
+    const error = parsedJson(execution.errorPreview);
+    let why;
+    const byWinner = execution.outcome !== "timed_out" && Boolean(VISIT_WINNERS[execution.winner]);
+    if (execution.outcome === "timed_out") why = "Its time limit passed";
+    else if (byWinner) why = VISIT_WINNERS[execution.winner];
+    else if (execution.resultKind === "business") why = `It ended '${execution.outcome}'`;
+    else if (execution.resultKind === "runtime_error") why = `A runtime error (${execution.outcome ?? text(error?.code) ?? "not recorded"})`;
+    else why = "How it ended was not recorded";
+    const detail = !byWinner && execution.resultKind === "runtime_error" && text(error?.message) ? clipped(error.message) : null;
+    const end = isRecord(execution.agent) ? execution.agent.end : null;
+    const agent = end === "cancel" ? "Its agent chat was ended." : end === "done" ? "Its agent chat finished after its result was taken." : null;
+    return { why, detail, agent, text: `${why}.${detail ? ` ${detail}` : ""}${agent ? ` ${agent}` : ""}` };
+}
+
+/**
+ * The sessions under a step (owner decision q14; mock M14 "View owned subtree"): its agent chat (`rootId`) and every
+ * session started under it, from the session rows loaded (`byId`), each with its title, status and depth (the chat 0),
+ * in tree order; at most `limit`. Sessions not loaded here are not shown. Pure.
+ */
+export function workflowV2SessionSubtree(byId, rootId, limit = 50) {
+    if (!isRecord(byId) || typeof rootId !== "string" || !rootId) return [];
+    const children = new Map();
+    for (const row of Object.values(byId)) {
+        if (!isRecord(row) || typeof row.sessionId !== "string" || typeof row.parentSessionId !== "string") continue;
+        if (!children.has(row.parentSessionId)) children.set(row.parentSessionId, []);
+        children.get(row.parentSessionId).push(row.sessionId);
+    }
+    const out = [];
+    const seen = new Set();
+    const visit = (sessionId, depth) => {
+        if (seen.has(sessionId) || out.length >= limit) return;
+        seen.add(sessionId);
+        const row = isRecord(byId[sessionId]) ? byId[sessionId] : null;
+        out.push({ sessionId, title: text(row?.title) ?? null, status: text(row?.status) ?? "not loaded", depth });
+        for (const child of children.get(sessionId) ?? []) visit(child, depth + 1);
+    };
+    visit(rootId, 0);
+    return out;
 }
