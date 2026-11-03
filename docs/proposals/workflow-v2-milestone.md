@@ -1593,7 +1593,11 @@ refuses those states. A sub-agent that a chat spawns (spawn_agent) starts at
 1.0.83 on a worker with `testOptions.workflowRequests` (the turn's own client,
 session-proxy getInlineClient, and spawnChildSession), so
 an agent can delegate writing such a workflow; system agents and their
-children still start at 1.0.82. Unset, empty or any other value is
+system children still start at 1.0.82. The rule is the worker's, not the
+caller's: on such a worker, spawn_agent from a system agent's turn also
+starts its (non-system) sub-agent at 1.0.83. That is fine in the test
+environment, where every worker serves 1.0.83, and it cannot happen with the
+switch off, where no worker has the option. Unset, empty or any other value is
 off, and every option is exactly as without it (unit tests prove it for the
 worker, the portal, its embedded workers and MCP; a local test runs a chat each
 way). Each entry point logs one
