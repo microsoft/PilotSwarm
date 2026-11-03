@@ -120,7 +120,7 @@ test("the commands name the test run; the answer names its interception; a refus
 
     assert.equal(workflowV2RunCommandAccepted("test_respond", RUN, { replayed: false, runId: RUN, interceptionId: AGENT,
         node: { stateId: "review", state: "completed", outcome: "accepted" } }, { interceptionId: AGENT, response }),
-    "Answered held call nx-rev…gent of test run run-1. State 'review' ended 'accepted'.");
+    "Answered held call nx-rev…gent of test run run-1. Step 'review' ended 'accepted'.");
     assert.equal(workflowV2RunCommandAccepted("test_advance", RUN, { seconds: 300, decided: [{ nodeExecutionId: "nx-1" }] }, { seconds: 300 }),
         "Advanced the virtual clock of test run run-1 by 300 seconds: 1 deadline came due. Script clocks are real.");
     const invalid = workflowV2RunCommandFailure(Object.assign(new Error("The output does not match ReviewResult."),
@@ -168,7 +168,7 @@ test("an answer and an advance are sent for the shown test run, and the workflow
     assert.match(answer.operation_id, /^ui-test_respond-./);
     assert.deepEqual(Object.fromEntries(Object.entries(answer).filter(([key]) => key !== "operation_id")),
         { operation: "test_respond", run_id: RUN, interception_id: AGENT, response });
-    assert.equal(store.getState().ui.statusText, "Answered held call nx-rev…gent of test run run-1. State 'review' ended 'accepted'.");
+    assert.equal(store.getState().ui.statusText, "Answered held call nx-rev…gent of test run run-1. Step 'review' ended 'accepted'.");
     await until(() => reads.length === 1, "the read model read again");
     assert.equal((await controller.sendWorkflowRunCommand(SID, { operation: "test_advance", runId: RUN, seconds: 300 })).ok, true);
     assert.deepEqual(Object.fromEntries(Object.entries(updates[1][1]).filter(([key]) => key !== "operation_id")),

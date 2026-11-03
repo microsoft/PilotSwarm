@@ -9,6 +9,7 @@ import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
     workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
+    workflowV2AnswerSourceText,
 } from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
@@ -418,7 +419,7 @@ export function WorkflowV2TestInterceptions({ test, controller = null, sessionId
             h("tbody", null, items.map((item, i) => h("tr", { key: item.interceptionId || i, "data-interception": item.interceptionId },
                 h("td", { title: item.interceptionId }, item.tool ? `${item.operation} · ${item.tool}` : String(item.operation)),
                 h("td", null, item.stateId || "—"),
-                h("td", null, item.response ? `${item.response.kind} · ${item.response.disposition}` : "Waiting for the parent"),
+                h("td", null, item.response ? `${item.response.kind} · ${workflowV2AnswerSourceText(item.response.disposition, "—")}` : "Waiting for the parent"),
                 answerable || askable ? h("td", null,
                     waits(item.interceptionId) ? h("button", { type: "button", className: "ps-mini-button", "data-action": "answer",
                         disabled: responder.busy, "aria-pressed": answering === item.interceptionId,

@@ -277,7 +277,7 @@ test("an explicit runtime error recorded as a completion reads as a runtime erro
 
 test("a v2 runtime error with no error text names the effect or says nothing was recorded", () => {
     const effect = event("workflow.state_failed", { runId: "r", nodeExecutionId: "n", stateId: "poll", step: 2, effectStatus: "Failed", resultKind: "runtime_error" });
-    assert.equal(formatWorkflowEventText(effect), "✗ Step 2: `poll` runtime error: `the effect Failed`");
+    assert.equal(formatWorkflowEventText(effect), "✗ Step 2: `poll` runtime error: `the action Failed`");
     assert.equal(describeWorkflowEvent(effect).summary, "poll runtime error");
     const none = event("workflow.state_failed", { runId: "r", stateId: "poll", step: 2, outcome: "execution_failed", resultKind: "runtime_error" });
     assert.equal(formatWorkflowEventText(none), "✗ Step 2: `poll` runtime error `execution_failed`: `no error text was recorded`");

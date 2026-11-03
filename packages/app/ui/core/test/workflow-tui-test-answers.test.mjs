@@ -148,7 +148,7 @@ test("the view says what a and + do for the shown test run; a binds the form to 
     const h = await opened(workflow(), [answered("accepted")]);
     const lines = details(h.store);
     assert.ok(lines.includes("Test run test-r…0001 — a answers one of its 2 waiting calls · + advances its virtual clock"), lines.join("\n"));
-    assert.ok(lines.includes("a answers one that waits; the parent agent or a prepared answer may answer first, and the first answer stands."));
+    assert.ok(joined(lines).includes("a answers one that waits; the parent agent or a prepared answer may answer first, and the first answer stands."), lines.join("\n"));
     const view = modalOf(h.store);
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER);
@@ -174,7 +174,7 @@ test("the view says what a and + do for the shown test run; a binds the form to 
     assert.match(first.operation_id, /^ui-test_respond-./);
     assert.deepEqual(without(first, "operation_id"), { operation: "test_respond", run_id: TEST_RUN, interception_id: AGENT,
         response: { kind: "success", value: { outcome: "accepted", output: null } } });
-    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. State 'review' ended 'accepted'.");
+    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. Step 'review' ended 'accepted'.");
     assert.deepEqual(modalOf(h.store), view, "accepted: back to the view");
     await settle();
     assert.ok(details(h.store).includes("Test run test-r…0001 — a answers its waiting call · + advances its virtual clock"));
@@ -222,7 +222,7 @@ test("Tab changes the kind and what was typed is checked first; ↑↓ bind the 
     assert.ok(texts(shown.lines).includes("The call ends as cancelled; a cancel has no value."));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND);
     assert.deepEqual(without(h.sent()[0], "operation_id"), { operation: "test_respond", run_id: TEST_RUN, interception_id: AGENT, response: { kind: "cancel" } });
-    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. State 'review' ended 'cancelled'.");
+    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. Step 'review' ended 'cancelled'.");
     await settle();
 });
 
@@ -277,7 +277,7 @@ test("the server decides the rest and the form keeps what was typed: a contract'
     assert.equal(statusOf(h.store), conflict);
     await settle();
     const shown = answerForm(h.store);
-    assert.ok(joined(shown.lines).includes("Answered: success · fixture: {\"outcome\":\"rejected\",\"output\":null}. Another answer is refused; "
+    assert.ok(joined(shown.lines).includes("Answered: success · prepared answer: {\"outcome\":\"rejected\",\"output\":null}. Another answer is refused; "
         + "the same answer again is the same answer."), joined(shown.lines));
     assert.ok(texts(shown.lines).includes("1 held call waits for an answer · ↑↓ another"), "the form stays bound to its effect");
     assert.equal(modalOf(h.store).interceptionId, AGENT);
@@ -288,7 +288,7 @@ test("the server decides the rest and the form keeps what was typed: a contract'
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_TEST_ANSWER_SEND);
     const [, second, third] = h.sent();
     assert.notEqual(third.operation_id, second.operation_id, "a different answer is a different command");
-    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. State 'review' ended 'rejected'. It had already been accepted.");
+    assert.equal(statusOf(h.store), "Answered held call nx-rev…gent of test run test-r…0001. Step 'review' ended 'rejected'. It had already been accepted.");
     assert.equal(modalOf(h.store).type, "workflowView");
     await settle();
 });

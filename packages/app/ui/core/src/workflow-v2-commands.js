@@ -810,7 +810,7 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
         const interception = shortId(String(args?.interceptionId ?? receipt?.interceptionId ?? ""));
         const node = isRecord(receipt?.node) ? receipt.node : null;
         const decided = node && node.state !== "pending" && text(node.outcome)
-            ? ` State '${text(node.stateId) ?? "?"}' ended '${node.outcome}'.` : "";
+            ? ` Step '${text(node.stateId) ?? "?"}' ended '${node.outcome}'.` : "";
         return `Answered held call ${interception} of test ${run}.${decided}${again}`;
     }
     if (operation === "test_advance") {
@@ -1099,4 +1099,15 @@ export function workflowV2HeldCallQuestion({ workflowName = null, workflowSessio
 /** What the status line says once a message reached the parent agent's chat (q12, q16). Pure. */
 export function workflowV2AskParentSent(parentSessionId) {
     return `Sent to the parent agent's chat (session ${shortSession(parentSessionId)}). It answers with its own tools; open its chat from the session list.`;
+}
+
+/**
+ * Where a held call's answer came from, in plain words (the owner's plain-words rule): a prepared answer (stored
+ * disposition "fixture") or the parent agent ("parent"); any other value as it is, and `fallback` for none. Display
+ * only: the stored value does not change. Pure.
+ */
+export function workflowV2AnswerSourceText(disposition, fallback = "not known") {
+    if (disposition === "fixture") return "prepared answer";
+    if (disposition === "parent") return "parent agent";
+    return typeof disposition === "string" && disposition ? disposition : fallback;
 }

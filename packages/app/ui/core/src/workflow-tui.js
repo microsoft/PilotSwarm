@@ -8,7 +8,7 @@ import {
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
-    workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2RevisionCompare,
+    workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2RevisionCompare, workflowV2AnswerSourceText,
 } from "./workflow-v2-commands.js";
 
 /**
@@ -1130,7 +1130,7 @@ export function selectWorkflowTestAnswerModal(state, maxWidth = 100, viewportHei
         add(`Held call: ${item.interceptionId}`);
         if (isPlainRecord(item.response)) {
             const value = item.response.value === undefined || item.response.value === null ? "" : `: ${testValueText(item.response.value)}`;
-            add(`Answered: ${item.response.kind ?? "an answer"} · ${item.response.disposition ?? "not known"}${value}. Another answer is refused; the same answer again is the same answer.`);
+            add(`Answered: ${item.response.kind ?? "an answer"} · ${workflowV2AnswerSourceText(item.response.disposition)}${value}. Another answer is refused; the same answer again is the same answer.`);
         } else if (isPlainRecord(node) && node.state !== "pending") {
             add(`Its step already ended${typeof node.outcome === "string" && node.outcome ? ` '${node.outcome}'` : ""}; an answer is refused.`, "yellow");
         } else {
@@ -1426,7 +1426,7 @@ function testEffectLines(projection, selectedId) {
     const lines = items.slice(0, EFFECT_LIMIT).map(item => {
         const effect = `${item.operation ?? "effect"}${item.tool ? ` · ${item.tool}` : ""}`;
         const answered = Boolean(item.response && typeof item.response === "object");
-        const answer = answered ? `${item.response.kind ?? "answered"} · ${item.response.disposition ?? "—"}` : "waiting for the parent";
+        const answer = answered ? `${item.response.kind ?? "answered"} · ${workflowV2AnswerSourceText(item.response.disposition, "—")}` : "waiting for the parent";
         return { text: `  ${effect} · step ${item.stateId ?? "—"} · ${answer}${item.stateId && item.stateId === selectedId ? " ◂ this step" : ""}`,
             color: answered ? "white" : "yellow" };
     });
@@ -1565,7 +1565,8 @@ function detailLines(selection, width) {
     if (effects) {
         add(effects.title, "cyan");
         for (const line of effects.lines) add(line.text, line.color);
-        add(effects.note, "gray");
+        // The note is read whole: it wraps, as the other notes do, instead of being cut at the panel's width.
+        for (const text of wrapped(effects.note, Math.max(20, width))) add(text, "gray");
     }
     return lines;
 }

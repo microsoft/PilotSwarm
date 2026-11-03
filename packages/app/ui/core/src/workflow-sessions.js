@@ -212,7 +212,7 @@ export function formatWorkflowEventText(event) {
         }
         case "workflow.state_failed":
             if (data.resultKind === "runtime_error") {
-                const reason = nonEmpty(data.error) ? data.error : nonEmpty(data.effectStatus) ? `the effect ${data.effectStatus}` : "no error text was recorded";
+                const reason = nonEmpty(data.error) ? data.error : nonEmpty(data.effectStatus) ? `the action ${data.effectStatus}` : "no error text was recorded";
                 return `✗ Step ${data.step ?? "?"}: ${code(data.stateId)} runtime error${nonEmpty(data.outcome) ? ` ${inline(data.outcome, 60)}` : ""}: ${inline(reason, 300)}`;
             }
             return `✗ Step ${data.step ?? "?"}: ${code(data.stateId)} could not run: ${data.error ?? "unknown error"}`;

@@ -155,7 +155,7 @@ test("a test run keeps its notice visible, with its staleness, virtual clock and
     const html = renderToStaticMarkup(React.createElement(WorkflowV2TestInterceptions, { test }));
     assert.ok(html.includes("Held calls (2)"));
     assert.ok(html.includes("tool.call · read_build"));
-    assert.ok(html.includes("success · fixture"));
+    assert.ok(html.includes("success · prepared answer"));
     assert.ok(html.includes("Waiting for the parent"));
 });
 
