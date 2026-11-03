@@ -310,3 +310,17 @@ test("the workflow pane shows the controls in its header only when the read mode
     assert.ok(notice.includes("Stop for run run-1 may not have reached the workflow: Failed to fetch. Retry sends the same command again."));
     assert.ok(notice.includes(">Retry<") && notice.includes(">Dismiss<"));
 });
+
+// Mocks M18 and M19 "Cancel test" / "Cancel" (accounting rows 67, 71): a running test run offers the same run controls as a
+// live run, Cancel included, for exactly that run; once it has ended, none is enabled.
+test("a test run offers Cancel (and its other run controls) as a live run does; an ended test run offers none", () => {
+    const running = controlsOf({ mode: "test", status: "running" });
+    assert.equal(running.mode, "test");
+    assert.equal(running.runId, RUN);
+    const cancel = running.controls.find(control => control.operation === "cancel");
+    assert.ok(cancel, JSON.stringify(running.controls));
+    assert.equal(cancel.enabled, true);
+    assert.equal(cancel.label, "Cancel");
+    const ended = controlsOf({ mode: "test", status: "completed", outcome: "succeeded" });
+    assert.ok(ended.controls.every(control => !control.enabled), JSON.stringify(ended.controls));
+});

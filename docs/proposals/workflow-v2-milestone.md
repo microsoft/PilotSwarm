@@ -251,7 +251,11 @@ review_changes:
 - **Reading.** `read_workflow`'s graph marks each body state with its
   `parallel` state; a branch's node execution shows its `scopeId` and
   `branch` (parallel node execution and index); a parallel node execution
-  shows its number of `branches`.
+  shows its number of `branches`. The portal's Details and the TUI's details
+  of a parallel state say its branches now, from the loaded executions
+  (mock M21: active, queued and ended), and a blocked join how many of its
+  branches succeeded (mock M22: k of n); with older history not loaded they
+  say so.
 
 Not covered here: explicit `join` states, quorum or any-of joins (refused,
 D10), per-branch attempt/head/round identity (a definition carries that in

@@ -296,4 +296,9 @@ test("the review names each named agent and what is pinned for it, and the tests
     assert.ok(open.includes("data-evidence=\"Agent in &#x27;review&#x27;\""), open);
     assert.ok(open.includes("its exact package revision is pinned when this revision is published"));
     assert.ok(open.includes("test-r…0001 completed · succeeded; test-r…0002 running"));
+    // Mock M03 "Back to draft" (accounting row 13): the review has its Close; mock M28 "Fit" (row 91): the graph opens fitted.
+    const fitted = main(mount({ readModel: draftModel(), readModelRunId: null, definitionOpen: true }));
+    assert.ok(fitted.includes(">Close</button>"));
+    assert.match(fitted, /aria-pressed="true">Fit<\/button>/);
+    assert.match(fitted, /aria-pressed="false">100%<\/button>/);
 });

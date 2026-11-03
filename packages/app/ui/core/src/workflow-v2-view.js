@@ -753,7 +753,7 @@ function nodeView(node, executions, context) {
         partial: !context.complete || stalePending || runs > list.length,
         outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined), resultKind,
         result, pending: pending || null, current: pending || latestDone || null, executions: history,
-        description: describeWorkflowV2Execution(node, pending || latestDone),
+        description: [...describeWorkflowV2Execution(node, pending || latestDone), ...branchProgressLines(node, pending || latestDone, context)],
     };
 }
 
@@ -836,6 +836,8 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     const context = { run: status, hasRun: status.phase !== "none", terminalState: bound ? status.terminalState ?? run?.terminalState ?? null : null,
         complete: Boolean(run && bound && run.history.complete), stateless: !bound && runId ? "Run not overlaid" : undefined,
         pins: agentPinSource(shared, run, bound, active) };
+    // Each parallel state's branches as the loaded executions show them (mock M21 active and queued counts, M22 a blocked join).
+    context.branchProgress = workflowV2BranchProgress(executions, active?.states || []);
     const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
     return {
         shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
@@ -999,4 +1001,44 @@ export function workflowV2KvCompare(before, after) {
     for (const row of rows) counts[row.change] += 1;
     return { from: before.kv.revision, to: after.kv.revision, rows, counts,
         whole: before.kv.whole === true && after.kv.whole === true };
+}
+
+/**
+ * Each parallel state execution's branches as the loaded executions show them (mock M21 "active and queued counts",
+ * M22 "JOIN BLOCKED k / n accepted"): by the parallel state's node execution id, the branches that have begun
+ * (`started`), those with work still pending (`active`), and those that reached a terminal state that succeeded
+ * (`succeeded`). From the executions loaded only: older history not loaded may hold more (the caller says so). Pure.
+ */
+export function workflowV2BranchProgress(executions, states = []) {
+    const succeededTerminal = new Set((Array.isArray(states) ? states : []).filter(node => node?.type === "terminal" && node.outcome === "succeeded").map(node => node.id));
+    const byParallel = new Map();
+    for (const execution of Array.isArray(executions) ? executions : []) {
+        const branch = execution?.branch;
+        if (!isRecord(branch) || typeof branch.parallelNodeExecutionId !== "string" || !Number.isSafeInteger(branch.index)) continue;
+        const branches = byParallel.get(branch.parallelNodeExecutionId) ?? new Map();
+        const seen = branches.get(branch.index) ?? { pending: false, succeeded: false };
+        if (execution.status === "pending") seen.pending = true;
+        if (execution.status === "completed" && succeededTerminal.has(execution.stateId)) seen.succeeded = true;
+        branches.set(branch.index, seen);
+        byParallel.set(branch.parallelNodeExecutionId, branches);
+    }
+    const progress = new Map();
+    for (const [id, branches] of byParallel) {
+        const list = [...branches.values()];
+        progress.set(id, { started: list.length, active: list.filter(item => item.pending).length, succeeded: list.filter(item => item.succeeded).length });
+    }
+    return progress;
+}
+
+/** A parallel state's branches now, as lines of its description: active, queued and ended while it runs; a blocked join's k of n. */
+function branchProgressLines(node, execution, context) {
+    if (node?.type !== "parallel" || !execution || !Number.isSafeInteger(execution.branches)) return [];
+    const progress = context.branchProgress?.get(execution.id) ?? { started: 0, active: 0, succeeded: 0 };
+    const note = context.complete ? "" : " (in the loaded history)";
+    if (execution.status === "pending") {
+        const queued = Math.max(0, execution.branches - progress.started);
+        return [`Branches now${note}: ${progress.active} active, ${queued} queued, ${progress.started - progress.active} ended.`];
+    }
+    if (execution.outcome === "blocked") return [`Join blocked${note}: ${progress.succeeded} of ${execution.branches} branches succeeded.`];
+    return [];
 }

@@ -88,6 +88,29 @@ test("an agent state's node names its child session and opens its actual chat; a
     assert.equal(byId(branched, "fan").stateLabel, "Running its branches");
     assert.ok(byId(branched, "fan").description.includes("3 branches from its manifest."));
     assert.ok(byId(branched, "work").description.includes("In branch 0 of its parallel state."));
+    // Mock M21: the branches now, from the loaded executions: one begun and still working, two not begun yet.
+    assert.ok(byId(branched, "fan").description.includes("Branches now: 1 active, 2 queued, 0 ended."), byId(branched, "fan").description.join("\n"));
+    const progressed = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
+        done("review", 1, "accepted"),
+        row("fan", 1, "pending", { branches: 3 }),
+        ...[0, 1].map(index => done("work", 1, "ok", { nodeExecutionId: `nx-work-${index}`, scopeId: `nx-fan-1#${index}`, branch: { parallelNodeExecutionId: "nx-fan-1", index } })),
+        row("branch_done", 1, "completed", { nodeExecutionId: "nx-branch-done-0", outcome: "succeeded", resultKind: "business", winner: "controller",
+            scopeId: "nx-fan-1#0", branch: { parallelNodeExecutionId: "nx-fan-1", index: 0 } }),
+        row("work", 1, "pending", { nodeExecutionId: "nx-work-2", scopeId: "nx-fan-1#2", branch: { parallelNodeExecutionId: "nx-fan-1", index: 2 } }),
+    ] }) });
+    assert.ok(byId(progressed, "fan").description.includes("Branches now: 1 active, 0 queued, 2 ended."), byId(progressed, "fan").description.join("\n"));
+    // Mock M22: a blocked join says how many of its branches succeeded.
+    const blocked = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
+        done("review", 1, "accepted"),
+        row("fan", 1, "completed", { branches: 3, outcome: "blocked", resultKind: "business", winner: "controller" }),
+        row("branch_done", 1, "completed", { nodeExecutionId: "nx-branch-done-0", outcome: "succeeded", resultKind: "business", winner: "controller",
+            scopeId: "nx-fan-1#0", branch: { parallelNodeExecutionId: "nx-fan-1", index: 0 } }),
+        done("work", 1, "ok", { nodeExecutionId: "nx-work-1", scopeId: "nx-fan-1#1", branch: { parallelNodeExecutionId: "nx-fan-1", index: 1 } }),
+    ] }) });
+    assert.ok(byId(blocked, "fan").description.includes("Join blocked: 1 of 3 branches succeeded."), byId(blocked, "fan").description.join("\n"));
+    // The portal's Details read the same lines.
+    const fanHtml = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "details", selected: byId(blocked, "fan"), nodes: blocked.nodes, select() {} }));
+    assert.ok(fanHtml.includes("Join blocked: 1 of 3 branches succeeded."));
 });
 
 test("a real-agent test run says its agents are real, and lists their mocked tool calls under their agent state", () => {
@@ -134,4 +157,42 @@ test("a test run keeps its notice visible, with its staleness, virtual clock and
     assert.ok(html.includes("tool.call · read_build"));
     assert.ok(html.includes("success · fixture"));
     assert.ok(html.includes("Waiting for the parent"));
+});
+
+/** Every element of a React element tree whose props match `predicate`; function components are expanded with their props. */
+function elementsOf(node, predicate, found = []) {
+    if (Array.isArray(node)) { for (const child of node) elementsOf(child, predicate, found); return found; }
+    if (!node || typeof node !== "object") return found;
+    if (typeof node.type === "function") return elementsOf(node.type(node.props), predicate, found);
+    if (predicate(node)) found.push(node);
+    return elementsOf(node.props?.children, predicate, found);
+}
+
+// The portal's node Details as controls, not only as text (accounting rows 34, 35, 48, 49, 76): a transition button selects
+// its target state; an agent state's child button opens exactly that child's chat; the outcomes, the parallel manifest and
+// join rows are shown.
+test("the portal's Details: a transition selects its state, the agent child opens its own chat, outcomes and a parallel state's rows are shown", () => {
+    const projection = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
+        row("review", 1, "pending", { agent: { childSessionId: "child-1", spawned: true, spawnAttempts: 1, end: null, endSent: false } }),
+    ] }) });
+    const review = byId(projection, "review");
+    const selected = [];
+    const opened = [];
+    const tree = WorkflowV2NodeContent({ tab: "details", selected: review, nodes: projection.nodes, select: id => selected.push(id), openSession: id => opened.push(id) });
+    const transitions = elementsOf(tree, element => element.type === "button" && element.props.className === "ps-workflow-transition");
+    assert.deepEqual(transitions.map(button => button.props.disabled), [false, false], "both targets are states of this graph");
+    for (const button of transitions) button.props.onClick();
+    assert.deepEqual(selected, ["fan", "failed"], "each transition selects exactly its target");
+    const child = elementsOf(tree, element => element.type === "button" && element.props.children === "Open the agent's chat (read-only)");
+    assert.equal(child.length, 1);
+    child[0].props.onClick();
+    assert.deepEqual(opened, ["child-1"]);
+    const html = renderToStaticMarkup(tree);
+    assert.ok(html.includes("<span>Outcomes</span><strong>accepted</strong>"), html);
+
+    const fan = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [done("review", 1, "accepted"), row("fan", 1, "pending", { branches: 3 })] }) }), "fan");
+    const fanHtml = renderToStaticMarkup(WorkflowV2NodeContent({ tab: "details", selected: fan, nodes: projection.nodes, select() {} }));
+    for (const [label, value] of [["Branches start at", "work"], ["Concurrency", "Up to 2 branches at a time"], ["Join", "Every branch must succeed"], ["Branches", "3"]]) {
+        assert.ok(fanHtml.includes(`<span>${label}</span><strong>${value}</strong>`), `${label}: ${fanHtml}`);
+    }
 });
