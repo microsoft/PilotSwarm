@@ -157,37 +157,68 @@ const render = props => renderToStaticMarkup(React.createElement(WorkflowV2StepI
     loaded: { state: "review", phase: "loaded", value: STEP_INPUT, error: null }, preview: null, draftRevision: 2, draftYaml: YAML, busy: false,
     unsaved: false, ...props }));
 
+/** HTML-escaped attribute text as the value it stands for. */
+const unescaped = value => value.replace(/&quot;/g, "\"").replace(/&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
+/**
+ * The first rendered `tag` element whose attributes include every `has` name and value, as { name: value } of all its
+ * attributes (a boolean attribute is ""); null for none. Independent of the order React renders attributes in.
+ */
+function element(html, tag, has = {}) {
+    for (const match of html.matchAll(new RegExp(`<${tag}\\b([^>]*)>`, "g"))) {
+        const attributes = Object.fromEntries([...match[1].matchAll(/([a-zA-Z][\w:-]*)(?:="([^"]*)")?/g)].map(([, name, value]) => [name, unescaped(value ?? "")]));
+        if (Object.entries(has).every(([name, value]) => attributes[name] === value)) return attributes;
+    }
+    return null;
+}
+
+/** The save button's disabled flag and title, wherever React puts them. */
+const saveButton = html => {
+    const button = element(html, "button", { "data-action": "save-step-input" });
+    assert.ok(button, "the save button is rendered");
+    return { disabled: Object.hasOwn(button, "disabled"), title: button.title };
+};
+
 test("the editor lists each field with where its value comes from; saving waits for the change, and never runs over unsaved YAML edits", () => {
     const html = render();
-    assert.match(html, /<section class="ps-workflow-step-input" aria-label="Step inputs" data-state="review"/);
-    assert.match(html, /<option value="review" selected="">review<\/option><option value="fix">fix<\/option>/);
+    assert.ok(element(html, "section", { class: "ps-workflow-step-input", "aria-label": "Step inputs", "data-state": "review" }), html);
+    // The step picker: review chosen, then fix.
+    assert.match(html, /<option[^>]*>review<\/option><option[^>]*>fix<\/option>/);
+    assert.equal(element(html, "option", { value: "review" })?.selected, "");
+    assert.equal(element(html, "option", { value: "fix" })?.selected, undefined);
     assert.match(html, /<tr data-input-field="pr"><td>pr \(required\) · string<div[^>]*>The pull request<\/div><\/td>/);
-    assert.match(html, /aria-label="Where pr comes from"><option value="none">Not set<\/option><option value="run_input" selected="">A run input<\/option>/);
-    assert.match(html, /value="pr" placeholder="run input name"/);
+    // Where pr comes from: the choices in order, a run input chosen.
+    const prSource = /<select\b[^>]*aria-label="Where pr comes from"[^>]*>(.*?)<\/select>/.exec(html)?.[1] ?? "";
+    assert.match(prSource, /^<option[^>]*>Not set<\/option><option[^>]*>A run input<\/option>/);
+    assert.equal(element(prSource, "option", { value: "run_input" })?.selected, "");
+    // Which run input: one text box holding pr, with its placeholder.
+    const prInput = element(html, "input", { "aria-label": "pr: run input name" });
+    assert.ok(prInput, html);
+    assert.deepEqual([prInput.type, prInput.value, prInput.placeholder], ["text", "pr", "run input name"]);
     // "As written in the YAML" is offered only for the field written that way, and shows what is written.
-    assert.equal([...html.matchAll(/<option value="keep"/g)].length, 1);
+    assert.equal([...html.matchAll(/<option\b[^>]*\bvalue="keep"/g)].length, 1);
     assert.match(html, /<tr data-input-field="notes">.*<code>\$\{input\.notes \?\? &quot;none&quot;\}<\/code>/);
     assert.match(html, /Not set: depth \(required\)\. The step refuses to start without them\./);
-    assert.match(html, /data-action="save-step-input" disabled="" title="Show the change first\."/);
+    assert.deepEqual(saveButton(html), { disabled: true, title: "Show the change first." });
     assert.ok(!/contract|binding|candidate/i.test(html.replace(/data-[a-z-]+="[^"]*"/g, "")), "plain words only");
 
     const preview = { state: "review", revision: 2, phase: "loaded", error: null, value: { yaml: PROPOSED, changed: true, valid: true, diagnostics: [] } };
     const ready = render({ preview });
-    assert.match(ready, /data-action="save-step-input" title="Save as a new revision after revision 2\."/);
+    assert.deepEqual(saveButton(ready), { disabled: false, title: "Save as a new revision after revision 2." });
     assert.match(ready, /Only the input lines of step &#x27;review&#x27; change\. Saving makes a new draft revision\./);
-    assert.match(ready, /<div data-kind="removed"[^>]*>- {7}pr: \$\{inputs\.pr\}<\/div><div data-kind="added"[^>]*>\+ {7}pr: \$\{inputs\.repo\}<\/div>/);
-    assert.match(render({ preview, unsaved: true }), /data-action="save-step-input" disabled="" title="Save or discard your YAML edits above first\."/);
-    assert.match(render({ preview, draftRevision: 3 }), /disabled="" title="The draft changed since this was prepared; show the change again\."/);
-    assert.match(render({ preview, busy: true }), /disabled="" title="Another command for this workflow is being sent\."/);
+    assert.match(ready, /<div\b[^>]*data-kind="removed"[^>]*>- {7}pr: \$\{inputs\.pr\}<\/div><div\b[^>]*data-kind="added"[^>]*>\+ {7}pr: \$\{inputs\.repo\}<\/div>/);
+    assert.deepEqual(saveButton(render({ preview, unsaved: true })), { disabled: true, title: "Save or discard your YAML edits above first." });
+    assert.deepEqual(saveButton(render({ preview, draftRevision: 3 })), { disabled: true, title: "The draft changed since this was prepared; show the change again." });
+    assert.deepEqual(saveButton(render({ preview, busy: true })), { disabled: true, title: "Another command for this workflow is being sent." });
 
     // A step whose input is one value: choosing fields replaces it. A step that lists no fields: add each by name.
     const expression = render({ loaded: { state: "review", phase: "loaded", error: null,
         value: { ...STEP_INPUT, fields: [], schemaDeclared: false, inputShape: "expression", inputText: "\"${input}\"" } } });
     assert.match(expression, /This step&#x27;s input is written as one value \(&quot;\$\{input\}&quot;\)\. Choosing fields below replaces it\./);
     assert.match(expression, /This step does not list its input fields \(inputSchema\), so add each field by name\./);
-    assert.match(expression, /data-action="add-field" disabled=""/);
-    assert.match(render({ loaded: { state: "review", phase: "failed", value: null, error: "Gateway timeout" } }),
-        /role="alert"[^>]*>The step&#x27;s inputs could not be read: Gateway timeout<\/p>/);
+    assert.ok(Object.hasOwn(element(expression, "button", { "data-action": "add-field" }) ?? {}, "disabled"), "nothing to add without a name");
+    const failed = render({ loaded: { state: "review", phase: "failed", value: null, error: "Gateway timeout" } });
+    assert.match(failed, /<p\b[^>]*role="alert"[^>]*>The step&#x27;s inputs could not be read: Gateway timeout<\/p>/);
 });
 
 test("the draft editor offers step inputs only for a workflow with agent steps", () => {
@@ -205,6 +236,6 @@ test("the draft editor offers step inputs only for a workflow with agent steps",
     };
     const withAgent = mount(modelOf({ revision: 2, initial: "review", states }));
     assert.ok(withAgent.includes("aria-label=\"Step inputs\""));
-    assert.match(withAgent, /<option value="review" selected="">review<\/option>/);
+    assert.ok(element(withAgent, "option", { value: "review", selected: "" }), "the step picker shows review chosen");
     assert.ok(!mount(modelOf(undefined)).includes("aria-label=\"Step inputs\""), "no agent step, no step inputs");
 });
