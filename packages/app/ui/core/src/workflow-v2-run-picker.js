@@ -31,11 +31,12 @@ function runFacts(run) {
 
 /**
  * One option's text. Kind, status, revision and the short id are fixed-size and always present; only the outcome
- * is cut (at 20 characters), so long outcomes can never hide which run an option is.
+ * is cut (at 20 characters), so long outcomes can never hide which run an option is. `kindText` replaces the kind's
+ * word (the live run's own option says "Live run").
  */
-function runLabel(run) {
+function runLabel(run, kindText = null) {
     const facts = runFacts(run);
-    const kind = facts.mode === "live" ? "Live" : facts.mode === "test" ? "Test" : "Run (mode not recognized)";
+    const kind = kindText ?? (facts.mode === "live" ? "Live" : facts.mode === "test" ? "Test" : "Run (mode not recognized)");
     const outcome = facts.outcome ? ` (${bounded(facts.outcome, OUTCOME_LABEL_LIMIT)})` : "";
     const revision = facts.revision === null ? "" : ` · revision ${facts.revision}`;
     return `${kind} · ${facts.status ?? "status unknown"}${outcome}${revision} · ${shortId(facts.runId)}`;
@@ -74,16 +75,19 @@ export function workflowV2RunPickerModel({ workflowModel = null, selectedRunId =
     const modeOf = run => runFacts(run).mode;
     const idOf = run => own(run, "runId");
     const live = runs.find(run => modeOf(run) === "live");
-    const shown = runs.slice(0, RUN_OPTION_LIMIT);
+    // The live run is listed once, as the first option (value ""); the others follow.
+    const shown = runs.filter(run => run !== live).slice(0, RUN_OPTION_LIMIT);
     const options = [{ value: "", kind: "live", title: live ? `The workflow's live run: ${runTitle(live)}` : "The workflow's live run",
-        label: live ? `Live run · ${runFacts(live).status ?? "status unknown"} · ${shortId(idOf(live))}` : "Live run" }];
+        label: live ? runLabel(live, "Live run") : "Live run" }];
     for (const run of shown) options.push({ value: idOf(run), kind: modeOf(run) ?? "other", label: runLabel(run), title: runTitle(run) });
     let missing = false;
+    // The live run chosen by its id is the live run's own option.
+    const liveSelected = selection !== null && live !== undefined && selection === idOf(live);
     if (selection !== null && !seen.has(selection)) {
         missing = true;
         options.push({ value: selection, kind: "missing", title: selection,
             label: `Selected run ${shortId(selection)} · ${list ? "not in the run list that was read" : "run list not loaded"}` });
-    } else if (selection !== null && !shown.some(run => idOf(run) === selection)) {
+    } else if (selection !== null && !liveSelected && !shown.some(run => idOf(run) === selection)) {
         const run = runs.find(item => idOf(item) === selection);
         options.push({ value: selection, kind: modeOf(run) ?? "other", label: runLabel(run), title: runTitle(run) });
     }
@@ -95,5 +99,5 @@ export function workflowV2RunPickerModel({ workflowModel = null, selectedRunId =
     if (missing && list) notes.push({ level: "warning", text: "This run is not in the run list that was read; only what is loaded for it is shown." });
     if (error) notes.push({ level: "error", text: "This run could not be read. Your selection is kept." });
     else if (!ownModelLoaded) notes.push({ level: "info", text: selection === null ? "Reading the live run…" : "Reading this run…" });
-    return { selection, value: selection ?? "", options, notes, runsKnown: Boolean(list), runCount: runs.length, malformed, missing };
+    return { selection, value: liveSelected ? "" : selection ?? "", options, notes, runsKnown: Boolean(list), runCount: runs.length, malformed, missing };
 }

@@ -37,18 +37,22 @@ async function until(check, label) {
     assert.fail(`never reached: ${label}`);
 }
 
-test("several live and test runs are listed with kind, status, outcome, revision and a short id; the live option names the first live run", () => {
+test("several live and test runs are listed with kind, status, outcome, revision and a short id; the live run is listed once, first", () => {
     const model = workflowV2RunPickerModel({ workflowModel: MODEL, selectedRunId: null, ownModelLoaded: true });
-    assert.deepEqual(model.options.map(option => [option.value, option.kind]), [["", "live"], ["run-live", "live"], ["run-test-1", "test"], ["run-old", "live"], ["run-test-2", "test"]]);
-    assert.equal(model.options[0].label, "Live run · running · run-live");
-    assert.equal(model.options[2].label, "Test · completed (succeeded) · revision 1 · run-test-1");
-    assert.equal(model.options[3].label, "Live · failed (failed) · revision 1 · run-old");
+    assert.deepEqual(model.options.map(option => [option.value, option.kind]), [["", "live"], ["run-test-1", "test"], ["run-old", "live"], ["run-test-2", "test"]]);
+    assert.equal(model.options[0].label, "Live run · running · revision 1 · run-live");
+    assert.equal(model.options[1].label, "Test · completed (succeeded) · revision 1 · run-test-1");
+    assert.equal(model.options[2].label, "Live · failed (failed) · revision 1 · run-old");
     assert.equal(model.value, "");
     assert.deepEqual(model.notes, []);
     assert.equal(model.runCount, 4);
     const test2 = workflowV2RunPickerModel({ workflowModel: MODEL, selectedRunId: "run-test-2", ownModelLoaded: true });
     assert.equal(test2.value, "run-test-2");
     assert.equal(test2.missing, false);
+    // The live run chosen by its own id shows as the live run's option, not a second one (flow-03).
+    const byId = workflowV2RunPickerModel({ workflowModel: MODEL, selectedRunId: "run-live", ownModelLoaded: true });
+    assert.equal(byId.value, "");
+    assert.deepEqual(byId.options.map(option => option.value), ["", "run-test-1", "run-old", "run-test-2"]);
     assert.equal(workflowV2RunPickerModel({ workflowModel: readModel({ runs: [run("a", "test")] }), selectedRunId: null, ownModelLoaded: true }).options[0].label, "Live run", "no live run is listed");
 });
 
@@ -74,9 +78,10 @@ test("a selected id that is not listed, or whose list is not loaded, stays visib
 test("a malformed run list is counted and left out; an unrecognized model gives no list; the pane never throws", () => {
     const junk = readModel({ runs: [null, 7, "x", [], { mode: "live" }, { runId: "" }, { runId: 5 }, run("ok"), run("ok"), { runId: "odd", mode: "mystery", status: "weird", revision: "x", outcome: 3 }] });
     const model = workflowV2RunPickerModel({ workflowModel: junk, selectedRunId: null, ownModelLoaded: true });
-    assert.deepEqual(model.options.map(option => option.value), ["", "ok", "odd"]);
+    assert.deepEqual(model.options.map(option => option.value), ["", "odd"]);
     assert.equal(model.malformed, 8);
-    assert.equal(model.options[2].label, "Run (mode not recognized) · status unknown · odd");
+    assert.equal(model.options[0].label, "Live run · running · revision 1 · ok");
+    assert.equal(model.options[1].label, "Run (mode not recognized) · status unknown · odd");
     assert.deepEqual(model.notes.map(note => note.text), ["8 run entries in the run list could not be read and are not listed."]);
     const one = workflowV2RunPickerModel({ workflowModel: readModel({ runs: [null] }), ownModelLoaded: true });
     assert.deepEqual(one.notes.map(note => note.text), ["1 run entry in the run list could not be read and is not listed."]);
@@ -268,14 +273,14 @@ test("long outcomes cannot hide which run an option is: kind, status, revision a
         run("run-0123456789-bbb2", "test", "completed", { outcome: long, revision: 4 }),
         run("run-9", "live", "failed", { outcome: "x".repeat(100000), revision: 12 }),
     ] });
-    const [, a, b, c] = workflowV2RunPickerModel({ workflowModel, selectedRunId: null, ownModelLoaded: true }).options;
+    const [only, a, b] = workflowV2RunPickerModel({ workflowModel, selectedRunId: null, ownModelLoaded: true }).options;
     assert.equal(a.label, "Test · completed (needs-human-review-…) · revision 3 · run-01…aaa1");
     assert.equal(b.label, "Test · completed (needs-human-review-…) · revision 4 · run-01…bbb2");
     assert.notEqual(a.label, b.label);
     assert.equal(a.title, `run-0123456789-aaa1 · test run · completed · revision 3 · outcome ${long.slice(0, 299)}…`);
     assert.ok(b.title.startsWith("run-0123456789-bbb2 · test run · completed · revision 4 · outcome "));
-    assert.equal(c.label, "Live · failed (xxxxxxxxxxxxxxxxxxx…) · revision 12 · run-9");
-    assert.ok(c.label.length <= 120 && c.title.length <= 400);
+    assert.equal(only.label, "Live run · failed (xxxxxxxxxxxxxxxxxxx…) · revision 12 · run-9");
+    assert.ok(only.label.length <= 120 && only.title.length <= 400);
     const html = pane(seed({ view: { definition: def(), readModel: workflowModel, readModelRunId: null } }).controller);
     assert.ok(html.includes("revision 3 · run-01…aaa1") && html.includes("revision 4 · run-01…bbb2"));
     assert.ok(html.includes("title=\"run-0123456789-aaa1 · test run"));

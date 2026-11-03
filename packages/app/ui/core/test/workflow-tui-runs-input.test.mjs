@@ -89,9 +89,8 @@ test("← → show the workflow's other runs, as the portal's picker lists them,
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await settle();
     let view = selectWorkflowViewModal(store.getState(), 110);
-    assert.equal(view.detailsLines[0].text, "Run: Live run · running · run-1 (1 of 4 · ←→ choose)");
-    // The live run, then every run in the list (the live run by its id too), as the portal's picker offers them.
-    await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_NEXT_RUN);
+    assert.equal(view.detailsLines[0].text, "Run: Live run · running · revision 1 · run-1 (1 of 3 · ←→ choose)");
+    // The live run, then every other run in the list, as the portal's picker offers them (the live run is listed once).
     await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_NEXT_RUN);
     await settle();
     let state = store.getState();
@@ -99,7 +98,7 @@ test("← → show the workflow's other runs, as the portal's picker lists them,
     assert.equal(state.ui.statusText, "Showing Test · completed (passed) · revision 1 · run-t1");
     assert.deepEqual(calls.filter(call => call[0] === "readWorkflow").at(-1), ["readWorkflow", "wf", { runId: "run-t1" }]);
     view = selectWorkflowViewModal(state, 110);
-    assert.equal(view.detailsLines[0].text, "Run: Test · completed (passed) · revision 1 · run-t1 (3 of 4 · ←→ choose)");
+    assert.equal(view.detailsLines[0].text, "Run: Test · completed (passed) · revision 1 · run-t1 (2 of 3 · ←→ choose)");
     assert.match(view.title, /^Workflow: review-once · Test run · Completed · passed/);
     // That run's agent state shows that run's own child, never the live run's.
     assert.equal(selectWorkflowViewSelection(state).occurrence.childSessionId, "child-of-run-t1");

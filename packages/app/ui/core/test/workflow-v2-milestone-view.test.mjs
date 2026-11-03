@@ -59,7 +59,7 @@ test("a stopping run says what may still settle; a stopped run is ended, and the
     assert.equal(stopped.status.ended, true);
     assert.match(stopped.status.label, /^Stopped/);
     const picker = workflowV2RunPickerModel({ workflowModel: readModel({ graph, run: { status: "stopped" } }) });
-    assert.match(picker.options[1].label, /^Live · stopped/);
+    assert.match(picker.options[0].label, /^Live run · stopped/);
 });
 
 test("an agent state's node names its child session and opens its actual chat; a branch state names its branch", () => {
