@@ -81,3 +81,30 @@ test("a narrow desktop chat beside a canvas keeps a usable one-line composer", a
     expect(g.w).toBeGreaterThanOrEqual(80);
     expect(g.h).toBeLessThanOrEqual(48);
 });
+
+test("zen ignores the reading column and its inset; leaving zen restores them", async ({ page }) => {
+    const settings = { themeId: "terminal-green", chatReading: { on: true, pad: 40, align: "left", width: 900 },
+        canvasPrefs: { [sessionId]: { zenRailPx: 420 } } };
+    await page.route("**/api/v1/**", route => {
+        const url = new URL(route.request().url());
+        if (url.pathname.endsWith("/me/profile/settings")) return route.fulfill({ json: { ok: true, result: { profileSettings: settings } } });
+        if (url.pathname.endsWith("/me/profile")) return route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: settings } } });
+        return route.fallback();
+    });
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+    await page.locator(".ps-session-list-button").first().waitFor();
+    await page.getByRole("button", { name: /^Show canvas$/i }).first().click();
+    await expect(page.locator(".ps-chat-panel.is-reading")).toHaveCount(1);
+    await page.getByRole("button", { name: "Zen mode" }).first().click();
+    await expect(page.getByRole("button", { name: "Leave zen mode" }).first()).toBeVisible();
+    await expect(page.locator(".ps-chat-panel.is-reading")).toHaveCount(0);
+    // The composer starts at the rail's own padding, not 40px further in.
+    const inset = await page.locator(".ps-chat-panel .ps-chat-composer").first().evaluate(node => {
+        const panel = node.closest(".ps-chat-panel").getBoundingClientRect();
+        return node.getBoundingClientRect().left - panel.left;
+    });
+    expect(inset).toBeLessThan(30);
+    await page.getByRole("button", { name: "Leave zen mode" }).first().click();
+    await expect(page.locator(".ps-chat-panel.is-reading")).toHaveCount(1);
+});

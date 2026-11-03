@@ -16821,7 +16821,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         className: "ps-workspace-pane-slot",
         style: { gridColumn: "3" },
     },
-        React.createElement(ChatPane, { controller, readingColumn: true }))),
+        // Zen makes chat a narrow rail beside the canvas: the reading column
+        // and its inset are for a wide chat, so the rail ignores them.
+        React.createElement(ChatPane, { controller, readingColumn: !zenActive }))),
     rightSideActive
         ? (artifactPaneActive
             ? React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust })
