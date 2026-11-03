@@ -108,6 +108,7 @@ export class ApiClient {
 
     async request(method, pathWithQuery, { body, headers, authProbe = false, raw = false, signal } = {}) {
         const requestHeaders = await this.authHeaders(headers || {});
+        signal?.throwIfAborted();
         if (body !== undefined && !requestHeaders["content-type"]) {
             requestHeaders["content-type"] = raw ? "application/octet-stream" : "application/json";
         }
@@ -149,14 +150,18 @@ export class ApiClient {
     }
 
     /** Invoke a protocol operation by name with rpc-shaped params. */
-    async call(name, params = {}) {
-        if (name === "putSessionWorkspaceUploadPart") return this.putSessionWorkspaceUploadPart(params.sessionId, params.uploadId, params.part, params.bytes);
+    async call(name, params = {}, { signal } = {}) {
+        if (name === "putSessionWorkspaceUploadPart") {
+            return this.putSessionWorkspaceUploadPart(
+                params.sessionId, params.uploadId, params.part, params.bytes, { signal },
+            );
+    }
         const { method, path, query, body } = buildOperationRequest(name, params);
         // Avoid URLSearchParams.prototype.size (absent on Safari 16 / iOS 16,
         // which the portal build targets); toString() is universally supported.
         const queryString = query.toString();
         const suffix = queryString ? `?${queryString}` : "";
-        return this.request(method, `${path}${suffix}`, body !== null ? { body } : {});
+        return this.request(method, `${path}${suffix}`, { ...(body !== null ? { body } : {}), ...(signal ? { signal } : {}) });
     }
 
     async putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, { signal } = {}) {
