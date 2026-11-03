@@ -1070,6 +1070,28 @@ async function interceptionsPageOf(store: WorkflowStore, run: WorkflowRunRow, li
     };
 }
 
+/** The open rows a page does not hold (each section's rows by its own id). */
+function openNotPaged<T>(open: readonly T[], paged: readonly T[], id: (row: T) => string): T[] {
+    const shown = new Set(paged.map(id));
+    return open.filter(row => !shown.has(id(row)));
+}
+
+/** An agent state's child session and its lifecycle (IR 8, INACTIVE), by node execution id: read only for the agent states shown. */
+async function agentInvocationsOf(store: WorkflowStore, runId: string, nodes: readonly WorkflowNodeExecutionRow[]): Promise<Map<string, WorkflowAgentInvocation>> {
+    const ids = nodes.filter(node => node.nodeType === "agent").map(node => node.nodeExecutionId);
+    return ids.length > 0 ? new Map((await store.listAgentInvocationsFor(runId, ids)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
+        : new Map();
+}
+
+/**
+ * A recipient's later intake refusal of each delivered message shown (design 5.6), by exchange id, shown beside the
+ * delivery, which it never rewrites: looked up for exactly the messages shown.
+ */
+async function intakeOutcomesOf(store: WorkflowStore, runId: string, messages: readonly WorkflowOutboxMessage[])
+    : Promise<Map<string, { intakeOutcome: string; intakeOutcomeAt: string }>> {
+    return messages.length > 0 ? await store.listOutboxIntakeOutcomes(runId, messages.map(message => message.exchangeId)) : new Map();
+}
+
 /**
  * A run's sections as the view shows them: the newest page of each, and its open rows that the page does not hold
  * (each read apart, at most WORKFLOW_READ_OPEN_MAX), with the agent children and delivery outcomes of the rows shown.
@@ -1077,28 +1099,17 @@ async function interceptionsPageOf(store: WorkflowStore, run: WorkflowRunRow, li
 async function runSectionsOf(store: WorkflowStore, run: WorkflowRunRow, limits: Record<WorkflowReadSection, number>) {
     const executions = await executionsPageOf(store, run, limits.executions, null);
     const openNodes = await store.listOpenNodeExecutions(run.runId, WORKFLOW_READ_OPEN_MAX);
-    const pagedNodes = new Set(executions.rows.map(node => node.nodeExecutionId));
-    const openExecutions = openNodes.rows.filter(node => !pagedNodes.has(node.nodeExecutionId));
-    // An agent state's child session and its lifecycle (IR 8, INACTIVE): read only for the agent states shown.
-    const agentIds = [...executions.rows, ...openExecutions].filter(node => node.nodeType === "agent").map(node => node.nodeExecutionId);
-    const agents = agentIds.length > 0
-        ? new Map((await store.listAgentInvocationsFor(run.runId, agentIds)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
-        : new Map<string, WorkflowAgentInvocation>();
+    const openExecutions = openNotPaged(openNodes.rows, executions.rows, node => node.nodeExecutionId);
+    const agents = await agentInvocationsOf(store, run.runId, [...executions.rows, ...openExecutions]);
     const inbox = await inboxPageOf(store, run, limits.inbox, null);
     const openInputs = await store.listOpenInbox(run.runId, WORKFLOW_READ_OPEN_MAX);
-    const pagedInputs = new Set(inbox.rows.map(message => message.messageId));
     const outbox = await outboxPageOf(store, run, limits.outbox, null);
     const openSent = await store.listOpenOutbox(run.runId, WORKFLOW_READ_OPEN_MAX);
-    const pagedSent = new Set(outbox.rows.map(message => message.exchangeId));
-    const openOutbox = openSent.rows.filter(message => !pagedSent.has(message.exchangeId));
-    // A recipient's later intake refusal of a delivered message (design 5.6), shown beside the delivery, which it never rewrites;
-    // looked up for exactly the messages shown.
-    const shownSent = [...outbox.rows, ...openOutbox];
-    const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = shownSent.length > 0
-        ? await store.listOutboxIntakeOutcomes(run.runId, shownSent.map(message => message.exchangeId)) : new Map();
+    const openOutbox = openNotPaged(openSent.rows, outbox.rows, message => message.exchangeId);
+    const intakeOutcomes = await intakeOutcomesOf(store, run.runId, [...outbox.rows, ...openOutbox]);
     return {
         executions, openExecutions, openExecutionsComplete: !openNodes.more, agents,
-        inbox, openInbox: openInputs.rows.filter(message => !pagedInputs.has(message.messageId)), openInboxComplete: !openInputs.more,
+        inbox, openInbox: openNotPaged(openInputs.rows, inbox.rows, message => message.messageId), openInboxComplete: !openInputs.more,
         outbox, openOutbox, openOutboxComplete: !openSent.more, intakeOutcomes,
     };
 }
@@ -1159,16 +1170,12 @@ async function readSectionPage(store: WorkflowStore, workflowSessionId: string, 
     const after = cursor.after;
     if (cursor.section === "executions" && "enteredAt" in after) {
         const read = await executionsPageOf(store, run, limit, after);
-        const agentIds = read.rows.filter(node => node.nodeType === "agent").map(node => node.nodeExecutionId);
-        const agents = agentIds.length > 0
-            ? new Map((await store.listAgentInvocationsFor(run.runId, agentIds)).map(invocation => [invocation.nodeExecutionId, invocation] as const))
-            : new Map<string, WorkflowAgentInvocation>();
+        const agents = await agentInvocationsOf(store, run.runId, read.rows);
         return page(read.rows.map(node => nodeExecutionViewOf(node, agents)), read.nextCursor);
     }
     if (cursor.section === "outbox" && "createdAt" in after) {
         const read = await outboxPageOf(store, run, limit, after);
-        const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = read.rows.length > 0
-            ? await store.listOutboxIntakeOutcomes(run.runId, read.rows.map(message => message.exchangeId)) : new Map();
+        const intakeOutcomes = await intakeOutcomesOf(store, run.runId, read.rows);
         return page(read.rows.map(message => outboxViewOf(message, intakeOutcomes)), read.nextCursor);
     }
     if (cursor.section === "inbox" && "seq" in after) {
@@ -1250,8 +1257,7 @@ async function testViewOf(store: WorkflowStore, workflowSessionId: string, run: 
     known: readonly WorkflowNodeExecutionRow[], limit: number): Promise<{ view: { [key: string]: JsonValue }; page: { [key: string]: JsonValue } }> {
     const page = await interceptionsPageOf(store, run, limit, null);
     const open = await store.listOpenInterceptions(run.runId, WORKFLOW_READ_OPEN_MAX);
-    const paged = new Set(page.rows.map(item => item.interceptionId));
-    const openApart = open.rows.filter(item => !paged.has(item.interceptionId));
+    const openApart = openNotPaged(open.rows, page.rows, item => item.interceptionId);
     const nodes = await interceptedNodesOf(store, run.runId, [...page.rows, ...openApart], known);
     const ir = await store.readRevisionIr(workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
     const coverage = await store.testCoverage(run.runId);
