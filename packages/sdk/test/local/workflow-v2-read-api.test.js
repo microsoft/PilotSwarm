@@ -619,9 +619,6 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             expect(added).toBe(yaml.replace("      next: { done: end }\n  quick:", "      next: { done: end }\n    input:\n      text: ${input}\n  quick:"));
             const emptied = (await read({ state: "review", input: {} })).stepInput.proposed.yaml;
             expect(emptied).toContain("    # what the reviewer gets\n    input: {}\n    inputSchema:\n");
-            // Paths are read and written with the compiler's grammar: a quoted key may hold spaces and ?? as data.
-            const quoted = (await read({ state: "summarize", input: { text: { source: "previous_step", path: "[\"a b ?? c\"]" } } })).stepInput.proposed.yaml;
-            expect(quoted).toContain("    input:\n      text: \"${input[\\\"a b ?? c\\\"]}\"\n");
             // Nothing was written: the draft is still revision 1 with its own text.
             expect((await store.readDefinition(workflowSessionId)).currentRevision).toBe(1);
             expect((await store.readRevision(workflowSessionId, 1)).yaml).toBe(yaml);
@@ -636,8 +633,6 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
                 [{ state: "review", input: { depth: { source: "keep" } } }, /no value written for 'depth' to keep/],
                 [{ state: "review", input: { pr: { source: "guess" } } }, /source: run_input \| previous_step/],
                 [{ state: "review", input: { pr: { source: "run_input" } } }, /must name a run input/],
-                // Paths are read with the compiler's grammar: trailing text after a segment is refused.
-                [{ state: "review", input: { summary: { source: "previous_step", path: "items[0]junk" } } }, /field path of the previous step/],
                 ["review", /must be \{ state, input\? \}/],
             ]) {
                 await expect(read(value)).rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(pattern) });
@@ -648,6 +643,84 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             const tool = async args => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowSessionId, ...args }, { callerSessionId: parent, host: { catalog, store } }));
             expect(await tool({ step_input: { state: "review" } })).toMatchObject({ ok: true, workflowId: workflowSessionId, stepInput: { state: "review", runInputs: ["pr", "repo"] } });
             expect(await tool({ step_input: { state: "end" } })).toMatchObject({ ok: false, error: { code: "WORKFLOW_READ_INVALID" } });
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    // Review api-03: the step-input read reads a field's value with the compiler's own expression parser, so it agrees
+    // with the grammar the draft compiles under; anything the editor does not set stays as written.
+    it("api-03: step inputs are read with the compiler's expression parser; defaults and compound values stay as written", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        try {
+            const store = catalog.workflowStore();
+            const owner = { provider: "test", subject: `step-input-parser-${randomUUID()}` };
+            const parent = randomUUID();
+            await catalog.createSession(parent, { owner });
+            const workflowSessionId = randomUUID();
+            const yaml = [
+                "apiVersion: pilotswarm.dev/v2-draft",
+                "kind: Workflow",
+                "metadata: { name: step-input-parser, version: \"1.0.0\" }",
+                "inputs:",
+                "  schema:",
+                "    type: object",
+                "    properties:",
+                "      pr: { type: string }",
+                "      run input: { type: string }",
+                "initial: review",
+                "states:",
+                "  review:",
+                "    type: agent",
+                "    invoke:",
+                "      prompt: Review the change.",
+                "    input:",
+                "      quotedInput: '${inputs[\"run input\"]}'",
+                "      spacedPath: '${input[ \"x y ?? z\" ]}'",
+                "      variable: ${kv.k}",
+                "      withDefault: '${input.x ?? 1}'",
+                "      compound: { nested: '${inputs.pr}' }",
+                "      whole: ${input}",
+                "    outcomes: [done]",
+                "    transition:",
+                "      next: { done: summarize }",
+                "  summarize:",
+                "    type: agent",
+                "    invoke:",
+                "      prompt: Summarize.",
+                "    outcomes: [done]",
+                "    transition:",
+                "      next: { done: end }",
+                "  end: { type: terminal, outcome: succeeded }",
+                "",
+            ].join("\n");
+            const compiled = compileWorkflowV2(yaml, { enableRequests: true, enableAgents: true });
+            expect((await catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner,
+                creationConfig: { workflowV2: { requestSha256: "step-input-parser" } } })).created).toBe(true);
+            await store.createDefinition({ workflowSessionId, parentSessionId: parent, notifyParent: false, yaml, compiled,
+                actor: { kind: "system", name: "step-input-parser-test" }, operationId: "create", requestSha256: "step-input-parser",
+                publish: false, start: null, title: "Workflow: step-input-parser" });
+            const read = value => readWorkflowV2({ store, requests: true }, workflowSessionId, { stepInput: value }, "api");
+
+            // A quoted key (with a space, or with ?? as data, and spaces inside the brackets) is a source the editor sets; a
+            // previous step's path is kept exactly as written. A default and a value built of several parts stay as written.
+            const { stepInput } = await read({ state: "review" });
+            expect(stepInput.fields.map(field => [field.name, field.current])).toEqual([
+                ["quotedInput", { source: "run_input", name: "run input" }],
+                ["spacedPath", { source: "previous_step", path: "[ \"x y ?? z\" ]" }],
+                ["variable", { source: "variable", name: "k" }],
+                ["withDefault", { source: "keep", text: "${input.x ?? 1}" }],
+                ["compound", { source: "keep", text: "{\"nested\":\"${inputs.pr}\"}" }],
+                ["whole", { source: "previous_step", path: "" }],
+            ]);
+
+            // A path is written with the same grammar: a quoted key may hold a space and ?? as data; trailing text is refused.
+            const quoted = (await read({ state: "summarize", input: { text: { source: "previous_step", path: "[\"a b ?? c\"]" } } })).stepInput.proposed.yaml;
+            expect(quoted).toContain("    input:\n      text: \"${input[\\\"a b ?? c\\\"]}\"\n");
+            await expect(read({ state: "summarize", input: { text: { source: "previous_step", path: "items[0]junk" } } }))
+                .rejects.toMatchObject({ code: "WORKFLOW_READ_INVALID", message: expect.stringMatching(/field path of the previous step/) });
         } finally {
             await catalog.close();
         }
