@@ -37,6 +37,8 @@ async function fixture(page) {
         return route.fallback();
     });
     await page.goto(`${base}/?session=${sid(0)}`);
+    // On a phone the list is a slide-over behind the leftmost toolbar button.
+    if (page.viewportSize().width < 921) await page.locator('.ps-toolbar.is-mobile').getByRole('button', { name: 'Sessions', exact: true }).click();
     await expect(page.locator(`[data-session-id="${sid(1)}"]`).first()).toBeVisible();
     return errors;
 }

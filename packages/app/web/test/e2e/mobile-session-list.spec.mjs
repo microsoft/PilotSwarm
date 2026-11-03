@@ -15,14 +15,23 @@ let stub;
 let base;
 
 test.beforeAll(async () => {
-    stub = await startStubServer(0, { sessionCount: 24, transcriptTurns: 8 });
+    stub = await startStubServer(0, { sessionCount: 48, transcriptTurns: 8 });
     base = `http://127.0.0.1:${stub.port}`;
 });
 
 test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
 
-test("rows never claim the finger that scrolls the list", async ({ page }) => {
+// The list is a slide-over on a phone: open it from the leftmost button.
+async function openList(page) {
     await page.goto(base);
+    await page.getByRole("button", { name: "Sessions", exact: true }).click();
+    await expect(page.locator(".ps-mobile-session-slideover.is-open")).toBeVisible();
+    // Let the slide finish: a touch aimed mid-slide lands on the dimmed chat.
+    await expect.poll(async () => (await page.locator(".ps-mobile-session-slideover").boundingBox()).x).toBeGreaterThanOrEqual(0);
+}
+
+test("rows never claim the finger that scrolls the list", async ({ page }) => {
+    await openList(page);
     const row = page.locator(".ps-session-list-button").first();
     await row.waitFor();
     // touch-action:none on a row is exactly the regression: it disables
@@ -32,7 +41,7 @@ test("rows never claim the finger that scrolls the list", async ({ page }) => {
 });
 
 test("a tap still selects", async ({ page }) => {
-    await page.goto(base);
+    await openList(page);
     const rows = page.locator(".ps-session-list-button");
     await rows.first().waitFor();
     await rows.nth(2).tap();
@@ -40,7 +49,7 @@ test("a tap still selects", async ({ page }) => {
 });
 
 async function checkDragStops(page, nativeTouch = false) {
-    await page.goto(base);
+    await openList(page);
     const list = page.locator(".ps-session-list").first();
     await list.waitFor();
     await expect.poll(() => list.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(200);
@@ -87,7 +96,7 @@ test("a thumb drag stops on release without browser inertia in Chromium", async 
 });
 
 test("the page never scrolls sideways, in or out of focus mode", async ({ page }) => {
-    await page.goto(base);
+    await openList(page);
     await page.locator(".ps-session-list-button").first().waitFor();
     const overflow = () => page.evaluate(() => {
         const doc = document.documentElement;
@@ -120,7 +129,7 @@ test("the page never scrolls sideways, in or out of focus mode", async ({ page }
 // fields live behind a modal the stub cannot always reach, and the contract
 // under test is the stylesheet's, not any one dialog's.
 test("no field is small enough to make iOS zoom the page", async ({ page }) => {
-    await page.goto(base);
+    await openList(page);
     await page.locator(".ps-session-list-button").first().waitFor();
 
     const small = await page.evaluate(() => {

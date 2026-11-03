@@ -353,6 +353,7 @@ test("phone canvas and console never cover each other", async ({ page }) => {
     try {
         const canvas = page.locator(".ps-mobile-canvas-layer");
         const entry = page.locator(".ps-toolbar.is-mobile").getByRole("button", { name: /Show canvas/ });
+        await page.getByRole("button", { name: "Sessions", exact: true }).click();
         await page.locator(".ps-session-list-button").first().click();
         await expect(page.locator(".ps-session-list-button.is-selected")).toHaveCount(1);
         await entry.click();

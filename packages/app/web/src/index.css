@@ -2450,6 +2450,44 @@ body.is-resizing-pane-y iframe {
   white-space: nowrap;
 }
 
+/* Sub-agent chevron (phone slide-over). It stands in for the row's status
+   mark: the same box and margin as the dot (the ring, on a nested row), so a
+   parent's title lines up with its siblings and its mark stays by the guide
+   rail. The glyph is drawn larger than the box, in the status colour, and
+   the tap target is larger again. */
+.ps-session-row-disclosure {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  vertical-align: 1px;
+  color: var(--ps-muted);
+  cursor: pointer;
+}
+.ps-session-row-disclosure.is-node {
+  width: 7px;
+  height: 7px;
+}
+.ps-session-row-disclosure::before {
+  content: "";
+  position: absolute;
+  inset: -12px -8px -12px -12px;
+}
+.ps-session-row-disclosure svg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  transform: translate(-50%, -50%);
+  transition: transform 140ms ease;
+}
+.ps-session-row-disclosure.is-open svg {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
 /* Right-hand context % — never shrinks, tabular so it forms a column. */
 .ps-session-row-ctx {
   flex: 0 0 auto;
@@ -9276,6 +9314,68 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    layout's height cap on the pane. */
 .ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane {
   max-height: none;
+}
+
+/* Phone session list as a slide-over (the toolbar's leftmost button). The
+   chat keeps the whole height; the list keeps its usual look, at full height
+   and 86% of the width, over a dimmed chat. */
+.ps-mobile-workspace.has-session-slideover {
+  position: relative;
+}
+.ps-mobile-session-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: color-mix(in srgb, #000 50%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+.ps-mobile-session-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ps-mobile-session-slideover {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 31;
+  width: min(86%, 440px);
+  display: flex;
+  min-height: 0;
+  /* Panels are slightly translucent, and some themes more so; over a chat
+     that would show the chat through the list. Give it the page behind. */
+  background: var(--ps-page-background, var(--ps-background));
+  border-radius: var(--ps-radius-sm);
+  transform: translateX(-104%);
+  visibility: hidden;
+  transition: transform 200ms ease, visibility 0s linear 200ms;
+}
+.ps-mobile-session-slideover.is-open {
+  transform: none;
+  visibility: visible;
+  transition: transform 200ms ease, visibility 0s;
+}
+/* The slide-over has the whole height, so its rows can afford to be easier
+   to read and to hit: two points larger, and a little taller. */
+.ps-mobile-session-slideover .ps-session-pane .ps-session-list-button {
+  font-size: calc(var(--ps-font-size-dense) + 2px);
+  padding-block: 6px;
+}
+.ps-mobile-session-slideover > .ps-mobile-session-pane {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  max-height: none;
+  box-shadow: 8px 0 22px color-mix(in srgb, #000 45%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ps-mobile-session-backdrop,
+  .ps-mobile-session-slideover,
+  .ps-mobile-session-slideover.is-open {
+    transition: none;
+  }
 }
 
 /* The session list may pan sideways when its rows overflow — long titles and

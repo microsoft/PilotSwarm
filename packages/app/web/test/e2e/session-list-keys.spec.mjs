@@ -22,7 +22,8 @@ const placement = page => page.evaluate(() => {
     return { visible: r.top >= s.top - 1 && r.bottom <= s.top + scroller.clientHeight + 1, scrollTop: scroller.scrollTop };
 });
 
-for (const width of [1440, 390]) test(`${width}px: arrow and page keys keep the selection visible both ways`, async ({ page }) => {
+// Desktop widths: on a phone the list is a slide-over that a pick closes.
+for (const width of [1440, 1024]) test(`${width}px: arrow and page keys keep the selection visible both ways`, async ({ page }) => {
     await page.setViewportSize(width > 600 ? { width, height: 700 } : { width, height: 844 });
     await page.goto(base);
     const rows = page.locator(".ps-session-list .ps-session-list-button[data-session-id]");
