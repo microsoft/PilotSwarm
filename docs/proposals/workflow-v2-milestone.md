@@ -1774,3 +1774,14 @@ serves), no typed input into a running test, and no display of lineage, receipts
   line, the visit's last six events, and the sessions under the chosen chat, up to eight). Only what the events and
   the read record is shown: a response that arrives after its request timed out is not recorded as an event, so it is
   not listed.
+- **Branch results, and asking the parent agent about a step (q16, mocks M22 to M24).** A parallel step's details
+  list "Branch results" for the visit shown: how many branches succeeded (and are running), which branches block a
+  blocked join, and per branch where it is (running, succeeded, did not succeed, not started), its last step, a short
+  result and why it did not succeed (`workflowV2BranchEvidence`; the TUI lists up to twelve). Any step's details offer
+  "Ask the parent agent" with "Send findings", "Ask for rework" or "Ask for approval" and an optional note: an
+  ordinary message in the parent session's chat that names the run, step, visit and branch, how it ended and its
+  result, and what is asked (`askParentAboutStep`, `workflowV2StepQuestion`); the parent decides, and nothing in the
+  run changes. Offered only for a workflow with a parent (the TUI does not offer it yet). Rework and approval inside
+  a workflow are written into its graph (a `request` to the parent, a route back to an earlier step); the authoring
+  skill's section 12 says how. No control re-runs a finished step inside a live run: that would need a new runtime
+  operation and a change to the formal model.

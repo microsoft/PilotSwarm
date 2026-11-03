@@ -1331,6 +1331,7 @@ function executionResultLines(node, projection) {
 /** At most this many variables of a comparison are listed in the TUI's details (the rest are counted). */
 const KV_COMPARE_ROWS = 12;
 const SUBTREE_ROWS = 8;
+const EVIDENCE_ROWS = 12;
 const ACTIVITY_ROWS = 6;
 
 /**
@@ -1482,6 +1483,19 @@ function detailLines(selection, width) {
             for (const [label, value] of workflowV2AgentBindingRows(node.binding)) add(`${label}: ${value}`);
         }
         for (const line of node.description || []) add(line, "gray");
+        // Each branch's result for a parallel step (owner decision q16; mocks M22 to M24).
+        if (node.evidence) {
+            const evidence = node.evidence;
+            add(`Branch results: ${evidence.succeeded} of ${evidence.total} succeeded${evidence.running ? `, ${evidence.running} running` : ""}`, "cyan");
+            if (evidence.blocked && evidence.blocking.length) {
+                add(`  The join is blocked by ${evidence.blocking.length === 1 ? "branch" : "branches"} ${evidence.blocking.join(", ")}.`, "yellow");
+            }
+            for (const row of evidence.rows.slice(0, EVIDENCE_ROWS)) {
+                add(`  branch ${row.index} · ${row.status}${row.step ? ` · at '${row.step}'` : ""}${row.why ? ` · ${row.why}` : row.result ? ` · ${row.result}` : ""}`,
+                    row.status === "did not succeed" ? "yellow" : "gray");
+            }
+            if (evidence.rows.length > EVIDENCE_ROWS) add(`  … ${evidence.rows.length - EVIDENCE_ROWS} more branches (the portal lists them all)`, "gray");
+        }
     } else if (node.outcome) {
         add(`Last outcome: ${node.outcome}`);
     }

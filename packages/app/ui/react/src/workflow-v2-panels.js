@@ -2,7 +2,7 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
-    workflowV2VisitEnding, workflowV2WholeValue,
+    workflowV2VisitEnding, workflowV2WholeValue, WORKFLOW_V2_ASK_PARENT_KINDS,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -159,6 +159,51 @@ function AgentChild({ agent, openSession, subtree = [] }) {
                 onClick: () => openSession(entry.sessionId) }, "Open (read-only)") : null)))) : null);
 }
 
+/**
+ * Each branch of a parallel step's visit (owner decision q16; mocks M22 "JOIN BLOCKED k / n", M23 "Inspect conflict",
+ * M24 "Inspect evidence"): how many succeeded, which ones block a blocked join, and per branch where it is, its last
+ * step, a short result and why it did not succeed.
+ */
+function BranchEvidence({ evidence }) {
+    return h("div", { className: "ps-workflow-evidence", "aria-label": "Branch results" },
+        h("h3", null, "Branch results"),
+        h("p", { style: { margin: 0 } }, `${evidence.succeeded} of ${evidence.total} branches succeeded${evidence.running ? `, ${evidence.running} running` : ""}.`),
+        evidence.blocked && evidence.blocking.length ? h("p", { role: "status", "data-blocking": evidence.blocking.join(","), style: { margin: 0, color: TONES.warning } },
+            `The join is blocked by ${evidence.blocking.length === 1 ? "branch" : "branches"} ${evidence.blocking.join(", ")}.`) : null,
+        evidence.rows.length ? h("table", null,
+            h("thead", null, h("tr", null, ["Branch", "Status", "Last step", "Result", "Why"].map(label => h("th", { key: label }, label)))),
+            h("tbody", null, evidence.rows.map(row => h("tr", { key: row.index, "data-branch": row.index, "data-status": row.status },
+                h("td", null, String(row.index)), h("td", null, row.status), h("td", null, row.step ?? "—"), h("td", null, row.result ?? "—"),
+                h("td", null, row.why ?? "—"))))) : null);
+}
+
+/**
+ * Ask the workflow's parent agent about this visit (owner decision q16; mocks M22 "Send findings", M23 "Request scoped
+ * rework", M24 "Ask parent for approval"): choose findings, rework or approval, add a note, and send it to the parent
+ * agent's chat as an ordinary message (controller.askParentAboutStep). The parent decides what to do.
+ */
+function AskParent({ onAskParent, executionId }) {
+    const [kind, setKind] = React.useState(null);
+    const [note, setNote] = React.useState("");
+    const [sent, setSent] = React.useState(null);
+    const send = async () => {
+        const result = await onAskParent(kind, note, executionId);
+        setSent(result?.ok ? "Sent to the parent agent's chat." : result?.reason ?? "It was not sent.");
+        if (result?.ok) setNote("");
+    };
+    return h("div", { className: "ps-workflow-ask-parent", "aria-label": "Ask the parent agent", style: { display: "grid", gap: 4 } },
+        h("h3", null, "Ask the parent agent"),
+        h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, Object.entries(WORKFLOW_V2_ASK_PARENT_KINDS).map(([value, item]) =>
+            h("button", { key: value, type: "button", className: "ps-mini-button", "data-ask": value, "aria-pressed": kind === value,
+                onClick: () => { setKind(value); setSent(null); } }, item.label))),
+        kind ? h("label", { style: { display: "grid", gap: 2 } }, "Your note (optional)",
+            h("textarea", { value: note, rows: 3, "data-field": "ask-note", onChange: event => setNote(event.target.value) })) : null,
+        kind ? h("button", { type: "button", className: "ps-mini-button", "data-action": "ask-parent-send", style: { justifySelf: "start" },
+            onClick: () => { send(); } }, "Send to the parent agent") : null,
+        sent ? h("p", { role: "status", style: { margin: 0 } }, sent) : null,
+        h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, "It goes to the parent agent's chat as a message; the parent decides what to do."));
+}
+
 /** A collapsed list of activity rows (owner decision q14): time, what happened, who, newest first. */
 function ActivityDetails({ rows, label }) {
     if (!rows.length) return null;
@@ -227,7 +272,7 @@ function KvApplied({ execution, runId, kv }) {
  */
 export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError, openSession = null, runId = null, selection = null,
     onSelectExecution = null, onTab = null, executionValues = null, onReadWholeValue = null, history = null, onLoadOlder = null, kv = null,
-    events = null, sessionsById = null }) {
+    events = null, sessionsById = null, onAskParent = null }) {
     const property = (label, value) => h("div", { className: "ps-workflow-property", key: label },
         h("span", null, label), h("strong", null, value));
     const current = selected.current;
@@ -260,7 +305,10 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                 current.outbox.intake ? h(IntakeOutcome, { intake: current.outbox.intake }) : null,
                 h(Value, { value: current.outbox.payloadPreview, label: "Sent payload" })) : null,
             // Who did what in this visit, from the workflow's events (owner decision q14; mock M09 "Inspect audit").
-            events && current?.id ? h(ActivityDetails, { rows: workflowV2Activity(events, { runId, nodeExecutionId: current.id }), label: "Activity of this visit" }) : null);
+            events && current?.id ? h(ActivityDetails, { rows: workflowV2Activity(events, { runId, nodeExecutionId: current.id }), label: "Activity of this visit" }) : null,
+            // Each branch's result for a parallel step, and asking the parent agent about this visit (owner decision q16).
+            selected.evidence ? h(BranchEvidence, { evidence: selected.evidence }) : null,
+            onAskParent && current?.id ? h(AskParent, { key: current.id, onAskParent, executionId: current.id }) : null);
     }
     if (tab === "output") {
         const shown = workflowV2ShownExecution(selected, runId, selection);

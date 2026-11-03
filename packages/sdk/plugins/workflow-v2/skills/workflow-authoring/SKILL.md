@@ -224,6 +224,23 @@ approve, get that approval through the normal approval path first. Opening,
 merging and publishing remain separate authorized actions.
 `workflow-reference` has a complete review fan-out example.
 
+## 12. Rework and approval
+
+People see each branch's results in the workflow view, and from a step's details they can ask the parent agent for
+findings, rework or approval; that is a message to the parent, which decides. Write the decision itself into the
+graph:
+
+- Approval: a `request` state to `{ parent: true }` whose response contract carries the decision (for example a
+  `Decision` with `approved: boolean`), with routes for `responded`, `declined` and `timed_out`; a script reads the
+  decision and routes `approved` or `rejected`. If a person must approve, the parent gets that approval through the
+  normal approval path before it answers.
+- Rework: route a review's "changes required" outcome to a `request` for the rework (to the author's session, or to
+  the parent), then back to the review with the new input. Bound the rounds (a schema or a counter in the variables)
+  so the loop ends.
+- Keep evidence in typed outputs (what was reviewed, the findings, receipts): the branch results show them.
+
+`workflow-reference` shows both in its review fan-out example.
+
 ## Example: wait for an event or poll
 
 ```yaml

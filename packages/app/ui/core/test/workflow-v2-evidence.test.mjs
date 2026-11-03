@@ -1,0 +1,144 @@
+/**
+ * Workflow v2: a parallel step's branch results, and asking the parent agent about a step (owner decision q16; mocks
+ * M22 "JOIN BLOCKED k / n" and "Send findings to author", M23 "Inspect conflict" and "Request scoped rework", M24
+ * "Inspect evidence" and "Ask parent for approval"):
+ *   - a parallel step's visit lists each branch: where it is, its last step, a short result and why it did not succeed;
+ *     a blocked join names the branches that block it
+ *   - from a step's details a person asks the workflow's parent agent for findings, rework or approval: an ordinary
+ *     message in the parent's chat naming the run, step, visit and branch, how it ended and its result; the parent decides
+ *
+ * Run: node --test test/workflow-v2-evidence.test.mjs
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PilotSwarmUiController, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowViewModal } from "../src/index.js";
+import { WORKFLOW_V2_ASK_PARENT_KINDS, projectWorkflowV2, workflowV2BranchEvidence, workflowV2StepQuestion } from "../src/workflow-v2-view.js";
+import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
+import { RUN, done, readModel } from "./workflow-v2-fixtures.mjs";
+
+const states = [
+    { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
+        body: { initial: "work", states: ["work", "branch_done"] }, outcomes: ["joined", "blocked"], next: { joined: "done", blocked: "failed" } },
+    { id: "work", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["ok"], next: { ok: "branch_done" }, parallel: "fan" },
+    { id: "branch_done", type: "terminal", outcome: "succeeded", parallel: "fan" },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+    { id: "failed", type: "terminal", outcome: "failed" },
+];
+const graph = { revision: 1, initial: "fan", states };
+const branch = index => ({ branch: { parallelNodeExecutionId: "nx-fan-1", index } });
+const model = () => readModel({ graph, nodeExecutions: [
+    done("fan", 1, "blocked", { branches: 3 }),
+    done("work", 1, "ok", { nodeExecutionId: "nx-work-b0", ...branch(0) }),
+    done("branch_done", 2, "succeeded", { nodeExecutionId: "nx-done-b0", outputPreview: "{\"ok\":true}", ...branch(0) }),
+    done("work", 1, "crashed", { nodeExecutionId: "nx-work-b1", resultKind: "runtime_error", errorPreview: JSON.stringify({ code: "crashed", message: "exit code 1" }),
+        ...branch(1) }),
+] });
+
+test("a parallel step's visit lists each branch, and a blocked join names the branches that block it", () => {
+    const fan = projectWorkflowV2({ readModel: model() }).nodes.find(node => node.id === "fan");
+    assert.deepEqual(fan.evidence, {
+        total: 3, succeeded: 1, running: 0, blocked: true, blocking: [1, 2], rows: [
+            { index: 0, status: "succeeded", step: "branch_done", outcome: "succeeded", result: "{\"ok\":true}", why: null },
+            { index: 1, status: "did not succeed", step: "work", outcome: "crashed", result: null, why: "A runtime error (crashed): exit code 1" },
+            { index: 2, status: "not started", step: null, outcome: null, result: null, why: null },
+        ],
+    });
+    // Running, an ended branch, another branch's failure, and a history that is not all loaded.
+    const executions = [
+        { id: "a", stateId: "work", ordinal: 1, status: "pending", ...branch(0) },
+        { id: "b", stateId: "failed_end", ordinal: 1, status: "completed", outcome: "rejected", resultKind: "business", ...branch(1) },
+        { id: "c", stateId: "work", ordinal: 1, status: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "fail_fast", ...branch(2) },
+    ];
+    const running = workflowV2BranchEvidence(executions, [...states, { id: "failed_end", type: "terminal", outcome: "failed", parallel: "fan" }],
+        { id: "nx-fan-1", status: "pending", branches: 4 }, false);
+    assert.deepEqual(running.rows.map(row => [row.status, row.why]), [
+        ["running", null], ["did not succeed", "It ended at 'failed_end' (failed)"], ["did not succeed", "Another branch failed, so this one was cancelled"],
+        ["not in the loaded history", null]]);
+    assert.deepEqual([running.running, running.blocked, running.blocking], [1, false, []]);
+    assert.equal(workflowV2BranchEvidence([], states, { id: "x", status: "completed" }), null);
+    // Only a parallel step has evidence.
+    assert.equal(projectWorkflowV2({ readModel: model() }).nodes.find(node => node.id === "work").evidence, undefined);
+});
+
+test("the question to the parent agent names the run, step, visit and branch, how it ended and its result, and what is asked", () => {
+    assert.deepEqual(Object.keys(WORKFLOW_V2_ASK_PARENT_KINDS), ["findings", "rework", "approval"]);
+    assert.deepEqual(Object.values(WORKFLOW_V2_ASK_PARENT_KINDS).map(kind => kind.label), ["Send findings", "Ask for rework", "Ask for approval"]);
+    const fan = projectWorkflowV2({ readModel: model() }).nodes.find(node => node.id === "fan");
+    assert.equal(workflowV2StepQuestion({ workflowName: "watch-v2", workflowSessionId: "wf", runId: RUN, stateId: "fan", execution: fan.current, kind: "approval",
+        note: " the release needs it " }), [
+        "About workflow \"watch-v2\" (session wf): in run run-1, step 'fan' (visit 1): it asks for your approval. It ended 'blocked'.",
+        "My note: the release needs it",
+        "Please decide whether it is approved and continue the workflow accordingly (for example answer the request it waits on).",
+    ].join("\n"));
+    const done0 = { id: "nx-done-b0", stateId: "branch_done", ordinal: 2, status: "completed", outcome: "succeeded", resultKind: "business",
+        outputPreview: "{\"ok\":true}", ...branch(0) };
+    assert.equal(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "branch_done", execution: done0, kind: "findings" }), [
+        "About workflow (session wf): in run run-1, step 'branch_done' (visit 2) in branch 0: here is what it found. It ended 'succeeded'. Its result: {\"ok\":true}",
+        "Please pass these findings to whoever needs them (for example the author of the change), or act on them.",
+    ].join("\n"));
+    assert.match(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "work", execution: { id: "p", ordinal: 3, status: "pending" }, kind: "rework" }),
+        /^About workflow \(session wf\): in run run-1, step 'work' \(visit 3\): it needs rework\. It is still running\.\nPlease arrange the rework/);
+    assert.equal(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "work", execution: null, kind: "other" }), null);
+});
+
+function seeded({ parent = "parent-1" } = {}) {
+    const sent = [];
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: watch-v2", status: "running", sessionKind: "workflow",
+        parentSessionId: parent }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model(), readModelRunId: null } });
+    const controller = new PilotSwarmUiController({ store, transport: { sendMessage: async (...args) => { sent.push(args); }, getSessionEventsBefore: async () => [] } });
+    return { controller, store, sent };
+}
+
+test("the controller sends the question to the parent's chat as an ordinary message, and says why when it cannot", async () => {
+    const h = seeded();
+    const result = await h.controller.askParentAboutStep("wf", { stateId: "fan", kind: "rework", note: "branch 1 crashed" });
+    assert.deepEqual(result, { ok: true, parentSessionId: "parent-1" });
+    assert.equal(h.sent.length, 1);
+    const [parent, text, options] = h.sent[0];
+    assert.deepEqual([parent, options], ["parent-1", { enqueueOnly: true }]);
+    assert.ok(text.startsWith("About workflow \"watch-v2\" (session wf): in run run-1, step 'fan' (visit 1): it needs rework."), text);
+    assert.ok(text.includes("\nMy note: branch 1 crashed\nPlease arrange the rework"), text);
+    // A visit chosen by id, an unknown kind, a step with no visit, a workflow without a parent.
+    assert.equal((await h.controller.askParentAboutStep("wf", { stateId: "work", executionId: "nx-work-b1", kind: "findings" })).ok, true);
+    assert.ok(h.sent[1][1].includes("step 'work' (visit 1) in branch 1: here is what it found. A runtime error (crashed). exit code 1"), h.sent[1][1]);
+    assert.deepEqual(await h.controller.askParentAboutStep("wf", { stateId: "fan", kind: "other" }),
+        { ok: false, reason: "Choose what to ask: findings, rework or approval." });
+    assert.deepEqual(await h.controller.askParentAboutStep("wf", { stateId: "done", kind: "findings" }),
+        { ok: false, reason: "Step 'done' has no visit in the shown run to ask about." });
+    assert.equal(h.sent.length, 2);
+    const orphan = seeded({ parent: null });
+    assert.deepEqual(await orphan.controller.askParentAboutStep("wf", { stateId: "fan", kind: "findings" }),
+        { ok: false, reason: "This workflow has no parent agent to ask." });
+});
+
+test("the portal shows a parallel step's branch results and the three ways to ask the parent agent", () => {
+    const projected = projectWorkflowV2({ readModel: model() });
+    const fan = projected.nodes.find(node => node.id === "fan");
+    const render = props => renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "details", selected: fan, nodes: projected.nodes,
+        select: () => {}, runOutput: null, runError: null, runId: RUN, ...props }));
+    const html = render({ onAskParent: async () => ({ ok: true }) });
+    assert.match(html, /aria-label="Branch results"><h3>Branch results<\/h3><p[^>]*>1 of 3 branches succeeded\.<\/p>/);
+    assert.match(html, /<p role="status" data-blocking="1,2"[^>]*>The join is blocked by branches 1, 2\.<\/p>/);
+    assert.match(html, /<tr data-branch="1" data-status="did not succeed"><td>1<\/td><td>did not succeed<\/td><td>work<\/td><td>—<\/td><td>A runtime error \(crashed\): exit code 1<\/td><\/tr>/);
+    assert.match(html, /<tr data-branch="0" data-status="succeeded"><td>0<\/td><td>succeeded<\/td><td>branch_done<\/td><td>\{&quot;ok&quot;:true\}<\/td><td>—<\/td><\/tr>/);
+    assert.match(html, /aria-label="Ask the parent agent"[^>]*><h3>Ask the parent agent<\/h3>/);
+    for (const label of ["Send findings", "Ask for rework", "Ask for approval"]) assert.ok(html.includes(`>${label}</button>`), label);
+    assert.ok(!html.includes("data-action=\"ask-parent-send\""), "nothing to send until a kind is chosen");
+    assert.ok(!render({}).includes("Ask the parent agent"), "only for a workflow with a parent");
+});
+
+test("the TUI lists a parallel step's branch results and the branches that block its join", () => {
+    const h = seeded();
+    h.store.dispatch({ type: "ui/modal", modal: { type: "workflowView", sessionId: "wf", selectedNodeId: "fan", detailsScroll: 0 } });
+    const lines = selectWorkflowViewModal(h.store.getState(), 160, 80).detailsLines.map(line => line.text.trim());
+    for (const line of ["Branch results: 1 of 3 succeeded", "The join is blocked by branches 1, 2.", "branch 0 · succeeded · at 'branch_done' · {\"ok\":true}",
+        "branch 1 · did not succeed · at 'work' · A runtime error (crashed): exit code 1", "branch 2 · not started"]) {
+        assert.ok(lines.includes(line), `${line}\n${lines.join("\n")}`);
+    }
+});

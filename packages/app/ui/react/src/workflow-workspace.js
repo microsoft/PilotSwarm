@@ -259,7 +259,7 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
 }
 
 export function WorkflowNodePane({ controller }) {
-    const { sessionId, view, selected, select, nodes, v2, events } = useWorkflowView(controller);
+    const { sessionId, session, view, selected, select, nodes, v2, events } = useWorkflowView(controller);
     // The session rows loaded: the sessions under an agent step (owner decision q14; mock M14 "View owned subtree").
     const sessionsById = useControllerSelector(controller, state => state.sessions.byId);
     const [tab, setTab] = React.useState("details");
@@ -289,6 +289,9 @@ export function WorkflowNodePane({ controller }) {
                 runId: v2?.runId ?? null, selection: view.selectedExecution ?? null, onTab: setTab,
                 // Why the visit ended, its activity and the sessions under an agent step (owner decision q14).
                 events: v2?.bound ? events : null, sessionsById,
+                // Ask the workflow's parent agent about the visit shown (owner decision q16): only for a workflow with a parent.
+                onAskParent: session?.parentSessionId && v2?.bound
+                    ? (kind, note, executionId) => controller.askParentAboutStep(sessionId, { stateId: selected.id, executionId, kind, note }) : null,
                 onSelectExecution: executionId => controller.selectWorkflowExecution(sessionId,
                     executionId === null ? null : { runId: v2?.runId ?? null, stateId: selected.id, executionId }),
                 // That execution's whole value (read for exactly the shown run), and the run's older history.

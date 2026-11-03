@@ -798,6 +798,7 @@ function nodeView(node, executions, context) {
         outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined), resultKind,
         result, pending: pending || null, current: pending || latestDone || null, executions: history,
         description: [...describeWorkflowV2Execution(node, pending || latestDone), ...branchProgressLines(node, pending || latestDone, context)],
+        ...(node.type === "parallel" ? { evidence: workflowV2BranchEvidence(context.executions, context.states, pending || latestDone, context.complete) } : {}),
     };
 }
 
@@ -887,6 +888,9 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
         pins: agentPinSource(shared, run, bound, active) };
     // Each parallel state's branches as the loaded executions show them (mock M21 active and queued counts, M22 a blocked join).
     context.branchProgress = workflowV2BranchProgress(executions, active?.states || []);
+    // Each branch's result for a parallel step's evidence (owner decision q16; mocks M22 to M24).
+    context.executions = executions;
+    context.states = active?.states || [];
     const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
     return {
         shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
@@ -1303,4 +1307,81 @@ export function workflowV2SessionSubtree(byId, rootId, limit = 50) {
     };
     visit(rootId, 0);
     return out;
+}
+
+// ── Evidence of a parallel step's branches, and asking the parent agent about a step (owner decision q16; M22 to M24) ──
+
+/**
+ * Each branch of one visit of a parallel step (owner decision q16; mocks M22 "JOIN BLOCKED k / n", M23 "Inspect
+ * conflict", M24 "Inspect evidence"): by branch, where it is (running, succeeded, did not succeed, or not started),
+ * its last step, its outcome, a short result and, for a branch that did not succeed, why. From the executions loaded
+ * (`complete`: whether every one is): a branch with none may only be outside the loaded history. A blocked join names
+ * the branches that block it. { total, succeeded, running, blocked, blocking, rows }, or null when the visit names no
+ * branch count. Pure.
+ */
+export function workflowV2BranchEvidence(executions, states, parallel, complete = true) {
+    if (!isRecord(parallel) || !Number.isSafeInteger(parallel.branches) || parallel.branches < 0) return null;
+    const byId = new Map((Array.isArray(states) ? states : []).filter(isRecord).map(state => [state.id, state]));
+    const groups = new Map();
+    for (const execution of Array.isArray(executions) ? executions : []) {
+        const branch = execution?.branch;
+        if (!isRecord(branch) || branch.parallelNodeExecutionId !== parallel.id || !Number.isSafeInteger(branch.index)) continue;
+        if (!groups.has(branch.index)) groups.set(branch.index, []);
+        groups.get(branch.index).push(execution);
+    }
+    const rows = [];
+    for (let index = 0; index < parallel.branches; index += 1) {
+        const list = (groups.get(index) ?? []).slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
+        if (!list.length) {
+            rows.push({ index, status: complete ? "not started" : "not in the loaded history", step: null, outcome: null, result: null, why: null });
+            continue;
+        }
+        const pending = list.find(item => item.status === "pending") ?? null;
+        const last = pending ?? list[list.length - 1];
+        const state = byId.get(last.stateId);
+        const terminal = state?.type === "terminal";
+        const succeeded = !pending && terminal && state.outcome === "succeeded";
+        const error = parsedJson(last.errorPreview);
+        const why = pending || succeeded ? null
+            : terminal ? `It ended at '${last.stateId}' (${state.outcome})`
+                : VISIT_WINNERS[last.winner] ?? (last.resultKind === "runtime_error"
+                    ? `A runtime error (${last.outcome ?? text(error?.code) ?? "not recorded"})${because(error?.message)}`
+                    : `It stopped at step '${last.stateId}'`);
+        const preview = typeof last.outputPreview === "string" && last.outputPreview && last.outputPreview !== "null" ? clipped(last.outputPreview, 160) : null;
+        rows.push({ index, status: pending ? "running" : succeeded ? "succeeded" : "did not succeed", step: last.stateId, outcome: last.outcome ?? null,
+            result: preview, why });
+    }
+    const blocked = parallel.status === "completed" && parallel.outcome === "blocked";
+    return {
+        total: parallel.branches, succeeded: rows.filter(row => row.status === "succeeded").length, running: rows.filter(row => row.status === "running").length,
+        blocked, blocking: blocked ? rows.filter(row => row.status !== "succeeded").map(row => row.index) : [], rows,
+    };
+}
+
+/** What a person can ask the parent agent about a step (owner decision q16), with the words its button and message use. */
+export const WORKFLOW_V2_ASK_PARENT_KINDS = Object.freeze({
+    findings: { label: "Send findings", about: "here is what it found", action: "pass these findings to whoever needs them (for example the author of the change), or act on them." },
+    rework: { label: "Ask for rework", about: "it needs rework", action: "arrange the rework: for example change the draft or its inputs and start a new run, or ask whoever owns the work to change it." },
+    approval: { label: "Ask for approval", about: "it asks for your approval", action: "decide whether it is approved and continue the workflow accordingly (for example answer the request it waits on)." },
+});
+
+/**
+ * The message that asks the workflow's parent agent about one visit of a step (owner decision q16; mocks M22 "Send
+ * findings", M23 "Request scoped rework", M24 "Ask parent for approval"): which run, step, visit and branch, how it
+ * ended and its result, what the person asks (`kind`: findings, rework or approval) and their note. Built with
+ * workflowV2AskParentMessage's shape, sent as an ordinary message to the parent's chat. Null for an unknown kind. Pure.
+ */
+export function workflowV2StepQuestion({ workflowName = null, workflowSessionId, runId, stateId, execution = null, kind, note = "" } = {}) {
+    const asked = WORKFLOW_V2_ASK_PARENT_KINDS[kind];
+    if (!asked) return null;
+    const visit = Number.isSafeInteger(execution?.ordinal) ? ` (visit ${execution.ordinal})` : "";
+    const branch = isRecord(execution?.branch) && Number.isSafeInteger(execution.branch.index) ? ` in branch ${execution.branch.index}` : "";
+    const ending = workflowV2VisitEnding(execution);
+    const result = typeof execution?.outputPreview === "string" && execution.outputPreview && execution.outputPreview !== "null"
+        ? ` Its result: ${clipped(execution.outputPreview, 1_000)}` : "";
+    const lines = [`About workflow ${workflowName ? `"${workflowName}" ` : ""}(session ${workflowSessionId}): in run ${runId}, step '${stateId}'${visit}${branch}: ${asked.about}.`
+        + `${ending ? ` ${ending.text}` : execution?.status === "pending" ? " It is still running." : ""}${result}`];
+    if (typeof note === "string" && note.trim()) lines.push(`My note: ${note.trim()}`);
+    lines.push(`Please ${asked.action}`);
+    return lines.join("\n");
 }

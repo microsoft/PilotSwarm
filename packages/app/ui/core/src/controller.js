@@ -1,7 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { workflowDefinition, workflowReadModelView, workflowV2ExecutionValueKey, workflowV2KvApplied, workflowV2KvRevisionKey, workflowV2OlderStart,
     workflowV2RunHistory, workflowV2RunRows,
-    workflowV2ShownExecution } from "./workflow-view.js";
+    workflowV2ShownExecution, workflowV2StepQuestion } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputCheck, selectWorkflowInputNote, WORKFLOW_INPUT_CHECKING_TEXT, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
@@ -7593,6 +7593,27 @@ export class PilotSwarmUiController {
         this.afterWorkflowTestCommand(modal, { ok: true });
         this.dispatch({ type: "ui/status", text: workflowV2AskParentSent(result.parentSessionId) });
         return result;
+    }
+
+    /**
+     * Workflow v2: ask the workflow's parent agent about one visit of a step of the run the view shows (owner decision
+     * q16; mocks M22 "Send findings", M23 "Request scoped rework", M24 "Ask parent for approval"): `kind` findings,
+     * rework or approval, with the person's note (workflowV2StepQuestion's message, sent by askWorkflowParent). The
+     * visit is `executionId`, else the step's latest. Never throws.
+     */
+    async askParentAboutStep(sessionId, { stateId = null, executionId = null, kind = null, note = "" } = {}) {
+        const projection = workflowViewProjectionFor(this.getState(), sessionId);
+        const v2 = projection.v2;
+        const node = v2?.bound ? v2.nodes.find(item => item.id === stateId) ?? null : null;
+        const execution = node ? (executionId ? (node.executions ?? []).find(item => item?.id === executionId) ?? null : node.current) : null;
+        const refuse = reason => {
+            this.dispatch({ type: "ui/status", text: reason });
+            return { ok: false, reason };
+        };
+        if (!execution) return refuse(`Step '${stateId}' has no visit in the shown run to ask about.`);
+        const text = workflowV2StepQuestion({ workflowName: projection.name, workflowSessionId: sessionId, runId: v2.runId, stateId, execution, kind, note });
+        if (!text) return refuse("Choose what to ask: findings, rework or approval.");
+        return this.askWorkflowParent(sessionId, text);
     }
 
     /**
