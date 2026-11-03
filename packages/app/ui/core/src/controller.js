@@ -6388,6 +6388,33 @@ export class PilotSwarmUiController {
     }
 
     /**
+     * Workflow v2: one kept read of a workflow, as the definition revisions, a run's variables and an execution's whole
+     * value are read: `{ ...identity, phase, [field], error }` under `key` of the view's `slot` (the `cap` newest kept),
+     * loading, then the value `accept` takes from the answer (it throws for an answer that is not the one asked for), or
+     * the failure as `describe` words it. Returns { ok, entry } or { ok: false, reason: "failed", error, entry }. Reading
+     * changes nothing. Never throws.
+     */
+    async _readWorkflowKept(sessionId, { slot, key, cap, identity = {}, field, options, accept, describe }) {
+        const write = entry => {
+            const reads = { ...(this.getState().ui.workflowViews?.[sessionId]?.[slot] ?? {}) };
+            delete reads[key];
+            reads[key] = { ...identity, ...entry };
+            // Oldest first, except numeric keys, which an object orders by number: the key just written is never dropped.
+            const keys = Object.keys(reads);
+            for (const old of keys.filter(other => other !== String(key)).slice(0, Math.max(0, keys.length - cap))) delete reads[old];
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { [slot]: reads } });
+            return reads[key];
+        };
+        write({ phase: "loading", [field]: null, error: null });
+        try {
+            const value = accept(await this.transport.readWorkflow(sessionId, options));
+            return { ok: true, entry: write({ phase: "loaded", [field]: value, error: null }) };
+        } catch (error) {
+            return { ok: false, reason: "failed", error, entry: write({ phase: "failed", [field]: null, error: describe(error) }) };
+        }
+    }
+
+    /**
      * Workflow v2: read one definition revision's YAML (readWorkflow definitionRevision; owner decision q4: comparing two
      * versions) into the view's `definitionRevisions`, by revision (at most 32, the newest). A revision is never
      * changed once saved, so one read is kept; a failure is read again. Reading changes nothing. Never throws.
@@ -6398,23 +6425,12 @@ export class PilotSwarmUiController {
         if (!Number.isSafeInteger(revision) || revision < 1) return null;
         const current = state.ui.workflowViews?.[sessionId]?.definitionRevisions?.[revision];
         if (current && current.phase !== "failed") return current;
-        const write = entry => {
-            const reads = { ...(this.getState().ui.workflowViews?.[sessionId]?.definitionRevisions ?? {}) };
-            delete reads[revision];
-            reads[revision] = entry;
-            const keys = Object.keys(reads);
-            for (const old of keys.filter(key => Number(key) !== revision).slice(0, Math.max(0, keys.length - 32))) delete reads[old];
-            this.dispatch({ type: "ui/workflowView", sessionId, view: { definitionRevisions: reads } });
-            return entry;
-        };
-        write({ phase: "loading", value: null, error: null });
-        try {
-            const value = await this.transport.readWorkflow(sessionId, { definitionRevision: revision });
-            if (value?.definitionRevision?.revision !== revision) throw new Error(`The answer was not revision ${revision}.`);
-            return write({ phase: "loaded", value, error: null });
-        } catch (error) {
-            return write({ phase: "failed", value: null, error: error?.message || String(error) });
-        }
+        return (await this._readWorkflowKept(sessionId, { slot: "definitionRevisions", key: revision, cap: 32, field: "value",
+            options: { definitionRevision: revision }, describe: error => error?.message || String(error),
+            accept: value => {
+                if (value?.definitionRevision?.revision !== revision) throw new Error(`The answer was not revision ${revision}.`);
+                return value;
+            } })).entry;
     }
 
     /**
@@ -6536,27 +6552,15 @@ export class PilotSwarmUiController {
             return { ok: false, reason: "unsupported" };
         }
         if (typeof runId !== "string" || !runId || !Number.isSafeInteger(revision) || revision < 1) return { ok: false, reason: "invalid" };
-        const key = workflowV2KvRevisionKey(runId, revision);
-        const write = entry => {
-            const snapshots = { ...(this.getState().ui.workflowViews?.[sessionId]?.kvRevisions ?? {}) };
-            delete snapshots[key];
-            snapshots[key] = { runId, revision, ...entry };
-            const keys = Object.keys(snapshots);
-            for (const old of keys.slice(0, Math.max(0, keys.length - 6))) delete snapshots[old];
-            this.dispatch({ type: "ui/workflowView", sessionId, view: { kvRevisions: snapshots } });
-        };
-        write({ phase: "loading", kv: null, error: null });
-        try {
-            const read = await this.transport.readWorkflow(sessionId, { runId, kvRevision: revision });
-            if (read?.runId !== runId || read?.kv?.revision !== revision || !Array.isArray(read.kv.entries)) {
-                throw new Error(`The read did not answer with revision ${revision} of run ${runId}'s variables.`);
-            }
-            write({ phase: "loaded", kv: read.kv, error: null });
-            return { ok: true };
-        } catch (error) {
-            write({ phase: "failed", kv: null, error: boundedWorkflowReadError(error) });
-            return { ok: false, reason: "failed", error };
-        }
+        const { entry, ...result } = await this._readWorkflowKept(sessionId, { slot: "kvRevisions", key: workflowV2KvRevisionKey(runId, revision), cap: 6,
+            identity: { runId, revision }, field: "kv", options: { runId, kvRevision: revision }, describe: boundedWorkflowReadError,
+            accept: read => {
+                if (read?.runId !== runId || read?.kv?.revision !== revision || !Array.isArray(read.kv.entries)) {
+                    throw new Error(`The read did not answer with revision ${revision} of run ${runId}'s variables.`);
+                }
+                return read.kv;
+            } });
+        return result;
     }
 
     /**
@@ -6658,27 +6662,16 @@ export class PilotSwarmUiController {
         if (typeof runId !== "string" || !runId || typeof executionId !== "string" || !executionId) return { ok: false, reason: "invalid" };
         const key = workflowV2ExecutionValueKey(runId, executionId);
         if (state.ui.workflowViews?.[sessionId]?.executionValues?.[key]?.phase === "loading") return { ok: false, reason: "pending" };
-        const write = entry => {
-            const values = { ...(this.getState().ui.workflowViews?.[sessionId]?.executionValues ?? {}) };
-            delete values[key];
-            values[key] = { runId, executionId, ...entry };
-            const keys = Object.keys(values);
-            for (const old of keys.slice(0, Math.max(0, keys.length - 4))) delete values[old];
-            this.dispatch({ type: "ui/workflowView", sessionId, view: { executionValues: values } });
-        };
-        write({ phase: "loading", result: null, error: null });
-        try {
-            const read = await this.transport.readWorkflow(sessionId, { runId, executionId });
-            const execution = read?.execution;
-            if (!execution || typeof execution !== "object" || read.runId !== runId || execution.nodeExecutionId !== executionId) {
-                throw new Error(`The read did not answer with execution ${executionId} of run ${runId}.`);
-            }
-            write({ phase: "loaded", result: execution.result && typeof execution.result === "object" ? execution.result : null, error: null });
-            return { ok: true };
-        } catch (error) {
-            write({ phase: "failed", result: null, error: boundedWorkflowReadError(error) });
-            return { ok: false, reason: "failed", error };
-        }
+        const { entry, ...result } = await this._readWorkflowKept(sessionId, { slot: "executionValues", key, cap: 4, identity: { runId, executionId },
+            field: "result", options: { runId, executionId }, describe: boundedWorkflowReadError,
+            accept: read => {
+                const execution = read?.execution;
+                if (!execution || typeof execution !== "object" || read.runId !== runId || execution.nodeExecutionId !== executionId) {
+                    throw new Error(`The read did not answer with execution ${executionId} of run ${runId}.`);
+                }
+                return execution.result && typeof execution.result === "object" ? execution.result : null;
+            } });
+        return result;
     }
 
     /**
