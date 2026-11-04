@@ -1493,3 +1493,180 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         expect(errors).toEqual([]);
     });
 }
+
+// ------------------------------------------------------------------------------------------------------------
+// Batch 6 (f-03): step boxes can be moved, and where a person put them is kept in their profile (workflowLayouts,
+// keyed by the workflow's session). Moving a box redraws the edges that touch it as curves between the boxes; edges
+// between unmoved boxes keep their route. One profile save after the drop; a reload puts the box where it was dropped;
+// Reset layout (only once a box moved) puts every box back and the next save has no entry for the workflow; Fit to
+// screen fits the boxes where they are. A new revision keeps the places of steps it still has, a new step takes its
+// automatic place, and a removed step's place is dropped on the next save.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "f-03:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+/** The profile, kept for one test: every save the page makes is recorded, and a reload reads the last one back. */
+async function routeProfileSaves(page) {
+    const profile = { stored: {}, saves: [] };
+    await page.route("**/api/v1/**", async (route) => {
+        const req = route.request();
+        const pathname = new URL(req.url()).pathname;
+        const reply = (result) => route.fulfill({ json: { ok: true, result } });
+        if (pathname.endsWith("/me/profile/settings")) {
+            profile.stored = req.postDataJSON().settings;
+            profile.saves.push(profile.stored);
+            return reply({ profileSettings: profile.stored });
+        }
+        if (pathname.endsWith("/me/profile")) return reply({ isAdmin: false, profileSettings: profile.stored });
+        return route.fallback();
+    });
+    return profile;
+}
+const flowNodeAt = (graph, id) => graph.locator(`.react-flow__node[data-id="${id}"]`).evaluate((element) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+    return { x: matrix.e, y: matrix.f, width: element.offsetWidth, height: element.offsetHeight };
+});
+const edgePath = (graph, from, to) => graph.locator(`.ps-workflow-edge[data-from="${from}"][data-to="${to}"] .ps-workflow-edge-path`).getAttribute("d");
+const edgeLabelAt = (graph, from, to) => graph.locator(`.ps-workflow-edge[data-from="${from}"][data-to="${to}"] .ps-workflow-edge-label`)
+    .evaluate(element => { const matrix = element.transform.baseVal.consolidate()?.matrix; return { x: matrix?.e ?? 0, y: matrix?.f ?? 0 }; });
+const pathEnds = d => {
+    const numbers = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    return { start: { x: numbers[0], y: numbers[1] }, end: { x: numbers[numbers.length - 2], y: numbers[numbers.length - 1] } };
+};
+async function dragStep(page, graph, id, dx, dy) {
+    const box = await graph.getByRole("button", { name: `Inspect ${id}`, exact: true }).boundingBox();
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + dx / 2, y + dy / 2, { steps: 4 });
+    await page.mouse.move(x + dx, y + dy, { steps: 4 });
+    await page.mouse.up();
+}
+const LAYOUT_KEY = `session:${WORKFLOW_ID}`;
+const placesSaved = (profile) => profile.saves.filter(settings => settings?.workflowLayouts?.[LAYOUT_KEY]);
+const without = (settings, key) => Object.fromEntries(Object.entries(settings || {}).filter(([name]) => name !== key));
+const REV2_STATES = [
+    { id: "poll", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["changed", "unchanged"],
+        next: { changed: "review", unchanged: "pause" } },
+    { id: "pause", type: "wait", seconds: 30, outcomes: ["elapsed"], next: { elapsed: "poll" } },
+    { id: "review", type: "script", runtime: "node", timeoutSeconds: 60, outcomes: ["ok"], next: { ok: "done" } },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+];
+
+test("f-03: a moved step is saved once in the profile, comes back after a reload, and Reset layout puts it back", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let model = V2_READ_MODEL;
+    await routeV2(page, { readModel: () => model, onCommand: (route, command) => accept(route, command) });
+    const profile = await routeProfileSaves(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const graph = page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await settledView(graph);
+    const controls = graph.getByRole("group", { name: "Graph view", exact: true });
+    // Reset layout is offered only once a box has moved.
+    await expect(controls.getByRole("button", { name: "Reset layout", exact: true })).toHaveCount(0);
+    const automatic = await flowNodeAt(graph, "pause");
+    const untouched = { done: await edgePath(graph, "poll", "done"), failed: await edgePath(graph, "poll", "failed") };
+    const into = await edgePath(graph, "poll", "pause");
+    const before = profile.saves.at(-1) ?? null;
+
+    // Drag "pause" 120px right: the box moves; the edges that touch it follow it as curves; the others keep their route.
+    await dragStep(page, graph, "pause", 120, 0);
+    const placed = await flowNodeAt(graph, "pause");
+    expect(placed.x).toBeGreaterThan(automatic.x + 20);
+    expect(Math.abs(placed.y - automatic.y)).toBeLessThan(2);
+    await expect.poll(() => edgePath(graph, "poll", "pause")).not.toBe(into);
+    expect(await edgePath(graph, "poll", "done")).toBe(untouched.done);
+    expect(await edgePath(graph, "poll", "failed")).toBe(untouched.failed);
+    // The edge into it ends at its top centre and the edge out of it starts at its bottom centre; the label is at the middle.
+    const inbound = pathEnds(await edgePath(graph, "poll", "pause"));
+    expect(Math.abs(inbound.end.x - (placed.x + placed.width / 2))).toBeLessThan(3);
+    expect(Math.abs(inbound.end.y - placed.y)).toBeLessThan(12);
+    const outbound = pathEnds(await edgePath(graph, "pause", "poll"));
+    expect(Math.abs(outbound.start.x - (placed.x + placed.width / 2))).toBeLessThan(3);
+    expect(Math.abs(outbound.start.y - (placed.y + placed.height))).toBeLessThan(12);
+    const label = await edgeLabelAt(graph, "poll", "pause");
+    expect(Math.abs(label.x - (inbound.start.x + inbound.end.x) / 2)).toBeLessThan(6);
+    expect(Math.abs(label.y - (inbound.start.y + inbound.end.y) / 2)).toBeLessThan(6);
+    await expect(controls.getByRole("button", { name: "Reset layout", exact: true })).toBeVisible();
+
+    // One save after the drop, carrying the place as whole pixels; the other profile keys are as they were.
+    await page.waitForTimeout(1_000);
+    expect(placesSaved(profile)).toHaveLength(1);
+    const saved = placesSaved(profile)[0];
+    const place = saved.workflowLayouts[LAYOUT_KEY].steps.pause;
+    expect(place).toEqual([Math.round(placed.x), Math.round(placed.y)]);
+    expect(Object.keys(saved.workflowLayouts[LAYOUT_KEY].steps)).toEqual(["pause"]);
+    if (before) expect(without(saved, "workflowLayouts")).toEqual(without(before, "workflowLayouts"));
+    await shot(page, "f03-step-moved");
+
+    // Reload: the box is where it was dropped, from the profile.
+    await page.reload();
+    await flowReady(graph);
+    const reloaded = await flowNodeAt(graph, "pause");
+    expect(Math.abs(reloaded.x - place[0])).toBeLessThan(1);
+    expect(Math.abs(reloaded.y - place[1])).toBeLessThan(1);
+    await expect(controls.getByRole("button", { name: "Reset layout", exact: true })).toBeVisible();
+
+    // Fit to screen fits the boxes where they are: a box moved far right stays inside the fitted view.
+    await dragStep(page, graph, "done", 700, 0);
+    await controls.getByRole("button", { name: "Fit to screen", exact: true }).click();
+    await settledView(graph);
+    const area = await graph.boundingBox();
+    for (const id of ["poll", "pause", "done", "failed"]) {
+        const box = await graph.getByRole("button", { name: `Inspect ${id}`, exact: true }).boundingBox();
+        expect(box.x).toBeGreaterThanOrEqual(area.x - 1);
+        expect(box.x + box.width).toBeLessThanOrEqual(area.x + area.width + 1);
+    }
+
+    // Reset layout: every box back in its automatic place; the next save has no entry for this workflow.
+    const savesBeforeReset = profile.saves.length;
+    await controls.getByRole("button", { name: "Reset layout", exact: true }).click();
+    await expect.poll(async () => Math.abs((await flowNodeAt(graph, "pause")).x - automatic.x)).toBeLessThan(1);
+    await expect(controls.getByRole("button", { name: "Reset layout", exact: true })).toHaveCount(0);
+    await expect.poll(() => profile.saves.length).toBeGreaterThan(savesBeforeReset);
+    expect(profile.saves.at(-1).workflowLayouts?.[LAYOUT_KEY]).toBeUndefined();
+    expect(errors).toEqual([]);
+});
+
+test("f-03: a new revision keeps the places of the steps it still has; a removed step's place is dropped on the next save", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let model = V2_READ_MODEL;
+    await routeV2(page, { readModel: () => model, onCommand: (route, command) => accept(route, command) });
+    const profile = await routeProfileSaves(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const graph = page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await settledView(graph);
+    await dragStep(page, graph, "pause", 100, 0);
+    await dragStep(page, graph, "failed", 100, 0);
+    await expect.poll(() => Object.keys(placesSaved(profile).at(-1)?.workflowLayouts[LAYOUT_KEY].steps ?? {}).sort()).toEqual(["failed", "pause"]);
+    const pausePlace = placesSaved(profile).at(-1).workflowLayouts[LAYOUT_KEY].steps.pause;
+
+    // Revision 2: "failed" is gone and "review" is new.
+    model = {
+        ...V2_READ_MODEL,
+        definition: { ...V2_READ_MODEL.definition, currentRevision: 2, publishedRevision: 2, publishedDefinitionHash: "hash-2" },
+        revision: { ...V2_READ_MODEL.revision, revision: 2, definitionHash: "hash-2", irSha256: "ir-2" },
+        graph: { revision: 2, initial: "poll", states: REV2_STATES },
+    };
+    await page.reload();
+    await flowReady(graph);
+    await expect(graph.locator(".ps-workflow-node")).toHaveCount(4);
+    const pause = await flowNodeAt(graph, "pause");
+    expect(Math.abs(pause.x - pausePlace[0])).toBeLessThan(1);
+    expect(Math.abs(pause.y - pausePlace[1])).toBeLessThan(1);
+    await expect(graph.getByRole("button", { name: "Inspect review", exact: true })).toBeVisible();
+    await expect(graph.locator('.react-flow__node[data-id="failed"]')).toHaveCount(0);
+
+    // The next save keeps "pause", adds the step just moved, and drops "failed".
+    const count = placesSaved(profile).length;
+    await dragStep(page, graph, "done", 60, 0);
+    await expect.poll(() => placesSaved(profile).length).toBeGreaterThan(count);
+    const steps = placesSaved(profile).at(-1).workflowLayouts[LAYOUT_KEY].steps;
+    expect(Object.keys(steps).sort()).toEqual(["done", "pause"]);
+    expect(steps.pause).toEqual(pausePlace);
+    expect(errors).toEqual([]);
+});
