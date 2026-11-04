@@ -142,3 +142,27 @@ test("SF-4: references that branch (each schema refers twice to the next) stop a
     for (let i = 1; i < 15; i += 1) level = level.properties.next;
     assert.deepEqual(level, { type: "integer" });
 });
+
+// Verification of SF-4 (M-04): a branching DAG with one large string leaf stops on its byte budget, as the bytes are
+// counted, before the large copy would be serialized.
+test("SF-4: a branching DAG over a 128 KiB string stops within the byte budget, before serializing", () => {
+    const defs = { inputs: { $ref: "#/$defs/L1" } };
+    for (let i = 1; i <= 10; i += 1) {
+        defs[`L${i}`] = { type: "object", properties: { left: { $ref: `#/$defs/L${i + 1}` }, right: { $ref: `#/$defs/L${i + 1}` } } };
+    }
+    defs.L11 = { type: "string", description: "x".repeat(128 * 1024) };
+    const stats = { values: 0, bytes: 0 };
+    const started = process.hrtime.bigint();
+    assert.equal(workflowV2ResolvedInputsSchema(ir(defs), stats), null);
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 1_000, "bounded time");
+    // Counting stopped at the first string past the budget: at most the budget plus that one string.
+    assert.ok(stats.bytes <= 32 * 1024 + 128 * 1024 + 2, `counted ${stats.bytes} bytes`);
+    assert.ok(stats.values < 100, `made ${stats.values} values`);
+});
+
+test("SF-4: a schema just under the budget is shown, and its count is its size", () => {
+    const stats = { values: 0, bytes: 0 };
+    const shown = workflowV2ResolvedInputsSchema(ir({ inputs: { type: "object", description: "d".repeat(20 * 1024) } }), stats);
+    assert.ok(shown);
+    assert.ok(stats.bytes >= 20 * 1024 && stats.bytes < 32 * 1024);
+});

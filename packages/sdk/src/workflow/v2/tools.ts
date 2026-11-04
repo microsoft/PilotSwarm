@@ -990,26 +990,35 @@ const INPUTS_SCHEMA_VIEW_MAX_BYTES = 32 * 1024;
  * still resolving (a recursive schema), or into part of one, becomes {} (anything). Null without an input schema, or when
  * the result is larger than INPUTS_SCHEMA_VIEW_MAX_BYTES.
  */
-export function workflowV2ResolvedInputsSchema(ir: { inputsSchema: string | null; schemaDefs?: Record<string, JsonValue> }): JsonValue | null {
+export function workflowV2ResolvedInputsSchema(ir: { inputsSchema: string | null; schemaDefs?: Record<string, JsonValue> },
+    stats: { values: number; bytes: number } = { values: 0, bytes: 0 }): JsonValue | null {
     const defs = ir.schemaDefs ?? {};
     if (!ir.inputsSchema || !Object.hasOwn(defs, ir.inputsSchema)) return null;
-    // SF-4: a budget of values made while resolving, so a small definition whose references branch (each schema
-    // referring twice to the next) cannot make an exponential copy before the size check: past it, no schema is shown.
-    let made = 0;
+    // SF-4 and its verification: two budgets while resolving, so a small definition whose references branch cannot make
+    // an exponential copy (values made) or an exponential text (the bytes its copy would have as JSON, counted as each
+    // string, key and scalar is reached, before anything is serialized). Past either, no schema is shown. `stats`
+    // reports what was counted (tests).
+    const charge = (bytes: number) => {
+        stats.bytes += bytes;
+        if (stats.bytes > INPUTS_SCHEMA_VIEW_MAX_BYTES) throw INPUTS_SCHEMA_OVER_BUDGET;
+    };
     const resolve = (value: JsonValue, resolving: readonly string[], depth: number): JsonValue => {
-        made += 1;
-        if (made > INPUTS_SCHEMA_VIEW_MAX_VALUES) throw INPUTS_SCHEMA_OVER_BUDGET;
-        if (depth > 64) return {};
-        if (Array.isArray(value)) return value.map(item => resolve(item, resolving, depth + 1));
-        if (!isJsonObject(value)) return value;
+        stats.values += 1;
+        if (stats.values > INPUTS_SCHEMA_VIEW_MAX_VALUES) throw INPUTS_SCHEMA_OVER_BUDGET;
+        if (depth > 64) { charge(2); return {}; }
+        if (typeof value === "string") { charge(utf8ByteLength(value) + 2); return value; }
+        if (!Array.isArray(value) && !isJsonObject(value)) { charge(String(value).length); return value; }
+        charge(2);
+        if (Array.isArray(value)) return value.map(item => { charge(1); return resolve(item, resolving, depth + 1); });
+        const entry = (key: string, item: JsonValue): [string, JsonValue] => { charge(utf8ByteLength(key) + 4); return [key, resolve(item, resolving, depth + 1)]; };
         const ref = typeof value.$ref === "string" ? value.$ref : null;
-        if (ref === null) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolve(item, resolving, depth + 1)]));
+        if (ref === null) return Object.fromEntries(Object.entries(value).map(([key, item]) => entry(key, item)));
         const name = ref.startsWith("#/$defs/") ? ref.slice("#/$defs/".length) : ref.startsWith("#/schemas/") ? ref.slice("#/schemas/".length) : null;
-        const rest = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "$ref").map(([key, item]) => [key, resolve(item, resolving, depth + 1)]));
+        const rest = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "$ref").map(([key, item]) => entry(key, item)));
         if (name === null || name.includes("/") || !Object.hasOwn(defs, name) || resolving.includes(name)) return rest;
         const target = resolve(defs[name], [...resolving, name], depth + 1);
         if (!isJsonObject(target)) return Object.keys(rest).length ? rest : target;
-        return { ...target, ...rest };
+        return Object.fromEntries([...Object.entries(target), ...Object.entries(rest)]);
     };
     let resolved: JsonValue;
     try {
