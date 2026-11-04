@@ -68,6 +68,46 @@ export function validateMigrationEntries(migrations: MigrationEntry[]): void {
 }
 
 /**
+ * A migration recorded in a ledger under an earlier version number (adversarial review RT-1): the migration `name`
+ * once applied as version `from` is now version `to`.
+ */
+export interface MigrationLedgerMove {
+    name: string;
+    from: string;
+    to: string;
+}
+
+/**
+ * Which of `moves` a ledger needs, from what it records (`recorded`, every version and name), or why it cannot be
+ * reconciled. A move applies when its old version is recorded under its name and that version now holds another
+ * migration. Within the versions the moves touch, every recorded row must be the migration now at that version or one
+ * of the moved migrations at its old version; a migration recorded at both its old and its new version, or a target
+ * held by another migration that is not moved away, is ambiguous. Elsewhere the ledger is not looked at. Pure.
+ */
+export function planMigrationLedgerMoves(recorded: ReadonlyArray<{ version: string; name: string }>, migrations: MigrationEntry[],
+    moves: readonly MigrationLedgerMove[]): { moves: MigrationLedgerMove[]; error: string | null } {
+    const byVersion = new Map(recorded.map(row => [row.version, row.name]));
+    const current = new Map(migrations.map(migration => [migration.version, migration.name]));
+    const legacyAt = new Map(moves.map(move => [move.from, move.name]));
+    const touched = new Set(moves.flatMap(move => [move.from, move.to]));
+    for (const version of touched) {
+        const name = byVersion.get(version);
+        if (name === undefined || name === current.get(version) || name === legacyAt.get(version)) continue;
+        return { moves: [], error: `version ${version} is recorded as '${name}', which is neither '${current.get(version) ?? "(none)"}' nor an earlier number of a moved migration` };
+    }
+    const due = moves.filter(move => byVersion.get(move.from) === move.name && current.get(move.from) !== move.name);
+    const freed = new Set(due.map(move => move.from));
+    for (const move of due) {
+        const target = byVersion.get(move.to);
+        if (target === undefined || freed.has(move.to)) continue;
+        return { moves: [], error: target === move.name
+            ? `'${move.name}' is recorded at both ${move.from} and ${move.to}`
+            : `'${move.name}' cannot move from ${move.from} to ${move.to}, which is recorded as '${target}'` };
+    }
+    return { moves: due, error: null };
+}
+
+/**
  * Run all pending migrations against the given schema.
  *
  * Uses a PostgreSQL advisory lock keyed on `lockSeed` + schema name to
@@ -84,6 +124,7 @@ export async function runMigrations(
     schema: string,
     migrations: MigrationEntry[],
     lockSeed: number,
+    options: { ledgerMoves?: readonly MigrationLedgerMove[] } = {},
 ): Promise<void> {
     validateMigrationEntries(migrations);
     const lockKey = hashSchemaName(schema, lockSeed);
@@ -113,6 +154,31 @@ export async function runMigrations(
                 applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         `);
+
+        // RT-1: migrations renumbered after a database applied them are moved to their new numbers first, under this
+        // lock and in one transaction, by version and name; an ambiguous ledger stops the start.
+        if (options.ledgerMoves?.length) {
+            const { rows: recorded } = await client.query(`SELECT version, name FROM ${migrationsTable}`);
+            const plan = planMigrationLedgerMoves(recorded, migrations, options.ledgerMoves);
+            if (plan.error) throw new Error(`The migration ledger of schema ${schema} cannot be reconciled: ${plan.error}.`);
+            if (plan.moves.length > 0) {
+                try {
+                    await client.query("BEGIN");
+                    for (const move of plan.moves) {
+                        await client.query(`UPDATE ${migrationsTable} SET version = $1 WHERE version = $2 AND name = $3`,
+                            [`moving:${move.from}`, move.from, move.name]);
+                    }
+                    for (const move of plan.moves) {
+                        await client.query(`UPDATE ${migrationsTable} SET version = $1 WHERE version = $2 AND name = $3`,
+                            [move.to, `moving:${move.from}`, move.name]);
+                    }
+                    await client.query("COMMIT");
+                } catch (err) {
+                    await client.query("ROLLBACK").catch(() => {});
+                    throw err;
+                }
+            }
+        }
 
         const { rows: applied } = await client.query(
             `SELECT version FROM ${migrationsTable} ORDER BY version`,
