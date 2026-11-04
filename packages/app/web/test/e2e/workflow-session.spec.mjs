@@ -1972,3 +1972,96 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         expect(errors).toEqual([]);
     });
 }
+
+// ------------------------------------------------------------------------------------------------------------
+// Batch 6 (f-06): the graph is fitted once, when first shown with no remembered view. Opening, closing or resizing the
+// side pane and resizing the window keep the zoom and the graph's place; only Fit to screen fits again. Graph -> YAML ->
+// Graph, a side panel and another session and back give the exact same view. A new revision's graph is fitted once.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "f-06:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const sameView = (a, b) => {
+    expect(Math.abs(a.x - b.x)).toBeLessThan(1);
+    expect(Math.abs(a.y - b.y)).toBeLessThan(1);
+    expect(Math.abs(a.scale - b.scale)).toBeLessThan(0.001);
+};
+async function expectFitted(graph) {
+    const area = await graph.boundingBox();
+    for (const node of await graph.locator(".ps-workflow-node").all()) {
+        const box = await node.boundingBox();
+        expect(box.x).toBeGreaterThanOrEqual(area.x - 1);
+        expect(box.x + box.width).toBeLessThanOrEqual(area.x + area.width + 1);
+        expect(box.y).toBeGreaterThanOrEqual(area.y - 1);
+        expect(box.y + box.height).toBeLessThanOrEqual(area.y + area.height + 1);
+    }
+}
+
+test("f-06: the graph is fitted once and keeps its view through the side pane, the window, tabs and sessions", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let model = V2_READ_MODEL;
+    await routeV2Revisions(page, () => model);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    const fitted = await settledView(graph);
+    await expectFitted(graph);
+
+    // The side pane opens (a panel), closes and opens again; the window is resized: the view stays.
+    await main.getByRole("button", { name: "Step log", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Session canvas" })).toBeVisible();
+    sameView(await settledView(graph), fitted);
+    await page.getByRole("button", { name: "Hide the canvas", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Session canvas" })).toHaveCount(0);
+    sameView(await settledView(graph), fitted);
+    await page.getByRole("button", { name: "Show canvas", exact: true }).click();
+    sameView(await settledView(graph), fitted);
+    await page.setViewportSize({ width: 1280, height: 760 });
+    sameView(await settledView(graph), fitted);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    sameView(await settledView(graph), fitted);
+
+    // Only Fit to screen fits again (here, into the narrower area beside the side pane).
+    await page.getByRole("button", { name: "Hide the canvas", exact: true }).click();
+    await page.setViewportSize({ width: 1600, height: 900 });
+    const wide = await settledView(graph);
+    sameView(wide, fitted);
+    await graph.getByRole("button", { name: "Fit to screen", exact: true }).click();
+    await expect.poll(async () => {
+        const now = await viewOf(graph);
+        return Math.abs(now.x - fitted.x) > 1 || Math.abs(now.scale - fitted.scale) > 0.001;
+    }).toBe(true);
+    await expectFitted(graph);
+
+    // Zoom and move, then Graph -> YAML -> Graph, a side panel, another session and back: the same view exactly.
+    await graph.getByRole("button", { name: "Zoom in", exact: true }).click();
+    const area = await graph.boundingBox();
+    await page.mouse.move(area.x + 10, area.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(area.x + 40, area.y + 30, { steps: 4 });
+    await page.mouse.up();
+    const chosen = await settledView(graph);
+    await workflowTabs(main).getByRole("tab", { name: "YAML", exact: true }).click();
+    await workflowTabs(main).getByRole("tab", { name: "Graph", exact: true }).click();
+    await flowReady(graph);
+    sameView(await settledView(graph), chosen);
+    await main.getByRole("button", { name: "Step log", exact: true }).click();
+    sameView(await settledView(graph), chosen);
+    await openSession(page, "Release triage agent");
+    await openSession(page, "Workflow: watch-v2");
+    await flowReady(graph);
+    sameView(await settledView(graph), chosen);
+
+    // A new revision with a different graph is fitted once.
+    model = { ...V2_READ_MODEL,
+        definition: { ...V2_READ_MODEL.definition, currentRevision: 2, publishedRevision: 2, publishedDefinitionHash: "hash-2" },
+        revision: { ...V2_READ_MODEL.revision, revision: 2, definitionHash: "hash-2", irSha256: "ir-2" },
+        graph: { revision: 2, initial: "poll", states: REV2_STATES } };
+    await page.reload();
+    await flowReady(graph);
+    await expect(graph.locator(".ps-workflow-node")).toHaveCount(4);
+    await settledView(graph);
+    await expectFitted(graph);
+    expect(errors).toEqual([]);
+});
