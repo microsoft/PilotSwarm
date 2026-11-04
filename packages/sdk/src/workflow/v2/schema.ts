@@ -314,8 +314,17 @@ function parsePattern(pattern: string): Alt {
 }
 
 /** Each analysis of an item or a group once per check (E2-T2): the check's work grows with the pattern's size only. */
-let memo = { nullable: new WeakMap<Alt, boolean>(), first: new WeakMap<Alt, CharSet>(), chars: new WeakMap<Item, CharSet>(),
-    lengths: new WeakMap<Item, [number, number]>() };
+interface AnalysisMemo {
+    nullable: WeakMap<Alt, boolean>;
+    first: WeakMap<Alt, CharSet>;
+    chars: WeakMap<Item, CharSet>;
+    lengths: WeakMap<Item, [number, number]>;
+}
+const freshMemo = (): AnalysisMemo => ({
+    nullable: new WeakMap<Alt, boolean>(), first: new WeakMap<Alt, CharSet>(), chars: new WeakMap<Item, CharSet>(),
+    lengths: new WeakMap<Item, [number, number]>(),
+});
+let memo: AnalysisMemo = freshMemo();
 function remembered<K extends object, V>(map: WeakMap<K, V>, key: K, compute: () => V): V {
     const known = map.get(key);
     if (known !== undefined) return known;
@@ -451,7 +460,7 @@ function checkAlt(alt: Alt): void {
 export function unsafeSchemaPattern(pattern: string): string | null {
     if (pattern.length > SCHEMA_PATTERN_MAX_LENGTH) return `a pattern may have at most ${SCHEMA_PATTERN_MAX_LENGTH} characters`;
     work = 0;
-    memo = { nullable: new WeakMap(), first: new WeakMap(), chars: new WeakMap(), lengths: new WeakMap() };
+    memo = freshMemo();
     try {
         checkAlt(parsePattern(pattern));
         return null;

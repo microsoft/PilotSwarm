@@ -75,9 +75,9 @@ function redactValue(value: JsonValue | null | undefined, keepKey: boolean): Jso
     if (Array.isArray(value)) return value.map(item => redactValue(item, keepKey) as JsonValue);
     if (value && typeof value === "object") {
         // Object.fromEntries defines each member as its own, so a JSON member named __proto__ stays one (VR-5).
-        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
+        return Object.fromEntries(Object.entries(value).map(([key, item]): [string, JsonValue] => [key,
             (item !== null && typeof item === "object") || typeof item === "string"
-                ? (SECRET_NAME_EXACT.test(key) && !(key === "key" && keepKey) ? "<hidden>" : redactValue(item, keepKey))
+                ? (SECRET_NAME_EXACT.test(key) && !(key === "key" && keepKey) ? "<hidden>" : redactValue(item, keepKey) as JsonValue)
                 : item]));
     }
     return value;
