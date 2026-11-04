@@ -753,7 +753,8 @@ states:
         /** The skips a workflow recorded, as stored. */
         const skipsOf = async workflowId => (await h.host.catalog.getSessionEvents(workflowId, 0, 50, ["workflow.parent_notification_skipped"]))
             .map(event => event.data);
-        const skip = runId => ({ runId, reason: "Parent authority is no longer available" });
+        // Batch 7 (n-2): the reason is said in plain words.
+        const skip = runId => ({ runId, reason: "parent is gone" });
         try {
             const parentId = randomUUID();
             await h.host.catalog.createSession(parentId, {});
