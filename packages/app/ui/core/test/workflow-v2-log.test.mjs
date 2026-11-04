@@ -125,10 +125,10 @@ test("legacy steps keep their rules and an unclassified step is never a quiet re
     assert.deepEqual(counts(nullKind), [2]);
 });
 
-test("the eight control events are workflow events, in the history paging types, and each is logged from its real payload", () => {
+test("the nine control events are workflow events, in the history paging types, and each is logged from its real payload", () => {
     assert.deepEqual(WORKFLOW_CONTROL_EVENT_TYPES, [
         "workflow.paused", "workflow.resumed", "workflow.vars_set", "workflow.input_accepted", "workflow.recovered",
-        "workflow.cancel_requested", "workflow.parent_notified", "workflow.parent_notification_skipped",
+        "workflow.cancel_requested", "workflow.stop_requested", "workflow.parent_notified", "workflow.parent_notification_skipped",
     ]);
     for (const type of WORKFLOW_CONTROL_EVENT_TYPES) {
         assert.ok(WORKFLOW_EVENT_TYPES.includes(type), type);
@@ -153,6 +153,9 @@ test("the eight control events are workflow events, in the history paging types,
             "↻ Recovery requested by `abcdef12`: a restart of the run was recorded; this does not show that it has started.", "recovery requested", "yellow"],
         [event("workflow.cancel_requested", { runId: "r", effects: [{ nodeExecutionId: "n", instanceId: "i", status: "Running" }, { nodeExecutionId: "m", instanceId: "j", status: "Suspended" }] }),
             "⏹ Asked 2 running actions to stop.", "2 actions asked to stop", "yellow"],
+        // Adversarial review R2-UI-6: a graceful stop's request.
+        [event("workflow.stop_requested", { runId: "r", actor: user, graceSeconds: 60, reason: "release freeze" }),
+            "⏹ Stop asked by `u-1`: steps already started may finish. Reason: `release freeze`", "stop asked", "yellow"],
         [event("workflow.parent_notified", { runId: "r", parentSessionId: "parent-123456" }),
             "✉ The parent session was told that the run ended (`parent-1`).", "parent told the run ended", "gray"],
         [event("workflow.parent_notification_skipped", { runId: "r", reason: "Parent authority is no longer available" }),
@@ -195,6 +198,46 @@ test("pause, resume, recovery and a cancel request are rows of their own that do
     const nextRun = buildHistoryModel([started(), begin(1), done(1), event("workflow.paused", { runId: "run-a" }), started("run-b", 2), begin(1, "run-b"), done(1, "unchanged", "run-b")]);
     assert.deepEqual(counts(nextRun), [1, 1]);
     assert.match(progress(nextRun)[0].workflowNotice.title, /Polling ended/);
+});
+
+// Adversarial review R2-UI-6: a graceful stop's request and the run's stopped end are in the step log, in the first
+// history, in a live append and in an older page (the paging types), and the stop ends a summary still waiting.
+test("R2-UI-6: a graceful stop is logged from its request to its end, and closes a waiting poll summary", () => {
+    for (const type of ["workflow.stop_requested", "workflow.stopped"]) {
+        assert.ok(WORKFLOW_EVENT_TYPES.includes(type), type);
+        assert.ok(CHAT_HISTORY_EVENT_TYPES.includes(type), type);
+        assert.equal(isWorkflowEvent({ eventType: type }), true);
+    }
+    assert.ok(WORKFLOW_CONTROL_EVENT_TYPES.includes("workflow.stop_requested"));
+    assert.ok(!WORKFLOW_CONTROL_EVENT_TYPES.includes("workflow.stopped"), "the end of the run is not a control row");
+    const rows = [started(), begin(1), done(1), begin(2), done(2),
+        event("workflow.stop_requested", { runId: "run-a", actor: { kind: "agent", sessionId: "abcdef12-3456" }, graceSeconds: 600 }),
+        event("workflow.stopped", { runId: "run-a", name: "watch-v2", graceExpired: true, cancelledCount: 1, cancelled: ["nx-run-a-3"], reason: "done for today" })];
+    // The first history: the request does not split the summary; the stopped end closes it.
+    const history = buildHistoryModel(rows);
+    assert.deepEqual(history.chat.map(item => item.workflowEvent), ["workflow.started", "workflow.state_completed", "workflow.stop_requested", "workflow.stopped"]);
+    assert.deepEqual(counts(history), [2]);
+    assert.equal(progress(history)[0].workflowProgress.waiting, false);
+    assert.match(progress(history)[0].workflowNotice.title, /Polling ended/);
+    const stopped = describeWorkflowEvent(rows.at(-1));
+    assert.deepEqual([stopped.kind, stopped.title, stopped.color], ["card", "Workflow stopped", "yellow"]);
+    assert.equal(formatWorkflowEventText(rows.at(-1)),
+        "⏹ Workflow stopped: `done for today`; 1 step was still running when the time to finish ended, so it was cancelled.");
+    assert.match(formatWorkflowEventText(rows.at(-2)), /^⏹ Stop asked by `agent session abcdef12`: steps already started may finish\.$/);
+    // A live append gives the same transcript.
+    let live = buildHistoryModel(rows.slice(0, 3));
+    for (const next of rows.slice(3)) live = appendEventToHistory(live, next);
+    assert.deepEqual(live.chat, history.chat);
+    // An older page asks for the paging types: the stop rows are in it, other workflow events are not asked for.
+    const page = [...rows.slice(0, 5), event("workflow.branches_cancelled", { runId: "run-a", cancelled: [] }), ...rows.slice(5)]
+        .filter(row => CHAT_HISTORY_EVENT_TYPES.includes(row.eventType));
+    assert.deepEqual(buildHistoryModel(page).chat.map(item => item.workflowEvent), history.chat.map(item => item.workflowEvent));
+    // A stop while a check runs ends that check's summary too.
+    const pending = buildHistoryModel([started(), begin(1), done(1), begin(2), done(2), begin(3),
+        event("workflow.stop_requested", { runId: "run-a" }), event("workflow.stopped", { runId: "run-a" })]);
+    assert.equal(progress(pending)[0].workflowProgress.pending, false);
+    assert.equal(progress(pending)[0].workflowProgress.waiting, false);
+    assert.equal(formatWorkflowEventText({ eventType: "workflow.stopped" }), "⏹ Workflow stopped.");
 });
 
 test("missing or malformed control payloads still read sensibly and never throw", () => {

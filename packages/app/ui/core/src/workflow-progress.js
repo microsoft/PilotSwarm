@@ -3,7 +3,8 @@ import { WORKFLOW_ATTENTION_OUTCOMES, WORKFLOW_CONTROL_EVENT_TYPES, WORKFLOW_SES
 
 const DETAIL_LIMIT = 40;
 const stepEvents = new Set(["workflow.state_started", "workflow.state_completed"]);
-const terminalEvents = new Set(["workflow.completed", "workflow.failed", "workflow.cancelled"]);
+// A graceful stop ends the run too (adversarial review R2-UI-6): a summary still waiting is closed by it.
+const terminalEvents = new Set(["workflow.completed", "workflow.failed", "workflow.cancelled", "workflow.stopped"]);
 const significantOutcomes = WORKFLOW_ATTENTION_OUTCOMES;
 // Control and side-effect rows (pause, resume, variables, input, recovery, cancel request, parent notice) are not steps: a
 // summary row is found past them and keeps updating, and they neither end nor split it.

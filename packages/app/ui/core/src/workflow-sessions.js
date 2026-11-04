@@ -12,6 +12,21 @@ import { workflowEventText } from "./workflow-v2-view.js";
 
 export const WORKFLOW_SESSION_GLYPH = "◇";
 
+/** The v2 events that report a control action or a side effect, not a step of the run. They never end or split a poll summary. */
+export const WORKFLOW_CONTROL_EVENT_TYPES = [
+    // Workflow v2 control events (packages/sdk/src/workflow/v2 runtime.ts, service.ts, store.ts).
+    "workflow.paused",
+    "workflow.resumed",
+    "workflow.vars_set",
+    "workflow.input_accepted",
+    "workflow.recovered",
+    "workflow.cancel_requested",
+    // A graceful stop was asked (adversarial review R2-UI-6): the run's admitted steps may still finish.
+    "workflow.stop_requested",
+    "workflow.parent_notified",
+    "workflow.parent_notification_skipped",
+];
+
 export const WORKFLOW_EVENT_TYPES = [
     "workflow.started",
     "workflow.state_started",
@@ -21,19 +36,10 @@ export const WORKFLOW_EVENT_TYPES = [
     "workflow.completed",
     "workflow.failed",
     "workflow.cancelled",
-    // Workflow v2 control events (packages/sdk/src/workflow/v2 runtime.ts, service.ts, store.ts).
-    "workflow.paused",
-    "workflow.resumed",
-    "workflow.vars_set",
-    "workflow.input_accepted",
-    "workflow.recovered",
-    "workflow.cancel_requested",
-    "workflow.parent_notified",
-    "workflow.parent_notification_skipped",
+    // A run that ended by a graceful stop (R2-UI-6).
+    "workflow.stopped",
+    ...WORKFLOW_CONTROL_EVENT_TYPES,
 ];
-
-/** The v2 events that report a control action or a side effect, not a step of the run. They never end or split a poll summary. */
-export const WORKFLOW_CONTROL_EVENT_TYPES = WORKFLOW_EVENT_TYPES.slice(8);
 
 /** Outcomes that stay visible in a log of repeated steps, as business results and for legacy steps alike. */
 export const WORKFLOW_ATTENTION_OUTCOMES = new Set(["changed", "change", "failure", "failed", "error", "timeout", "cancelled", "canceled", "blocked"]);
@@ -227,6 +233,9 @@ export function describeWorkflowEvent(event) {
         case "workflow.failed":
             return { kind: "card", title: "Workflow failed", color: "red", text };
         case "workflow.cancelled":
+            return { kind: "card", title: "Workflow stopped", color: "yellow", text };
+        // A graceful stop ended the run (R2-UI-6); its text is the event's long form.
+        case "workflow.stopped":
             return { kind: "card", title: "Workflow stopped", color: "yellow", text };
         case "workflow.state_started":
             return { kind: "notice", title: stepTitle, color: "gray", summary: `${data.stateId ?? "?"} started (${data.runtime ?? data.type ?? "script"})`, text };

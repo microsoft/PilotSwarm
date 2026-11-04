@@ -1535,8 +1535,15 @@ const WORKFLOW_EVENT_TEXT = {
     },
     "workflow.stop_requested": {
         short: data => ({ text: `Stop asked; steps already started may finish${text(data.deadlineAt) ? ` until ${shownTime(data.deadlineAt)}` : ""}${because(data.reason)}`, level: "warning" }),
+        // The step log's line (adversarial review R2-UI-6).
+        long: data => ({ text: `⏹ Stop asked${byWho(data.actor)}: steps already started may finish${text(data.deadlineAt) ? ` until ${span(shownTime(data.deadlineAt), 40)}` : ""}`
+            + `${filled(data.reason) ? `. Reason: ${span(data.reason, 200)}` : "."}`, summary: "stop asked", color: "yellow" }),
     },
-    "workflow.stopped": { short: data => ({ text: `Run stopped${because(data.reason)}${stoppedRunningText(data)}`, level: "warning" }) },
+    "workflow.stopped": {
+        short: data => ({ text: `Run stopped${because(data.reason)}${stoppedRunningText(data)}`, level: "warning" }),
+        long: data => ({ text: `⏹ Workflow stopped${filled(data.reason) ? `: ${span(data.reason, 200)}` : ""}${stoppedRunningText(data)}.`,
+            summary: "stopped", color: "yellow" }),
+    },
     "workflow.cancel_requested": {
         short: data => {
             const count = Array.isArray(data.effects) ? data.effects.length : 0;
