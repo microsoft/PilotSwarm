@@ -2065,3 +2065,86 @@ test("f-06: the graph is fitted once and keeps its view through the side pane, t
     await expectFitted(graph);
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// Batch 8 (d-1): the session details of a workflow show Title, ID, Owner, Workflow, Revision, Run, Started by, Steps,
+// Updated and Access (ten rows, the same box height as a chat's), not Model, Context, Cron or Agent. Started by is a link
+// that selects the parent; a workflow a person started says "You" for its owner. Collapsed, the line shows the run, no
+// percentage. An agent session that runs a workflow's step shows "Step of" (a link to the workflow) instead of Cron.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "d-1:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const STEP_ID = "99999999-2222-3333-4444-555555555555";
+const detailLabels = page => page.locator(".ps-session-detail-box .ps-session-detail-label").allTextContents();
+const detailValue = (page, label) => page.locator(".ps-session-detail-field").filter({ has: page.locator(".ps-session-detail-label", { hasText: new RegExp(`^${label}$`) }) })
+    .locator(".ps-session-detail-value");
+
+test("d-1: a workflow's session details say what it runs, link its parent, and fold to its run", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { onCommand: (route, command) => accept(route, command) });
+    // A third session: an agent running one of the workflow's steps.
+    const step = { sessionId: STEP_ID, title: "Workflow step: review", status: "idle", model: "test:test-model", parentSessionId: WORKFLOW_ID,
+        agentId: "reviewer", createdAt: now - 10_000, updatedAt: now - 5_000 };
+    await page.route("**/api/v1/**", async (route) => {
+        const req = route.request();
+        const pathname = new URL(req.url()).pathname;
+        const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        const sessions = [...SESSIONS.map(session => session.sessionId === WORKFLOW_ID ? { ...session, title: "Workflow: watch-v2", status: "running" } : session), step];
+        if (pathname.endsWith("/management/sessions")) return answer({ sessions, hasMore: false, nextCursor: null });
+        if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions, hasMore: false });
+        if (pathname.includes(`/sessions/${STEP_ID}/events`)) return answer([]);
+        if (pathname.endsWith(`/sessions/${STEP_ID}`)) return answer({ ...step, events: [], messages: [] });
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await flowReady(page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" }));
+
+    await expect.poll(() => detailLabels(page)).toEqual(["Title", "ID", "Owner", "Workflow", "Revision", "Run", "Started by", "Steps", "Updated", "Access"]);
+    await expect(detailValue(page, "Workflow")).toHaveText("watch-v2 1.0.0");
+    await expect(detailValue(page, "Revision")).toHaveText("1 · published");
+    await expect(detailValue(page, "Run")).toHaveText("running");
+    await expect(detailValue(page, "Steps")).toHaveText("4");
+    const startedBy = detailValue(page, "Started by");
+    await expect(startedBy).toHaveText("Release triage agent");
+    const workflowHeight = Math.round((await page.locator(".ps-session-detail-box").boundingBox()).height);
+    await shot(page, "d1-workflow-details");
+
+    // Collapsed: the run, no percentage.
+    await page.locator(".ps-session-detail-collapse").click();
+    const marks = page.locator(".ps-session-detail-box.is-collapsed .ps-session-detail-marks");
+    await expect(marks).toContainText("running");
+    await expect(marks).not.toContainText("%");
+    await page.locator(".ps-session-detail-summary").click();
+
+    // Started by selects the parent: a chat, whose details have the chat rows and the same height.
+    await startedBy.click();
+    await expect(page.locator(".ps-workflow-main")).toHaveCount(0);
+    await expect.poll(() => detailLabels(page)).toEqual(["Title", "ID", "Owner", "Model", "Context", "Cron", "Agent", "Updated", "Children", "Access"]);
+    expect(Math.round((await page.locator(".ps-session-detail-box").boundingBox()).height)).toBe(workflowHeight);
+
+    // The step's agent session: "Step of" the workflow, a link, instead of Cron.
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${STEP_ID}`);
+    await expect.poll(() => detailLabels(page)).toEqual(["Title", "ID", "Owner", "Model", "Context", "Step of", "Agent", "Updated", "Children", "Access"]);
+    const stepOf = detailValue(page, "Step of");
+    await expect(stepOf).toHaveText("Workflow: watch-v2");
+    await stepOf.click();
+    await expect(page.locator(".ps-workflow-main")).toBeVisible();
+    expect(errors).toEqual([]);
+});
+
+test("d-1: a workflow a person started says 'You' as its starter, for its owner", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await routeApi(page, {
+        workflowEvents: V2_EVENTS,
+        workflowState: { title: "Workflow: watch-v2", status: "running", parentSessionId: null,
+            owner: { provider: "none", subject: "test", email: "test@example.com", displayName: "Test User" } },
+        onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: { ...V2_READ_MODEL, runs: [], run: null } } }),
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await expect(detailValue(page, "Started by")).toHaveText("You");
+    await expect(detailValue(page, "Run")).toHaveText("No run yet");
+    await page.locator(".ps-session-detail-collapse").click();
+    await expect(page.locator(".ps-session-detail-box.is-collapsed .ps-session-detail-marks")).toContainText("No run yet");
+    await page.locator(".ps-session-detail-summary").click();
+});
