@@ -193,6 +193,38 @@ describe("workflow v2: a person's workflow command (direct management client, in
         }
     });
 
+    it("n-1: a person's live start turns the parent notification on unless it says false; a run command that names it is refused", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const mgmt = await commandsClient(env, { requests: false });
+        try {
+            const parent = randomUUID();
+            await catalog.createSession(parent, { owner: PERSON });
+            // Drafts made with the notification off (workflowOf), as spawn_workflow with notify_on_completion false makes them.
+            const on = await workflowOf(catalog, parent, YAML("person-notify-on"));
+            expect((await mgmt.readWorkflow(on.workflowSessionId)).definition.notifyOnCompletion).toBe(false);
+            await refused(() => mgmt.updateWorkflow(on.workflowSessionId, { operation: "publish", operation_id: "pub-0", expected_revision: 1,
+                definition_hash: on.definitionHash, notify_on_completion: true }, { principal: PERSON }), "WORKFLOW_COMMAND_INVALID", 400);
+            await mgmt.updateWorkflow(on.workflowSessionId, { operation: "publish", operation_id: "pub-1", expected_revision: 1,
+                definition_hash: on.definitionHash }, { principal: PERSON });
+            expect((await mgmt.readWorkflow(on.workflowSessionId)).definition.notifyOnCompletion).toBe(false);
+            await mgmt.updateWorkflow(on.workflowSessionId, { operation: "start", operation_id: "start-1", definition_hash: on.definitionHash, inputs: {} },
+                { principal: PERSON });
+            expect((await mgmt.readWorkflow(on.workflowSessionId)).definition.notifyOnCompletion).toBe(true);
+            await refused(() => mgmt.updateWorkflow(on.workflowSessionId, { operation: "set_vars", operation_id: "kv-1", set: { a: 1 },
+                expected_kv_revision: 1, notify_on_completion: false }, { principal: PERSON }), "WORKFLOW_COMMAND_INVALID", 400);
+
+            const off = await workflowOf(catalog, parent, YAML("person-notify-off"));
+            await mgmt.updateWorkflow(off.workflowSessionId, { operation: "publish_and_start", operation_id: "ps-1", expected_revision: 1,
+                definition_hash: off.definitionHash, inputs: {}, notify_on_completion: false }, { principal: PERSON });
+            expect((await mgmt.readWorkflow(off.workflowSessionId)).definition.notifyOnCompletion).toBe(false);
+        } finally {
+            await mgmt.stop();
+            await catalog.close();
+        }
+    });
+
     it("lets a person only brake a workflow inside a workflow agent state's subtree, and command the container above it", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
