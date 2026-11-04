@@ -1,7 +1,7 @@
 import { parseDocument } from "yaml";
 import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
-import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
+import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, unsafeSchemaPattern, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 
 /**
  * Workflow v2 compiler: YAML -> diagnostics and an immutable, hashed IR.
@@ -1487,6 +1487,31 @@ function holdsBinding(value: JsonValue): boolean {
     try { return bindingRootsOf(value).size > 0; } catch { return true; }
 }
 
+/**
+ * The schema a member of an object must match (E2-R3, as JSON Schema applies them): its property's schema and the
+ * schema of every patternProperties name its key matches, all of them (allOf); only a key that neither names nor
+ * matches takes additionalProperties. Undefined when nothing applies, or when a pattern cannot be evaluated here (the
+ * run checks that member).
+ */
+function memberSchema(target: { [key: string]: JsonValue }, key: string): JsonValue | undefined {
+    const applied: JsonValue[] = [];
+    const properties = isJsonObject(target.properties) ? target.properties : {};
+    const named = Object.hasOwn(properties, key);
+    if (named) applied.push(properties[key]);
+    let matched = false;
+    if (isJsonObject(target.patternProperties)) {
+        for (const [pattern, schema] of Object.entries(target.patternProperties)) {
+            // Only a pattern the compiler accepts is evaluated (an unsafe one is refused where the schema is checked).
+            if (unsafeSchemaPattern(pattern) !== null) return undefined;
+            let matches: boolean;
+            try { matches = new RegExp(pattern, "u").test(key); } catch { return undefined; }
+            if (matches) { applied.push(schema); matched = true; }
+        }
+    }
+    if (!named && !matched && target.additionalProperties !== undefined && target.additionalProperties !== true) applied.push(target.additionalProperties);
+    return applied.length === 0 ? undefined : applied.length === 1 ? applied[0] : { allOf: applied };
+}
+
 /** A fixed part of a partly bound input: where it is, the value as written, and the schema it must match. */
 interface FixedPart { pointer: string; value: JsonValue; schema: JsonValue }
 
@@ -1494,8 +1519,9 @@ interface FixedPart { pointer: string; value: JsonValue; schema: JsonValue }
  * The fixed parts of a partly bound input and what a bound part's written-out object must have (adversarial review SF-8
  * and its verification): a part with no binding is collected whole, to be validated with the run's own validator; in a
  * part that holds a binding, an object written out must have its schema's required properties (returned as problems),
- * and its members and array items are visited with their own schemas (properties or additionalProperties; prefixItems
- * or items). Composed schemas (allOf, anyOf, oneOf) are visited no further: the run checks them.
+ * and its members and array items are visited with their own schemas (memberSchema: properties and matching
+ * patternProperties together, else additionalProperties; prefixItems or items). Composed schemas (allOf, anyOf, oneOf)
+ * are visited no further: the run checks them.
  */
 function fixedParts(value: JsonValue, schema: JsonValue | undefined, defs: Record<string, JsonValue>, pointer: string,
     parts: FixedPart[], problems: string[], depth = 0): void {
@@ -1516,11 +1542,8 @@ function fixedParts(value: JsonValue, schema: JsonValue | undefined, defs: Recor
     if (!isJsonObject(value)) return;
     const required = Array.isArray(target.required) ? target.required.filter((key): key is string => typeof key === "string") : [];
     for (const key of required) if (!Object.hasOwn(value, key)) problems.push(`${pointer || "/"} must have required property '${key}'`);
-    const properties = isJsonObject(target.properties) ? target.properties : {};
     for (const [key, item] of Object.entries(value)) {
-        const itemSchema = Object.hasOwn(properties, key) ? properties[key]
-            : target.additionalProperties !== undefined && target.additionalProperties !== true ? target.additionalProperties : undefined;
-        fixedParts(item, itemSchema as JsonValue | undefined, defs, `${pointer}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`, parts, problems, depth + 1);
+        fixedParts(item, memberSchema(target, key), defs, `${pointer}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`, parts, problems, depth + 1);
     }
 }
 

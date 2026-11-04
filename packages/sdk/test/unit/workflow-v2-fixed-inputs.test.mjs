@@ -244,3 +244,47 @@ test("SF-8: valid fixed parts beside bindings compile; a part holding a binding 
         assert.equal(compiled.valid, true, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
     }
 });
+
+// Verification of SF-8 in E2 (E2-R3; test E2-T6): a fixed member of an object holding a binding is checked as JSON Schema
+// applies it: its property and every matching patternProperties schema together; additionalProperties only for a key
+// that neither names nor matches.
+const PATTERNED = input => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: patterned-script, version: "1.0.0" }
+inputs: { schema: { type: object } }
+initial: calc
+states:
+  calc:
+    type: script
+    source: |
+      await setResult("done", context.input);
+    inputSchema:
+      type: object
+      properties:
+        code: { type: string }
+        user: { type: string }
+      patternProperties:
+        "^x-": { type: string }
+        "^c": { type: string, maxLength: 2 }
+      additionalProperties: false
+    input: ${input}
+    outcomes: [done]
+    transition: { next: { done: finish, failure: refused } }
+  finish: { type: terminal, outcome: succeeded }
+  refused: { type: terminal, outcome: failed }
+`;
+
+test("E2-T6: a member that matches a patternProperties name is checked against it, not against additionalProperties", () => {
+    for (const input of [`{ user: "\${inputs.user}", x-note: "ok" }`, `{ user: "\${inputs.user}", code: "ab", x-a: "b" }`]) {
+        const compiled = compileWorkflowV2(PATTERNED(input));
+        assert.equal(compiled.valid, true, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
+    }
+    // The pattern's own schema applies.
+    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", x-note: 5 }`)), /\/x-note must be string/);
+});
+
+test("E2-T6: a property and a pattern its key matches apply together; a key that matches nothing takes additionalProperties", () => {
+    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", code: "abc" }`)), /\/code must NOT have more than 2 characters/);
+    assert.ok(problemOf(PATTERNED(`{ user: "\${inputs.user}", other: "x" }`)).includes("/other"), "an unmatched key takes additionalProperties: false");
+});
