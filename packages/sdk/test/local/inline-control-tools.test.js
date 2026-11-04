@@ -1717,9 +1717,10 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
     // accepted the prompt, before the send gate opens, so a Stop its observer asks for keeps the gate closed and nothing
     // more is sent.
     it("E2: the reminder's event is published after the SDK accepted the prompt; a Stop from its observer keeps the gate closed", async () => {
-        // The reminder's run starts only after send() resolved, as the CLI's run does once it accepted the prompt (delayMs).
+        // Each run starts only after its send() resolved, as the CLI's run does once it accepted the prompt (delayMs): so the
+        // first send opens the gate, and the reminder's send opens it again unless a Stop closed it.
         const reminderTurn = async ({ stopOnEvent }) => {
-            const h = stepChild([{ assistantContent: "It seems fine." }, { delayMs: 20, assistantContent: "Still fine." },
+            const h = stepChild([{ delayMs: 20, assistantContent: "It seems fine." }, { delayMs: 20, assistantContent: "Still fine." },
                 { assistantContent: "never sent" }]);
             const live = new LiveTurnControl({ sessionId: "step-child", turn: 0, start: 0,
                 abort: async reason => { h.managed.requestStop(reason); h.managed.abort(); } });
@@ -1729,25 +1730,30 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
                 gateOpened: () => { opened += 1; live.gateOpened(); }, detach: () => live.detach(),
             };
             let promptsAtEvent = null;
+            let openedAtEvent = null;
             const result = await h.run({
                 turnIndex: 0, turnControl: binding,
                 onEvent: event => {
                     h.events.push(event);
                     if (event.eventType !== "runtime.workflow_step_reminded") return;
                     promptsAtEvent = h.fakeSession.sentPrompts.length;
+                    openedAtEvent = opened;
                     if (stopOnEvent) h.managed.requestStop("Stopped by user");
                 },
             });
-            return { h, result, opened, promptsAtEvent };
+            return { h, result, opened, promptsAtEvent, openedAtEvent };
         };
-        // Without a Stop: the event after the SDK accepted the reminder, then the gate opens for the reminder's run.
+        // Without a Stop: the first send opened the gate once; the event comes after the SDK accepted the reminder and
+        // before the gate opens for the reminder's run, which it then does.
         const plain = await reminderTurn({ stopOnEvent: false });
         expect(plain.promptsAtEvent).toBe(2);
+        expect(plain.openedAtEvent).toBe(1);
         expect(plain.opened).toBe(2);
         expect(plain.result).toMatchObject({ type: "completed", content: "Still fine." });
         // A Stop from the event's observer: nothing more is sent, the gate stays closed, and the turn is stopped.
         const stopped = await reminderTurn({ stopOnEvent: true });
         expect(stopped.promptsAtEvent).toBe(2);
+        expect(stopped.openedAtEvent).toBe(1);
         expect(stopped.h.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
         expect(stopped.opened).toBe(1);
         expect(stopped.result).toMatchObject({ type: "stopped", reason: "Stopped by user" });
