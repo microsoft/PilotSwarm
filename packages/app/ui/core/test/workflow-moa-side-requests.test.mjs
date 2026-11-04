@@ -44,8 +44,9 @@ test("VR-6: the live buffer decides what edit is handed over; the saved one only
     const clean = { sessionId: "wf-1", base, text: "a: 1\n" };
     const saved = { sessionId: "wf-1", base, text: "a: 3\n" };
     assert.deepEqual(workflowDraftHandoff({ sessionId: "wf-1", buffer: dirty, saved }), { draftEdit: dirty, draftDirty: true });
-    // Discarded in the live editor: the stale saved edit is not resurrected.
-    assert.deepEqual(workflowDraftHandoff({ sessionId: "wf-1", buffer: clean, saved }), { draftEdit: null, draftDirty: false });
+    // Discarded in the live editor: the stale saved edit is not resurrected, and nothing is handed over (E2-R4: the
+    // workspace's own unsaved edit is not erased).
+    assert.equal(workflowDraftHandoff({ sessionId: "wf-1", buffer: clean, saved }), null);
     assert.deepEqual(workflowDraftHandoff({ sessionId: "wf-1", buffer: null, saved }), { draftEdit: saved, draftDirty: true });
     assert.equal(workflowDraftHandoff({ sessionId: "wf-1", buffer: null, saved: null }), null);
     // Another session's buffer or saved edit never counts.
@@ -55,4 +56,24 @@ test("VR-6: the live buffer decides what edit is handed over; the saved one only
 test("VR-6: Discard edits drops the saved edit from the view too", () => {
     const panels = read("../../react/src/workflow-v2-panels.js");
     assert.match(panels, /setTextValue\(base\.yaml\);\s*controller\.dispatch\(\{ type: "ui\/workflowView", sessionId, view: \{ draftEdit: null, draftDirty: false \} \}\);/);
+});
+
+// Verification of VR-6 in E2 (E2-R4; test E2-T9): opening the workflow from a panel whose editor is clean keeps the main
+// workspace's own unsaved edit; a changed panel edit is handed over as unsaved.
+test("E2-T9: a clean panel buffer hands over nothing, so the workspace keeps its own unsaved edit; a changed one is handed over", async () => {
+    const { appReducer, createInitialState } = await import("../src/index.js");
+    const base = { sessionId: "wf-1", revision: 2, yaml: "a: 1\n" };
+    const own = { sessionId: "wf-1", base, text: "a: own\n" };
+    let state = appReducer(createInitialState(), { type: "sessions/loaded", sessions: [{ sessionId: "wf-1", sessionKind: "workflow", title: "W" }] });
+    state = appReducer(state, { type: "ui/workflowView", sessionId: "wf-1", view: { draftEdit: own, draftDirty: true } });
+    const open = (buffer, saved = null) => {
+        const draft = workflowDraftHandoff({ sessionId: "wf-1", buffer, saved });
+        return appReducer(state, { type: "ui/workflowView", sessionId: "wf-1", view: { sidePanel: null, ...(draft ?? {}) } }).ui.workflowViews["wf-1"];
+    };
+    // A clean panel buffer (and a discarded panel edit): the workspace's own edit stays, unsaved.
+    assert.deepEqual([open({ sessionId: "wf-1", base, text: "a: 1\n" }).draftEdit, open({ sessionId: "wf-1", base, text: "a: 1\n" }).draftDirty], [own, true]);
+    assert.equal(open({ sessionId: "wf-1", base, text: "a: 1\n" }, { sessionId: "wf-1", base, text: "a: stale\n" }).draftEdit, own);
+    // A changed panel buffer: handed over, unsaved.
+    const changed = { sessionId: "wf-1", base, text: "a: panel\n" };
+    assert.deepEqual([open(changed).draftEdit, open(changed).draftDirty], [changed, true]);
 });

@@ -78,16 +78,17 @@ export function replaceMoaNode(tree, nodeId, next) {
 
 /**
  * Which YAML edit a Master of Agents workflow panel hands to the workspace when it opens the workflow there (adversarial
- * review UI-2 and its verification, VR-6). The panel's live editor buffer, when one is mounted, is the person's edit as
- * it is now: a changed one is handed over; a clean one (nothing changed, or the edit was discarded) hands over that
- * there is no edit, even when an older edit was saved. Only with no live buffer is the saved edit handed over. Only an
- * edit of `sessionId` counts. Returns the workflow view's change ({ draftEdit, draftDirty }), or null to leave the
- * workspace's own as it is. Pure.
+ * review UI-2 and its verifications, VR-6 and E2-R4). The panel's live editor buffer, when one is mounted, is the
+ * person's edit in the panel as it is now: a changed one is handed over, as unsaved; a clean one (nothing changed, or
+ * the edit was discarded) hands over nothing, so it neither brings back an older saved edit nor erases an unsaved edit
+ * the workspace has of its own. Only with no live buffer is the panel's saved edit handed over. Only an edit of
+ * `sessionId` counts. Returns the workflow view's change ({ draftEdit, draftDirty }), or null to leave the workspace's
+ * own as it is. Pure.
  */
 export function workflowDraftHandoff({ sessionId, buffer = null, saved = null }) {
     if (buffer && buffer.sessionId === sessionId) {
         const changed = typeof buffer.text === "string" && buffer.base && buffer.text !== buffer.base.yaml;
-        return changed ? { draftEdit: buffer, draftDirty: true } : { draftEdit: null, draftDirty: false };
+        return changed ? { draftEdit: buffer, draftDirty: true } : null;
     }
     if (saved && saved.sessionId === sessionId) return { draftEdit: saved, draftDirty: true };
     return null;
