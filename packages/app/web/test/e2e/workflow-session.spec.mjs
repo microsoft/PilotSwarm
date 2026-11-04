@@ -435,9 +435,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         expect(errors).toEqual([]);
     });
 
-    // Batch 5 T8: a drag that starts on a step never moves the graph, with the hand on; the background still does.
+    // Batch 6 (f-03): a drag that starts on a step moves that step's box by the drag distance; it does not move the graph
+    // and does not select the step. A press that moves less than 4px is a click and selects it. With the hand on or off.
     // Selector: -g "starts on a step" (from packages/app/web, after build).
-    test(`a drag that starts on a step does not move the graph, at ${viewport.width}px`, async ({ page }) => {
+    test(`a drag that starts on a step moves the step, not the graph, and does not select it, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
@@ -448,31 +449,61 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         const graph = main.getByRole("group", { name: "Workflow graph" });
         await flowReady(graph);
         await settledView(graph);
-        // Zoomed in by the person first, so the view no longer follows the graph area's size: only a drag could move it.
-        await graph.getByRole("button", { name: "Zoom in", exact: true }).click();
-        const before = await settledView(graph);
-        const box = await graph.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).boundingBox();
-        const x = box.x + box.width / 2, y = box.y + box.height / 2;
-        await page.mouse.move(x, y);
-        await page.mouse.down();
-        await page.mouse.move(x + 40, y + 30, { steps: 4 });
-        await page.mouse.move(x + 80, y + 60, { steps: 4 });
-        const during = await viewOf(graph);
-        await page.mouse.up();
-        const after = await settledView(graph);
-        for (const view of [during, after]) {
-            expect(Math.abs(view.x - before.x)).toBeLessThan(1);
-            expect(Math.abs(view.y - before.y)).toBeLessThan(1);
-            expect(Math.abs(view.scale - before.scale)).toBeLessThan(0.001);
+        const hand = graph.getByRole("button", { name: "Move the graph", exact: true });
+        for (const handOn of [true, false]) {
+            if (!handOn) await hand.click();
+            await expect(hand).toHaveAttribute("aria-pressed", String(handOn));
+            const id = handOn ? "evaluate_quality" : "collect_metrics";
+            const step = graph.getByRole("button", { name: `Inspect ${id}`, exact: true });
+            const pressed = await step.getAttribute("aria-pressed");
+            const shownBefore = await page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2").allTextContents();
+            const before = await settledView(graph);
+            const box = await step.boundingBox();
+            const x = box.x + box.width / 2, y = box.y + box.height / 2;
+            await page.mouse.move(x, y);
+            await page.mouse.down();
+            await page.mouse.move(x + 40, y + 30, { steps: 4 });
+            await page.mouse.move(x + 80, y + 60, { steps: 4 });
+            const during = await viewOf(graph);
+            await page.mouse.up();
+            const after = await settledView(graph);
+            // The graph did not move.
+            for (const view of [during, after]) {
+                expect(Math.abs(view.x - before.x)).toBeLessThan(1);
+                expect(Math.abs(view.y - before.y)).toBeLessThan(1);
+                expect(Math.abs(view.scale - before.scale)).toBeLessThan(0.001);
+            }
+            // The step's box moved with the pointer.
+            const moved = await step.boundingBox();
+            expect(Math.abs(moved.x - box.x - 80)).toBeLessThan(6);
+            expect(Math.abs(moved.y - box.y - 60)).toBeLessThan(6);
+            // It was not selected, and Step details did not switch to it.
+            await expect(step).toHaveAttribute("aria-pressed", pressed ?? "false");
+            expect(await page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2").allTextContents()).toEqual(shownBefore);
         }
-        // Control: the same drag from the background does move it.
+        // A press that moves under 4px is a click: it selects the step.
+        const blocked = graph.getByRole("button", { name: "Inspect blocked", exact: true });
+        const small = await blocked.boundingBox();
+        const cx = small.x + small.width / 2, cy = small.y + small.height / 2;
+        await page.mouse.move(cx, cy);
+        await page.mouse.down();
+        await page.mouse.move(cx + 2, cy + 1, { steps: 2 });
+        await page.mouse.up();
+        await expect(blocked).toHaveAttribute("aria-pressed", "true");
+        const still = await blocked.boundingBox();
+        expect(Math.abs(still.x - small.x)).toBeLessThan(3);
+        // Control: with the hand on, the same drag from the background does move the graph.
+        await hand.click();
+        await expect(hand).toHaveAttribute("aria-pressed", "true");
+        const view = await settledView(graph);
         const area = await graph.boundingBox();
         await page.mouse.move(area.x + 10, area.y + 10);
         await page.mouse.down();
         await page.mouse.move(area.x + 50, area.y + 40, { steps: 4 });
         await page.mouse.move(area.x + 90, area.y + 70, { steps: 4 });
         await page.mouse.up();
-        await expect.poll(async () => (await viewOf(graph)).x - after.x).toBeGreaterThan(40);
+        await expect.poll(async () => (await viewOf(graph)).x - view.x).toBeGreaterThan(40);
+        await shot(page, `graph-drag-step-${viewport.width}`);
         expect(errors).toEqual([]);
     });
 }
