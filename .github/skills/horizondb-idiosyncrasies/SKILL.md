@@ -139,8 +139,14 @@ uses API `2026-10-01-preview`. Its rules, each found by a failed deploy:
 pool GET still shows the **previous** group as `Succeeded` / `InSync`; the
 server restarts about a minute in, and the GET shows the new group only when
 the operation ends. Send **one** PATCH, then wait until the GET shows the new
-group with `syncStatus: InSync` (or follow the `Azure-AsyncOperation` URL). A
-second PATCH while one runs starts another attach.
+group with `syncStatus: InSync` (or follow the `Azure-AsyncOperation` URL).
+
+**The first PATCH soon after a pool is created can be dropped:** it ends
+`Succeeded`, no restart happens, and the pool stays on the built-in group.
+Seen twice, each time within a minute of the pool's create and login writes.
+A second PATCH then attached normally. `ensureHorizonDbParameterGroup`
+resends the PATCH when the GET still shows another group four minutes later
+(at most three PATCHes).
 
 `syncStatus` values: `Applying`, `InSync`, `PendingReboot` (static settings
 wait for `POST .../pools/{pool}/restart`), `FailedToApply`. With
