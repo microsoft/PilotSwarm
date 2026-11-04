@@ -75,7 +75,7 @@ import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarni
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
-import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
+import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
@@ -2893,17 +2893,27 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 workflowV2Host,
             }),
 
-            /** update_workflow / read_workflow: the calling session is the host-stamped actor. */
-            updateWorkflow: async (args: Record<string, unknown>) => updateWorkflowFromTool(args, {
-                callerSessionId: input.sessionId, host: await workflowV2Host(),
-            }),
-            readWorkflow: async (args: Record<string, unknown>) => readWorkflowFromTool(args, {
-                callerSessionId: input.sessionId, host: await workflowV2Host(),
-            }),
+            /**
+             * update_workflow / read_workflow: the calling session is the host-stamped actor. A host that cannot be made (its
+             * store unreachable, for example) answers as the tool's own refusals do, with a code and the reason (batch 7, n-3),
+             * never as a failed tool call.
+             */
+            updateWorkflow: async (args: Record<string, unknown>) => {
+                let host: WorkflowToolHost;
+                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                return updateWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
+            },
+            readWorkflow: async (args: Record<string, unknown>) => {
+                let host: WorkflowToolHost;
+                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                return readWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
+            },
             /** send_workflow_input: the calling session is the host-stamped sender. */
-            sendWorkflowInput: async (args: Record<string, unknown>) => sendWorkflowInputFromTool(args, {
-                callerSessionId: input.sessionId, host: await workflowV2Host(),
-            }),
+            sendWorkflowInput: async (args: Record<string, unknown>) => {
+                let host: WorkflowToolHost;
+                try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
+                return sendWorkflowInputFromTool(args, { callerSessionId: input.sessionId, host });
+            },
             /** respond_session_request (request states, INACTIVE): the calling session is the host-stamped responder. */
             ...(workflowRequestTurn ? {
                 respondSessionRequest: async (args: Record<string, unknown>) => {

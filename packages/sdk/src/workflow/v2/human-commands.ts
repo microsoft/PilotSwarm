@@ -147,7 +147,7 @@ const LIMITED = new Set(["OPERATION_LIMIT", "TEST_INTERCEPTION_LIMIT", "INBOX_RA
 /**
  * The HTTP status of a refused workflow command: 404 for what does not exist,
  * 403 forbidden, 400 an invalid command, 422 a value its contract refuses, 429
- * a limit, 500 a corrupt store, and 409 for a command that conflicts with the
+ * a limit, 500 a corrupt store, 503 a store not available now, and 409 for a command that conflicts with the
  * workflow's current state (a revision, hash, operation id, run or answer).
  */
 export function workflowCommandStatus(code: string): number {
@@ -157,6 +157,7 @@ export function workflowCommandStatus(code: string): number {
     if (UNPROCESSABLE.has(code)) return 422;
     if (LIMITED.has(code)) return 429;
     if (code === "WORKFLOW_STORE_CORRUPT") return 500;
+    if (code === "WORKFLOW_STORE_UNAVAILABLE") return 503;
     return 409;
 }
 

@@ -14,6 +14,7 @@ import {
     type WorkflowReadCursor, type WorkflowReadSection,
 } from "./read-pages.js";
 import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
+import { workflowStoreFailure } from "./failure.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import {
     advanceWorkflowV2Test,
@@ -259,12 +260,20 @@ function payload(value: { [key: string]: JsonValue }): string {
     return JSON.stringify(value);
 }
 
+/**
+ * A workflow tool's refusal or failure as its JSON answer (batch 7, n-3): always a code and a message that is safe to
+ * show (failure.ts): a refusal's own code, WORKFLOW_STORE_UNAVAILABLE for a store that cannot be reached or has no room
+ * now, else WORKFLOW_ERROR. Never a bare "Tool execution failed".
+ */
 function errorPayload(error: unknown): string {
-    if (error instanceof WorkflowStoreError) {
-        return payload({ ok: false, error: { code: error.code, message: jsonbSafeText(error.message, 2_000), details: error.details } });
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    return payload({ ok: false, error: { code: "WORKFLOW_ERROR", message: jsonbSafeText(message, 2_000) } });
+    const failure = workflowStoreFailure(error);
+    return payload({ ok: false, error: { code: failure.code, message: jsonbSafeText(failure.message, 2_000),
+        ...(error instanceof WorkflowStoreError ? { details: failure.details } : {}) } });
+}
+
+/** The same answer for a failure met before a workflow tool's own handler ran (its host could not be made, for example). */
+export function workflowToolErrorPayload(error: unknown): string {
+    return errorPayload(error);
 }
 
 function receiptJson(receipt: WorkflowDefinitionReceipt, replayed: boolean): { [key: string]: JsonValue } {

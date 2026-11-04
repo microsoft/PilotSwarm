@@ -25,6 +25,7 @@ import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer
 import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 import {
     READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC,
+    workflowToolErrorPayload,
 } from "./workflow/v2/tools.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "./workflow/v2/agent-node-service.js";
@@ -3122,7 +3123,8 @@ export class ManagedSession {
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_workflow");
                 if (!controlBridge?.updateWorkflow) return "Error: update_workflow is not available in this session.";
-                return await controlBridge.updateWorkflow(args ?? {});
+                // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
+                try { return await controlBridge.updateWorkflow(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
         const readWorkflowTool = defineTool("read_workflow", {
@@ -3130,7 +3132,8 @@ export class ManagedSession {
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_workflow");
                 if (!controlBridge?.readWorkflow) return "Error: read_workflow is not available in this session.";
-                return await controlBridge.readWorkflow(args ?? {});
+                // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
+                try { return await controlBridge.readWorkflow(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
         const sendWorkflowInputTool = defineTool("send_workflow_input", {
@@ -3138,7 +3141,8 @@ export class ManagedSession {
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("send_workflow_input");
                 if (!controlBridge?.sendWorkflowInput) return "Error: send_workflow_input is not available in this session.";
-                return await controlBridge.sendWorkflowInput(args ?? {});
+                // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
+                try { return await controlBridge.sendWorkflowInput(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
             },
         });
         // Workflow request states (INACTIVE): a turn whose bridge can answer a request gets the tool; a session declared it

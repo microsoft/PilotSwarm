@@ -29,7 +29,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 + "run.test.openInterceptions). run.pages gives each section's nextCursor: give it back as cursor (a JSON object; limit may "
                 + "go with it) for that section's next, older page; null means none is older. execution_id, kv_revision, agent_versions, "
                 + "definition_revision and step_input are separate reads: each argument says what it returns. Refusals carry their code: "
-                + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, DEFINITION_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID.",
+                + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, DEFINITION_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID, "
+                + "and WORKFLOW_STORE_UNAVAILABLE (with its reason) when the store cannot be reached or has no room now.",
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to read"),
                 run_id: z.string().optional().describe("A run of the workflow; default the live run"),

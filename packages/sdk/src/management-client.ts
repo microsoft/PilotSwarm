@@ -168,6 +168,7 @@ import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerso
 import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
 import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
+import { workflowAdapterFailure } from "./workflow/v2/failure.js";
 import type { WorkflowV2Host } from "./workflow/v2/service.js";
 import {
     AgentPackageValidationError,
@@ -1920,8 +1921,19 @@ export class PilotSwarmManagementClient {
      * person (`personCommands`, human-commands.ts), so a screen offers only
      * those, and, for a draft a person may change, its current YAML
      * (`personCommands.draft`); without it the view is exactly the tool's.
+     * A store that cannot be reached or has no room now is
+     * WORKFLOW_STORE_UNAVAILABLE (503) with its reason (batch 7, n-3).
      */
     async readWorkflow(sessionId: string, options: WorkflowReadOptions = {})
+        : Promise<Record<string, unknown>> {
+        try {
+            return await this._readWorkflow(sessionId, options);
+        } catch (error) {
+            throw workflowAdapterFailure(error);
+        }
+    }
+
+    private async _readWorkflow(sessionId: string, options: WorkflowReadOptions)
         : Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
@@ -1977,10 +1989,21 @@ export class PilotSwarmManagementClient {
      * a system actor: never a field of the command. A workflow in a workflow
      * agent state's subtree takes only pause, stop and cancel from a person
      * (403 WORKFLOW_HUMAN_INPUT_DENIED). Returns the receipt; a refusal
-     * carries its code, its HTTP status and its details.
+     * carries its code, its HTTP status and its details. A store that cannot
+     * be reached or has no room now is WORKFLOW_STORE_UNAVAILABLE (503) with
+     * its reason (batch 7, n-3).
      */
     async updateWorkflow(sessionId: string, command: Record<string, unknown>,
         options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
+        try {
+            return await this._updateWorkflow(sessionId, command, options);
+        } catch (error) {
+            throw workflowAdapterFailure(error);
+        }
+    }
+
+    private async _updateWorkflow(sessionId: string, command: Record<string, unknown>,
+        options: { principal?: { provider?: string | null; subject?: string | null } | null }): Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string, details?: unknown): Error =>
             Object.assign(new Error(message), { code, status, ...(details !== undefined ? { details } : {}) });

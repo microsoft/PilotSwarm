@@ -147,4 +147,6 @@ export function workflowReadLimit(limit: unknown, section: WorkflowReadSection):
 export const WORKFLOW_READ_STATUS: Readonly<Record<string, number>> = Object.freeze({
     WORKFLOW_NOT_FOUND: 404, RUN_NOT_FOUND: 404, EXECUTION_NOT_FOUND: 404, KV_REVISION_NOT_FOUND: 404, DEFINITION_REVISION_NOT_FOUND: 404, WORKFLOW_CURSOR_INVALID: 400,
     WORKFLOW_READ_INVALID: 400,
+    // The workflow store cannot be reached or has no room now (batch 7, n-3): try again.
+    WORKFLOW_STORE_UNAVAILABLE: 503,
 });

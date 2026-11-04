@@ -243,6 +243,7 @@ execution_failed, message, details? }`.
 | `KV_REVISION_CONFLICT` | Read `kvRevision` again. |
 | `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
 | `RUN_STOP_UNSUPPORTED` | The run's controller does not stop gracefully; cancel it. |
+| `WORKFLOW_STORE_UNAVAILABLE` | The store cannot be reached or has no room now; try once more, then report the error as given. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
 | `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
 | `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | Only the creating agent changes or reads its workflow child. |
