@@ -39,6 +39,12 @@ attached repositories/workspaces and an explicitly supported model/tool profile.
 Start with one session per isolated environment; sharing and the treatment of
 child sessions need an explicit allocation policy.
 
+**Proposed state strategy:** the runtime uses native session files inside its
+execution environment. PilotSwarm captures/restores the declared session state
+and retains archive-backed commit and recovery authority. Repositories remain
+independently attached. This is the proposed shared-core integration mode, not
+an already qualified remote profile.
+
 ```text
 Current:   worker [SDK client + agent runtime]
 Proposed:  worker [SDK client] -> isolated environment [agent runtime]
@@ -133,17 +139,30 @@ Unknown outcomes need an observable reconciliation path. The required outcome
 does not mandate a particular binding API, deleting every environment after each
 turn, or one specific lease implementation.
 
-### Declared state fidelity
+### Proposed native-session-file profile
 
-The selected filesystem/persistence path must preserve the state the supported
-workload needs. This includes database state where those tools are offered.
-Unsupported operations must be explicit, not silently omitted.
+For the first isolated profile, this draft proposes real session files beside
+the runtime rather than requiring worker-backed SessionFs for all runtime state.
+The intent is to preserve normal filesystem behavior, including native database
+access where the supported runtime uses it.
 
-Worker-backed file operations and whole-tree capture are different mechanisms.
-Neither should be chosen solely to preserve an existing interface. Qualify its
-actual behavior, including the capture boundary, native-tool visibility and any
-SQLite or sidecar requirements. Copying files named like a database is not a
-database-consistency proof.
+The trusted side captures/restores the complete declared per-session state and
+publishes the accepted result through PilotSwarm's existing archive/CAS lifecycle.
+Validate returned files and preserve the worker's authority over commit metadata.
+Do not fold independently attached repo/build storage into the conversation
+archive merely because the runtime can access it.
+
+Capture needs a defined consistency boundary: verified writer shutdown, a
+supported database backup operation or another qualified mechanism. A warm live
+copy is not automatically an atomic database checkpoint. Establish the locations
+of all required files/databases; capturing a per-session tree does not imply
+capturing every runtime-global database. SQLite/sidecar fidelity still needs
+qualification rather than inference from filenames.
+
+Native session files do not mean provider-owned VM snapshots or process-memory
+recovery. PilotSwarm remains authoritative. This can be a declared mode of the
+common compute framework; it need not reject its targets, connection, workspace
+or brokerage mechanisms, or mandate the same storage mode for every provider.
 
 ### Committed outcome and completion recovery
 
@@ -196,6 +215,9 @@ adds no cloud provider, new persistence backend, process-continuity feature or
 sharing policy. It does not complete the broader worker-failure fencing or
 committed-completion work.
 
+Those fixes repair the reviewed draft's existing paths. The proposed native
+session-file integration is a separate change, not an expansion of that first PR.
+
 ### Then: reconcile the required recovery behavior
 
 Carry the execution-ownership, state-fidelity and committed-completion outcomes
@@ -237,8 +259,8 @@ qualified independently.
 
 1. Is allocation per logical session or per parent/child session tree, and what is
    the initial supported scope?
-2. Which state, model and tool profile does the first delivery preserve, and
-   which limitations are explicitly accepted?
+2. Do we agree on the proposed native-session-file mode, which files/databases
+   must it preserve, and which model/tool profile does the first delivery qualify?
 3. Where are dynamic allocation records, authority and orphan reconciliation
    implemented, and what proves safe replacement?
 4. How are repository files actually made available inside the environment, and
