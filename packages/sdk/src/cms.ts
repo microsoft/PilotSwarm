@@ -1753,8 +1753,33 @@ export class PgSessionCatalog implements SessionCatalog {
     private _workflowStore: WorkflowStore | null = null;
 
     workflowStore(): WorkflowStore {
-        this._workflowStore ??= new WorkflowStore(this.pool, this.sql.schema);
+        this._workflowStore ??= new WorkflowStore(this.pool, this.sql.schema, { noticeLockPool: () => this.workflowNoticeLockPool() });
         return this._workflowStore;
+    }
+
+    /** The workflow run notice lock's own small pool (E3-R2), made at its first use with this pool's connection settings. */
+    private noticeLockPool: Promise<any> | null = null;
+
+    private workflowNoticeLockPool(): Promise<any> {
+        const settings = this.listenConfig;
+        if (!settings) return Promise.resolve(this.pool);
+        this.noticeLockPool ??= (async () => {
+            const { default: pg } = await import("pg");
+            const configured = Number.parseInt(process.env.PILOTSWARM_WORKER_CONCURRENCY ?? "", 10);
+            const concurrency = Number.isFinite(configured) && configured > 0 ? configured : 2;
+            const pool = new pg.Pool({
+                application_name: "pilotswarm-workflow-notice-lock",
+                ...settings,
+                max: concurrency + 1,
+                idleTimeoutMillis: 5_000,
+                connectionTimeoutMillis: 10_000,
+            });
+            pool.on("error", (err: Error) => {
+                console.error("[cms] workflow notice lock pool idle client error (non-fatal):", err.message);
+            });
+            return pool;
+        })();
+        return this.noticeLockPool;
     }
 
     async createWorkflowSessionV2(sessionId: string, opts: {
@@ -4098,6 +4123,11 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async close(): Promise<void> {
+        if (this.noticeLockPool) {
+            const lockPool = await this.noticeLockPool.catch(() => null);
+            this.noticeLockPool = null;
+            if (lockPool && lockPool !== this.pool) await lockPool.end();
+        }
         if (this.pool) {
             await this.pool.end();
             this.pool = null;

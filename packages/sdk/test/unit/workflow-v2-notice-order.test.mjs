@@ -15,7 +15,7 @@ const RUN = { runId: "run-1", workflowSessionId: "wf-1", mode: "live", status: "
  * finds it held gets { locked: false }); `recorded` answers runNoticeRecorded, in order of the calls.
  */
 function harness({ inFlight = () => 0, waitMs, delivered, attempted = false, authorized = true, notifyParent = true, recorded = () => false,
-    notifyGate = null, lock = null } = {}) {
+    notifyGate = null, lock = null, lockWaitMs } = {}) {
     const activities = new Map();
     const log = [];
     const timeouts = [];
@@ -24,7 +24,9 @@ function harness({ inFlight = () => 0, waitMs, delivered, attempted = false, aut
     const store = {
         readRun: async () => RUN,
         readDefinition: async () => ({ parentSessionId: PARENT, notifyParent }),
-        runNoticeRecorded: async () => recorded(recordedCalls++),
+        // Recorded by this test's choice, or by a notice event any attempt recorded.
+        runNoticeRecorded: async () => recorded(recordedCalls++)
+            || log.some(entry => entry[0] === "event" && ["workflow.parent_notified", "workflow.parent_notification_skipped"].includes(entry[1])),
         runNoticeAttempted: async () => attempted,
         readRevisionLabel: async () => ({ name: "w", semver: "1.0.0" }),
         runDeliveriesInFlight: async (runId, recipient, seconds, timeoutMs) => {
@@ -32,8 +34,14 @@ function harness({ inFlight = () => 0, waitMs, delivered, attempted = false, aut
             timeouts.push(timeoutMs);
             return await inFlight();
         },
-        withRunNoticeLock: lock ?? (async (runId, work) => {
-            if (held) { log.push(["lock-held", runId]); return { locked: false }; }
+        // An in-memory lock: an attempt that finds it held tries again until its wait ends (E3-R1).
+        withRunNoticeLock: lock ?? (async (runId, work, wait = {}) => {
+            const until = Date.now() + (wait.waitMs ?? 0);
+            while (held) {
+                log.push(["lock-held", runId]);
+                if (Date.now() > until) return { locked: false };
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
             held = true;
             log.push(["lock", runId]);
             try { return { locked: true, value: await work() }; }
@@ -55,6 +63,7 @@ function harness({ inFlight = () => 0, waitMs, delivered, attempted = false, aut
         },
         deleteSession: async () => {},
         ...(waitMs !== undefined ? { noticeDeliveryWaitMs: waitMs } : {}),
+        ...(lockWaitMs !== undefined ? { noticeLockWaitMs: lockWaitMs } : {}),
     });
     const notify = () => activities.get(WORKFLOW_V2_ACTIVITIES.notifyParent)({}, { runId: RUN.runId });
     return { notify, log, timeouts };
@@ -162,18 +171,33 @@ test("WFO-4: a retry that may tell the parent queues again with the same id, rec
     assert.deepEqual(h.log.filter(entry => entry[0] === "notify"), [["notify", PARENT, "workflow:wf-1:run-1:terminal"]]);
 });
 
-// Verification of WFO-4 (D-T8): one attempt at a time per run. The read, the marker, the enqueue and the record run under
-// the run's notice lock; an attempt that finds it held records nothing (the holder records).
-test("D-T8: two notifiers of one run at once: one queues the notice and records it; the other records nothing", async () => {
+// Verification of WFO-4 (D-T8) and of E3 (E3-R1): one attempt at a time per run. The read, the marker, the enqueue and the
+// record run under the run's notice lock. An attempt that finds it held waits for it; under it, it reads again whether
+// the notice was recorded. Still held after its wait, it fails, so that the activity is tried again: it never ends as if
+// the notice were sent.
+const tick = (ms = 10) => new Promise(resolve => setTimeout(resolve, ms));
+/** A lock another attempt holds while `holder.holds`; this attempt polls it within its wait. */
+const heldElsewhere = holder => async (_runId, work, wait = {}) => {
+    const until = Date.now() + (wait.waitMs ?? 0);
+    while (holder.holds) {
+        if (Date.now() > until) return { locked: false };
+        await tick(10);
+    }
+    return { locked: true, value: await work() };
+};
+
+test("D-T8, E3-R1: two notifiers of one run at once: the second waits for the lock, then finds the notice recorded", async () => {
     let release;
     const notifyGate = new Promise(resolve => { release = resolve; });
     const h = harness({ notifyGate });
     const first = h.notify();
-    await new Promise(resolve => setTimeout(resolve, 20));
-    await h.notify();
-    assert.ok(h.log.some(entry => entry[0] === "lock-held"), "the second found the lock held");
+    await tick(20);
+    const second = h.notify();
+    await tick(50);
+    assert.ok(h.log.some(entry => entry[0] === "lock-held"), "the second waits for the lock");
     release();
-    await first;
+    assert.equal(await first, null);
+    assert.equal(await second, null);
     assert.equal(h.log.filter(entry => entry[0] === "notify").length, 1);
     assert.deepEqual(eventsOf(h).map(entry => entry[1]), ["workflow.parent_notifying", "workflow.parent_notified"]);
 });
@@ -184,8 +208,36 @@ test("D-T8: an attempt that gets the lock after another recorded the notice reco
     await h.notify();
     assert.deepEqual(h.log.filter(entry => entry[0] === "notify"), []);
     assert.deepEqual(eventsOf(h), []);
-    // A lock held elsewhere (another worker): nothing is queued or recorded, and the activity ends.
-    const elsewhere = harness({ lock: async () => ({ locked: false }) });
-    assert.equal(await elsewhere.notify(), null);
-    assert.deepEqual(elsewhere.log.filter(entry => entry[0] === "notify" || entry[0] === "event"), []);
+});
+
+test("E3-R1: a lock held by an attempt that then fails: this attempt fails to be tried again, and the retry sends the notice once", async () => {
+    const zombie = { holds: true };
+    const h = harness({ lock: heldElsewhere(zombie), lockWaitMs: 100 });
+    await assert.rejects(h.notify(), /being sent by another attempt; this attempt is tried again/);
+    assert.deepEqual(h.log.filter(entry => entry[0] === "notify" || entry[0] === "event"), []);
+    // The holder failed before its enqueue; its lock went with its connection. The activity's retry tells the parent.
+    zombie.holds = false;
+    assert.equal(await h.notify(), null);
+    assert.equal(h.log.filter(entry => entry[0] === "notify").length, 1);
+    assert.deepEqual(eventsOf(h).map(entry => entry[1]), ["workflow.parent_notifying", "workflow.parent_notified"]);
+});
+
+test("E3-R1: a lock held by an attempt that records the notice: this attempt waits, then returns without a second notice", async () => {
+    const holder = { holds: true };
+    const h = harness({ lock: heldElsewhere(holder) });
+    const waiting = h.notify();
+    await tick(40);
+    // The holder told the parent and recorded it, then let the lock go.
+    h.log.push(["event", "workflow.parent_notified", { runId: "run-1", parentSessionId: PARENT }]);
+    holder.holds = false;
+    assert.equal(await waiting, null);
+    assert.equal(h.log.filter(entry => entry[0] === "notify").length, 0);
+});
+
+test("E3-R1: the waits for deliveries and for the lock stay inside the attempt's budget", async () => {
+    // A lock that stays held: the attempt fails within its own wait, not later.
+    const h = harness({ lock: heldElsewhere({ holds: true }), lockWaitMs: 200 });
+    const started = Date.now();
+    await assert.rejects(h.notify(), /another attempt/);
+    assert.ok(Date.now() - started < 2_000);
 });

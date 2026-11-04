@@ -1634,7 +1634,12 @@ export class WorkflowStore {
         sessions: string; sessionOwners: string; users: string; sessionEvents: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
-    constructor(private readonly pool: Pool, readonly schema: string) {
+    /**
+     * `noticeLockPool`: where the run notice lock takes its connection (E3-R2): a small pool of its own, so the store
+     * calls made while it is held never wait for the connection the lock holds. Unset, the store's pool.
+     */
+    constructor(private readonly pool: Pool, readonly schema: string,
+        private readonly options: { noticeLockPool?: () => Promise<Pool> } = {}) {
         const s = `"${schema}"`;
         this.t = {
             definitions: `${s}.workflow_definitions`, revisions: `${s}.workflow_revisions`,
@@ -2770,24 +2775,33 @@ export class WorkflowStore {
     /**
      * Run `work` while this attempt holds the run's notice lock (adversarial review WFO-4 and its verification): a
      * session-level advisory lock on the schema and the run id, held on a connection of its own for the whole of
-     * `work`. Another attempt that holds it makes this return `{ locked: false }` at once, without running `work`. A
-     * process that dies while it holds the lock loses its connection, and the lock with it. A connection that cannot
-     * unlock is closed, not returned to the pool, so the lock never outlives `work`.
+     * `work`, taken from the notice lock's own pool (E3-R2). An attempt that finds it held tries again every `pollMs`
+     * for up to `waitMs` (E3-R1); still held, this returns `{ locked: false }` without running `work`. A process that
+     * dies while it holds the lock loses its connection, and the lock with it. A connection that cannot unlock is
+     * closed, not returned to its pool, so the lock never outlives `work`.
      */
-    async withRunNoticeLock<T>(runId: string, work: () => Promise<T>): Promise<{ locked: true; value: T } | { locked: false }> {
+    async withRunNoticeLock<T>(runId: string, work: () => Promise<T>, wait: { waitMs?: number; pollMs?: number } = {})
+        : Promise<{ locked: true; value: T } | { locked: false }> {
         const key = `${this.schema}:workflow-run-notice:${runId}`;
-        const client = await this.pool.connect();
+        const pool = this.options.noticeLockPool ? await this.options.noticeLockPool() : this.pool;
+        const client = await pool.connect();
         let broken: Error | undefined;
         try {
-            let locked: boolean;
-            try {
-                const { rows } = await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked", [key]);
-                locked = rows[0]?.locked === true;
-            } catch (error) {
-                broken = error instanceof Error ? error : new Error(String(error));
-                throw error;
+            const until = Date.now() + Math.max(0, wait.waitMs ?? 0);
+            const pollMs = Math.max(10, wait.pollMs ?? 500);
+            for (;;) {
+                let locked: boolean;
+                try {
+                    const { rows } = await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked", [key]);
+                    locked = rows[0]?.locked === true;
+                } catch (error) {
+                    broken = error instanceof Error ? error : new Error(String(error));
+                    throw error;
+                }
+                if (locked) break;
+                if (Date.now() + pollMs > until) return { locked: false };
+                await new Promise(resolve => setTimeout(resolve, pollMs));
             }
-            if (!locked) return { locked: false };
             try {
                 return { locked: true, value: await work() };
             } finally {

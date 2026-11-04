@@ -1938,6 +1938,8 @@ export interface WorkflowV2RuntimeDeps {
         => Promise<void | { delivered: boolean }>;
     /** How long the run-end notice waits for the run's deliveries to the parent still in flight (WFO-1); a test sets it. */
     noticeDeliveryWaitMs?: number;
+    /** How long a run-end notice attempt waits for the run's notice lock another attempt holds (E3-R1); a test sets it. */
+    noticeLockWaitMs?: number;
     deleteSession: (sessionId: string) => Promise<void>;
     /** The agent sessions' message queues a send state delivers to; default: sessionQueueTransport on the activity's durable client. */
     sessionQueue?: WorkflowSessionQueue;
@@ -2447,6 +2449,13 @@ export const WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS = 15_000;
 const WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS = 200;
 const WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS = 60;
 const WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS = 2_000;
+/**
+ * How long an attempt waits for the run's notice lock that another attempt holds, how often it tries it, and the part of
+ * the activity's 30-second attempt budget that the wait for deliveries and the wait for the lock may use together (E3-R1).
+ */
+export const WORKFLOW_V2_NOTICE_LOCK_WAIT_MS = 20_000;
+const WORKFLOW_V2_NOTICE_LOCK_POLL_MS = 500;
+const WORKFLOW_V2_NOTICE_ATTEMPT_BUDGET_MS = 27_000;
 
 /** The owed agent invocations read at a time when a run's children are ended (RT-5). */
 export const WORKFLOW_V2_OWED_AGENT_PAGE = 200;
@@ -3357,7 +3366,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         };
     };
 
-    register("notifyParent", async (actx, rawInput) => {
+    register("notifyParent", async (_actx, rawInput) => {
+        // The attempt's budget (WORKFLOW_V2_STORE_RETRY's 30 s per attempt) bounds the waits below together.
+        const attemptStarted = Date.now();
         const input = record(rawInput, "notify input");
         const run = await runOf(text(input.runId, "runId"));
         const requestedBy = input.requestedBy === undefined ? null : textOrNull(input.requestedBy, "requestedBy");
@@ -3374,19 +3385,35 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // WFO-1: a send's message or a request to the parent whose delivery attempt began before the run ended (or that
         // was failed after it began: its enqueue may still be running) may still be queued after this. The run's end is
         // told after it, so the parent never reads them after the end. The wait is bounded (an attempt that takes longer,
-        // or began long ago, is not waited for), each look has a statement timeout, and it is in this activity, before
-        // the run's notice lock: no orchestration changes.
+        // or began long ago, is not waited for), each look has a statement timeout, and the whole wait has one deadline
+        // (E3 verification: a slow pool or transaction cannot extend it). It is in this activity, before the run's notice
+        // lock: no orchestration changes.
         if (notifyParent) {
-            const waitUntil = Date.now() + (deps.noticeDeliveryWaitMs ?? WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS);
-            for (;;) {
-                const left = waitUntil - Date.now();
-                if (left <= 0) break;
-                const inFlight = await store.runDeliveriesInFlight(run.runId, parentSessionId, WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS,
-                    Math.max(1, Math.min(left, WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS)));
-                if (inFlight === 0) break;
-                await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS, waitUntil - Date.now()))));
+            const waitMs = deps.noticeDeliveryWaitMs ?? WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS;
+            const waitUntil = Date.now() + waitMs;
+            const waiting = (async (): Promise<void> => {
+                for (;;) {
+                    const left = waitUntil - Date.now();
+                    if (left <= 0) return;
+                    const inFlight = await store.runDeliveriesInFlight(run.runId, parentSessionId, WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS,
+                        Math.max(1, Math.min(left, WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS)));
+                    if (inFlight === 0) return;
+                    await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS, waitUntil - Date.now()))));
+                }
+            })();
+            // A look still running at the deadline is not waited for.
+            waiting.catch(() => undefined);
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([waiting, new Promise<void>(resolve => { timer = setTimeout(resolve, waitMs); })]);
+            } finally {
+                if (timer) clearTimeout(timer);
             }
         }
+        // E3-R1: an attempt that finds the run's notice lock held waits for it (polling), within the attempt's budget;
+        // still held, it fails so that the activity is tried again, and never ends as if the notice were sent.
+        const lockWaitMs = Math.max(0, Math.min(deps.noticeLockWaitMs ?? WORKFLOW_V2_NOTICE_LOCK_WAIT_MS,
+            attemptStarted + WORKFLOW_V2_NOTICE_ATTEMPT_BUDGET_MS - Date.now()));
         const held = await store.withRunNoticeLock(run.runId, async (): Promise<null> => {
             // Read again under the lock: an attempt that held it before may have recorded the notice.
             if (await store.runNoticeRecorded(run.workflowSessionId, run.runId)) return null;
@@ -3431,8 +3458,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             // WFO-3: the parent's session had ended before the notice was queued: this attempt did not tell it.
             if (delivery?.delivered === false) return await skipped("parent is gone");
             return await told();
-        });
-        if (!held.locked) actx.traceWarn?.(`[workflow-v2] run=${run.runId} another attempt is telling the parent; it records the notice`);
+        }, { waitMs: lockWaitMs, pollMs: WORKFLOW_V2_NOTICE_LOCK_POLL_MS });
+        if (!held.locked) {
+            throw new Error(`The end notice of run ${run.runId} is being sent by another attempt; this attempt is tried again.`);
+        }
         return null;
     });
 

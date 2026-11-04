@@ -11,7 +11,8 @@
  *   names the rest (failure { stateId, code, message, problems }).
  * - Verification of WFO-1 (D-T1, D-T3): the count of a run's deliveries to its parent still in flight, on real rows
  *   (sends and requests, pending and failed after their last attempt began); and of WFO-4 (D-T8): the run's notice lock
- *   is held by one attempt at a time.
+ *   is held by one attempt at a time; and of E3 (E3-R1, E3-R2): an attempt waits for a held lock, and the lock has a
+ *   pool of its own.
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
@@ -270,8 +271,51 @@ describe("workflow v2: telling the parent when a live run ends", () => {
             // Released: a work that fails releases it too.
             await expect(h.store.withRunNoticeLock(runId, async () => { throw new Error("enqueue failed"); })).rejects.toThrow(/enqueue failed/);
             expect(await h.store.withRunNoticeLock(runId, async () => "again")).toEqual({ locked: true, value: "again" });
+
+            // E3-R1: an attempt that finds it held tries again within its wait: it gets the lock once it is let go, or
+            // reports it held when its wait ends.
+            const next = gate => h.store.withRunNoticeLock(runId, async () => { await gate; return "holder"; });
+            let letGo;
+            const holding = next(new Promise(resolve => { letGo = resolve; }));
+            await new Promise(resolve => setTimeout(resolve, 100));
+            const started = Date.now();
+            expect(await h.store.withRunNoticeLock(runId, async () => "late", { waitMs: 600, pollMs: 100 })).toEqual({ locked: false });
+            expect(Date.now() - started).toBeGreaterThanOrEqual(400);
+            const waiting = h.store.withRunNoticeLock(runId, async () => "after", { waitMs: 10_000, pollMs: 100 });
+            setTimeout(() => letGo(), 300);
+            expect(await holding).toEqual({ locked: true, value: "holder" });
+            expect(await waiting).toEqual({ locked: true, value: "after" });
         } finally {
             await h.stop();
+        }
+    });
+
+    it("E3-R2: the run's notice lock has a pool of its own: with the store's pool at one connection, work under the lock still reaches the store", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const before = process.env.PILOTSWARM_CMS_PG_POOL_MAX;
+        process.env.PILOTSWARM_CMS_PG_POOL_MAX = "1";
+        let catalog;
+        try {
+            catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        } finally {
+            if (before === undefined) delete process.env.PILOTSWARM_CMS_PG_POOL_MAX; else process.env.PILOTSWARM_CMS_PG_POOL_MAX = before;
+        }
+        try {
+            await catalog.initialize();
+            const store = catalog.workflowStore();
+            const id = randomUUID();
+            await catalog.createSession(id, {});
+            const started = Date.now();
+            // The store's one connection serves the reads made while the lock's connection is held.
+            const held = await store.withRunNoticeLock(`run-${randomUUID()}`, async () => {
+                const recorded = await store.runNoticeRecorded(id, "run-x");
+                const attempted = await store.runNoticeAttempted(id, "run-x");
+                return [recorded, attempted];
+            });
+            expect(held).toEqual({ locked: true, value: [false, false] });
+            expect(Date.now() - started).toBeLessThan(5_000);
+        } finally {
+            await catalog.close();
         }
     });
 
