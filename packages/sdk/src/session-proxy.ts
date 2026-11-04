@@ -79,6 +79,7 @@ import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool
 import { isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
+import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
 import { spawnNesting } from "./workflow/v2/input-policy.js";
@@ -4867,6 +4868,27 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 foldedText: Boolean(tc?.carriedText || tc?.foldedSteerText), intake: turnIntake !== null,
                 attachments: requestedAttachments.length,
             });
+            // Owner decision Q2 (workflow/v2/agent-reminder.ts): an agent state's own child is reminded inside its turn
+            // when the turn would end with nothing pending. The gate ManagedSession asks: no cron or cron_at schedule is
+            // active (this session's published status, unless the turn queued a cancel), then the store checks the step
+            // and records the reminder (recordAgentReminder).
+            const reminderStore = workflowAgentChild && workflowRequestTurn && catalog?.workflowStore ? catalog.workflowStore() : null;
+            const stepReminder: TurnOptions["stepReminder"] | undefined = reminderStore
+                ? {
+                    check: async ({ scheduleCancelled }) => {
+                        if (!scheduleCancelled) {
+                            const { duroxideClient } = await workflowBridgeHost();
+                            if (publishedScheduleActive(await duroxideClient.getStatus(`session-${input.sessionId}`))) {
+                                return { remind: false, reason: "schedule" };
+                            }
+                        }
+                        const record = await reminderStore.recordAgentReminder({ childSessionId: input.sessionId, turn: input.turnIndex ?? 0 });
+                        activityCtx.traceInfo(`[runTurn] session=${input.sessionId} step reminder: ` + (record.recorded
+                            ? `${record.repeat ? "again " : ""}${record.n} of ${record.max} for step ${record.nodeExecutionId}` : `none (${record.reason})`));
+                        return record.recorded ? { remind: true, n: record.n, max: record.max, stateId: record.stateId } : { remind: false, reason: record.reason };
+                    },
+                }
+                : undefined;
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
                 // Workflow intake (runTurnV5, design 5.5; exposure protocol
                 // revision 2, section 4): the carried items come before
@@ -4907,6 +4929,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     bootstrap: input.bootstrap,
                     ...(quietEmptyAnswer ? { quietEmptyAnswer: true } : {}),
                     requiredTool: input.requiredTool,
+                    ...(stepReminder ? { stepReminder } : {}),
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
                     controlToolBridge,

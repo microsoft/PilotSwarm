@@ -1505,6 +1505,15 @@ function formatActivity(event) {
             runs = buildLabeledActivityRuns(time, "[error]", "red", body || "session error", "white");
             break;
 
+        // Owner decision Q2: the workflow reminded this agent chat, inside its turn, to finish its step.
+        case "runtime.workflow_step_reminded": {
+            const data = event?.data ?? {};
+            const step = typeof data.stateId === "string" && data.stateId ? `step '${data.stateId}'` : "its step";
+            const count = Number.isSafeInteger(data.n) && Number.isSafeInteger(data.max) ? ` (${data.n} of ${data.max})` : "";
+            runs = buildLabeledActivityRuns(time, "[workflow]", "gray", `Reminded to finish ${step}${count}`, "gray");
+            break;
+        }
+
         case "system.message":
             if (isRehydrationNoticeText(messageTextFromEvent(event))) {
                 runs = buildLabeledActivityRuns(

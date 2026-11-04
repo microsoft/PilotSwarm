@@ -3,6 +3,9 @@ import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { collectContractViolations, isFailureToolCompletion, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
 import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/v2/input-policy.ts";
+import {
+    answerAsksParent, publishedScheduleActive, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText,
+} from "../../src/workflow/v2/agent-reminder.ts";
 
 class FakeCopilotSession {
     registeredTools = [];
@@ -1430,5 +1433,179 @@ describe("inline control tool execution", () => {
             { role: "assistant", content: "nope", refusal: "I cannot help with that" },
             { role: "user", content: "bye" },
         ]);
+    });
+});
+
+// Owner decision Q2 (workflow/v2/agent-reminder.ts): a workflow agent state's own child whose turn would end with nothing
+// pending is reminded once, inside the turn, through runCorrection, after the activity's gate (TurnOptions.stepReminder)
+// checked the step and recorded the reminder.
+describe("Q2: the step reminder inside an agent state's child turn", () => {
+    const TEXT = workflowAgentReminderText("review");
+    const COMPLETE = { name: "complete_workflow_node", args: { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" } };
+    const REMIND = { remind: true, n: 1, max: 3, stateId: "review" };
+
+    /** A step child's turn on the fake CLI: the model's sends, the gate's answer (or an error it throws), the session config. */
+    function stepChild(sends, { gate = REMIND, config = { workflowAgentChild: true }, tools = [] } = {}) {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedSends = sends;
+        const checks = [];
+        const stepReminder = { check: vi.fn(async input => {
+            checks.push(input);
+            if (gate instanceof Error) throw gate;
+            return gate;
+        }) };
+        const completeWorkflowNode = vi.fn(async () => JSON.stringify({ ok: true }));
+        const sendSessionMessage = vi.fn(async () => "sent");
+        const managed = new ManagedSession("step-child", fakeSession, { ...config, tools });
+        const events = [];
+        const traces = [];
+        const run = (opts = {}) => managed.runTurn("Review the change.", {
+            stepReminder, onEvent: event => events.push(event), trace: line => traces.push(line),
+            controlToolBridge: { completeWorkflowNode, sendSessionMessage, resolveWaitForAgents: async ids => ids },
+            ...opts,
+        });
+        return { fakeSession, checks, completeWorkflowNode, sendSessionMessage, events, traces, run };
+    }
+    const reminded = result => (result.events ?? []).filter(event => event.eventType === "runtime.workflow_step_reminded");
+
+    it("reads what is pending: a question in the turn's calls or its answer, the turn's schedule actions, the published schedule", () => {
+        const call = (eventType, args) => ({ eventType, data: { toolName: "send_session_message", arguments: args } });
+        expect(turnAskedForAnswer([call("tool.execution_start", { session_id: "p", subject: "q", body: "b", expects_response: true })])).toBe(true);
+        expect(turnAskedForAnswer([call("tool.execution_complete", { session_id: "p", subject: "q", body: "b" })])).toBe(false);
+        expect(turnAskedForAnswer(undefined)).toBe(false);
+        expect(answerAsksParent("  question for parent: which base?")).toBe(true);
+        expect(answerAsksParent("It seems fine. QUESTION FOR PARENT: none")).toBe(false);
+        expect(answerAsksParent(undefined)).toBe(false);
+        const set = { type: "cron", action: "set", intervalSeconds: 60, reason: "check" };
+        const cancelAt = [{ type: "cron_at", action: "cancel" }, { type: "cron", action: "cancel" }];
+        expect(turnScheduleEffect(undefined)).toBeNull();
+        expect(turnScheduleEffect([{ type: "set_workspace_extra", extra: {} }])).toBeNull();
+        expect(turnScheduleEffect([set, ...cancelAt])).toBe("cancel");
+        expect(turnScheduleEffect([...cancelAt, { type: "cron_at", action: "set", schedule: {} }])).toBe("set");
+        expect(publishedScheduleActive({ status: "Running", customStatus: JSON.stringify({ status: "running", cronActive: true }) })).toBe(true);
+        expect(publishedScheduleActive({ status: "Running", customStatus: { cronActive: true } })).toBe(true);
+        expect(publishedScheduleActive({ status: "Running", customStatus: JSON.stringify({ status: "running", cronActive: false }) })).toBe(false);
+        expect(publishedScheduleActive({ status: "Running", customStatus: "not json" })).toBe(false);
+        expect(publishedScheduleActive(null)).toBe(false);
+    });
+
+    it("a prose end gets exactly one reminder in the same turn, with the soft text and a runtime event; the turn completes", async () => {
+        expect(TEXT).toBe("Reminder from the workflow: step 'review' is still open. If you have finished, call complete_workflow_node now "
+            + "with your outcome and output. If you are still working, continue.");
+        const h = stepChild([{ assistantContent: "I looked at it; it seems fine." }, { toolCalls: [COMPLETE], assistantContent: "STATE_COMPLETED" }]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "STATE_COMPLETED" });
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
+        expect(h.checks).toEqual([{ scheduleCancelled: false }]);
+        expect(h.completeWorkflowNode).toHaveBeenCalledTimes(1);
+        const event = { eventType: "runtime.workflow_step_reminded", data: { stateId: "review", n: 1, max: 3, sessionId: "step-child" } };
+        expect(reminded(result)).toEqual([event]);
+        expect(h.events.filter(item => item.eventType === "runtime.workflow_step_reminded")).toEqual([event]);
+    });
+
+    it("a model that still answers in prose after the reminder gets no second one this turn; the turn completes", async () => {
+        const h = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "Still fine, I think." }]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "Still fine, I think." });
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
+        expect(h.checks).toHaveLength(1);
+        expect(reminded(result)).toHaveLength(1);
+    });
+
+    it("a turn that called complete_workflow_node gets none, and the gate is not asked", async () => {
+        const h = stepChild([{ toolCalls: [COMPLETE], assistantContent: "Done." }]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "Done." });
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(h.checks).toEqual([]);
+        expect(reminded(result)).toEqual([]);
+    });
+
+    it.each([
+        ["wait", { name: "wait", args: { seconds: 30, reason: "build running" } }, "wait"],
+        ["ask_user", { name: "ask_user", args: { question: "May I merge?" } }, "input_required"],
+        ["wait_for_agents", { name: "wait_for_agents", args: { agent_ids: ["helper-1"] } }, "wait_for_agents"],
+        ["cron", { name: "cron", args: { seconds: 60, reason: "check the build" } }, "completed"],
+        ["cron_at", { name: "cron_at", args: { minute: 0, hour: 9, tz: "UTC", reason: "check every morning" } }, "completed"],
+    ])("a turn that ends on %s, or queues a schedule, gets none", async (_label, call, type) => {
+        const h = stepChild([{ toolCalls: [call], assistantContent: "Waiting for it." }]);
+        const result = await h.run();
+        expect(result.type).toBe(type);
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(h.checks).toEqual([]);
+        expect(reminded(result)).toEqual([]);
+    });
+
+    it("a turn that cancels its schedule tells the gate, which decides on the session's status without it", async () => {
+        const h = stepChild([{ toolCalls: [{ name: "cron", args: { action: "cancel" } }], assistantContent: "No more checks." },
+            { assistantContent: "Still thinking." }]);
+        const result = await h.run();
+        expect(h.checks).toEqual([{ scheduleCancelled: true }]);
+        expect(reminded(result)).toHaveLength(1);
+    });
+
+    it("a1: a turn that called send_session_message with expects_response=true gets none; a one-way message does not count", async () => {
+        const ask = { name: "send_session_message", args: { session_id: "parent-1", subject: "Which base?", body: "main or dev?", expects_response: true } };
+        const asked = stepChild([{ toolCalls: [ask], assistantContent: "I asked my parent." }]);
+        const result = await asked.run();
+        expect(result.type).toBe("completed");
+        expect(asked.sendSessionMessage).toHaveBeenCalledTimes(1);
+        expect(asked.checks).toEqual([]);
+        expect(asked.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        const told = stepChild([{ toolCalls: [{ name: "send_session_message", args: { session_id: "parent-1", subject: "FYI", body: "started" } }],
+            assistantContent: "I told my parent." }, { assistantContent: "Still working." }]);
+        expect(reminded(await told.run())).toHaveLength(1);
+    });
+
+    it("an answer that asks the parent a question (QUESTION FOR PARENT:) gets none", async () => {
+        const h = stepChild([{ assistantContent: "QUESTION FOR PARENT: which base should I use?" }]);
+        const result = await h.run();
+        expect(result).toMatchObject({ type: "completed", content: "QUESTION FOR PARENT: which base should I use?" });
+        expect(h.checks).toEqual([]);
+        expect(h.fakeSession.sentPrompts).toHaveLength(1);
+    });
+
+    it("a gate that refuses (step closed, deadline passed, sub-agents at work, reminders spent, a schedule) or fails sends nothing; the turn completes", async () => {
+        for (const reason of ["decided", "expired", "sub_agents", "spent", "schedule"]) {
+            const h = stepChild([{ assistantContent: "It seems fine." }], { gate: { remind: false, reason } });
+            const result = await h.run();
+            expect(result, reason).toMatchObject({ type: "completed", content: "It seems fine." });
+            expect(h.checks, reason).toHaveLength(1);
+            expect(h.fakeSession.sentPrompts, reason).toEqual(["Review the change."]);
+            expect(reminded(result), reason).toEqual([]);
+            expect(h.traces.join("\n"), reason).toContain(`no step reminder: ${reason}`);
+        }
+        const failing = stepChild([{ assistantContent: "It seems fine." }], { gate: new Error("store unavailable") });
+        const result = await failing.run();
+        expect(result).toMatchObject({ type: "completed", content: "It seems fine." });
+        expect(failing.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(failing.traces.join("\n")).toContain("store unavailable");
+    });
+
+    it("a session that is not an agent state's own child, or a turn without the gate, gets none", async () => {
+        const other = stepChild([{ assistantContent: "It seems fine." }], { config: {} });
+        expect(reminded(await other.run())).toEqual([]);
+        expect(other.checks).toEqual([]);
+        expect(other.fakeSession.sentPrompts).toHaveLength(1);
+        const ungated = stepChild([{ assistantContent: "It seems fine." }]);
+        expect(reminded(await ungated.run({ stepReminder: undefined }))).toEqual([]);
+        expect(ungated.fakeSession.sentPrompts).toHaveLength(1);
+    });
+
+    it("the reminder comes after the required-tool correction, never before it", async () => {
+        const catalog = vi.fn(async () => ({ commands: 71 }));
+        const tools = [{ name: "package_catalog", parameters: { type: "object", properties: {} }, handler: catalog }];
+        const h = stepChild([
+            { assistantContent: "The catalog has 71 commands." },
+            { toolCalls: [{ name: "package_catalog", args: {} }], assistantContent: "Catalog verified." },
+            { assistantContent: "Still checking the review." },
+        ], { tools });
+        const result = await h.run({ requiredTool: "package_catalog" });
+        expect(result).toMatchObject({ type: "completed", content: "Still checking the review." });
+        expect(h.fakeSession.sentPrompts).toHaveLength(3);
+        expect(h.fakeSession.sentPrompts[1]).toContain("Required-tool contract violation");
+        expect(h.fakeSession.sentPrompts[2]).toBe(TEXT);
+        expect(result.events.map(event => event.eventType).filter(type => type.startsWith("runtime.")))
+            .toEqual(["runtime.required_tool_not_invoked", "runtime.workflow_step_reminded"]);
     });
 });

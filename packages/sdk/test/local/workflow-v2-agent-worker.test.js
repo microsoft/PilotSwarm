@@ -296,19 +296,51 @@ function agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId
 }
 
 /**
- * F-C2: one agent state with an inline prompt and no route for a runtime error (as the deployment's "subagent-check"), so
- * a step whose child never completes fails the run timed_out at its deadline. As a document (JSON is YAML).
+ * F-C2 and Q2: one agent state with an inline prompt and no route for a runtime error (as the deployment's
+ * "subagent-check"), so a step whose child never completes fails the run timed_out at its deadline. As a document (JSON
+ * is YAML).
  */
-const PROSE_WORKFLOW = JSON.stringify({
+const proseWorkflow = (timeoutSeconds) => JSON.stringify({
     apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "prose-step", version: "1.0.0" }, initial: "summarize",
     states: {
         summarize: {
-            type: "agent", invoke: { prompt: "Summarize the change in one line." }, outcomes: ["success"], timeoutSeconds: 20,
+            type: "agent", invoke: { prompt: "Summarize the change in one line." }, outcomes: ["success"], timeoutSeconds,
             transition: { next: { success: "done" } },
         },
         done: { type: "terminal", outcome: "succeeded" },
     },
 }, null, 2);
+/** The start of the in-turn reminder the step's child gets (Q2, agent-reminder.ts). */
+const REMINDER = "Reminder from the workflow: step 'summarize' is still open.";
+
+/** Start a published prose-step workflow's live run under a new parent chat, as a 1.9.0 host's tools would. */
+async function startProseStep(catalog, store, duroxide, timeoutSeconds) {
+    const parent = randomUUID();
+    await catalog.createSession(parent, { owner: OWNER });
+    const workflowSessionId = randomUUID();
+    const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide, requests: true }, {
+        workflowSessionId, parentSessionId: parent, yaml: proseWorkflow(timeoutSeconds), actor: ACTOR, operationId: "create", publish: true,
+        start: { inputs: {} }, notifyParent: false,
+    });
+    expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
+    const runId = created.receipt.run.runId;
+    return { parent, workflowSessionId, runId, nodeExecutionId: nodeExecutionIdFor(runId, "root", "summarize", 1) };
+}
+
+/** The step's reminders: recorded on the workflow (workflow.agent_reminded) and in the child's turns (runtime.workflow_step_reminded). */
+async function reminders(catalog, workflowSessionId, child) {
+    return {
+        recorded: (await catalog.getSessionEvents(workflowSessionId, 0, 500, ["workflow.agent_reminded"])).map(event => event.data),
+        inTurn: child ? (await catalog.getSessionEvents(child, 0, 500, ["runtime.workflow_step_reminded"])).map(event => event.data) : [],
+    };
+}
+
+/** A session orchestration's published status, parsed. */
+async function customStatusOf(duroxide, instanceId) {
+    const status = await duroxide.getStatus(instanceId);
+    const custom = status?.customStatus;
+    try { return typeof custom === "string" ? JSON.parse(custom) : (custom ?? null); } catch { return null; }
+}
 
 describe("workflow v2 agent states on a real worker (test-only option, inactive)", () => {
     // F-C2 (the deployment at 65932bfc): a step whose model ends its turn in prose never completes; at the deadline the run
@@ -317,9 +349,12 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
     // prompt. After the child's cancel, the workflow's row, the session list and a status read all still say failed, with
     // the run's error. (The deployment's race, a status read in the moment between the run's end and its controller's end,
     // is not forced here; failed-runtime-status.test.js covers that read with the controller still running.)
+    // Q2 (owner decision, agent-reminder.ts): each turn that would end in prose with nothing pending gets one reminder
+    // inside the turn, at most 3 per step. Here the parent's messages give the child four turns; the model ignores every
+    // reminder, so the fourth turn finds them spent, and the run still ends timed_out at the step's deadline.
     it("F-C2: a step that never completes times out; after its child's cancel the workflow's row and the list still say failed, with its error", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        // The child's turn (its request declares complete_workflow_node): an answer in prose, no completion. Others: "ok".
+        // The child's requests (they declare complete_workflow_node): an answer in prose, no completion. Others: "ok".
         const turns = [];
         const respond = (body, position) => {
             const tools = (body.tools ?? []).map(tool => tool.function?.name);
@@ -335,23 +370,40 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
             const duroxide = client._getDuroxideClient();
             try {
                 const store = catalog.workflowStore();
-                const parent = randomUUID();
-                await catalog.createSession(parent, { owner: OWNER });
-                const workflowSessionId = randomUUID();
-                const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide, requests: true }, {
-                    workflowSessionId, parentSessionId: parent, yaml: PROSE_WORKFLOW, actor: ACTOR, operationId: "create", publish: true,
-                    start: { inputs: {} }, notifyParent: false,
-                });
-                expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
-                const runId = created.receipt.run.runId;
-                const nodeExecutionId = nodeExecutionIdFor(runId, "root", "summarize", 1);
+                // 90 s: room for four turns of the child before the deadline.
+                const { parent, workflowSessionId, runId, nodeExecutionId } = await startProseStep(catalog, store, duroxide, 90);
                 const { boundary } = agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId, nodeExecutionId, workflowSessionId });
 
                 await boundary("the child's turn reaches the model and ends in prose", async () => (turns.length > 0 ? turns[0] : null));
+                const child = (await store.readAgentInvocation(nodeExecutionId)).childSessionId;
+                // Each turn: one reminder inside it, then the child idles. The parent's message starts the next turn.
+                for (let turn = 1; turn <= 4; turn += 1) {
+                    if (turn > 1) {
+                        await duroxide.enqueueEvent(`session-${child}`, "messages", JSON.stringify({
+                            prompt: `Any news on the summary? (${turn})`, sender: { kind: "agent", sessionId: parent, display: "parent" },
+                            clientMessageIds: [`parent-nudge-${turn}`],
+                        }));
+                    }
+                    const expected = Math.min(turn, 3);
+                    await boundary(`turn ${turn} is reminded (or finds the reminders spent) and ends`, async () => {
+                        const seen = await reminders(catalog, workflowSessionId, child);
+                        const idle = (await customStatusOf(duroxide, `session-${child}`))?.status === "idle";
+                        const reached = turn === 1 || turns.some(item => item.prompt.includes(`(${turn})`));
+                        return reached && seen.recorded.length === expected && idle ? true : null;
+                    });
+                }
+                const seen = await reminders(catalog, workflowSessionId, child);
+                expect(seen.recorded.map(data => data.n)).toEqual([1, 2, 3]);
+                expect(new Set(seen.recorded.map(data => data.turn)).size).toBe(3);
+                expect(seen.inTurn.map(data => [data.stateId, data.n, data.max])).toEqual([["summarize", 1, 3], ["summarize", 2, 3], ["summarize", 3, 3]]);
+                // The model got each reminder once, as the last prompt of a turn's corrective run; the fourth turn got none.
+                expect(turns.filter(item => item.prompt.includes(REMINDER))).toHaveLength(3);
+                expect(turns.filter(item => item.prompt.includes("(4)"))).toHaveLength(1);
+
                 const run = await boundary("the run ends", async () => {
                     const row = await store.readRun(runId);
                     return row && ENDED.includes(row.status) ? row : null;
-                });
+                }, 150_000);
                 expect(run).toMatchObject({ status: "failed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION });
                 expect(await store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "timed_out", winner: "controller" });
                 const invocation = await boundary("the child's end is sent", async () => {
@@ -359,7 +411,6 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                     return row?.endSentAt ? row : null;
                 });
                 expect(invocation.endRequested).toBe("cancel");
-                const child = invocation.childSessionId;
 
                 // The child takes the end as its parent's cleanup: recorded on the workflow, with the end's id and requestedBy.
                 const cleanup = await boundary("the child records its cleanup on the workflow", async () =>
@@ -382,6 +433,97 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                 const after = await catalog.getSession(workflowSessionId);
                 expect(after.state).toBe("failed");
                 expect(after.lastError).toBe(row.lastError);
+            } finally {
+                await catalog.close();
+            }
+        });
+    });
+
+    it("Q2: a step that answers in prose is reminded inside its turn, then completes: the run succeeds before its deadline", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        // The child's first answer: prose. On the reminder (the same turn's corrective run): complete the state, then end. Others: "ok".
+        const turns = [];
+        const respond = (body, position) => {
+            const tools = (body.tools ?? []).map(tool => tool.function?.name);
+            if (!tools.includes("complete_workflow_node")) return { content: "ok" };
+            turns.push({ prompt: position.lastUserText, step: position.step, turn: position.turn });
+            if (!position.lastUserText.includes(REMINDER)) return { content: "Hello means a greeting." };
+            if (position.step === 0) {
+                return { tools: [{ name: "complete_workflow_node", args: { outcome: "success", output: { summary: "a greeting" }, operation_id: "after-reminder" } }] };
+            }
+            return { content: "STATE_COMPLETED" };
+        };
+        const { traces, traceWriter } = traceTail();
+        const worker = { testOptions: { workflowRequests: true }, logLevel: "warning", traceWriter };
+        await withScriptedModel(env, { respond, worker }, async ({ client, model }) => {
+            const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+            await catalog.initialize();
+            const duroxide = client._getDuroxideClient();
+            try {
+                const store = catalog.workflowStore();
+                const { workflowSessionId, runId, nodeExecutionId } = await startProseStep(catalog, store, duroxide, 300);
+                const { boundary } = agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId, nodeExecutionId, workflowSessionId });
+
+                await boundary("the child is reminded", async () => turns.find(turn => turn.prompt.includes(REMINDER)) ?? null);
+                const run = await boundary("the run ends", async () => {
+                    const row = await store.readRun(runId);
+                    return row && ENDED.includes(row.status) ? row : null;
+                });
+                expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+                expect(await store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "success", winner: "agent", output: { summary: "a greeting" } });
+                const child = (await store.readAgentInvocation(nodeExecutionId)).childSessionId;
+                const seen = await reminders(catalog, workflowSessionId, child);
+                expect(seen.recorded).toEqual([expect.objectContaining({ nodeExecutionId, stateId: "summarize", childSessionId: child, n: 1, max: 3 })]);
+                // The child's transcript shows the reminder as the runtime's correction inside its turn, not as a message.
+                expect(seen.inTurn).toEqual([{ stateId: "summarize", n: 1, max: 3, sessionId: child }]);
+                expect((await catalog.getSessionEvents(child, 0, 500, ["user.message"]))
+                    .filter(event => String(event.data?.content ?? "").includes(REMINDER))).toEqual([]);
+                // One turn: the first answer, then the reminder's run (its completion and its end), all in the same conversation turn.
+                expect(turns.map(turn => [turn.prompt.includes(REMINDER), turn.step])).toEqual([[false, 0], [true, 0], [true, 1]]);
+            } finally {
+                await catalog.close();
+            }
+        });
+    });
+
+    // Q2: a schedule is pending work. The first turn sets a cron (15 s) and ends in prose: its own queued set is pending.
+    // The cron's turn ends in prose too: the session's published status says the schedule is active (the activity's gate).
+    // Neither is reminded.
+    it("Q2: a turn that sets a cron, and the cron's own turn, get no reminder", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const turns = [];
+        const respond = (body, position) => {
+            const tools = (body.tools ?? []).map(tool => tool.function?.name);
+            if (!tools.includes("complete_workflow_node")) return { content: "ok" };
+            turns.push({ prompt: position.lastUserText, step: position.step });
+            if (turns.length === 1) return { tools: [{ name: "cron", args: { seconds: 15, reason: "Check the change again." } }] };
+            return { content: "Still checking; the schedule wakes me." };
+        };
+        const { traces, traceWriter } = traceTail();
+        const worker = { testOptions: { workflowRequests: true }, logLevel: "warning", traceWriter };
+        await withScriptedModel(env, { respond, worker }, async ({ client, model }) => {
+            const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+            await catalog.initialize();
+            const duroxide = client._getDuroxideClient();
+            try {
+                const store = catalog.workflowStore();
+                const { workflowSessionId, runId, nodeExecutionId } = await startProseStep(catalog, store, duroxide, 300);
+                const { boundary } = agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId, nodeExecutionId, workflowSessionId });
+                const child = (await boundary("the step's invocation is recorded", async () => store.readAgentInvocation(nodeExecutionId))).childSessionId;
+
+                // The first turn is handled: the child waits on its cron.
+                const armed = await boundary("the first turn's cron is set", async () => {
+                    const status = await customStatusOf(duroxide, `session-${child}`);
+                    return status?.cronActive === true && status.status === "waiting" ? status : null;
+                });
+                expect(armed).toMatchObject({ cronKind: "interval", cronInterval: 15 });
+                expect(await reminders(catalog, workflowSessionId, child)).toEqual({ recorded: [], inTurn: [] });
+                // The cron's turn reaches the model, ends in prose and is handled.
+                await boundary("the cron's turn reaches the model", async () => (turns.length >= 3 ? true : null), 90_000);
+                await boundary("the cron's turn is handled", async () => ((await customStatusOf(duroxide, `session-${child}`))?.status === "waiting" ? true : null));
+                expect(await reminders(catalog, workflowSessionId, child)).toEqual({ recorded: [], inTurn: [] });
+                expect(turns.filter(turn => turn.prompt.includes(REMINDER))).toEqual([]);
+                expect((await store.readNodeExecution(nodeExecutionId)).state).toBe("pending");
             } finally {
                 await catalog.close();
             }

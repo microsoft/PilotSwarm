@@ -72,6 +72,24 @@ test("the activity lists who did what, newest first, for one run and one visit",
     assert.equal(one("workflow.state_failed", { stateId: "poll", effectStatus: "Failed", resultKind: "runtime_error" }), "Step 'poll' failed: the action Failed");
 });
 
+test("Q2: a step's reminder has a line in the workflow's activity and in the agent chat's activity", () => {
+    const reminded = event(1, "workflow.agent_reminded", { nodeExecutionId: "nx-review-1", stateId: "review", childSessionId: "child-1", turn: 2, n: 1, max: 3 });
+    assert.equal(workflowV2Activity([reminded], { runId: RUN })[0].what, "Step 'review' reminded to finish (1 of 3)");
+    // In the step's details, for its visit only.
+    assert.equal(workflowV2Activity([reminded], { runId: RUN, nodeExecutionId: "nx-review-1" }).length, 1);
+    assert.equal(workflowV2Activity([reminded], { runId: RUN, nodeExecutionId: "nx-other" }).length, 0);
+    assert.equal(workflowEventText("workflow.agent_reminded", {}, "short").text, "A step reminded to finish");
+    // The agent chat's own activity: the reminder it got inside its turn, one gray line.
+    const { activity, chat } = buildHistoryModel([{ seq: 7, sessionId: "child-1", eventType: "runtime.workflow_step_reminded", createdAt: at(7),
+        data: { stateId: "review", n: 2, max: 3, sessionId: "child-1" } }]);
+    assert.equal(activity.length, 1);
+    assert.match(activity[0].text, /\[workflow\] Reminded to finish step 'review' \(2 of 3\)$/);
+    assert.deepEqual(activity[0].line.slice(-2).map(run => run.color), ["gray", "gray"], "a gray line");
+    assert.equal(chat.length, 0);
+    const bare = buildHistoryModel([{ seq: 8, sessionId: "child-1", eventType: "runtime.workflow_step_reminded", createdAt: at(8), data: {} }]).activity;
+    assert.match(bare[0].text, /\[workflow\] Reminded to finish its step$/);
+});
+
 test("one sentence table: each event says the same thing on every screen that shows it, and only those screens show it (ui-05)", () => {
     // Activity-only events have no step-log line; log-only events have no activity line; the run's control events have both.
     assert.equal(workflowEventText("workflow.stop_requested", {}, "long"), null);

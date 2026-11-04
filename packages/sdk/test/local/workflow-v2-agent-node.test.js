@@ -267,6 +267,113 @@ describe("workflow v2 agent states: the store", () => {
         }
     });
 
+    // Owner decision Q2 (agent-reminder.ts): the gate of the in-turn reminder checks the step and records the reminder in
+    // one transaction (recordAgentReminder), at most WORKFLOW_V2_AGENT_MAX_REMINDERS per step, only while the step is open
+    // and its child has no sub-agent at work; the same turn records once.
+    it("Q2: records a step's reminders once per turn, at most 3, only while the step is open and nothing is at work", { timeout: TIMEOUT }, async () => {
+        const h = await agentFixture(getEnv());
+        try {
+            const run = await h.workflow();
+            const { nodeExecutionId, childSessionId } = await h.admit(run);
+            const record = turn => h.store.recordAgentReminder({ childSessionId, turn });
+            const recorded = async () => (await h.catalog.getSessionEvents(run.workflowSessionId, 0, 200, ["workflow.agent_reminded"]))
+                .map(event => event.data);
+
+            // Not an agent state's child: nothing.
+            expect(await h.store.recordAgentReminder({ childSessionId: randomUUID(), turn: 1 })).toEqual({ recorded: false, reason: "not_a_step" });
+            // The first stall; an attempt of the same turn that runs again reminds again under the same number, and records nothing more.
+            expect(await record(1)).toEqual({ recorded: true, n: 1, max: 3, stateId: "review", nodeExecutionId, repeat: false });
+            expect(await record(1)).toEqual({ recorded: true, n: 1, max: 3, stateId: "review", nodeExecutionId, repeat: true });
+            expect(await recorded()).toEqual([{ runId: run.runId, nodeExecutionId, stateId: "review", childSessionId, turn: 1, n: 1, max: 3 }]);
+            // Two concurrent checks of one turn: one record, one number.
+            const both = await Promise.all([record(2), record(2)]);
+            expect(both.map(item => item.n)).toEqual([2, 2]);
+            expect(both.filter(item => item.repeat)).toHaveLength(1);
+            // A sub-agent of the child at work: no reminder until it is done.
+            await h.catalog.createSession(childSessionId, { parentSessionId: run.workflowSessionId });
+            const sub = randomUUID();
+            await h.catalog.createSession(sub, { parentSessionId: childSessionId });
+            await h.catalog.updateSession(sub, { state: "running" });
+            expect(await record(3)).toEqual({ recorded: false, reason: "sub_agents" });
+            await h.catalog.updateSession(sub, { state: "idle" });
+            expect(await record(3)).toMatchObject({ recorded: true, n: 3, repeat: false });
+            // A fourth stall: spent, across turns.
+            expect(await record(4)).toEqual({ recorded: false, reason: "spent" });
+            expect((await recorded()).map(data => [data.n, data.turn])).toEqual([[1, 1], [2, 2], [3, 3]]);
+
+            // A completed step, a step with an end requested, a step past its deadline (the store's clock): nothing recorded.
+            const second = await h.workflow();
+            const done = await h.admit(second);
+            expect(await h.complete(done.childSessionId, "op-done", { outcome: "accepted", output: { verdict: "ok" } })).toMatchObject({ kind: "accepted" });
+            expect(await h.store.recordAgentReminder({ childSessionId: done.childSessionId, turn: 1 })).toEqual({ recorded: false, reason: "decided" });
+            const third = await h.workflow();
+            const ending = await h.admit(third);
+            await h.store.recordAgentEnd(ending.nodeExecutionId, "cancel");
+            expect(await h.store.recordAgentReminder({ childSessionId: ending.childSessionId, turn: 1 })).toEqual({ recorded: false, reason: "decided" });
+            const fourth = await h.workflow();
+            const late = await h.admit(fourth, { timeoutSeconds: 1 });
+            await pause(1_200);
+            expect(await h.store.recordAgentReminder({ childSessionId: late.childSessionId, turn: 1 })).toEqual({ recorded: false, reason: "expired" });
+            for (const workflowSessionId of [second.workflowSessionId, third.workflowSessionId, fourth.workflowSessionId]) {
+                expect(await h.catalog.getSessionEvents(workflowSessionId, 0, 200, ["workflow.agent_reminded"])).toEqual([]);
+            }
+        } finally {
+            await h.stop();
+        }
+    });
+
+    // The gate serializes with the step's completion and its deadline: it reads the store's clock after the locks.
+    it("Q2: a reminder check that waits for a completion's locks finds the step decided; one that waits past the deadline records nothing", { timeout: TIMEOUT }, async () => {
+        const h = await agentFixture(getEnv());
+        try {
+            // A completion holds the step's locks while the check starts: the check waits, then finds the step decided.
+            const run = await h.workflow();
+            const { childSessionId } = await h.admit(run);
+            let held;
+            let holding = new Promise(resolve => { held = resolve; });
+            h.control.hook = async ({ sql, params, query }) => {
+                const result = await query(sql, params);
+                if (sql.includes(".workflow_agent_completions") && sql.includes("INSERT")) {
+                    held();
+                    await pause(1_000);
+                }
+                return result;
+            };
+            const completion = h.complete(childSessionId, "op-held", { outcome: "accepted", output: { verdict: "ok" } });
+            await holding;
+            const check = h.store.recordAgentReminder({ childSessionId, turn: 1 });
+            expect(await completion).toMatchObject({ kind: "accepted" });
+            expect(await check).toEqual({ recorded: false, reason: "decided" });
+
+            // A check that began before the deadline and waited for the locks past it records nothing.
+            const late = await h.workflow();
+            const step = await h.admit(late, { timeoutSeconds: 3 });
+            const deadline = (await h.store.readAgentInvocation(step.nodeExecutionId)).deadlineAt.getTime();
+            holding = new Promise(resolve => { held = resolve; });
+            h.control.hook = async ({ sql, params, query }) => {
+                const result = await query(sql, params);
+                // The first check's record, just written: hold its transaction (and its locks) until after the deadline.
+                if (sql.includes("cms_record_events") && String(params?.[1] ?? "").includes('"turn":1')) {
+                    held();
+                    while (Date.now() < deadline + 500) await pause(50);
+                }
+                return result;
+            };
+            const first = h.store.recordAgentReminder({ childSessionId: step.childSessionId, turn: 1 });
+            await holding;
+            const startedAt = Date.now();
+            const second = h.store.recordAgentReminder({ childSessionId: step.childSessionId, turn: 2 });
+            expect(await first).toMatchObject({ recorded: true, n: 1 });
+            expect(await second).toEqual({ recorded: false, reason: "expired" });
+            expect(startedAt).toBeLessThan(deadline);
+            h.control.hook = null;
+            expect((await h.catalog.getSessionEvents(late.workflowSessionId, 0, 200, ["workflow.agent_reminded"])).map(event => event.data.n)).toEqual([1]);
+        } finally {
+            h.control.hook = null;
+            await h.stop();
+        }
+    });
+
     it("E2-T5: an agent's reported error is stored with its secrets hidden, and a repeat of the same call is still recognized", { timeout: TIMEOUT }, async () => {
         const h = await agentFixture(getEnv());
         try {

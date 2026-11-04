@@ -248,6 +248,18 @@ export interface TurnOptions {
     quietEmptyAnswer?: boolean;
     /** Require a real execution event for this tool; correct once, then fail the turn if still absent. */
     requiredTool?: string;
+    /**
+     * Owner decision Q2 (workflow/v2/agent-reminder.ts): the turn of a workflow agent state's own child. When the turn's
+     * run settles with nothing pending (after the tool-call-as-text and required-tool corrections: no control tool ended
+     * the turn, no queued schedule set, complete_workflow_node not called, no question to another session, no error, no
+     * Stop and no steer in flight), ManagedSession asks `check` once, immediately before it would remind; `scheduleCancelled`
+     * says the turn queued a cron or cron_at cancel as its last schedule action. A `remind` answer was already recorded
+     * by the store; the model then gets the reminder once, in this turn, and the turn ends normally whatever it does. Set
+     * by the runTurn activity only.
+     */
+    stepReminder?: {
+        check(input: { scheduleCancelled: boolean }): Promise<{ remind: true; n: number; max: number; stateId: string } | { remind: false; reason: string }>;
+    };
     /** Internal: this turn was started by a recurring cron/cron_at timer fire. */
     cycleOrigin?: "cron" | "cron_at";
     /**

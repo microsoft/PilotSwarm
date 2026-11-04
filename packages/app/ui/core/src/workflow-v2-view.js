@@ -1305,6 +1305,11 @@ const WORKFLOW_EVENT_TEXT = {
         short: data => ({ text: `Agent chat for ${stepOf(data)} ended${workflowV2AgentEndText(data.end) ? ` (${workflowV2AgentEndText(data.end)})` : ""}` }),
     },
     "workflow.agent_end_failed": { short: data => ({ text: `Ending the agent chat for ${stepOf(data)} did not succeed yet; it is tried again`, level: "warning" }) },
+    // Owner decision Q2: the agent chat ended its turn without finishing its step, and was reminded to finish it.
+    "workflow.agent_reminded": {
+        short: data => ({ text: `${StepOf(data)} reminded to finish`
+            + `${Number.isSafeInteger(data.n) && Number.isSafeInteger(data.max) ? ` (${data.n} of ${data.max})` : ""}` }),
+    },
     "workflow.request_delivered": {
         short: data => ({ text: `Request${text(data.contract) ? ` ${data.contract}` : ""} sent${text(data.responderSessionId) ? ` to session ${shortId(data.responderSessionId)}` : ""}`
             + `${text(data.deadlineAt) ? `; answer due by ${data.deadlineAt}` : ""}` }),

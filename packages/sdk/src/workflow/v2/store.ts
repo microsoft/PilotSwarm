@@ -663,6 +663,15 @@ export const WORKFLOW_V2_LINEAGE_MAX_DEPTH = 32;
 export const WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS = 3;
 /** The longest message of an agent's reported runtime error. */
 export const WORKFLOW_V2_AGENT_ERROR_MESSAGE_MAX = 2_000;
+/** Reminders an agent state's child gets at most (owner decision Q2: one per stall); its deadline still applies. */
+export const WORKFLOW_V2_AGENT_MAX_REMINDERS = 3;
+/** The workflow session's record of a step's reminder (recordAgentReminder). */
+export const WORKFLOW_AGENT_REMINDED_EVENT = "workflow.agent_reminded";
+
+/** The answer of recordAgentReminder: remind the child now (the n-th reminder of its step), or why not. */
+export type WorkflowAgentReminderRecord =
+    | { recorded: true; n: number; max: number; stateId: string; nodeExecutionId: string; repeat: boolean }
+    | { recorded: false; reason: "not_a_step" | "decided" | "expired" | "sub_agents" | "spent" };
 /** The largest details value of an agent's reported runtime error, in UTF-8 bytes of canonical JSON. */
 export const WORKFLOW_V2_AGENT_ERROR_DETAILS_MAX_BYTES = 16 * 1024;
 
@@ -5396,6 +5405,65 @@ export class WorkflowStore {
         if (!storableId(childSessionId)) return null;
         const { rows } = await this.pool.query(`SELECT * FROM ${this.t.agentInvocations} WHERE child_session_id = $1`, [childSessionId]);
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
+    }
+
+    /**
+     * The gate of a step's reminder (owner decision Q2: remind when nothing is pending): the turn `turn` of the agent state's
+     * own child `childSessionId` ended with nothing pending, and the child is about to be reminded inside that turn. In one
+     * transaction, with the locks of a completion in its order (completeAgentNode: the workflow's session, the run, the
+     * invocation, the node), so a completion, an expiry and a run's end serialize with it, then one reading of the
+     * store's clock: the step must be open (the workflow not deleted, the run active, the node pending, no end requested,
+     * that reading before its deadline, no completion bound expired), the child must have no sub-agent at work (a child
+     * session row pending, running, waiting or asking), and fewer than `max` reminders may be recorded for the step. The
+     * reminder is recorded (workflow.agent_reminded on the workflow session) in the same transaction, before the child is
+     * reminded, so the count is durable. The same turn records once: an attempt of it that runs again (an activity
+     * retry) reminds again under its recorded number, and counts nothing more. Every refusal records nothing.
+     */
+    async recordAgentReminder(input: { childSessionId: string; turn: number; max?: number }): Promise<WorkflowAgentReminderRecord> {
+        if (!storableId(input.childSessionId) || !Number.isSafeInteger(input.turn) || input.turn < 0) return { recorded: false, reason: "not_a_step" };
+        const max = input.max ?? WORKFLOW_V2_AGENT_MAX_REMINDERS;
+        return this.transaction(async client => {
+            const { rows: found } = await client.query(
+                `SELECT node_execution_id, workflow_session_id, run_id FROM ${this.t.agentInvocations} WHERE child_session_id = $1`, [input.childSessionId]);
+            if (!found[0]) return { recorded: false, reason: "not_a_step" } as const;
+            const nodeExecutionId = str(found[0], "node_execution_id");
+            const workflowSessionId = str(found[0], "workflow_session_id");
+            const live = await this.lockLiveSession(client, workflowSessionId);
+            const run = await this.lockRun(client, str(found[0], "run_id"));
+            const { rows: locked } = await client.query(`SELECT * FROM ${this.t.agentInvocations} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            const invocation = agentInvocationFrom(locked[0]);
+            const { rows: nodeRows } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            if (!nodeRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} has no node execution.`);
+            const node = nodeFrom(nodeRows[0]);
+            if (!live || !ACTIVE_RUN_STATUSES.includes(run.status) || node.state !== "pending" || invocation.endRequested !== null) {
+                return { recorded: false, reason: "decided" } as const;
+            }
+            // One reading of the store's clock, after the locks: a wait for them may have crossed the deadline.
+            const { rows: clock } = await client.query(
+                `SELECT clock_timestamp() < deadline_at
+                        AND NOT EXISTS (SELECT 1 FROM ${this.t.agentCompletions} WHERE node_execution_id = $1 AND outcome = 'expired') AS in_time
+                   FROM ${this.t.agentInvocations} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            if (!bool(clock[0], "in_time")) return { recorded: false, reason: "expired" } as const;
+            const { rows: recorded } = await client.query(
+                `SELECT data FROM ${this.t.sessionEvents} WHERE session_id = $1 AND event_type = $2 AND data->>'nodeExecutionId' = $3 ORDER BY seq`,
+                [workflowSessionId, WORKFLOW_AGENT_REMINDED_EVENT, nodeExecutionId]);
+            const reminders = recorded.map(row => (row.data && typeof row.data === "object" ? row.data as Record<string, unknown> : {}))
+                .map(data => ({ n: Number(data.n), turn: Number(data.turn) }))
+                .filter(item => Number.isSafeInteger(item.n));
+            const same = reminders.find(item => item.turn === input.turn);
+            if (same) return { recorded: true, n: same.n, max, stateId: node.nodeId, nodeExecutionId, repeat: true } as const;
+            const busy = await client.query(
+                `SELECT 1 FROM ${this.t.sessions} WHERE parent_session_id = $1 AND deleted_at IS NULL
+                    AND state IN ('pending', 'running', 'waiting', 'input_required') LIMIT 1`, [input.childSessionId]);
+            if (busy.rows.length > 0) return { recorded: false, reason: "sub_agents" } as const;
+            if (reminders.length >= max) return { recorded: false, reason: "spent" } as const;
+            const n = reminders.reduce((highest, item) => Math.max(highest, item.n), 0) + 1;
+            await client.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [workflowSessionId, JSON.stringify([{
+                eventType: WORKFLOW_AGENT_REMINDED_EVENT,
+                data: { runId: invocation.runId, nodeExecutionId, stateId: node.nodeId, childSessionId: input.childSessionId, turn: input.turn, n, max },
+            }]), null]);
+            return { recorded: true, n, max, stateId: node.nodeId, nodeExecutionId, repeat: false } as const;
+        });
     }
 
     async listAgentInvocations(runId: string, limit = 200): Promise<WorkflowAgentInvocation[]> {

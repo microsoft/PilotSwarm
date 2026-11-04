@@ -29,6 +29,7 @@ import {
 } from "./workflow/v2/tools.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "./workflow/v2/agent-node-service.js";
+import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/v2/agent-reminder.js";
 import { WORKFLOW_ASK_USER_REFUSAL } from "./workflow/v2/input-policy.js";
 import { interceptWorkflowTestTools } from "./workflow/v2/test-agent-tools.js";
 
@@ -4333,6 +4334,44 @@ export class ManagedSession {
                     ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
                 } as any;
             }
+
+            // Owner decision Q2 (workflow/v2/agent-reminder.ts): a workflow agent state's own child whose turn would end
+            // with nothing pending is reminded to finish its step once, in this turn, after the corrections above: only
+            // when no control tool ended the turn, the turn queued no schedule set, did not call complete_workflow_node,
+            // asked no other session (or its parent, in its answer) a question, saw no error, and no Stop or steer is in
+            // flight. The activity's gate checks the step and records the reminder first. The turn then ends as it ends,
+            // whatever the model does.
+            const scheduleEffect = turnScheduleEffect(turnState.queuedActions);
+            if (opts?.stepReminder
+                && this.config.workflowAgentChild === true
+                && turnState.pendingActions.length === 0
+                && scheduleEffect !== "set"
+                && deferredSessionError === null
+                && !hasInvokedTool(collectedEvents, COMPLETE_WORKFLOW_NODE_TOOL)
+                && !turnAskedForAnswer(collectedEvents)
+                && !answerAsksParent(finalContent)
+                && !this.stopRequest
+                && this.runInterrupt?.reason == null
+                && !(this.steer && (this.steer.gate === "closed" || this.steer.inFlight > 0 || this.steer.unconfirmed.size > 0))) {
+                let reminder = null as { stateId: string; n: number; max: number } | null;
+                try {
+                    const verdict = await opts.stepReminder.check({ scheduleCancelled: scheduleEffect === "cancel" });
+                    if (verdict.remind) reminder = { stateId: verdict.stateId, n: verdict.n, max: verdict.max };
+                    else opts.trace?.(`[runTurn] session=${this.sessionId} no step reminder: ${verdict.reason}`);
+                } catch (err: any) {
+                    opts.trace?.(`[runTurn] session=${this.sessionId} the step reminder's check failed; no reminder: ${err?.message ?? String(err)}`);
+                }
+                if (reminder) {
+                    const diagnostic: CapturedEvent = {
+                        eventType: "runtime.workflow_step_reminded",
+                        data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
+                    };
+                    collectedEvents.push(diagnostic);
+                    if (opts.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                    finalContent = undefined;
+                    await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId) });
+                }
+            }
             turnRanToEnd = true;
         } catch (err: any) {
             // Every error unwind ends the run, and the guards below abort it:
@@ -4407,7 +4446,8 @@ export class ManagedSession {
                 && deferredSessionError === null
                 && turnState.pendingActions.length === 0
                 && !collectedEvents.some(e => e.eventType === "tool.execution_start" || e.eventType === "session.error"
-                    || e.eventType === "runtime.tool_call_as_text" || e.eventType === "runtime.required_tool_not_invoked")
+                    || e.eventType === "runtime.tool_call_as_text" || e.eventType === "runtime.required_tool_not_invoked"
+                    || e.eventType === "runtime.workflow_step_reminded")
                 && (this.steer?.sends ?? 0) === 0;
             if (!nothingElse) {
                 const held: CapturedEvent = quietedEmptyAnswer;
