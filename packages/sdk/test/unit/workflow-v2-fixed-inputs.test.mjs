@@ -245,11 +245,14 @@ test("SF-8: valid fixed parts beside bindings compile; a part holding a binding 
     }
 });
 
-// Verification of SF-8 in E2 (E2-R3; test E2-T6): a fixed member of an object holding a binding is checked as JSON Schema
-// applies it: every patternProperties schema its key matches, together; additionalProperties only for a key that neither
-// names nor matches. No named property here matches a pattern: the run's validator (Ajv, strict) refuses such a schema
-// ("use allowMatchingProperties"), so the pattern-matched keys are separate from the named properties.
-const PATTERNED = input => `
+// Verification of SF-8 in E2 (E2-R3; test E2-T6) and the final verification of E2bm-R1: the compiler evaluates no
+// pattern. A fixed member of an object holding a binding takes its named property's schema (the run's validator, Ajv in
+// strict mode, refuses a schema whose property name one of its patternProperties names matches, so no pattern applies
+// to a named key). Any other member is left to the run when there are patternProperties (which apply needs them
+// evaluated), and takes additionalProperties when there are none. A fixed part or a fixed input whose schema has a
+// `pattern` or `patternProperties` anywhere below it is left to the run. A schema without patterns is still checked.
+const POLY = "^a*a*a*a*a*a*b$";
+const PATTERNED = (input, { patterns = true } = {}) => `
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
 metadata: { name: patterned-script, version: "1.0.0" }
@@ -263,81 +266,73 @@ states:
     inputSchema:
       type: object
       properties:
-        code: { type: string }
         user: { type: string }
-        note: { type: string, pattern: "^a*a*b$" }
-      patternProperties:
+        count: { type: integer }
+        note: ${patterns ? `{ type: string, pattern: "${POLY}" }` : "{ type: string, maxLength: 3 }"}
+${patterns ? `      patternProperties:
+        "${POLY}": { type: integer }
         "^x-": { type: string }
-        "^c-": { type: string, maxLength: 4 }
-        "z$": { type: string, minLength: 3 }
-        "^a*a*b$": { type: integer }
-      additionalProperties: false
+` : ""}      additionalProperties: false
     input: ${input}
     outcomes: [done]
     transition: { next: { done: finish, failure: refused } }
   finish: { type: terminal, outcome: succeeded }
   refused: { type: terminal, outcome: failed }
 `;
+const compiledIn = (yaml) => {
+    const started = performance.now();
+    const compiled = compileWorkflowV2(yaml);
+    return { compiled, ms: performance.now() - started };
+};
 
-test("E2-T6: a member that matches a patternProperties name is checked against it, not against additionalProperties", () => {
-    for (const input of [`{ user: "\${inputs.user}", x-note: "ok" }`, `{ user: "\${inputs.user}", code: "a long code", c-a: "ab", c-z: "abc" }`]) {
+test("E2-T6: a named member is checked against its property; a member a pattern would select is left to the run", () => {
+    for (const input of [`{ user: "\${inputs.user}", x-note: "ok" }`, `{ user: "\${inputs.user}", count: 3 }`]) {
         const compiled = compileWorkflowV2(PATTERNED(input));
         assert.equal(compiled.valid, true, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
     }
-    // The pattern's own schema applies.
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", x-note: 5 }`)), /\/x-note must be string/);
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", c-a: "abcde" }`)), /\/c-a must NOT have more than 4 characters/);
-});
-
-test("E2-T6: every pattern a key matches applies together; a key that matches nothing takes additionalProperties", () => {
-    // c-z matches ^c- (at most 4 characters) and z$ (at least 3): each of the two schemas refuses on its own.
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", c-z: "ab" }`)), /\/c-z must NOT have fewer than 3 characters/);
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", c-z: "abcde" }`)), /\/c-z must NOT have more than 4 characters/);
-    assert.ok(problemOf(PATTERNED(`{ user: "\${inputs.user}", other: "x" }`)).includes("/other"), "an unmatched key takes additionalProperties: false");
-});
-
-// Verification of E2b-medium (E2bm-R1): the compiler matches a key against a schema's patterns only up to 256
-// characters. ^a*a*b$ is accepted (repeats side by side grow as a power of the input), and on a long run of "a" with no
-// "b" it takes time that grows with the square of the key's length; a longer key is left to the run's own check, so
-// the compile stays fast. Nothing here matches the pattern against a long key.
-test("E2bm-R1: a key over 256 characters is not matched against a schema's patterns at compile time; the run checks it", { timeout: 20_000 }, () => {
-    const hostile = "a".repeat(100_000);
-    const compileTime = (input) => {
-        const started = performance.now();
+    // A named member, beside patternProperties, is checked here.
+    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", count: "three" }`)), /\/count must be integer/);
+    // Which pattern applies to x-note, or whether "other" matches none, needs a pattern evaluated: the run checks them.
+    for (const input of [`{ user: "\${inputs.user}", x-note: 5 }`, `{ user: "\${inputs.user}", other: "x" }`]) {
         const compiled = compileWorkflowV2(PATTERNED(input));
-        return { compiled, ms: performance.now() - started };
-    };
-    // Beside a binding: the member is left to the run (if it were checked here, additionalProperties: false refuses it).
-    const bound = compileTime(`{ user: "\${inputs.user}", "${hostile}": "x" }`);
-    assert.equal(bound.compiled.valid, true, JSON.stringify(bound.compiled.diagnostics).slice(0, 400));
-    assert.ok(bound.ms < 3_000, `compiled in ${Math.round(bound.ms)} ms`);
-    // A fixed input with that key (no binding): left to the run as a whole.
-    const fixed = compileTime(`{ "${hostile}": "x" }`);
-    assert.equal(fixed.compiled.valid, true, JSON.stringify(fixed.compiled.diagnostics).slice(0, 400));
-    assert.ok(fixed.ms < 3_000, `compiled in ${Math.round(fixed.ms)} ms`);
-    // Up to 256 characters a key is still checked here: it matches no pattern, so additionalProperties refuses it.
-    assert.ok(problemOf(PATTERNED(`{ user: "\${inputs.user}", "${"a".repeat(256)}": "x" }`)).includes(`/${"a".repeat(256)}`));
-    assert.match(problemOf(PATTERNED(`{ "${"a".repeat(256)}": "x" }`)), /additional properties/);
-    // A 257-character key is not.
-    assert.equal(compileWorkflowV2(PATTERNED(`{ user: "\${inputs.user}", "${"a".repeat(257)}": "x" }`)).valid, true);
+        assert.equal(compiled.valid, true, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
+    }
 });
 
-// The same for a long string value (E2bm-R1, strings): the compiler validates a fixed string against a schema's pattern
-// only up to 4,096 characters. A longer one, beside a binding or in a fixed input, is left to the run's own check.
-test("E2bm-R1: a string over 4,096 characters is not matched against a pattern at compile time; the run checks it", { timeout: 20_000 }, () => {
-    const hostile = "a".repeat(100_000);
-    for (const input of [`{ user: "\${inputs.user}", note: "${hostile}" }`, `{ note: "${hostile}" }`]) {
-        const started = performance.now();
-        const compiled = compileWorkflowV2(PATTERNED(input));
-        const ms = performance.now() - started;
-        // If it were checked here, the pattern (it does not end in "b") would refuse it.
-        assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics).slice(0, 400));
+test("E2-T6: without patterns, a member that names nothing takes additionalProperties, and a fixed input is checked whole", () => {
+    assert.ok(problemOf(PATTERNED(`{ user: "\${inputs.user}", other: "x" }`, { patterns: false })).includes("/other"),
+        "an unnamed key takes additionalProperties: false");
+    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", note: "abcd" }`, { patterns: false })), /\/note must NOT have more than 3 characters/);
+    assert.match(problemOf(PATTERNED(`{ count: "three" }`, { patterns: false })), /\/count must be integer/);
+    assert.match(problemOf(PATTERNED(`{ other: "x" }`, { patterns: false })), /additional properties/);
+});
+
+// Final verification of E2bm-R1: ^a*a*a*a*a*a*b$ passes the pattern check (its cost is a power of the input, not
+// exponential), and on a long run of "a" with no "b" its cost is a high power of the length: the length caps alone do
+// not bound it. The compiler evaluates no pattern, so each of these compiles fast and is left to the run. Nothing here
+// matches the pattern against a long input.
+test("E2bm-R1: a schema with a pattern is not evaluated at compile time, under the length caps too; the run checks it", { timeout: 20_000 }, () => {
+    const key = `${"a".repeat(255)}!`;
+    const text = "a".repeat(4_000);
+    for (const input of [
+        `{ user: "\${inputs.user}", "${key}": 1 }`,
+        `{ "${key}": 1 }`,
+        `{ user: "\${inputs.user}", note: "${text}" }`,
+        `{ note: "${text}" }`,
+    ]) {
+        const { compiled, ms } = compiledIn(PATTERNED(input));
+        // If it were checked here, additionalProperties (the key) or the pattern (the text: it does not end in "b") would refuse it.
+        assert.equal(compiled.valid, true, `${input.slice(0, 60)}: ${JSON.stringify(compiled.diagnostics).slice(0, 400)}`);
         assert.ok(ms < 3_000, `compiled in ${Math.round(ms)} ms`);
     }
-    // A short string is still checked here, beside a binding and in a fixed input.
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", note: "aaa" }`)), /\/note must match pattern/);
-    assert.match(problemOf(PATTERNED(`{ note: "aaa" }`)), /\/note must match pattern/);
-    // 4,096 characters is still checked; 4,097 is not.
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", note: "${"a".repeat(4_096)}" }`)), /\/note must match pattern/);
-    assert.equal(compileWorkflowV2(PATTERNED(`{ user: "\${inputs.user}", note: "${"a".repeat(4_097)}" }`)).valid, true);
+    // A fixed input with a pattern-free schema is still refused at compile time when it is wrong, beside the same caps.
+    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", count: "${"a".repeat(255)}" }`)), /\/count must be integer/);
+});
+
+test("E2bm-R1: the length caps are kept: a key over 256 characters or a string over 4,096 is left to the run", () => {
+    // Pattern-free schema: up to the caps the fixed input is checked; past them it is left to the run.
+    assert.match(problemOf(PATTERNED(`{ "${"k".repeat(256)}": "x" }`, { patterns: false })), /additional properties/);
+    assert.equal(compileWorkflowV2(PATTERNED(`{ "${"k".repeat(257)}": "x" }`, { patterns: false })).valid, true);
+    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", note: "${"n".repeat(4_096)}" }`, { patterns: false })), /\/note must NOT have more than 3 characters/);
+    assert.equal(compileWorkflowV2(PATTERNED(`{ user: "\${inputs.user}", note: "${"n".repeat(4_097)}" }`, { patterns: false })).valid, true);
 });

@@ -1,7 +1,7 @@
 import { parseDocument } from "yaml";
 import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
-import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, unsafeSchemaPattern, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
+import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 
 /**
  * Workflow v2 compiler: YAML -> diagnostics and an immutable, hashed IR.
@@ -1488,9 +1488,8 @@ function holdsBinding(value: JsonValue): boolean {
 }
 
 /**
- * The longest object key the compiler matches against a schema's patterns (E2bm-R1). A pattern the compiler accepts can
- * still take time that grows as a power of its input (repeats side by side, such as a*a*), so a longer key is not
- * matched here: its member, and any fixed part that holds such a key, are left to the run's own check.
+ * The longest object key in a value the compiler validates (E2bm-R1): a fixed part that holds a longer key is left to the
+ * run's own check. The compiler evaluates no pattern either (schemaUsesPattern); this cap is kept as well.
  */
 const COMPILE_TIME_KEY_MAX_LENGTH = 256;
 /** The longest string value the compiler validates (a `pattern` is matched against it); a longer one is left to the run. */
@@ -1519,29 +1518,51 @@ function holdsLongKeyOrString(value: JsonValue): boolean {
 }
 
 /**
- * The schema a member of an object must match (E2-R3, as JSON Schema applies them): its property's schema and the
- * schema of every patternProperties name its key matches, all of them (allOf); only a key that neither names nor
- * matches takes additionalProperties. Undefined when nothing applies, or when a pattern cannot be evaluated here (the
- * run checks that member): an unsafe pattern, or a key longer than COMPILE_TIME_KEY_MAX_LENGTH (E2bm-R1).
+ * Whether a schema can make a validator match a regular expression: a `pattern` or `patternProperties` anywhere below it,
+ * its references followed (final verification of E2bm-R1). The compiler evaluates no pattern, so a value such a schema
+ * checks is left to the run. A pattern the compiler accepts can still take time that grows as a power of its input
+ * (a*a*a*b), and the length caps alone do not bound it. Conservative: a property named "pattern" counts too, and so does
+ * a reference that cannot be followed.
  */
-function memberSchema(target: { [key: string]: JsonValue }, key: string): JsonValue | undefined {
-    const applied: JsonValue[] = [];
-    const properties = isJsonObject(target.properties) ? target.properties : {};
-    const named = Object.hasOwn(properties, key);
-    if (named) applied.push(properties[key]);
-    let matched = false;
-    if (isJsonObject(target.patternProperties)) {
-        if (key.length > COMPILE_TIME_KEY_MAX_LENGTH && Object.keys(target.patternProperties).length > 0) return undefined;
-        for (const [pattern, schema] of Object.entries(target.patternProperties)) {
-            // Only a pattern the compiler accepts is evaluated (an unsafe one is refused where the schema is checked).
-            if (unsafeSchemaPattern(pattern) !== null) return undefined;
-            let matches: boolean;
-            try { matches = new RegExp(pattern, "u").test(key); } catch { return undefined; }
-            if (matches) { applied.push(schema); matched = true; }
+function schemaUsesPattern(schema: JsonValue | undefined, defs: Record<string, JsonValue>): boolean {
+    const seen = new Set<string>();
+    const stack: JsonValue[] = schema === undefined ? [] : [schema];
+    while (stack.length > 0) {
+        const next = stack.pop() as JsonValue;
+        if (Array.isArray(next)) {
+            for (const item of next) stack.push(item);
+        } else if (isJsonObject(next)) {
+            for (const [key, item] of Object.entries(next)) {
+                if (key === "pattern" || key === "patternProperties") return true;
+                if (key === "$ref" && typeof item === "string") {
+                    const name = item.startsWith("#/$defs/") ? item.slice("#/$defs/".length).split("/")[0]
+                        : item.startsWith("#/schemas/") ? item.slice("#/schemas/".length).split("/")[0] : null;
+                    if (name === null || !Object.hasOwn(defs, name)) return true;
+                    if (!seen.has(name)) {
+                        seen.add(name);
+                        stack.push(defs[name]);
+                    }
+                    continue;
+                }
+                stack.push(item);
+            }
         }
     }
-    if (!named && !matched && target.additionalProperties !== undefined && target.additionalProperties !== true) applied.push(target.additionalProperties);
-    return applied.length === 0 ? undefined : applied.length === 1 ? applied[0] : { allOf: applied };
+    return false;
+}
+
+/**
+ * The schema a member of an object must match (E2-R3, as JSON Schema applies them), or undefined when the run checks it.
+ * A named key takes its property's schema: the run's validator (strict) refuses a schema whose property name one of its
+ * patternProperties names matches, so no pattern applies to a named key. Which patterns apply to any other key needs
+ * them evaluated, and the compiler evaluates none (E2bm-R1): with patternProperties such a member is left to the run.
+ * Without them, it takes additionalProperties.
+ */
+function memberSchema(target: { [key: string]: JsonValue }, key: string): JsonValue | undefined {
+    const properties = isJsonObject(target.properties) ? target.properties : {};
+    if (Object.hasOwn(properties, key)) return properties[key];
+    if (isJsonObject(target.patternProperties) && Object.keys(target.patternProperties).length > 0) return undefined;
+    return target.additionalProperties !== undefined && target.additionalProperties !== true ? target.additionalProperties : undefined;
 }
 
 /** A fixed part of a partly bound input: where it is, the value as written, and the schema it must match. */
@@ -1551,16 +1572,18 @@ interface FixedPart { pointer: string; value: JsonValue; schema: JsonValue }
  * The fixed parts of a partly bound input and what a bound part's written-out object must have (adversarial review SF-8
  * and its verification): a part with no binding is collected whole, to be validated with the run's own validator; in a
  * part that holds a binding, an object written out must have its schema's required properties (returned as problems),
- * and its members and array items are visited with their own schemas (memberSchema: properties and matching
- * patternProperties together, else additionalProperties; prefixItems or items). Composed schemas (allOf, anyOf, oneOf)
- * are visited no further: the run checks them.
+ * and its members and array items are visited with their own schemas (memberSchema: a named property's schema; another
+ * member is left to the run when there are patternProperties, else it takes additionalProperties; prefixItems or items).
+ * Composed schemas (allOf, anyOf, oneOf) are visited no further: the run checks them. A fixed part whose schema has a
+ * pattern is left to the run (E2bm-R1).
  */
 function fixedParts(value: JsonValue, schema: JsonValue | undefined, defs: Record<string, JsonValue>, pointer: string,
     parts: FixedPart[], problems: string[], depth = 0): void {
     if (depth > 32 || schema === undefined) return;
     if (!holdsBinding(value)) {
-        // The run's validator matches keys and strings against the schema's patterns: a part with a very long one is left to the run.
-        if (!holdsLongKeyOrString(value)) parts.push({ pointer, value, schema });
+        // The compiler evaluates no pattern (E2bm-R1): a part whose schema has one, or with a very long key or string, is
+        // left to the run.
+        if (!holdsLongKeyOrString(value) && !schemaUsesPattern(schema, defs)) parts.push({ pointer, value, schema });
         return;
     }
     const target = schemaTarget(defs, schema);
@@ -1632,8 +1655,9 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
             }
             continue;
         }
-        // E2bm-R1: an input with a very long key or string is not matched against the schema's patterns here; the run checks it.
-        if (holdsLongKeyOrString(node.input)) continue;
+        // E2bm-R1: the compiler evaluates no pattern. An input whose schema has one, or with a very long key or string, is
+        // left to the run.
+        if (holdsLongKeyOrString(node.input) || schemaUsesPattern(defs[schemaName], defs)) continue;
         validator ??= new WorkflowSchemaSet(defs);
         const problems = validator.validate(schemaName, node.input);
         if (problems.length) {
