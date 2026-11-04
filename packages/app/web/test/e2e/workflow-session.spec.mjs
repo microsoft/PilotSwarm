@@ -2257,3 +2257,34 @@ test("f-03: a moved step's own loop curves beside it", async ({ page }) => {
     expect(Math.abs(numbers[1] - (node.y + node.height))).toBeLessThan(12);
     expect(Math.abs(numbers[7] - node.y)).toBeLessThan(12);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// Adversarial review UI-6: the person's saved step places can arrive after the graph's first fit (the profile read after
+// the workflow's). Then, once, while the person has not touched the view and none was remembered, the graph is fitted
+// again to where the boxes are, so a far-moved box is on screen.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "UI-6:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("UI-6: saved places that arrive after the first fit are fitted once", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { onCommand: (route, command) => accept(route, command) });
+    const saved = { workflowLayouts: { [LAYOUT_KEY]: { at: Date.now(), steps: { done: [4000, 2400] } } } };
+    await page.route("**/api/v1/**", async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        if (pathname.endsWith("/me/profile")) {
+            await new Promise(resolve => setTimeout(resolve, 2_500));
+            return route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: saved } } });
+        }
+        if (pathname.endsWith("/me/profile/settings")) return route.fulfill({ json: { ok: true, result: { profileSettings: saved } } });
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const graph = page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    // The places arrive: the box moves far away, and the graph is fitted again to show it.
+    await expect.poll(async () => (await flowNodeAt(graph, "done")).x, { timeout: 15_000 }).toBe(4000);
+    await settledView(graph);
+    await expectFitted(graph);
+    expect(errors).toEqual([]);
+});

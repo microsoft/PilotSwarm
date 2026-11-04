@@ -124,7 +124,7 @@ const EDGE_TYPES = { workflowEdge: StepEdge };
 const panZoomReady = state => Boolean(state.panZoom);
 
 /** The controls, and the one automatic fit: `fitted` is true once the view was fitted or started from a remembered one. */
-function GraphView({ bounds, area, fitted, hand, onHand, onReset }) {
+function GraphView({ bounds, area, fitted, hand, onHand, onReset, refit = 0, onInteract = null }) {
     const flow = useReactFlow();
     const ready = useStore(panZoomReady);
     const fit = React.useCallback(options => {
@@ -136,14 +136,19 @@ function GraphView({ bounds, area, fitted, hand, onHand, onReset }) {
         fitted.current = true;
         fit();
     }, [ready, area, fit, fitted]);
+    // UI-6: the one hydration fit, when the person's saved places arrived after the first fit (see WorkflowFlow).
+    React.useEffect(() => {
+        if (refit > 0 && ready && area) fit();
+    }, [refit]);
     const zoom = by => {
+        onInteract?.();
         if (by > 0) flow.zoomIn({ duration: ZOOM_DURATION_MS });
         else flow.zoomOut({ duration: ZOOM_DURATION_MS });
     };
     return h(Panel, { position: "bottom-left", className: "ps-workflow-graph-controls", role: "group", "aria-label": "Graph view" },
         h(WorkflowToolButton, { label: "Zoom in", glyph: "zoom-in", onClick: () => zoom(1) }),
         h(WorkflowToolButton, { label: "Zoom out", glyph: "zoom-out", onClick: () => zoom(-1) }),
-        h(WorkflowToolButton, { label: "Fit to screen", glyph: "fit", onClick: () => fit({ duration: FIT_DURATION_MS }) }),
+        h(WorkflowToolButton, { label: "Fit to screen", glyph: "fit", onClick: () => { onInteract?.(); fit({ duration: FIT_DURATION_MS }); } }),
         h(WorkflowToolButton, { label: "Move the graph", glyph: "hand", "aria-pressed": hand,
             title: hand ? "Drag the background to move the graph; pinch or scroll to zoom. Turn it off to keep the graph still."
                 : "The graph stays still. Turn it on to move it by dragging and to zoom by pinching or scrolling.",
@@ -180,9 +185,19 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
     const [moved, setMoved] = React.useState(() => placesOf(places, layout));
     const savedKey = JSON.stringify(places ?? null);
     const firstSaved = React.useRef(true);
+    // UI-6: the person's saved places can arrive after the first fit (the profile read after the workflow's). Then, once,
+    // while the person has not touched the view and none was remembered, the graph is fitted again to where the boxes are.
+    const interacted = React.useRef(false);
+    const hydrationFit = React.useRef(start === null);
+    const [refit, setRefit] = React.useState(0);
+    const onInteract = React.useCallback(() => { interacted.current = true; }, []);
     React.useEffect(() => {
         if (firstSaved.current) { firstSaved.current = false; return; }
         setMoved(placesOf(places, layout));
+        if (hydrationFit.current && !interacted.current) {
+            hydrationFit.current = false;
+            setRefit(count => count + 1);
+        }
     }, [savedKey, layout]);
     const latest = React.useRef({ moved, layout, onPlaces });
     latest.current = { moved, layout, onPlaces };
@@ -254,6 +269,7 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         tell?.(Object.keys(kept).length ? kept : null);
     }, []);
     const reset = React.useCallback(() => {
+        interacted.current = true;
         setMoved(new Map());
         latest.current.onPlaces?.(null);
     }, []);
@@ -270,11 +286,14 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         panOnDrag: hand, zoomOnScroll: hand, zoomOnPinch: hand, panOnScroll: false, zoomOnDoubleClick: false, preventScrolling: hand,
         minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM,
         ...(start ? { defaultViewport: start } : {}),
-        // Every settled view, the person's or a button's, so it can be restored exactly.
+        // Every settled view, the person's or a button's, so it can be restored exactly. A move the person starts (it has
+        // an event) or a box they drag counts as touching the view (UI-6).
+        onMoveStart: event => { if (event) interacted.current = true; },
+        onNodeDragStart: () => { interacted.current = true; },
         onMoveEnd: (_event, view) => { onViewport?.({ x: view.x, y: view.y, zoom: view.zoom }); },
         defaultMarkerColor: null,
         className: `ps-workflow-flow${hand ? " is-hand" : " is-still"}`,
     },
     h(Background, { variant: BackgroundVariant.Dots, gap: 18, size: 1 }),
-    h(GraphView, { bounds, area, fitted, hand, onHand: setHand, onReset: moved.size ? reset : null }));
+    h(GraphView, { bounds, area, fitted, hand, onHand: setHand, onReset: moved.size ? reset : null, refit, onInteract }));
 }
