@@ -16737,9 +16737,19 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         ? 0
         : Math.max(0, Math.round(sessionColumnBase + (Number(state.portalSessionColumnAdjust) || 0))) + 32)
         + PORTAL_MIN_CHAT_COLUMN_PX;
+    // With no side column the main grid IS the workspace, so the list's share
+    // is plain CSS and needs no measurement. Pixels from a measurement land a
+    // frame after the first paint; that late width change made chat re-pin
+    // itself to the bottom under a reader who had just scrolled up. Only with
+    // a canvas, reader or diagnostics column open does the share come from the
+    // (measured) workspace, so the list keeps its width beside the column.
+    const sessionColumnAdjustPx = Number(state.portalSessionColumnAdjust) || 0;
+    const sessionColumnPreferred = rightSideActive
+        ? `${Math.round(sessionColumnBase + sessionColumnAdjustPx)}px`
+        : `calc((100% - ${PORTAL_SESSION_CHAT_DIVIDER_PX + PORTAL_WORKSPACE_GAP_PX * 2}px) * ${PORTAL_SESSION_COLUMN_RATIO} + ${sessionColumnAdjustPx}px)`;
     const sessionColumnTrack = sessionColumnMode === "hidden"
         ? "0px"
-        : `clamp(0px, ${Math.round(sessionColumnBase + (Number(state.portalSessionColumnAdjust) || 0))}px, max(0px, calc(100% - ${PORTAL_MIN_CHAT_COLUMN_PX}px - 32px)))`;
+        : `clamp(0px, ${sessionColumnPreferred}, max(0px, calc(100% - ${PORTAL_MIN_CHAT_COLUMN_PX}px - 32px)))`;
 
     const desktopWorkspace = React.createElement("div", {
         ref: workspaceGridRef,
