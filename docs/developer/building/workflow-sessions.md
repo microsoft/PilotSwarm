@@ -39,8 +39,11 @@ sharing, and a transcript.
   workflow and that pane to resize it, use the divider's arrow keys, or
   double-click it to reset its width; the width is kept for this session. On a
   phone, the side pane opens as a separate layer; return to Main to see the
-  graph again. The worker's original canvas artifact remains available without
-  changing running workflows.
+  graph again. A workflow has no zen and no full screen: its side pane offers
+  neither, and a workflow opened while either is on shows in the normal
+  layout. On a desktop, returning to a chat brings them back as you left them;
+  on a phone, opening a workflow leaves mobile zen. The worker's original canvas
+  artifact remains available without changing running workflows.
 - The main pane stays still: a compact header (the name, the status,
   **Graph | YAML**, the run picker and the icon tools) and, under it, the
   graph or the YAML, nothing else. The tab you choose is kept for this

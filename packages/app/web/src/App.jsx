@@ -614,6 +614,18 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         docs: portal?.docs || null,
     }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
     const moa = useMoa(controller);
+    // A workflow has no mobile zen (batch 6, f-02): opening one, from zen or otherwise, closes it, so the workflow shows in
+    // the normal layout. It is not opened again afterwards.
+    const closeMobileZenRef = React.useRef(moa.closeMobileZen);
+    closeMobileZenRef.current = moa.closeMobileZen;
+    React.useEffect(() => {
+        if (!moa.mobileZen) return undefined;
+        const check = state => {
+            if (state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow") closeMobileZenRef.current();
+        };
+        check(controller.getState());
+        return controller.subscribe(check);
+    }, [controller, moa.mobileZen]);
     const viewNavigation = useViewNavigation(controller, moa);
     const createPanelTransport = React.useCallback(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken, getResourceToken: auth.getResourceToken,

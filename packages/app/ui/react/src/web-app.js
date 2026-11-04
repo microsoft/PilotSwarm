@@ -7346,6 +7346,11 @@ function OutboxStrip({ controller, sessionId, header, blocks, theme }) {
 }
 const OUTBOX_SELECTABLE_PHASES = new Set(["pending", "queued", "cancelling"]);
 
+/** Whether the active session is a workflow: it has no zen and no full screen (batch 6, f-02). */
+function activeSessionIsWorkflow(state) {
+    return state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow";
+}
+
 function ChatPane(props) {
     const workflow = useControllerSelector(props.controller, state =>
         state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
@@ -8903,7 +8908,8 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                         "aria-label": "Share canvas",
                     }, React.createElement(CanvasLinkGlyph))
                     : null,
-                onToggleMaximized
+                // A workflow has no full screen (batch 6, f-02).
+                onToggleMaximized && !isWorkflow
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-canvas-max-btn",
@@ -8962,8 +8968,9 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                     : null,
                 // Zen: sessions step away, chat becomes a rail, the canvas is
                 // the workbench. The mode for "the work happens on the canvas,
-                // chat is for steering".
-                React.createElement("button", {
+                // chat is for steering". A workflow has neither zen nor full
+                // screen (batch 6, f-02): its side pane sits beside its graph.
+                isWorkflow ? null : React.createElement("button", {
                     type: "button",
                     className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
                     onClick: () => controller.dispatch({ type: "ui/canvasZen" }),
@@ -8977,7 +8984,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 // While full screen this whole bar is hidden and the rev and
                 // the way back are promoted into the portal header, so the
                 // control never disappears with the pane that drew it.
-                React.createElement("button", {
+                isWorkflow ? null : React.createElement("button", {
                     type: "button",
                     className: "ps-artifact-pane-btn",
                     onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: true }),
@@ -10780,7 +10787,8 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     const budgetOpen = useControllerSelector(controller, (state) => Boolean(state.ui?.budgetOpen));
     const canvasView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const diagnosticsOpen = useControllerSelector(controller, (s) => s?.ui?.diagnosticsOpen === true);
-    const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true);
+    // A workflow has no full screen (batch 6, f-02): the stored flag reads as off while one is active.
+    const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true && !activeSessionIsWorkflow(s));
     // The artifact reader takes over the right side; while it is up, the
     // surface on screen is NOT the canvas, so the canvas toggle must not
     // read as active (its next press still shows the canvas).
@@ -14671,8 +14679,9 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             if (!mobile && event.key === "Escape") {
                 // In full screen or zen, Escape steps down a level (their own
                 // handler); taking it here left the person stuck there.
-                const ui = controller.getState().ui;
-                if (ui.canvasOpen && (ui.canvasZen || ui.canvasMaximized)) return;
+                const root = controller.getState();
+                const ui = root.ui;
+                if (ui.canvasOpen && (ui.canvasZen || ui.canvasMaximized) && !activeSessionIsWorkflow(root)) return;
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.FOCUS_SESSIONS).catch(() => {});
             }
@@ -15992,6 +16001,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         // shallow-equal sees changes and the save effect fires.
         canvasPrefs: rootState.canvas?.prefs,
         activeSessionIsGroup: Boolean(rootState.sessions.activeSessionId && rootState.sessions.byId[rootState.sessions.activeSessionId]?.isGroup),
+        activeSessionIsWorkflow: activeSessionIsWorkflow(rootState),
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
         portalSessionColumnAdjust: rootState.ui.layout?.portalSessionColumnAdjust ?? 0,
@@ -16411,8 +16421,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         && !filesFullscreenActive
         && !artifactPaneActive
         // Zen is chat + canvas only; diagnostics keeps its stored toggle and
-        // returns when zen ends.
-        && !(state.canvasZen && state.canvasOpen);
+        // returns when zen ends. A workflow has no zen (batch 6, f-02).
+        && !(state.canvasZen && state.canvasOpen && !state.activeSessionIsWorkflow);
     // Whether the right side of the workspace exists at all. Both columns off
     // is the default: sessions and chat, nothing else. An absent column takes
     // no width and grows no resizer — off means gone, not collapsed.
@@ -16421,10 +16431,14 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // In the STORE, not local state: the header owns the way out (the rev
     // strip is promoted up there while full screen), and every other toolbar
     // button has to be able to drop it before doing its own job.
-    const canvasMaximized = state.canvasMaximized && canvasModeActive;
+    //
+    // A workflow has neither full screen nor zen (batch 6, f-02): while one is
+    // active both read as off and it shows in the normal layout. The stored
+    // flags are untouched, so a chat brings them back as the person left them.
+    const canvasMaximized = state.canvasMaximized && canvasModeActive && !state.activeSessionIsWorkflow;
     // Zen: chat rail + canvas workbench. Diagnostics steps aside but keeps
     // its stored toggle; the session list hides entirely.
-    const zenActive = state.canvasZen && canvasModeActive && !artifactPaneActive;
+    const zenActive = state.canvasZen && canvasModeActive && !artifactPaneActive && !state.activeSessionIsWorkflow;
     const zenRailPx = Math.max(260, Math.min(720,
         Number(state.canvasPrefs?.[state.activeSessionId]?.zenRailPx) || PORTAL_ZEN_RAIL_DEFAULT_PX));
     // Escape steps down one rung: full screen -> zen -> normal workspace.
