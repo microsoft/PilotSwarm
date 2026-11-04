@@ -1891,7 +1891,11 @@ export interface WorkflowV2RuntimeDeps {
     /** Whether this worker runs workflow scripts. */
     enabled: () => boolean;
     resolveToolBinding: (sessionId: string) => Promise<WorkflowToolBinding | null>;
-    openToolExecutor: (sessionId: string, binding: WorkflowToolBinding, step: number) => Promise<WorkflowToolExecutor>;
+    /**
+     * A script state's tool executor. It may wait for the workflow's tool session (one script state holds it at a time);
+     * `signal` aborts that wait when the script ends first (RT-2, VR-1..3).
+     */
+    openToolExecutor: (sessionId: string, binding: WorkflowToolBinding, step: number, options?: { signal?: AbortSignal }) => Promise<WorkflowToolExecutor>;
     authorizeParentNotification: (sessionId: string, parentSessionId: string) => Promise<boolean>;
     /**
      * Queue a message for the parent session. `{ delivered: false }` says the parent's session had already ended, so
@@ -3443,7 +3447,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // Everything the script needs is prepared before its entry, so the
         // entry decision and the process start are one step (store.enterScript).
         const binding = await deps.resolveToolBinding(run.workflowSessionId);
-        const tools: { executor: WorkflowToolExecutor | null } = { executor: null };
+        // The script's tool executor, opened at its first tool call (once, whatever calls race to it), and the means to stop
+        // an opening still waiting for the workflow's tool session when the script ends (RT-2, VR-1..3).
+        const tools: { executor: WorkflowToolExecutor | null; opening: Promise<WorkflowToolExecutor> | null; stop: AbortController } = {
+            executor: null, opening: null, stop: new AbortController() };
         // A test run's tool calls are intercepted (migration 0102; design 05): no live tool runs. Each call is recorded by
         // its stable id (the script's n-th call) and answered by a fixture (its tool and the exact hash of its arguments) or
         // by the parent; the script waits for the answer, within its own timeout. The grant still decides which tools a
@@ -3490,8 +3497,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const callTool = async (call: ScriptToolCall): Promise<unknown> => {
             if (!binding) throw new Error("This workflow has no delegated tool grant; scripts in it cannot call tools.");
             if (testFixtures !== null) return interceptedToolCall(binding, call, testFixtures);
-            tools.executor ??= await deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal);
-            return tools.executor.call(call.name, call.arguments);
+            tools.opening ??= deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal, { signal: tools.stop.signal });
+            const executor = await tools.opening;
+            if (scriptDone) throw new Error("The script ended before its tool call ran.");
+            tools.executor = executor;
+            return executor.call(call.name, call.arguments);
         };
         // The script sees the KV snapshot its node execution pinned at admission, and in a parallel branch its `branch`.
         const scriptKv = await kvOf(run.runId, executed.kvRevision);
@@ -3528,7 +3538,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 guardedNode: true,
                 strictJson: true,
                 enter: async start => (await store.enterScript(executed.nodeExecutionId, attempt => start(scriptContext(attempt)))).entered,
-                cancelTools: async () => { if (tools.executor) await tools.executor.close(); },
+                cancelTools: async () => { tools.stop.abort(); if (tools.executor) await tools.executor.close(); },
                 isCancelled: () => actx.isCancelled() || decidedElsewhere,
             }, deps.runnerOptions);
         } catch (error) {
@@ -3536,7 +3546,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         } finally {
             scriptDone = true;
             clearInterval(liveness);
-            if (tools.executor) await tools.executor.close();
+            // An opening still on its way stops waiting; one that got the session anyway is closed, so it never holds it.
+            tools.stop.abort();
+            const opened = tools.executor ?? (tools.opening ? await tools.opening.catch(() => null) : null);
+            if (opened) await opened.close();
         }
         // Not started: the node was decided, or its run or session ended, before entry.
         if (ran.resultSource === "not_started" || decidedElsewhere) return { kind: "completed" };

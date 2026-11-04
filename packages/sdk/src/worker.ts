@@ -1087,7 +1087,7 @@ export class PilotSwarmWorker {
                 catalog: this._catalog,
                 enabled: () => workflowScriptSettings.enabled,
                 resolveToolBinding: resolveWorkflowToolBinding,
-                openToolExecutor: (sessionId, binding, step) => this.sessionManager.openWorkflowToolExecutor(sessionId, binding, step),
+                openToolExecutor: (sessionId, binding, step, options) => this.sessionManager.openWorkflowToolExecutor(sessionId, binding, step, options),
                 authorizeParentNotification: authorizeWorkflowParentNotification,
                 notifyParent: notifyWorkflowParent,
                 deleteSession: async (sessionId) => {
