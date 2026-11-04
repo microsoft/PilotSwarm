@@ -1,6 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
 import { normalizeWorkflowLayouts } from "../../core/src/workflow-layouts.js";
-import { workflowSessionDetails, workflowStepParent } from "../../core/src/workflow-view.js";
+import { workflowSessionDetails, workflowStepLogHistory, workflowStepLogRunId, workflowStepParent } from "../../core/src/workflow-view.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -7441,6 +7441,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            // A workflow's step log shows the selected run's entries (UI-8).
+            logRunId: workflowLog && activeSessionId ? workflowStepLogRunId(state.ui.workflowViews?.[activeSessionId]) : null,
             // A shared empty array, not a literal: a fresh [] per call failed
             // the shallow-equal check on every dispatch and re-rendered the
             // whole pane, transcript included, on every keystroke.
@@ -7467,6 +7469,10 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
             contentWidth,
         };
     }, shallowEqualObject);
+    const logHistory = React.useMemo(
+        () => (workflowLog ? workflowStepLogHistory(viewState.activeHistory, viewState.logRunId) : viewState.activeHistory),
+        [workflowLog, viewState.activeHistory, viewState.logRunId],
+    );
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,
         connection: viewState.connection,
@@ -7477,8 +7483,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
             flat: viewState.sessionsFlat,
         },
         history: {
-            bySessionId: viewState.activeSessionId && viewState.activeHistory
-                ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
+            bySessionId: viewState.activeSessionId && logHistory
+                ? new Map([[viewState.activeSessionId, logHistory]])
                 : new Map(),
         },
         outbox: {
@@ -7492,7 +7498,7 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
                 ? { workflowInputPolicies: { [viewState.activeSessionId]: viewState.activeInputPolicy } } : {}),
         },
     }), [
-        viewState.activeHistory,
+        logHistory,
         viewState.activeSessionId,
         viewState.activeOutbox,
         viewState.activeInputPolicy,
@@ -7532,8 +7538,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
     );
     // A workflow's step log says plainly that it is empty instead of showing the splash art (batch 5, g-06).
     const lines = React.useMemo(
-        () => workflowLog ? workflowStepLogLines(transcriptLines, viewState.activeHistory) : transcriptLines,
-        [workflowLog, transcriptLines, viewState.activeHistory],
+        () => workflowLog ? workflowStepLogLines(transcriptLines, logHistory) : transcriptLines,
+        [workflowLog, transcriptLines, logHistory],
     );
     const spinnerFrame = useSpinnerFrame(viewState.activeSessionStatus === "running");
     const liveActivityLines = React.useMemo(

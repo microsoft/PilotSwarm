@@ -306,3 +306,26 @@ export function workflowViewSnapshotEqual(a, b) {
     return a === b || (Boolean(a) && Boolean(b) && a.sessionId === b.sessionId && a.session === b.session && a.history === b.history
         && a.canvas === b.canvas && a.view === b.view && a.places === b.places);
 }
+
+/**
+ * The run a workflow's step log shows (adversarial review UI-8): the run the person chose, else the run the workflow's
+ * last read model shows (its live run); null for a workflow with no runs read (a version 1 workflow's log is not
+ * filtered). Pure.
+ */
+export function workflowStepLogRunId(view) {
+    if (!view || typeof view !== "object") return null;
+    if (typeof view.selectedRunId === "string" && view.selectedRunId) return view.selectedRunId;
+    const model = workflowReadModelView(view).workflowModel;
+    const runId = model?.run?.runId;
+    return typeof runId === "string" && runId ? runId : null;
+}
+
+/**
+ * A workflow session's history for its step log (UI-8): only the entries of `runId`, and every entry that names no run
+ * (the session's own notices). The same history object when nothing is left out, or no run is chosen. Pure.
+ */
+export function workflowStepLogHistory(history, runId) {
+    if (!runId || !history || !Array.isArray(history.chat)) return history;
+    const chat = history.chat.filter(item => !item?.workflowRunId || item.workflowRunId === runId);
+    return chat.length === history.chat.length ? history : { ...history, chat };
+}

@@ -827,10 +827,13 @@ function buildWorkflowChatMessage(event) {
     if (!view) return null;
     const message = buildChatMessage({ ...event, data: { content: view.text } }, "system");
     if (!message) return null;
+    const runId = event?.data && typeof event.data === "object" && typeof event.data.runId === "string" && event.data.runId ? event.data.runId : null;
     return {
         ...message,
         sessionId: event.sessionId,
         workflowEvent: event.eventType,
+        // The run the event is of (UI-8: a step log shows the selected run's), when it names one.
+        ...(runId ? { workflowRunId: runId } : {}),
         ...(view.kind === "card"
             ? { cardTitle: view.title, cardTitleColor: view.color }
             : { workflowNotice: { title: view.title, summary: view.summary, color: view.color } }),
