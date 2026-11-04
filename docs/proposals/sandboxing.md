@@ -4,6 +4,12 @@
 not an already agreed architecture or a claim of provider qualification.
 Merging this document changes no runtime behavior, database schema or deployment.
 
+**Reading guide:** start here for the framing and first workflow. The
+[remote-execution technical companion](remote-execution-bindings.md) explains the
+compute framework, trust boundaries, lifecycle and recovery contracts in more
+detail. They describe the same proposal; the earlier PRs are background, not
+three competing designs reviewers must reconcile.
+
 ## Proposed framing
 
 **Sandboxing is the management of an isolated execution environment and its
