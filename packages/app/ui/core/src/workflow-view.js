@@ -284,27 +284,40 @@ export function workflowStepParent(state, session) {
 export const EMPTY_WORKFLOW_VIEW = Object.freeze({});
 
 /**
+ * Whether a workflow's parent agent is working (owner batch 7, H1): its session row (`parent`) is in a turn, as the
+ * session list shows it (its steadied status, else its status, is "running"). A wait, a schedule or an idle session
+ * is not working. Pure.
+ */
+export function workflowParentWorking(parent) {
+    return (parent?.rowVisualStatus || parent?.status) === "running";
+}
+
+/**
  * Everything the workflow screen shows for the active session, read from one state in one selector (adversarial review
- * UI-1): the session's id and its row, history, canvas, workflow view and saved step places. Each part is derived from
- * the same id, so a render never pairs one session's id with another's view (separate selectors, each closing over the
- * id of the last render, did: a newly selected workflow's YAML editor could start with the previous one's YAML). Pure.
+ * UI-1): the session's id and its row, history, canvas, workflow view and saved step places, and whether its parent
+ * agent is working (H1). Each part is derived from the same id, so a render never pairs one session's id with another's
+ * view (separate selectors, each closing over the id of the last render, did: a newly selected workflow's YAML editor
+ * could start with the previous one's YAML). Pure.
  */
 export function selectWorkflowViewSnapshot(state) {
     const sessionId = state?.sessions?.activeSessionId ?? null;
+    const session = sessionId ? state.sessions.byId?.[sessionId] : undefined;
+    const parentId = typeof session?.parentSessionId === "string" && session.parentSessionId ? session.parentSessionId : null;
     return {
         sessionId,
-        session: sessionId ? state.sessions.byId?.[sessionId] : undefined,
+        session,
         history: sessionId ? state.history?.bySessionId?.get?.(sessionId) : undefined,
         canvas: sessionId ? state.canvas?.bySessionId?.[sessionId] : undefined,
         view: (sessionId ? state.ui?.workflowViews?.[sessionId] : null) || EMPTY_WORKFLOW_VIEW,
         places: (sessionId ? state.ui?.workflowLayouts?.[`session:${sessionId}`]?.steps : null) ?? null,
+        parentWorking: parentId ? workflowParentWorking(state.sessions.byId?.[parentId]) : false,
     };
 }
 
 /** Whether two snapshots (selectWorkflowViewSnapshot) hold the same parts. */
 export function workflowViewSnapshotEqual(a, b) {
     return a === b || (Boolean(a) && Boolean(b) && a.sessionId === b.sessionId && a.session === b.session && a.history === b.history
-        && a.canvas === b.canvas && a.view === b.view && a.places === b.places);
+        && a.canvas === b.canvas && a.view === b.view && a.places === b.places && a.parentWorking === b.parentWorking);
 }
 
 /**

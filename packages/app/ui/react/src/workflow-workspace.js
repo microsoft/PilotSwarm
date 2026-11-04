@@ -1,7 +1,9 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { selectWorkflowViewSnapshot, workflowNodeViews, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
-import { projectWorkflowV2, workflowV2Activity, workflowV2NoticeLevel, workflowV2OpenCalls, workflowV2ShownNotices } from "../../core/src/workflow-v2-view.js";
+import {
+    projectWorkflowV2, workflowV2Activity, workflowV2DraftInProgress, workflowV2NoticeCount, workflowV2NoticeLevel, workflowV2OpenCalls, workflowV2ShownNotices,
+} from "../../core/src/workflow-v2-view.js";
 import {
     workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
     workflowV2TestControls, workflowV2TestResponder,
@@ -29,7 +31,7 @@ export const WORKFLOW_SIDE_PANEL_TITLES = Object.freeze({
 
 function useWorkflowView(controller) {
     // UI-1: one selector for every part, all derived from the same state's active session.
-    const { sessionId, session, history, canvas, view, places } = useControllerSelector(controller, selectWorkflowViewSnapshot, workflowViewSnapshotEqual);
+    const { sessionId, session, history, canvas, view, places, parentWorking } = useControllerSelector(controller, selectWorkflowViewSnapshot, workflowViewSnapshotEqual);
     const events = history?.events || EMPTY_EVENTS;
     const live = canvas?.dataPayload;
     const selectedRunId = view.selectedRunId ?? null;
@@ -100,7 +102,9 @@ function useWorkflowView(controller) {
     // What the side pane offers now (r-3): the run's activity once it has some, the notices (and a failed read), a test
     // run's calls, and the panels the commands above offer.
     const activity = v2?.bound && v2.runId && (v2.ending || workflowV2Activity(events, { runId: v2.runId }).length) ? v2.runId : null;
-    const notices = workflowV2ShownNotices(v2?.banners);
+    // Owner batch 7 (H1): while the parent agent is still writing the latest revision, its errors are said calmly and not counted.
+    const drafting = v2 ? workflowV2DraftInProgress(v2, parentWorking) : null;
+    const notices = workflowV2ShownNotices(v2?.banners, { draftInProgress: drafting });
     const test = v2?.readModel?.run?.test ?? null;
     const offered = { definition: Boolean(publication?.controls.length), test: Boolean(testControls), calls: Boolean(test),
         variables: Boolean(variables), draft: Boolean(draftEditor), activity: Boolean(activity), notices: Boolean(notices.length || readError), log: true };
@@ -111,7 +115,7 @@ function useWorkflowView(controller) {
     const noticeInYaml = Boolean(runNotice?.operation === "replace_definition" && mainTab === "yaml" && sidePanel !== "draft");
     return { sessionId, session, view, places, nodes, selected, select, openSide, showSide, live, status, v2, definition, readError,
         workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, draftEditor, testControls, testResponder,
-        runNotice, events, definitionModel, activity, notices, test, sidePanel, mainTab, noticeInYaml };
+        runNotice, events, definitionModel, activity, notices, drafting, test, sidePanel, mainTab, noticeInYaml };
 }
 
 /** The read model's last failure for the selected run, in the Notices panel, with a Retry that asks again now. */
@@ -143,7 +147,7 @@ const MAIN_TABS = [["graph", "Graph"], ["yaml", "YAML"]];
  */
 export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = false, onOpenSide = null }) {
     const { sessionId, session, view, places, nodes, selected, select, openSide, showSide, status, v2, definition, readError, workflowModel, selectedRunId,
-        ownModelLoaded, runControls, variables, publication, draftEditor, testControls, runNotice, definitionModel, activity, notices, test,
+        ownModelLoaded, runControls, variables, publication, draftEditor, testControls, runNotice, definitionModel, activity, notices, drafting, test,
         sidePanel, mainTab, noticeInYaml } = useWorkflowView(controller);
     const tabsId = `wf-tabs-${React.useId().replace(/:/g, "")}`;
     // The side pane is on screen beside this pane: a desktop's canvas column, open on its canvas side.
@@ -201,7 +205,7 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
     // f-06: the graph's view (x, y, zoom) is remembered for this workflow, so tabs, panels and sessions give it back exactly.
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }),
         [controller, sessionId]);
-    const noticeCount = notices.length + (readError ? 1 : 0);
+    const noticeCount = workflowV2NoticeCount(notices) + (readError ? 1 : 0);
     const openCalls = workflowV2OpenCalls(test);
     const title = definition?.name || session?.title || "Workflow";
     return h("section", { className: "ps-workflow-main", "aria-label": "Workflow session", "data-tab": mainTab },
@@ -225,7 +229,7 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
                 panelButton("log", { label: "Step log", glyph: "log" }),
                 activity ? panelButton("activity", { label: "Run activity", glyph: "activity" }) : null,
                 noticeCount ? panelButton("notices", { label: "Notices", glyph: "notices", badge: noticeCount,
-                    badgeLevel: readError ? "error" : workflowV2NoticeLevel(notices),
+                    badgeLevel: readError ? "error" : workflowV2NoticeLevel(notices.filter(notice => !notice.quiet)),
                     title: `${noticeCount} ${noticeCount === 1 ? "notice" : "notices"} about this workflow and its run.` }) : null,
                 test ? panelButton("calls", { label: "Test calls", glyph: "calls", badge: openCalls || null, badgeLevel: openCalls ? "warning" : null,
                     title: openCalls ? `${openCalls} ${openCalls === 1 ? "call waits" : "calls wait"} for an answer.` : "The test run's calls and its virtual clock." }) : null,
@@ -236,7 +240,7 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
             definition
                 ? h(WorkflowGraph, { definition, nodes, selected, select: selectNode, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                     places, onPlaces })
-                : v2 ? h(WorkflowV2NoGraph, { projection: v2 })
+                : v2 ? h(WorkflowV2NoGraph, { projection: v2, drafting })
                 : h("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                     view.error || "Loading workflow graph…",
                     view.error ? h("button", { type: "button", className: "ps-mini-button",
@@ -296,7 +300,7 @@ function WorkflowSidePanel({ controller, workflow, log, notice }) {
  */
 export function WorkflowNodePane({ controller, log = null }) {
     const workflow = useWorkflowView(controller);
-    const { sessionId, session, view, selected, select, nodes, v2, events, sidePanel, runNotice, noticeInYaml } = workflow;
+    const { sessionId, session, view, selected, select, nodes, v2, events, sidePanel, runNotice, noticeInYaml, drafting } = workflow;
     // The session rows loaded: the sessions under an agent step (owner decision q14; mock M14 "View owned subtree").
     const sessionsById = useControllerSelector(controller, state => state.sessions.byId);
     const [tab, setTab] = React.useState("details");
@@ -306,7 +310,7 @@ export function WorkflowNodePane({ controller, log = null }) {
     const notice = runNotice && !noticeInYaml ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }) : null;
     if (sidePanel) return h(WorkflowSidePanel, { controller, workflow, log, notice });
     const details = () => {
-        if (!selected && v2) return React.createElement(WorkflowV2NoGraph, { projection: v2 });
+        if (!selected && v2) return React.createElement(WorkflowV2NoGraph, { projection: v2, drafting });
         if (!selected) return React.createElement("div", { className: "ps-workflow-empty" },
             view.error || "Select a workflow step to see its details.");
         const property = (label, value) => React.createElement("div", { className: "ps-workflow-property", key: label },

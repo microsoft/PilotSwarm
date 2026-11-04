@@ -5395,7 +5395,11 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-log > .ps-chat-panel { height: 100%; border: 0; border-radius: 0; }
 /* In the side pane the bar above already says "Step log". */
 .ps-workflow-log .ps-chat-panel > .ps-panel-header { display: none; }
-.ps-workflow-empty { padding: 20px; color: var(--ps-muted); display: grid; gap: 12px; }
+/* Owner batch 7 (H1): compact at the top of the graph area and of the side pane, scrolled when long. */
+.ps-workflow-empty { padding: 20px; color: var(--ps-muted); display: grid; gap: 12px; align-content: start; min-height: 0; overflow: auto; }
+.ps-workflow-empty.is-drafting > strong { color: var(--ps-foreground); }
+.ps-workflow-draft-errors > summary { cursor: pointer; }
+.ps-workflow-draft-errors > .ps-workflow-diagnostics { margin-top: 8px; }
 .ps-workflow-node-details { height: 100%; overflow: auto; padding: 16px; }
 .ps-workflow-node-details header small { color: var(--ps-muted); font-size: 0.75rem; letter-spacing: 0.06em; }
 .ps-workflow-node-details h2 { margin: 8px 0; font-size: 1.2rem; overflow-wrap: anywhere; }

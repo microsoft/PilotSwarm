@@ -4,6 +4,7 @@ import {
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
     workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2ShownNotices, workflowV2VisitEnding, workflowV2WholeValue,
     describeWorkflowV2Execution, workflowV2BranchChoice, workflowV2BranchList, workflowV2BranchNumber, workflowV2BranchSteps, workflowV2ForEachText,
+    workflowV2RevisionErrorsText,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -97,8 +98,21 @@ export function WorkflowV2Diagnostics({ diagnostics }) {
         ": ", item.message)));
 }
 
-/** Shown in place of the graph when the read model has no graph to draw: draft without a graph, invalid, or unrecognized. */
-export function WorkflowV2NoGraph({ projection }) {
+/**
+ * Shown in place of the graph when the read model has no graph to draw: draft without a graph, invalid, or unrecognized.
+ * Owner batch 7 (H1): while the parent agent is still writing the latest revision (`drafting`, workflowV2DraftInProgress),
+ * it says so calmly, with that revision's errors folded under one line; no alert. Otherwise, as before.
+ */
+export function WorkflowV2NoGraph({ projection, drafting = null }) {
+    if (drafting) {
+        return h("div", { className: "ps-workflow-empty is-drafting", role: "status", "data-drafting": drafting.revision },
+            h("strong", null, "The agent is still writing this workflow."),
+            h("details", { className: "ps-workflow-draft-errors" },
+                h("summary", null, workflowV2RevisionErrorsText(drafting.revision, drafting.errors)),
+                h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics })),
+            // Any other notice, as before; the revision's own errors are the folded line above.
+            h(WorkflowV2Banners, { banners: workflowV2ShownNotices(projection.banners, { draftInProgress: drafting }).filter(banner => !banner.quiet) }));
+    }
     const alert = projection.banners.some(banner => banner.level === "error");
     return h("div", { className: "ps-workflow-empty", role: alert ? "alert" : "status" },
         h("strong", null, projection.modelStatus === "invalid" ? "This workflow definition is invalid" : "No workflow graph to show"),

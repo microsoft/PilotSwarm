@@ -230,11 +230,20 @@ export function annotateWorkflowV2Edges(definition, layout) {
 /**
  * The notices the portal lists behind its Notices button (owner batch 5, g-03): the projection's banners about the
  * definition and the shown run, each with a level and its text. "No run yet" is left out: the run's status says it
- * (g-07). Pure.
+ * (g-07). Owner batch 7 (H1): while the parent agent is still writing the latest revision (`draftInProgress`,
+ * workflowV2DraftInProgress), that revision's errors are said calmly, as information that is not counted (`quiet`).
+ * Pure.
  */
-export function workflowV2ShownNotices(banners) {
-    return Array.isArray(banners)
-        ? banners.filter(banner => isRecord(banner) && typeof banner.text === "string" && banner.text && banner.code !== "no-run") : [];
+export function workflowV2ShownNotices(banners, { draftInProgress = null } = {}) {
+    if (!Array.isArray(banners)) return [];
+    return banners.filter(banner => isRecord(banner) && typeof banner.text === "string" && banner.text && banner.code !== "no-run")
+        .map(banner => (draftInProgress && banner.code === "invalid-revision"
+            ? { level: "info", code: "draft-in-progress", quiet: true, text: `The agent is still writing this workflow. ${banner.text}` } : banner));
+}
+
+/** How many notices the Notices button counts: every shown notice but the quiet ones (H1). Pure. */
+export function workflowV2NoticeCount(notices) {
+    return Array.isArray(notices) ? notices.filter(notice => !notice?.quiet).length : 0;
 }
 
 /** The most serious level among notices, for the Notices button's tint: "error", "warning", "info", or null for none. */
@@ -472,7 +481,9 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
     if (!revision.valid) {
         const errors = diagnostics.filter(item => item.severity === "error").length;
         status = graph ? "ready" : "invalid";
-        banners.push({ level: "error", text: `Revision ${revision.revision} has ${errors || "unlisted"} error${errors === 1 ? "" : "s"} and cannot run.`
+        // Its code lets the screen say it calmly while the parent agent is still writing it (owner batch 7, H1).
+        banners.push({ level: "error", code: "invalid-revision",
+            text: `Revision ${revision.revision} has ${errors || "unlisted"} error${errors === 1 ? "" : "s"} and cannot run.`
             + (graph ? ` Showing revision ${graph.revision}.` : "") });
     } else if (!graph) {
         status = "unavailable";
@@ -551,7 +562,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
     if (history?.error) banners.push({ level: "warning", text: `Older history could not be read: ${history.error}` });
     return {
         ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, workflowBanners, run, overlay, runRevision, waitingReplies,
-        lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision,
+        lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision, latestRevision: revision.revision,
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
         // What publication pinned each named agent state to (migration 0103; only a definition with any has them).
         publishedAgentPins: isRecord(lifecycle.publishedAgentPins) ? lifecycle.publishedAgentPins : null,
@@ -946,7 +957,26 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
         output: bound ? run?.output ?? null : null, error: bound ? run?.error ?? null : null, modelStatus: shared?.status ?? null,
         // Why the shown run ended (owner decision q14), from its read and its end events; null while it runs.
         ending: bound && run && status.ended ? workflowV2RunEnding(run, events) : null,
+        // The workflow's latest revision: its number, whether it is valid, and its errors (owner batch 7, H1).
+        latest: shared?.ok ? { revision: shared.latestRevision, valid: shared.validRevision,
+            errors: shared.diagnostics.filter(item => item.severity === "error").length } : null,
     };
+}
+
+/**
+ * Whether the workflow's parent agent is still writing its latest revision (owner batch 7, H1): that revision is not
+ * valid, and `parentWorking` (the parent agent's session is in a turn: workflowParentWorking). `{ revision, errors }`
+ * for the calm in-progress screen, or null for today's invalid state. Pure.
+ */
+export function workflowV2DraftInProgress(projection, parentWorking) {
+    const latest = projection?.latest;
+    if (parentWorking !== true || !isRecord(latest) || latest.valid !== false) return null;
+    return { revision: latest.revision, errors: latest.errors };
+}
+
+/** "Revision 3 has 2 errors" (or "unlisted errors" when the read lists none). Pure. */
+export function workflowV2RevisionErrorsText(revision, errors) {
+    return `Revision ${revision} has ${errors || "unlisted"} error${errors === 1 ? "" : "s"}`;
 }
 
 /** Collapse neighbouring executions that ended the same way, with the same output, into one row. The raw list stays available to the caller. */
