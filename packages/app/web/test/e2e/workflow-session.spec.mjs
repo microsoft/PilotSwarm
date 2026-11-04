@@ -650,7 +650,7 @@ test("the main workflow graph follows live ticks and selection drives canvas nod
 });
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    test(`workflow graph, resizable log and node detail navigation at ${viewport.width}px`, async ({ page }) => {
+    test(`workflow graph, the step log in the side pane and node detail navigation at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
         page.on("pageerror", error => errors.push(error.message));
@@ -658,21 +658,16 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = page.locator(".ps-workflow-main");
         await expect(main.locator(".ps-workflow-graph")).toBeVisible();
-        // Batch 5 (g-03): closed by default; the Step log button opens it below the graph with its divider.
+        // Batch 6 (r-3): the step log is a side-pane panel; the main pane never holds it, and it has no divider.
         await expect(main.locator(".ps-workflow-log")).toHaveCount(0);
-        await expect(main.getByRole("separator", { name: "Resize the step log" })).toHaveCount(0);
+        await expect(page.getByRole("separator", { name: "Resize the step log" })).toHaveCount(0);
         await main.getByRole("button", { name: "Step log", exact: true }).click();
-        await expect(main.locator(".ps-workflow-log .ps-chat-panel")).toBeVisible();
-        const divider = main.getByRole("separator", { name: "Resize the step log" });
-        const before = await main.locator(".ps-workflow-log").boundingBox();
-        await divider.focus();
-        await page.keyboard.press("ArrowDown");
-        await expect.poll(async () => (await main.locator(".ps-workflow-log").boundingBox()).height).toBeLessThan(before.height);
-        const box = await divider.boundingBox();
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        await page.mouse.down();
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 35, { steps: 4 });
-        await page.mouse.up();
+        const sideLog = page.locator('.ps-workflow-side-panel[data-panel="log"]').filter({ visible: true });
+        await expect(sideLog.locator(".ps-workflow-log .ps-chat-panel")).toBeVisible();
+        await expect(main.locator(".ps-workflow-log")).toHaveCount(0);
+        await expect(page.getByRole("separator", { name: "Resize the step log" })).toHaveCount(0);
+        // A phone: back from the details layer to the graph.
+        if (viewport.width < 920) await page.getByRole("button", { name: /^Sessions — / }).click();
         await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
         if (viewport.width < 920) {
             // On a phone a tap only selects the step and keeps the workflow on screen (flow-04), even for collect, the step
@@ -920,7 +915,11 @@ test("a v2 workflow's read model failure is shown beside its graph, and Retry re
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = page.locator(".ps-workflow-main");
     const graph = main.getByRole("group", { name: "Workflow graph" });
-    const alert = main.locator(".ps-workflow-read-error");
+    // Batch 6 (r-3): the Notices button says there is an error; its panel in the side pane shows it, with Retry.
+    const noticesButton = main.getByRole("button", { name: "Notices", exact: true });
+    await expect(noticesButton.locator(".ps-workflow-tool-badge")).toHaveAttribute("data-level", "error");
+    await noticesButton.click();
+    const alert = page.locator('.ps-workflow-side-panel[data-panel="notices"] .ps-workflow-read-error');
     await expect(alert).toBeVisible();
     await expect(alert).toHaveAttribute("role", "alert");
     await expect(alert).toContainText("could not be read: The workflow store is not reachable.");
@@ -1035,7 +1034,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         const readsBefore = reads.count;
         await controls.getByRole("button", { name: "Stop", exact: true }).click();
         await dialog.getByRole("button", { name: "Stop Run", exact: true }).click();
-        const notice = main.locator(".ps-workflow-run-command-notice");
+        const notice = page.locator(".ps-workflow-run-command-notice");
         await expect(notice).toHaveAttribute("role", "alert");
         await expect(notice).toHaveAttribute("data-level", "error");
         await expect(notice.locator("span").first()).toHaveText("Stop was refused for run run-1: The run already ended.");
@@ -1089,7 +1088,7 @@ test("v2 commands: an unconfirmed pause is retried with the same operation id, n
     await expect(controls.locator('[data-operation="cancel"]')).toHaveAttribute("data-title", "Another command for this workflow is being sent.");
     release();
 
-    const notice = main.locator(".ps-workflow-run-command-notice");
+    const notice = page.locator(".ps-workflow-run-command-notice");
     await expect(notice).toHaveAttribute("data-level", "warning");
     await expect(notice.locator("span").first()).toHaveText(
         "Pause for run run-1 may not have reached the workflow: The workflow store is not reachable. Retry sends the same command again.");
@@ -1125,7 +1124,8 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = page.locator(".ps-workflow-main");
-    const clock = main.getByRole("group", { name: "Virtual clock", exact: true });
+    // Batch 6 (r-3): the Test calls panel is in the side pane.
+    const clock = page.getByRole("group", { name: "Virtual clock", exact: true });
     // Batch 5 (g-03): the clock is with the test run's calls, behind the Test calls button.
     await expect(clock).toHaveCount(0);
     await main.getByRole("button", { name: "Test calls", exact: true }).click();
@@ -1151,7 +1151,7 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
 
     // A refusal is shown with the server's reason (generic code: the mapping is not code-specific).
     await clock.getByRole("button", { name: "Advance", exact: true }).click();
-    const notice = main.locator(".ps-workflow-run-command-notice");
+    const notice = page.locator(".ps-workflow-run-command-notice");
     await expect(notice.locator("span").first()).toHaveText("The clock advance was refused for run run-1: The test run ended.");
     expect(commands).toHaveLength(2);
     expect(commands[1].operation_id).not.toBe(commands[0].operation_id);
@@ -1164,7 +1164,7 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
 // shown whenever the run has any, as before batch 5, not only once it ended).
 // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "graph only" (from packages/app/web, after build).
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    test(`the workflow pane opens with the graph only, and each panel opens from its own button, at ${viewport.width}px`, async ({ page }) => {
+    test(`the workflow pane opens with the graph only, and each panel opens in the side pane from its own button, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
@@ -1172,21 +1172,40 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = page.locator(".ps-workflow-main");
         await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
-        for (const selector of [".ps-workflow-log", ".ps-workflow-banners", ".ps-workflow-test-calls", ".ps-workflow-run-activity"]) {
+        for (const selector of [".ps-workflow-log", ".ps-workflow-banners", ".ps-workflow-test-calls", ".ps-workflow-run-activity", ".ps-workflow-side-panel"]) {
             await expect(main.locator(selector)).toHaveCount(0);
         }
         await shot(page, `graph-only-${viewport.width}`);
-        for (const [name, selector] of [["Step log", ".ps-workflow-log"], ["Run activity", ".ps-workflow-run-activity"], ["Notices", ".ps-workflow-banners"],
-            ["Test calls", ".ps-workflow-test-calls"]]) {
+        const desktop = viewport.width >= 920;
+        for (const [name, panel, selector] of [["Step log", "log", ".ps-workflow-log"], ["Run activity", "activity", ".ps-workflow-run-activity"],
+            ["Notices", "notices", ".ps-workflow-banners"], ["Test calls", "calls", ".ps-workflow-test-calls"]]) {
             const button = main.getByRole("button", { name, exact: true });
             await expect(button).toHaveAttribute("aria-expanded", "false");
             await button.click();
-            await expect(button).toHaveAttribute("aria-expanded", "true");
-            await expect(main.locator(selector)).toBeVisible();
-            if (name === "Run activity") await expect(main.locator(selector)).toContainText("Activity of this run (1)");
-            await button.click();
-            await expect(button).toHaveAttribute("aria-expanded", "false");
+            const shown = page.locator(`.ps-workflow-side-panel[data-panel="${panel}"]`).filter({ visible: true });
+            await expect(shown).toBeVisible();
+            await expect(shown.locator("h2")).toHaveText(name);
+            await expect(shown.getByRole("button", { name: "Back to Step details", exact: true })).toBeVisible();
+            await expect(shown.locator(selector)).toBeVisible();
+            // One panel at a time, never in the main pane.
+            await expect(page.locator(".ps-workflow-side-panel").filter({ visible: true })).toHaveCount(1);
             await expect(main.locator(selector)).toHaveCount(0);
+            if (name === "Run activity") await expect(shown.locator(selector)).toContainText("Activity of this run (1)");
+            if (desktop) {
+                // Pressed only while the side pane shows it; a second press goes back to Step details.
+                await expect(button).toHaveAttribute("aria-expanded", "true");
+                await button.click();
+                await expect(button).toHaveAttribute("aria-expanded", "false");
+                await expect(shown).toHaveCount(0);
+                await expect(page.locator(".ps-workflow-node-details").filter({ visible: true })).toBeVisible();
+            } else {
+                // A phone: the details layer shows the panel; Back to Step details shows the step, and the toolbar returns to
+                // the graph.
+                await shown.getByRole("button", { name: "Back to Step details", exact: true }).click();
+                await expect(shown).toHaveCount(0);
+                await page.getByRole("button", { name: /^Sessions — / }).click();
+                await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+            }
         }
         const badge = main.getByRole("button", { name: "Notices", exact: true }).locator(".ps-workflow-tool-badge");
         await expect(badge).toHaveText(/^[1-9]\d*$/);
@@ -1212,7 +1231,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(main.getByRole("combobox", { name: "Workflow run" })).toHaveCount(0);
         await expect(main.getByRole("button", { name: "Notices", exact: true })).toHaveCount(0);
         await main.getByRole("button", { name: "Step log", exact: true }).click();
-        const log = main.locator(".ps-workflow-log");
+        // Batch 6 (r-3): the step log is a side-pane panel.
+        const log = page.locator('.ps-workflow-side-panel[data-panel="log"] .ps-workflow-log').filter({ visible: true });
         await expect(log).toContainText("No step output yet.");
         await expect(log).not.toContainText("No messages yet.");
         await expect(log.locator(".is-splash-desktop, .is-splash-mobile")).toHaveCount(0);
@@ -1239,7 +1259,8 @@ test("v2 commands: the workflow screen's edit boxes share one theme style and ma
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = page.locator(".ps-workflow-main");
     await main.getByRole("button", { name: "Variables", exact: true }).click();
-    const form = main.getByRole("form", { name: "Set or remove a variable", exact: true });
+    // Batch 6 (r-3): the Variables panel is in the side pane.
+    const form = page.getByRole("form", { name: "Set or remove a variable", exact: true });
     const name = form.getByRole("textbox", { name: "Name", exact: true });
     const value = form.getByRole("textbox", { name: "Value (JSON)", exact: true });
     await expect(name).toHaveClass(/\bps-workflow-input\b/);
@@ -1432,7 +1453,7 @@ test("v2 commands: a draft save whose answer is lost keeps the edit and Retry se
     await expect(save).toBeEnabled();
     await save.click();
 
-    const notice = main.locator(".ps-workflow-run-command-notice");
+    const notice = page.locator(".ps-workflow-run-command-notice");
     await expect(notice).toHaveAttribute("data-level", "warning");
     await expect(notice.locator("span").first()).toHaveText(/^Saving the draft may not have reached the workflow: .+ Retry sends the same command again\.$/);
     await expect(yaml).toHaveValue(DRAFT_YAML_2); // the edit survives the lost answer
@@ -1447,53 +1468,6 @@ test("v2 commands: a draft save whose answer is lost keeps the edit and Retry se
     await expect(save).toBeDisabled();
     expect(errors).toEqual([]);
 });
-
-// F-06 (batch 4, UX resize report): the panels a person opens above the graph never crush the graph and the step log. With
-// the draft editor and Publish review both open, the graph, the log's divider and the log keep at least 262px together
-// (150 + 12 + 100) and the divider is on screen and takes the pointer; the panels scroll inside their own area, so the
-// review's last button is reachable. At 1440 the pane itself does not scroll.
-// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "F-06" (from packages/app/web, after build).
-const PANELS_MODEL = {
-    ...V2_READ_MODEL,
-    definition: { state: "draft", semver: "1.0.0", currentRevision: 1, publishedRevision: null, publishedDefinitionHash: null },
-    personCommands: { operations: ["replace_definition", "publish", "publish_and_start"], viewer: { allowed: true },
-        draft: { revision: 1, definitionHash: "hash-1", yaml: DRAFT_YAML_1 } },
-};
-for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    test(`F-06: with the draft editor and Publish review open the graph and step log keep 262px and the log divider stays on screen at ${viewport.width}px`, async ({ page }) => {
-        await page.setViewportSize(viewport);
-        const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
-        const { commands } = await routeV2(page, { readModel: () => PANELS_MODEL, onCommand: (route, command) => accept(route, command) });
-        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
-        const main = page.locator(".ps-workflow-main");
-        // Batch 5 (g-03): the step log is closed by default; this case opens it with the two panels.
-        await main.getByRole("button", { name: "Step log", exact: true }).click();
-        await main.getByRole("button", { name: "Edit draft", exact: true }).click();
-        await main.getByRole("button", { name: "Publish…", exact: true }).click();
-        await expect(main.getByRole("region", { name: "Draft editor", exact: true })).toBeAttached();
-        const review = main.getByRole("region", { name: "Publish review", exact: true });
-        await expect(review).toBeAttached();
-        const split = main.locator(".ps-workflow-split");
-        await expect.poll(async () => (await split.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(261);
-        if (viewport.width >= 920) expect(await main.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
-        const divider = main.getByRole("separator", { name: "Resize the step log", exact: true });
-        await divider.scrollIntoViewIfNeeded();
-        const box = await divider.boundingBox();
-        expect(box.y).toBeGreaterThanOrEqual(0);
-        expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
-        const hit = await page.evaluate(([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest(".ps-workflow-log-resizer")),
-            [box.x + box.width / 2, box.y + box.height / 2]);
-        expect(hit).toBe(true);
-        // The panels area scrolls on its own: the review's Publish only button can be brought into view.
-        const publish = review.locator('[data-operation="publish"]');
-        await publish.scrollIntoViewIfNeeded();
-        await expect(publish).toBeInViewport();
-        await shot(page, `f06-panels-open-${viewport.width}`);
-        expect(commands).toEqual([]);
-        expect(errors).toEqual([]);
-    });
-}
 
 // ------------------------------------------------------------------------------------------------------------
 // Batch 6 (f-03): step boxes can be moved, and where a person put them is kept in their profile (workflowLayouts,
@@ -1836,5 +1810,48 @@ test("r-2: a published revision's YAML is read-only, and a person who may not ch
     const denied = page.locator(".ps-workflow-main").getByRole("region", { name: "Workflow YAML", exact: true });
     await expect(denied.getByRole("status")).toHaveText("The YAML is shown to people who can change this workflow.");
     await expect(denied.getByRole("textbox")).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// Batch 6 (r-3): the side pane hosts every panel. Selecting a step shows Step details again; the step log fills the
+// side pane with no second "Step log" header; a refused run control brings the side pane up with the notice above what
+// it shows.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "r-3:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("r-3: the step log fills the side pane, a step on the graph shows Step details again, and a refusal shows above it", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { onCommand: (route) => refuse(route, 409, "RUN_NOT_ACTIVE", "The run already ended.") });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    const side = page.getByRole("region", { name: "Session canvas" });
+
+    await main.getByRole("button", { name: "Step log", exact: true }).click();
+    const log = side.locator('.ps-workflow-side-panel[data-panel="log"]');
+    await expect(log).toBeVisible();
+    await expect(log.getByText("Step log", { exact: true })).toHaveCount(1);
+    const body = await side.locator(".ps-side-pane-body").boundingBox();
+    const shown = await log.locator(".ps-workflow-log").boundingBox();
+    expect(shown.height).toBeGreaterThan(body.height * 0.75);
+
+    // Selecting a step on the graph shows Step details again.
+    await graph.getByRole("button", { name: "Inspect pause", exact: true }).click();
+    await expect(log).toHaveCount(0);
+    await expect(side.locator(".ps-workflow-node-details h2")).toHaveText("pause");
+    await expect(main.getByRole("button", { name: "Step log", exact: true })).toHaveAttribute("aria-expanded", "false");
+
+    // A refused pause: the notice shows in the side pane, above what it shows.
+    await main.getByRole("group", { name: "Run controls", exact: true }).locator('[data-operation="pause"]').click();
+    const notice = side.locator(".ps-workflow-run-command-notice");
+    await expect(notice).toBeVisible();
+    await expect(notice.locator("span").first()).toHaveText("Pause was refused for run run-1: The run already ended.");
+    const noticeBox = await notice.boundingBox();
+    const detailsBox = await side.locator(".ps-workflow-node-details").boundingBox();
+    expect(noticeBox.y + noticeBox.height).toBeLessThanOrEqual(detailsBox.y + 1);
+    await shot(page, "r3-side-pane-notice");
     expect(errors).toEqual([]);
 });
