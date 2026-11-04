@@ -185,6 +185,9 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
         setTab(MAIN_TABS[next][0]);
         if (typeof document !== "undefined") document.getElementById(`${tabsId}-${MAIN_TABS[next][0]}`)?.focus();
     };
+    // f-06: the graph's view (x, y, zoom) is remembered for this workflow, so tabs, panels and sessions give it back exactly.
+    const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }),
+        [controller, sessionId]);
     const noticeCount = notices.length + (readError ? 1 : 0);
     const openCalls = workflowV2OpenCalls(test);
     const title = definition?.name || session?.title || "Workflow";
@@ -218,7 +221,7 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
         h("div", { id: `${tabsId}-graph-panel`, className: "ps-workflow-graph-region", hidden: mainTab !== "graph" || undefined,
             ...(v2 ? { role: "tabpanel", "aria-labelledby": `${tabsId}-graph` } : {}) },
             definition
-                ? h(WorkflowGraph, { definition, nodes, selected, select: selectNode })
+                ? h(WorkflowGraph, { definition, nodes, selected, select: selectNode, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView })
                 : v2 ? h(WorkflowV2NoGraph, { projection: v2 })
                 : h("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                     view.error || "Loading workflow graph…",

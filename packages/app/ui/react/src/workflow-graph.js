@@ -47,8 +47,8 @@ export function WorkflowEdgeShape({ edge, markerEnd }) {
 
 /**
  * What decides the graph's layout, as one string: the steps and their routes, the first step and the revision. A run's
- * progress changes the steps' states, never this, so the layout is computed (and the view fitted) only when the graph
- * itself changes.
+ * progress changes the steps' states, never this, so the layout is computed (and a view without a remembered one fitted)
+ * only when the graph itself changes.
  */
 export function workflowGraphKey(definition) {
     const states = Array.isArray(definition?.states) ? definition.states : [];
@@ -82,13 +82,18 @@ function loadFlow() {
 }
 
 /**
- * The graph area's content: React Flow once it is loaded (keyed by the graph, so a new definition or revision fits the
- * view again while a run's progress keeps the person's zoom and position), the plain picture until then.
+ * The graph area's content: React Flow once it is loaded, the plain picture until then. The flow is keyed by `scope` (the
+ * workflow's session) and the graph, so another workflow or a new definition or revision starts a new view while a run's
+ * progress keeps the person's zoom and position. Batch 6 (f-06): `viewport` is the view remembered for this workflow
+ * ({ key, x, y, zoom }); it is used only for the graph it was taken of (its `key`), and `onViewport` is given each new one
+ * with that key.
  */
-export function WorkflowGraph({ definition, nodes, selected, select }) {
+export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null }) {
     const key = workflowGraphKey(definition);
     // The key holds everything of the definition the layout reads.
     const layout = React.useMemo(() => layoutWorkflowGraphTB(definition), [key]);
+    const remembered = viewport && viewport.key === key ? viewport : null;
+    const report = React.useCallback(next => { onViewport?.({ key, ...next }); }, [key, onViewport]);
     const [Flow, setFlow] = React.useState(() => flowModule?.WorkflowFlow ?? null);
     React.useEffect(() => {
         if (Flow) return undefined;
@@ -97,5 +102,6 @@ export function WorkflowGraph({ definition, nodes, selected, select }) {
         return () => { live = false; };
     }, [Flow]);
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
-        Flow ? h(Flow, { key, layout, nodes, selected, select }) : h(WorkflowGraphStatic, { layout, nodes, selected, select }));
+        Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report })
+            : h(WorkflowGraphStatic, { layout, nodes, selected, select }));
 }

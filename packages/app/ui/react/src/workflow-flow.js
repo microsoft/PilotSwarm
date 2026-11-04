@@ -18,10 +18,15 @@ const h = React.createElement;
  *
  * The view is fitted from the layout's own bounds (getViewportForBounds + setViewport), not by React Flow's fitView,
  * which waits for every step to be measured: our steps are given with their sizes, and a run's progress hands React
- * Flow new step objects, which drops what it measured, so a queued fitView could wait for ever (batch 5 T8). The view
- * follows the graph's area (fitted when it first has a size, and again when the area changes size) until the person
- * moves or zooms it; Fit to screen fits it and follows again. A new graph (definition or revision) mounts a new flow,
- * fitted again; a run's progress never moves the view.
+ * Flow new step objects, which drops what it measured, so a queued fitView could wait for ever (batch 5 T8).
+ *
+ * Batch 6 (f-06): the view is fitted once, when the graph is first shown with a size and there is no remembered view.
+ * After that a change of the area's size (the side pane opened, closed or resized, the window resized, the tab shown
+ * again) keeps the zoom and keeps the graph's top-left where it was; only Fit to screen fits again. Each change of the
+ * view (x, y, zoom), the person's or a button's, is reported once it ends (`onViewport`), and the remembered view
+ * (`viewport`) is where a new flow starts, so switching tabs, panels or sessions and back restores it exactly. A new
+ * graph (definition or revision) mounts a new flow; without a remembered view of its own it is fitted once. A run's
+ * progress never moves the view.
  */
 
 const MIN_ZOOM = 0.2;
@@ -61,8 +66,15 @@ const NODE_TYPES = { workflowStep: StepNode };
 const EDGE_TYPES = { workflowEdge: StepEdge };
 const panZoomReady = state => Boolean(state.panZoom);
 
-/** The controls, and the fitting: `follow` is true while the view keeps fitted to the graph's area. */
-function GraphView({ layout, area, follow, hand, onHand }) {
+/** A remembered view React Flow can start from: finite x and y, and a zoom it allows. */
+export function workflowViewportOf(value) {
+    if (!value || typeof value !== "object") return null;
+    const { x, y, zoom } = value;
+    return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(zoom) && zoom >= MIN_ZOOM && zoom <= MAX_ZOOM ? { x, y, zoom } : null;
+}
+
+/** The controls, and the one automatic fit: `fitted` is true once the view was fitted or started from a remembered one. */
+function GraphView({ layout, area, fitted, hand, onHand }) {
     const flow = useReactFlow();
     const ready = useStore(panZoomReady);
     const fit = React.useCallback(options => {
@@ -70,29 +82,34 @@ function GraphView({ layout, area, follow, hand, onHand }) {
         flow.setViewport(workflowFitViewport(layout, area), options);
     }, [flow, layout, area]);
     React.useEffect(() => {
-        if (ready && follow.current) fit();
-    }, [ready, fit, follow]);
+        if (!ready || !area || fitted.current) return;
+        fitted.current = true;
+        fit();
+    }, [ready, area, fit, fitted]);
     const zoom = by => {
-        follow.current = false;
         if (by > 0) flow.zoomIn({ duration: ZOOM_DURATION_MS });
         else flow.zoomOut({ duration: ZOOM_DURATION_MS });
     };
     return h(Panel, { position: "bottom-left", className: "ps-workflow-graph-controls", role: "group", "aria-label": "Graph view" },
         h(WorkflowToolButton, { label: "Zoom in", glyph: "zoom-in", onClick: () => zoom(1) }),
         h(WorkflowToolButton, { label: "Zoom out", glyph: "zoom-out", onClick: () => zoom(-1) }),
-        h(WorkflowToolButton, { label: "Fit to screen", glyph: "fit",
-            onClick: () => { follow.current = true; fit({ duration: FIT_DURATION_MS }); } }),
+        h(WorkflowToolButton, { label: "Fit to screen", glyph: "fit", onClick: () => fit({ duration: FIT_DURATION_MS }) }),
         h(WorkflowToolButton, { label: "Move the graph", glyph: "hand", "aria-pressed": hand,
             title: hand ? "Drag the background to move the graph; pinch or scroll to zoom. Turn it off to keep the graph still."
                 : "The graph stays still. Turn it on to move it by dragging and to zoom by pinching or scrolling.",
             onClick: () => onHand(!hand) }));
 }
 
-/** `layout` from layoutWorkflowGraphTB; `nodes` the step views; `select(id)` selects a step (and may open its details). */
-export function WorkflowFlow({ layout, nodes, selected, select }) {
+/**
+ * `layout` from layoutWorkflowGraphTB; `nodes` the step views; `select(id)` selects a step (and may open its details);
+ * `viewport` the remembered view this flow starts from (read when it mounts), `onViewport(view)` told each view once it
+ * settles.
+ */
+export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null }) {
     const [hand, setHand] = React.useState(true);
     const hostRef = React.useRef(null);
-    const follow = React.useRef(true);
+    const [start] = React.useState(() => workflowViewportOf(viewport));
+    const fitted = React.useRef(start !== null);
     const [area, setArea] = React.useState(null);
     React.useEffect(() => {
         const host = hostRef.current;
@@ -142,11 +159,12 @@ export function WorkflowFlow({ layout, nodes, selected, select }) {
         panActivationKeyCode: null, zoomActivationKeyCode: null, disableKeyboardA11y: true, autoPanOnNodeFocus: false,
         panOnDrag: hand, zoomOnScroll: hand, zoomOnPinch: hand, panOnScroll: false, zoomOnDoubleClick: false, preventScrolling: hand,
         minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM,
-        // The person moved or zoomed the view (a programmatic change has no event): it stops following the area's size.
-        onMove: event => { if (event) follow.current = false; },
+        ...(start ? { defaultViewport: start } : {}),
+        // Every settled view, the person's or a button's, so it can be restored exactly.
+        onMoveEnd: (_event, view) => { onViewport?.({ x: view.x, y: view.y, zoom: view.zoom }); },
         defaultMarkerColor: null,
         className: `ps-workflow-flow${hand ? " is-hand" : " is-still"}`,
     },
     h(Background, { variant: BackgroundVariant.Dots, gap: 18, size: 1 }),
-    h(GraphView, { layout, area, follow, hand, onHand: setHand }));
+    h(GraphView, { layout, area, fitted, hand, onHand: setHand }));
 }
