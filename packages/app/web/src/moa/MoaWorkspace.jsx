@@ -2,7 +2,7 @@ import React from "react";
 import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
-import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
+import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows, shortSessionId } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
 import { paneLayout, boxStyle, emptySessionPanes, MOA_PANE_GAP_PX } from "./pane-layout.js";
@@ -690,7 +690,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
         displayTree = visit(displayTree);
     }
     const geometry = paneLayout(displayTree);
-    const titleFor = node => `${node?.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${node?.type === "empty" ? "Empty panel" : state.sessions.byId[node?.sessionId]?.title || "Session"}`;
+    const titleFor = node => `${node?.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${node?.type === "empty" ? "Empty panel" : state.sessions.byId[node?.sessionId]?.title || shortSessionId(node?.sessionId)}`;
     const split = (node, direction) => {
         if (nodes.length >= MOA_MAX_PANELS) { setError(`A MoA supports up to ${MOA_MAX_PANELS} panels.`); return; }
         const empty = emptyMoaPanel();
@@ -786,10 +786,10 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
         <IconButton className="ps-moa-split-action" label="Split below" icon="below" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(node, "column")} />
     </>;
     function draw(node, style) {
-        const session = state.sessions.byId[node.sessionId], title = node.type === "empty" ? "Empty panel" : session?.title || "Session";
+        const title = titleFor(node);
         const active = selected === node.id;
-        return <section key={node.id} style={mobile ? undefined : style} hidden={mobile && !active} className={`ps-moa-panel ${active ? "is-focused" : ""} ${dragging.drag?.sourceId === node.id ? "is-drag-source" : ""}`} tabIndex={-1} data-moa-panel={visible ? node.id : undefined} data-session-id={visible ? node.sessionId : undefined} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onPointerDown={e => dragging.onPointerDown(e, node.id)} onLostPointerCapture={dragging.onLostPointerCapture} onPointerDownCapture={e => { if (e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onClickCapture={e => { dragging.onClickCapture(e); if (!e.isPropagationStopped()) setFocus(node.id); }} onFocusCapture={e => { if (e.target.matches?.(":focus-visible") || e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); if (dragging.drag) return; setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
-            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} panels={moa.panels} panelKey={`${layout.id}:${node.id}`} node={node} mobile={mobile} visible={visible} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={visible && active && !dashboardPicker && !dashboardEdit && !picker && !menu && !clearing && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={node.sessionId} refreshScheduler={moa.refreshScheduler} composerHost={composerHost} perChat={value.composerMode !== "shared"} onArtifact={(sessionId, filename) => zoom(node, { sessionId, filename })} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span></>, actions: <>{splitButtons(node)}<IconButton label="Focus panel" icon="focus" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
+        return <section key={node.id} style={mobile ? undefined : style} hidden={mobile && !active} className={`ps-moa-panel ${active ? "is-focused" : ""} ${dragging.drag?.sourceId === node.id ? "is-drag-source" : ""}`} tabIndex={-1} data-moa-panel={visible ? node.id : undefined} data-session-id={visible ? node.sessionId : undefined} aria-label={title} onPointerDown={e => dragging.onPointerDown(e, node.id)} onLostPointerCapture={dragging.onLostPointerCapture} onPointerDownCapture={e => { if (e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onClickCapture={e => { dragging.onClickCapture(e); if (!e.isPropagationStopped()) setFocus(node.id); }} onFocusCapture={e => { if (e.target.matches?.(":focus-visible") || e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); if (dragging.drag) return; setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
+            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} panels={moa.panels} panelKey={`${layout.id}:${node.id}`} node={node} mobile={mobile} visible={visible} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={visible && active && !dashboardPicker && !dashboardEdit && !picker && !menu && !clearing && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={node.sessionId} refreshScheduler={moa.refreshScheduler} composerHost={composerHost} perChat={value.composerMode !== "shared"} onArtifact={(sessionId, filename) => zoom(node, { sessionId, filename })} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{title}</span></>, actions: <>{splitButtons(node)}<IconButton label="Focus panel" icon="focus" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
 
         </section>;
     }
@@ -827,7 +827,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
         {mobile && visible && <header className="ps-mobile-focus-header" {...swipe}>
             <IconButton label="Back to normal view" icon="restore" onClick={moa.leave} />
             <div className="ps-mobile-session-heading">
-                <span className="ps-moa-panel-title ps-mobile-session-name">{state.sessions.byId[selectedNode?.sessionId]?.title || selectedNode?.sessionId || (selectedNode?.type === "empty" ? "Empty panel" : "Master of Agents")}</span>
+                <span className="ps-moa-panel-title ps-mobile-session-name">{selectedNode ? titleFor(selectedNode) : "Master of Agents"}</span>
                 <div ref={setMobileStatusHost} />
             </div>
             <IconButton label="Session control panel" icon="controls" onClick={() => setMenu(selectedNode || { id: null, type: "empty" })} />
@@ -857,10 +857,10 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
         {visible && mapOpen && <Modal title="Panel map" onClose={() => setMapOpen(false)}>
             <div className="ps-moa-map-body">
                 <div className="ps-moa-map" style={{ "--ps-moa-map-ratio": layout.aspectRatio || 16 / 9 }} aria-label="Desktop panel layout">
-                    {panelRects(layout.tree).map(({ node, x, y, width, height }, index) => <button key={node.id} className={node.id === selected ? "is-selected" : ""} style={{ left: `${x * 100}%`, top: `${y * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }} aria-label={`Panel ${panelNumber(node)}: ${state.sessions.byId[node.sessionId]?.title || "Empty panel"}`} aria-pressed={node.id === selected} onClick={() => { setFocus(node.id); setMapOpen(false); }}><b>{panelNumber(node)}</b><span>{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{state.sessions.byId[node.sessionId]?.title || "Empty panel"}</span></button>)}
+                    {panelRects(layout.tree).map(({ node, x, y, width, height }, index) => <button key={node.id} className={node.id === selected ? "is-selected" : ""} style={{ left: `${x * 100}%`, top: `${y * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }} aria-label={`Panel ${panelNumber(node)}: ${titleFor(node)}`} aria-pressed={node.id === selected} onClick={() => { setFocus(node.id); setMapOpen(false); }}><b>{panelNumber(node)}</b><span>{titleFor(node)}</span></button>)}
                 </div>
                 <div className="ps-moa-map-list" aria-label="All panels">
-                    {orderedNodes.map((node, index) => <button key={node.id} aria-current={node.id === selected ? "true" : undefined} onClick={() => { setFocus(node.id); setMapOpen(false); }}>{index + 1} · {node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{state.sessions.byId[node.sessionId]?.title || "Empty panel"}</button>)}
+                    {orderedNodes.map((node, index) => <button key={node.id} aria-current={node.id === selected ? "true" : undefined} onClick={() => { setFocus(node.id); setMapOpen(false); }}>{index + 1} · {titleFor(node)}</button>)}
                 </div>
                 <small>Swipe left for the next panel, right for the previous. Canvas: swipe the title bar.</small>
             </div>
@@ -885,7 +885,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
         </div></Modal>}
         {visible && picker && <SessionPicker controller={controller} initial={picker} onCreate={() => { setCreating(picker); setPicker(null); }} onClose={closePicker} onChoose={binding => { const next = { id: picker.id || crypto.randomUUID(), ...binding }; replace(picker.id, next, next.id); setPicker(null); }} />}
         {visible && menu && <Modal title="Session control panel" onClose={closeMenu}><div className="ps-moa-control-panel">
-            <p className="ps-moa-control-title">{state.sessions.byId[menu.sessionId]?.title || "Empty panel"}</p>
+            <p className="ps-moa-control-title">{titleFor(menu)}</p>
             {menu.type !== "empty" && <section aria-label="Session actions"><h3>Session</h3><div className="ps-moa-control-actions">
                 <div ref={setControlsHost} className="ps-moa-control-actions" />
             </div></section>}
