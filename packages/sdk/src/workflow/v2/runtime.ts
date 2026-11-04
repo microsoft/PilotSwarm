@@ -2490,14 +2490,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     };
     /** The value arriving at a node from its exact predecessor (or the initial input). */
     /**
-     * Whether the parent is to be told of a run that an accepted cancel ended
-     * before it began: a live run of a workflow with a parent that asked to be
-     * notified, unless that parent requested the cancel (the controller's rule).
+     * Whether the notifier is to run for a run that an accepted cancel ended
+     * before it began: a live run of a workflow with a parent, unless that
+     * parent requested the cancel (the controller's rule). It tells the parent,
+     * or records why it does not (notifications off; batch 7, n-2).
      */
     const parentToldOfCancelBeforeBegin = async (run: WorkflowRunRow): Promise<boolean> => {
         if (run.mode !== "live" || run.status !== "cancelled" || !cancelledBeforeBegin(run)) return false;
         const definition = await store.readDefinition(run.workflowSessionId);
-        if (!definition?.parentSessionId || !definition.notifyParent) return false;
+        if (!definition?.parentSessionId) return false;
         return cancelRequester(run) !== definition.parentSessionId;
     };
     /** The KV a node execution was admitted with (an execution from before KV revisions sees an empty map). */
@@ -3122,23 +3123,30 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * recent ids (RECENT_CLIENT_MESSAGE_ID_LIMIT); delivery is not otherwise
      * exactly once. This reads no IR, so a run whose IR cannot be read is
      * still reported.
+     *
+     * A live run whose parent is not told says so once (batch 7, n-2):
+     * workflow.parent_notification_skipped with the reason, "notifications
+     * are off" (the workflow's notify_parent is false) or "parent is gone"
+     * (its authority to be told is no longer there). A run the parent
+     * itself ended, and a workflow without a parent, record nothing.
      */
     register("notifyParent", async (_ctx, rawInput) => {
         const input = record(rawInput, "notify input");
         const run = await runOf(text(input.runId, "runId"));
         const requestedBy = input.requestedBy === undefined ? null : textOrNull(input.requestedBy, "requestedBy");
         const definition = await store.readDefinition(run.workflowSessionId);
-        if (!definition?.parentSessionId || !definition.notifyParent || run.mode !== "live") return null;
+        if (!definition?.parentSessionId || run.mode !== "live") return null;
         // The command's requester; for a run a cancel ended before it began, the requester its end records.
         const endedBy = requestedBy ?? (cancelledBeforeBegin(run) ? cancelRequester(run) : null);
         if (endedBy && endedBy === definition.parentSessionId) return null;
         const prior = await deps.catalog.getSessionEvents(run.workflowSessionId, 0, 50, ["workflow.parent_notified", "workflow.parent_notification_skipped"]);
         if (prior.some(event => isJsonObject(event.data) && event.data.runId === run.runId)) return null;
-        if (!await deps.authorizeParentNotification(run.workflowSessionId, definition.parentSessionId)) {
-            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notification_skipped",
-                data: { runId: run.runId, reason: "Parent authority is no longer available" } }]);
+        const skipped = async (reason: string): Promise<null> => {
+            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notification_skipped", data: { runId: run.runId, reason } }]);
             return null;
-        }
+        };
+        if (!definition.notifyParent) return await skipped("notifications are off");
+        if (!await deps.authorizeParentNotification(run.workflowSessionId, definition.parentSessionId)) return await skipped("parent is gone");
         const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
         const data = {
             sessionId: run.workflowSessionId, runId: run.runId,

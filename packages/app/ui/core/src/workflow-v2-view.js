@@ -1275,6 +1275,8 @@ const WORKFLOW_EVENT_TEXT = {
             summary: "parent told the run ended", color: "gray" }),
     },
     "workflow.parent_notification_skipped": {
+        // Batch 7 (n-2): a live run's end the parent agent was not told of, and why ("notifications are off", "parent is gone").
+        short: data => ({ text: `The parent agent was not told${because(data.reason)}.`, level: "warning" }),
         long: data => ({ text: `✉ The parent session was not told that the run ended${filled(data.reason) ? `: ${span(data.reason, 200)}` : "."}`,
             summary: "parent not told", color: "yellow" }),
     },

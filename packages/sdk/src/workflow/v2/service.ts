@@ -416,7 +416,8 @@ function parseRecoverReceipt(value: JsonValue): WorkflowV2RecoverReceipt {
 async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow): Promise<void> {
     if (run.mode !== "live" || run.status !== "failed" || !isJsonObject(run.terminalError) || run.terminalError.code !== "controller_ended") return;
     const definition = await host.store.readDefinition(run.workflowSessionId);
-    if (!definition?.parentSessionId || !definition.notifyParent) return;
+    // With notifications off the notifier records that the parent was not told (batch 7, n-2).
+    if (!definition?.parentSessionId) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
         { runId: run.runId }, runNotifyVersion(run));
 }
@@ -451,7 +452,8 @@ async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "
     const details = isJsonObject(error) && isJsonObject(error.details) ? error.details : null;
     if (run.mode !== "live" || run.status !== "cancelled" || !details || details.beforeBegin !== true || details.operationId !== operationId) return;
     const definition = await host.store.readDefinition(run.workflowSessionId);
-    if (!definition?.parentSessionId || !definition.notifyParent) return;
+    // With notifications off the notifier records that the parent was not told (batch 7, n-2).
+    if (!definition?.parentSessionId) return;
     if (details.requestedBy === definition.parentSessionId || callerSessionId === definition.parentSessionId) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
         { runId: run.runId }, runNotifyVersion(run));

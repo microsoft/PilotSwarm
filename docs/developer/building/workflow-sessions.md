@@ -287,6 +287,11 @@ deduplication covers pending messages and its last 20 consumed IDs. This is
 not an unbounded exactly-once guarantee. Delivery failures are recorded as
 `workflow.parent_notification_failed`; they do not replace the workflow's
 terminal result. A terminal, deleted or no-longer-authorized parent is skipped.
+When a version 2 live run ends and its parent is not told, the workflow records
+`workflow.parent_notification_skipped` once, with the reason (`notifications
+are off` or `parent is gone`); Run activity and the terminal show it ("The
+parent agent was not told: notifications are off."). A run the parent ended
+itself records nothing.
 Workflow names and outputs arrive as escaped JSON explicitly marked untrusted,
 not as executable instructions.
 
