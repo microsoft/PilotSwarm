@@ -3336,6 +3336,11 @@ export class PilotSwarmUiController {
         if (!force && current && Number.isFinite(current.fetchedAt) && (now - current.fetchedAt) < SESSION_STATS_REFRESH_MS) return;
 
         this.dispatch({ type: "sessionStats/loading", sessionId });
+        const computeStatus = typeof this.transport.getSessionComputeExecution === "function"
+            ? this.transport.getSessionComputeExecution(sessionId)
+                .then(execution => ({ computeExecution: execution, computeExecutionError: null }))
+                .catch(error => ({ computeExecution: null, computeExecutionError: error?.message || String(error) }))
+            : Promise.resolve({ computeExecution: null, computeExecutionError: null });
         try {
             const [summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace] = await Promise.all([
                 this.transport.getSessionMetricSummary(sessionId),
@@ -3361,9 +3366,9 @@ export class PilotSwarmUiController {
                     ? this.transport.getSessionWorkspace(sessionId).catch(() => null)
                     : null,
             ]);
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary, tokensByModel, treeStats, skillUsage, treeSkillUsage, factsStats, treeFactsStats, workspace, ...await computeStatus });
         } catch {
-            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, tokensByModel: [], treeStats: null, skillUsage: null, treeSkillUsage: null, factsStats: null, treeFactsStats: null });
+            this.dispatch({ type: "sessionStats/loaded", sessionId, summary: null, tokensByModel: [], treeStats: null, skillUsage: null, treeSkillUsage: null, factsStats: null, treeFactsStats: null, ...await computeStatus });
         }
     }
 

@@ -51,6 +51,7 @@ import type { Duplex } from "node:stream";
 import { computeCopyDigests, computeCopyManifest, forgetComputeDigest, type ComputeCopyPlan } from "./compute-assets.js";
 import { ComputeChannel, type ComputeChannelStream } from "./compute-channel.js";
 import type { RemoteMcpHostFacts } from "./compute-mcp.js";
+import { COMPUTE_NATIVE_STATE_MAX_BYTES } from "./compute-native-state.js";
 
 /** The most bytes one forwarded conversation carries in one direction. */
 export const COMPUTE_FORWARD_MAX_BYTES = 64 * 1024 * 1024;
@@ -118,6 +119,7 @@ interface ForwardGrant {
     /** The deployment's configuration, as the worker resolved it today. */
     config: any;
     caller: ComputeCallerStatement;
+    admit?: (operation: () => Promise<void>) => Promise<void>;
 }
 
 function vouchedEnv(caller: ComputeCallerStatement): Record<string, string> {
@@ -270,6 +272,8 @@ export function forwardHeaders(
 }
 
 export interface ComputeControlLinkOptions {
+    /** Captured when a ticket is minted; stale connections cannot borrow a later turn's admission. */
+    admissionForSession?: (sessionId: string) => ((operation: () => Promise<void>) => Promise<void>) | undefined;
     /** How long one forwarded conversation may carry in one direction. */
     maxForwardBytes?: number;
     /** How long one forwarded HTTP call may wait to be answered, and between bytes. */
@@ -340,6 +344,46 @@ export class ComputeControlLink {
 
     get isClosed(): boolean {
         return this.closed || this.channel.isClosed;
+    }
+
+    /** Native state uses the existing bounded channel, never a provider-specific file transfer. */
+    async nativeStateCall<T>(request: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+        if (this.isClosed || signal?.aborted) throw new Error("Native state control is unavailable");
+        const stream = this.channel.open("native-state", {});
+        const max = 2 * COMPUTE_NATIVE_STATE_MAX_BYTES + 1024 * 1024;
+        const body = Buffer.from(JSON.stringify(request));
+        if (body.length > max) { stream.close(); throw new Error("Native state request exceeds its byte budget"); }
+        return new Promise<T>((resolve, reject) => {
+            const parts: Buffer[] = [];
+            let size = 0, settled = false;
+            const finish = (error?: Error, value?: T) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                signal?.removeEventListener("abort", abort);
+                if (error) reject(error); else resolve(value!);
+            };
+            const abort = () => { finish(new Error("Native state operation cancelled")); stream.close(); };
+            const timer = setTimeout(() => {
+                finish(new Error("Native state operation timed out; its outcome is unknown"));
+                stream.close();
+            }, COMPUTE_CONTROL_COPY_TIMEOUT_MS);
+            signal?.addEventListener("abort", abort, { once: true });
+            stream.on("data", (chunk: Buffer) => {
+                size += chunk.length;
+                if (size > max) { finish(new Error("Native state response exceeds its byte budget")); stream.close(); }
+                else parts.push(chunk);
+            });
+            stream.on("end", () => {
+                try {
+                    const response = JSON.parse(Buffer.concat(parts).toString("utf8")) as { ok?: boolean; value?: T; error?: string };
+                    if (response.ok !== true) throw new Error(response.error ?? "Native state operation refused");
+                    finish(undefined, response.value);
+                } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+            });
+            stream.on("close", () => finish(new Error("Native state control closed; its outcome is unknown")));
+            void stream.write(body).then(() => stream.end()).catch(error => finish(error instanceof Error ? error : new Error(String(error))));
+        });
     }
 
     /** What the host said about itself, once it has said it. */
@@ -545,6 +589,7 @@ export class ComputeControlLink {
      * server's configuration behind the ticket is refreshed every turn.
      */
     mintTicket(grant: ForwardGrant): string {
+        grant = { ...grant, admit: this.options.admissionForSession?.(grant.sessionId) };
         const key = `${grant.sessionId}\u0000${grant.server}`;
         const held = this.byServer.get(key);
         if (held) {
@@ -628,6 +673,19 @@ export class ComputeControlLink {
             this.refuse(stream, ticket, "this worker has no such forwarding ticket");
             return;
         }
+        if (grant.admit) {
+            const admit = grant.admit;
+            void admit(() => new Promise<void>((resolve, reject) => {
+                stream.once("close", reason => reason ? reject(new Error(String(reason))) : resolve());
+                this.startForward(stream, grant);
+            })).catch(error => this.refuse(stream, ticket, error instanceof Error ? error.message : String(error)));
+            return;
+        }
+        this.startForward(stream, grant);
+    }
+
+    private startForward(stream: ComputeChannelStream, grant: ForwardGrant): void {
+        const ticket = String(stream.meta.ticket ?? "");
         if (stream.kind === "mcp") {
             this.forwardStdio(stream, grant);
             return;

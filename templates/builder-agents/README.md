@@ -25,6 +25,13 @@ They are not active in this repository. Copy the relevant templates into the tar
 - `pilotswarm-azure-lessons` — RBAC conditional access workaround, PostgreSQL region restrictions, Key Vault + CSI
 - `pilotswarm-three-tier` — dedicated worker-cluster topology for long-running or dehydration-resistant jobs
 
+For remote execution, follow the public
+[native compute contract](../../docs/developer/building/compute-providers.md).
+Register a qualified deployment-owned provider; do not generate a private SDK
+fork, worker-backed SessionFs mode, per-turn session-end hooks or shared
+parent/child executor. Repo attachments keep their own persistence semantics.
+The stock process fixture is not a qualified isolation/supervision provider.
+
 These templates assume apps consume:
 
 - `pilotswarm-sdk`

@@ -40,6 +40,7 @@ import type {
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import { readDefaultsRecord } from "./workspace.js";
+import type { ComputeExecutionStatus } from "./compute-execution.js";
 import {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,
@@ -3412,6 +3413,19 @@ export class PilotSwarmManagementClient {
     async getSessionMetricSummary(sessionId: string): Promise<SessionMetricSummary | null> {
         this._ensureStarted();
         return this._catalog!.getSessionMetricSummary(sessionId);
+    }
+
+    async getSessionComputeExecution(sessionId: string): Promise<ComputeExecutionStatus | null> {
+        this._ensureStarted();
+        if (!this._catalog?.computeExecution) throw new Error("Compute execution authority is unavailable");
+        return this._catalog.computeExecution.inspect(sessionId);
+    }
+
+    /** Request trusted worker reconciliation; never clears an execution hold itself. */
+    async reconcileSessionComputeExecution(sessionId: string): Promise<void> {
+        this._ensureStarted();
+        if (!this._catalog?.computeExecution?.requestReconciliation) throw new Error("Compute reconciliation is unavailable");
+        await this._catalog.computeExecution.requestReconciliation(sessionId);
     }
 
     // ── Session footprint (sensor) ────────────────────────────

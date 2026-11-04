@@ -2487,6 +2487,8 @@ function baseReducer(state, action) {
                 treeFactsStats: action.treeFactsStats || null,
                 // Session workspaces: getSessionWorkspace's view, or null when unknown.
                 workspace: action.workspace || null,
+                computeExecution: action.computeExecution || null,
+                computeExecutionError: action.computeExecutionError || null,
             };
             return {
                 ...state,

@@ -9,8 +9,8 @@
  *   - the runtime holds only credential placeholders; the model still gets
  *     the real key, swapped in by the worker's request handler
  *   - the runtime keeps its session state in the worker's session folder
- *     (SessionFs), so a new worker with a new runtime resumes the session
- *   - a sub-agent runs in its tree's runtime
+ *     after a verified native capture, so a new worker resumes accepted state
+ *   - a sub-agent inherits target authority but has its own runtime/native home
  *   - unknown targets, unknown kinds and non-local runtime addresses are
  *     refused
  *
@@ -116,16 +116,17 @@ describe("process compute provider", () => {
             console.log(`[compute-process] runtime home files: ${JSON.stringify(hostFiles)}`);
             expect(workerFiles).toContain("events.jsonl");
             expect(workerFiles.some((file) => file.includes("session-state/"))).toBe(false);
-            expect(hostFiles.some((file) => file.includes(session.sessionId))).toBe(false);
+            expect(hostFiles.some((file) => file.includes(session.sessionId))).toBe(true);
 
-            // A sub-agent runs where its tree runs, though nothing in its own
-            // config names the target.
+            // A sub-agent inherits the target, not its parent's physical allocation.
             probeOutput = "";
             const child = await client.createSession({ model: qualifiedModel, parentSessionId: session.sessionId });
             expect(await child.sendAndWait("child prompt", TIMEOUT)).toBe(`turn1:${marker}`);
-            expect(probeOutput).toContain(`home=${hosts[0].homeDir}`);
-            expect(providerA.hosts()).toHaveLength(1);
-            expect(providerA.hosts()[0].sessions).toEqual(expect.arrayContaining([session.sessionId, child.sessionId]));
+            expect(providerA.hosts()).toHaveLength(2);
+            const childHost = providerA.hosts().find(host => host.sessions.includes(child.sessionId));
+            expect(childHost).toBeTruthy();
+            expect(childHost.homeDir).not.toBe(hosts[0].homeDir);
+            expect(probeOutput).toContain(`home=${childHost.homeDir}`);
 
             // A new worker with a new runtime picks the session up from the worker folder.
             const firstPid = hosts[0].pid;

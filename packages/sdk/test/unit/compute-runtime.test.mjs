@@ -1,17 +1,12 @@
 /**
  * Driving a remote agent runtime (docs/proposals/compute-providers.md): the
  * runtime gets credential placeholders, the worker's request handler swaps
- * them back, and session state stays in the worker's directory.
+ * them back; native session state remains beside the executor.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import {
-    REMOTE_SESSION_STATE_ROOT,
     RemoteRuntimeRequestHandler,
-    WorkerDirectorySessionFs,
     checkModelRequest,
     containsWorkerPlaceholder,
     injectSecrets,
@@ -109,76 +104,4 @@ test("a placeholder the worker cannot resolve is refused, never sent", async () 
     const { provider } = redactProviderSecrets({ apiKey: "k1" }, "other-session");
     const request = new Request("https://example.invalid/x", { headers: { "api-key": provider.apiKey } });
     await assert.rejects(injectSecrets(request, new Map()), /cannot resolve/);
-});
-
-test("session state lives in the worker's session directory and cannot escape it", async (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-sessionfs-"));
-    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-    const sfs = new WorkerDirectorySessionFs(dir);
-
-    await sfs.writeFile(`${REMOTE_SESSION_STATE_ROOT}/events.jsonl`, "a\n");
-    await sfs.appendFile(`${REMOTE_SESSION_STATE_ROOT}/events.jsonl`, "b\n");
-    assert.equal(fs.readFileSync(path.join(dir, "events.jsonl"), "utf8"), "a\nb\n");
-    assert.equal(await sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/events.jsonl`), "a\nb\n");
-
-    await sfs.mkdir(`${REMOTE_SESSION_STATE_ROOT}/checkpoints/1`, true);
-    await sfs.writeFile(`${REMOTE_SESSION_STATE_ROOT}/checkpoints/1/state.json`, "{}");
-    assert.deepEqual((await sfs.readdirWithTypes(REMOTE_SESSION_STATE_ROOT)).sort((a, b) => a.name.localeCompare(b.name)),
-        [{ name: "checkpoints", type: "directory" }, { name: "events.jsonl", type: "file" }]);
-    const st = await sfs.stat(`${REMOTE_SESSION_STATE_ROOT}/events.jsonl`);
-    assert.equal(st.isFile, true);
-    assert.equal(st.size, 4);
-
-    await sfs.rename(`${REMOTE_SESSION_STATE_ROOT}/events.jsonl`, `${REMOTE_SESSION_STATE_ROOT}/old/events.jsonl`);
-    assert.equal(await sfs.exists(`${REMOTE_SESSION_STATE_ROOT}/events.jsonl`), false);
-    assert.equal(await sfs.exists(`${REMOTE_SESSION_STATE_ROOT}/old/events.jsonl`), true);
-    await sfs.rm(`${REMOTE_SESSION_STATE_ROOT}/old`, true, false);
-    assert.equal(fs.existsSync(path.join(dir, "old")), false);
-
-    await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/../../etc/passwd`), /outside the session directory/);
-    await assert.rejects(sfs.writeFile("/../escape.txt", "x"), /outside the session directory/);
-    await assert.rejects(sfs.readFile("/etc/passwd"), /outside the session directory/);
-    await assert.rejects(sfs.writeFile("C:\\Windows\\x.txt", "x"), /outside the session directory/);
-    await sfs.writeFile("relative/ok.txt", "r");
-    assert.equal(fs.readFileSync(path.join(dir, "relative", "ok.txt"), "utf8"), "r");
-});
-
-test("SessionFs never follows a link inside the session directory", async (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-sessionfs-"));
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const dir = path.join(root, "session");
-    const outside = path.join(root, "outside");
-    fs.mkdirSync(dir);
-    fs.mkdirSync(outside);
-    fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
-    try {
-        fs.symlinkSync(path.join(outside, "secret.txt"), path.join(dir, "file-link"), "file");
-        fs.symlinkSync(outside, path.join(dir, "dir-link"), process.platform === "win32" ? "junction" : "dir");
-    } catch (error) {
-        if (error.code === "EPERM") return t.skip("this account cannot create links");
-        throw error;
-    }
-    const sfs = new WorkerDirectorySessionFs(dir);
-    await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/file-link`), /crosses a link/);
-    await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/dir-link/secret.txt`), /crosses a link/);
-    await assert.rejects(sfs.writeFile(`${REMOTE_SESSION_STATE_ROOT}/dir-link/new.txt`, "x"), /crosses a link/);
-    await assert.rejects(sfs.rename(`${REMOTE_SESSION_STATE_ROOT}/dir-link/secret.txt`, `${REMOTE_SESSION_STATE_ROOT}/stolen.txt`), /crosses a link/);
-    assert.equal(fs.existsSync(path.join(outside, "new.txt")), false);
-    assert.equal(fs.readFileSync(path.join(outside, "secret.txt"), "utf8"), "secret");
-});
-
-test("files the runtime names by its own home land in the same session directory", async (t) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-sessionfs-"));
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const dir = path.join(root, "11111111-2222-4333-8444-555555555555");
-    fs.mkdirSync(dir);
-    const sfs = new WorkerDirectorySessionFs(dir);
-    const home = "/runtime/home/session-state/11111111-2222-4333-8444-555555555555";
-
-    await sfs.writeFile(`${home}/workspace.yaml`, "id: x\n");
-    await sfs.writeFile(`${home}/checkpoints/index.md`, "# index\n");
-    assert.equal(fs.readFileSync(path.join(dir, "workspace.yaml"), "utf8"), "id: x\n");
-    assert.equal(fs.readFileSync(path.join(dir, "checkpoints", "index.md"), "utf8"), "# index\n");
-    assert.equal(await sfs.exists(home), true);
-    assert.equal(fs.existsSync(path.join(dir, "runtime")), false);
 });

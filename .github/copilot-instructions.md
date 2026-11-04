@@ -40,6 +40,20 @@ See [the provider-boundary audit](../docs/architecture/provider-boundary-audit.m
 for existing violations and the extraction plan. Do not copy those violations
 into new code or treat them as additional exceptions.
 
+## Native compute state
+
+Remote compute is native-only: use the common host/state service and public
+provider/supervisor contracts, never worker-backed SessionFs or local fallback.
+Physical allocation is per logical session, including delegated children; target
+inheritance is not executor/home/process/database sharing. Capture requires a
+qualified writer barrier while the host/export service remains alive. Do not
+replace that proof with SDK idle/detach/flush, equal copies, process-group signals
+or per-turn session-end hooks. Worker-owned archive/CAS/result/completion metadata
+remains trusted-side; independently attached roots keep their own recovery.
+Preserve original accounting coordinates and expose unknown authority through the
+management/tuner/shared-stats surfaces. See
+`docs/developer/building/compute-providers.md` for qualification and rollout limits.
+
 ## Agent Smith naming
 
 The published `agent-manager` package and agent display as **Agent Smith**.

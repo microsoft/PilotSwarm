@@ -1481,15 +1481,6 @@ export interface PilotSwarmWorkerOptions {
      */
     computeCopyMaxFiles?: number;
 
-    /**
-     * Compute providers: the most one session's state folder may hold on
-     * this worker. A runtime on a host writes its session state back
-     * through the worker, into a folder on the worker's own disk, which
-     * it shares with every other session here. Default 512 MiB. Env:
-     * `PILOTSWARM_SESSION_FS_MAX_TOTAL_BYTES`.
-     */
-    sessionFsMaxTotalBytes?: number;
-
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
 

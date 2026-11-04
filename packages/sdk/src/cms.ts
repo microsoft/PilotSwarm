@@ -19,6 +19,10 @@ import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummary
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
+import { PgComputeExecutionAuthority } from "./compute-execution-store.js";
+import type { ComputeExecutionAuthority } from "./compute-execution.js";
+import type { CompleteExecutionTurnWritebackInput, ComputeChargeIdentity } from "./compute-writeback.js";
+import { isComputeStoppedOutcome } from "./compute-writeback.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -968,6 +972,10 @@ export interface FleetDirectiveRow {
 }
 
 export interface SessionCatalog {
+    readonly computeExecution?: ComputeExecutionAuthority;
+    getComputeChargeIdentity?(sessionId: string, turnIndex: number): Promise<ComputeChargeIdentity>;
+    completeExecutionTurnWriteback?(input: CompleteExecutionTurnWritebackInput): Promise<boolean>;
+    getComputeStoppedOutcome?(sessionId: string, turnKey: string, epoch: number): Promise<Extract<import("./types.js").TurnResult, { type: "stopped" }> | null>;
     getSessionCapabilities?(sessionId: string): Promise<CapabilityState>;
     saveSessionCapabilities?(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean>;
     /**
@@ -1655,6 +1663,7 @@ export class PgSessionCatalog implements SessionCatalog {
     private _providers: ProviderStore;
     readonly features: FeatureStore;
     readonly computeTargets: ComputeTargetStore;
+    readonly computeExecution: ComputeExecutionAuthority;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
 
@@ -1664,6 +1673,7 @@ export class PgSessionCatalog implements SessionCatalog {
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
         this.computeTargets = new ComputeTargetStore(pool, schema);
+        this.computeExecution = new PgComputeExecutionAuthority(pool, schema);
     }
 
     /**
@@ -1801,7 +1811,6 @@ export class PgSessionCatalog implements SessionCatalog {
         // A 42883 mid-transaction aborts it, so probe the newer overloads'
         // existence up front (once) instead of catch-and-retry inside BEGIN.
         const useVisibilityCreate = await this.supportsVisibilityCreate();
-        const useCreationConfig = Boolean(opts?.creationConfig) && await this.supportsCreationConfig();
         const useSplashMobileCreate = !useVisibilityCreate && Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
         const providerModel = opts?.model ?? null;
         const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
@@ -1815,8 +1824,14 @@ export class PgSessionCatalog implements SessionCatalog {
             ? opts.creationConfig.computeTarget as string : null;
         const computeTarget = named
             ?? (opts?.parentSessionId ? null : (this.defaultComputeTarget || null));
-        if (computeTarget && !named) {
+        if (computeTarget) {
             opts = { ...(opts ?? {}), creationConfig: { ...(opts?.creationConfig ?? {}), computeTarget } };
+        }
+        const useCreationConfig = Boolean(opts?.creationConfig) && await this.supportsCreationConfig();
+        if (computeTarget && !useCreationConfig) {
+            throw Object.assign(
+                new Error("COMPUTE_TARGET_NOT_FOUND: this deployment cannot persist compute target selection yet"),
+                { code: "COMPUTE_TARGET_NOT_FOUND", status: 400 });
         }
         if (computeTarget && !await this.supportsComputeTargets()) {
             throw Object.assign(
@@ -1862,8 +1877,8 @@ export class PgSessionCatalog implements SessionCatalog {
 
             // Creation config rides the same transaction as a raw UPDATE, like
             // the service columns below — the create proc's signature stays
-            // untouched, and a pre-0072 database simply skips the write (the
-            // in-memory map still covers the same-process path there).
+            // untouched. Without compute selection, a pre-0072 database skips
+            // the write (the in-memory map still covers the same-process path).
             if (useCreationConfig) {
                 await client.query(
                     `UPDATE "${this.sql.schema}".sessions SET creation_config = $2::jsonb WHERE session_id = $1`,
@@ -3034,6 +3049,30 @@ export class PgSessionCatalog implements SessionCatalog {
                 input.workerNodeId,
             ],
         );
+    }
+
+    async getComputeChargeIdentity(sessionId: string, turnIndex: number): Promise<ComputeChargeIdentity> {
+        const { rows } = await this.pool.query(`SELECT "${this.sql.schema}".cms_compute_charge_identity($1,$2) AS identity`, [sessionId, turnIndex]);
+        if (!rows[0]?.identity) throw new Error("Native accounting identity is unavailable");
+        return rows[0].identity;
+    }
+
+    async getComputeStoppedOutcome(sessionId: string, turnKey: string, epoch: number): Promise<Extract<import("./types.js").TurnResult, { type: "stopped" }> | null> {
+        const { rows } = await this.pool.query(`SELECT "${this.sql.schema}".cms_compute_stopped_outcome($1,$2,$3) AS outcome`, [sessionId, turnKey, epoch]);
+        const outcome = rows[0]?.outcome;
+        if (!outcome) return null;
+        if (!isComputeStoppedOutcome(outcome)) throw new Error("Stored native Stop outcome is invalid");
+        return outcome;
+    }
+
+    async completeExecutionTurnWriteback(input: CompleteExecutionTurnWritebackInput): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT "${this.sql.schema}".cms_complete_execution_turn_writeback($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb) AS controls`,
+            [input.turn.sessionId, input.turnKey, input.transcriptEpoch, JSON.stringify(input.turn),
+                input.providerCharge ? JSON.stringify(input.providerCharge) : null, JSON.stringify(input.execution),
+                JSON.stringify(input.operationIdentity ?? input.execution)],
+        );
+        return rows[0]?.controls === true;
     }
 
     async completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<boolean> {

@@ -41,9 +41,11 @@
  * host must be private or otherwise protected.
  */
 import { connect as netConnect, createServer, type AddressInfo, type Server, type Socket } from "node:net";
+import path from "node:path";
 import { ComputeChannel } from "./compute-channel.js";
 import { ComputeHandshakeError, runHostHandshake, type ComputeHandshakeCredential, type ComputeHandshakePurpose } from "./compute-handshake.js";
 import { serveComputeHostControl, type ComputeHostServiceOptions, type ComputeHostServices } from "./compute-host-services.js";
+import { ComputeNativeStateHost, assertNativeAttachmentsSeparate, type ComputeNativeStateOptions } from "./compute-native-state.js";
 
 /** The most proved connections one host component carries at a time, unless the host is told otherwise. */
 export const COMPUTE_HOST_MAX_CONNECTIONS = 16;
@@ -119,7 +121,9 @@ export interface ComputeHostOptions extends ComputeHandshakeCredential {
     /** Listen for the worker's side. `port` 0 asks the operating system for one. */
     listen: { host?: string; port: number };
     /** The runtime's own address on this host, `host:port` or just a port. */
-    runtimeAddress: string;
+    runtimeAddress?: string;
+    /** Common native state service, outside the supervisor's stoppable runtime/writer scope. */
+    nativeState?: ComputeNativeStateOptions;
     handshakeTimeoutMs?: number;
     maxConnections?: number;
     /** The most connections proving themselves at once. */
@@ -206,7 +210,10 @@ function join(a: Socket, b: Socket): void {
  */
 export async function startComputeHost(options: ComputeHostOptions): Promise<ComputeHostHandle> {
     if (!options.listen) throw new Error("a host component needs the address to listen on");
-    const runtime = parseAddress(options.runtimeAddress);
+    const runtime = options.nativeState ? null : parseAddress(options.runtimeAddress ?? "");
+    if (options.nativeState && !options.services) throw new Error("Native compute requires the host control/state service");
+    const nativeState = options.nativeState ? new ComputeNativeStateHost(options.nativeState) : undefined;
+    if (nativeState && options.services) assertNativeAttachmentsSeparate(nativeState.options.profile, [path.resolve(options.services.directory)]);
     const credential: ComputeHandshakeCredential = { bindingId: options.bindingId, secret: options.secret };
     const handshakeTimeoutMs = options.handshakeTimeoutMs ?? COMPUTE_HOST_PREAUTH_TIMEOUT_MS;
     const maxConnections = options.maxConnections ?? COMPUTE_HOST_MAX_CONNECTIONS;
@@ -318,14 +325,15 @@ export async function startComputeHost(options: ComputeHostOptions): Promise<Com
                 // the runtime's port.
                 const channel = new ComputeChannel(socket, { side: "host" });
                 socket.on("close", () => { forget(socket); options.onConnectionClosed?.({ ok: true }); });
-                const made = await serveComputeHostControl(channel, options.services!);
+                const made = await serveComputeHostControl(channel, { ...options.services!, nativeState });
                 services = made;
                 channel.on("close", () => { if (services === made) services = null; });
                 return;
             }
             // Only after both sides have proved themselves does anything
             // reach the runtime.
-            runtimeSocket = await dial(runtime.host, runtime.port, COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS);
+            const currentRuntime = nativeState ? parseAddress(nativeState.runtimeAddress) : runtime!;
+            runtimeSocket = await dial(currentRuntime.host, currentRuntime.port, COMPUTE_HOST_RUNTIME_CONNECT_TIMEOUT_MS);
             try { runtimeSocket.setKeepAlive(true, COMPUTE_HOST_KEEPALIVE_MS); } catch { /* not every platform */ }
             runtimeSocket.on("data", () => lastByte.set(socket, Date.now()));
             runtimeSocket.on("close", () => { forget(socket); options.onConnectionClosed?.({ ok: true }); });

@@ -28,11 +28,12 @@ import {
 
 const read = name => readFileSync(new URL(`../../src/${name}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
-test("registry freezes 1.0.82 and activates a separate 1.0.83 handler", () => {
+test("registry keeps 1.0.82 and 1.0.83 frozen while activating the separate 1.0.84 handler", () => {
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.82").handler.name, "durableSessionOrchestration_1_0_82");
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.83");
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler.name, "durableSessionOrchestration_1_0_83");
-    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.83");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.83").handler.name, "durableSessionOrchestration_1_0_83");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.84");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).handler.name, "durableSessionOrchestration_1_0_84");
+    assert.equal(DURABLE_SESSION_LATEST_VERSION, "1.0.84");
     assert.match(read("orchestration-registry.ts"), /from "\.\/orchestration_1_0_82\/index\.js"/);
     assert.match(read("orchestration_1_0_82/runtime.ts"), /CURRENT_ORCHESTRATION_VERSION = "1\.0\.82"/);
     assert.match(read("orchestration_1_0_82/index.ts"), /latestVersion: DURABLE_SESSION_LATEST_VERSION/);

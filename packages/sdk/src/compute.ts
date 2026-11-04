@@ -6,7 +6,7 @@
  *   compute provider  the worker plug-in for one compute type (`kind`)
  *   compute target    a registered instance of a compute type, stored in the
  *                     CMS; users pick one per session
- *   host              the concrete runtime a session tree is bound to
+ *   host              the concrete environment one logical session is bound to
  *
  * The worker stays trusted: it keeps the orchestration, PilotSwarm tools,
  * model credentials and session state. A provider only places the agent
@@ -17,6 +17,8 @@
 import { createHash } from "node:crypto";
 import { RuntimeConnection } from "@github/copilot-sdk";
 import { computeFailureError } from "./compute-failures.js";
+import type { ComputeExecutionIdentity } from "./compute-execution.js";
+import type { ComputeCheckpointBarrier } from "./compute-native-state.js";
 import { COMPUTE_HANDSHAKE_FAILED, type ComputeHandshakeCredential } from "./compute-handshake.js";
 
 export const LOCAL_COMPUTE_KIND = "local";
@@ -140,14 +142,14 @@ export interface ComputePrincipal {
  * What a provider says about the hosts it creates. Fixed in provider code,
  * the same for every target of that kind.
  *
- * One field, because one field is all PilotSwarm acts on: whether the worker
- * may let a remote session's file tools reach the worker's own folders.
- * Anything else a provider wants to say about its hosts belongs where it is
- * used, not here.
+ * File access and the qualified native state profile are separate capabilities.
+ * Neither implies a particular cloud, transport or deployment topology.
  */
 export interface ComputeCapabilities {
     /** How PilotSwarm tools in the worker reach the host's files. */
     files: "worker-local" | "shared-mount" | "provider-api" | "none";
+    /** Required for remote execution; old SessionFs hosts are not compatible. */
+    nativeState?: { protocol: 1; profileId: string; sdkVersion: string; runtimeVersion: string };
 }
 
 /**
@@ -338,7 +340,7 @@ export interface ComputeValidateRequest extends ComputeCall {
 export interface ComputeBindRequest extends ComputeCall {
     target: ComputeTarget;
     sessionId: string;
-    /** The session tree: hosts are bound per (target, tree). */
+    /** Lineage/target inheritance only. Physical allocation is per (target, session). */
     rootSessionId: string;
     owner: ComputePrincipal | null;
     workerNodeId: string;
@@ -423,7 +425,7 @@ export interface ComputeReleaseRequest extends ComputeCall {
  * Experimental: this interface may change before it is released.
  *
  * `validateTarget` runs before every bind: may this principal use what the
- * target's config points at? `bind` must be idempotent per (target, tree):
+ * target's config points at? `bind` must be idempotent per (target, session):
  * called again, it returns the same host while that host lives. `connect`
  * runs before every turn, possibly on another worker.
  *
@@ -432,13 +434,12 @@ export interface ComputeReleaseRequest extends ComputeCall {
  * the provider's decision alone — keep it, clean it and hold it ready for
  * the next workload, or discard it and make a fresh one. It is best effort
  * and called once per session that leaves a host on this worker, and
- * several sessions of a tree share a host, so a host is only free of
- * PilotSwarm once no session uses it.
+ * multiple workers may temporarily hold the same logical session. Delegated
+ * children inherit target authority but always have separate environments.
  *
  * `bind` and `release` are per (session, worker), not per session. A
- * session moves between workers while it stays open, and more than one
- * worker can hold sessions of the same tree on the same host at the same
- * time. A provider that counts its users by session id alone will have one
+ * session moves between workers while it stays open. A provider that
+ * counts its users by session id alone will have one
  * worker's release take a host away from another worker that is still
  * using it. Count `(workerNodeId, sessionId)` pairs: both calls carry
  * `workerNodeId` for exactly this.
@@ -466,6 +467,15 @@ export interface ComputeProvider {
     bind(req: ComputeBindRequest): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>;
     connect(req: ComputeConnectRequest): Promise<ComputeConnectResult>;
     release?(req: ComputeReleaseRequest): Promise<void>;
+    /** Validate checkpoint evidence through trusted supervision, not a guest-reported boolean. */
+    verifyCheckpoint?(req: ComputeCall & {
+        target: ComputeTarget; host: ComputeHostRef; identity: ComputeExecutionIdentity; barrier: ComputeCheckpointBarrier;
+    }): Promise<{ ok: true } | ComputeFailure>;
+    /** Trusted reconciliation when the common host cannot be reached. Unknown must not authorize replacement. */
+    inspectExecution?(req: ComputeCall & { target: ComputeTarget; host: ComputeHostRef; identity: ComputeExecutionIdentity }): Promise<
+        { state: "running" | "retired" | "unknown"; runtimeGeneration?: string; evidence?: Record<string, unknown> }>;
+    retireExecution?(req: ComputeCall & { target: ComputeTarget; host: ComputeHostRef; identity: ComputeExecutionIdentity }): Promise<
+        { state: "retired" | "unknown"; runtimeGeneration?: string; evidence?: Record<string, unknown> }>;
 }
 
 /**
@@ -668,25 +678,16 @@ export function computeHostKey(host: Pick<ComputeHostRef, "id" | "incarnation">)
 }
 
 /**
- * One binding, as the worker holds it in memory: the session tree, the
- * target and the host, so that every session of a tree bound to the same
- * host shares what belongs to that host and a replaced host gets its own.
- *
- * The tree is in the key because everything shared per host — the bridge,
- * its address, its pooled client and the reach it reads, secret included —
- * hangs off it. A provider is meant to give one host to one tree, but if
- * it ever hands the same host to two, leaving the tree out would make
- * them share all of that: whichever connected last would overwrite the
- * other's secret, and two trees, possibly of two different people, would
- * run down one control connection. With the tree in the key that cannot
- * happen on this worker whatever a provider does.
+ * One logical session's target/allocation binding. Including the session
+ * prevents accidental connection, secret or controller sharing between siblings.
+ * Providers must also enforce physical per-session isolation.
  */
 export function computeBindingKey(
     targetId: string,
     host: Pick<ComputeHostRef, "id" | "incarnation">,
-    rootSessionId: string,
+    sessionId: string,
 ): string {
-    return `${rootSessionId}\u001f${targetId}\u001f${computeHostKey(host)}`;
+    return `${sessionId}\u001f${targetId}\u001f${computeHostKey(host)}`;
 }
 
 /** Whether an endpoint address names this machine (localhost, 127.0.0.0/8 or ::1). */

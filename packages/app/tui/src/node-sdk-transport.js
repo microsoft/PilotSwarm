@@ -1108,6 +1108,14 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionMetricSummary(sessionId);
     }
 
+    async getSessionComputeExecution(sessionId) {
+        return this.mgmt.getSessionComputeExecution(sessionId);
+    }
+
+    async reconcileSessionComputeExecution(sessionId) {
+        await this.mgmt.reconcileSessionComputeExecution(sessionId);
+    }
+
     async getSessionFootprint(sessionId) {
         return this.mgmt.getSessionFootprint(sessionId);
     }

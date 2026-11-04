@@ -2,6 +2,7 @@ import { CopilotClient, CopilotRequestHandler, RuntimeConnection } from "@github
 import type { CopilotClientOptions, CopilotRequestContext } from "@github/copilot-sdk";
 import { createParser } from "eventsource-parser";
 import { normalizeToolCatalog, type ToolCatalogCapability } from "./model-providers.js";
+import fs from "node:fs";
 
 type JsonObject = Record<string, any>;
 type ToolGroup = { body: JsonObject; name: string; toolNames: Set<string> };
@@ -231,6 +232,15 @@ export class ByokRequestCompatibility extends CopilotRequestHandler {
         const response = await super.sendRequest(request, context);
         return group ? restoreGroupedResponse(response, group) : response;
     }
+}
+
+/** Controller version evidence, read from this package's installed dependency, never user configuration. */
+export function copilotSdkVersion(): string {
+    const metadata: unknown = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.resolve("@github/copilot-sdk")), "utf8"));
+    if (!metadata || typeof metadata !== "object" || !("version" in metadata) || typeof metadata.version !== "string") {
+        throw new Error("The installed Copilot SDK version cannot be established");
+    }
+    return metadata.version;
 }
 
 /** Shared by durable sessions and the short-lived title/distillation clients. */

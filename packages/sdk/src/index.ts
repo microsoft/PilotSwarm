@@ -289,6 +289,17 @@ export type { ComputeHostOptions, ComputeHostHandle } from "./compute-host.js";
 export type { ComputeHostServiceOptions, ComputeHostServices } from "./compute-host-services.js";
 export { COMPUTE_COPY_MAX_BYTES, COMPUTE_COPY_MAX_FILES } from "./compute-assets.js";
 export type { ComputeCopyLimits } from "./compute-assets.js";
+export { ComputeNativeStateHost, COMPUTE_NATIVE_STATE_PROTOCOL, stageNativeCapture, readNativeStaging, nativeStateDigest } from "./compute-native-state.js";
+export { ComputeNativeStateClient } from "./compute-native-client.js";
+export type {
+    ComputeNativeStateProfile, ComputeNativeStateOptions, ComputeHostSupervisor,
+    ComputeCheckpointBarrier, ComputeNativeState, ComputeNativeCapture, ComputeNativeStateDescription,
+    ComputeHostNativeFactory,
+} from "./compute-native-state.js";
+export { ComputeExecutionAttempt, ComputeExecutionError } from "./compute-execution.js";
+export type { ComputeExecutionIdentity, ComputeExecutionStatus, ComputeExecutionAuthority } from "./compute-execution.js";
+export { PgComputeExecutionAuthority } from "./compute-execution-store.js";
+export type { CompleteExecutionTurnWritebackInput, ComputeChargeIdentity, ComputeWritebackReceipt } from "./compute-writeback.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,

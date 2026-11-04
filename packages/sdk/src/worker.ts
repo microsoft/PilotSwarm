@@ -1,6 +1,6 @@
 import { LOCAL_COMPUTE_KIND, computeModelRefusal, type ComputeProvider } from "./compute.js";
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
-import { AGENT_HANDOFF_CAPABILITY, COMPUTE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
+import { AGENT_HANDOFF_CAPABILITY, NATIVE_COMPUTE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
 import { SessionManager, packageAgentKey, agentOwnerKey, type AgentCopyEntry, type AgentPromptEntry } from "./session-manager.js";
@@ -482,8 +482,6 @@ export class PilotSwarmWorker {
                 maxBytes: options.computeCopyMaxBytes ?? parsePositiveInt(process.env.PILOTSWARM_COMPUTE_COPY_MAX_BYTES),
                 maxFiles: options.computeCopyMaxFiles ?? parsePositiveInt(process.env.PILOTSWARM_COMPUTE_COPY_MAX_FILES),
             },
-            sessionFsMaxTotalBytes: options.sessionFsMaxTotalBytes
-                ?? parsePositiveInt(process.env.PILOTSWARM_SESSION_FS_MAX_TOTAL_BYTES),
         });
     }
 
@@ -934,7 +932,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, COMPUTE_CAPABILITY] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, NATIVE_COMPUTE_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -1030,6 +1028,7 @@ export class PilotSwarmWorker {
                 blobStore: this.artifactStore,
                 localPathRootsFor: (sessionId) => this.sessionManager?.computeLocalPathRoots(sessionId),
                 computeFolderMapFor: (sessionId) => this.sessionManager?.computeFolderMap(sessionId),
+                nativeFilesFor: (sessionId, candidate) => this.sessionManager?.nativeArtifactFiles(sessionId, candidate),
             });
             // The write bundle attaches patch artifacts through the same store.
             if (this.sessionManager) this.sessionManager.artifactStore = this.artifactStore ?? null;
@@ -1389,6 +1388,8 @@ export class PilotSwarmWorker {
             })(),
             this._agentPackagesRefreshMs > 0 ? this.refreshAgentPackages() : Promise.resolve(),
         ]);
+        try { await this.sessionManager.reconcilePendingComputeExecutions(); }
+        catch (error) { console.warn(`[PilotSwarmWorker] compute reconciliation poll failed: ${error instanceof Error ? error.message : String(error)}`); }
     }
 
     async refreshAgentPackages(opts: { force?: boolean } = {}): Promise<void> {

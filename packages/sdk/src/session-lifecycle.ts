@@ -62,7 +62,7 @@ export type TurnPreambleOutcome =
          */
         regressed?: { markerVersion: number; storeVersion: number };
       }
-    | { kind: "already-committed"; version: number; result: unknown }
+    | { kind: "already-committed"; version: number; result: unknown; writeback?: unknown }
     /**
      * Local dir was cleared (or never existed) and the store holds nothing:
      * getOrCreate decides fresh-create vs lossy replay exactly as today.
@@ -90,6 +90,7 @@ export interface TurnCommitOutcome {
      * its own body's (§3.2 restore-not-replay).
      */
     storedResult?: unknown;
+    storedWriteback?: unknown;
     /**
      * Store-wins: whether this commit actually advanced the store.
      *   true  — a new version (or an alreadyCommitted same-turnKey winner) landed.
@@ -113,6 +114,8 @@ export interface TurnCommitOutcome {
 }
 
 export interface TurnLifecycleContext {
+    writeback?: unknown;
+    requireCommittedOutcome?: boolean;
     store: VersionedSnapshotStore;
     sessionStateDir: string;
     sessionId: string;
@@ -130,25 +133,7 @@ export interface TurnLifecycleContext {
     turnKey: string;
     /** Destroy the in-memory ManagedSession only — disk untouched. */
     dropWarmSession: () => Promise<void>;
-    /**
-     * Compute providers: close the session's state folder to its agent
-     * runtime for the moment this protocol reads or rewrites the whole
-     * folder, and open it again. A session whose runtime is the worker's
-     * own child writes those files through the worker and needs no fence,
-     * so the default does nothing.
-     */
-    fenceSessionFiles?: (reason: string) => () => void;
     trace: (message: string) => void;
-}
-
-/** Run one step of the protocol with the session's folder closed to its runtime. */
-async function fenced<T>(ctx: TurnLifecycleContext, reason: string, step: () => Promise<T>): Promise<T> {
-    const release = ctx.fenceSessionFiles?.(reason) ?? (() => {});
-    try {
-        return await step();
-    } finally {
-        release();
-    }
 }
 
 const COMMIT_TRANSIENT_RETRIES = 3;
@@ -205,8 +190,11 @@ async function recoverAlreadyCommitted(ctx: TurnLifecycleContext): Promise<TurnP
             `session=${ctx.sessionId} already-committed recovery: store at v${hydrated.version} ` +
             `under this turnKey; returning stored result without re-running the turn`,
         );
-        return { kind: "already-committed", version: hydrated.version, result: commitFile.result };
+        if (ctx.requireCommittedOutcome && commitFile.writeback === undefined) throw new Error("Committed native completion metadata is missing");
+        return { kind: "already-committed", version: hydrated.version, result: commitFile.result,
+            ...(commitFile.writeback === undefined ? {} : { writeback: commitFile.writeback }) };
     }
+    if (ctx.requireCommittedOutcome) throw new Error("Committed native result is missing or corrupt; execution will not be replayed");
     // Snapshot claims our turnKey but carries no readable committed result —
     // degrade to a hydrated re-run (duplicate execution beats a wrong result).
     ctx.trace(
@@ -258,7 +246,7 @@ async function resolveFromStore(
  * (already-committed — the caller returns the stored result without a body).
  */
 export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
-    return fenced(ctx, "restored", () => runTurnPreambleFenced(ctx));
+    return runTurnPreambleFenced(ctx);
 }
 
 async function runTurnPreambleFenced(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
@@ -371,14 +359,14 @@ async function runTurnPreambleFenced(ctx: TurnLifecycleContext): Promise<TurnPre
  * store-deleting reset is a no-op against an empty store.
  */
 export async function attemptStoreRecovery(ctx: TurnLifecycleContext): Promise<number | null> {
-    const probe = await ctx.store.probeSnapshot(ctx.sessionId, ctx.transcriptEpoch);
-    if (!probe.exists) return null;
-    const sessionDir = sessionDirOf(ctx);
-    await ctx.dropWarmSession();
-    const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
-    markerFromHydrate(ctx, sessionDir, hydrated);
-    clearTurnSentinel(sessionDir);
-    return hydrated.version;
+        const probe = await ctx.store.probeSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+        if (!probe.exists) return null;
+        const sessionDir = sessionDirOf(ctx);
+        await ctx.dropWarmSession();
+        const hydrated = await ctx.store.hydrateSnapshot(ctx.sessionId, ctx.transcriptEpoch);
+        markerFromHydrate(ctx, sessionDir, hydrated);
+        clearTurnSentinel(sessionDir);
+        return hydrated.version;
 }
 
 /**
@@ -394,7 +382,7 @@ export async function runTurnCommit(
     baseVersion: number,
     result: unknown,
 ): Promise<TurnCommitOutcome> {
-    return fenced(ctx, "saved", () => runTurnCommitFenced(ctx, baseVersion, result));
+    return runTurnCommitFenced(ctx, baseVersion, result);
 }
 
 async function runTurnCommitFenced(
@@ -427,7 +415,7 @@ async function runTurnCommitFenced(
         };
     }
     const sessionDir = sessionDirOf(ctx);
-    writeTurnCommitFile(sessionDir, ctx.turnKey, result);
+    writeTurnCommitFile(sessionDir, ctx.turnKey, result, ctx.writeback);
     faultPoint("turn.commit.before-cas");
 
     let lastError: unknown;
@@ -452,6 +440,9 @@ async function runTurnCommitFenced(
                 markerFromHydrate(ctx, sessionDir, hydrated);
                 clearTurnSentinel(sessionDir);
                 const commitFile = readTurnCommitFile(sessionDir);
+                if (ctx.requireCommittedOutcome && (!commitFile || commitFile.turnKey !== ctx.turnKey || commitFile.writeback === undefined)) {
+                    throw new Error("Winning native result or completion metadata is missing");
+                }
                 return {
                     version: committed.version,
                     contentHash: hydrated.contentHash ?? committed.contentHash,
@@ -460,7 +451,8 @@ async function runTurnCommitFenced(
                     alreadyCommitted: true,
                     published: true,
                     ...(commitFile && commitFile.turnKey === ctx.turnKey
-                        ? { storedResult: commitFile.result }
+                        ? { storedResult: commitFile.result,
+                            ...(commitFile.writeback === undefined ? {} : { storedWriteback: commitFile.writeback }) }
                         : {}),
                 };
             }

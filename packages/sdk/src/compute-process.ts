@@ -6,7 +6,7 @@
  * **Test provider. Not part of the SDK's public surface** — it is not
  * exported from `index.ts`, so nothing outside this package can reach it.
  * It exists so the remote-runtime path (connection token, handshake,
- * SessionFs, credential placeholders, release) can be exercised without a
+ * credential placeholders, release) can be exercised without a
  * cluster, and as the smallest readable example of a provider. It is not an
  * isolation boundary. A real provider replaces `spawn` with its platform's
  * call and returns the address its platform gives.
@@ -48,6 +48,8 @@ export interface ProcessComputeProviderOptions {
 
 interface ProcessHost {
     key: string;
+    sessionId: string;
+    rootSessionId: string;
     ref: ComputeHostRef;
     child: ChildProcess;
     port: number;
@@ -113,7 +115,7 @@ function removeHostDir(dir: string): void {
 
 export function createProcessComputeProvider(options: ProcessComputeProviderOptions = {}): ComputeProvider & {
     /** Test and diagnostic view: the live hosts. `holders` is one entry per (worker, session). */
-    hosts(): Array<{ targetId: string; rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sharedDir: string; sessions: string[]; holders: string[] }>;
+    hosts(): Array<{ targetId: string; sessionId: string; rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sharedDir: string; sessions: string[]; holders: string[] }>;
     /** Stop every host. */
     stopAll(): Promise<void>;
 } {
@@ -131,7 +133,7 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         } catch { /* already gone */ }
     }
 
-    async function start(key: string, targetId: string, rootSessionId: string): Promise<ProcessHost> {
+    async function start(key: string, targetId: string, sessionId: string, rootSessionId: string): Promise<ProcessHost> {
         const cliPath = options.cliPath ?? defaultCliPath();
         const incarnation = randomUUID();
         const hostDir = path.join(rootDir, incarnation);
@@ -217,8 +219,8 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
             throw error;
         }
         const host: ProcessHost = {
-            key,
-            ref: { kind: PROCESS_COMPUTE_KIND, id: `${targetId}/${rootSessionId}`, incarnation, data: { port } },
+            key, sessionId, rootSessionId,
+            ref: { kind: PROCESS_COMPUTE_KIND, id: `${targetId}/${sessionId}`, incarnation, data: { port } },
             child, port, token, hostDir, homeDir, workDir, sharedDir, sessions: new Set(), exited: false,
             component, bindingId, secret,
         };
@@ -265,12 +267,12 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         capabilities: { files: "worker-local" },
 
         async bind(req) {
-            const key = hostKey(req.target.id, req.rootSessionId);
+            const key = hostKey(req.target.id, req.sessionId);
             let host = hosts.get(key);
             if (!host || host.exited) {
                 let pending = starting.get(key);
                 if (!pending) {
-                    pending = start(key, req.target.id, req.rootSessionId).finally(() => starting.delete(key));
+                    pending = start(key, req.target.id, req.sessionId, req.rootSessionId).finally(() => starting.delete(key));
                     starting.set(key, pending);
                 }
                 try {
@@ -316,11 +318,11 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
 
         hosts() {
             return [...hosts.values()].map((host) => {
-                const [targetId, rootSessionId] = host.key.split("\0");
+                const [targetId] = host.key.split("\0");
                 // Reported as session ids: a session held by two workers
                 // while it moves is one session to anyone reading this.
                 const sessions = [...new Set([...host.sessions].map((entry) => entry.slice(entry.indexOf("\u001f") + 1)))];
-                return { targetId, rootSessionId, pid: host.child.pid, port: host.port, homeDir: host.homeDir, workDir: host.workDir, sharedDir: host.sharedDir, sessions, holders: [...host.sessions] };
+                return { targetId, sessionId: host.sessionId, rootSessionId: host.rootSessionId, pid: host.child.pid, port: host.port, homeDir: host.homeDir, workDir: host.workDir, sharedDir: host.sharedDir, sessions, holders: [...host.sessions] };
             });
         },
 

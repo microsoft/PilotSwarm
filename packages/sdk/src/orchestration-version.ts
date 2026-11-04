@@ -12,7 +12,7 @@
  *
  * @internal
  */
-export const DURABLE_SESSION_LATEST_VERSION = "1.0.83";
+export const DURABLE_SESSION_LATEST_VERSION = "1.0.84";
 export const DURABLE_SESSION_COMPATIBILITY_FLOOR_VERSION = "1.0.47";
 
 /**
@@ -38,6 +38,7 @@ export const WORKSPACE_ORCHESTRATION_MIN_VERSION = "1.0.80";
  * this one.
  */
 export const COMPUTE_ORCHESTRATION_MIN_VERSION = "1.0.83";
+export const NATIVE_COMPUTE_ORCHESTRATION_MIN_VERSION = "1.0.84";
 
 /**
  * Whether an orchestration version is at least `minimum`. Unreadable or

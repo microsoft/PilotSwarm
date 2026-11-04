@@ -108,6 +108,8 @@ export function registerTurnControlActivity(runtime: any, name: keyof typeof TUR
  * applied to.
  */
 export const COMPUTE_CAPABILITY = "pilotswarm.compute.v1";
+/** Native state, per-session allocation and committed completion; incompatible with SessionFs workers. */
+export const NATIVE_COMPUTE_CAPABILITY = "pilotswarm.compute.native.v1";
 
 /**
  * Route a turn that must run on a worker that can drive a remote runtime.
@@ -115,9 +117,9 @@ export const COMPUTE_CAPABILITY = "pilotswarm.compute.v1";
  * a turn untagged, since an untagged turn is exactly the one an older
  * worker would pick up.
  */
-export function routeComputeActivity(task: any): any {
+export function routeComputeActivity(task: any, native = false): any {
     if (typeof task.withTag !== "function") {
         throw new Error("Compute providers require Duroxide activity tag routing support");
     }
-    return task.withTag(COMPUTE_CAPABILITY);
+    return task.withTag(native ? NATIVE_COMPUTE_CAPABILITY : COMPUTE_CAPABILITY);
 }

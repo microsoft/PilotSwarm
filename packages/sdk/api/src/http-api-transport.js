@@ -342,6 +342,14 @@ export class HttpApiTransport {
         return this.api.call("getSessionMetricSummary", { sessionId });
     }
 
+    async getSessionComputeExecution(sessionId) {
+        return this.api.call("getSessionComputeExecution", { sessionId });
+    }
+
+    async reconcileSessionComputeExecution(sessionId) {
+        await this.api.call("reconcileSessionComputeExecution", { sessionId });
+    }
+
     async getSessionTokensByModel(sessionId) {
         return this.api.call("getSessionTokensByModel", { sessionId });
     }

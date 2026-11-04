@@ -73,6 +73,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getProviderUsageSummary",
     "getSession",
     "getSessionAccess",
+    "getSessionComputeExecution",
     "getSessionCreationPolicy",
     "getSessionEvents",
     "getSessionEventsBefore",
@@ -130,6 +131,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
+    "reconcileSessionComputeExecution",
     "regenerateSession",
     "removeCanvasShareLink",
     "removeProviderLimit",
@@ -785,6 +787,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Native compute authority, phase and unresolved operation count. Does not authorize takeover.
+     * @remarks `GET /management/sessions/:sessionId/compute-execution` — access: `session:read`
+     */
+    getSessionComputeExecution(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * Session creation policy.
      * @remarks `GET /session-creation-policy` — access: `authed`
      */
@@ -1258,6 +1268,14 @@ export interface ManagementOps {
         agentId?: string;
         limit?: number;
         scope?: string;
+    }): Promise<any>;
+
+    /**
+     * Request trusted execution reconciliation; never clears unresolved work or accepts caller-supplied retirement proof.
+     * @remarks `POST /management/sessions/:sessionId/compute-execution/reconcile` — access: `session:manage`
+     */
+    reconcileSessionComputeExecution(params: {
+        sessionId: string;
     }): Promise<any>;
 
     /**
@@ -1908,6 +1926,7 @@ export function createManagementOps(
         getProviderUsageSummary: (params: Record<string, unknown> = {}) => callOp("getProviderUsageSummary", params),
         getSession: (params: Record<string, unknown> = {}) => callOp("getSession", params),
         getSessionAccess: (params: Record<string, unknown> = {}) => callOp("getSessionAccess", params),
+        getSessionComputeExecution: (params: Record<string, unknown> = {}) => callOp("getSessionComputeExecution", params),
         getSessionCreationPolicy: (params: Record<string, unknown> = {}) => callOp("getSessionCreationPolicy", params),
         getSessionEvents: (params: Record<string, unknown> = {}) => callOp("getSessionEvents", params),
         getSessionEventsBefore: (params: Record<string, unknown> = {}) => callOp("getSessionEventsBefore", params),
@@ -1965,6 +1984,7 @@ export function createManagementOps(
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
+        reconcileSessionComputeExecution: (params: Record<string, unknown> = {}) => callOp("reconcileSessionComputeExecution", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),

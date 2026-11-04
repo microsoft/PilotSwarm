@@ -4,6 +4,12 @@ A sample PilotSwarm application that demonstrates building an agent-powered DevO
 
 All tools return **mock data** — no real cloud APIs are called.
 
+This sample remains local by default. A remote adaptation must use a qualified
+provider through the public [native compute contract](../../docs/developer/building/compute-providers.md):
+separate environments for parent/child sessions, common-host state capture and
+PilotSwarm archive/CAS authority. Mock build tools do not qualify a remote
+supervisor, repository mount or deployment.
+
 ## What's Included
 
 ### Agents

@@ -15,6 +15,7 @@ import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging
 import { turnControlMigration } from "./migrations/turn-control-0082.js";
 import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
 import { computeTargetsMigration } from "./migrations/compute-targets-0084.js";
+import { computeNativeMigration } from "./migrations/compute-native-0085.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -410,6 +411,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
         { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
         { version: "0084", name: "compute_targets", sql: computeTargetsMigration(schema) },
+        { version: "0085", name: "compute_native_execution", sql: computeNativeMigration(schema) },
     ];
 }
 

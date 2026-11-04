@@ -41,6 +41,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ComputeAssetStore, computeCopyLimits, type ComputeCopyLimits } from "./compute-assets.js";
 import { ComputeChannel, type ComputeChannelStream } from "./compute-channel.js";
+import { COMPUTE_NATIVE_STATE_MAX_BYTES, type ComputeNativeState, type ComputeNativeStateHost } from "./compute-native-state.js";
+import type { ComputeExecutionIdentity } from "./compute-execution.js";
 
 /** How long a relay connection may say nothing about which ticket it carries. */
 export const COMPUTE_RELAY_TICKET_TIMEOUT_MS = 10_000;
@@ -89,6 +91,7 @@ export interface ComputeHostServiceOptions {
     limits?: Partial<ComputeCopyLimits>;
     /** What starts the relay. Default: this machine's Node and the written program. */
     relayCommand?: { command: string; args: string[] };
+    nativeState?: ComputeNativeStateHost;
 }
 
 export interface ComputeHostServices {
@@ -168,6 +171,51 @@ export async function serveComputeHostControl(
     });
 
     channel.on("stream", (stream: ComputeChannelStream) => {
+        if (stream.kind === "native-state") {
+            const parts: Buffer[] = [];
+            let size = 0;
+            const max = 2 * (options.nativeState?.options.maxBytes ?? COMPUTE_NATIVE_STATE_MAX_BYTES) + 1024 * 1024;
+            stream.on("data", (chunk: Buffer) => {
+                size += chunk.length;
+                if (size > max) stream.close("Native state request exceeds its byte budget");
+                else parts.push(chunk);
+            });
+            stream.on("end", () => { void (async () => {
+                try {
+                    if (!options.nativeState) throw new Error("This host does not support native session state");
+                    if (size > max) throw new Error("Native state request exceeds its byte budget");
+                    const request = JSON.parse(Buffer.concat(parts).toString("utf8")) as {
+                        op: string; identity: ComputeExecutionIdentity; state?: ComputeNativeState; barrierId?: string; disposition?: string;
+                        path?: string; data?: string; sha256?: string;
+                    };
+                    const host = options.nativeState;
+                    let value: unknown;
+                    switch (request.op) {
+                        case "describe": value = host.describe(); break;
+                        case "prepare": value = await host.prepare(request.identity, request.state); break;
+                        case "begin-checkpoint": value = await host.beginCheckpoint(request.identity); break;
+                        case "export-state":
+                            if (!request.barrierId) throw new Error("Native export requires a barrier ID");
+                            value = await host.exportState(request.identity, request.barrierId); break;
+                        case "end-checkpoint":
+                            if (!request.barrierId || !["committed", "discarded"].includes(request.disposition ?? "")) throw new Error("Invalid native barrier disposition");
+                            await host.endCheckpoint(request.identity, request.barrierId, request.disposition as "committed" | "discarded");
+                            break;
+                        case "retire": value = await host.retire(request.identity); break;
+                        case "artifact-read": value = await host.readArtifact(request.identity, String(request.path ?? "")); break;
+                        case "artifact-write": value = await host.writeArtifact(request.identity, String(request.path ?? ""),
+                            String(request.data ?? ""), String(request.sha256 ?? "")); break;
+                        default: throw new Error("Unknown native state operation");
+                    }
+                    await stream.write(JSON.stringify({ ok: true, value }));
+                    await stream.end();
+                } catch (error) {
+                    await stream.write(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+                    await stream.end();
+                }
+            })().catch(error => stream.close(error instanceof Error ? error.message : String(error))); });
+            return;
+        }
         if (stream.kind !== "blob") {
             stream.close("this host does not serve streams of that kind");
             return;

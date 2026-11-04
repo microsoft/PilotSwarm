@@ -2,10 +2,13 @@ import { COMPUTE_ERROR_CODES, COMPUTE_GITHUB_MODEL_REFUSAL, LOCAL_COMPUTE_KIND, 
 import { computeCopyLimits, planComputeCopy, type ComputeCopyLimits, type ComputeCopyRefusal } from "./compute-assets.js";
 import { COMPUTE_CONTROL_COPY_TIMEOUT_MS, ComputeControlLink, type ComputeCallerStatement } from "./compute-control.js";
 import { computeCopyName, mcpOriginKey, packageMcpFolders, packageMcpFoldersForAgents, remoteMcpCustomAgents, remoteMcpServers, type McpServerOrigin } from "./compute-mcp.js";
-import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
+import { RemoteRuntimeRequestHandler, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
 import { COMPUTE_PIPE_OPEN_TIMEOUT_MS, ComputeBridgeRegistry, ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
 import { computeFailureError, computeFailureMessage } from "./compute-failures.js";
 import { isPurposeNotServed, runWorkerHandshake } from "./compute-handshake.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { ComputeExecutionAttempt } from "./compute-execution.js";
+import { readNativeStaging, stageNativeCapture, sameComputeIdentity, assertNativeAttachmentsSeparate, nativeStateDigest, COMPUTE_NATIVE_STATE_MAX_BYTES, type ComputeCheckpointBarrier, type ComputeNativeStateProfile } from "./compute-native-state.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -20,7 +23,7 @@ import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js"
 import { FeatureFlagError, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
-import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
+import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility, copilotSdkVersion } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
@@ -56,7 +59,7 @@ import { composeStructuredSystemMessage, extractPromptContent, mergePromptSectio
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { createHash, randomUUID } from "node:crypto";
-import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
+import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker, writeTurnSentinel } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -860,6 +863,220 @@ export function buildByokModelCapabilities(
 }
 
 export class SessionManager {
+    private readonly computeAttemptScope = new AsyncLocalStorage<{ sessionId: string; attempt?: ComputeExecutionAttempt;
+        stopped?: import("./compute-writeback.js").ComputeStoppedOutcome;
+        recovered?: import("./compute-execution.js").ComputeExecutionIdentity }>();
+    private readonly nativeSessions = new Map<string, { link: ComputeControlLink; profile: ComputeNativeStateProfile;
+        identity: import("./compute-execution.js").ComputeExecutionIdentity; runtimeGeneration: string; barrier?: ComputeCheckpointBarrier;
+        disposition?: "committed" | "discarded" }>();
+
+    getComputeExecution(sessionId: string): ComputeExecutionAttempt | undefined {
+        const scope = this.computeAttemptScope.getStore();
+        return scope?.sessionId === sessionId ? scope.attempt : undefined;
+    }
+
+    isNativeComputeTurn(sessionId: string): boolean {
+        return this.computeAttemptScope.getStore()?.sessionId === sessionId;
+    }
+
+    getComputeStoppedOutcome(sessionId: string): import("./compute-writeback.js").ComputeStoppedOutcome | undefined {
+        const scope = this.computeAttemptScope.getStore();
+        return scope?.sessionId === sessionId ? scope.stopped : undefined;
+    }
+
+    noteComputeRecovery(sessionId: string, identity: import("./compute-execution.js").ComputeExecutionIdentity): void {
+        const scope = this.computeAttemptScope.getStore();
+        if (!scope || scope.sessionId !== sessionId || scope.attempt) throw new Error("Native recovery requires its non-executing recovery scope");
+        scope.recovered = identity;
+    }
+
+    private async _recoverComputeOutcome(sessionId: string, operation: () => Promise<import("./types.js").TurnResult>,
+        stopped?: import("./compute-writeback.js").ComputeStoppedOutcome, turnKey?: string): Promise<import("./types.js").TurnResult> {
+        const authority = this.sessionCatalog?.computeExecution;
+        const prior = stopped ? await authority?.inspect(sessionId) : null;
+        const scope = { sessionId, stopped, recovered: prior && prior.identity.turnKey === turnKey ? prior.identity : undefined };
+        const result = await this.computeAttemptScope.run(scope, operation);
+        const status = await authority?.inspect(sessionId);
+        if (scope.recovered && status && sameComputeIdentity(scope.recovered, status.identity) && status.phase !== "released") {
+            await authority!.finish(status.identity, "unknown");
+            if (status.pendingOperations === 0 && authority?.requestReconciliation) {
+                await authority.requestReconciliation(sessionId);
+                await this.reconcilePendingComputeExecutions();
+            }
+        }
+        return result;
+    }
+
+    async reconcilePendingComputeExecutions(): Promise<void> {
+        const authority = this.sessionCatalog?.computeExecution;
+        if (!authority?.listReconciliationRequests || !authority.reconcile) return;
+        for (const status of await authority.listReconciliationRequests()) {
+            const binding = status.binding;
+            if (!binding || status.pendingOperations !== 0) {
+                console.warn("[SessionManager] compute reconciliation remains unknown: unresolved admitted work or allocation identity");
+                continue;
+            }
+            const provider = this.computeProviders.get(binding.kind);
+            if (!provider?.inspectExecution || !provider.retireExecution) continue;
+            const target = await this.sessionCatalog!.computeTargets?.resolveForSession(binding.targetId);
+            if (!target) continue;
+            try {
+                await authority.reconcile(status.identity, async () => {
+                    const request = { target, host: binding.host, identity: status.identity, signal: AbortSignal.timeout(COMPUTE_CONNECT_TIMEOUT_MS) };
+                    const inspected = await provider.inspectExecution!(request);
+                    if (inspected.state !== "retired") {
+                        const retired = await provider.retireExecution!(request);
+                        if (retired.state !== "retired") return "unknown";
+                    }
+                    const verified = await provider.inspectExecution!({ ...request, signal: AbortSignal.timeout(COMPUTE_CONNECT_TIMEOUT_MS) });
+                    return verified.state === "retired" && verified.runtimeGeneration && verified.evidence
+                        && (!binding.runtimeGeneration || verified.runtimeGeneration === binding.runtimeGeneration) ? "retired" : "unknown";
+                });
+            } catch (error) {
+                console.warn(`[SessionManager] compute reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+    }
+
+    async withComputeExecution(input: {
+        sessionId: string; config: SerializableSessionConfig; snapshot?: { turnKey: string }; transcriptEpoch?: number;
+    }, operation: () => Promise<import("./types.js").TurnResult>): Promise<import("./types.js").TurnResult> {
+        const catalog = this.sessionCatalog;
+        const selected = Boolean(input.config.computeTarget || this.computeRemoteSessions.has(input.sessionId));
+        if (!catalog?.getSessionCreationConfig) {
+            if (selected) throw computeFailureError({ code: COMPUTE_ERROR_CODES.UNAVAILABLE, message: "Compute target authority is unavailable" });
+            return operation();
+        }
+        const row = await catalog.getSession(input.sessionId);
+        const target = await this._treeComputeTarget(catalog, input.sessionId, row?.rootSessionId || input.sessionId);
+        if (!target.name && !target.id) {
+            if (selected) throw computeFailureError({ code: COMPUTE_ERROR_CODES.UNAVAILABLE, message: "Compute selection has no recorded authority" });
+            return operation();
+        }
+        const resolved = await catalog.computeTargets?.resolveForSession(target.id);
+        if (resolved?.kind === LOCAL_COMPUTE_KIND) return operation();
+        if (input.snapshot?.turnKey) {
+            const stopped = await catalog.getComputeStoppedOutcome?.(input.sessionId, input.snapshot.turnKey, input.transcriptEpoch ?? 0);
+            if (stopped) return this._recoverComputeOutcome(input.sessionId, operation, stopped, input.snapshot.turnKey);
+            if (this.sessionStore && supportsVersionedSnapshots(this.sessionStore)) {
+                const probe = await this.sessionStore.probeSnapshot(input.sessionId, input.transcriptEpoch);
+                if (probe.exists && probe.turnKey === input.snapshot.turnKey) return this._recoverComputeOutcome(input.sessionId, operation);
+            }
+        }
+        if (!resolved) throw computeFailureError({ code: COMPUTE_ERROR_CODES.NOT_FOUND, message: "Recorded compute target is unavailable" });
+        if (!resolved.enabled) throw computeFailureError({ code: COMPUTE_ERROR_CODES.DISABLED, message: "Recorded compute target is disabled" });
+        const provider = this.computeProviders.get(resolved.kind);
+        if (!provider?.capabilities.nativeState || !provider.verifyCheckpoint || !provider.inspectExecution || !provider.retireExecution) {
+            throw computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: "Compute provider lacks qualified native checkpoint/retirement supervision" });
+        }
+        if (!input.snapshot?.turnKey || !catalog.computeExecution || !catalog.completeExecutionTurnWriteback
+            || !this.sessionStore || !supportsVersionedSnapshots(this.sessionStore)) {
+            throw computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: "Native compute requires durable execution authority, completion and versioned snapshots" });
+        }
+        const identity = await catalog.computeExecution.acquire({
+            sessionId: input.sessionId, transcriptEpoch: input.transcriptEpoch ?? 0, turnKey: input.snapshot.turnKey,
+            attemptId: randomUUID(), workerNodeId: this.workspaceWorkerNodeId ?? os.hostname(),
+        });
+        const attempt: ComputeExecutionAttempt = new ComputeExecutionAttempt(identity, catalog.computeExecution,
+            action => this.computeAttemptScope.run({ sessionId: input.sessionId, attempt }, action));
+        try {
+            const result = await this.computeAttemptScope.run({ sessionId: input.sessionId, attempt }, operation);
+            await attempt.finish("committed");
+            const native = this.nativeSessions.get(input.sessionId);
+            if (native?.barrier) {
+                if (!native.disposition) throw new Error("Native checkpoint has no accepted disposition");
+                if (native.disposition === "discarded") {
+                    const binding = this.computeHosts.get(input.sessionId);
+                    if (!binding) throw new Error("Discarded native runtime has no recorded allocation");
+                    await this._retireNativeWriters(input.sessionId, binding);
+                } else {
+                    await native.link.nativeStateCall({ op: "end-checkpoint", identity, barrierId: native.barrier.barrierId, disposition: "committed" });
+                }
+                native.barrier = undefined;
+            }
+            const clientKey = this.sessionClientKeys.get(input.sessionId);
+            const client = clientKey ? this.clients.get(clientKey) : undefined;
+            if (client) {
+                await client.forceStop();
+                this.clients.delete(clientKey!);
+            }
+            this._forgetWarmSession(input.sessionId);
+            this.sessionClientKeys.delete(input.sessionId);
+            await catalog.computeExecution.finish(identity, "released");
+            return result;
+        } catch (error) {
+            try {
+                await attempt.finish("unknown");
+                await catalog.computeExecution.recordFailure?.(identity, error instanceof Error ? error.message : String(error));
+            }
+            catch (cleanup) { throw new AggregateError([error, cleanup], "Compute execution and uncertainty recording failed"); }
+            throw error;
+        }
+    }
+
+    async checkpointComputeExecution(sessionId: string): Promise<void> {
+        const attempt = this.getComputeExecution(sessionId);
+        if (!attempt) return;
+        const heldBinding = this.computeHosts.get(sessionId);
+        if (heldBinding) await this._reconcileRemoteGrants(heldBinding, sessionId, []);
+        await attempt.drain();
+        const native = this.nativeSessions.get(sessionId);
+        const binding = this.computeHosts.get(sessionId);
+        if (!native || !binding?.provider.verifyCheckpoint) throw new Error("Native checkpoint supervision is unavailable");
+        await attempt.lifecycle(async () => {
+            const barrier = await native.link.nativeStateCall<ComputeCheckpointBarrier>({ op: "begin-checkpoint", identity: attempt.identity });
+            native.barrier = barrier;
+            if (!sameComputeIdentity(barrier.identity, attempt.identity) || barrier.runtimeGeneration !== native.runtimeGeneration) throw new Error("Native checkpoint belongs to a stale attempt");
+            const valid = await binding.provider.verifyCheckpoint!({
+                target: binding.target, host: binding.host, identity: attempt.identity, barrier,
+                signal: AbortSignal.timeout(COMPUTE_CONNECT_TIMEOUT_MS),
+            });
+            if (!valid.ok) throw computeFailureError(valid);
+            const capture = await native.link.nativeStateCall<import("./compute-native-state.js").ComputeNativeCapture>({
+                op: "export-state", identity: attempt.identity, barrierId: barrier.barrierId,
+            });
+            if (capture.barrier.barrierId !== barrier.barrierId || !sameComputeIdentity(capture.barrier.identity, attempt.identity)
+                || capture.barrier.runtimeGeneration !== barrier.runtimeGeneration) throw new Error("Native export barrier changed");
+            await stageNativeCapture(path.join(this.sessionStateDir, sessionId), capture.state, { sessionId, profile: native.profile });
+            writeTurnSentinel(path.join(this.sessionStateDir, sessionId), attempt.identity.turnKey);
+        });
+    }
+
+    noteComputeCheckpointDisposition(sessionId: string, disposition: "committed" | "discarded"): void {
+        const native = this.nativeSessions.get(sessionId);
+        if (!native?.barrier) throw new Error("Native checkpoint disposition requires its held barrier");
+        native.disposition = disposition;
+    }
+
+    nativeArtifactFiles(sessionId: string | undefined, candidate: string): import("./artifact-tools.js").NativeArtifactFiles | undefined {
+        if (!sessionId) return undefined;
+        const native = this.nativeSessions.get(sessionId);
+        const attempt = this.getComputeExecution(sessionId);
+        if (!native || !attempt) return undefined;
+        const root = native.profile.roots.find(entry => entry.name === "session")?.directory;
+        if (!root) throw new Error("Native session file root is unavailable");
+        const hostPath = root.includes("\\") ? path.win32 : path.posix;
+        const files = hostPath.join(root, "files");
+        if (!hostPath.isAbsolute(candidate) && this.computeLocalPathRoots(sessionId)?.length) return undefined;
+        const resolved = hostPath.resolve(files, candidate);
+        const relative = hostPath.relative(files, resolved);
+        if (relative === ".." || relative.startsWith(".." + hostPath.sep) || hostPath.isAbsolute(relative)) return undefined;
+        return {
+            maxBytes: COMPUTE_NATIVE_STATE_MAX_BYTES,
+            read: async () => attempt.current(async () => {
+                const result = await native.link.nativeStateCall<{ path: string; data: string; sha256: string }>({
+                    op: "artifact-read", identity: attempt.identity, path: resolved,
+                });
+                const body = Buffer.from(result.data, "base64");
+                if (createHash("sha256").update(body).digest("hex") !== result.sha256) throw new Error("Native artifact digest mismatch");
+                return { path: result.path, body };
+            }),
+            write: async body => attempt.current(() => native.link.nativeStateCall({
+                op: "artifact-write", identity: attempt.identity, path: resolved, data: body.toString("base64"),
+                sha256: createHash("sha256").update(body).digest("hex"),
+            })),
+        };
+    }
     /**
      * Resolved inspect viewers, keyed by session id. Static so it is shared
      * across manager instances in a worker process.
@@ -946,20 +1163,12 @@ export class SessionManager {
      * Kept while the session stays on that connection, so a warm runtime
      * session keeps its placeholders.
      */
-    private remoteGrants = new Map<string, { grant: RemoteSessionGrant; endpointKey: string; fingerprint: string; provider: unknown }>();
+    private remoteGrants = new Map<string, { grant: RemoteSessionGrant; endpointKey: string; placeholders: Map<string, string>; attempt?: ComputeExecutionAttempt }>();
     /** Per session: the compute host it is bound to, for release. */
     private computeHosts = new Map<string, ComputeBinding>();
     /**
-     * Per session: the session-state folder a remote runtime writes through,
-     * kept so the worker can close it to the runtime while it saves or
-     * restores that folder (`fenceSessionFiles`).
-     */
-    private computeSessionFs = new Map<string, WorkerDirectorySessionFs>();
-    /**
-     * Per host: its bridge on this machine, shared by every session of a
-     * tree bound to that host, so they share one address and one pooled
-     * client. The registry is what makes two turns starting together get
-     * one bridge rather than two.
+     * Per logical session/allocation: its bridge on this machine. Reconnects
+     * retain that bridge; delegated sessions never share its controller.
      */
     private computeBridges = new ComputeBridgeRegistry();
     /**
@@ -991,8 +1200,6 @@ export class SessionManager {
      * as "runs here" would hand a remote session the worker's own folders.
      */
     private computeRemoteSessions = new Set<string>();
-    /** The most one session's state folder may hold; the default when unset. */
-    private sessionFsMaxTotalBytes: number | undefined;
     /** How much one session's copy of its folders carries. */
     private computeCopyLimits: ComputeCopyLimits = computeCopyLimits();
     /** Whether a provider may hand back a runtime address that is not on this machine. */
@@ -1471,10 +1678,17 @@ export class SessionManager {
         // same as a session that has none: with this deployment running
         // every agent elsewhere, the difference is whether an agent runs
         // on the worker, so it fails rather than falls through.
+        const remembered = this.computeTargetBySession.get(sessionId);
+        const selected = Boolean(config.computeTarget?.trim() || remembered?.name || remembered?.id)
+            || this.computeRemoteSessions.has(sessionId);
         if (!catalog) {
             if (this.computeRequired) {
                 return fail(COMPUTE_ERROR_CODES.REQUIRED,
                     "this deployment runs every session's agent on a compute host, and this worker has no catalog to read its target from");
+            }
+            if (selected) {
+                return fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
+                    "this session selects a compute target, and this worker has no catalog to authorize it", 5_000);
             }
             return null;
         }
@@ -1482,6 +1696,10 @@ export class SessionManager {
             if (this.computeRequired) {
                 return fail(COMPUTE_ERROR_CODES.REQUIRED,
                     "this deployment runs every session's agent on a compute host, and this catalog cannot say which target a session has");
+            }
+            if (selected) {
+                return fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
+                    "this session selects a compute target, and this catalog cannot read its recorded selection", 5_000);
             }
             return null;
         }
@@ -1494,6 +1712,10 @@ export class SessionManager {
         const targetId = recorded.id;
         if (recorded.ownId && recorded.ownId !== targetId) {
             return fail(COMPUTE_ERROR_CODES.INVALID, "this session names a different compute target than its session tree");
+        }
+        if (selected && !targetName && !targetId) {
+            return fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
+                "this session selects a compute target, but its tree has no recorded selection to authorize", 5_000);
         }
         if ((targetName || targetId) && !catalog.computeTargets) {
             // The tree has a target and this worker cannot resolve one.
@@ -1531,6 +1753,9 @@ export class SessionManager {
         if (!target.enabled) return fail(COMPUTE_ERROR_CODES.DISABLED, `the compute target "${target.name}" is disabled`);
         const provider = this.computeProviders.get(target.kind);
         if (!provider) return fail(COMPUTE_ERROR_CODES.KIND_UNKNOWN, `this worker has no compute provider of kind "${target.kind}"`);
+        if (provider.kind !== LOCAL_COMPUTE_KIND && (!provider.capabilities.nativeState || !provider.verifyCheckpoint || !provider.inspectExecution || !provider.retireExecution)) {
+            return fail(COMPUTE_ERROR_CODES.UNSUPPORTED, "This compute provider has no qualified native state/checkpoint contract");
+        }
         const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
 
         if (provider.validateTarget) {
@@ -1539,11 +1764,20 @@ export class SessionManager {
             if (!valid.ok) return fail(valid.code, valid.message, valid.retryAfterMs);
         }
         const previous = this.computeHosts.get(sessionId);
-        const bound = await this._computeCall("bind", COMPUTE_BIND_TIMEOUT_MS,
+        const execution = this.getComputeExecution(sessionId);
+        const bind = () => this._computeCall("bind", COMPUTE_BIND_TIMEOUT_MS,
             (signal) => provider.bind({ target, sessionId, rootSessionId, owner, workerNodeId, signal }));
+        const bound = execution ? await execution.current(bind) : await bind();
         if (!bound.ok) return fail(bound.code, bound.message, bound.retryAfterMs);
+        for (const [otherSessionId, other] of this.computeHosts) {
+            if (otherSessionId !== sessionId && other.target.id === target.id && other.host.kind === bound.host.kind
+                && other.host.id === bound.host.id && other.host.incarnation === bound.host.incarnation) {
+                return fail(COMPUTE_ERROR_CODES.UNSUPPORTED, "A native compute allocation must not be shared by logical sessions");
+            }
+        }
         if (previous && (previous.target.id !== target.id || previous.host.id !== bound.host.id || previous.host.incarnation !== bound.host.incarnation)) {
             // The session's host was replaced: leave the old one.
+            if (previous.provider.capabilities.nativeState) await this._retireNativeWriters(sessionId, previous);
             this.computeHosts.delete(sessionId);
             await this._releaseBinding(sessionId, previous, "failed", true);
             // Worth recording: the session's processes, its scratch files
@@ -1562,6 +1796,17 @@ export class SessionManager {
                 target: target.name, host: bound.host.id, incarnation: bound.host.incarnation, workerNodeId,
             });
         }
+        const priorStatus = execution ? await catalog.computeExecution?.inspect(sessionId) : undefined;
+        const recordedBinding: NonNullable<import("./compute-execution.js").ComputeExecutionStatus["binding"]> = {
+            targetId: target.id, targetName: target.name, kind: target.kind,
+            host: { kind: bound.host.kind, id: bound.host.id, incarnation: bound.host.incarnation },
+            ...(priorStatus?.binding?.host.id === bound.host.id && priorStatus.binding.host.incarnation === bound.host.incarnation
+                && priorStatus.binding.runtimeGeneration ? { runtimeGeneration: priorStatus.binding.runtimeGeneration } : {}),
+        };
+        if (execution) {
+            if (!catalog.computeExecution?.recordBinding) return fail(COMPUTE_ERROR_CODES.UNSUPPORTED, "Compute authority cannot persist allocation identity");
+            await catalog.computeExecution.recordBinding(execution.identity, recordedBinding);
+        }
         // Record the binding before connect, so a failed connect still releases it.
         const workspace: ComputeWorkspacePaths = {
             ...(workspaceAttach?.path ?? config.workingDirectory ? { cwd: workspaceAttach?.path ?? config.workingDirectory } : {}),
@@ -1570,18 +1815,16 @@ export class SessionManager {
         const sameHost = Boolean(previous && previous.host.id === bound.host.id && previous.host.incarnation === bound.host.incarnation);
         const binding: ComputeBinding = {
             provider, target, host: bound.host, rootSessionId, workerNodeId,
-            hostKey: computeBindingKey(target.id, bound.host, rootSessionId),
+            hostKey: computeBindingKey(target.id, bound.host, sessionId),
             endpointKey: sameHost ? previous!.endpointKey : "",
             owner,
             workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
             folderMap: new ComputeFolderMap([]),
         };
         this.computeHosts.set(sessionId, binding);
-        const connected = await this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
-            (signal) => provider.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, signal, workspace })).catch(async (error) => {
-                await this.releaseCompute(sessionId, "failed");
-                throw error;
-            });
+        const connect = () => this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
+            (signal) => provider.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, signal, workspace }));
+        const connected = await (execution ? execution.current(connect) : connect());
         if (!connected.ok) {
             await this.releaseCompute(sessionId, "failed");
             return fail(connected.code, connected.message, connected.retryAfterMs);
@@ -1611,6 +1854,12 @@ export class SessionManager {
             return fail(COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
                 "the compute provider returned a runtime address that is not on this machine; this worker accepts only local addresses");
         }
+        if (connected.endpoint.transport !== "local" && (config.workspace || config.workingDirectory)) {
+            if ((workspace.cwd && !connected.workspace.cwd)
+                || (workspace.additionalDirectories?.length ?? 0) > (connected.workspace.additionalDirectories?.length ?? 0)) {
+                return fail(COMPUTE_ERROR_CODES.UNAVAILABLE, "Required session workspace roots are unavailable on the native host");
+            }
+        }
         // Every runtime that is not the worker's own child process gets a
         // bridge on this machine, and the rest of the worker then sees an
         // ordinary local address. That is what makes the handshake
@@ -1621,6 +1870,40 @@ export class SessionManager {
         let endpoint: ComputeRuntimeEndpoint = connected.endpoint;
         if (endpoint.transport !== "local") {
             try {
+                const attempt = this.getComputeExecution(sessionId);
+                if (!attempt) throw new Error("Remote runtime startup requires current native execution admission");
+                this.computeReach.set(binding.hostKey, endpoint);
+                const link = await this._controlLink(binding);
+                const described = await link.nativeStateCall<import("./compute-native-state.js").ComputeNativeStateDescription>({ op: "describe" });
+                const expected = provider.capabilities.nativeState!;
+                if (described.protocol !== expected.protocol || described.sessionId !== sessionId || described.profile.id !== expected.profileId
+                    || described.profile.sdkVersion !== expected.sdkVersion || described.profile.runtimeVersion !== expected.runtimeVersion) {
+                    throw new Error("Native host profile/version does not match the admitted provider");
+                }
+                assertNativeAttachmentsSeparate(described.profile, [
+                    ...(workspace.cwd && connected.workspace.cwd ? [connected.workspace.cwd] : []),
+                    ...(connected.workspace.additionalDirectories ?? []).slice(0, workspace.additionalDirectories?.length ?? 0),
+                ]);
+                const directory = path.join(this.sessionStateDir, sessionId);
+                const state = fs.existsSync(path.join(directory, "workspace.yaml"))
+                    ? await readNativeStaging(directory, { sessionId, profile: described.profile }) : undefined;
+                if (!state && described.retained?.stateDigest
+                    && described.retained.identity.transcriptEpoch === attempt.identity.transcriptEpoch) {
+                    throw new Error("Accepted native state is unavailable; an empty archive does not authorize replacement");
+                }
+                if ((state && nativeStateDigest(state) !== described.retained?.stateDigest) || (!state && described.retained)) {
+                    await this._retireNativeWriters(sessionId, binding, {
+                        link, identity: described.retained?.identity ?? attempt.identity,
+                        runtimeGeneration: described.retained?.runtimeGeneration,
+                    });
+                }
+                const prepared = await attempt.current(() => link.nativeStateCall<{ connectionToken: string; runtimeGeneration: string }>({
+                    op: "prepare", identity: attempt.identity, ...(state ? { state } : {}),
+                }));
+                if (!prepared.connectionToken || !prepared.runtimeGeneration) throw new Error("Native runtime did not provide its connection token/generation");
+                await catalog.computeExecution!.recordBinding!(attempt.identity, { ...recordedBinding, runtimeGeneration: prepared.runtimeGeneration });
+                endpoint = { ...endpoint, connectionToken: prepared.connectionToken };
+                this.nativeSessions.set(sessionId, { link, profile: described.profile, identity: attempt.identity, runtimeGeneration: prepared.runtimeGeneration });
                 endpoint = await this._bridgeEndpoint(binding, endpoint, sessionId);
             } catch (error) {
                 await this.releaseCompute(sessionId, "failed");
@@ -1635,7 +1918,8 @@ export class SessionManager {
         // answers `connect` with the host's view of the same folders, in
         // the same order, so the two line up by position.
         binding.folderMap = computeFolderMapOf(workspace, connected.workspace, workspaceAttach?.extras?.map((extra) => extra.name) ?? []);
-        const endpointKey = runtimeEndpointKey(endpoint, bound.host);
+        const attemptKey = this.getComputeExecution(sessionId)?.identity.attemptId;
+        const endpointKey = runtimeEndpointKey(endpoint, bound.host) + (attemptKey ? `\0${attemptKey}` : "");
         const oldKey = binding.endpointKey;
         binding.endpointKey = endpointKey;
         if (oldKey && oldKey !== endpointKey) {
@@ -1772,6 +2056,10 @@ export class SessionManager {
             }
             const link = new ComputeControlLink(pipe, {
                 onRefusal: ({ reason }) => console.warn(`[SessionManager] a forwarded call on ${binding.target.name} was refused: ${reason}`),
+                admissionForSession: sessionId => {
+                    const attempt = this.getComputeExecution(sessionId);
+                    return attempt ? operation => attempt.callback(operation) : undefined;
+                },
             });
             try {
                 // Make the host say what it offers before anything is sent,
@@ -2126,9 +2414,35 @@ export class SessionManager {
     /** Compute providers: tell the provider a session no longer needs its host here. Best effort. */
     async releaseCompute(sessionId: string, reason: ComputeReleaseReason): Promise<void> {
         const binding = this.computeHosts.get(sessionId);
+        if (binding && binding.provider.capabilities.nativeState) await this._retireNativeWriters(sessionId, binding);
         this.computeHosts.delete(sessionId);
+        this.nativeSessions.delete(sessionId);
         this.remoteGrants.delete(sessionId);
         if (binding) await this._releaseBinding(sessionId, binding, reason);
+    }
+
+    private async _retireNativeWriters(sessionId: string, binding: ComputeBinding, source?: {
+        link: ComputeControlLink; identity: import("./compute-execution.js").ComputeExecutionIdentity; runtimeGeneration?: string;
+    }): Promise<void> {
+        const native = source ?? this.nativeSessions.get(sessionId);
+        const status = await this.sessionCatalog?.computeExecution?.inspect(sessionId);
+        const identity = native?.identity ?? status?.identity;
+        if (!identity || (status && status.pendingOperations !== 0)
+            || !binding.provider.retireExecution || !binding.provider.inspectExecution) {
+            throw new Error("Compute release requires verified retirement and settled admitted work");
+        }
+        const request = { target: binding.target, host: binding.host, identity, signal: AbortSignal.timeout(COMPUTE_CONNECT_TIMEOUT_MS) };
+        const retired = await binding.provider.retireExecution(request);
+        const inspected = await binding.provider.inspectExecution({ ...request, signal: AbortSignal.timeout(COMPUTE_CONNECT_TIMEOUT_MS) });
+        if (retired.state !== "retired" || inspected.state !== "retired" || !retired.runtimeGeneration
+            || retired.runtimeGeneration !== inspected.runtimeGeneration || !inspected.evidence
+            || (native?.runtimeGeneration && native.runtimeGeneration !== inspected.runtimeGeneration)) {
+            throw new Error("Compute retirement is unknown; allocation ownership retained");
+        }
+        if (native) {
+            const ended = await native.link.nativeStateCall<{ runtimeGeneration: string }>({ op: "retire", identity });
+            if (ended.runtimeGeneration !== inspected.runtimeGeneration) throw new Error("Common host retirement generation differs from trusted inspection");
+        }
     }
 
     /**
@@ -2179,14 +2493,10 @@ export class SessionManager {
         allowNonLoopbackEndpoints?: boolean;
         requireCompute?: boolean;
         copyLimits?: Partial<ComputeCopyLimits>;
-        /** The most one session's state folder may hold on the worker. */
-        sessionFsMaxTotalBytes?: number;
     }): void {
         this.computeAllowNonLoopbackEndpoints = options.allowNonLoopbackEndpoints === true;
         this.computeRequired = options.requireCompute === true;
         this.computeCopyLimits = computeCopyLimits(options.copyLimits);
-        const quota = Number(options.sessionFsMaxTotalBytes);
-        this.sessionFsMaxTotalBytes = Number.isFinite(quota) && quota > 0 ? Math.floor(quota) : undefined;
     }
 
     /** Compute providers: add one plug-in per compute type. */
@@ -2391,15 +2701,18 @@ export class SessionManager {
                 COPILOT_HOME: path.dirname(this.sessionStateDir),
             },
             // Compute providers: a remote runtime keeps its session state in
-            // this worker's session directory through SessionFs.
-            ...(remote ? { sessionFs: { initialCwd: "/", sessionStatePath: REMOTE_SESSION_STATE_ROOT, conventions: "posix" as const } } : {}),
+            // a native state service, not worker-backed filesystem RPC.
         }, byokOpenAi ? { type: "openai" } : undefined, toolCatalogResolver, remote ? {
             connection: runtimeConnectionFor(remote),
             // Serves only the sessions bound to this connection.
             requestHandler: new RemoteRuntimeRequestHandler((sessionId) => {
                 const entry = sessionId ? this.remoteGrants.get(sessionId) : undefined;
                 return entry && entry.endpointKey === endpointKey ? entry.grant : undefined;
-            }, toolCatalogResolver),
+            }, toolCatalogResolver, (sessionId, send) => {
+                const entry = sessionId ? this.remoteGrants.get(sessionId) : undefined;
+                if (!entry || entry.endpointKey !== endpointKey) throw new Error("Stale native model connection");
+                return entry.attempt ? entry.attempt.forward(send) : send();
+            }),
         } : undefined);
         this.clients.set(clientKey, created);
         return created;
@@ -3192,7 +3505,10 @@ export class SessionManager {
             }
             : baseProviderConfig;
         config.providerFingerprint = createHash("sha256")
-            .update(JSON.stringify(baseProviderConfig.provider ?? {}))
+            .update(JSON.stringify({
+                ...baseProviderConfig.provider,
+                bearerTokenProvider: typeof baseProviderConfig.provider?.bearerTokenProvider === "function" ? "callback" : undefined,
+            }))
             .digest("hex");
 
         // Context-window tier: only models whose catalog entry declares
@@ -3273,25 +3589,22 @@ export class SessionManager {
         let sessionProviderConfig: typeof resolvedProviderConfig = resolvedProviderConfig;
         if (remoteEndpoint) {
             const realProvider = resolvedProviderConfig.provider as Record<string, any>;
-            const fingerprint = JSON.stringify([realProvider?.type ?? null, realProvider?.baseUrl ?? null,
-                Object.keys(realProvider?.headers ?? {}).sort(), Boolean(realProvider?.apiKey), Boolean(realProvider?.bearerToken),
-                typeof realProvider?.bearerTokenProvider === "function"]);
-            let entry = this.remoteGrants.get(sessionId);
-            if (!entry || entry.endpointKey !== compute!.endpointKey || entry.fingerprint !== fingerprint) {
-                // New placeholders whenever the session lands on a new connection
-                // or its provider changes; the same ones while it stays put.
-                const redacted = redactProviderSecrets(realProvider, sessionId);
-                const grant = remoteSessionGrant(realProvider?.baseUrl, redacted.secrets);
-                if (!grant) {
-                    throw Object.assign(
-                computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: `this session's model provider has no http(s) base URL, which a remote runtime needs` }),
-                { status: 400 },
-            );
-                }
-                entry = { grant, endpointKey: compute!.endpointKey, fingerprint, provider: redacted.provider };
-                this.remoteGrants.set(sessionId, entry);
+            const previous = this.remoteGrants.get(sessionId);
+            // Only stand-ins survive a warm binding. Authority and all provider
+            // options are rebuilt from this turn's admitted selection.
+            const redacted = redactProviderSecrets(realProvider, sessionId, resolvedProvider?.providerId ?? "default",
+                previous?.endpointKey === compute!.endpointKey ? previous.placeholders : undefined);
+            const grant = remoteSessionGrant(realProvider?.baseUrl, redacted.secrets);
+            if (!grant) {
+                this.remoteGrants.delete(sessionId);
+                throw Object.assign(
+                    computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: `this session's model provider has no http(s) base URL, which a remote runtime needs` }),
+                    { status: 400 },
+                );
             }
-            sessionProviderConfig = { ...resolvedProviderConfig, provider: entry.provider } as typeof resolvedProviderConfig;
+            this.remoteGrants.set(sessionId, { grant, endpointKey: compute!.endpointKey, placeholders: redacted.placeholders,
+                attempt: this.getComputeExecution(sessionId) });
+            sessionProviderConfig = { ...resolvedProviderConfig, provider: redacted.provider };
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
         const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
@@ -3317,6 +3630,14 @@ export class SessionManager {
             }
         }
         const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root, remoteEndpoint, compute?.endpointKey);
+        if (remoteEndpoint && this.isNativeComputeTurn(sessionId)) {
+            const profile = this.nativeSessions.get(sessionId)?.profile;
+            if (!profile || profile.sdkVersion !== copilotSdkVersion()) throw new Error("Native host/controller SDK profile mismatch");
+            const starting = this._startClient(client);
+            if (starting) await starting;
+            const observed = await client.getStatus();
+            if (observed.version !== profile.runtimeVersion) throw new Error("Native runtime version differs from its admitted state profile");
+        }
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -3519,8 +3840,15 @@ export class SessionManager {
         // An unreadable owner must not bypass a user-level OFF by resolving
         // cluster policy. Ownerless resolution is only for standalone managers.
         const nativeOwnerKnown = !this.sessionCatalog || Boolean(nativeOwner?.provider && nativeOwner?.subject);
-        config.nativeFeatureAllowed = () => nativeOwnerKnown
+        const nativeFeatureRequested = () => nativeOwnerKnown
             && (this.featureFlags?.resolve("copilot.native_tasks", nativeOwner, { fallback: false }).enabled ?? false);
+        config.nativeFeatureAllowed = () => !remoteEndpoint && nativeFeatureRequested();
+        if (remoteEndpoint && this.workerDefaults.nativeSubagents === "sync" && nativeFeatureRequested()) {
+            await this.sessionCatalog!.recordEvents(sessionId, [{
+                eventType: "session.compute_capability_unavailable",
+                data: { capability: "copilot.native_tasks", message: "In-process SDK subtasks cannot provide per-logical-session isolation; use durable delegated sessions." },
+            }]);
+        }
         const nativeEnabled = this.workerDefaults.nativeSubagents === "sync" && config.nativeFeatureAllowed()
             && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
             && config.promptLayering?.kind !== "pilotswarm-system-agent";
@@ -3865,7 +4193,9 @@ export class SessionManager {
             // refreshes the client-side handler map). Pinned so tool search
             // cannot defer PilotSwarm tools out of the prompt — see
             // tool-pinning.ts for the why and the phase-2 opt-out path.
-            tools: pinToolsNeverDefer(nativeEnabled ? guardNativeExternalTools(allTools, sessionId, nativeTaskAccess) : allTools),
+            tools: pinToolsNeverDefer(this.getComputeExecution(sessionId)?.tools(
+                nativeEnabled ? guardNativeExternalTools(allTools, sessionId, nativeTaskAccess) : allTools)
+                ?? (nativeEnabled ? guardNativeExternalTools(allTools, sessionId, nativeTaskAccess) : allTools)),
             model: sdkModelName,
             // Tell the runtime what a BYOK model can do.
             //
@@ -3913,14 +4243,7 @@ export class SessionManager {
                 : workspaceAttach?.extras?.length
                     ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
                     : {}),
-            // Compute providers: session state stays in this worker's directory.
-            ...(remoteEndpoint ? { createSessionFsProvider: () => {
-                const made = new WorkerDirectorySessionFs(
-                    path.join(this.sessionStateDir, sessionId), undefined,
-                    { maxTotalBytes: this.sessionFsMaxTotalBytes });
-                this.computeSessionFs.set(sessionId, made);
-                return made;
-            } } : {}),
+            // Native runtime state is prepared by the common host before create/resume.
             // Session workspaces: repo hooks never run, and the repo's
             // instruction files load only when the provider adopts them. A
             // cleared session keeps hooks off.
@@ -3976,6 +4299,13 @@ export class SessionManager {
                 ? (remoteCapabilities && Object.keys(remoteCapabilities.mcpServers).length > 0 ? { mcpServers: remoteCapabilities.mcpServers } : {})
                 : Object.keys(effectiveMcpServers).length > 0 ? { mcpServers: effectiveMcpServers } : {}),
         };
+        const computeAttempt = this.getComputeExecution(sessionId);
+        if (computeAttempt) {
+            if (sessionConfig.hooks) sessionConfig.hooks = computeAttempt.callbacks(sessionConfig.hooks);
+            const permission = sessionConfig.onPermissionRequest;
+            sessionConfig.onPermissionRequest = (...args: unknown[]) => computeAttempt.callback(async () => permission(...args));
+            config.tools = computeAttempt.tools(config.tools ?? []);
+        }
 
         let copilotSession: CopilotSession;
 
@@ -4167,25 +4497,6 @@ export class SessionManager {
         this.sessions.delete(sessionId);
         this.sessionAgentCopies.delete(sessionId);
         this.sessionBindingFingerprints.delete(sessionId);
-        // The folder a remote runtime wrote through belonged to that
-        // handle; the next one makes its own.
-        this.computeSessionFs.delete(sessionId);
-    }
-
-    /**
-     * Compute providers: close a remote session's state folder to its
-     * runtime while the worker saves or restores it, and open it again
-     * afterwards.
-     *
-     * The worker publishes a session's files by reading the whole folder
-     * and writing it back. A runtime writing into the folder at that
-     * moment would put part of one state into the snapshot of another. An
-     * ordinary session writes those files through the worker's own handle
-     * and needs nothing here, so this returns a function that does
-     * nothing for it.
-     */
-    fenceSessionFiles(sessionId: string, reason: string): () => void {
-        return this.computeSessionFs.get(sessionId)?.fence(reason) ?? (() => {});
     }
 
     /**

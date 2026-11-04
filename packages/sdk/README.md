@@ -2,6 +2,12 @@
 
 Durable runtime primitives for building apps on top of PilotSwarm.
 
+Experimental [native compute providers](../../docs/developer/building/compute-providers.md)
+use the common host/state service and a qualified supervisor. Each logical session,
+including delegated children, has a separate executor. Remote worker-backed
+SessionFs is removed; unqualified providers fail closed rather than running locally.
+Real-runtime qualification is separate from the owned component fixtures.
+
 Download the SDK asset from a published Microsoft release, then install it:
 
 ```bash

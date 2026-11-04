@@ -325,6 +325,14 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionMetricSummary", { sessionId });
     }
 
+    async getSessionComputeExecution(sessionId: string): Promise<import("../compute-execution.js").ComputeExecutionStatus | null> {
+        return this._api.call("getSessionComputeExecution", { sessionId });
+    }
+
+    async reconcileSessionComputeExecution(sessionId: string): Promise<void> {
+        await this._api.call("reconcileSessionComputeExecution", { sessionId });
+    }
+
     async getSessionFootprint(sessionId: string, _opts?: { bypassCache?: boolean }): Promise<any> {
         // bypassCache is a direct-mode/test affordance; the web path always
         // reads through the server-side TTL cache.

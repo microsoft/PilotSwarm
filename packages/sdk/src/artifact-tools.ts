@@ -38,6 +38,11 @@ import type { ComputeFolderMap } from "./compute.js";
 
 const INLINE_READ_DEFAULT_BYTES = 65_536;
 const INLINE_READ_MAX_BYTES = 262_144;
+export interface NativeArtifactFiles {
+    maxBytes: number;
+    read(): Promise<{ path: string; body: Buffer }>;
+    write(body: Buffer): Promise<{ path: string }>;
+}
 
 function artifactLink(sessionId: string, filename: string): string {
     return `artifact://${sessionId}/${filename}`;
@@ -120,6 +125,7 @@ export function createArtifactTools(opts: {
      * and write on the worker, so a path crosses this map both ways.
      */
     computeFolderMapFor?: (sessionId: string | undefined) => ComputeFolderMap | undefined;
+    nativeFilesFor?: (sessionId: string | undefined, candidate: string) => NativeArtifactFiles | undefined;
 }): Tool<any>[] {
     const { blobStore } = opts;
     // Asked even when the session cannot be told: answering "the default
@@ -150,7 +156,7 @@ export function createArtifactTools(opts: {
     const writeTool = defineTool("write_artifact", {
         description:
             "Write an artifact from EXACTLY ONE of three sources: inline `content` (text you are authoring), " +
-            "`fromFile` (a worker-local file path — streamed server-side, use this for anything that already " +
+            "`fromFile` (an allowed session file path, native or attached — transferred server-side, use this for anything that already " +
             "exists as a file, especially binaries and archives), or `fromArtifact` (server-side copy from " +
             "another session's artifact, optionally verified against an expected SHA-256). " +
             "Returns full metadata including sha256 and an artifact:// link — include the link in your " +
@@ -177,7 +183,7 @@ export function createArtifactTools(opts: {
                 fromFile: {
                     type: "string",
                     description:
-                        "Worker-local file path to upload (source 2 of 3). Streamed — bytes never enter " +
+                        "Allowed session file path to upload (source 2 of 3). Transferred — bytes never enter " +
                         "the conversation. Preferred for files created with bash/tar/build steps.",
                 },
                 fromArtifact: {
@@ -240,6 +246,14 @@ export function createArtifactTools(opts: {
 
             try {
                 if (params.fromFile) {
+                    const native = opts.nativeFilesFor?.(sessionId, params.fromFile);
+                    if (native) {
+                        const file = await native.read();
+                        const filename = params.filename || file.path.replace(/\\/g, "/").split("/").at(-1)!;
+                        const metadata = await blobStore.uploadArtifact(sessionId, filename, file.body, contentType,
+                            { pinned, source: "file", sourceDetail: file.path });
+                        return JSON.stringify({ success: true, sessionId, ...metadata, artifactLink: artifactLink(sessionId, metadata.filename) });
+                    }
                     const asked = workerPathFor(String(params.fromFile), sessionId);
                     if ("error" in asked) return toolError("PATH_OUTSIDE_WORKDIR", asked.error);
                     const jailed = resolveJailedPath(asked.path, true, rootsFor(sessionId));
@@ -308,7 +322,7 @@ export function createArtifactTools(opts: {
     const readTool = defineTool("read_artifact", {
         description:
             "Read a session artifact (yours or another session's). Three modes: default returns text content " +
-            "inline (bounded by maxBytes, use offset to page); `toFile` streams the artifact to a worker-local " +
+            "inline (bounded by maxBytes, use offset to page); `toFile` transfers the artifact to an allowed session " +
             "path without the bytes entering the conversation (REQUIRED for large or binary artifacts you want " +
             "to process with bash); `metaOnly` returns just metadata (size, sha256, contentType) — use it to " +
             "verify provenance cheaply. Small binary artifacts can be read inline with encoding='base64'.",
@@ -334,8 +348,8 @@ export function createArtifactTools(opts: {
                 toFile: {
                     type: "string",
                     description:
-                        "Write the artifact to this worker-local path instead of returning content. " +
-                        "Zero context cost; works for any size and any content type.",
+                        "Write the artifact to this allowed session file path instead of returning content. " +
+                        "Zero context cost; native transfers are bounded by the host's byte limit.",
                 },
                 encoding: {
                     type: "string",
@@ -417,6 +431,17 @@ export function createArtifactTools(opts: {
                     if (!context?.durableSessionId) {
                         return toolError("NO_SESSION_CONTEXT", "No session context — toFile cannot decide which folders this session may write.");
                     }
+                    const native = opts.nativeFilesFor?.(context.durableSessionId, params.toFile);
+                    if (native) {
+                        const stat = await blobStore.statArtifact(params.sessionId, params.filename);
+                        if (!stat) return toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`);
+                        if (stat.sizeBytes > native.maxBytes) return toolError("ARTIFACT_TOO_LARGE", "Artifact exceeds the native file transfer limit.");
+                        const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
+                        const file = await native.write(result.body);
+                        const { body: _body, ...metadata } = result;
+                        return JSON.stringify({ success: true, sessionId: params.sessionId, path: file.path, ...metadata,
+                            artifactLink: artifactLink(params.sessionId, metadata.filename) });
+                    }
                     const asked = workerPathFor(String(params.toFile), context?.durableSessionId);
                     if ("error" in asked) return toolError("PATH_OUTSIDE_WORKDIR", asked.error);
                     const jailed = resolveJailedPath(asked.path, false, rootsFor(context?.durableSessionId));
@@ -442,12 +467,13 @@ export function createArtifactTools(opts: {
                     // The hint must not send the session to a mode it does
                     // not have: a session whose host shares no folders with
                     // the worker cannot use toFile at all.
-                    const canUseFiles = (rootsFor(context?.durableSessionId) ?? ["default"]).length > 0;
+                    const canUseFiles = (rootsFor(context?.durableSessionId) ?? ["default"]).length > 0
+                        || Boolean(opts.nativeFilesFor?.(context?.durableSessionId, params.filename));
                     return JSON.stringify({
                         error: "ARTIFACT_IS_BINARY",
                         message: `Artifact '${params.filename}' is binary (${result.contentType}, ${result.sizeBytes} bytes) and cannot be returned as text.`,
                         hint: canUseFiles
-                            ? "Use toFile to materialize it on the worker filesystem, or encoding='base64' if it is small enough to inspect inline."
+                            ? "Use toFile with an allowed session file path, or encoding='base64' if it is small enough to inspect inline."
                             : "This session's agent runs on a compute host that shares no files with the worker, so toFile is unavailable here. "
                                 + "Use encoding='base64' if it is small enough to inspect inline.",
                         contentType: result.contentType,

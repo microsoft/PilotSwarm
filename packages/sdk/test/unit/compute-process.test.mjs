@@ -55,7 +55,7 @@ function releaseReq(host, sessionId, reason) {
     return { target, host, sessionId, rootSessionId: "tree-1", workerNodeId: "w1", reason, signal };
 }
 
-test("one runtime per session tree, reached by address and token, with a scrubbed environment", async (t) => {
+test("one runtime per logical session, including siblings, with a scrubbed environment", async (t) => {
     const { provider } = setup(t);
     process.env.PS_SECRET_FOR_TEST = "must-not-leak";
     t.after(() => { delete process.env.PS_SECRET_FOR_TEST; });
@@ -63,9 +63,11 @@ test("one runtime per session tree, reached by address and token, with a scrubbe
     const a = await provider.bind(bindReq("s1"));
     const b = await provider.bind(bindReq("s2"));
     assert.equal(a.ok, true);
-    assert.deepEqual(b.host, a.host);
-    assert.equal(provider.hosts().length, 1);
-    assert.deepEqual(provider.hosts()[0].sessions.sort(), ["s1", "s2"]);
+    assert.notDeepEqual(b.host, a.host);
+    assert.equal(provider.hosts().length, 2);
+    assert.deepEqual(provider.hosts()[0].sessions, ["s1"]);
+    assert.equal(provider.hosts()[1].rootSessionId, provider.hosts()[0].rootSessionId, "target lineage can match without sharing allocation");
+    assert.notEqual(provider.hosts()[0].homeDir, provider.hosts()[1].homeDir);
 
     const connected = await provider.connect(connectReq(a.host));
     assert.equal(connected.ok, true);
@@ -94,19 +96,23 @@ test("one runtime per session tree, reached by address and token, with a scrubbe
     const otherKind = await provider.bind(bindReq("s4", "tree-1", otherTarget));
     assert.notDeepEqual(otherTree.host, a.host, "trees get their own runtime");
     assert.notDeepEqual(otherKind.host, a.host, "targets get their own runtime");
-    assert.equal(provider.hosts().length, 3);
+    assert.equal(provider.hosts().length, 4);
 });
 
-test("the runtime stops when the last session of its tree leaves", async (t) => {
+test("the runtime stops when its session's last worker leaves without stopping a sibling", async (t) => {
     const { provider } = setup(t);
     const a = await provider.bind(bindReq("s1"));
-    await provider.bind(bindReq("s2"));
+    const b = await provider.bind(bindReq("s2"));
+    await provider.bind({ ...bindReq("s1"), workerNodeId: "w2" });
+    const siblingPid = provider.hosts()[1].pid;
     const { pid, homeDir } = provider.hosts()[0];
 
     await provider.release(releaseReq(a.host, "s1", "evicted"));
     assert.equal(isAlive(pid), true);
-    await provider.release(releaseReq(a.host, "s2", "ended"));
+    await provider.release({ ...releaseReq(a.host, "s1", "ended"), workerNodeId: "w2" });
     assert.equal(isAlive(pid), false);
+    assert.equal(isAlive(siblingPid), true);
+    await provider.release(releaseReq(b.host, "s2", "ended"));
     assert.equal(provider.hosts().length, 0);
     assert.equal(fs.existsSync(homeDir), false, "the runtime's folders go with it");
 

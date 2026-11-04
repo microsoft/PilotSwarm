@@ -4614,11 +4614,10 @@ export class ManagedSession {
         if (config.featureToolFingerprint !== undefined
             && config.featureToolFingerprint !== this.config.featureToolFingerprint) return true;
         return Boolean(
-            (currentModel || nextModel)
-            && (currentModel !== nextModel
-                || currentReasoningEffort !== nextReasoningEffort
-                || currentContextTier !== nextContextTier
-                || currentProviderFingerprint !== nextProviderFingerprint)
+            ((currentModel || nextModel) && currentModel !== nextModel)
+            || currentReasoningEffort !== nextReasoningEffort
+            || currentContextTier !== nextContextTier
+            || currentProviderFingerprint !== nextProviderFingerprint
         );
     }
 

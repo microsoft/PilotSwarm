@@ -31,8 +31,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMPUTE_HOST_IDLE_TIMEOUT_MS, readHandshakeSecret, startComputeHost } from "./compute-host.js";
+import { isComputeNativeStateOptions, type ComputeNativeStateOptions } from "./compute-native-state.js";
 
 
 function argument(argv: string[], name: string): string | undefined {
@@ -78,10 +79,12 @@ async function main(): Promise<void> {
     const argv = process.argv.slice(2);
     const bindingId = argument(argv, "binding") ?? "";
     const runtimeAddress = argument(argv, "runtime") ?? "";
+    const nativeModule = argument(argv, "native-module");
     const listen = argument(argv, "listen");
     const secret = readHandshakeSecret(process.env);
-    if (!bindingId || !runtimeAddress || !listen) {
-        console.error("usage: pilotswarm-compute-host --binding <id> --runtime <host:port|port> --listen <host:port>"
+    if (!bindingId || (!runtimeAddress && !nativeModule) || !listen) {
+        console.error("usage: pilotswarm-compute-host --binding <id> --listen <host:port>"
+            + " (--runtime <host:port|port> | --native-module <absolute-module-path>)"
             + " [--idle-timeout <ms>] [--max-connections <n>] [--services-dir <folder>] [--no-services]"
             + " [--copy-max-bytes <n>] [--copy-max-files <n>]");
         process.exitCode = 2;
@@ -102,10 +105,20 @@ async function main(): Promise<void> {
     const servesControl = !argv.includes("--no-services");
     const servicesDirectory = argument(argv, "services-dir")
         ?? path.join(os.tmpdir(), `pilotswarm-compute-host-${folderSafe(bindingId)}`);
+    let nativeState: ComputeNativeStateOptions | undefined;
+    if (nativeModule) {
+        if (!path.isAbsolute(nativeModule) || !servesControl) throw new Error("--native-module requires an absolute module path and enabled services");
+        const module: { createNativeState?: unknown } = await import(pathToFileURL(nativeModule).href);
+        if (typeof module.createNativeState !== "function") throw new Error("The native module must export createNativeState");
+        const configured: unknown = await module.createNativeState({ bindingId, servicesDirectory });
+        if (!isComputeNativeStateOptions(configured)) throw new Error("The native module did not supply valid native state/supervision options");
+        nativeState = configured;
+    }
     const host = await startComputeHost({
         bindingId,
         secret,
         runtimeAddress,
+        ...(nativeState ? { nativeState } : {}),
         listen: endpoint(listen, "listen"),
         idleTimeoutMs,
         ...(maxConnections !== undefined ? { maxConnections } : {}),

@@ -2,7 +2,20 @@
 
 **Status:** exploration on a feature branch, draft PR for discussion.
 
-**Built on the branch:** shared compute targets and their names; the
+**Native-state integration:** the successor candidate removes remote
+worker-backed SessionFs. Each logical session, including delegated children,
+has a separate executor/native home. The common host imports/exports native
+state under a verified supervisor barrier; the trusted worker owns archive/CAS
+and committed completion. A controlled runtime restart is allowed if needed,
+not required every turn. Real runtime/supervisor and integrated-head qualification
+remain gates. See [the provider implementation guide](../developer/building/compute-providers.md).
+
+The detailed narrative below records the original framework baseline. Its
+worker-backed session files, tree-shared hosts/connections and timeout-based
+recovery descriptions are historical, not compatibility modes in the native
+candidate. The implementation guide specifies their replacements and gates.
+
+**Built in the original framework:** shared compute targets and their names; the
 provider interface and its connection contract, for providers whose hosts
 are reachable at an address; the bridge; the handshake and the host
 component; the remote turn and its trust boundary; the host's idle
@@ -95,8 +108,8 @@ The main ideas:
 - **A compute provider** knows one kind of compute. It gets a host ready, says
   how to reach it, and decides what happens to the host when PilotSwarm is
   done with it.
-- **One host per session tree.** A parent session and its sub-agents share a
-  host.
+- **One host per logical session.** Children may inherit target authority,
+  but never the parent's executor, native home, process or database.
 - **The connection is just a pipe.** Each provider has one way of being
   reached. PilotSwarm needs only a two-way, ordered, reliable connection and
   never learns what it is made of.
@@ -230,7 +243,7 @@ Defined before use, in the order the rest of the document needs them.
 | Endpoint | What `connect` returns: `uri`, an address the worker dials. |
 | Capabilities | What a provider says about the hosts it makes. Fixed in provider code. This change uses one: `files`, which says whether the host shares the worker's folders. |
 | Placeholder credentials | Per-session, per-binding random stand-ins the runtime holds instead of real model keys. The worker swaps them for real keys on each request. |
-| SessionFs | The session-state file surface the runtime reads and writes. It is confined to the worker's folder for that session. |
+| Native session state | Declared runtime files/databases beside the executor; captured through the common host under a verified barrier. |
 | Session tree | A root session and all of its sub-agents. It runs on one target, fixed at the root; every turn of every session in it is routed to a worker that can drive a remote runtime. |
 | CMS | The session catalog database: sessions, events, and the new `compute_targets` table. |
 
@@ -274,7 +287,7 @@ is everything the operator runs: the network between workers and hosts.
 | Reaching the host | A bridge per host on the worker's machine, in front of every remote runtime; PilotSwarm opens every connection itself (**built**) | An address the worker can reach | the endpoint `connect` returns |
 | Proving each end | One mutual handshake on every remote connection; a host component that answers it (**built**) | Putting the per-binding secret on the host; running the host component in front of the runtime | the handshake frames |
 | Model requests | Placeholder credentials in the runtime; a per-connection handler that swaps them for real keys and refuses anything else (**built**) | Nothing; the provider never sees a key | the request handler |
-| Session-state files | SessionFs confined to the worker's session folder (**built**) | `files` capability says whether the host shares the worker's files | the SessionFs provider |
+| Session-state files | Native host state, validated into trusted staging before archive/CAS | Separate from workspace/file-sharing capabilities | the common host/state service and qualified supervisor |
 | Finishing with a host | `release` per leaving session, as a hint; the host component's idle shutdown as the backstop (**built**) | Running the runtime under the host component; deciding the host's fate | `release(req)`, the idle timeout |
 | Failures | One shape for every compute error (`CODE: message`); a failure goes through the ordinary turn retry (**built**). Clear reasons that stop a turn at once are future work (section 12) | A code, a message and an optional retry hint | the `ComputeFailure` shape |
 | Management surfaces | List, create, update, enable/disable and delete targets, in the management client and the Web API (**built**). The CLI, portal and MCP surfaces are future work (section 12) | Nothing | the management client and API |
@@ -534,8 +547,8 @@ handshake and never replace it.
    - a request handler: every model request comes back to the worker, which
      checks it against the session's grant and swaps placeholders for real
      keys;
-   - a SessionFs provider: session-state files live in the worker's own session
-     folder, so dehydrate and hydrate are unchanged.
+   - a native state service: the runtime keeps real files beside the executor;
+     the common host captures/restores them while PilotSwarm retains archive/CAS authority.
 6. The session is created or resumed with the host's working directory. The
    model runs the turn; PilotSwarm tools run in the worker as external tools.
 
@@ -544,7 +557,7 @@ The trust boundary, concern by concern:
 | Path | Rule |
 |---|---|
 | Model requests | The runtime holds per-session, per-binding placeholders, not keys. Each pooled connection has its own request handler, serving only its sessions. A request must go to the session's model origin and path prefix, by `GET` or `POST`; the worker swaps placeholders for real keys and sends it with redirects refused. Anything else is refused. |
-| Session state (SessionFs) | Confined to the worker's folder for that session. Only the virtual root, the runtime's own session-state form and relative paths are accepted; no link inside is followed; one write carries at most 64 MiB. |
+| Native session state | Declared required roots/files/databases, bounded manifests and verified writer exclusion. Host input cannot supply worker protocol or completion metadata. Independent workspaces remain outside the archive. |
 | Folders mounted on a host | A provider whose `files` capability says it mounts the session's folders must mount only that session's own folders, with access control on the file server, so a host can never reach another session's or another person's folders. PilotSwarm states the rule and cannot enforce it. |
 | Worker files named by tools | Any tool that names a worker path from a remote session — the artifact file tools, and loading an agent or skill by path — may use only that session's own workspace folders, and only when the provider says the host shares them with the worker; otherwise none. For those sessions a path is resolved before it is checked, so a link inside a folder that points out of it is refused. A session that runs on the worker is unchanged. |
 | Skill folders | The folders this session is authorized to see — the same selection a session on the worker gets — are copied to the host read-only and named by the host's paths. Every file is resolved before it is read and must stay inside the folder it was found in; the copy has a file count and a byte count a deployment sets. `load_skill` is a worker tool and is unchanged. |
@@ -553,6 +566,20 @@ The trust boundary, concern by concern:
 | What a forwarded call carries | Only servers the deployment configured for that session, named by a ticket the worker minted. The caller's own credentials travel unchanged and the worker adds none of its own; it adds a statement of which session is calling and who owns it. Messages and calls are bounded. A deployment can keep any of its servers away from these sessions. |
 | Repository MCP servers | Off, as they are for a session on the worker. |
 | Runtime-authenticated models | A model that signs inside the runtime with a credential the worker holds is refused on a remote target. |
+
+On every admitted turn the worker rebuilds the effective model provider options
+and secret resolvers from the current selection. Only the opaque stand-ins may
+remain stable on the same connection, so warm reuse and cold resume cannot
+retain an old API key, project header or token callback. Removed stand-ins no
+longer resolve. Provider request-option changes still rebind the SDK handle.
+
+Before capture, the worker closes effect/callback admission and drains admitted
+work. The common host then obtains a qualified native writer hold or stopped-runtime
+boundary while the export service and environment remain alive. The barrier stays
+held through capture, trusted validation, archive/CAS and idempotent completion.
+Unknown work or failed capture cannot publish success or authorize replacement.
+SDK detach, flush, idle and matching copies alone are not this barrier, and
+session-end hooks are not invoked automatically after every turn.
 
 ### 4.7 Where a provider runs
 
@@ -585,6 +612,16 @@ by default, so an existing deployment and local development are unchanged.
 
 Whether a session has a target is read from its own record, never from
 anything the agent can set.
+
+Default-target normalization happens before deciding whether creation config
+must be stored, including system-session callers that omit that config entirely.
+The target name and validated immutable ID are recorded together; creation is
+refused if the catalog cannot persist that selection. An explicit or remembered
+compute selection also refuses a turn when its catalog or creation-config reader
+is missing, independently of `requireCompute`. A requested target without a
+recorded tree selection is refused, not silently backfilled. Genuinely unselected
+local sessions keep their existing behavior; these checks do not repair old
+records automatically.
 
 **Before a deployment turns this on: a private network.** The connection
 between a worker and a host is not encrypted (section 4.5). Before any target
@@ -969,9 +1006,9 @@ and future work says what it would take.
 | Stop and Steer, abort, permission prompts, `ask_user`, PilotSwarm tools, tool refresh, reasoning effort, context tiers, title generation | works | All of it already goes through the runtime connection, so the bridge carries it unchanged. |
 | Durable sub-agents, nesting, messaging, `complete_agent`, `cancel_agent` | works | A child runs on its tree's host, so one host runs the whole tree. Capacity is the tree's, not the session's. |
 | Inline artifacts, `fromArtifact`, metadata, links, `show_artifact`, image prompt attachments | works | None of these name a filesystem path; images cross as bytes on the runtime connection. |
-| Facts, transcript, checkpoints, dehydrate and hydrate, regeneration | works | Session state is written through SessionFs into the worker's own folder, so none of it depends on where the agent runs. |
+| Facts, transcript, checkpoints, dehydrate and hydrate, regeneration | profile qualification required | Native state is exported into trusted worker staging and recovered from the accepted archive. Required files and databases must be qualified. |
 | Background shells and the busy guards | changed here | The task list is taken at the runtime's word and stopped only by asking the runtime; the worker never inspects or signals a process id a host reported. A stop the host will not confirm leaves the session busy. |
-| PilotSwarm's own files in the session folder | changed here | `.ps-*` names are the worker's alone: refused, unlisted, and reported absent. The folder is closed to the runtime while the worker saves or restores it. |
+| PilotSwarm's protocol files | changed here | `.ps-*` names remain trusted-worker metadata and do not enter the imported native payload. Host-authored control files are refused. |
 | Moving between workers | changed here | The worker a session leaves lets go of the host, so two workers never drive one runtime. A provider counts its users per (worker, session). |
 | A connection that breaks | changed here | The bridge tells the worker when the last connection to a host has gone and the clients reaching it are dropped, so the next turn connects afresh. Keepalive stops a half-open pipe looking healthy. |
 | Session events | changed here | An event a remote runtime sends under a type PilotSwarm emits is recorded under `unverified.<type>` and nothing acts on it. Bind, connect and host replacement are recorded. |
@@ -990,7 +1027,7 @@ and future work says what it would take.
 | A worker crash or shutdown mid-turn | works differently | The host and the commands it is running survive. The turn is redelivered and replayed into the same host, so a side-effecting command can run twice or alongside itself. Fencing is 12.6. |
 | Host-local state: scratch files, processes, the runtime's logs | not yet | None of it is in a snapshot, none of it is rolled back by a reset or a lineage jump, and nothing collects the runtime's logs from the host. A replaced host loses all of it with no notice to the session (12.7, 12.17). |
 | Artifact file modes on a host that shares no folders | not yet | `fromFile` and `toFile` are refused with the reason, and the session's instructions say so. Moving bytes over the side channel is 12.16. |
-| The SQL tools and SQLite-backed todos | not yet | SessionFs carries text file calls; SQLite's needs are not among them. A remote session should not be promised them (12.9). |
+| The SQL tools and SQLite-backed todos | profile qualification required | Declare required databases and qualify backup/closure plus restored integrity/logical data. Synthetic database bytes or WAL filenames are not proof. |
 
 ### 4.15 What a provider must guarantee
 
@@ -1066,7 +1103,7 @@ A local test drives it through real workers and PostgreSQL and checks:
 |---|---|
 | A turn on a `process` target runs a shell inside the separate runtime | the command sees the runtime's home, and none of the worker's variables |
 | The runtime holds only placeholders | every model request still carries the real key; no placeholder reaches the model |
-| Session state | written through SessionFs into the worker's own session folder |
+| Session state | native beside the executor; verified capture into worker-owned archive/CAS staging |
 | A new worker with a new runtime | resumes the session from that folder; the next request carries the earlier turn |
 | Stop | the worker's shutdown releases the host; no runtime process is left |
 | A sub-agent | runs in its tree's runtime, though its own config names no target |
@@ -1074,8 +1111,8 @@ A local test drives it through real workers and PostgreSQL and checks:
 
 What the runs showed, carried here so later work does not relearn it:
 
-- The runtime writes session files under the SessionFs root, and also names
-  some by its own home. The worker's SessionFs maps both to the session folder.
+- The supervisor establishes the actual native home before runtime create/resume.
+  State roots are declared and qualified, not mapped into virtual worker file RPC.
 - The runtime keeps a private local store in its home. It is not needed to
   resume: a new runtime with an empty home resumed the session. The `process`
   provider keeps that home private and removes it with the host.
@@ -1133,7 +1170,7 @@ Finish:   the tree ends and core releases the host; the provider discards the
 | # | Case | Handling |
 |---|---|---|
 | K1 | A worker crashes mid-turn | The turn is redelivered and replayed. Nothing connects to the host meanwhile, so its component's idle shutdown ends it if the tree never comes back. |
-| K2 | A session moves to another worker | The next worker connects again — to the same host, or a fresh one the provider gives it — and resumes from the session folder. SessionFs lives in the worker's own storage, so hydrate is unchanged. |
+| K2 | A session moves to another worker | Reconcile prior authority/writers first, then import the exact accepted archive into a verified native scope. Uncertain retirement never authorizes replacement. |
 | K3 | A host is replaced | Its `incarnation` changes, so the worker builds a fresh connection and stops the old one once no session uses it. |
 | K4 | A target is deleted while sessions reference it | Those sessions are blocked with a clear reason. A new target with the same name is a different id and never takes them. |
 
@@ -1178,7 +1215,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | Where servers run (**built**) | U | A package's server is rebuilt for the host out of the copy, with only what its entry states; one asking for a worker value, or naming a path outside its package folder, is unavailable with the reason; a deployment's server becomes a ticket and its command, environment, headers and address never cross; a deployment can keep a server away; `default`, `allowedAgents` and `remote` never reach a runtime; nested custom-agent maps are transformed too |
 | Forwarding (**built**) | U | A ticket this worker did not mint reaches nothing, and a session's tickets go when it leaves the host; a session keeps one ticket per server so a warm runtime keeps working; the caller's own credentials pass through unchanged, the configuration fills in what the caller did not send, and the worker's statement cannot be forged from the host; a conversation past its ceiling is cut off |
 | Processes on a host (**built**) | U | A remote session's shell whose reported id is a live worker process is never signalled, and the stop that could not be proved is recorded; an ordinary session still kills its own; a reported id that exists nowhere on the worker still counts as running; a host that will not answer leaves the session busy |
-| PilotSwarm's own files (**built**) | U | Every operation on a `.ps-*` name is refused, including under a reserved directory and as the target of a rename; they are not listed and report as absent; the session's own folder cannot be removed or renamed; ordinary session files are unaffected; the folder is closed to the runtime while it is saved and opens again |
+| Trusted protocol metadata | U | Host payloads reject `.ps-*`; the worker reconstructs marker/result/receipt after validation. A held native barrier, not text-RPC fencing, excludes runtime writers. |
 | Moving between workers (**built**) | L | A compute session's worker lets go when the session moves, with reason `moved`, and holds nothing afterwards; the next worker resumes the same conversation; one worker's release does not take a host from another worker still holding it, and the host goes when the last one lets go |
 | A host that dies (**built**) | U, L | The bridge tells the worker when the last connection to a host has gone, and not when one of two closes or when the worker closes the bridge itself; keepalive is set on the worker's side of the pipe; killing a host under a warm session gives the next turn a fresh host with the conversation whole |
 | What the worker takes from a host (**built**) | U | An event under a type PilotSwarm emits is recorded as `unverified.<type>` and only for a remote session; the runtime's own events are untouched; the compute lifecycle events are the worker's |
@@ -1192,7 +1229,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | Decision | Instead of |
 |---|---|
 | The runtime runs on a host, never where the CMS or orchestration can be reached | Running the runtime next to the worker's credentials |
-| One host per session tree, fixed at the root session | A session picking compute per turn, or sub-agents on different hosts |
+| One isolated host per logical session, including each child | Implicit parent/child sharing of the native home/process/database |
 | Every host is reached at an address; the worker opens the connection | A provider carrying transport code of its own |
 | Everything above the provider sees only a pipe | Core knowing the medium |
 | One mutual handshake PilotSwarm defines for every connection, answered by a host component | Each provider inventing its own trust scheme |
@@ -1212,7 +1249,7 @@ and Windows, so nothing may assume a path separator or a shell.
 |---|---|
 | A turn runs in a separate runtime with none of the worker's environment | Holds |
 | Placeholders in the runtime, real keys only in the worker; other destinations refused | Holds |
-| Session state round-trips through SessionFs and resumes on a new worker | Holds |
+| Native state/archive round-trip | Common-host component fixtures pass; real runtime/supervisor qualification remains required. |
 | A sub-agent runs in its tree's runtime | Holds |
 | A full turn through the bridge, over a proved connection | Holds |
 | A remote session's skill folders copied to its host, and its MCP servers reachable from it | Holds |
@@ -1223,7 +1260,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | Item | Why |
 |---|---|
 | A turn surviving a worker crash | Depends on whether the runtime keeps a turn when its connection drops and on resume reattaching. |
-| SessionFs under compaction, large files, or a non-Linux runtime | Checked for ordinary turns, dehydrate and resume only. |
+| Native state under compaction, large files, or another OS | Must be qualified for the declared profile; no universal guarantee is inferred. |
 
 **Open items**
 
@@ -1238,7 +1275,7 @@ and Windows, so nothing may assume a path separator or a shell.
 
 | Portal and TUI views for compute | Future work (section 12). |
 | Provisioning (creating hosts on demand) | Out of scope; a compute provisioner can come later. |
-| SQL tools on remote sessions | To do. |
+| Native SQL state on remote sessions | Controlled real-WAL/backup checks exist; qualify the actual runtime/supervisor profile separately. |
 | Which skill folders a remote session's copy covers | Exactly the list a session on the worker is given this turn, built by the same code: for a base-V2 session the owner-filtered folders, otherwise the deployment's own. The copy widens nothing; if that selection should be narrower for a remote session, it is a change to the selection and applies to both. |
 | The sessions of one tree on one host | Not separated from each other; the host is the boundary (section 12.12). |
 | What a package's MCP server needs to run | It runs out of the read-only copy, so its dependencies must be in the package folder or already on the host; nothing is installed on a host (section 12.13). |
@@ -1255,7 +1292,8 @@ branch; section 12 lists what was deliberately left out.
 | `migrations/compute-targets-0084.ts`, `0084_diff.md` | `compute_targets` and its procedures (extended in place; never edit 0083 or older) | built |
 | `compute-target-store.ts`, `cms.ts` | The target store; the create-time check | built |
 | `types.ts`, `client.ts` | `computeTarget` on the session config | built |
-| `compute-runtime.ts` | Placeholder credentials, the request handler, worker-backed SessionFs | built |
+| `compute-runtime.ts` | Placeholder credentials and current-attempt model request handling | built |
+| `compute-native-state.ts` / common host/control | Native import/export, manifests, supervisor barrier and trusted staging | candidate, qualification gates apply |
 | `compute-process.ts` | The `process` test provider, internal to the package | built |
 | `copilot-client.ts`, `session-manager.ts` | The remote connection and turn wiring | built |
 | `compute-handshake.ts`, `compute-host.ts`, `compute-host-cli.ts` | The handshake, the host component, and the command that runs it on a host | built |
@@ -1283,7 +1321,7 @@ branch; section 12 lists what was deliberately left out.
 | Capabilities and a target's own models | What a target says it offers, the check that records it, and models a host serves itself | **future work** (section 12) |
 | The remaining surfaces | Managing targets from MCP and the CLI, and choosing one in the portal and the TUI | **future work** (section 12) |
 | Leases and end-of-tree notices | Telling a provider exactly when a host is free, instead of after a timeout | **future work** (section 12) |
-| Later | Provider extras; demand hints; a secret reference; provisioning; multi-target trees; SessionFs quotas and remote SQL tools | **later** |
+| Later | Provider extras; demand hints; secret references; deployment provisioning; multi-target trees | **later** |
 
 What is built is proved end to end on a laptop and in CI through the `process`
 provider: loaded into the worker, reached through the bridge, with the real
@@ -1589,8 +1627,8 @@ refuse each other.
 **Value.** The rule that a remote session reaches only its own folders stays
 true as features are added, rather than being re-established tool by tool.
 
-**What it adds.** SQL tools on a remote session, which need SessionFs to carry
-SQLite; and a sweep of every worker feature that takes a path, so each one
+**What it qualifies.** Native SQL state, consistent backup/closure and cold
+restoration; and every worker feature that takes a path, so each one
 either goes through the same per-session roots or is refused for a remote
 session, the way the artifact tools and loading by path already are.
 
