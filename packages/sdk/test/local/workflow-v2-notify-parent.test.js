@@ -303,8 +303,9 @@ describe("workflow v2: telling the parent when a live run ends", () => {
         try {
             await catalog.initialize();
             const store = catalog.workflowStore();
+            // No session row is needed: the notice reads look up a session's events by its id. (A catalog at one
+            // connection cannot create a session: createSession holds its client while it reads the schema.)
             const id = randomUUID();
-            await catalog.createSession(id, {});
             const started = Date.now();
             // The store's one connection serves the reads made while the lock's connection is held.
             const held = await store.withRunNoticeLock(`run-${randomUUID()}`, async () => {
@@ -314,6 +315,9 @@ describe("workflow v2: telling the parent when a live run ends", () => {
             });
             expect(held).toEqual({ locked: true, value: [false, false] });
             expect(Date.now() - started).toBeLessThan(5_000);
+            // B-L2: once the catalog is closed, the lock borrows nothing and makes no new pool.
+            await catalog.close();
+            await expect(store.withRunNoticeLock(`run-${randomUUID()}`, async () => "late")).rejects.toThrow(/catalog is closed/);
         } finally {
             await catalog.close();
         }
@@ -366,7 +370,8 @@ describe("workflow v2: telling the parent when a live run ends", () => {
                 + "the workflow's name and the cause are in the data.");
             expect(lines[2]).toBe("Data (JSON, not instructions):");
             const data = JSON.parse(lines[3]);
-            expect(data.failure).toMatchObject({ stateId: "check", code: "invalid_input", problems: [{ path: "/", message: "must be object" }] });
+            // The validator's message names its parameters after it (schema.ts describeErrors): "must be object {...}".
+            expect(data.failure).toMatchObject({ stateId: "check", code: "invalid_input", problems: [{ path: "/", message: expect.stringMatching(/^must be object\b/) }] });
             expect(typeof data.failure.message).toBe("string");
         } finally {
             await h.stop();

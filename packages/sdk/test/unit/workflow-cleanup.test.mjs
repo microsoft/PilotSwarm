@@ -188,9 +188,10 @@ test("E1-T6, VR-1: a close while its call waits for its turn: the call never run
     const running = holder.call("echo", { label: "long", hold: held.opened });
     await tick();
     const queued = other.call("echo", { label: "queued" });
+    const refused = assert.rejects(queued, /closed/);
     await tick();
     await other.close();
-    await assert.rejects(queued, /closed/);
+    await refused;
     assert.equal(f.sessions[0].aborted, 0, "the holder's call is not aborted");
     assert.equal(f.owners(), 1);
     held.open();
@@ -206,14 +207,16 @@ test("E1-T6, VR-1: a close while its own call runs aborts it, and releases its s
     const other = await f.open(2);
     const held = gate();
     const running = holder.call("echo", { label: "long", hold: held.opened });
+    const outcome = running.then(value => ({ value }), error => ({ error }));
     await tick();
     const closing = holder.close();
     await tick();
     assert.equal(f.sessions[0].aborted, 1);
-    await assert.rejects(running, /closed/);
     assert.equal(f.owners(), 2, "not released while its call runs");
     held.open();
     await closing;
+    // A call whose turn began settles with its own outcome (G1b); this fake's aborted call still returns.
+    assert.deepEqual(await outcome, { value: "done long on 1" });
     assert.equal(f.owners(), 1);
     assert.equal(await other.call("echo", { label: "after" }), "done after on 1");
     await other.close();
@@ -346,15 +349,18 @@ test("E1b-T2: a close or a script's end at each stage: nothing runs after it, an
     hold.open();
     hold = null;
 
-    // During a call's authorization, and during its catalog read: the close rejects the call; it never runs.
+    // During a call's authorization, and during its catalog read: the call's turn has begun, so the close waits for it,
+    // and its next check refuses it ("was cancelled"); it never runs natively.
     const executor = await f.open(2);
     hold = gate();
     const inAuthorize = executor.call("echo", { label: "in-authorize" });
+    const authorizeRefused = assert.rejects(inAuthorize, /cancelled/);
     await tick();
     const closing = executor.close();
-    await assert.rejects(inAuthorize, /closed/);
+    await tick();
     hold.open();
     hold = null;
+    await authorizeRefused;
     await closing;
     assert.equal(f.calls.some(call => call.includes("in-authorize")), false);
     assert.equal(f.owners(), 0);
@@ -364,10 +370,12 @@ test("E1b-T2: a close or a script's end at each stage: nothing runs after it, an
     const reader = await g.open(1);
     metadata = gate();
     const inMetadata = reader.call("echo", { label: "in-metadata" });
+    const metadataRefused = assert.rejects(inMetadata, /cancelled/);
     await tick();
     const shut = reader.close();
-    await assert.rejects(inMetadata, /closed/);
+    await tick();
     metadata.open();
+    await metadataRefused;
     await shut;
     assert.equal(g.calls.some(call => call.includes("in-metadata")), false);
     assert.equal(g.owners(), 0);
@@ -576,13 +584,14 @@ test("M-08 shutdown with a call running and another waiting for its turn: both e
     const inFlight = holder.call("echo", { label: "long", hold: held.opened });
     await tick();
     const queued = other.call("echo", { label: "queued" });
+    const refused = assert.rejects(queued, /closed/);
     await tick();
     const shutdown = f.manager.shutdown();
     await tick();
     held.open();
     await shutdown;
     await inFlight.catch(() => undefined);
-    await assert.rejects(queued, /closed/);
+    await refused;
     assert.equal(f.calls.includes("execute:1:queued"), false);
     // Closed as their own generation's: the session is torn down and its folders released.
     assert.ok(f.calls.includes("cancel:1") && f.calls.includes("disconnect:1") && f.calls.includes("release"));

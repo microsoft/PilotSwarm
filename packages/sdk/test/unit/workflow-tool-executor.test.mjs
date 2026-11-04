@@ -132,19 +132,22 @@ test("close during authorization registers and aborts the call without executing
     assert.equal(f.calls.length, 0);
     assert.equal(f.disposed, 1);
 });
+// A close aborts a call that runs, waits for it (bounded by the cleanup deadline), and only then disposes (E1b, G1b); the
+// call settles with its own outcome. Here only the disposal ends the native call, so the wait reaches its deadline.
 test("abort failure still disposes and waits for the active call", async () => {
     let finish;
-    const f = fixture();
+    const f = fixture({ cleanupTimeoutMs: 50 });
     f.session.rpc.tools.execute = () => new Promise(resolve => { finish = resolve; });
     f.session.abort = async () => { throw new Error("abort failed"); };
     let disposed = 0;
     f.options.dispose = async () => { disposed++; finish({ resultType: "success", textResultForLlm: "stopped" }); };
     const executor = await createWorkflowToolExecutor(f.options);
     const call = executor.call("bash", {});
-    await Promise.resolve();
-    await Promise.resolve();
+    const outcome = call.then(value => ({ value }), error => ({ error }));
+    for (let i = 0; i < 50 && !finish; i += 1) await Promise.resolve();
+    assert.equal(typeof finish, "function", "the native call runs");
     await assert.rejects(executor.close(), /abort failed/);
-    assert.equal(await call, "stopped");
+    assert.deepEqual(await outcome, { value: "stopped" });
     assert.equal(disposed, 1);
 });
 test("a hung abort has a bounded close and does not skip disposal", async () => {
@@ -155,10 +158,11 @@ test("a hung abort has a bounded close and does not skip disposal", async () => 
     f.options.dispose = async () => { finish({ resultType: "success", textResultForLlm: "stopped" }); };
     const executor = await createWorkflowToolExecutor(f.options);
     const call = executor.call("bash", {});
-    await Promise.resolve();
-    await Promise.resolve();
+    const outcome = call.then(value => ({ value }), error => ({ error }));
+    for (let i = 0; i < 50 && !finish; i += 1) await Promise.resolve();
+    assert.equal(typeof finish, "function", "the native call runs");
     await assert.rejects(executor.close(), /cleanup timed out/);
-    assert.equal(await call, "stopped");
+    assert.deepEqual(await outcome, { value: "stopped" });
 });
 test("new admission is Node-only without invalidating old compiled documents", () => {
     for (const runtime of ["node", "python", "powershell"]) {
@@ -182,8 +186,9 @@ states:
     }
 });
 
-// E1b (verification of RT-2): on a shared session a call is checked when its turn comes, and a close aborts only this
-// handle's own running call, waits for it, and only then disposes the handle.
+// E1b (verification of RT-2) and G1b: on a shared session a call is checked when its turn comes. A close rejects a call
+// that has not begun its turn at once ("closed"); a call whose turn has begun settles with its own outcome: the close
+// aborts it, waits for it, and only then disposes the handle.
 const tick = (ms = 10) => new Promise(resolve => setTimeout(resolve, ms));
 function turnGate() {
     let open;
@@ -212,8 +217,9 @@ test("E1b: a close rejects a call still waiting for its turn at once, does not a
     const outcomes = [];
     const executor = await createWorkflowToolExecutor({ ...f.options, serially: run => turn.opened.then(run), dispose: async outcome => { outcomes.push(outcome); } });
     const waiting = executor.call("bash", {});
+    const refused = assert.rejects(waiting, /closed/);
     await executor.close();
-    await assert.rejects(waiting, /closed/);
+    await refused;
     turn.open();
     await tick();
     assert.equal(aborted, 0);
@@ -230,12 +236,14 @@ test("E1b: a close aborts this handle's own running call and disposes it only af
     const outcomes = [];
     const executor = await createWorkflowToolExecutor({ ...f.options, dispose: async outcome => { outcomes.push(outcome); } });
     const running = executor.call("bash", {});
+    const runningOutcome = running.then(value => ({ value }), error => ({ error }));
     await tick();
     await assert.rejects(executor.close(), /timed out/);
     assert.equal(aborted, 1);
     assert.deepEqual(outcomes, [{ settled: false }]);
-    await assert.rejects(running, /closed/);
+    // A call whose turn began is not turned away by the close: it settles with its own outcome.
     finish({ resultType: "success", textResultForLlm: "late" });
+    assert.deepEqual(await runningOutcome, { value: "late" });
 
     const g = fixture();
     let release;
@@ -244,6 +252,7 @@ test("E1b: a close aborts this handle's own running call and disposes it only af
     g.session.abort = async () => { order.push("abort"); };
     const second = await createWorkflowToolExecutor({ ...g.options, dispose: async outcome => { order.push(`dispose:${outcome.settled}`); } });
     const call = second.call("bash", {});
+    const callOutcome = call.then(value => ({ value }), error => ({ error }));
     await tick();
     const closing = second.close();
     await tick();
@@ -251,7 +260,7 @@ test("E1b: a close aborts this handle's own running call and disposes it only af
     release({ resultType: "success", textResultForLlm: "done" });
     await closing;
     assert.deepEqual(order, ["abort", "dispose:true"]);
-    await assert.rejects(call, /closed/);
+    assert.deepEqual(await callOutcome, { value: "done" });
 });
 
 // E1c (E1b-R2): a shared check (the workflow session's failure barrier, a worker shutting down) refuses a call when its

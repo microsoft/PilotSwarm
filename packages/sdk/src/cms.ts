@@ -1759,12 +1759,17 @@ export class PgSessionCatalog implements SessionCatalog {
 
     /** The workflow run notice lock's own small pool (E3-R2), made at its first use with this pool's connection settings. */
     private noticeLockPool: Promise<any> | null = null;
+    /** Set by close (E3b verification, B-L2): no lock pool is made, and no lock connection is borrowed, after it. */
+    private closing = false;
 
     private workflowNoticeLockPool(): Promise<any> {
+        if (this.closing) return Promise.reject(new Error("The session catalog is closed."));
         const settings = this.listenConfig;
         if (!settings) return Promise.resolve(this.pool);
         this.noticeLockPool ??= (async () => {
             const { default: pg } = await import("pg");
+            // A close that began while pg was loading: no pool is made.
+            if (this.closing) throw new Error("The session catalog is closed.");
             const configured = Number.parseInt(process.env.PILOTSWARM_WORKER_CONCURRENCY ?? "", 10);
             const concurrency = Number.isFinite(configured) && configured > 0 ? configured : 2;
             const pool = new pg.Pool({
@@ -4123,9 +4128,12 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async close(): Promise<void> {
-        if (this.noticeLockPool) {
-            const lockPool = await this.noticeLockPool.catch(() => null);
-            this.noticeLockPool = null;
+        // The flag first, then the snapshot: a lock pool still being made sees the flag and makes none.
+        this.closing = true;
+        const pendingLockPool = this.noticeLockPool;
+        this.noticeLockPool = null;
+        if (pendingLockPool) {
+            const lockPool = await pendingLockPool.catch(() => null);
             if (lockPool && lockPool !== this.pool) await lockPool.end();
         }
         if (this.pool) {

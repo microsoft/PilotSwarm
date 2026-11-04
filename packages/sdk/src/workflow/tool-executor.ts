@@ -69,7 +69,8 @@ export function workflowToolResult(result: ToolResult): unknown {
  * On a shared session (`serially`, workflow v2 RT-2 and E1b), a call waits for its turn; when its turn comes it is
  * refused if this handle was closed, its script ended or `check` refuses, then authority is checked, then the same
  * refusals are checked again after the authorization and just before it runs (E1b-R2). A close rejects a
- * call still waiting at once (its turn then runs nothing), aborts the session only while this handle's own call runs,
+ * call still waiting at once (its turn then runs nothing); a call whose turn has begun settles with its own outcome. A
+ * close aborts the session only while this handle's own call runs,
  * waits for the whole turn of a call that began to end (on a shared session, the turn gives the tasks the call started
  * to this handle after the call; E1c-R2), and only then disposes the handle.
  */
@@ -88,9 +89,8 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
      */
     let turnInProgress: { done: Promise<void> | null } | null = null;
     let closePromise: Promise<void> | undefined;
-    let rejectWaiting!: (error: Error) => void;
-    const closedWhileWaiting = new Promise<never>((_, reject) => { rejectWaiting = reject; });
-    closedWhileWaiting.catch(() => undefined);
+    /** Rejects this handle's call while it still waits for its turn (G1b): a close turns such a call away at once. */
+    let rejectPending: (() => void) | null = null;
     const ended = () => options.signal?.aborted === true;
     const refuse = () => {
         if (closed) throw new Error("Workflow tool executor was cancelled.");
@@ -107,7 +107,15 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
             active = true;
             const invocationId = `${options.invocationPrefix}/${calls}`;
             const token: { done: Promise<void> | null } = { done: null };
+            // A call that has not begun its turn is rejected by a close at once ("closed"); once its turn has begun it
+            // settles with its own outcome: its result, the refusal of a later check ("was cancelled") or the abort's error.
+            let started = false;
+            let rejectThis!: (error: Error) => void;
+            const closedFirst = new Promise<never>((_, reject) => { rejectThis = reject; });
+            closedFirst.catch(() => undefined);
+            rejectPending = () => { if (!started) rejectThis(new Error("Workflow tool executor is closed.")); };
             const execute = async () => {
+                started = true;
                 // Its turn: a closed handle or an ended script never starts the call (VR-1).
                 refuse();
                 turnInProgress = token;
@@ -133,13 +141,13 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
             const done = turn.then(() => undefined, () => undefined);
             token.done = done;
             void done.then(() => { if (turnInProgress === token) turnInProgress = null; });
-            try { return await Promise.race([turn, closedWhileWaiting]); }
-            finally { active = false; }
+            try { return await Promise.race([turn, closedFirst]); }
+            finally { active = false; rejectPending = null; }
         },
         close() {
             closePromise ??= (async () => {
                 closed = true;
-                rejectWaiting(new Error("Workflow tool executor is closed."));
+                rejectPending?.();
                 const executing = running;
                 const turnEnd = turnInProgress?.done ?? null;
                 const errors: unknown[] = [];
