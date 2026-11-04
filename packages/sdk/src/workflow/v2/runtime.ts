@@ -3319,7 +3319,17 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (endedBy && endedBy === definition.parentSessionId) return null;
         // Told or recorded already, at any time in the workflow's history (RT-4: not only its first 50 notices).
         if (await store.runNoticeRecorded(run.workflowSessionId, run.runId)) return null;
+        // WFO-4: an earlier attempt may have queued the notice (it records workflow.parent_notifying just before the
+        // enqueue) and stopped before recording it. A skip is then never recorded: the parent may have been told, so the
+        // run is recorded as told by that attempt.
+        const attempted = await store.runNoticeAttempted(run.workflowSessionId, run.runId);
+        const told = async (data: { [key: string]: JsonValue } = {}): Promise<null> => {
+            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notified",
+                data: { runId: run.runId, parentSessionId: definition.parentSessionId, ...data } }]);
+            return null;
+        };
         const skipped = async (reason: string): Promise<null> => {
+            if (attempted) return told({ byEarlierAttempt: true });
             await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notification_skipped", data: { runId: run.runId, reason } }]);
             return null;
         };
@@ -3346,13 +3356,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             ...(failure ? { failure } : {}),
         };
         const json = JSON.stringify(data).replace(/[<>[\]]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-        const delivery = await deps.notifyParent(definition.parentSessionId, workflowV2ParentNotification({ sessionId: run.workflowSessionId, runId: run.runId,
+        const clientMessageId = `workflow:${run.workflowSessionId}:${run.runId}:terminal`;
+        // WFO-4: the attempt is recorded before the enqueue (once), so a retry after a crash never records a skip.
+        if (!attempted) {
+            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notifying",
+                data: { runId: run.runId, parentSessionId: definition.parentSessionId, clientMessageId } }]);
+        }
+        const delivery = (await deps.notifyParent(definition.parentSessionId, workflowV2ParentNotification({ sessionId: run.workflowSessionId, runId: run.runId,
             name: data.name, version: data.version, status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId, failure }, json),
-            workflowRuntimeSender("ended"), `workflow:${run.workflowSessionId}:${run.runId}:terminal`);
-        // WFO-3: the parent's session had ended before the notice was queued: it was not told.
-        if (delivery && delivery.delivered === false) return await skipped("parent is gone");
-        await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notified", data: { runId: run.runId, parentSessionId: definition.parentSessionId } }]);
-        return null;
+            workflowRuntimeSender("ended"), clientMessageId)) as { delivered?: boolean } | undefined;
+        // WFO-3: the parent's session had ended before the notice was queued: it was not told (unless an earlier attempt
+        // may have told it, WFO-4).
+        if (delivery?.delivered === false) return await skipped("parent is gone");
+        return await told();
     });
 
     /**

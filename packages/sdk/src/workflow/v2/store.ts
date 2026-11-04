@@ -2725,6 +2725,17 @@ export class WorkflowStore {
     }
 
     /**
+     * Whether an earlier attempt to tell the parent of a run's end may have queued the notice: it records
+     * workflow.parent_notifying just before the enqueue (adversarial review WFO-4).
+     */
+    async runNoticeAttempted(workflowSessionId: string, runId: string): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT 1 FROM ${this.t.sessionEvents}
+              WHERE session_id = $1 AND event_type = 'workflow.parent_notifying' AND data->>'runId' = $2 LIMIT 1`, [workflowSessionId, runId]);
+        return rows.length > 0;
+    }
+
+    /**
      * How many of a run's sends and requests to `recipientSessionId` (an agent session) have a delivery attempt that
      * began (counted under the session locks) and is not recorded yet, begun within the last `withinSeconds`
      * (adversarial review WFO-1): such an attempt may still queue its message after the run ended, since a run's end

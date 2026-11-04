@@ -295,7 +295,13 @@ When a version 2 live run ends and its parent is not told, the workflow records
 `workflow.parent_notification_skipped` once, with the reason (`notifications
 are off` or `parent is gone`); Run activity and the terminal show it ("The
 parent agent was not told: notifications are off."). A run the parent ended
-itself records nothing.
+itself records nothing. A parent whose session has ended is not sent the
+notice (`parent is gone`). Each attempt records `workflow.parent_notifying`
+just before it queues the notice, so a retry after a crash never records a
+skip for a parent that may have been told: it records `workflow.parent_notified`
+with `byEarlierAttempt: true`. The notice waits (at most 20 seconds) for a
+send's message or a request to the parent whose delivery began before the run
+ended, so the parent reads them before the run's end.
 Workflow names and outputs arrive as escaped JSON explicitly marked untrusted,
 not as executable instructions.
 

@@ -10,17 +10,17 @@ const PARENT = "parent-1";
 const RUN = { runId: "run-1", workflowSessionId: "wf-1", mode: "live", status: "completed", revision: 1, terminalOutcome: "succeeded",
     terminalNodeId: "done", terminalOutput: null, terminalError: null };
 
-function harness({ inFlight = () => 0, waitMs, delivered } = {}) {
+function harness({ inFlight = () => 0, waitMs, delivered, attempted = false, authorized = true } = {}) {
     const activities = new Map();
     const log = [];
     const store = {
         readRun: async () => RUN,
         readDefinition: async () => ({ parentSessionId: PARENT, notifyParent: true }),
         runNoticeRecorded: async () => false,
-        runNoticeAttempted: async () => false,
+        runNoticeAttempted: async () => attempted,
         readRevisionLabel: async () => ({ name: "w", semver: "1.0.0" }),
         runDeliveriesInFlight: async (runId, recipient, seconds) => { log.push(["inFlight", runId, recipient, seconds]); return inFlight(); },
-        recordSessionEvents: async (_id, events) => { log.push(...events.map(event => ["event", event.eventType])); },
+        recordSessionEvents: async (_id, events) => { log.push(...events.map(event => ["event", event.eventType, event.data])); },
     };
     registerWorkflowV2({
         registerActivity: (name, fn) => activities.set(name, fn),
@@ -28,7 +28,7 @@ function harness({ inFlight = () => 0, waitMs, delivered } = {}) {
     }, {
         store, catalog: {}, enabled: () => true,
         resolveToolBinding: async () => null, openToolExecutor: async () => { throw new Error("no tools"); },
-        authorizeParentNotification: async () => true,
+        authorizeParentNotification: async () => authorized,
         notifyParent: async (parent, _prompt, _sender, clientMessageId) => {
             log.push(["notify", parent, clientMessageId]);
             return delivered === undefined ? undefined : { delivered };
@@ -79,4 +79,38 @@ test("WFO-3: a parent whose session had ended is recorded as not told", async ()
         await told.notify();
         assert.ok(told.log.some(entry => entry[0] === "event" && entry[1] === "workflow.parent_notified"), String(delivered));
     }
+});
+
+// Adversarial review WFO-4 (TLC parent.skip-after-given): the attempt is recorded before the enqueue, and a retry after
+// an attempt that may have queued the notice never records a skip.
+const eventsOf = h => h.log.filter(entry => entry[0] === "event");
+
+test("WFO-4: the first attempt records workflow.parent_notifying, with the client message id, before it queues", async () => {
+    const h = harness();
+    await h.notify();
+    const notifying = h.log.findIndex(entry => entry[0] === "event" && entry[1] === "workflow.parent_notifying");
+    assert.ok(notifying >= 0 && notifying < h.log.findIndex(entry => entry[0] === "notify"));
+    assert.deepEqual(h.log[notifying][2], { runId: "run-1", parentSessionId: PARENT, clientMessageId: "workflow:wf-1:run-1:terminal" });
+    assert.deepEqual(eventsOf(h).map(entry => entry[1]), ["workflow.parent_notifying", "workflow.parent_notified"]);
+});
+
+test("WFO-4: a retry after an attempt that may have queued it records no skip when the parent is gone, or ended", async () => {
+    for (const options of [{ authorized: false }, { delivered: false }]) {
+        const h = harness({ attempted: true, ...options });
+        await h.notify();
+        const events = eventsOf(h);
+        assert.deepEqual(events.map(entry => entry[1]), ["workflow.parent_notified"], JSON.stringify(options));
+        assert.equal(events[0][2].byEarlierAttempt, true);
+    }
+    // Without an earlier attempt, the same is a skip.
+    const fresh = harness({ authorized: false });
+    await fresh.notify();
+    assert.deepEqual(eventsOf(fresh).map(entry => entry[1]), ["workflow.parent_notification_skipped"]);
+});
+
+test("WFO-4: a retry that queues again records the attempt once and the notice as told", async () => {
+    const h = harness({ attempted: true });
+    await h.notify();
+    assert.deepEqual(eventsOf(h).map(entry => entry[1]), ["workflow.parent_notified"]);
+    assert.equal(h.log.filter(entry => entry[0] === "notify").length, 1);
 });
