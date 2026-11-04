@@ -232,9 +232,24 @@ function gate() {
 }
 
 /**
+ * The collect activity, recording in `withheld` each run whose collection gave
+ * its controller no result while results of the work it asked about were
+ * stored (controller 1.8.0 while its run is paused; review R2-RT-1).
+ */
+function withholding(store, fn, withheld) {
+    return async (ctx, input) => {
+        const collected = await fn(ctx, input);
+        if (Array.isArray(collected) && collected.length === 0 && input.nodeExecutionIds.length > 0
+            && (await store.readCompletedNodes(input.runId, input.nodeExecutionIds)).length > 0) withheld.push(input.runId);
+        return collected;
+    };
+}
+
+/**
  * A worker-equivalent registration. `hold` pauses each effect named in it
  * after its node was admitted and before its script starts (the tool binding
  * read); `refusals` counts admissions the store refused for a pause;
+ * `withheld` lists runs whose results a collection kept from the controller;
  * `wrapStore` wraps the store the runtime uses. With `notify`, the parent
  * notification is authorized and each delivery is recorded in `notified`
  * (otherwise it is refused, and the notifier records the skip).
@@ -248,13 +263,15 @@ async function harness(env, { wrapStore, notify = false } = {}) {
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
     const holds = new Map();
     const refusals = [];
+    const withheld = [];
     const notified = [];
     const registrar = {
-        registerActivity: (name, fn) => runtime.registerActivity(name, name !== WORKFLOW_V2_ACTIVITIES.enter ? fn : async (ctx, input) => {
-            const entered = await fn(ctx, input);
-            if (entered.admitted === false && entered.status === "paused") refusals.push(input.runId);
-            return entered;
-        }),
+        registerActivity: (name, fn) => runtime.registerActivity(name, name === WORKFLOW_V2_ACTIVITIES.collect ? withholding(store, fn, withheld)
+            : name !== WORKFLOW_V2_ACTIVITIES.enter ? fn : async (ctx, input) => {
+                const entered = await fn(ctx, input);
+                if (entered.admitted === false && entered.status === "paused") refusals.push(input.runId);
+                return entered;
+            }),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     };
     registerWorkflowV2(registrar, {
@@ -277,7 +294,7 @@ async function harness(env, { wrapStore, notify = false } = {}) {
     });
     await runtime.start();
     return {
-        store, client, refusals, notified,
+        store, client, refusals, withheld, notified,
         host: { catalog, store, duroxideClient: client },
         /** Hold the next effect of this workflow before its script starts. */
         hold(workflowId) { const held = gate(); holds.set(workflowId, held); return held; },
@@ -383,10 +400,12 @@ describe("workflow v2 run control on the real runtime", () => {
             // Requested, not yet settled: the admitted state is still running.
             expect((await parent.read(id)).run).toMatchObject({ status: "paused", pausedFrom: "running", pauseSettled: false });
 
-            // The admitted script still runs and its result is kept; the next state is refused while paused.
+            // The admitted script still runs and its result is kept; it is not routed while paused (review R2-RT-1: the
+            // collection keeps it from the controller, which tries no admission), so no next state is admitted.
             held.open();
             await until(async () => (await h.store.listNodeExecutions(runId))[0]?.state === "completed", "the admitted script's result");
-            await until(async () => h.refusals.includes(runId), "an admission refused for the pause");
+            await until(async () => h.withheld.includes(runId), "a collection that keeps the result for the resume");
+            expect(h.refusals).not.toContain(runId);
             expect((await h.store.listNodeExecutions(runId)).map(node => [node.nodeId, node.state, node.winner])).toEqual([["first", "completed", "effect"]]);
             const view = await parent.read(id);
             expect(view.run).toMatchObject({ status: "paused", pausedFrom: "running", pauseSettled: true, controller: { needsRecovery: false } });

@@ -3370,7 +3370,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // (a branch cancelled under failFast, IR 8, is never collected: its controller dropped it first).
         const collected = rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind,
             ...(row.winner === BRANCH_CANCEL_WINNERS.join || row.winner === BRANCH_CANCEL_WINNERS.timeout ? { cut: true } : {}) }));
-        if (!requests) return collected;
+        // Controller 1.8.0 (frozen: its loop is not changed; adversarial review R2-RT-1): a paused run's results are not given
+        // to it, read after them, so it routes none of them and ends no run by them until the resume, also when its cursor
+        // waits on work and no admission would find the pause. They stay stored; a collection after the resume returns them.
+        // Its histories replay as recorded: only what this activity answers from now on changes.
+        if (!requests) return (await runOf(runId)).status === "paused" ? [] : collected;
         // Controller 1.9.0: also the run's accepted stop, read after the results, so a stop accepted before this read
         // reaches the controller with them (it routes none of them then). A stop is never withdrawn.
         const run = await runOf(runId);

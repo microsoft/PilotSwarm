@@ -81,7 +81,8 @@ async function baseOf(env) {
 
 /**
  * A worker-equivalent registration. `refusals` lists runs whose admission the
- * store refused for a pause; `elapses` lists the elapse activity's results;
+ * store refused for a pause; `withheld` lists runs whose results a collection
+ * kept from the controller while paused; `elapses` lists the elapse activity's results;
  * `beforeElapse` runs before each elapse activity, and `wrapStore` wraps the
  * store the runtime uses (fault-injection hooks).
  */
@@ -91,7 +92,17 @@ async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", ...runtimeOptions });
     const refusals = [];
     const elapses = [];
+    const withheld = [];
     const wrap = (name, fn) => {
+        // Review R2-RT-1: a collection that gave controller 1.8.0 no result while results of the work it asked about were stored.
+        if (name === WORKFLOW_V2_ACTIVITIES.collect) {
+            return async (ctx, input) => {
+                const collected = await fn(ctx, input);
+                if (Array.isArray(collected) && collected.length === 0 && input.nodeExecutionIds.length > 0
+                    && (await store.readCompletedNodes(input.runId, input.nodeExecutionIds)).length > 0) withheld.push(input.runId);
+                return collected;
+            };
+        }
         if (name === WORKFLOW_V2_ACTIVITIES.enter) {
             return async (ctx, input) => {
                 const entered = await fn(ctx, input);
@@ -125,7 +136,7 @@ async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500
     await runtime.start();
     let running = true;
     return {
-        store, client, refusals, elapses, base,
+        store, client, refusals, elapses, withheld, base,
         host: { catalog, store, duroxideClient: client },
         async stopRuntime() {
             if (!running) return;
@@ -318,7 +329,9 @@ describe("workflow v2 wait states", () => {
             expect(lateness(elapsed)).toBeGreaterThanOrEqual(0);
             expect(lateness(elapsed)).toBeLessThan(5_000);
             expect(elapsed.outcome).toBe("elapsed");
-            await until(async () => h.refusals.includes(runId), "the successor's admission refused for the pause");
+            // Its result is kept for the resume (review R2-RT-1): no successor is admitted, and none is tried.
+            await until(async () => h.withheld.includes(runId), "a collection that keeps the result for the resume");
+            expect(h.refusals).not.toContain(runId);
             expect((await h.store.listNodeExecutions(runId)).map(item => item.nodeId)).toEqual(["nap"]);
             expect((await parent.read(id)).run).toMatchObject({ status: "paused", pauseSettled: true });
             expect(await parent.update(id, { operation: "resume", operation_id: "resume" })).toMatchObject({ ok: true, status: "running" });

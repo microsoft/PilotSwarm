@@ -140,7 +140,8 @@ async function until(check, label, timeoutMs = 60_000) {
 }
 
 /**
- * A worker-equivalent registration with one durable provider; `refusals` lists runs whose admission was refused for a pause.
+ * A worker-equivalent registration with one durable provider; `refusals` lists runs whose admission was refused for a pause,
+ * and `withheld` runs whose results a collection kept from the controller while paused.
  * With `storePool`, the runtime's store runs on that pool (a test pool that can hold a statement); tool calls use the catalog's.
  * With `wrapStore`, the runtime's store is the one it returns for that store (a test store that can stop a method).
  */
@@ -155,8 +156,15 @@ async function harness(env, { wakeBackstopMs = 500, storePool = null, wrapStore 
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
     const direct = new pg.Pool({ connectionString: env.store, max: 2 });
     const refusals = [];
+    const withheld = [];
     registerWorkflowV2({
-        registerActivity: (name, fn) => runtime.registerActivity(name, name !== WORKFLOW_V2_ACTIVITIES.enter ? fn : async (ctx, input) => {
+        registerActivity: (name, fn) => runtime.registerActivity(name, name === WORKFLOW_V2_ACTIVITIES.collect ? async (ctx, input) => {
+            // Review R2-RT-1: a collection that gave controller 1.8.0 no result while results of the work it asked about were stored.
+            const collected = await fn(ctx, input);
+            if (Array.isArray(collected) && collected.length === 0 && input.nodeExecutionIds.length > 0
+                && (await store.readCompletedNodes(input.runId, input.nodeExecutionIds)).length > 0) withheld.push(input.runId);
+            return collected;
+        } : name !== WORKFLOW_V2_ACTIVITIES.enter ? fn : async (ctx, input) => {
             const entered = await fn(ctx, input);
             if (entered.admitted === false && entered.status === "paused") refusals.push(input.runId);
             return entered;
@@ -175,7 +183,7 @@ async function harness(env, { wakeBackstopMs = 500, storePool = null, wrapStore 
     await runtime.start();
     const host = { catalog, store, duroxideClient: client };
     return {
-        catalog, store, client, refusals, host,
+        catalog, store, client, refusals, withheld, host,
         /** The host with a controller start that never reaches duroxide: a run stays admitted, its controller absent. */
         undispatched: { ...host, duroxideClient: { ...client, startOrchestrationVersioned: async () => undefined,
             getStatus: id => client.getStatus(id), enqueueEvent: (...args) => client.enqueueEvent(...args) } },
@@ -1014,8 +1022,9 @@ states:
             expect(await parent.update(run.id, { operation: "pause", run_id: run.runId, operation_id: "pause" })).toMatchObject({ ok: true, status: "paused" });
             const sent = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "build" });
             expect(sent).toMatchObject({ ok: true, claimedBy: { nodeExecutionId: waiting.nodeExecutionId } });
-            // The controller routes the result and tries to admit the next state: refused, the run is paused.
-            await until(async () => h.refusals.includes(run.runId), "the next admission to be refused for the pause");
+            // The result is kept for the resume (review R2-RT-1): the controller routes nothing and tries no admission.
+            await until(async () => h.withheld.includes(run.runId), "a collection that keeps the result for the resume");
+            expect(h.refusals).not.toContain(run.runId);
             expect((await h.store.readRun(run.runId)).status).toBe("paused");
             expect((await nodesOf(h.store, run.runId)).map(node => node.nodeId)).toEqual(["await_build"]);
             expect(await parent.update(run.id, { operation: "resume", run_id: run.runId, operation_id: "resume" })).toMatchObject({ ok: true });
