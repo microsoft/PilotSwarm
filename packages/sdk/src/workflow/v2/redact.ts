@@ -39,11 +39,9 @@ export function redactWorkflowErrorValue<T extends JsonValue | null | undefined>
     if (typeof value === "string") return redactWorkflowSecrets(value) as T;
     if (Array.isArray(value)) return value.map(item => redactWorkflowErrorValue(item)) as T;
     if (value && typeof value === "object") {
-        const out: { [key: string]: JsonValue } = {};
-        for (const [key, item] of Object.entries(value)) {
-            out[key] = typeof item === "string" && SECRET_NAME_EXACT.test(key) && key !== "key" ? "<hidden>" : redactWorkflowErrorValue(item as JsonValue);
-        }
-        return out as T;
+        // Object.fromEntries defines each member as its own, so a JSON member named __proto__ stays one (VR-5).
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
+            typeof item === "string" && SECRET_NAME_EXACT.test(key) && key !== "key" ? "<hidden>" : redactWorkflowErrorValue(item as JsonValue)])) as T;
     }
     return value;
 }
@@ -55,9 +53,7 @@ const ERROR_FIELDS: ReadonlySet<string> = new Set(["error", "cause", "message", 
 export function redactWorkflowEventData<T extends JsonValue>(data: T): T {
     if (Array.isArray(data)) return data.map(item => redactWorkflowEventData(item)) as T;
     if (!data || typeof data !== "object") return data;
-    const out: { [key: string]: JsonValue } = {};
-    for (const [key, item] of Object.entries(data)) {
-        out[key] = ERROR_FIELDS.has(key) ? redactWorkflowErrorValue(item as JsonValue) : redactWorkflowEventData(item as JsonValue);
-    }
-    return out as T;
+    // As above: a member named __proto__ stays an own member (VR-5).
+    return Object.fromEntries(Object.entries(data).map(([key, item]) => [key,
+        ERROR_FIELDS.has(key) ? redactWorkflowErrorValue(item as JsonValue) : redactWorkflowEventData(item as JsonValue)])) as T;
 }

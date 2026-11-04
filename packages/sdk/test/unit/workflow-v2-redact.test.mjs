@@ -81,3 +81,24 @@ test("refusals, adapter errors and sanitized messages hide secrets", () => {
     assert.deepEqual(adapted.details, { secret: "<hidden>" });
     assert.ok(!sanitizeWorkflowErrorText(`Authorization: Bearer ${SENTINEL} and {"token":"${SENTINEL}"}`).includes(SENTINEL));
 });
+
+// Verification VR-5: a JSON member named __proto__ stays an own member of the copy, with an ordinary prototype.
+test("VR-5: an own __proto__ member survives redaction of an error value and of event data", async () => {
+    const { canonicalJson } = await import("../../dist/workflow/v2/json.js");
+    const error = JSON.parse(`{"code":"x","message":"token=${SENTINEL}","details":{"__proto__":{"a":1},"n":2}}`);
+    const redacted = redactWorkflowErrorValue(error);
+    assert.equal(Object.getPrototypeOf(redacted.details), Object.prototype);
+    assert.ok(Object.hasOwn(redacted.details, "__proto__"));
+    assert.deepEqual(redacted.details.__proto__, { a: 1 });
+    assert.equal(redacted.message, "token=<hidden>");
+    assert.match(JSON.stringify(redacted), /"__proto__":\{"a":1\}/);
+    assert.doesNotThrow(() => canonicalJson(redacted));
+    const data = JSON.parse(`{"runId":"r","__proto__":{"b":2},"error":{"__proto__":{"c":3},"message":"secret=${SENTINEL}"}}`);
+    const out = redactWorkflowEventData(data);
+    assert.ok(Object.hasOwn(out, "__proto__"));
+    assert.deepEqual(out.__proto__, { b: 2 });
+    assert.ok(Object.hasOwn(out.error, "__proto__"));
+    assert.equal(out.error.message, "secret=<hidden>");
+    assert.equal(Object.getPrototypeOf(out), Object.prototype);
+    assert.doesNotThrow(() => canonicalJson(out));
+});
