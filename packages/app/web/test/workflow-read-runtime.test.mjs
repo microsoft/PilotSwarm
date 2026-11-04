@@ -100,11 +100,46 @@ test("the session:read gate decides before the workflow is read, with not-found 
     assert.ok(audits.some((entry) => entry.action === "readWorkflow" && entry.sessionId === "s1" && entry.decision === "break_glass"));
 });
 
-test("with the ownership switch off, readWorkflow behaves as every other session:read operation: audited, not blocked", async () => {
+test("with the ownership switch off, readWorkflow is still gated: every selector of a hidden workflow is not found, with no read (SF-1)", async () => {
     const { runtime, calls, audits } = runtimeWith({ enforce: false });
-    await runtime.call("readWorkflow", { sessionId: "s1" }, as("bob"));
-    assert.deepEqual(calls, [["s1", {}]]);
-    assert.ok(audits.some((entry) => entry.action === "readWorkflow" && entry.decision === "would_deny"));
+    assert.equal(runtime.authz.enforce, false);
+    // Every selector the view takes: the overview, a run, a page, one execution, a KV revision and key, agent versions,
+    // a definition revision and a step's inputs.
+    const selectors = [{}, { runId: "run-1" }, { cursor: { section: "executions", before: 9 } }, { executionId: "nx-1" },
+        { kvRevision: 1 }, { kvRevision: 1, kvKey: "secret" }, { agentVersions: true }, { definitionRevision: 1 }, { stepInput: { state: "review" } }];
+    for (const params of selectors) {
+        for (const [sessionId, subject] of [["s1", "bob"], ["missing", "alice"]]) {
+            await assert.rejects(runtime.call("readWorkflow", { sessionId, ...params }, as(subject)),
+                (error) => error.status === 404 && error.code === "NOT_FOUND" && error.message === "Session not found.",
+                `${sessionId} ${JSON.stringify(params)}`);
+        }
+    }
+    assert.deepEqual(calls, []);
+    assert.ok(audits.some((entry) => entry.action === "readWorkflow" && entry.sessionId === "s1" && entry.decision === "deny"));
+    assert.ok(!audits.some((entry) => entry.action === "readWorkflow" && entry.decision === "would_deny"));
+
+    // The owner, a reader it is shared with and an admin keep their access.
+    assert.deepEqual(await runtime.call("readWorkflow", { sessionId: "s1", kvRevision: 1, kvKey: "secret" }, as("alice")), { workflowId: "s1", run: null });
+    await runtime.call("readWorkflow", { sessionId: "shared" }, as("bob"));
+    await runtime.call("readWorkflow", { sessionId: "s1" }, as("ada", "admin"));
+    assert.deepEqual(calls.map(([sessionId]) => sessionId), ["s1", "shared", "s1"]);
+    assert.ok(audits.some((entry) => entry.action === "readWorkflow" && entry.sessionId === "s1" && entry.decision === "break_glass"));
+});
+
+test("with the ownership switch off, other session:read operations are still only audited (the switch is unchanged for them)", async () => {
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.authz = { ...runtime.authz, enforce: false };
+    const audits = [];
+    const decisions = [];
+    runtime._recordAudit = (entry) => { audits.push(entry); };
+    runtime._getAccessSnapshot = async () => ({ rootSessionId: "s1", isSystem: false, visibility: "private",
+        owner: { provider: "dev", subject: "alice" }, viewerIsOwner: false, viewerShareAccess: null });
+    runtime.transport = { getSessionAccess: async () => null };
+    decisions.push(await runtime._gateSession("getSessionEvents", "session:read", "s1", as("bob"), { owner: { provider: "dev", subject: "bob" }, isAdmin: false }));
+    assert.equal(decisions.length, 1);
+    assert.ok(audits.some((entry) => entry.action === "getSessionEvents" && entry.decision === "would_deny"));
+    await assert.rejects(runtime._gateSession("readWorkflow", "session:read", "s1", as("bob"), { owner: { provider: "dev", subject: "bob" }, isAdmin: false }),
+        (error) => error.status === 404);
 });
 
 /**

@@ -121,7 +121,10 @@ function requireUserPrincipal(authContext, methodName) {
 
 // New operations with no pre-model behavior to preserve: their session gate is
 // enforced even during the ownership dark-launch, as session:share's is.
-const ENFORCED_NEW_METHODS = new Set(["updateWorkflow"]);
+// readWorkflow is content-bearing (a run's outputs, KV, executions and
+// message previews, and the definition's revisions), so every one of its
+// selectors is gated whatever the switch says (adversarial review SF-1).
+const ENFORCED_NEW_METHODS = new Set(["updateWorkflow", "readWorkflow"]);
 
 // Break-glass audit coverage: every non-read session op, plus the reads that
 // expose content (transcript, artifacts, history). Status polling and list
@@ -399,7 +402,8 @@ export class PortalRuntime {
         // flip to enforce (adversarial review HIGH-2).
         // session:files (the Workspace pane) is new as well: the session's
         // owner only, whatever the ownership switch says.
-        // updateWorkflow (a person's workflow command) is new too: owner or admin, whatever the switch says.
+        // updateWorkflow (a person's workflow command) is new too: owner or admin, whatever the switch says;
+        // so is readWorkflow (a workflow's view): session:read, whatever the switch says (SF-1).
         const effectiveEnforce = this.authz.enforce || accessClass === "session:share" || accessClass === "session:files"
             || ENFORCED_NEW_METHODS.has(method);
         const hasSessionId = sessionId != null && String(sessionId).trim() !== "";
