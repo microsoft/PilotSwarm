@@ -1687,6 +1687,71 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
         expect(h.events.filter(event => event.eventType === "runtime.workflow_step_reminded")).toEqual([]);
     });
 
+    // Review E1: a Steer that turn control accepts while the gate is asked is pending work: the reminder is not sent, and
+    // the Steer stays held for the turn's normal end (turn end labels it).
+    it("E1: a Steer accepted while the gate decides goes first: the gate's yes sends nothing, and the Steer stays held", async () => {
+        let live = null;
+        const h = stepChild([{ assistantContent: "It seems fine." }, { assistantContent: "never sent" }], {
+            gate: async () => {
+                live.enqueue([{ seq: 1, kind: "steer", text: "Also check the tests.", createdAt: new Date().toISOString() }]);
+                await pause(50);
+                return REMIND;
+            },
+        });
+        live = new LiveTurnControl({ sessionId: "step-child", turn: 0, start: 0,
+            abort: async reason => { h.managed.requestStop(reason); h.managed.abort(); } });
+        const result = await h.run({ turnIndex: 0, turnControl: live });
+        expect(result).toMatchObject({ type: "completed", content: "It seems fine." });
+        expect(h.checks).toHaveLength(1);
+        // Neither the reminder nor the Steer was sent in this turn; the Steer waits for the turn's end.
+        expect(h.fakeSession.sentPrompts).toEqual(["Review the change."]);
+        expect(h.events.filter(event => event.eventType === "runtime.workflow_step_reminded")).toEqual([]);
+        expect(reminded(result)).toEqual([]);
+        expect(live.hasHeldControls()).toBe(true);
+        expect(h.traces.join("\n")).toContain("the turn has pending work now");
+    });
+
+    // Review E2: no observer runs between the last check and the send. The reminder's event is published once the SDK
+    // accepted the prompt, before the send gate opens, so a Stop its observer asks for keeps the gate closed and nothing
+    // more is sent.
+    it("E2: the reminder's event is published after the SDK accepted the prompt; a Stop from its observer keeps the gate closed", async () => {
+        // The reminder's run first calls a tool, so its run is still going when the SDK accepted the prompt (as with the CLI).
+        const told = { name: "send_session_message", args: { session_id: "parent-1", subject: "FYI", body: "still on it" } };
+        const reminderTurn = async ({ stopOnEvent }) => {
+            const h = stepChild([{ assistantContent: "It seems fine." }, { toolCalls: [told], assistantContent: "Still fine." },
+                { assistantContent: "never sent" }]);
+            const live = new LiveTurnControl({ sessionId: "step-child", turn: 0, start: 0,
+                abort: async reason => { h.managed.requestStop(reason); h.managed.abort(); } });
+            let opened = 0;
+            const binding = {
+                attach: port => live.attach(port), heldStop: () => live.heldStop(), hasHeldControls: () => live.hasHeldControls(),
+                gateOpened: () => { opened += 1; live.gateOpened(); }, detach: () => live.detach(),
+            };
+            let promptsAtEvent = null;
+            const result = await h.run({
+                turnIndex: 0, turnControl: binding,
+                onEvent: event => {
+                    h.events.push(event);
+                    if (event.eventType !== "runtime.workflow_step_reminded") return;
+                    promptsAtEvent = h.fakeSession.sentPrompts.length;
+                    if (stopOnEvent) h.managed.requestStop("Stopped by user");
+                },
+            });
+            return { h, result, opened, promptsAtEvent };
+        };
+        // Without a Stop: the event after the SDK accepted the reminder, then the gate opens for the reminder's run.
+        const plain = await reminderTurn({ stopOnEvent: false });
+        expect(plain.promptsAtEvent).toBe(2);
+        expect(plain.opened).toBe(2);
+        expect(plain.result).toMatchObject({ type: "completed", content: "Still fine." });
+        // A Stop from the event's observer: nothing more is sent, the gate stays closed, and the turn is stopped.
+        const stopped = await reminderTurn({ stopOnEvent: true });
+        expect(stopped.promptsAtEvent).toBe(2);
+        expect(stopped.h.fakeSession.sentPrompts).toEqual(["Review the change.", TEXT]);
+        expect(stopped.opened).toBe(1);
+        expect(stopped.result).toMatchObject({ type: "stopped", reason: "Stopped by user" });
+    });
+
     // Review D3: a turn with an error is not a quiet prose end; the error stands.
     it.each([
         ["the CLI's empty-answer error", { message: "No response was returned. Send your message again to retry.", errorType: "query" }],

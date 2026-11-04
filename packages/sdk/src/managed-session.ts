@@ -4187,9 +4187,12 @@ export class ManagedSession {
         // controls until the corrective prompt is sent, then applies steers and
         // Stop live, and the run settles through the same handlers. A Stop,
         // applied or still held, means no corrective prompt is sent. Returns
-        // false when the turn stops instead. `beforeSend` runs once the corrective prompt is certain to be sent, just
-        // before it is.
-        const runCorrection = async (message: Record<string, unknown>, beforeSend?: () => void): Promise<boolean> => {
+        // false when the turn stops instead. `hooks.beforeSend` runs once the corrective prompt is certain to be sent,
+        // just before it is: local bookkeeping only, never an observer (nothing may run between the last check and the
+        // send; review E2). `hooks.afterSend` runs once the SDK accepted the prompt, before the send gate opens: a Stop
+        // its observer asks for keeps the gate closed.
+        const runCorrection = async (message: Record<string, unknown>,
+            hooks: { beforeSend?: () => void; afterSend?: () => void } = {}): Promise<boolean> => {
             const heldStop = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
             if (heldStop !== null && !this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
             if (this.stopRequest) return false;
@@ -4198,10 +4201,11 @@ export class ManagedSession {
             // still corrects. Every other turn is unchanged.
             const intake = opts?.intakeAdmission;
             if (intake && (this.runInterrupt?.reason != null || intake.eligible?.() === false)) return false;
-            beforeSend?.();
+            hooks.beforeSend?.();
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
             await this.copilotSession.send(message as any);
+            hooks.afterSend?.();
             if (this.steer && this.steer.gate === "pending") {
                 this.steer.gate = "open";
                 opts?.turnControl?.gateOpened();
@@ -4407,6 +4411,13 @@ export class ManagedSession {
             // check as the first run's (review D4). The turn then ends as it ends, whatever the model does.
             const scheduleEffect = turnScheduleEffect(turnState.queuedActions);
             const stepReminder = opts?.stepReminder;
+            // Work that is pending in the turn now (a Stop, an interrupt, a steer in flight, unconfirmed or held): checked
+            // before the gate is asked and again when it answers (review E1), so a steer accepted meanwhile goes first.
+            const turnWorkPending = (): boolean => Boolean(this.stopRequest)
+                || this.runInterrupt?.reason != null
+                || (opts?.turnControl?.heldStop() ?? null) !== null
+                || opts?.turnControl?.hasHeldControls?.() === true
+                || (this.steer !== null && (this.steer.inFlight > 0 || this.steer.unconfirmed.size > 0));
             if (stepReminder
                 && this.config.workflowAgentChild === true
                 && turnState.pendingActions.length === 0
@@ -4418,25 +4429,27 @@ export class ManagedSession {
                 && !turnAskedForAnswer(collectedEvents)
                 && !answerAsksParent(finalContent)
                 && !guardExpired
-                && !this.stopRequest
-                && this.runInterrupt?.reason == null
-                && (opts?.turnControl?.heldStop() ?? null) === null
-                && opts?.turnControl?.hasHeldControls?.() !== true
-                && !(this.steer && (this.steer.inFlight > 0 || this.steer.unconfirmed.size > 0))) {
+                && !turnWorkPending()) {
                 const reminder = await this.awaitStepReminderGate(stepReminder, { scheduleCancelled: scheduleEffect === "cancel" }, guards, opts?.trace);
-                // Immediately before the send: a guard that expired ends the turn by its own handling; a Stop or an
-                // interrupt sends nothing (runCorrection checks a held Stop).
+                // When the gate answers: a guard that expired meanwhile ends the turn by its own handling; work that became
+                // pending meanwhile (a Stop, an interrupt, a steer) is left to the turn's normal end, and nothing is sent.
                 if (reminder && guardExpired) await Promise.race(guards);
-                if (reminder && !this.stopRequest && this.runInterrupt?.reason == null) {
-                    // The runtime event says the reminder was sent: it is recorded only when the prompt goes out.
-                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId) }, () => {
-                        const diagnostic: CapturedEvent = {
-                            eventType: "runtime.workflow_step_reminded",
-                            data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
-                        };
-                        collectedEvents.push(diagnostic);
-                        if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
-                        finalContent = undefined;
+                if (reminder && turnWorkPending()) {
+                    opts?.trace?.(`[runTurn] session=${this.sessionId} no step reminder: the turn has pending work now`);
+                } else if (reminder) {
+                    // The runtime event says the reminder was sent: it is published only once the SDK accepted the prompt.
+                    const diagnostic: CapturedEvent = {
+                        eventType: "runtime.workflow_step_reminded",
+                        data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
+                    };
+                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId) }, {
+                        beforeSend: () => {
+                            collectedEvents.push(diagnostic);
+                            finalContent = undefined;
+                        },
+                        afterSend: () => {
+                            if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                        },
                     });
                     if (sent) {
                         const reminderFailure = await settleTextToolCalls();
