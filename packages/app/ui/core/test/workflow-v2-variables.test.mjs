@@ -31,7 +31,7 @@ import {
     workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandNotice, workflowV2RunCommandWire,
     workflowV2RunVariables, workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "../src/workflow-v2-commands.js";
-import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { RUN, readModel, subtreeCommands } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-variables";
@@ -225,13 +225,17 @@ function mount(view) {
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });
+    // The side pane on screen, so the header's button says whether it shows the variables (batch 6, r-3).
+    store.dispatch({ type: "canvas/flip", sessionId: "wf", slot: 1 });
     return new PilotSwarmUiController({ store, transport: {} });
 }
-const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+// Batch 6 (r-3): the header's buttons are in the main pane, and the panel they choose shows in the side pane.
+const main = controller => renderToStaticMarkup(React.createElement(React.Fragment, null,
+    React.createElement(WorkflowMainPane, { controller, icon: null }), React.createElement(WorkflowNodePane, { controller })));
 const withCommands = (run, personCommands = commands()) => ({ ...readModel({ run }), personCommands });
 
 test("the panel opens from the header's Variables button: a form where a person may change them, the reason where not", () => {
-    const plain = main(mount({ readModel: readModel({ run: { kv: KV, kvRevision: 3 } }), readModelRunId: null, variablesOpen: true }));
+    const plain = main(mount({ readModel: readModel({ run: { kv: KV, kvRevision: 3 } }), readModelRunId: null, sidePanel: "variables" }));
     assert.ok(!plain.includes("aria-label=\"Variables\"") && !plain.includes("Workflow variables"), "no button and no panel without personCommands");
 
     const closed = main(mount({ readModel: withCommands({ kv: KV, kvRevision: 3 }), readModelRunId: null }));
@@ -239,7 +243,7 @@ test("the panel opens from the header's Variables button: a form where a person 
     assert.ok(closed.includes("aria-expanded=\"false\""));
     assert.ok(!closed.includes("Workflow variables"));
 
-    const open = main(mount({ readModel: withCommands({ kv: KV, kvRevision: 3 }), readModelRunId: null, variablesOpen: true }));
+    const open = main(mount({ readModel: withCommands({ kv: KV, kvRevision: 3 }), readModelRunId: null, sidePanel: "variables" }));
     assert.ok(open.includes("aria-expanded=\"true\""));
     assert.ok(open.includes("aria-label=\"Workflow variables\""));
     assert.ok(open.includes("Variables · revision 3"));
@@ -248,13 +252,13 @@ test("the panel opens from the header's Variables button: a form where a person 
     assert.ok(open.includes("data-operation=\"set\"") && open.includes("data-operation=\"remove\""));
     assert.ok(open.includes("aria-label=\"Edit note\""));
 
-    const subtree = main(mount({ readModel: withCommands({ kv: KV, kvRevision: 3 }, SUBTREE), readModelRunId: null, variablesOpen: true }));
+    const subtree = main(mount({ readModel: withCommands({ kv: KV, kvRevision: 3 }, SUBTREE), readModelRunId: null, sidePanel: "variables" }));
     assert.ok(subtree.includes("aria-label=\"Workflow variables\""));
     assert.ok(!subtree.includes("Set or remove a variable"), "no form where people cannot change them");
     assert.ok(!subtree.includes("aria-label=\"Edit note\""));
     assert.ok(subtree.includes("Its controlling agent is session parent-a."));
 
-    const ended = main(mount({ readModel: withCommands({ status: "completed", kv: KV, kvRevision: 3 }), readModelRunId: null, variablesOpen: true }));
+    const ended = main(mount({ readModel: withCommands({ status: "completed", kv: KV, kvRevision: 3 }), readModelRunId: null, sidePanel: "variables" }));
     assert.ok(ended.includes("This run has ended (completed); its variables no longer change."));
     assert.ok(!ended.includes("Set or remove a variable"));
 });

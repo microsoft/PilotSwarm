@@ -7349,11 +7349,11 @@ const OUTBOX_SELECTABLE_PHASES = new Set(["pending", "queued", "cancelling"]);
 function ChatPane(props) {
     const workflow = useControllerSelector(props.controller, state =>
         state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
+    // A workflow's main pane holds its header and its graph or YAML only; its step log opens in the side pane (batch 6, r-3).
     return workflow
         ? React.createElement(WorkflowMainPane, {
             controller: props.controller, icon: React.createElement(WorkflowGlyph, { decorative: true }),
             onNodeSelected: props.onWorkflowNodeSelected, mobile: Boolean(props.mobile),
-            log: React.createElement(ChatTranscriptPane, { ...props, showComposer: false, workflowLog: true }),
         })
         : React.createElement(ChatTranscriptPane, props);
 }
@@ -8892,7 +8892,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
             ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip" },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
                 React.createElement("span", { className: "ps-artifact-pane-type", title: onCanvas ? (view.note || undefined) : undefined },
-                    onCanvas ? (isWorkflow ? "Step details" : view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
+                    onCanvas ? (isWorkflow ? "Details" : view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
                 onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
                 onCanvas && view.exists && !isWorkflow
                     ? React.createElement("button", {
@@ -8916,7 +8916,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
         : (maximized ? (toolbarSlot ? createPortal(React.createElement(React.Fragment, null,
             React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
             onCanvas && (view.exists || isWorkflow)
-                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, isWorkflow ? "Step details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, isWorkflow ? "Details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                 : null,
             onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
             onCanvas && view.exists && !isWorkflow ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
@@ -8946,7 +8946,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode }),
                 onCanvas && (view.exists || isWorkflow)
                     ? React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
-                        isWorkflow ? "Step details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+                        isWorkflow ? "Details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                     : null,
                 onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view }) : null),
             React.createElement("span", { className: "ps-artifact-pane-actions" },
@@ -8997,8 +8997,11 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // note on .ps-canvas-pane .ps-html-preview-frame).
     React.createElement("div", { className: "ps-artifact-pane-body ps-side-pane-body" },
         React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas },
+            // A workflow's side pane: Step details, or the panel its header chose, the step log among them (batch 6,
+            // r-3). The log has no mobile zen entry: a workflow has no zen (f-02).
             isWorkflow
-                ? React.createElement(WorkflowNodePane, { controller })
+                ? React.createElement(WorkflowNodePane, { controller,
+                    log: React.createElement(ChatTranscriptPane, { controller, mobile, fullWidth: true, showComposer: false, workflowLog: true }) })
                 : view.exists
                 ? React.createElement(CanvasFrame, {
                     key: `slot:${view.slot}`,

@@ -35,20 +35,32 @@ sharing, and a transcript.
   run's progress never moves the view; a new definition or revision fits it
   again.
   Select a node to inspect its outcome, tools, output and recent history in
-  the right-hand canvas pane. Drag the divider between the workflow and that
-  pane to resize it, use the divider's arrow keys, or double-click it to reset
-  its width; the width is kept for this session. On a phone, node details open
-  as a separate layer; return to Main to see the graph and log again. The
-  worker's original canvas artifact remains available without changing
-  running workflows.
-- The pane shows the workflow's header and its graph. The **step log**, the
-  run's **activity**, its **notices** and a test run's **calls** each open
-  from their own button in the header (Notices and Test calls show how many
-  there are), and close the same way. With the step log open, drag its
-  divider, use the divider's arrow keys, or double-click to reset its height;
-  until the workflow writes to it, it says "No step output yet." Before the
-  first run, the header's status says "No run yet" and the run picker
-  appears once a run exists.
+  the right-hand side pane (**Step details**). Drag the divider between the
+  workflow and that pane to resize it, use the divider's arrow keys, or
+  double-click it to reset its width; the width is kept for this session. On a
+  phone, the side pane opens as a separate layer; return to Main to see the
+  graph again. The worker's original canvas artifact remains available without
+  changing running workflows.
+- The main pane stays still: a compact header (the name, the status,
+  **Graph | YAML**, the run picker and the icon tools) and, under it, the
+  graph or the YAML, nothing else. The tab you choose is kept for this
+  workflow. **YAML** edits a draft you may change at the tab's full height,
+  with Save, Discard and its error marks; an unsaved edit is kept when you
+  switch tabs or sessions. Any other revision (a published one, or a draft you
+  may not change) shows read-only; its YAML is shown only to people who can
+  change the workflow.
+- Every panel opens in the side pane, one at a time, with its title and a
+  way back to Step details: the publish or start review, the test review, a
+  test run's **calls** and clock, **variables**, the draft's tools (compare
+  versions, change an agent step's inputs; from the YAML tab), the run's
+  **activity**, its **notices** (and a status that could not be read), and
+  the **step log**. Its icon button in the header looks pressed while the
+  side pane shows it; press it again for Step details. Notices and Test calls
+  show how many there are. Selecting a step shows Step details again. When a
+  command you sent is refused or may not have arrived, the side pane says so
+  above what it shows. Until the workflow writes to the step log, it says "No
+  step output yet." Before the first run, the header's status says "No run
+  yet" and the run picker appears once a run exists.
 - The **transcript** starts with a compact, expandable definition. Repeated
   healthy self-loop checks update one progress row with an increasing count,
   the last outcome and check time. Expand it for the most recent 40 checks

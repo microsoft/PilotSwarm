@@ -18,7 +18,7 @@ import { PilotSwarmUiController, appReducer, createInitialState, createStore } f
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
 } from "../src/workflow-v2-commands.js";
-import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { WorkflowV2StepInputEditor } from "../../react/src/workflow-v2-panels.js";
 import { readModel } from "./workflow-v2-fixtures.mjs";
 
@@ -254,7 +254,7 @@ test("the editor lists each field with where its value comes from; saving waits 
     assert.deepEqual(saveButton(ready), { disabled: false, title: "Save as a new revision after revision 2." });
     assert.match(ready, /Only the input lines of step &#x27;review&#x27; change\. Saving makes a new draft revision\./);
     assert.match(ready, /<div\b[^>]*data-kind="removed"[^>]*>- {7}pr: \$\{inputs\.pr\}<\/div><div\b[^>]*data-kind="added"[^>]*>\+ {7}pr: \$\{inputs\.repo\}<\/div>/);
-    assert.deepEqual(saveButton(render({ preview, unsaved: true })), { disabled: true, title: "Save or discard your YAML edits above first." });
+    assert.deepEqual(saveButton(render({ preview, unsaved: true })), { disabled: true, title: "Save or discard your YAML edits first." });
     assert.deepEqual(saveButton(render({ preview, draftRevision: 3 })), { disabled: true, title: "The draft changed since this was prepared; show the change again." });
     assert.deepEqual(saveButton(render({ preview, busy: true })), { disabled: true, title: "Another command for this workflow is being sent." });
     // A change prepared from other fields (one has been changed since) is not shown, and cannot be saved.
@@ -272,7 +272,8 @@ test("the editor lists each field with where its value comes from; saving waits 
     assert.match(failed, /<p\b[^>]*role="alert"[^>]*>The step&#x27;s inputs could not be read: Gateway timeout<\/p>/);
 });
 
-test("the draft editor offers step inputs only for a workflow with agent steps", () => {
+// Batch 6 (r-3): the step-input editor is one of the draft's tools, in the side pane.
+test("the draft tools offer step inputs only for a workflow with agent steps", () => {
     const states = [{ id: "review", type: "agent", invoke: { source: "prompt" }, outcomes: ["done"], next: { done: "end" } },
         { id: "end", type: "terminal", outcome: "succeeded" }];
     const draft = { state: "draft", currentRevision: 2, publishedRevision: null, publishedDefinitionHash: null };
@@ -282,8 +283,8 @@ test("the draft editor offers step inputs only for a workflow with agent steps",
         const store = createStore(appReducer, createInitialState({ mode: "api" }));
         store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
         store.dispatch({ type: "sessions/selected", sessionId: "wf" });
-        store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model, readModelRunId: null, draftOpen: true } });
-        return renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller: new PilotSwarmUiController({ store, transport: {} }), log: null, icon: null }));
+        store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model, readModelRunId: null, sidePanel: "draft" } });
+        return renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller: new PilotSwarmUiController({ store, transport: {} }) }));
     };
     const withAgent = mount(modelOf({ revision: 2, initial: "review", states }));
     assert.ok(withAgent.includes("aria-label=\"Step inputs\""));

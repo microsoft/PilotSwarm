@@ -39,6 +39,10 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
     notices: () => glyph(h("path", { d: "M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" }), h("path", { d: "M10 20.5a2 2 0 0 0 4 0" })),
     calls: () => glyph(h("path", { d: "M5 4h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-5 4v-4H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" }),
         h("path", { d: "M12 7.5v4" }), h("path", { d: "M12 13.5v.5" })),
+    // The side pane's panels and the draft's tools (batch 6, r-3).
+    tools: () => glyph(h("path", { d: "M4 7h9" }), h("path", { d: "M17 7h3" }), h("circle", { cx: "15", cy: "7", r: "2" }),
+        h("path", { d: "M4 17h3" }), h("path", { d: "M11 17h9" }), h("circle", { cx: "9", cy: "17", r: "2" })),
+    close: () => glyph(h("path", { d: "M6 6l12 12" }), h("path", { d: "M18 6L6 18" })),
 });
 
 /**

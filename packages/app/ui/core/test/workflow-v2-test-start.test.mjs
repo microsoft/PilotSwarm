@@ -27,7 +27,7 @@ import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandNotice,
     workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2TestControls,
 } from "../src/workflow-v2-commands.js";
-import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { readModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-test-start";
@@ -150,14 +150,16 @@ function mount(view) {
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });
     return new PilotSwarmUiController({ store, transport: {} });
 }
-const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+// Batch 6 (r-3): the header's buttons are in the main pane, and the panel they choose shows in the side pane.
+const main = controller => renderToStaticMarkup(React.createElement(React.Fragment, null,
+    React.createElement(WorkflowMainPane, { controller, icon: null }), React.createElement(WorkflowNodePane, { controller })));
 
 test("the test review opens from the header with the test notice, the exact revision and hash, and mocked agents by default", () => {
     const closed = main(mount({ readModel: modelOf(), readModelRunId: null }));
     assert.ok(closed.includes("aria-label=\"Test…\""), "an icon button named by its old text (of-04)");
     assert.ok(!closed.includes("Test review"));
 
-    const open = main(mount({ readModel: modelOf(), readModelRunId: null, testOpen: true }));
+    const open = main(mount({ readModel: modelOf(), readModelRunId: null, sidePanel: "test" }));
     assert.ok(open.includes("aria-label=\"Test review\""));
     assert.ok(open.includes(">Test review</h3>"));
     assert.ok(open.includes(WORKFLOW_V2_TEST_NOTICE_TEXT), "the test notice is shown before the test starts");
@@ -180,7 +182,7 @@ test("the test review opens from the header with the test notice, the exact revi
     for (const [label, model] of [["1.8.0 host", modelOf({ personCommands: { operations: MILESTONE.slice(0, 8), restriction: null, run: null } })],
         ["subtree", modelOf({ personCommands: SUBTREE })], ["no personCommands", readModel({ definition: DRAFT, noRun: true })],
         ["published (of-06)", modelOf({ definition: { state: "published", currentRevision: 2 } })]]) {
-        const html = main(mount({ readModel: model, readModelRunId: null, testOpen: true }));
+        const html = main(mount({ readModel: model, readModelRunId: null, sidePanel: "test" }));
         assert.ok(!html.includes("aria-label=\"Test…\"") && !html.includes("Test review"), label);
     }
 });

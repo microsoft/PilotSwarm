@@ -7,7 +7,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import { workflowDefinition, workflowReadModelView } from "../src/workflow-view.js";
-import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { selectWorkflowV2Run, workflowV2RunPickerModel } from "../../react/src/workflow-v2-panels.js";
 import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
 import { startedData, legacyStartedData, ev, row, done, readModel } from "./workflow-v2-fixtures.mjs";
@@ -164,10 +164,14 @@ test("while the selected run's model loads or fails, nothing of the previously r
     assert.match(loading, /Selected run not loaded/);
     assert.match(loading, /<option[^>]*value="run-test-1"[^>]*selected=""/);
     assert.match(loading, /Reading this run…/);
-    const failing = pane(seed({ view: viewOf({ selectedRunId: "run-test-1", readModelAttempt: { runId: "run-test-1", afterSeq: null, sessionUpdatedAt: 1 }, readModelError: "boom" }) }).controller);
+    const failingSeed = seed({ view: viewOf({ selectedRunId: "run-test-1", readModelAttempt: { runId: "run-test-1", afterSeq: null, sessionUpdatedAt: 1 },
+        readModelError: "boom", sidePanel: "notices" }) });
+    const failing = pane(failingSeed.controller);
     assert.ok(!failing.includes("Done · changed"));
     assert.match(failing, /This run could not be read\. Your selection is kept\./);
-    assert.match(failing, /The workflow&#x27;s current status could not be read: boom/);
+    // Batch 6 (r-3): the whole failure, with its Retry, is in the side pane's Notices.
+    assert.match(renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller: failingSeed.controller })),
+        /The workflow&#x27;s current status could not be read: boom/);
     assert.match(failing, /<option[^>]*value="run-test-1"[^>]*selected=""/);
     assert.ok(!failing.includes("Reading this run…"));
     assert.deepEqual(workflowReadModelView({ readModel: live, readModelRunId: null, selectedRunId: "run-test-1" }).readModel, null);

@@ -32,7 +32,7 @@ import {
     WORKFLOW_V2_RUN_CONTROL_OPERATIONS, workflowV2RunCommandAccepted, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
     workflowV2RunCommandNotice, workflowV2RunControls,
 } from "../src/workflow-v2-commands.js";
-import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { RUN, readModel, subtreeCommands } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-run-controls";
@@ -281,7 +281,7 @@ function mount(view) {
 }
 const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
 
-test("the workflow pane shows the controls in its header only when the read model offers them, and the last failure beside the graph", () => {
+test("the workflow pane shows the controls in its header only when the read model offers them, and the last failure in the side pane", () => {
     const plain = main(mount({ readModel: readModel({ run: { status: "running" } }), readModelRunId: null }));
     assert.ok(!plain.includes("Run controls"), "a read model without personCommands has no controls");
     assert.ok(!plain.includes("data-operation"));
@@ -304,10 +304,14 @@ test("the workflow pane shows the controls in its header only when the read mode
     const other = main(mount({ readModel: { ...readModel({ run: { status: "running" } }), personCommands: commands() }, readModelRunId: "run-other" }));
     assert.ok(!other.includes("Run controls"));
 
-    const notice = main(mount({ readModel: { ...readModel({ run: { status: "running" } }), personCommands: commands() }, readModelRunId: null,
-        runCommand: { operation: "stop", runId: RUN, operationId: "ui-stop-1", phase: "unconfirmed", message: "Failed to fetch", code: null } }));
+    // Batch 6 (r-3): the answer to the person's click shows in the side pane, above what it shows; the main pane stays still.
+    const noticeView = mount({ readModel: { ...readModel({ run: { status: "running" } }), personCommands: commands() }, readModelRunId: null,
+        runCommand: { operation: "stop", runId: RUN, operationId: "ui-stop-1", phase: "unconfirmed", message: "Failed to fetch", code: null } });
+    const notice = renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller: noticeView }));
     assert.ok(notice.includes("Stop for run run-1 may not have reached the workflow: Failed to fetch. Retry sends the same command again."));
     assert.ok(notice.includes(">Retry<") && notice.includes(">Dismiss<"));
+    assert.match(notice, /^<div class="ps-workflow-side"><div class="ps-workflow-run-command-notice" role="alert"/);
+    assert.ok(!main(noticeView).includes("may not have reached the workflow"));
 });
 
 // Mocks M18 and M19 "Cancel test" / "Cancel" (accounting rows 67, 71): a running test run offers the same run controls as a

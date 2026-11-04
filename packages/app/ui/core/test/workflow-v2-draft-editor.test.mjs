@@ -11,7 +11,8 @@
  *   - the command names no run and carries the whole YAML; a refused save (a
  *     changed draft, 409 REVISION_CONFLICT; a new version, 409
  *     SEMVER_IMMUTABLE) is reported and the workflow read again
- *   - the editor opens from the header (server render)
+ *   - the editor is the YAML tab of a draft (batch 6, r-2); any other revision
+ *     shows read-only there (server render)
  *
  * Run: node --test test/workflow-v2-draft-editor.test.mjs
  */
@@ -151,15 +152,19 @@ function mount(view) {
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });
     return new PilotSwarmUiController({ store, transport: {} });
 }
-const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, icon: null }));
 
-test("the editor opens from the header with the draft's YAML; nothing is offered without the YAML, for a published definition or in a subtree", () => {
+test("the YAML tab edits the draft's YAML; without it, for a published definition or in a subtree, it shows the YAML read-only", () => {
     const closed = main(mount({ readModel: modelOf(), readModelRunId: null }));
-    assert.ok(closed.includes("aria-label=\"Edit draft\""), "an icon button named by its old text (of-04)");
-    assert.ok(!closed.includes("Draft editor"));
+    assert.match(closed, /role="tab" aria-selected="false"[^>]*>YAML<\/button>/, "Graph | YAML (batch 6, r-1); the Edit draft button is gone");
+    assert.ok(!closed.includes("Edit draft") && !closed.includes("Draft editor"));
 
-    const open = main(mount({ readModel: modelOf(), readModelRunId: null, draftOpen: true }));
+    const open = main(mount({ readModel: modelOf(), readModelRunId: null, mainTab: "yaml" }));
+    assert.match(open, /role="tab" aria-selected="true"[^>]*>YAML<\/button>/);
+    assert.match(open, /<div id="[^"]+-yaml-panel" class="ps-workflow-yaml-tab" role="tabpanel"/);
+    assert.match(open, /<div id="[^"]+-graph-panel" class="ps-workflow-graph-region" hidden=""/, "the graph stays, hidden");
     assert.ok(open.includes("aria-label=\"Draft editor\""));
+    assert.ok(open.includes("aria-label=\"Draft tools\""), "the draft's tools open in the side pane");
     assert.ok(open.includes("Draft · editing revision 2"));
     assert.ok(open.includes(`>${YAML}</textarea>`), "the YAML is in the editor");
     assert.ok(open.includes("The version stays 1.0.0: a new version needs a new workflow."));
@@ -167,9 +172,24 @@ test("the editor opens from the header with the draft's YAML; nothing is offered
 
     for (const [label, model] of [["no YAML", modelOf({ draft: null })], ["published", modelOf({ definition: { state: "published", currentRevision: 1 } })],
         ["subtree", modelOf({ operations: ["pause", "stop", "cancel"] })]]) {
-        const html = main(mount({ readModel: model, readModelRunId: null, draftOpen: true }));
+        const html = main(mount({ readModel: model, readModelRunId: null, mainTab: "yaml" }));
         assert.ok(!html.includes("Edit draft") && !html.includes("Draft editor"), label);
+        assert.ok(html.includes("aria-label=\"Workflow YAML\""), `${label}: the YAML read-only`);
     }
+    // A published revision: its YAML from the revision read, in the same box, read-only, with one muted note.
+    const published = { state: "published", currentRevision: 1, publishedRevision: 1 };
+    const yamlRead = { 1: { phase: "loaded", error: null, value: { definitionRevision: { revision: 1, definitionHash: "hash-1", valid: true, yaml: YAML } } } };
+    const fixed = main(mount({ readModel: modelOf({ definition: published }), readModelRunId: null, mainTab: "yaml", definitionRevisions: yamlRead }));
+    assert.ok(fixed.includes("Published revision 1 is fixed. A new version needs a new workflow, made as a draft."));
+    assert.match(fixed, /<textarea[^>]*readonly=""[^>]*>apiVersion: pilotswarm\.dev\/v2-draft/);
+    assert.ok(!fixed.includes("data-operation=\"replace_definition\""), "nothing to save");
+    assert.ok(main(mount({ readModel: modelOf({ definition: published }), readModelRunId: null, mainTab: "yaml" })).includes("Reading revision 1…"));
+    // Someone who may not change the workflow is not given its versions' YAML by the server: the tab says so.
+    const denied = { ...modelOf({ definition: published, draft: null }), personCommands: { operations: EVERY, restriction: null, run: null,
+        viewer: { allowed: false, reason: "Only its owner can change it." } } };
+    const told = main(mount({ readModel: denied, readModelRunId: null, mainTab: "yaml" }));
+    assert.ok(told.includes("The YAML is shown to people who can change this workflow."));
+    assert.ok(!told.includes("<textarea"));
 });
 
 // Owner decision q5: the saved revision's errors are marked inside the editor, on their lines, with a button per marked
@@ -192,7 +212,7 @@ test("the editor marks the saved revision's errors on their lines, and lists a b
     const older = { ...modelOf(), revision: { revision: 1, definitionHash: "hash-1", valid: false, diagnostics } };
     assert.deepEqual(workflowV2DraftEditor(older).diagnostics, [], "another revision's diagnostics are not this text's");
 
-    const open = main(mount({ readModel: withErrors, readModelRunId: null, draftOpen: true }));
+    const open = main(mount({ readModel: withErrors, readModelRunId: null, mainTab: "yaml" }));
     assert.match(open, /<div data-mark="error" title="STATE_UNKNOWN: No state &#x27;nowhere&#x27;\."[^>]*>● 2<\/div>/);
     assert.match(open, /<div data-mark="warning" title="STATE_UNREACHABLE: State &#x27;spare&#x27; is never reached\.\nSTYLE: Name it plainly\."[^>]*>● 3<\/div>/);
     assert.match(open, /<div>1<\/div>/, "an unmarked line keeps its number");
@@ -203,7 +223,7 @@ test("the editor marks the saved revision's errors on their lines, and lists a b
     assert.ok(open.includes(`>${YAML}</textarea>`), "the YAML is still a plain text box");
     assert.match(open, /wrap="off"/);
     // Without diagnostics nothing is marked and no list is shown.
-    const clean = main(mount({ readModel: modelOf(), readModelRunId: null, draftOpen: true }));
+    const clean = main(mount({ readModel: modelOf(), readModelRunId: null, mainTab: "yaml" }));
     assert.ok(!clean.includes("data-mark=") && !clean.includes("Errors marked in the YAML") && !clean.includes("aria-describedby=\"wf-yaml-marks"));
 });
 

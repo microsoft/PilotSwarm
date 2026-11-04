@@ -22,7 +22,7 @@ function mount({ view = {}, events = [] } = {}) {
     return new PilotSwarmUiController({ store, transport: {} });
 }
 
-const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, icon: null }));
 const node = controller => renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller }));
 
 test("the legacy graph renders as before, without v2 marks", () => {
@@ -68,8 +68,10 @@ test("an invalid draft shows its diagnostics as text, and a draft with a graph s
     assert.ok(html.includes("This workflow definition is invalid"));
     assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; is not a state"));
     assert.ok(!html.includes("<script>alert"));
-    const draft = main(mount({ view: { readModel: readModel({ noRun: true, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null } }),
-        noticesOpen: true } }));
+    // Batch 6 (r-3): the notices show in the side pane.
+    const draftView = mount({ view: { readModel: readModel({ noRun: true, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null } }),
+        sidePanel: "notices" } });
+    const draft = main(draftView) + node(draftView);
     assert.ok(draft.includes("Draft revision 1 · not published."));
     // Batch 5 (g-07): "No run yet" is said once, by the run's status; the notices do not repeat it.
     assert.equal(draft.match(/No runs? yet/g)?.length, 1);
@@ -134,8 +136,9 @@ test("a v2 definition is not redrawn once the read model says there is no graph"
 });
 
 test("an unverified run status is shown with its notice", () => {
-    const html = main(mount({ view: { readModel: readModel({ nodeExecutions: [row("poll", 1, "pending")] }), readModelAfterSeq: 1, noticesOpen: true },
-        events: [{ eventType: "workflow.paused", seq: 4, data: { runId: "run-1" } }] }));
+    const shown = mount({ view: { readModel: readModel({ nodeExecutions: [row("poll", 1, "pending")] }), readModelAfterSeq: 1, sidePanel: "notices" },
+        events: [{ eventType: "workflow.paused", seq: 4, data: { runId: "run-1" } }] });
+    const html = main(shown) + node(shown);
     assert.ok(html.includes("Status not certain · its data says running, latest event says paused"));
     assert.ok(html.includes("Refresh to read it again."));
     assert.ok(html.includes("Pending · run status not certain"));

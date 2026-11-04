@@ -27,7 +27,7 @@ import {
     workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2TestAnswerTemplate, workflowV2TestResponder, workflowV2TestResponseDraft,
     workflowV2AskParentMessage, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId,
 } from "../src/workflow-v2-commands.js";
-import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { RUN, readModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-test-answers";
@@ -180,14 +180,19 @@ function mount(view) {
     const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
-    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, testCallsOpen: true, ...view } });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, sidePanel: "calls", ...view } });
+    // The side pane on screen, so the header's button says whether it shows the calls (batch 6, r-3).
+    store.dispatch({ type: "canvas/flip", sessionId: "wf", slot: 1 });
     return new PilotSwarmUiController({ store, transport: {} });
 }
-const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+// Batch 6 (r-3): the header's buttons are in the main pane, and the test calls show in the side pane.
+const main = controller => renderToStaticMarkup(React.createElement(React.Fragment, null,
+    React.createElement(WorkflowMainPane, { controller, icon: null }), React.createElement(WorkflowNodePane, { controller })));
 
 test("a waiting interception has an Answer button that opens its form; the clock advances; neither shows where it is not allowed", () => {
-    // Batch 5 (g-03): the calls, the clock and the form are behind the Test calls button, open here (mount); closed, none shows.
-    const closed = main(mount({ readModel: testModel(), testCallsOpen: false }));
+    // Batch 5 (g-03), batch 6 (r-3): the calls, the clock and the form are the Test calls panel of the side pane, shown here
+    // (mount); with Step details shown instead, none shows.
+    const closed = main(mount({ readModel: testModel(), sidePanel: null }));
     assert.match(closed, /aria-label="Test calls"[^>]*aria-expanded="false"/);
     // Its count is the calls that wait for an answer (one here), and its title says so.
     assert.match(closed, /aria-label="Test calls" data-title="1 call waits for an answer\."[^>]*><span class="ps-workflow-tool-glyph"[^>]*>.*?<\/span><span class="ps-workflow-tool-badge" data-level="warning" aria-hidden="true">1<\/span>/);
@@ -290,7 +295,7 @@ test("q12: a held call that waits offers 'Ask the parent agent', and the answer 
         const store = createStore(appReducer, createInitialState({ mode: "api" }));
         store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch", parentSessionId: "parent-1" }] });
         store.dispatch({ type: "sessions/selected", sessionId: "wf" });
-        store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, testCallsOpen: true, ...view } });
+        store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, sidePanel: "calls", ...view } });
         return main(new PilotSwarmUiController({ store, transport: {} }));
     };
     const html = withParent({ readModel: testModel() });

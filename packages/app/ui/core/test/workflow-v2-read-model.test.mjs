@@ -21,7 +21,7 @@
  *     committed yet) shows no error and is asked again, once, on new events
  *     or a changed session row; a legacy definition is never asked for
  *   - any other failure keeps the model shown and is reported, bounded, for
- *     its selection, with a Retry beside the graph (rendered here on the
+ *     its selection, with a Retry in the side pane's Notices (rendered here on the
  *     server; the click is the controller's forced request)
  *   - the execution log names v2 wait and messaging states by their kind
  *
@@ -34,7 +34,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore, formatWorkflowEventText } from "../src/index.js";
 import { workflowDefinition, workflowReadModelView } from "../src/workflow-view.js";
 import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
-import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { RUN, startedData, legacyStartedData, ev, started, completed, row, done, readModel as fixtureReadModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-read-model";
@@ -319,18 +319,20 @@ test("READ-WIRE-02: a failure keeps the model shown, is reported bounded for its
     assert.equal(workflowReadModelView(h.view()).error, null);
 });
 
-test("READ-WIRE-02: the pane shows the selected run's read failure beside the graph, with a Retry, and never another run's", () => {
+test("READ-WIRE-02: the side pane shows the selected run's read failure, with a Retry, and never another run's", () => {
     const render = view => {
         const store = createStore(appReducer, createInitialState({ mode: "api" }));
         store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, sessionKind: "workflow", title: "Watch" }] });
         store.dispatch({ type: "sessions/selected", sessionId: SID });
         store.dispatch({ type: "ui/workflowView", sessionId: SID, view });
         const controller = new PilotSwarmUiController({ store, transport: {} });
-        return renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+        return renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(WorkflowMainPane, { controller, icon: null }),
+            view.sidePanel ? React.createElement(WorkflowNodePane, { controller }) : null));
     };
     const model = fixtureReadModel({ nodeExecutions: [done("poll", 1, "changed")] });
+    // Batch 6 (r-3): the failure and its Retry show in the side pane's Notices.
     const failed = { definition: workflowDefinition(startedData), readModel: model, readModelRunId: null,
-        readModelAttempt: { runId: null, afterSeq: 2, sessionUpdatedAt: null }, readModelError: "Service unavailable." };
+        readModelAttempt: { runId: null, afterSeq: 2, sessionUpdatedAt: null }, readModelError: "Service unavailable.", sidePanel: "notices" };
     const html = render(failed);
     assert.ok(html.includes("role=\"alert\""));
     assert.ok(html.includes("could not be read: Service unavailable."));
@@ -365,7 +367,9 @@ function renderPane(view, events = []) {
     if (events.length) store.dispatch({ type: "history/set", sessionId: SID, history: { chat: [], activity: [], events, lastSeq: events.length } });
     store.dispatch({ type: "ui/workflowView", sessionId: SID, view });
     const controller = new PilotSwarmUiController({ store, transport: {} });
-    return renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+    // Batch 6 (r-3): with a side panel chosen, the side pane too (a read failure shows in its Notices).
+    return renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(WorkflowMainPane, { controller, icon: null }),
+        view.sidePanel ? React.createElement(WorkflowNodePane, { controller }) : null));
 }
 
 /** Nothing of run A: its executions, its waiting state and its status. */
@@ -384,7 +388,8 @@ test("READ-WIRE-01: with run A's history loaded, a selected run B whose model is
     const modelA = fixtureReadModel({ nodeExecutions: [done("poll", 1, "changed"), row("pause", 2, "pending")] });
     const loading = { definition, readModel: modelA, readModelRunId: null, readModelAfterSeq: 4,
         readModelAttempt: { runId: null, afterSeq: 4, sessionUpdatedAt: null }, selectedRunId: "run-2" };
-    const failed = { ...loading, readModelAttempt: { runId: "run-2", afterSeq: 4, sessionUpdatedAt: null }, readModelError: "Service unavailable." };
+    const failed = { ...loading, readModelAttempt: { runId: "run-2", afterSeq: 4, sessionUpdatedAt: null }, readModelError: "Service unavailable.",
+        sidePanel: "notices" };
     for (const [label, view] of [["loading", loading], ["failed", failed]]) {
         const html = renderPane(view, runAEvents);
         assertNoRunA(html, label);
@@ -449,7 +454,8 @@ test("READ-WIRE-01: the controller's run selection, with run A's history loaded,
     h.transport.respond = (_id, options) => (options.runId === "run-2" ? runB.promise : Promise.resolve(modelA));
     await h.controller.ensureWorkflowDefinition(SID);
     await until(() => h.view().readModel === modelA && h.view().definition, "run A's model and the definition");
-    const pane = () => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller: h.controller, log: null, icon: null }));
+    const pane = () => renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(WorkflowMainPane, { controller: h.controller, icon: null }),
+        h.view().sidePanel ? React.createElement(WorkflowNodePane, { controller: h.controller }) : null));
     assert.ok(pane().includes("Done · changed"), "run A while it is selected");
 
     h.select("run-2");
@@ -461,6 +467,8 @@ test("READ-WIRE-01: the controller's run selection, with run A's history loaded,
 
     runB.reject(Object.assign(new Error("Service unavailable."), { code: "INTERNAL_ERROR", status: 503 }));
     await loading;
+    // Batch 6 (r-3): the failure and its Retry show in the side pane's Notices.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: SID, view: { sidePanel: "notices" } });
     const failed = pane();
     assertNoRunA(failed, "failed");
     assert.ok(failed.includes("could not be read: Service unavailable.") && failed.includes(">Retry<") && failed.includes("wait · 30 s"));

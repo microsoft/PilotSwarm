@@ -4551,8 +4551,8 @@ body.is-resizing-pane-y iframe {
   border: 1px solid var(--ps-border);
   border-radius: var(--ps-radius-sm);
   background: var(--ps-surface);
-  /* F-06: only when the pane is shorter than its header, its notices and the graph's 262px floor (a short window or
-     a small dashboard pane) does the whole pane scroll; otherwise the panels area below scrolls on its own. */
+  /* Only when the pane is shorter than its header and the graph's 150px floor (a short window or a small dashboard pane)
+     does the whole pane scroll. */
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -4568,18 +4568,30 @@ body.is-resizing-pane-y iframe {
   font-size: 0.9rem;
 }
 
-/* F-06: the open panels (Edit draft, Publish review, Test review, Variables, the run's activity and test calls) share
-   one area that takes its content's height and shrinks first, scrolling inside itself, while the graph and the step
-   log below keep at least 262px: 150 for the graph, 12 for the divider and 100 for the log. A fixed cap on each panel
-   was the alternative; it would still let two open panels crush the graph, and would cut a short panel on a tall
-   screen for nothing. */
-.ps-workflow-panels {
-  flex: 0 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+/* Batch 6 (r-1): Graph | YAML, a small segmented switch in the header. The main pane holds nothing else: every panel
+   opens in the side pane (r-3). */
+.ps-workflow-main-tabs {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-chrome);
 }
-.ps-workflow-panels:empty { display: none; }
+.ps-workflow-main-tabs > button {
+  padding: 2px 10px;
+  border: 0;
+  border-radius: calc(var(--ps-radius-sm) - 2px);
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.ps-workflow-main-tabs > button[aria-selected="true"] { background: var(--ps-surface); color: var(--ps-foreground); box-shadow: 0 0 0 1px var(--ps-border); }
+.ps-workflow-main-tabs > button:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 1px; }
 
 /* of-02: the name never wraps letter by letter. One line with an ellipsis (the whole name is its title), beside its
    own status badge; the tools follow on the same row at desktop widths and wrap to a second row on a narrow screen. */
@@ -4723,12 +4735,82 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   caret-color: var(--ps-foreground);
   outline: none;
 }
-/* F-06: with the step log open, the graph (150px), the divider (12px) and the step log (100px) never get less than 262px
-   together; alone (batch 5, g-03) the graph keeps 150px. */
-.ps-workflow-split { flex: 1 1 150px; min-height: 150px; display: grid; }
-.ps-workflow-split.is-log-open { flex-basis: 262px; min-height: 262px; }
-.ps-workflow-graph-region, .ps-workflow-log { min-width: 0; min-height: 0; }
-.ps-workflow-graph-region { position: relative; }
+/* The graph tab fills the pane under the header and keeps at least 150px; it stays mounted (hidden) while the YAML tab
+   is shown, so the graph comes back at the same zoom and place. */
+.ps-workflow-graph-region {
+  position: relative;
+  flex: 1 1 150px;
+  min-width: 0;
+  min-height: 150px;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+}
+.ps-workflow-graph-region[hidden], .ps-workflow-yaml-tab[hidden] { display: none; }
+.ps-workflow-log { min-width: 0; min-height: 0; }
+
+/* Batch 6 (r-2): the YAML tab. A draft's editor fills it: one compact strip, a muted note, the answer to a save, then the
+   YAML box at the remaining height, scrolling inside, and its marks under it. Another revision shows read-only. */
+.ps-workflow-yaml-tab {
+  flex: 1 1 150px;
+  min-width: 0;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ps-workflow-draft-editor, .ps-workflow-yaml-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 12px 8px;
+  font-size: 0.75rem;
+}
+.ps-workflow-draft-editor > .ps-workflow-yaml, .ps-workflow-yaml-view > .ps-workflow-yaml { flex: 1 1 120px; min-height: 120px; }
+.ps-workflow-yaml-marks { flex: 0 1 auto; max-height: 8em; overflow: auto; }
+.ps-workflow-yaml-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ps-workflow-yaml-strip h3 { margin: 0 6px 0 0; font-size: 0.8rem; white-space: nowrap; }
+.ps-workflow-yaml-strip-tools { margin-left: auto; display: inline-flex; }
+.ps-workflow-yaml-unsaved { color: var(--ps-muted); }
+.ps-workflow-yaml-note { margin: 0; color: var(--ps-muted); overflow-wrap: anywhere; }
+.ps-workflow-yaml > textarea[readonly] { cursor: text; }
+
+/* Batch 6 (r-3): the side pane shows Step details or one panel at a time, each with its title and a way back to Step
+   details, the answer to the person's last command above it, then the panel, scrolling inside. */
+.ps-workflow-side, .ps-workflow-side-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.ps-workflow-side > .ps-workflow-node-details, .ps-workflow-side > .ps-workflow-empty { flex: 1 1 auto; min-height: 0; height: auto; overflow: auto; }
+.ps-workflow-side-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-workflow-side-bar h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-workflow-side-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.ps-workflow-side-panel.is-log .ps-workflow-side-body { overflow: hidden; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+/* The bar already names the panel. */
+.ps-workflow-side-panel .ps-workflow-definition > h3,
+.ps-workflow-side-panel .ps-workflow-test-review > h3,
+.ps-workflow-side-panel .ps-workflow-variables > h3 { display: none; }
+.ps-workflow-panel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ps-workflow-draft-tools { display: grid; gap: 8px; padding: 8px 12px; font-size: 0.75rem; }
 
 /* Batch 5 (g-02): the graph, drawn by React Flow (.ps-workflow-flow) once it has loaded and as a plain picture of the
    same layout (.ps-workflow-graph-static) until then. Steps are HTML cards, edges SVG curves with a label box. */
@@ -4799,19 +4881,9 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   background: var(--ps-chrome);
 }
 .ps-workflow-graph-controls .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] { color: var(--ps-accent); border-color: var(--ps-accent); }
-.ps-workflow-log-resizer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: row-resize;
-  touch-action: none;
-  border-block: 1px solid var(--ps-border);
-  background: var(--ps-chrome);
-}
-.ps-workflow-log-resizer:hover, .ps-workflow-log-resizer:focus-visible { background: var(--ps-chrome-strong); }
-.ps-workflow-log-resizer span { height: 3px; width: 34px; border-radius: 2px; background: var(--ps-muted); }
 .ps-workflow-log > .ps-chat-panel { height: 100%; border: 0; border-radius: 0; }
-.ps-workflow-log .ps-chat-panel > .ps-panel-header { display: flex; }
+/* In the side pane the bar above already says "Step log". */
+.ps-workflow-log .ps-chat-panel > .ps-panel-header { display: none; }
 .ps-workflow-empty { padding: 20px; color: var(--ps-muted); display: grid; gap: 12px; }
 .ps-workflow-node-details { height: 100%; overflow: auto; padding: 16px; }
 .ps-workflow-node-details header small { color: var(--ps-muted); font-size: 0.75rem; letter-spacing: 0.06em; }

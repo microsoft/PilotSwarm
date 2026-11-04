@@ -27,7 +27,7 @@ import {
     workflowV2CommandNamesRun, workflowV2DefinitionControls, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs,
     workflowV2PublicationEvidenceRows, workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire,
 } from "../src/workflow-v2-commands.js";
-import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { readModel, subtreeCommands } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-publication";
@@ -213,10 +213,12 @@ function mount(view) {
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });
     return new PilotSwarmUiController({ store, transport: {} });
 }
-const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+// Batch 6 (r-3): the header's buttons are in the main pane, and the panel they choose shows in the side pane.
+const main = controller => renderToStaticMarkup(React.createElement(React.Fragment, null,
+    React.createElement(WorkflowMainPane, { controller, icon: null }), React.createElement(WorkflowNodePane, { controller })));
 
 test("the review panel opens from the header: the exact revision and hash with Publish only and Publish and start, or Start for a published workflow", () => {
-    const plain = main(mount({ readModel: readModel({ definition: DRAFT, noRun: true }), readModelRunId: null, definitionOpen: true }));
+    const plain = main(mount({ readModel: readModel({ definition: DRAFT, noRun: true }), readModelRunId: null, sidePanel: "definition" }));
     assert.ok(!plain.includes("Publish…") && !plain.includes("Publish review"), "no controls without personCommands");
 
     const closed = main(mount({ readModel: draftModel(), readModelRunId: null }));
@@ -224,7 +226,7 @@ test("the review panel opens from the header: the exact revision and hash with P
     assert.ok(closed.includes("data-definition-state=\"draft\""));
     assert.ok(!closed.includes("Publish review"));
 
-    const open = main(mount({ readModel: draftModel(), readModelRunId: null, definitionOpen: true }));
+    const open = main(mount({ readModel: draftModel(), readModelRunId: null, sidePanel: "definition" }));
     assert.ok(open.includes("aria-label=\"Publish review\""));
     // flow-08: one line for the definition, its revision and validity, and the hash by its start; the whole hash on hover.
     assert.ok(open.includes(` title="${HASH_2}" data-hash="${HASH_2}">${HASH_2.slice(0, 12)}…</code>`), "the short hash, whole on hover");
@@ -239,14 +241,14 @@ test("the review panel opens from the header: the exact revision and hash with P
     }
     assert.ok(open.includes("Publishing freezes this exact revision"));
 
-    const start = main(mount({ readModel: publishedModel(), readModelRunId: null, definitionOpen: true }));
+    const start = main(mount({ readModel: publishedModel(), readModelRunId: null, sidePanel: "definition" }));
     assert.ok(start.includes("aria-label=\"Start…\""));
     assert.ok(start.includes("aria-label=\"Start the live run\""));
     assert.deepEqual([...start.matchAll(/data-operation="([a-z_]+)"/g)].map(match => match[1]), ["start"]);
 
-    const live = main(mount({ readModel: publishedModel({ live: true }), readModelRunId: null, definitionOpen: true }));
+    const live = main(mount({ readModel: publishedModel({ live: true }), readModelRunId: null, sidePanel: "definition" }));
     assert.ok(!live.includes("Start…") && !live.includes("Start the live run"), "no start once the live run exists");
-    const subtree = main(mount({ readModel: draftModel({}, SUBTREE), readModelRunId: null, definitionOpen: true }));
+    const subtree = main(mount({ readModel: draftModel({}, SUBTREE), readModelRunId: null, sidePanel: "definition" }));
     assert.ok(!subtree.includes("Publish…") && !subtree.includes("Publish review"), "nothing to publish in an agent state's subtree");
 });
 
@@ -295,13 +297,13 @@ test("the review names each named agent and what is pinned for it, and the tests
     assert.deepEqual(workflowV2PublicationEvidenceRows(workflowV2DefinitionControls({ ...draftModel(), runs: [] }))[0], ["Agents", "None: no step runs a named agent"]);
     // The portal's review shows the same rows.
     const open = main(mount({ readModel: { ...draftModel(), graph: { revision: 2, initial: "review", states: AGENT_STATES }, runs: testRuns },
-        readModelRunId: null, definitionOpen: true }));
+        readModelRunId: null, sidePanel: "definition" }));
     assert.ok(open.includes("data-evidence=\"Agent in &#x27;review&#x27;\""), open);
     assert.ok(open.includes("its exact package revision is locked when this revision is published"));
     assert.ok(open.includes("test-r…0001 completed · succeeded; test-r…0002 running"));
     // Mock M03 "Back to draft" (accounting row 13): the review has its Close. Mock M28 "Fit" (row 91): the graph opens fitted,
     // by React Flow in the browser (workflow-session.spec.mjs, batch 5); the server's plain picture has no zoom buttons of its own.
-    const fitted = main(mount({ readModel: draftModel(), readModelRunId: null, definitionOpen: true }));
+    const fitted = main(mount({ readModel: draftModel(), readModelRunId: null, sidePanel: "definition" }));
     assert.ok(fitted.includes(">Close</button>"));
     assert.ok(fitted.includes("data-renderer=\"static\""));
     assert.ok(!fitted.includes(">Fit</button>") && !fitted.includes(">100%</button>") && !fitted.includes("Full graph"));

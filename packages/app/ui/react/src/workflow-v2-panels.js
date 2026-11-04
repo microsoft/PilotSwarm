@@ -648,21 +648,6 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
         : h("p", { className: "ps-workflow-variables-readonly", style: { margin: 0, color: "var(--ps-muted)" } }, model.reason));
 }
 
-/** The header button that opens and closes the variables panel (the view's `variablesOpen`). */
-export function WorkflowV2VariablesToggle({ controller, sessionId, open, controls }) {
-    return h(WorkflowToolButton, { label: "Variables", glyph: "variables", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
-        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { variablesOpen: !open } }) });
-}
-
-/** The header button that opens and closes the publication panel (the view's `definitionOpen`): "Publish…" for a draft, "Start…" otherwise. */
-export function WorkflowV2DefinitionToggle({ controller, sessionId, model, open, controls }) {
-    if (!model?.controls?.length) return null;
-    const draft = model.state === "draft";
-    return h(WorkflowToolButton, { label: draft ? "Publish…" : "Start…", glyph: draft ? "publish" : "start",
-        "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined, "data-definition-state": model.state,
-        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: !open } }) });
-}
-
 /**
  * The definition a review is about, on one line (flow-08): its name and version · its revision · whether it is valid
  * (when the review says), and its hash by its first 12 characters. The whole hash is on hover and in `data-hash`; the
@@ -712,7 +697,7 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, ve
         const result = await controller.sendWorkflowRunCommand(sessionId, operation === "start"
             ? { operation, definitionHash: model.publishedDefinitionHash, ...run }
             : { operation, expectedRevision: model.revision, definitionHash: model.definitionHash, ...run });
-        if (result?.ok && mounted.current) controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: false } });
+        if (result?.ok && mounted.current) controller.dispatch({ type: "ui/workflowView", sessionId, view: { sidePanel: null } });
     };
     const draft = model.state === "draft";
     const shownRevision = draft ? model.revision : model.publishedRevision;
@@ -737,15 +722,8 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, ve
             "data-operation": control.operation, disabled: !control.enabled, title: control.title,
             onClick: () => { send(control.operation); } }, control.label)),
         h("button", { type: "button", className: "ps-mini-button",
-            onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: false } }) }, "Close")),
+            onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { sidePanel: null } }) }, "Close")),
     error ? h("span", { role: "alert", style: { color: TONES.error } }, error) : null);
-}
-
-/** The header button that opens and closes the draft editor (the view's `draftOpen`). */
-export function WorkflowV2DraftToggle({ controller, sessionId, model, open, controls }) {
-    if (!model) return null;
-    return h(WorkflowToolButton, { label: "Edit draft", glyph: "edit", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
-        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: !open } }) });
 }
 
 /**
@@ -755,11 +733,33 @@ export function WorkflowV2DraftToggle({ controller, sessionId, model, open, cont
  * overwritten: the editor then says so and offers to load the new revision (discarding the edit) or to keep the edit on
  * it. Edits are kept across a refusal and a new read. The version (metadata.version) cannot change: a new version needs
  * a new workflow, and the server refuses it.
+ *
+ * Batch 6 (r-2): the editor is the YAML tab of a draft and fills it: one compact strip (the revision, Save, Discard,
+ * whether there are unsaved changes, and `tools`, the button for the draft tools in the side pane), the answer to a save
+ * (`notice`), then the YAML box at the tab's full height, scrolling inside, with its marks under it. An unsaved edit is
+ * never lost when the editor goes (the Graph tab, another session): it is kept in the workflow's view state
+ * (`draftEdit`, given back as `savedEdit`) and shown again when the editor comes back; nothing is kept once the edit is
+ * saved or discarded. Whether there is one (`draftDirty`) tells the step-input editor not to save over it.
  */
-export function WorkflowV2DraftEditor({ controller, sessionId, model, id, revisionReads = null, agentSteps = [], stepInput = null, stepInputPreview = null }) {
-    const [base, setBase] = React.useState(() => model ? { revision: model.revision, yaml: model.yaml } : null);
-    const [textValue, setTextValue] = React.useState(() => model?.yaml ?? "");
-    const [comparing, setComparing] = React.useState(false);
+export function WorkflowV2DraftEditor({ controller, sessionId, model, id, savedEdit = null, notice = null, tools = null }) {
+    const kept = savedEdit && typeof savedEdit.text === "string" && savedEdit.base && Number.isSafeInteger(savedEdit.base.revision)
+        && typeof savedEdit.base.yaml === "string" ? savedEdit : null;
+    const [base, setBase] = React.useState(() => kept ? kept.base : model ? { revision: model.revision, yaml: model.yaml } : null);
+    const [textValue, setTextValue] = React.useState(() => kept ? kept.text : model?.yaml ?? "");
+    const latest = React.useRef({ base, textValue });
+    latest.current = { base, textValue };
+    React.useEffect(() => () => {
+        const { base: was, textValue: text } = latest.current;
+        const edit = was && text !== was.yaml ? { base: was, text } : null;
+        controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftEdit: edit, draftDirty: Boolean(edit) } });
+    }, [controller, sessionId]);
+    const dirty = Boolean(base && textValue !== base.yaml);
+    const told = React.useRef(Boolean(kept));
+    React.useEffect(() => {
+        if (told.current === dirty) return;
+        told.current = dirty;
+        controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftDirty: dirty } });
+    }, [controller, sessionId, dirty]);
     // A new revision read while nothing was edited (or one that is exactly this edit, once saved) is taken as it is.
     React.useEffect(() => {
         if (!model || !base || model.revision === base.revision) return;
@@ -774,11 +774,18 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id, revisi
         if (!edit.canSave) return;
         controller.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: base.revision, yaml: textValue });
     };
-    return h("section", { id, className: "ps-workflow-draft-editor", "aria-label": "Draft editor", "data-revision": base.revision,
-        style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
-    h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, `Draft · editing revision ${base.revision}`),
-    h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
+    return h("section", { id, className: "ps-workflow-draft-editor", "aria-label": "Draft editor", "data-revision": base.revision },
+    h("div", { className: "ps-workflow-yaml-strip" },
+        h("h3", null, `Draft · editing revision ${base.revision}`),
+        h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", disabled: !edit.canSave,
+            title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save draft"),
+        h("button", { type: "button", className: "ps-mini-button", "data-action": "discard", disabled: !edit.changed,
+            onClick: () => setTextValue(base.yaml) }, "Discard edits"),
+        edit.changed && !edit.conflict ? h("span", { role: "status", className: "ps-workflow-yaml-unsaved" }, "Unsaved changes") : null,
+        tools ? h("span", { className: "ps-workflow-yaml-strip-tools" }, tools) : null),
+    h("p", { className: "ps-workflow-yaml-note" },
         `Saving makes a new revision; it never overwrites one someone else saved meanwhile.${model.semver ? ` The version stays ${model.semver}: a new version needs a new workflow.` : ""}`),
+    notice,
     edit.conflict ? h("div", { role: "alert", "data-conflict": "true", style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, color: TONES.warning } },
         h("span", { style: { flex: "1 1 20em" } }, edit.reason),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "load",
@@ -787,21 +794,59 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id, revisi
             onClick: () => setBase({ revision: model.revision, yaml: model.yaml }) }, `Keep my edits on revision ${model.revision}`)) : null,
     h(WorkflowV2YamlBox, { value: textValue, onChange: setTextValue,
         // The saved revision's errors, on their lines, while the edit is of that revision (owner decision q5).
-        marks: !edit.conflict && model.current ? workflowV2DraftMarks(model.diagnostics) : { lines: [], unplaced: 0 }, changed: edit.changed }),
-    h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 } },
-        h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", disabled: !edit.canSave,
-            title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save draft"),
-        h("button", { type: "button", className: "ps-mini-button", "data-action": "discard", disabled: !edit.changed,
-            onClick: () => setTextValue(base.yaml) }, "Discard edits"),
+        marks: !edit.conflict && model.current ? workflowV2DraftMarks(model.diagnostics) : { lines: [], unplaced: 0 }, changed: edit.changed }));
+}
+
+/**
+ * The draft's tools, in the side pane (batch 6, r-3; opened from the YAML tab's strip): compare two saved versions (owner
+ * decision q4) and change an agent step's inputs without writing YAML (q6). `unsaved` says the YAML tab holds edits not
+ * saved yet, which the step-input editor never saves over.
+ */
+export function WorkflowV2DraftTools({ controller, sessionId, model, revisionReads = null, agentSteps = [], stepInput = null, stepInputPreview = null, unsaved = false }) {
+    const [comparing, setComparing] = React.useState(false);
+    if (!model) return null;
+    return h("section", { className: "ps-workflow-draft-tools", "aria-label": "Draft tools", "data-revision": model.revision },
+    h("div", { className: "ps-workflow-panel-actions" },
         h("button", { type: "button", className: "ps-mini-button", "data-action": "compare", "aria-expanded": comparing,
             disabled: model.revision < 2, title: model.revision < 2 ? "There is only one version so far." : "Compare two saved versions of this draft.",
             onClick: () => setComparing(open => !open) }, "Compare versions"),
-        h("button", { type: "button", className: "ps-mini-button",
-            onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: false } }) }, "Close"),
-        edit.changed && !edit.conflict ? h("span", { role: "status", style: { color: "var(--ps-muted)" } }, "Unsaved changes") : null),
+        unsaved ? h("span", { role: "status", className: "ps-workflow-yaml-unsaved" }, "The YAML tab has unsaved changes.") : null),
     comparing && model.revision >= 2 ? h(WorkflowV2RevisionCompare, { controller, sessionId, latest: model.revision, reads: revisionReads }) : null,
     agentSteps.length ? h(WorkflowV2StepInputEditor, { controller, sessionId, steps: agentSteps, loaded: stepInput, preview: stepInputPreview,
-        draftRevision: model.revision, draftYaml: model.yaml, busy: model.busy, unsaved: edit.changed }) : null);
+        draftRevision: model.revision, draftYaml: model.yaml, busy: model.busy, unsaved }) : null);
+}
+
+/**
+ * A revision's YAML, read-only (batch 6, r-2): the YAML tab of a workflow whose YAML this person cannot edit (a published
+ * definition, or a draft the person may not change). `model` is the workflow's read model. The revision shown is the
+ * published one, or a draft's current one; its YAML comes from the revision read (controller.loadWorkflowDefinitionRevision,
+ * `reads` the view's `definitionRevisions`), which the server gives only to a person who may change the workflow;
+ * anyone else is told so, and nothing is read for them.
+ */
+export function WorkflowV2YamlView({ controller, sessionId, model, reads = null }) {
+    const definition = model && typeof model.definition === "object" ? model.definition : null;
+    const published = definition?.state === "published";
+    const revision = published ? definition.publishedRevision : definition?.currentRevision;
+    const known = Number.isSafeInteger(revision) && revision >= 1;
+    const denied = model?.personCommands?.viewer?.allowed === false;
+    React.useEffect(() => {
+        if (known && !denied) controller.loadWorkflowDefinitionRevision?.(sessionId, revision)?.catch?.(() => {});
+    }, [controller, sessionId, revision, known, denied]);
+    const entry = known && reads && typeof reads === "object" ? reads[revision] : null;
+    const value = entry?.value?.definitionRevision ?? null;
+    const yamlText = value && typeof value.yaml === "string" ? value.yaml : null;
+    const note = !known ? "There is no revision to show yet."
+        : published ? `Published revision ${revision} is fixed. A new version needs a new workflow, made as a draft.`
+            : `Draft revision ${revision}, read-only: you cannot change this workflow.`;
+    return h("section", { className: "ps-workflow-yaml-view", "aria-label": "Workflow YAML", "data-revision": known ? revision : undefined },
+    h("p", { className: "ps-workflow-yaml-note" }, note),
+    !known ? null
+        : denied ? h("p", { role: "status", className: "ps-workflow-yaml-note" }, "The YAML is shown to people who can change this workflow.")
+            : entry?.phase === "failed" ? h("p", { role: "alert", style: { margin: 0, color: TONES.error } }, `The YAML could not be read: ${entry.error ?? "no reason given"} `,
+                h("button", { type: "button", className: "ps-mini-button",
+                    onClick: () => { controller.loadWorkflowDefinitionRevision?.(sessionId, revision)?.catch?.(() => {}); } }, "Retry"))
+                : yamlText === null ? h("p", { role: "status", className: "ps-workflow-yaml-note" }, `Reading revision ${revision}…`)
+                    : h(WorkflowV2YamlBox, { value: yamlText, readOnly: true, marks: { lines: [], unplaced: 0 }, changed: false }));
 }
 
 /**
@@ -838,7 +883,7 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
     };
     const stale = shown?.phase === "loaded" && shown.revision !== draftRevision;
     const canSave = shown?.phase === "loaded" && shown.value?.changed === true && !stale && !busy && !unsaved;
-    const saveTitle = unsaved ? "Save or discard your YAML edits above first." : stale ? "The draft changed since this was prepared; show the change again."
+    const saveTitle = unsaved ? "Save or discard your YAML edits first." : stale ? "The draft changed since this was prepared; show the change again."
         : busy ? "Another command for this workflow is being sent." : shown?.value?.changed === true ? `Save as a new revision after revision ${draftRevision}.`
             : "Show the change first.";
     const changedLines = shown?.phase === "loaded" && typeof shown.value?.yaml === "string"
@@ -959,9 +1004,10 @@ export function WorkflowV2RevisionCompare({ controller, sessionId, latest, reads
  * marked lines show "●" in the error or warning colour with the messages as their title, and below the box one button
  * per marked line that moves the cursor to it and selects it. The box stays a plain text box (screen readers and every
  * test read it as one); it does not wrap lines, so each number stays beside its line. Marks are the saved revision's:
- * after an edit they stay on their line numbers until the next save checks the text.
+ * after an edit they stay on their line numbers until the next save checks the text. It fills the YAML tab (batch 6,
+ * r-2) and scrolls inside; `readOnly` shows a revision that cannot be edited, in the same box.
  */
-function WorkflowV2YamlBox({ value, onChange, marks, changed }) {
+function WorkflowV2YamlBox({ value, onChange = null, marks, changed, readOnly = false }) {
     const areaRef = React.useRef(null);
     const gutterRef = React.useRef(null);
     const listId = `wf-yaml-marks-${React.useId().replace(/:/g, "")}`;
@@ -992,9 +1038,9 @@ function WorkflowV2YamlBox({ value, onChange, marks, changed }) {
             })),
             h("textarea", { ref: areaRef, value, rows: 16, wrap: "off", spellCheck: false, "aria-label": "Workflow YAML", "data-field": "yaml",
                 ...(marks.lines.length ? { "aria-describedby": listId } : {}),
-                onChange: event => onChange(event.target.value),
+                ...(readOnly ? { readOnly: true } : { onChange: event => onChange(event.target.value) }),
                 onScroll: event => { if (gutterRef.current) gutterRef.current.scrollTop = event.target.scrollTop; },
-                style: { flex: 1, minWidth: 0, width: "100%", resize: "vertical", border: 0, padding: "2px 6px", whiteSpace: "pre", overflow: "auto" } })),
+                style: { flex: 1, minWidth: 0, width: "100%", resize: "none", border: 0, padding: "2px 6px", whiteSpace: "pre", overflow: "auto" } })),
         marks.lines.length ? h("ul", { id: listId, className: "ps-workflow-yaml-marks", "aria-label": "Errors marked in the YAML",
             style: { margin: 0, paddingLeft: 18, display: "grid", gap: 2 } },
         marks.lines.map(mark => h("li", { key: mark.line, "data-mark": mark.severity },
@@ -1002,13 +1048,6 @@ function WorkflowV2YamlBox({ value, onChange, marks, changed }) {
             " ", h("span", { style: { color: mark.severity === "error" ? TONES.error : TONES.warning } }, mark.texts.join("; "))))) : null,
         marks.lines.length && changed ? h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
             "The marks are for the revision as saved; save to check your edits.") : null);
-}
-
-/** The header button that opens and closes the test review (the view's `testOpen`). */
-export function WorkflowV2TestToggle({ controller, sessionId, model, open, controls }) {
-    if (!model) return null;
-    return h(WorkflowToolButton, { label: "Test…", glyph: "test", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
-        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: !open } }) });
 }
 
 /**
@@ -1042,7 +1081,7 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
             ...(parsedVars.value !== undefined ? { vars: parsedVars.value } : {}), ...(parsedScenario.value !== undefined ? { scenario: parsedScenario.value } : {}) });
         const runId = result?.ok && typeof result.receipt?.run?.runId === "string" ? result.receipt.run.runId : null;
         if (result?.ok && mounted.current) {
-            controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: false, ...(runId ? { selectedRunId: runId } : {}) } });
+            controller.dispatch({ type: "ui/workflowView", sessionId, view: { sidePanel: null, ...(runId ? { selectedRunId: runId } : {}) } });
         }
     };
     const radio = (value, label) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 } },
@@ -1067,6 +1106,6 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "test", disabled: !model.control.enabled, title: model.control.title,
             onClick: () => { start(); } }, model.control.label),
         h("button", { type: "button", className: "ps-mini-button",
-            onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: false } }) }, "Close")),
+            onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { sidePanel: null } }) }, "Close")),
     error ? h("span", { role: "alert", style: { color: TONES.error } }, error) : null);
 }
