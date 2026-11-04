@@ -70,7 +70,8 @@ export function workflowToolResult(result: ToolResult): unknown {
  * refused if this handle was closed, its script ended or `check` refuses, then authority is checked, then the same
  * refusals are checked again after the authorization and just before it runs (E1b-R2). A close rejects a
  * call still waiting at once (its turn then runs nothing), aborts the session only while this handle's own call runs,
- * waits for that call to end, and only then disposes the handle.
+ * waits for the whole turn of a call that began to end (on a shared session, the turn gives the tasks the call started
+ * to this handle after the call; E1c-R2), and only then disposes the handle.
  */
 export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOptions): Promise<WorkflowToolExecutor> {
     await options.session.rpc.tools.initializeAndValidate();
@@ -79,9 +80,13 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
     let closed = false;
     let calls = 0;
     let active = false;
-    /** This handle's call is in its turn (its checks or its native execution). */
+    /** This handle's call runs its checks or its native execution. */
     let running = false;
-    let pending: Promise<unknown> | undefined;
+    /**
+     * The turn of this handle's call once it has begun, until the turn has ended (E1c-R2): on a shared session the turn
+     * goes on after the call, to give the tasks the call started to this handle, and a close waits for that.
+     */
+    let turnInProgress: { done: Promise<void> | null } | null = null;
     let closePromise: Promise<void> | undefined;
     let rejectWaiting!: (error: Error) => void;
     const closedWhileWaiting = new Promise<never>((_, reject) => { rejectWaiting = reject; });
@@ -101,9 +106,11 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
             calls++;
             active = true;
             const invocationId = `${options.invocationPrefix}/${calls}`;
+            const token: { done: Promise<void> | null } = { done: null };
             const execute = async () => {
                 // Its turn: a closed handle or an ended script never starts the call (VR-1).
                 refuse();
+                turnInProgress = token;
                 running = true;
                 try {
                     await options.authorize();
@@ -123,23 +130,29 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
                 }
             };
             const turn = options.serially ? options.serially(execute) : execute();
-            pending = turn;
+            const done = turn.then(() => undefined, () => undefined);
+            token.done = done;
+            void done.then(() => { if (turnInProgress === token) turnInProgress = null; });
             try { return await Promise.race([turn, closedWhileWaiting]); }
-            finally { active = false; if (pending === turn) pending = undefined; }
+            finally { active = false; }
         },
         close() {
             closePromise ??= (async () => {
                 closed = true;
                 rejectWaiting(new Error("Workflow tool executor is closed."));
-                const inFlight = running ? pending : undefined;
+                const executing = running;
+                const turnEnd = turnInProgress?.done ?? null;
                 const errors: unknown[] = [];
                 const deadline = options.cleanupTimeoutMs ?? 10_000;
                 let settled = true;
-                if (inFlight) {
-                    // Only this handle's own running call is aborted; a call still waiting for its turn never starts.
+                // Only this handle's own running call is aborted; a call still waiting for its turn never starts.
+                if (executing) {
                     try { await cleanupWithin(options.session.abort(), deadline); }
                     catch (error) { errors.push(error); }
-                    try { await cleanupWithin(Promise.allSettled([inFlight]), deadline); }
+                }
+                // The whole turn of a call that began, its listing of the tasks it started included (E1c-R2), ends first.
+                if (turnEnd) {
+                    try { await cleanupWithin(turnEnd, deadline); }
                     catch (error) { errors.push(error); settled = false; }
                 }
                 // Abort failure must not skip stopping this handle's native background work.

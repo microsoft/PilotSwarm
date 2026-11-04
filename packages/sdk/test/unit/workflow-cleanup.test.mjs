@@ -82,7 +82,7 @@ async function until(check, label) {
  */
 function shareFixture({ authorize = async () => {}, createFails = null, createHold = () => null, factoryHold = () => null, metadataHold = () => null,
     cancelGate = null, cancelFails = false, cancelFailsFor = () => false, ownCancelFails = false, listFails = false,
-    release = { released: false, cancelled: 0 } } = {}) {
+    listHold = { label: null, gate: null }, release = { released: false, cancelled: 0 } } = {}) {
     const calls = [];
     const sessions = [];
     const flag = { written: false };
@@ -124,7 +124,10 @@ function shareFixture({ authorize = async () => {}, createFails = null, createHo
             getWorkflowToolSession: () => cli,
             activeBackgroundTasks: async () => {
                 if (listFails) throw new Error("tasks cannot be listed");
-                return session.tasks.filter(task => task.running).map(task => ({ id: task.id, type: "shell" }));
+                const listed = session.tasks.filter(task => task.running).map(task => ({ id: task.id, type: "shell" }));
+                // `listHold`: the listing after the call that started the task labelled so waits for its gate.
+                if (listHold.gate && session.tasks.some(task => task.label === listHold.label)) await listHold.gate.opened;
+                return listed;
             },
             cancelBackgroundTasks: async ({ select } = {}) => {
                 if (select) {
@@ -593,4 +596,67 @@ test("E1-R2, E1-R3: a script opens its executor once, checks its stop before eac
     assert.equal(runtime.match(/if \(scriptDone \|\| tools\.stop\.signal\.aborted\) throw new Error\("The script ended before its tool call ran\."\);/g)?.length, 2);
     assert.match(runtime, /tools\.stop\.abort\(\);\s*const opened = tools\.executor \?\? \(tools\.opening \? await settledWithin\(tools\.opening, WORKFLOW_V2_OPENING_WAIT_MS\) : null\);\s*if \(opened\) await opened\.close\(\);/);
     assert.match(runtime, /cancelTools: async \(\) => \{ tools\.stop\.abort\(\); if \(tools\.executor\) await tools\.executor\.close\(\); \}/);
+});
+
+// Verification of E1c (E1d): the barrier is a set of causes, each lifted only by the work that raised it (E1c-R1); a close
+// waits for its call's whole turn, so the tasks the call started are its own when it disposes (E1c-R2).
+test("E1c-R1: two late catalog checks, the later one ending first, keep the barrier up until both have ended", async () => {
+    const gates = [gate(), gate()];
+    let next = 0;
+    const f = shareFixture({ factoryHold: () => gates[next++]?.opened ?? null });
+    f.manager.workflowToolSetupDeadlineMs = 50;
+    const first = f.open(1);
+    const second = f.open(2);
+    await assert.rejects(first, /workflow tool catalog check did not finish within 50 ms/);
+    await assert.rejects(second, /workflow tool catalog check did not finish within 50 ms/);
+    assert.equal(f.barrier().size, 2);
+    gates[1].open();
+    await until(() => f.barrier()?.size === 1, "the later check's cause to be lifted");
+    await assert.rejects(f.open(3), /requires recovery: A workflow tool catalog check did not finish in time/);
+    gates[0].open();
+    await until(() => f.barrier() === null, "the earlier check's cause to be lifted");
+    const next3 = await f.open(4);
+    await next3.close();
+});
+
+test("E1c-R1: a failed owner cleanup followed by a late catalog check keeps the cleanup's cause when the check ends", async () => {
+    const hold = gate();
+    let checks = 0;
+    const f = shareFixture({ ownCancelFails: true, factoryHold: () => (++checks === 3 ? hold.opened : null) });
+    f.manager.workflowToolSetupDeadlineMs = 50;
+    const first = await f.open(1);
+    const second = await f.open(2);
+    await second.call("echo", { label: "bg", background: true });
+    const third = f.open(3);
+    await tick();
+    await assert.rejects(second.close(), /background shell remains/);
+    await assert.rejects(third, /workflow tool catalog check did not finish within 50 ms/);
+    assert.equal(f.barrier().size, 2);
+    hold.open();
+    await until(() => f.barrier()?.size === 1, "the late check's own cause to be lifted");
+    await assert.rejects(f.open(4), /requires recovery: background shell remains/);
+    await first.close();
+});
+
+test("E1c-R2: a close after the native call returned and before its tasks were listed waits, then stops the call's new task", async () => {
+    const listHold = { label: "late-bg", gate: gate() };
+    const f = shareFixture({ listHold });
+    const first = await f.open(1);
+    const second = await f.open(2);
+    await second.call("echo", { label: "other-bg", background: true });
+    const calling = first.call("echo", { label: "late-bg", background: true });
+    await until(() => f.calls.includes("execute:1:late-bg"), "the native call");
+    await tick();
+    let closed = false;
+    const closing = first.close().then(() => { closed = true; });
+    await tick(20);
+    assert.equal(closed, false, "the close waits for the call's turn");
+    assert.equal(f.running("late-bg"), true);
+    listHold.gate.open();
+    listHold.gate = null;
+    await closing;
+    await calling.catch(() => undefined);
+    assert.equal(f.running("late-bg"), false, "the call's own task was stopped by its close");
+    assert.equal(f.running("other-bg"), true, "the other owner's task runs on");
+    await second.close();
 });

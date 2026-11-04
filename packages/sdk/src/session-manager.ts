@@ -758,7 +758,11 @@ interface WorkflowToolSessionReady {
  */
 interface WorkflowToolLease { readonly generation: number; pending: number }
 
-/** A failure that blocks a workflow session's tools until recovery (VR-2), and the lease that raised it (E1b-R3). */
+/**
+ * One cause that blocks a workflow session's tools until recovery (VR-2), and the lease that raised it (E1b-R3). A
+ * session's barrier is the set of its causes (E1c-R1): up while any is there; each is lifted only by the work that
+ * raised it.
+ */
 interface WorkflowToolBarrier { readonly error: Error; readonly lease: WorkflowToolLease }
 
 /** The script states of one workflow session that share its native tool session (RT-2, E1b, E1c). */
@@ -936,7 +940,7 @@ export class SessionManager {
     /** Per workflow session, the lease that holds its native tool session from its setup until its teardown succeeded (E1b-R1). */
     private workflowToolHolders = new Map<string, WorkflowToolLease>();
     /** Per workflow session, a failure that may have left native work or folders behind: its tools wait for recovery. */
-    private workflowExecutorFailures = new Map<string, WorkflowToolBarrier>();
+    private workflowExecutorFailures = new Map<string, Set<WorkflowToolBarrier>>();
     /** Only application-supplied tools; resolved registry/platform handlers are never cached as inputs. */
     private sessionApplicationTools = new Map<string, Tool<any>[]>();
     /** One authorized agent snapshot per turn, also used by dynamic prompt callbacks. */
@@ -3592,11 +3596,14 @@ export class SessionManager {
         this.workflowToolsClosing = false;
         // E1b-R3: a barrier raised in an earlier generation, with none of its work still running, is lifted; that
         // generation's clients were stopped with it.
-        for (const [sessionId, barrier] of [...this.workflowExecutorFailures]) {
-            if (barrier.lease.generation < this.workflowToolGeneration && barrier.lease.pending === 0) {
-                this.workflowExecutorFailures.delete(sessionId);
-                emitSessionManagerTrace(sessionId, `workflow tools recovered at a worker start: ${barrier.error.message}`);
+        for (const [sessionId, causes] of [...this.workflowExecutorFailures]) {
+            for (const cause of [...causes]) {
+                if (cause.lease.generation < this.workflowToolGeneration && cause.lease.pending === 0) {
+                    causes.delete(cause);
+                    emitSessionManagerTrace(sessionId, `workflow tools recovered at a worker start: ${cause.error.message}`);
+                }
             }
+            if (causes.size === 0) this.workflowExecutorFailures.delete(sessionId);
         }
     }
 
@@ -3777,8 +3784,8 @@ export class SessionManager {
         const deadline = this.workflowToolSetupDeadlineMs;
         /** What blocks every owner of the workflow's tools: a failure that needs recovery, or a worker shutting down. */
         const refuseIfShut = (): void => {
-            const barrier = this.workflowExecutorFailures.get(sessionId);
-            if (barrier) throw new Error(`Workflow executor requires recovery: ${barrier.error.message}`);
+            const causes = this.workflowExecutorFailures.get(sessionId);
+            if (causes && causes.size > 0) throw new Error(`Workflow executor requires recovery: ${[...causes][0].error.message}`);
             if (this.workflowToolsClosing || this.workflowToolGeneration !== generation) {
                 throw new Error("The worker is shutting down; workflow tools are unavailable.");
             }
@@ -3831,6 +3838,7 @@ export class SessionManager {
         // before it are that call's (calls never overlap); each call's time window [since, until) is kept for a task no
         // listing caught (VR-3).
         const windows: Array<{ since: number; until: number }> = [];
+        let released = false;
         const serially = <T>(run: () => Promise<T>): Promise<T> => workflowToolShareSerially(owned, async () => {
             const before = await this.workflowTaskIds(ready.managed);
             const since = Date.now();
@@ -3839,7 +3847,23 @@ export class SessionManager {
             } finally {
                 windows.push({ since, until: Date.now() });
                 const after = await this.workflowTaskIds(ready.managed);
-                if (before && after) for (const id of after) if (!before.has(id) && !owned.taskOwners.has(id)) owned.taskOwners.set(id, me);
+                const mine = new Set<string>();
+                if (before && after) {
+                    for (const id of after) {
+                        if (!before.has(id) && !owned.taskOwners.has(id)) {
+                            owned.taskOwners.set(id, me);
+                            mine.add(id);
+                        }
+                    }
+                }
+                // E1c-R2: a task assigned to an owner that was already disposed is cancelled at once.
+                if (released && mine.size > 0) {
+                    try {
+                        await withWorkspaceDeadline(ready.managed.cancelBackgroundTasks({ select: task => mine.has(task.id) }), "workflow task cancel");
+                    } catch (error) {
+                        this.raiseWorkflowBarrier(sessionId, owned.lease, normalizeError(error));
+                    }
+                }
             }
         });
         /** A task this owner's calls started: claimed by id, or else started within one of its calls. */
@@ -3850,7 +3874,6 @@ export class SessionManager {
                 : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
             return Number.isFinite(at) && windows.some(window => at >= window.since && at < window.until);
         };
-        let released = false;
         let executor: WorkflowToolExecutor | undefined;
         const dispose = async ({ settled }: { settled: boolean } = { settled: true }): Promise<void> => {
             if (released) return;
@@ -3909,19 +3932,28 @@ export class SessionManager {
         return this.workflowToolHolders.get(sessionId) === lease && lease.generation === this.workflowToolGeneration;
     }
 
-    /** Raise the failure barrier for a session, only for the lease that holds it (E1b-R1); returns the barrier raised. */
+    /**
+     * Add a cause to a session's failure barrier, only for the lease that holds the session (E1b-R1); returns the cause.
+     * A cause never replaces or lifts another (E1c-R1).
+     */
     private raiseWorkflowBarrier(sessionId: string, lease: WorkflowToolLease, error: Error): WorkflowToolBarrier | null {
         if (!this.holdsWorkflowTools(sessionId, lease)) return null;
-        const barrier: WorkflowToolBarrier = { error, lease };
-        this.workflowExecutorFailures.set(sessionId, barrier);
-        return barrier;
+        const cause: WorkflowToolBarrier = { error, lease };
+        let causes = this.workflowExecutorFailures.get(sessionId);
+        if (!causes) {
+            causes = new Set<WorkflowToolBarrier>();
+            this.workflowExecutorFailures.set(sessionId, causes);
+        }
+        causes.add(cause);
+        return cause;
     }
 
-    /** Lift a barrier, only when it is still the one given (E1b-R3). */
-    private liftWorkflowBarrier(sessionId: string, barrier: WorkflowToolBarrier | null, why: string): void {
-        if (barrier === null || this.workflowExecutorFailures.get(sessionId) !== barrier) return;
-        this.workflowExecutorFailures.delete(sessionId);
-        emitSessionManagerTrace(sessionId, `workflow tools recovered: ${why} (${barrier.error.message})`);
+    /** Lift one cause of a session's barrier (E1b-R3, E1c-R1): the barrier stays up while any other cause is there. */
+    private liftWorkflowBarrier(sessionId: string, cause: WorkflowToolBarrier | null, why: string): void {
+        const causes = this.workflowExecutorFailures.get(sessionId);
+        if (cause === null || !causes || !causes.delete(cause)) return;
+        if (causes.size === 0) this.workflowExecutorFailures.delete(sessionId);
+        emitSessionManagerTrace(sessionId, `workflow tools: a cause lifted: ${why} (${cause.error.message})`);
     }
 
     /**
