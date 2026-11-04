@@ -56,6 +56,11 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
 
+/** A phone's way back from the details layer (the canvas) to the workflow: the toolbar's canvas toggle (0.8.9). */
+async function hideCanvas(page) {
+    await page.getByRole("button", { name: "Hide the canvas", exact: true }).click();
+}
+
 async function shot(page, name) {
     if (!SHOTS) return;
     fs.mkdirSync(SHOTS, { recursive: true });
@@ -462,6 +467,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             const x = box.x + box.width / 2, y = box.y + box.height / 2;
             await page.mouse.move(x, y);
             await page.mouse.down();
+            // The drag begins where the pointer first passes the 4-pixel click distance (React Flow's nodeDragThreshold),
+            // and the box follows the pointer from there: a first step of 5 pixels begins it (a first step of 10 left the
+            // box 10 pixels behind the pointer, as the early full run showed).
+            await page.mouse.move(x + 5, y);
             await page.mouse.move(x + 40, y + 30, { steps: 4 });
             await page.mouse.move(x + 80, y + 60, { steps: 4 });
             const during = await viewOf(graph);
@@ -529,7 +538,8 @@ test("mobile: a workflow has no zen entry, no maximize toggle and no composer ba
     await log.getByRole("button", { name: "Back to Step details", exact: true }).click();
     const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
     await expect(details).toBeVisible();
-    await page.getByRole("button", { name: /^Sessions — / }).click();
+    // A phone has no Sessions mode button (0.8.9): the canvas toggle leads back from the details layer to the workflow.
+    await hideCanvas(page);
     await main.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).click();
     await main.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).click();
     await expect(details.locator("h2")).toHaveText("evaluate_quality");
@@ -662,7 +672,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(main.locator(".ps-workflow-log")).toHaveCount(0);
         await expect(page.getByRole("separator", { name: "Resize the step log" })).toHaveCount(0);
         // A phone: back from the details layer to the graph.
-        if (viewport.width < 920) await page.getByRole("button", { name: /^Sessions — / }).click();
+        if (viewport.width < 920) await hideCanvas(page);
         await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
         if (viewport.width < 920) {
             // On a phone a tap only selects the step and keeps the workflow on screen (flow-04), even for collect, the step
@@ -678,7 +688,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(details.locator("pre")).toHaveText('{"count":3}');
         await shot(page, `node-details-${viewport.width}`);
         if (viewport.width < 920) {
-            await page.getByRole("button", { name: /^Sessions — / }).click();
+            await hideCanvas(page);
             await expect(main.locator(".ps-workflow-graph")).toBeVisible();
         }
         await page.reload();
@@ -848,15 +858,15 @@ test("of-03: Diagnostics squeezed by a narrower window gets its width back first
     expect(errors).toEqual([]);
 });
 
+// A workflow has no zen (batch 6, f-02), so the zen chat rail is exercised from a chat.
 test("of-03: the zen chat rail resizes by drag and a double-click puts it back at 380px", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await routeApi(page);
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
-    await page.locator(".ps-workflow-main").getByRole("button", { name: "Inspect collect", exact: true }).click();
-    await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("collect");
-    await page.getByRole("button", { name: "Zen mode", exact: true }).first().click();
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await page.getByRole("button", { name: "Show canvas", exact: true }).click();
+    await page.getByRole("region", { name: "Session canvas" }).getByRole("button", { name: "Zen mode", exact: true }).click();
     const rail = async () => Math.round(await page.locator(".ps-workspace-main-grid").evaluate((element) => element.getBoundingClientRect().width));
     await expect.poll(rail).toBe(380);
     const seam = page.getByRole("button", { name: "Resize the zen chat rail", exact: true });
@@ -1040,6 +1050,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect.poll(() => reads.count).toBeGreaterThan(readsBefore);
         await notice.getByRole("button", { name: "Dismiss", exact: true }).click();
         await expect(notice).toHaveCount(0);
+        // On a phone the refusal came up in the details layer (r-3); back to the workflow and its run controls.
+        if (viewport.width < 920) await hideCanvas(page);
 
         // Positive control + keyboard: Pause needs no confirm; Enter on the focused native button sends one pause.
         await controls.getByRole("button", { name: "Pause", exact: true }).focus();
@@ -1198,7 +1210,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
                 // the graph.
                 await shown.getByRole("button", { name: "Back to Step details", exact: true }).click();
                 await expect(shown).toHaveCount(0);
-                await page.getByRole("button", { name: /^Sessions — / }).click();
+                await hideCanvas(page);
                 await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
             }
         }
@@ -1225,13 +1237,15 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(main.locator(".ps-workflow-status")).toHaveText("No run yet");
         await expect(main.getByRole("combobox", { name: "Workflow run" })).toHaveCount(0);
         await expect(main.getByRole("button", { name: "Notices", exact: true })).toHaveCount(0);
+        // Said once in the workflow pane (checked before the step log, which covers the pane on a phone).
+        await expect(main.getByText(/No runs? yet/)).toHaveCount(1);
         await main.getByRole("button", { name: "Step log", exact: true }).click();
         // Batch 6 (r-3): the step log is a side-pane panel.
         const log = page.locator('.ps-workflow-side-panel[data-panel="log"] .ps-workflow-log').filter({ visible: true });
         await expect(log).toContainText("No step output yet.");
         await expect(log).not.toContainText("No messages yet.");
         await expect(log.locator(".is-splash-desktop, .is-splash-mobile")).toHaveCount(0);
-        await expect(main.getByText(/No runs? yet/)).toHaveCount(1);
+        if (viewport.width >= 920) await expect(main.getByText(/No runs? yet/)).toHaveCount(1);
         await shot(page, `no-run-${viewport.width}`);
         expect(errors).toEqual([]);
     });
@@ -1884,6 +1898,9 @@ test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen a
 
     // Zen on from the chat, then the workflow: normal layout; back on the chat, zen is on again.
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    // A load shows the chat's canvas column only once its toggle asks for it (0.8.9).
+    await expect(page.getByRole("button", { name: /^(Show canvas|Hide the canvas)$/ })).toBeVisible();
+    if (await page.getByRole("button", { name: "Show canvas", exact: true }).count()) await page.getByRole("button", { name: "Show canvas", exact: true }).click();
     await zenButton.click();
     await expect(side.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
     await expect(sessionRows.first()).toBeHidden();
@@ -2075,6 +2092,13 @@ test("f-06: the graph is fitted once and keeps its view through the side pane, t
 // ------------------------------------------------------------------------------------------------------------
 const STEP_ID = "99999999-2222-3333-4444-555555555555";
 const detailLabels = page => page.locator(".ps-session-detail-box .ps-session-detail-label").allTextContents();
+/** The session details box opens folded (sessionDetailCollapsed defaults to true); unfold it when it is. */
+async function openDetails(page) {
+    const box = page.locator(".ps-session-detail-box");
+    await expect(box).toBeVisible();
+    if (await box.evaluate(element => element.classList.contains("is-collapsed"))) await box.locator(".ps-session-detail-summary").click();
+    await expect(box).not.toHaveClass(/is-collapsed/);
+}
 const detailValue = (page, label) => page.locator(".ps-session-detail-field").filter({ has: page.locator(".ps-session-detail-label", { hasText: new RegExp(`^${label}$`) }) })
     .locator(".ps-session-detail-value");
 
@@ -2099,6 +2123,7 @@ test("d-1: a workflow's session details say what it runs, link its parent, and f
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await flowReady(page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" }));
+    await openDetails(page);
 
     await expect.poll(() => detailLabels(page)).toEqual(["Title", "ID", "Owner", "Workflow", "Revision", "Run", "Started by", "Steps", "Updated", "Access"]);
     await expect(detailValue(page, "Workflow")).toHaveText("watch-v2 1.0.0");
@@ -2125,6 +2150,7 @@ test("d-1: a workflow's session details say what it runs, link its parent, and f
 
     // The step's agent session: "Step of" the workflow, a link, instead of Cron.
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${STEP_ID}`);
+    await openDetails(page);
     await expect.poll(() => detailLabels(page)).toEqual(["Title", "ID", "Owner", "Model", "Context", "Step of", "Agent", "Updated", "Children", "Access"]);
     const stepOf = detailValue(page, "Step of");
     await expect(stepOf).toHaveText("Workflow: watch-v2");
@@ -2142,6 +2168,7 @@ test("d-1: a workflow a person started says 'You' as its starter, for its owner"
         onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: { ...V2_READ_MODEL, runs: [], run: null } } }),
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await openDetails(page);
     await expect(detailValue(page, "Started by")).toHaveText("You");
     await expect(detailValue(page, "Run")).toHaveText("No run yet");
     await page.locator(".ps-session-detail-collapse").click();
