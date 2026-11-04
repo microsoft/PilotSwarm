@@ -137,6 +137,14 @@ describe("a workflow's parent chat when the run ends", () => {
                 expect(answers, JSON.stringify(answers)).toContain("Started it.");
                 expect(answers.at(-1)).toBe(REPORT);
                 expect(answers.indexOf("Started it.")).toBeLessThan(answers.lastIndexOf(REPORT));
+                // w-4: the run's end is recorded in the parent's chat as the workflow's: a system.message whose sender is the
+                // workflow (kind "workflow", its name, the header's type and ids), not a person's message.
+                const recorded = (await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["system.message", "user.message"]))
+                    .filter(event => String(event.data?.content ?? "").startsWith("[WORKFLOW_UPDATE"));
+                expect(recorded.map(event => event.eventType)).toEqual(["system.message"]);
+                expect(recorded[0].data.sender).toMatchObject({ kind: "workflow", display: "one-second", workflow: { type: "ended" } });
+                expect(recorded[0].data.sender.workflow.sessionId).toEqual(expect.any(String));
+                expect(recorded[0].data.sender.workflow.runId).toEqual(expect.any(String));
             });
     });
 
