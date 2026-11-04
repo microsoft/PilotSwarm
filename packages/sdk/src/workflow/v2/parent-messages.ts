@@ -86,3 +86,30 @@ export function parseWorkflowUpdateHeader(text: unknown): { type: string; fields
     }
     return typeof fields.type === "string" ? { type: fields.type, fields } : null;
 }
+
+/**
+ * The server-stamped sender the runtime queues each kind of workflow message with (adversarial review SF-2): the run's
+ * end to the parent, a send state's message, a request state's request and a test run's held call. Only a message
+ * queued with exactly the sender of its header's type is a workflow's; the same text from a person or an agent is that
+ * person's or agent's message. A sender of kind "system" is stamped only by the runtime, never taken from a client.
+ */
+export const WORKFLOW_RUNTIME_SENDERS: Readonly<Record<WorkflowUpdateType, Readonly<{ kind: "system"; display: string }>>> = Object.freeze({
+    ended: Object.freeze({ kind: "system", display: "child workflow" }),
+    message: Object.freeze({ kind: "system", display: "workflow message" }),
+    request: Object.freeze({ kind: "system", display: "workflow request" }),
+    test_waiting: Object.freeze({ kind: "system", display: "workflow test" }),
+});
+
+/** The runtime's sender for a message of `type`, as a fresh object for a queue payload. */
+export function workflowRuntimeSender(type: WorkflowUpdateType): { kind: "system"; display: string } {
+    return { ...WORKFLOW_RUNTIME_SENDERS[type] };
+}
+
+/** Whether `sender` (as stamped on the queued message) is the runtime's sender for a workflow message of `type`. */
+export function isWorkflowRuntimeSender(sender: unknown, type: unknown): boolean {
+    if (!sender || typeof sender !== "object" || Array.isArray(sender) || typeof type !== "string") return false;
+    if (!Object.hasOwn(WORKFLOW_RUNTIME_SENDERS, type)) return false;
+    const expected = WORKFLOW_RUNTIME_SENDERS[type as WorkflowUpdateType];
+    const stamped = sender as { kind?: unknown; display?: unknown };
+    return stamped.kind === expected.kind && stamped.display === expected.display;
+}

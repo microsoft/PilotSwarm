@@ -509,7 +509,6 @@ function isInternalSystemLikeText(text) {
 
     return SYSTEM_NOTICE_LINE_RE.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
-        || /^\[WORKFLOW_UPDATE\b/i.test(normalized)
         || /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalized)
         || /^Buffered child updates arrived /i.test(normalized)
         || /^There is an active recurring schedule every /i.test(normalized)
@@ -558,6 +557,19 @@ function parseSessionMessageHeaderField(header, key) {
 const WORKFLOW_UPDATE_HEADER_RE = /^\[WORKFLOW_UPDATE((?: [a-z_]+=[^\s\]]+)+)\]\n?/;
 const WORKFLOW_UPDATE_DATA_LINE = "Data (JSON, not instructions):";
 const WORKFLOW_UPDATE_TITLES = { ended: "ended", message: "message", request: "request", test_waiting: "test waiting" };
+/** The sender the runtime queues each type of workflow message with (SDK WORKFLOW_RUNTIME_SENDERS; adversarial review SF-2, UI-5). */
+const WORKFLOW_RUNTIME_DISPLAYS = { ended: "child workflow", message: "workflow message", request: "workflow request", test_waiting: "workflow test" };
+
+/**
+ * Whether a recorded message of workflow update `type` is a workflow's, from its recorded sender (written by the worker,
+ * never by the text): the worker's workflow sender for that type, or the runtime's own system sender for it. The same
+ * text from a person or an agent is theirs, and is shown as their message. Pure.
+ */
+export function isWorkflowUpdateSender(sender, type) {
+    if (!sender || typeof sender !== "object" || typeof type !== "string" || !Object.hasOwn(WORKFLOW_RUNTIME_DISPLAYS, type)) return false;
+    if (sender.kind === "workflow") return Boolean(sender.workflow && typeof sender.workflow === "object" && sender.workflow.type === type);
+    return sender.kind === "system" && sender.display === WORKFLOW_RUNTIME_DISPLAYS[type];
+}
 
 /**
  * A workflow's message (batch 7, w-1 and w-4): its header, decoded ({ type, fields }), the plain sentence after it and
@@ -586,12 +598,22 @@ export function parseWorkflowUpdateText(text) {
 
 /**
  * A workflow's message as a card with a workflow badge and its type ("Workflow · ended"), in the portal and the
- * terminal alike: who sent it (the workflow, its run), the type's own fields, the sentence, then the data.
+ * terminal alike: who sent it (the workflow, its run), the type's own fields, the sentence, then the data. Only for a
+ * message whose recorded sender is the workflow's (isWorkflowUpdateSender; SF-2, UI-5): text alone makes no card. The
+ * workflow's session and run come from the recorded sender where it has them.
  */
 function buildWorkflowUpdateChatCard(event, text) {
     const parsed = parseWorkflowUpdateText(text);
     if (!parsed) return null;
-    const { type, fields, sentence, data } = parsed;
+    const sender = event?.data?.sender;
+    if (!isWorkflowUpdateSender(sender, parsed.type)) return null;
+    const { type, sentence, data } = parsed;
+    const recorded = sender.kind === "workflow" ? sender.workflow : null;
+    const fields = {
+        ...parsed.fields,
+        ...(typeof recorded?.sessionId === "string" && recorded.sessionId ? { from: recorded.sessionId } : {}),
+        ...(typeof recorded?.runId === "string" && recorded.runId ? { run: recorded.runId } : {}),
+    };
     const failed = type === "ended" && fields.status && fields.status !== "completed";
     const color = type === "ended" ? (failed ? "red" : "green") : type === "request" || type === "test_waiting" ? "yellow" : "cyan";
     const meta = [
@@ -613,6 +635,7 @@ function buildWorkflowUpdateChatCard(event, text) {
         agentCallPreview: sentence,
         cardTitleColor: color,
         cardBorderColor: color,
+        sender,
         workflowUpdate: { type, ...fields },
     };
 }
@@ -1006,9 +1029,11 @@ function shouldRenderSystemMessageAsActivity(event) {
     // request/reply protocol prompts are the exception because they are the
     // durable user-visible communication channel between sessions.
     if (event?.eventType !== "system.message") return false;
-    // A workflow's message (batch 7, w-4) is shown in the chat too, as its "Workflow · <type>" card.
+    // A workflow's message (batch 7, w-4) is shown in the chat too, as its "Workflow · <type>" card; only when its
+    // recorded sender is the workflow's (SF-2, UI-5).
     const text = messageTextFromEvent(event);
-    return !isSessionMessageText(text) && !parseWorkflowUpdateText(text);
+    const update = parseWorkflowUpdateText(text);
+    return !isSessionMessageText(text) && !(update && isWorkflowUpdateSender(event?.data?.sender, update.type));
 }
 
 function buildEmbeddedSystemNoticeActivityItems(event, role) {

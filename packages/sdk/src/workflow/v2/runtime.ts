@@ -44,7 +44,7 @@ import { schemaSetFor, type SchemaProblem } from "./schema.js";
 import { intakeEnvelopeSha256, type IntakeEnvelope } from "./intake.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
 import { RESPOND_SESSION_REQUEST_TOOL } from "./request-service.js";
-import { workflowUpdateHeader, workflowUpdateMessage, workflowUpdatePlain, workflowUpdateShortId } from "./parent-messages.js";
+import { workflowRuntimeSender, workflowUpdateHeader, workflowUpdateMessage, workflowUpdatePlain, workflowUpdateShortId } from "./parent-messages.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
 import {
     matchTestFixture, storedTestFixtures, testResultFor, toolCallResultOf, WORKFLOW_V2_TEST_POLL_MS, workflowTestAnsweredProjection,
@@ -2410,7 +2410,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             };
             const label = await store.readRevisionLabel(run.workflowSessionId, run.revision).catch(() => null);
             await deps.notifyParent(definition.parentSessionId, workflowTestNoticePrompt(data, label ? { name: label.name ?? null, version: label.semver ?? null } : null),
-                { kind: "system", display: "workflow test" }, `workflow-test:${interception.interceptionId}`);
+                workflowRuntimeSender("test_waiting"), `workflow-test:${interception.interceptionId}`);
         } catch (error) {
             await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.test_notice_failed", data: {
                 runId: run.runId, interceptionId: interception.interceptionId, error: jsonbSafeText(workflowErrorMessage(error), 1_000),
@@ -3220,7 +3220,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const json = JSON.stringify(data).replace(/[<>[\]]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
         await deps.notifyParent(definition.parentSessionId, workflowV2ParentNotification({ sessionId: run.workflowSessionId, runId: run.runId,
             name: data.name, version: data.version, status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId, failure }, json),
-            { kind: "system", display: "child workflow" }, `workflow:${run.workflowSessionId}:${run.runId}:terminal`);
+            workflowRuntimeSender("ended"), `workflow:${run.workflowSessionId}:${run.runId}:terminal`);
         await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notified", data: { runId: run.runId, parentSessionId: definition.parentSessionId } }]);
         return null;
     });
@@ -3516,7 +3516,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             const workflowIntake = begun.durable === true ? workflowSendIntakeEnvelope(begun.message) : null;
             await queue.enqueue(recipient, {
                 prompt: workflowSendPrompt({ ...message, stateId: executed.nodeId }),
-                sender: { kind: "system", display: "workflow message" }, clientMessageId,
+                sender: workflowRuntimeSender("message"), clientMessageId,
                 ...(workflowIntake ? { workflowIntake } : {}),
             });
             delivery = { clientMessageId, input: null, ...(workflowIntake ? { intake: "durable" as const } : {}) };
@@ -4168,7 +4168,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 ...message, stateId: executed.nodeId, deadlineAt: request.deadlineAt,
                 responseSchemas: responseSchemaClosure(ir, request.responseSchema), workflow: { name: ir.name, version: ir.version },
             }),
-            sender: { kind: "system", display: "workflow request" }, clientMessageId,
+            sender: workflowRuntimeSender("request"), clientMessageId,
         });
         const recorded = await store.recordRequestDelivery(input.nodeExecutionId, { stateId: executed.nodeId, clientMessageId }, receipt => ({
             sessionId: message.workflowSessionId,

@@ -76,7 +76,7 @@ import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } fro
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/v2/tools.js";
-import { parseWorkflowUpdateHeader } from "./workflow/v2/parent-messages.js";
+import { isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
@@ -510,11 +510,14 @@ function decorateRehydrationSystemPrompt(text?: string, workerNodeId?: string): 
 
 /**
  * The sender a workflow's message is recorded with (batch 7, w-4): kind "workflow", the workflow's name (or its session),
- * and the header's type and ids; null for any other text.
+ * and the header's type and ids; null for any other text. Provenance comes from the queued message's server-stamped
+ * sender, never from the text (adversarial review SF-2): only a message the runtime queued with its own sender for the
+ * header's type (WORKFLOW_RUNTIME_SENDERS) is a workflow's. A person's or an agent's text that starts with the same
+ * header stays their message, with their sender.
  */
-export function workflowUpdateSender(text: unknown): Record<string, unknown> | null {
+export function workflowUpdateSender(text: unknown, stampedSender: unknown): Record<string, unknown> | null {
     const header = parseWorkflowUpdateHeader(typeof text === "string" ? normalizePromptText(text) : text);
-    if (!header) return null;
+    if (!header || !isWorkflowRuntimeSender(stampedSender, header.type)) return null;
     // `workflow=<name>@<version>`: the version has no "@" (a semantic version), so the name is everything before the last one.
     const workflow = header.fields.workflow ?? "";
     const name = workflow.includes("@") ? workflow.slice(0, workflow.lastIndexOf("@")) : workflow || null;
@@ -525,14 +528,17 @@ export function workflowUpdateSender(text: unknown): Record<string, unknown> | n
     };
 }
 
-function isInternalSystemPrompt(text?: string): boolean {
+/**
+ * Whether a prompt is the runtime's own notice, recorded as a system.message. A workflow's message is one only when the
+ * runtime queued it with its own sender (`sender`, the queued message's server-stamped sender; SF-2).
+ */
+function isInternalSystemPrompt(text?: string, sender?: unknown): boolean {
     const normalized = normalizePromptText(text);
     if (!normalized) return false;
+    if (/^\[WORKFLOW_UPDATE\b/i.test(normalized)) return workflowUpdateSender(normalized, sender) !== null;
 
     return /^\[SYSTEM:/i.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
-        // A workflow's message (batch 7, w-1): recorded as runtime notices were, with the sender kind "workflow".
-        || /^\[WORKFLOW_UPDATE\b/i.test(normalized)
         || /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalized)
         || /^Sub-agent spawned successfully\./i.test(normalized)
         || /^Message sent to sub-agent /i.test(normalized)
@@ -4523,11 +4529,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // included: only runTurnV5 carries a batch, and it runs the turn-
             // control path, whose turn start is set wherever a catalog is.
             if (catalog && turnIntake) {
+                // An intake item is a send state's message the runtime stored itself: its sender is the runtime's.
+                const intakeSender = workflowRuntimeSender("message");
                 for (const item of turnIntake.items) {
                     promptRecords.push({
-                        eventType: isInternalSystemPrompt(item.text) ? "system.message" : "user.message",
+                        eventType: isInternalSystemPrompt(item.text, intakeSender) ? "system.message" : "user.message",
                         data: { content: item.text, clientMessageIds: [item.clientMessageId],
-                            sender: workflowUpdateSender(item.text) ?? { kind: "system", display: "workflow message" } },
+                            sender: workflowUpdateSender(item.text, intakeSender) ?? intakeSender },
                     });
                 }
             }
@@ -4546,8 +4554,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
                 // A workflow's message (batch 7, w-4) is recorded as the workflow's: sender kind "workflow", its name, and
                 // the header's type, so the portal and the terminal show it with a workflow badge. Only the record changes;
-                // the queue payload (and the orchestration that reads it) keeps its system sender.
-                const workflowSender = workflowUpdateSender(promptForRecord);
+                // the queue payload (and the orchestration that reads it) keeps its system sender. Only a message the
+                // runtime queued with its own sender is (SF-2); the same text from anyone else keeps their sender.
+                const stampedSender = (input as any).sender;
+                const workflowSender = workflowUpdateSender(promptForRecord, stampedSender);
                 if (workflowSender) eventData.sender = workflowSender;
                 // Image attachment refs ride the durable user.message event so
                 // transcripts can render thumbnails; bytes stay in the store.
@@ -4556,7 +4566,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     eventData.attachments = eventAttachments;
                 }
                 promptRecords.push({
-                    eventType: isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message",
+                    eventType: isInternalSystemPrompt(promptForRecord, stampedSender) ? "system.message" : "user.message",
                     data: eventData,
                 });
             }
