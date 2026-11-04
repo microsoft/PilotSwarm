@@ -854,15 +854,62 @@ function visitStatus(node, execution, run) {
     return { ...ended, state: "done", phase: "unclassified", stateLabel: "Completed · how it ended was not recorded" };
 }
 
+/**
+ * The scope a visit's number counts in (adversarial review R2-UI-4): one branch of one parallel visit
+ * ("<parallel visit>#<index>", as the runtime names the scope), else the scope the read model or event names, else the
+ * root. Visits of a step in different branches, or in another visit of its parallel step, are never compared by number.
+ */
+export function workflowV2VisitScope(execution) {
+    const branch = execution?.branch;
+    if (isRecord(branch) && typeof branch.parallelNodeExecutionId === "string" && Number.isSafeInteger(branch.index)) {
+        return `${branch.parallelNodeExecutionId}#${branch.index}`;
+    }
+    return text(execution?.scopeId) ?? "root";
+}
+
+/** When a visit ended, to order ended visits across scopes (the read model's completedAt); -Infinity when not known. */
+const endedAt = item => {
+    const time = typeof item?.completedAt === "string" ? Date.parse(item.completedAt) : NaN;
+    return Number.isFinite(time) ? time : -Infinity;
+};
+
+/**
+ * A step's visits by the scope they count in (R2-UI-4), each scope's shown visit (shownVisit, within the scope), and the
+ * scopes that are the step's now: a branch step's are the branches of its parallel step's shown visit (`parallelVisit`),
+ * when any reached the step; every other step's are all of them.
+ */
+function visitScopes(list, parallelVisit) {
+    const byScope = new Map();
+    for (const item of list) {
+        const key = workflowV2VisitScope(item);
+        if (!byScope.has(key)) byScope.set(key, []);
+        byScope.get(key).push(item);
+    }
+    const scopes = [...byScope].map(([key, items]) => ({ key, items, ...shownVisit(items),
+        index: Number.isSafeInteger(items[0]?.branch?.index) ? items[0].branch.index : null }));
+    const current = typeof parallelVisit?.id === "string"
+        ? scopes.filter(scope => scope.items.some(item => item.branch?.parallelNodeExecutionId === parallelVisit.id)) : [];
+    return { scopes, current: current.length ? current : scopes };
+}
+
 function nodeView(node, executions, context) {
     const kind = workflowV2Kind(node);
     const list = executions.filter(item => item.stateId === node.id).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
-    const latestDone = list.findLast(item => item.status === "completed");
-    // A pending execution older than a completed one lost its completion from the loaded history.
-    const pending = list.findLast(item => item.status === "pending" && (!latestDone || (item.ordinal ?? 0) >= (latestDone.ordinal ?? 0)));
-    const stalePending = list.some(item => item.status === "pending" && item !== pending);
+    // R2-UI-4: visit numbers count within a scope (the root, or one branch of one parallel visit). Each scope's pending
+    // visit is stale only against an ended visit of the same scope, and a branch step says its branches' state in the
+    // parallel step's shown visit: running while any of them runs, else its latest ended visit there.
+    const { scopes, current } = visitScopes(list, typeof node.parallel === "string" ? context.parallelVisits?.get(node.parallel) ?? null : null);
+    const byBranch = (a, b) => (a.index ?? Infinity) - (b.index ?? Infinity);
+    const running = current.filter(scope => scope.pending).sort(byBranch);
+    const pending = running[0]?.pending;
+    const latestDone = current.map(scope => scope.latestDone).filter(Boolean)
+        .reduce((latest, item) => (!latest || endedAt(item) > endedAt(latest) || (endedAt(item) === endedAt(latest) && (item.ordinal ?? 0) >= (latest.ordinal ?? 0)) ? item : latest), null)
+        ?? undefined;
+    // A pending execution older than a completed one of its own scope lost its completion from the loaded history.
+    const stalePending = scopes.some(scope => scope.items.some(item => item.status === "pending" && item !== scope.pending));
     const reachedByRun = node.type === "terminal" && context.terminalState === node.id;
-    const runs = Math.max(list.length, ...list.map(item => item.ordinal ?? 0), reachedByRun ? 1 : 0);
+    // Each scope's visits count on their own: the visits a step had are the sum of its scopes'.
+    const runs = Math.max(scopes.reduce((sum, scope) => sum + Math.max(scope.items.length, ...scope.items.map(item => item.ordinal ?? 0)), 0), reachedByRun ? 1 : 0);
     let state = "idle", phase = "not-reached", stateLabel = context.stateless ?? (context.hasRun ? "Not reached" : "No run");
     const result = latestDone || null;
     let outcome = result?.outcome, resultKind = result?.resultKind;
@@ -872,6 +919,10 @@ function nodeView(node, executions, context) {
         const status = visitStatus(node, shown, context.run);
         ({ state, phase, stateLabel } = status);
         if (shown === result) ({ outcome, resultKind } = status);
+        // Several branches reached the step: how many of them run it now (R2-UI-4).
+        if (shown === pending && current.length > 1 && running.length > 0 && status.state === "running") {
+            stateLabel = `${stateLabel} · in ${running.length} of ${plural(current.length, "branch", "branches")}`;
+        }
     } else if (reachedByRun) {
         state = node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done";
         phase = "done"; outcome = node.outcome; resultKind = "business"; stateLabel = `Ended · ${node.outcome}`;

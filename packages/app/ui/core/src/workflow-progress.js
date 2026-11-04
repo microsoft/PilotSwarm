@@ -10,6 +10,17 @@ const significantOutcomes = WORKFLOW_ATTENTION_OUTCOMES;
 // summary row is found past them and keeps updating, and they neither end nor split it.
 const controlEvents = new Set(WORKFLOW_CONTROL_EVENT_TYPES);
 const runIdOf = (data) => typeof data?.runId === "string" && data.runId !== "" ? data.runId : null;
+/**
+ * The scope of a step's event (adversarial review R2-UI-4): the root scope or one branch of one parallel visit, whose
+ * visit numbers count on their own. A start names its scope; a completion that does not is the one of the group's own
+ * start when it is that visit (its node execution), else its own visit only, so it never joins another branch's group.
+ * A version 1 event names neither: null, as before.
+ */
+function scopeOf(data, prior) {
+    if (typeof data?.scopeId === "string" && data.scopeId) return data.scopeId;
+    if (typeof data?.nodeExecutionId !== "string" || !data.nodeExecutionId) return null;
+    return prior && prior.nodeExecutionId === data.nodeExecutionId ? prior.scopeId ?? null : `visit:${data.nodeExecutionId}`;
+}
 
 function duration(ms) {
     if (!Number.isFinite(ms) || ms < 0) return null;
@@ -100,8 +111,10 @@ export function appendWorkflowProgress(chat, event, message) {
             break;
         }
     }
-    // The same state of another run (its step numbers start again) is not a continuation.
-    const sameState = prior?.stateId === data.stateId && (prior.runId ?? null) === runId;
+    // The same state of another run, or of another branch or parallel visit (their step numbers start again: R2-UI-4), is
+    // not a continuation.
+    const scopeId = scopeOf(data, prior);
+    const sameState = prior?.stateId === data.stateId && (prior.runId ?? null) === runId && (prior.scopeId ?? null) === scopeId;
     const selfLoop = definition && Object.values(definition.next ?? {}).includes(data.stateId);
     const eligible = definition ? (started ? selfLoop : definition.next?.[data.outcome] === data.stateId) : Boolean(sameState);
     // A v2 business result completed normally and carries no exit code; a v2 runtime error or an unknown result kind is never a quiet repeat. A business
@@ -147,6 +160,8 @@ export function appendWorkflowProgress(chat, event, message) {
     const progress = {
         stateId: data.stateId,
         runId,
+        scopeId,
+        nodeExecutionId: typeof data.nodeExecutionId === "string" && data.nodeExecutionId ? data.nodeExecutionId : null,
         firstStep: merge ? prior.firstStep : step,
         lastStep: step,
         count: (merge ? prior.count : 0) + (started ? 0 : 1),

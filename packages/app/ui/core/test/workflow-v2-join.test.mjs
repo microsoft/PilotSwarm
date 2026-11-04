@@ -161,8 +161,8 @@ const mixed = (rows = mixedRows()) => projectWorkflowV2({ readModel: readModel({
 test("a chosen branch's details say that branch's status and last outcome; the step's own are labelled all branches", () => {
     const projection = mixed();
     const prepare = byId(projection, "prepare");
-    // The step as a whole: one branch still runs it; the latest ended visit in the list failed.
-    assert.deepEqual([prepare.stateLabel, prepare.outcome, prepare.resultKind], ["Running", "crashed", "runtime_error"]);
+    // The step as a whole: one of its three branches still runs it (R2-UI-4); the latest ended visit in the list failed.
+    assert.deepEqual([prepare.stateLabel, prepare.outcome, prepare.resultKind], ["Running · in 1 of 3 branches", "crashed", "runtime_error"]);
     assert.deepEqual(prepare.branches.choices.map(choice => [choice.index, choice.status.stateLabel, choice.lastOutcome]), [
         [0, "Runtime error · crashed", { outcome: "crashed", resultKind: "runtime_error" }],
         [1, "Running", null],
@@ -175,7 +175,7 @@ test("a chosen branch's details say that branch's status and last outcome; the s
     const ready = html(2);
     assert.ok(ready.includes("<span>Status</span><strong>Done · ready</strong>"), ready);
     assert.ok(ready.includes("<span>Last outcome</span><strong>ready</strong>"), ready);
-    assert.ok(ready.includes("<span>All branches</span><strong>Running</strong>"), ready);
+    assert.ok(ready.includes("<span>All branches</span><strong>Running · in 1 of 3 branches</strong>"), ready);
     assert.ok(ready.includes("<span>Visits, all branches</span>"), ready);
     assert.ok(!valuesMention(ready, "crashed"), "nothing of another branch's visit");
     const failed = html(0);
