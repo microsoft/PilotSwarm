@@ -68,6 +68,9 @@ export const UI_COMMANDS = {
     WORKFLOW_VARIABLE_REMOVE: "workflowVariableRemove",
     WORKFLOW_VIEW_UPDATE_VARIABLES: "workflowViewUpdateVariables",
     WORKFLOW_VARIABLE_BATCH_SEND: "workflowVariableBatchSend",
+    // R2-UI-1: a variables form whose edit is behind the revision shown keeps the edit (ctrl-k) or loads the new values (ctrl-l).
+    WORKFLOW_VARIABLE_KEEP: "workflowVariableKeep",
+    WORKFLOW_VARIABLE_RELOAD: "workflowVariableReload",
     // The draft's YAML (INACTIVE likewise): open the draft editor, save the edit, discard it, keep it on a newer revision.
     WORKFLOW_VIEW_EDIT_DRAFT: "workflowViewEditDraft",
     WORKFLOW_DRAFT_SAVE: "workflowDraftSave",

@@ -10,8 +10,18 @@ import {
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
-    workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2RevisionCompare, workflowV2AnswerSourceText,
+    workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2VariableEditBehind, workflowV2RevisionCompare, workflowV2AnswerSourceText,
 } from "./workflow-v2-commands.js";
+
+/**
+ * R2-UI-1: a variables form's edit that started at an older revision than the view shows (null otherwise, and while
+ * nothing is typed, or for an update whose answer never came: Enter sends it again as itself), with what to do about it.
+ */
+function variablesBehind(modal, variables, dirty, notice) {
+    if (!dirty || (notice?.retry === true)) return null;
+    const behind = workflowV2VariableEditBehind(modal.baseRevision, variables?.revision);
+    return behind ? { ...behind, help: `${behind.text} ctrl-l loads the new values; ctrl-k keeps your edit to save it over them.` } : null;
+}
 
 /**
  * The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
@@ -444,6 +454,8 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
         addWrapped(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
         if (notice.retry) addWrapped("Enter (or ctrl-r) sends the same update again; the server applies it once.", "gray", "  ");
     }
+    const behind = sameRun ? variablesBehind(modal, variables, Boolean(String(modal.name ?? "") || String(modal.value ?? "")), notice) : null;
+    if (behind) addWrapped(behind.help, "yellow");
     if (typeof modal.error === "string" && modal.error) addWrapped(modal.error, "red");
     const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, (Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40) - 16)));
     const rows = Math.max(1, listHeight - 2);
@@ -455,7 +467,8 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
         name: String(modal.name ?? ""), nameCursor: Number(modal.nameCursor) || 0,
         value: String(modal.value ?? ""), valueCursor: Number(modal.valueCursor) || 0,
         busy: Boolean(variables?.busy),
-        hint: "Tab name/value · ↑↓ copy a listed variable · Enter set · ctrl-r remove (asks first) · Esc back to the view",
+        hint: behind ? "ctrl-l load the new values · ctrl-k keep your edit · Esc back to the view"
+            : "Tab name/value · ↑↓ copy a listed variable · Enter set · ctrl-r remove (asks first) · Esc back to the view",
         idealWidth: width,
     };
 }
@@ -499,7 +512,11 @@ export function selectWorkflowVariableBatchModal(state, maxWidth = 100, viewport
         addWrapped(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
         if (notice.retry) addWrapped("Enter sends the same update again; the server applies it once.", "gray", "  ");
     }
+    const behind = sameRun ? variablesBehind(modal, variables, Boolean(setText.trim() || removeText.trim()), notice) : null;
+    if (behind) addWrapped(behind.help.replace("ctrl-l loads the new values", "ctrl-l starts over at the new revision"), "yellow");
     if (typeof modal.error === "string" && modal.error) addWrapped(modal.error, "red");
+    // The revision Enter sends at: the edit's own (R2-UI-1).
+    const sendRevision = Number.isSafeInteger(modal.baseRevision) ? modal.baseRevision : variables?.revision ?? null;
     // What Enter sends, only where it may send anything (the reason above says why not).
     if (sameRun && variables.editable) {
         if (!setText.trim() && !removeText.trim()) {
@@ -512,7 +529,7 @@ export function selectWorkflowVariableBatchModal(state, maxWidth = 100, viewport
             } else {
                 // Whether a name has a value now is known only from a whole list (a preview cut short lists none).
                 const listed = variables.complete ? new Set(variables.entries.map(entry => entry.key)) : null;
-                add(`Enter sends one update${variables.revision === null ? "" : ` at revision ${variables.revision}`}:`, "cyan");
+                add(`${behind ? "Kept edit" : "Enter sends one update"}${sendRevision === null ? "" : ` at revision ${sendRevision}`}:`, "cyan");
                 const rows = [
                     ...Object.keys(draft.set).map(name => `${listed === null ? "set" : listed.has(name) ? "replace" : "add"} '${name}' = `
                         + JSON.stringify(draft.set[name])),
@@ -538,7 +555,8 @@ export function selectWorkflowVariableBatchModal(state, maxWidth = 100, viewport
         set: setText, setCursor: Number(modal.setCursor) || 0,
         remove: removeText, removeCursor: Number(modal.removeCursor) || 0,
         busy: Boolean(variables?.busy),
-        hint: "Tab set/remove · Enter send as one update (a removal asks first) · Esc back to the view",
+        hint: behind ? "ctrl-l start over at the new revision · ctrl-k keep your edit · Esc back to the view"
+            : "Tab set/remove · Enter send as one update (a removal asks first) · Esc back to the view",
         idealWidth: width,
     };
 }

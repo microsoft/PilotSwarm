@@ -13,6 +13,7 @@ import {
     workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
     workflowV2StepInputEditorState, workflowV2StepInputEdited, workflowV2StepInputLoadWaiting,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
+    workflowV2VariableEdit, workflowV2VariableEditState, WORKFLOW_V2_VARIABLE_EDIT_EMPTY,
     workflowV2AnswerSourceText, WORKFLOW_V2_ASK_PARENT_KINDS, workflowV2AskParentSent, workflowV2InputsBoxEmpty, workflowV2SampleInputs,
 } from "../../core/src/workflow-v2-commands.js";
 
@@ -691,31 +692,39 @@ export function WorkflowV2RunCommandNotice({ controller, sessionId, notice }) {
  * The run's variables (its open KV; R04, R05; mock M15; INACTIVE: only a read model that says which commands the
  * workflow takes from people has this panel). `model` is workflowV2RunVariables' answer. The list is read-only text; a
  * person who may change the variables sets one (a name and a JSON value) or removes one (by name, after the confirm
- * dialog), each as one update at the revision shown. Edit copies a listed variable into the form. The server checks the
- * revision (a changed map is refused and read again) and everything else.
+ * dialog), each as one update. Edit copies a listed variable into the form. An edit is sent at the revision it started
+ * from (adversarial review R2-UI-1, workflowV2VariableEdit): when the workflow is read again at a newer revision, the
+ * edit stays, the form says the variables changed since editing began, and Set and Remove wait until the person loads the
+ * new values or keeps the edit to save it over them. The server checks the revision (a changed map is refused and read
+ * again) and everything else.
  */
 export function WorkflowV2Variables({ controller, sessionId, model, id }) {
-    const [key, setKey] = React.useState("");
-    const [value, setValue] = React.useState("");
+    const [edit, change] = React.useReducer(workflowV2VariableEdit, WORKFLOW_V2_VARIABLE_EDIT_EMPTY);
     const [error, setError] = React.useState(null);
     const mounted = React.useRef(true);
     React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
     // A draft belongs to the run it was typed for: another run starts with an empty form.
     const runId = model?.runId ?? null;
-    React.useEffect(() => { setKey(""); setValue(""); setError(null); }, [runId]);
+    React.useEffect(() => { change({ type: "clear" }); setError(null); }, [runId]);
     if (!model) return null;
+    const { key, value } = edit;
+    const editState = workflowV2VariableEditState(edit, model.revision);
+    const setKey = text => change({ type: "type", field: "key", text, revision: model.revision });
+    const setValue = text => change({ type: "type", field: "value", text, revision: model.revision });
     const send = async input => {
         const result = await controller.sendWorkflowRunCommand(sessionId, { operation: "set_vars", runId: model.runId,
-            expectedKvRevision: model.revision, ...input });
-        if (result?.ok && mounted.current) { setKey(""); setValue(""); setError(null); }
+            expectedKvRevision: editState.expectedKvRevision, ...input });
+        if (result?.ok && mounted.current) { change({ type: "clear" }); setError(null); }
     };
     const onSet = event => {
         event.preventDefault();
+        if (editState.behind) return;
         const draft = workflowV2VariableDraft(key, value);
         setError(draft.ok ? null : draft.error);
         if (draft.ok) send({ set: draft.set });
     };
     const onRemove = () => {
+        if (editState.behind) return;
         const removal = workflowV2VariableRemoval(key);
         setError(removal.ok ? null : removal.error);
         if (removal.ok) send({ delete: removal.delete });
@@ -733,15 +742,24 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
             h("td", { style: cell }, h("code", null, entry.displayText)),
             h("td", { style: { ...cell, whiteSpace: "nowrap" } }, model.editable ? h("button", { type: "button", className: "ps-mini-button",
                 "aria-label": `Edit ${entry.key}`, disabled: model.busy,
-                onClick: () => { setKey(entry.key); setValue(entry.valueText); setError(null); } }, "Edit") : null))))) : null,
+                onClick: () => { change({ type: "copy", key: entry.key, value: entry.valueText, revision: model.revision }); setError(null); } }, "Edit") : null))))) : null,
     model.editable
         ? h("form", { "aria-label": "Set or remove a variable", onSubmit: onSet,
             style: { display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6 } },
         h(TextBox, { label: "Name" },
             h("input", { type: "text", className: "ps-workflow-input", value: key, maxLength: 128, onChange: event => setKey(event.target.value), "data-field": "name" })),
         h(JsonBox, { label: "Value (JSON)", name: "The value", object: false, value, onChange: setValue, field: "value", className: "is-grow" }),
-        h("button", { type: "submit", className: "ps-mini-button", disabled: model.busy, "data-operation": "set" }, model.pending ? "Saving…" : "Set"),
-        h("button", { type: "button", className: "ps-mini-button is-danger", disabled: model.busy, "data-operation": "remove", onClick: onRemove }, "Remove"),
+        h("button", { type: "submit", className: "ps-mini-button", disabled: model.busy || Boolean(editState.behind), "data-operation": "set" },
+            model.pending ? "Saving…" : "Set"),
+        h("button", { type: "button", className: "ps-mini-button is-danger", disabled: model.busy || Boolean(editState.behind), "data-operation": "remove",
+            onClick: onRemove }, "Remove"),
+        editState.behind ? h("div", { role: "status", className: "ps-workflow-variables-behind", "data-base-revision": editState.behind.base,
+            style: { flexBasis: "100%", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, color: TONES.warning } },
+        h("span", { style: { flex: "1 1 16em", minWidth: 0 } }, `${editState.behind.text} Load the new values, or keep your edit and save it over them.`),
+        h("button", { type: "button", className: "ps-mini-button", "data-operation": "reload",
+            onClick: () => { change({ type: "reload", entries: model.entries, revision: model.revision }); setError(null); } }, "Load new values"),
+        h("button", { type: "button", className: "ps-mini-button", "data-operation": "keep",
+            onClick: () => { change({ type: "keep", revision: model.revision }); setError(null); } }, "Keep my edit")) : null,
         error ? h("span", { role: "alert", style: { flexBasis: "100%", color: TONES.error } }, error) : null)
         : h("p", { className: "ps-workflow-variables-readonly", style: { margin: 0, color: "var(--ps-muted)" } }, model.reason));
 }

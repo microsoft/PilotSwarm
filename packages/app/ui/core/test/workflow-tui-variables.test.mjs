@@ -237,7 +237,7 @@ test("the form is not offered where the workflow, the run, the viewer or the dep
     assert.ok(joined(form(denied.store).lines).includes(`! ${refusal}`));
 });
 
-test("a changed revision is refused and read again, so the next try uses it; an unanswered update is sent again as itself", async () => {
+test("a changed revision is refused and read again; the edit stays at its own revision until ctrl-k keeps it; an unanswered update is sent again as itself", async () => {
     let lose;
     const h = await opened(model(), [
         async () => { throw Object.assign(new Error("The variables changed; read them again."), { status: 409, code: "KV_REVISION_CONFLICT" }); },
@@ -260,8 +260,18 @@ test("a changed revision is refused and read again, so the next try uses it; an 
     assert.ok(shown.lines.some(line => line.text === "  a = 2"));
     assert.ok(joined(shown.lines).includes(`! ${conflict}`));
     assert.deepEqual([shown.name, shown.value], ["a", "5"]);
+    // Review R2-UI-1: the edit is still of revision 3. Enter sends nothing until the person decides.
+    const behind = "The variables changed since you started editing (revision 3, now 4).";
+    assert.ok(joined(shown.lines).includes(`${behind} ctrl-l loads the new values; ctrl-k keeps your edit to save it over them.`), joined(shown.lines));
+    assert.equal(shown.hint, "ctrl-l load the new values · ctrl-k keep your edit · Esc back to the view");
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(h.sent().length, 1, "nothing was sent");
+    assert.equal(h.store.getState().ui.modal.error, `${behind} Nothing was sent: ctrl-l loads the new values, or ctrl-k keeps your edit to save it over them.`);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP);
+    assert.equal(statusOf(h.store), "Your edit is kept; it is saved over revision 4.");
+    assert.deepEqual([form(h.store).name, form(h.store).value], ["a", "5"]);
 
-    // The next try uses the new revision; while it is sent, it says so and nothing else is sent.
+    // Kept: the next try is at the new revision; while it is sent, it says so and nothing else is sent.
     const sending = h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     await settle();
     assert.equal(h.sent()[1].expected_kv_revision, 4);
@@ -283,6 +293,44 @@ test("a changed revision is refused and read again, so the next try uses it; an 
     const [, second, third] = h.sent();
     assert.deepEqual(third, second);
     assert.equal(h.store.getState().ui.modal.type, "workflowView", "accepted: back to the view");
+});
+
+// Adversarial review R2-UI-1: the form keeps the revision its edit started from across a refresh of the same run.
+test("R2-UI-1: a refresh to a newer revision keeps the edit at its own revision; ctrl-l loads the new value, and only then is it sent", async () => {
+    const h = await opened(model());
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    // Copy listed variable a (1) and change it; the edit is of revision 3.
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    assert.deepEqual([form(h.store).name, form(h.store).value], ["a", "1"]);
+    h.controller.switchWorkflowVariableField();
+    type(h, "0");
+    assert.equal(h.store.getState().ui.modal.baseRevision, 3);
+    // The same run is read again: someone else set a to 2 (revision 4). The edit stays, behind.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model({ vars: { a: 2, "b c": "x" }, revision: 4 }), readModelRunId: null } });
+    const shown = form(h.store);
+    assert.equal(shown.title, `Variables · run ${RUN} · revision 4`);
+    assert.deepEqual([shown.name, shown.value], ["a", "10"]);
+    assert.ok(joined(shown.lines).includes("The variables changed since you started editing (revision 3, now 4)."));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await h.controller.submitWorkflowVariable({ remove: true });
+    assert.deepEqual(h.sent(), [], "neither a set nor a removal is sent over the newer values");
+    // ctrl-l loads a's value now (2) at revision 4; the form says nothing is behind any more.
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD);
+    assert.equal(statusOf(h.store), "Loaded the variables of revision 4.");
+    assert.deepEqual([form(h.store).name, form(h.store).value], ["a", "2"]);
+    assert.ok(!joined(form(h.store).lines).includes("changed since you started editing"));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    const { operation_id: _id, ...wire } = h.sent()[0];
+    assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, set: { a: 2 }, expected_kv_revision: 4 });
+
+    // An empty form takes the newer revision when typing starts: nothing is behind.
+    h.serve(model({ vars: { a: 2, "b c": "x" }, revision: 5 }));
+    await settle();
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model({ vars: { a: 2, "b c": "x" }, revision: 5 }), readModelRunId: null } });
+    type(h, "n");
+    assert.equal(h.store.getState().ui.modal.baseRevision, 5);
+    assert.ok(!joined(form(h.store).lines).includes("changed since you started editing"));
 });
 
 test("a form whose run the view no longer shows sends nothing; Esc goes back to the view", async () => {

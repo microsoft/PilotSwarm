@@ -761,6 +761,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             }
             // The workflow variables form: two text fields, a name and a JSON value. Tab switches them, ↑↓ copy a listed
             // variable into them, Enter sets, ctrl-r removes (after the confirm dialog), Esc goes back to the workflow view.
+            // When the variables changed since the edit began (R2-UI-1), ctrl-k keeps the edit and ctrl-l loads the new values.
             if (modal.type === "workflowVariable") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
@@ -772,6 +773,14 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (matchesCtrlKey("r", "\u0012")) {
                     controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_REMOVE).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("k", "\u000b")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("l", "\u000c")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD).catch(() => {});
                     return;
                 }
                 if (key.tab) {
@@ -799,6 +808,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             }
             // The several-variables form: two text fields, Set (a JSON object of names and values) and Remove (a JSON list of
             // names). Tab switches them, Enter sends them as one update (a removal asks first), Esc goes back to the view.
+            // When the variables changed since the edit began (R2-UI-1), ctrl-k keeps the edit and ctrl-l starts over.
             if (modal.type === "workflowVariableBatch") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
@@ -806,6 +816,14 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (key.return) {
                     controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_BATCH_SEND).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("k", "\u000b")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("l", "\u000c")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD).catch(() => {});
                     return;
                 }
                 if (key.tab) {

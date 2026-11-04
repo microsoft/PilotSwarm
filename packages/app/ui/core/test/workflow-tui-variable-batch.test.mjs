@@ -322,7 +322,7 @@ test("the form is not offered where the workflow, the run, the viewer or the dep
     assert.equal(denied.sent().length, 1);
 });
 
-test("a changed revision is refused and read again, so the next try uses it; one command at a time; an unanswered update is sent again as itself", async () => {
+test("a changed revision is refused and read again; the edit stays at its own revision until ctrl-k keeps it; one command at a time; an unanswered update is sent again as itself", async () => {
     let lose;
     const h = await opened(model(), [
         async () => { throw Object.assign(new Error("The variables changed; read them again."), { status: 409, code: "KV_REVISION_CONFLICT" }); },
@@ -341,11 +341,20 @@ test("a changed revision is refused and read again, so the next try uses it; one
     assert.equal(shown.title, `Several variables · run ${RUN} · revision 4`, "the workflow was read again");
     assert.ok(texts(h.store).includes("  a = 2"));
     assert.ok(joined(shown.lines).includes(`! ${conflict}`));
+    assert.deepEqual([modalOf(h.store).type, shown.set, shown.remove], ["workflowVariableBatch", '{"a": 5, "c": [1]}', ""], "what was typed stays");
+    // Review R2-UI-1: the edit is still of revision 3; Enter sends nothing until the person decides.
+    const behind = "The variables changed since you started editing (revision 3, now 4).";
+    assert.ok(joined(shown.lines).includes(`${behind} ctrl-l starts over at the new revision; ctrl-k keeps your edit to save it over them.`), joined(shown.lines));
+    assert.ok(texts(h.store).includes("Kept edit at revision 3:"));
+    assert.equal(shown.hint, "ctrl-l start over at the new revision · ctrl-k keep your edit · Esc back to the view");
+    await send(h);
+    assert.equal(h.sent().length, 1, "nothing was sent");
+    assert.equal(modalOf(h.store).error, `${behind} Nothing was sent: ctrl-l loads the new values, or ctrl-k keeps your edit to save it over them.`);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP);
     assert.ok(texts(h.store).includes("Enter sends one update at revision 4:"), "the review is of the new revision");
     assert.ok(texts(h.store).includes("  replace 'a' = 5"));
-    assert.deepEqual([modalOf(h.store).type, shown.set, shown.remove], ["workflowVariableBatch", '{"a": 5, "c": [1]}', ""], "what was typed stays");
 
-    // The next try uses the new revision; while it is sent, the form says so and nothing else is sent.
+    // Kept: the next try is at the new revision; while it is sent, the form says so and nothing else is sent.
     const sending = send(h);
     await settle();
     assert.equal(h.sent()[1].expected_kv_revision, 4);
@@ -367,6 +376,24 @@ test("a changed revision is refused and read again, so the next try uses it; one
     const [, second, third] = h.sent();
     assert.deepEqual(third, second);
     assert.equal(modalOf(h.store).type, "workflowView", "accepted: back to the view");
+});
+
+// Adversarial review R2-UI-1: the several-variables form keeps the revision its edit started from across a refresh of the run.
+test("R2-UI-1: a refresh to a newer revision keeps the batch at its own revision; ctrl-l starts over at the new one", async () => {
+    const h = await opened(model());
+    await open(h);
+    type(h, '{"a": 9}');
+    assert.equal(modalOf(h.store).baseRevision, 3);
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model({ vars: { a: 2, "b c": "x" }, revision: 4 }), readModelRunId: null } });
+    assert.ok(joined(batch(h.store).lines).includes("The variables changed since you started editing (revision 3, now 4)."));
+    await send(h);
+    assert.deepEqual(h.sent(), [], "nothing is sent over the newer values");
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD);
+    assert.equal(statusOf(h.store), "Started over at revision 4.");
+    assert.deepEqual([batch(h.store).set, batch(h.store).remove, modalOf(h.store).baseRevision], ["", "", 4]);
+    type(h, '{"a": 3}');
+    await send(h);
+    assert.deepEqual(withoutId(h.sent()[0]), { operation: "set_vars", run_id: RUN, set: { a: 3 }, expected_kv_revision: 4 });
 });
 
 test("a form whose run the view no longer shows sends nothing; Esc goes back; an ordinary session has no such form", async () => {

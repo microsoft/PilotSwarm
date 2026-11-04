@@ -283,6 +283,64 @@ export function workflowV2VariableDraft(key, valueText) {
     }
 }
 
+/**
+ * Adversarial review R2-UI-1: an edit of the variables keeps the revision it started from (`base`) and is sent at it, so
+ * a change someone else made meanwhile is refused instead of overwritten. When the variables shown are newer
+ * (`revision`), the edit stays and this says so; nothing is sent until the person loads the new values or keeps the edit
+ * to save it over them. Null when the edit is at the revision shown, or either is not known. Pure.
+ */
+export function workflowV2VariableEditBehind(base, revision) {
+    if (!Number.isSafeInteger(base) || !Number.isSafeInteger(revision) || base === revision) return null;
+    return { base, revision, text: `The variables changed since you started editing (revision ${base}, now ${revision}).` };
+}
+
+/** The portal's variables form when nothing is typed: no name, no value, no revision of its own (R2-UI-1). */
+export const WORKFLOW_V2_VARIABLE_EDIT_EMPTY = Object.freeze({ key: "", value: "", base: null });
+
+/**
+ * The portal's variables form (R2-UI-1): what is typed (`key`, `value`) and the revision the edit started from (`base`),
+ * after `action`: `type` (field "key" or "value", its text; a clean form takes the shown `revision` as its own, an
+ * emptied one drops it), `copy` (a listed variable's name and value at the shown `revision`), `keep` (the edit stays and
+ * is saved over the shown `revision`), `reload` (the named variable's value now from `entries`, when it is listed, at the
+ * shown `revision`), `clear`. A refresh of the workflow changes nothing here. Pure.
+ */
+export function workflowV2VariableEdit(edit, action) {
+    const current = isRecord(edit) ? { key: String(edit.key ?? ""), value: String(edit.value ?? ""), base: Number.isSafeInteger(edit.base) ? edit.base : null }
+        : WORKFLOW_V2_VARIABLE_EDIT_EMPTY;
+    const revision = Number.isSafeInteger(action?.revision) ? action.revision : null;
+    switch (action?.type) {
+        case "type": {
+            const next = { ...current, [action.field === "value" ? "value" : "key"]: String(action.text ?? "") };
+            const dirty = next.key !== "" || next.value !== "";
+            return { ...next, base: dirty ? current.base ?? revision : null };
+        }
+        case "copy":
+            return { key: String(action.key ?? ""), value: String(action.value ?? ""), base: revision };
+        case "keep":
+            return { ...current, base: revision ?? current.base };
+        case "reload": {
+            const entry = (Array.isArray(action.entries) ? action.entries : []).find(item => isRecord(item) && item.key === current.key);
+            return { ...current, value: entry && typeof entry.valueText === "string" ? entry.valueText : current.value, base: revision ?? current.base };
+        }
+        case "clear":
+            return WORKFLOW_V2_VARIABLE_EDIT_EMPTY;
+        default:
+            return current;
+    }
+}
+
+/**
+ * What the portal's variables form may do now (R2-UI-1): whether anything is typed, the revision an update is sent at
+ * (the edit's own; the shown `revision` while nothing is typed), and whether the edit is behind the shown revision (then
+ * Set and Remove wait for the person to load the new values or keep the edit). Pure.
+ */
+export function workflowV2VariableEditState(edit, revision) {
+    const current = workflowV2VariableEdit(edit, null);
+    const dirty = current.key !== "" || current.value !== "";
+    const expectedKvRevision = dirty && current.base !== null ? current.base : revision;
+    return { dirty, expectedKvRevision, behind: dirty ? workflowV2VariableEditBehind(expectedKvRevision, revision) : null };
+}
+
 /** A variable a person asked to remove, as the delete list it is sent as, or the reason it is not one. */
 export function workflowV2VariableRemoval(key) {
     const name = typeof key === "string" ? key : "";

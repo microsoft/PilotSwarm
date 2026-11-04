@@ -142,6 +142,8 @@ test("the variables form takes typed text, q included; Tab, ↑↓, Enter, ctrl-
     const branch = APP.slice(form, APP.indexOf('if (modal.type === "renameSession" || modal.type === "artifactUpload"'));
     for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/, /key\.return[\s\S]*?UI_COMMANDS\.MODAL_CONFIRM/,
         /matchesCtrlKey\("r", "\\u0012"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_VARIABLE_REMOVE/, /key\.tab[\s\S]*?controller\.switchWorkflowVariableField\(\)/,
+        // R2-UI-1: an edit behind the revision shown is kept (ctrl-k) or replaced by the new values (ctrl-l).
+        /matchesCtrlKey\("k", "\\u000b"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_VARIABLE_KEEP/, /matchesCtrlKey\("l", "\\u000c"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_VARIABLE_RELOAD/,
         /UI_COMMANDS\.MODAL_PREV : UI_COMMANDS\.MODAL_NEXT/, /controller\.moveWorkflowVariableCursor\(key\.leftArrow \? -1 : 1\)/,
         /controller\.moveWorkflowVariableCursorToBoundary/, /controller\.deleteWorkflowVariableChar\(\)/,
         /if \(!key\.ctrl && !key\.meta && input\) controller\.insertWorkflowVariableText\(input\);/]) {
@@ -187,6 +189,7 @@ test("the several-variables form takes typed text, q included; Tab, Enter, the c
     assert.ok(form < APP.indexOf('if (key.escape || input === "q" ||'), "before q closes a modal");
     const branch = APP.slice(form, APP.indexOf('if (modal.type === "renameSession" || modal.type === "artifactUpload"'));
     for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/, /key\.return[\s\S]*?UI_COMMANDS\.WORKFLOW_VARIABLE_BATCH_SEND/,
+        /matchesCtrlKey\("k", "\\u000b"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_VARIABLE_KEEP/, /matchesCtrlKey\("l", "\\u000c"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_VARIABLE_RELOAD/,
         /key\.tab[\s\S]*?controller\.editWorkflowVariableBatchField\(\{ type: "switch" \}\)/,
         /controller\.editWorkflowVariableBatchField\(\{ type: "move", chars: key\.leftArrow \? -1 : 1 \}\)/,
         /controller\.editWorkflowVariableBatchField\(\{ type: "edge", edge: key\.home \? "start" : "end" \}\)/,
