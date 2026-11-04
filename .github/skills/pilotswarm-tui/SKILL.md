@@ -175,6 +175,10 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - MoA's Close panel action uses a panel outline with an × and neutral styling.
   Keep it distinct from the Session group's trash/lifecycle action; closing a
   panel changes only its layout, leaving the session available.
+- MoA panel headers, map, list, and controls use the session title, then its
+  eight-character session id, retaining the canvas slot prefix where applicable.
+  Reserve `Empty panel` for empty nodes, including inaccessible sessions reset
+  to empty; a missing title or catalog row does not make a bound panel empty.
 - Theme picker selection previews immediately in both portal and shared UI state. `Apply Theme` commits the previewed theme; `Cancel`, `Close`, backdrop click, or `Esc` restores the theme that was active when the picker opened.
 - In chat-focus mode, the Sessions pane supports horizontal scrolling so long session titles are fully readable; do not force focus-mode session rows to truncate with ellipses.
 - Summary markdown tables must render as real HTML tables in the portal. If summary text arrives with escaped newline sequences (`\\n`) in otherwise tabular markdown, normalize and render the table structure instead of showing raw pipe-delimited text.

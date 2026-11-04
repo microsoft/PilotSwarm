@@ -344,6 +344,44 @@ test("canvas focus binds the shared composer and the pinned slot loads its own d
     expect(f.errors).toEqual([]);
 });
 
+for (const type of ["chat", "canvas"]) for (const title of [null, undefined, "", "Incident review"]) {
+    test(`${type} panels use ${title ? "the session title" : `a short id for ${String(title)}`} consistently`, async ({ page }) => {
+        await page.route("**/api/v1/**", async route => {
+            const pathname = new URL(route.request().url()).pathname;
+            if (!pathname.endsWith("/management/sessions") && pathname !== `/api/v1/sessions/${sid(1)}`) return route.fallback();
+            const response = await route.fetch(), body = await response.json();
+            if (body.result.sessions) {
+                body.result.sessions = body.result.sessions.map(session => session.sessionId === sid(1) ? { ...session, title } : session);
+            } else body.result.title = title;
+            return route.fulfill({ response, json: body });
+        });
+        const node = { ...chat(1), type, ...(type === "canvas" ? { slot: 2 } : {}) };
+        const label = `${type === "canvas" ? "Canvas 2 · " : ""}${title || sid(1).slice(0, 8)}`;
+        const f = await fixture(page, [layout(split(node, { id: "empty", type: "empty" }))]);
+        await open(page);
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.getByRole("button", { name: "Open panel map" }).click();
+        const map = page.getByRole("dialog", { name: "Panel map", exact: true });
+        await expect(map.getByRole("button", { name: `Panel 1: ${label}`, exact: true })).toBeVisible();
+        await expect(map.locator(".ps-moa-map button").nth(0)).toHaveText(`1${label}`);
+        await expect(map.locator(".ps-moa-map-list button").nth(0)).toHaveText(`1 · ${label}`);
+        await expect(map.getByRole("button", { name: "Panel 2: Empty panel", exact: true })).toBeVisible();
+        await expect(map.locator(".ps-moa-map-list button").nth(1)).toHaveText("2 · Empty panel");
+        await map.getByRole("button", { name: `Panel 1: ${label}`, exact: true }).click();
+        await expect(page.locator(".ps-mobile-session-name")).toHaveText(label);
+        await page.locator(".ps-mobile-focus-header").getByRole("button", { name: "Session control panel" }).click();
+        await expect(page.getByRole("dialog", { name: "Session control panel" }).locator(".ps-moa-control-title")).toHaveText(label);
+        await page.getByRole("dialog", { name: "Session control panel" }).getByRole("button", { name: "Close dialog" }).click();
+        await page.setViewportSize({ width: 1600, height: 1000 });
+        await expect(panel(page, "panel-1")).toHaveAttribute("aria-label", label);
+        await expect(panel(page, "panel-1").locator(":scope > header .ps-moa-panel-title")).toHaveText(label);
+        await panel(page, "empty").locator(":scope > header").click();
+        await panel(page, "empty").getByRole("button", { name: "Session control panel" }).click();
+        await expect(page.getByRole("dialog", { name: "Session control panel" }).locator(".ps-moa-control-title")).toHaveText("Empty panel");
+        expect(f.errors).toEqual([]);
+    });
+}
+
 test("an inaccessible session resets to an empty pane and cannot expose a composer or send", async ({ page }) => {
     const f = await fixture(page, [layout(chat(3))]);
     await page.route(`**/api/v1/sessions/${sid(3)}`, route => route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ ok: false, error: { code: "NOT_FOUND", message: "Not found" } }) }));
@@ -353,6 +391,15 @@ test("an inaccessible session resets to an empty pane and cannot expose a compos
     await expect(denied).toContainText("Empty panel");
     await expect(denied.locator("textarea")).toHaveCount(0);
     await page.keyboard.press("Enter");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator(".ps-mobile-session-name")).toHaveText("Empty panel");
+    await page.getByRole("button", { name: "Open panel map" }).click();
+    const map = page.getByRole("dialog", { name: "Panel map", exact: true });
+    await expect(map.getByRole("button", { name: "Panel 1: Empty panel", exact: true })).toBeVisible();
+    await expect(map.locator(".ps-moa-map-list button")).toHaveText("1 · Empty panel");
+    await map.getByRole("button", { name: "Panel 1: Empty panel", exact: true }).click();
+    await page.locator(".ps-mobile-focus-header").getByRole("button", { name: "Session control panel" }).click();
+    await expect(page.getByRole("dialog", { name: "Session control panel" }).locator(".ps-moa-control-title")).toHaveText("Empty panel");
     expect(f.sends).toEqual([]);
     expect(f.errors).toEqual([]);
 });
