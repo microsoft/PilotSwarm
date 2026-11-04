@@ -1325,7 +1325,8 @@ export class PilotSwarmClient {
             }).catch(() => {});
         } else if (cmsRow && terminalStatusInput && shouldRecordWorkflowControllerFailed(terminalStatusInput)) {
             // Re-check R2-RT2-RC1: a workflow's row is never written from this read's snapshot; the workflow store records a
-            // failed controller only while, under its lock, the row and the live run still say the run has not ended.
+            // failed controller only while, under its lock, the row (and a v2 workflow's live run) still say the run has not
+            // ended. A legacy (version 1) workflow is recorded too (R2-RC2-RT2-1).
             const message = typeof customStatus?.error === "string" && customStatus.error.trim() ? customStatus.error.trim() : null;
             const store = this._catalog?.workflowStore?.() ?? null;
             await store?.recordControllerFailed({ workflowSessionId: sessionId, message }).catch(() => {});

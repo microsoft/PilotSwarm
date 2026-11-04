@@ -15,6 +15,8 @@
  * - Its re-check RC1: neither client writes a workflow's row from its read's snapshot. A failed controller is recorded by
  *   the store under its lock, only while the row and the live run still say the run has not ended
  *   (store.recordControllerFailed): a read whose snapshot is older than the run's end leaves that end as it is.
+ * - Its re-check R2-RC2-RT2-1: a legacy (version 1) workflow, known by its stored admission, has its failed controller
+ *   recorded too; an ended or deleted one, a v2 draft and a conversational session are left alone.
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -297,8 +299,79 @@ describe("workflow v2: a workflow session's row follows its live run (review B1)
             await h.begin(done, ended, "live");
             await h.finish(done, ended, "completed");
             await h.catalog.updateSession(done, { state: "running" });
-            expect(await h.store.recordControllerFailed({ workflowSessionId: done, message: "late" })).toEqual({ written: false });
+            expect(await h.store.recordControllerFailed({ workflowSessionId: done, message: "late" })).toEqual({ written: false, kind: "v2" });
             expect((await h.catalog.getSession(done)).state).toBe("running");
+        } finally {
+            await h.close();
+        }
+    });
+
+    // Re-check R2-RC2-RT2-1: a legacy (version 1) workflow has no v2 run, so the store knows it by its stored admission. Its
+    // failed controller is still recorded on its row, under the lock, by either client; an ended one is left as it is, and a
+    // v2 workflow without a live run is never taken for a legacy one.
+    it("RC2-RT2-1: a legacy workflow's failed controller is recorded by either client; an ended one, a deleted one and a v2 draft are left alone", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const legacy = async (label, state) => {
+                const owner = { provider: "test", subject: `${label}-${randomUUID()}` };
+                const parent = randomUUID();
+                await h.catalog.createSession(parent, { owner });
+                const workflowSessionId = randomUUID();
+                await h.catalog.createSession(workflowSessionId, { sessionKind: "workflow", parentSessionId: parent, owner, creationConfig: {
+                    workflowToolBinding: { owner, parentSessionId: parent },
+                    workflowAdmission: { policy: "legacy-test", workflowName: label, input: { sessionId: workflowSessionId } },
+                } });
+                await h.catalog.updateSession(workflowSessionId, { state, orchestrationId: `session-${workflowSessionId}`, lastError: "earlier" });
+                expect(await h.store.readDefinition(workflowSessionId), "a legacy workflow has no v2 definition").toBeNull();
+                return workflowSessionId;
+            };
+            const reads = (row, updates) => {
+                const catalog = { getSession: async () => row, updateSession: async (id, patch) => { updates.push([id, patch]); }, workflowStore: () => h.store };
+                const failed = { status: "Failed", customStatus: JSON.stringify({ status: "running", error: "The v1 controller failed." }) };
+                return {
+                    client: () => PilotSwarmClient.prototype._getSessionInfo.call({ _catalog: catalog, duroxideClient: { getStatus: async () => failed },
+                        _getLatestResponse: async () => null }, row.sessionId),
+                    management: () => PilotSwarmManagementClient.prototype.getSession.call({ _ensureStarted() {}, _catalog: catalog, _readJsonValue: async () => null,
+                        _duroxideClient: { getInstanceInfo: async () => ({ status: "Failed" }), getStatus: async () => failed } }, row.sessionId),
+                };
+            };
+            for (const which of ["client", "management"]) {
+                // A running legacy workflow whose controller failed: its row says failed, with the controller's error.
+                const failing = await legacy(`legacy-failed-${which}`, "running");
+                const updates = [];
+                await reads(await h.catalog.getSession(failing), updates)[which]();
+                expect(updates, `${which}: never a write from the read's snapshot`).toEqual([]);
+                expect(await h.catalog.getSession(failing), which).toMatchObject({ state: "failed", lastError: "The v1 controller failed." });
+                expect((await h.catalog.listSessions()).find(item => item.sessionId === failing)?.state, `${which}: the list says so too`).toBe("failed");
+
+                // An ended legacy workflow (completed after the read's snapshot said running): left as it is.
+                const ending = await legacy(`legacy-ended-${which}`, "running");
+                const stale = await h.catalog.getSession(ending);
+                await h.catalog.updateSession(ending, { state: "completed", lastError: null });
+                await reads(stale, updates)[which]();
+                expect(updates, which).toEqual([]);
+                expect(await h.catalog.getSession(ending), which).toMatchObject({ state: "completed", lastError: null });
+            }
+            // The store's own rule, directly: a legacy row is recorded once; an ended or deleted one is not; no message keeps its error.
+            const quiet = await legacy("legacy-quiet", "pending");
+            expect(await h.store.recordControllerFailed({ workflowSessionId: quiet, message: null })).toEqual({ written: true, kind: "legacy" });
+            expect(await h.catalog.getSession(quiet)).toMatchObject({ state: "failed", lastError: "earlier" });
+            expect(await h.store.recordControllerFailed({ workflowSessionId: quiet, message: "again" })).toEqual({ written: false });
+            const cancelled = await legacy("legacy-cancelled", "cancelled");
+            expect(await h.store.recordControllerFailed({ workflowSessionId: cancelled, message: "late" })).toEqual({ written: false });
+            expect((await h.catalog.getSession(cancelled)).state).toBe("cancelled");
+            const deleted = await legacy("legacy-deleted", "running");
+            await h.catalog.softDeleteSession(deleted);
+            expect(await h.store.recordControllerFailed({ workflowSessionId: deleted, message: "late" })).toEqual({ written: false });
+            // A v2 draft (no live run) is never taken for a legacy workflow: nothing is written.
+            const { workflowSessionId: draft } = await h.workflow("v2-draft");
+            await h.catalog.updateSession(draft, { state: "running" });
+            expect(await h.store.recordControllerFailed({ workflowSessionId: draft, message: "late" })).toEqual({ written: false, kind: "v2" });
+            expect((await h.catalog.getSession(draft)).state).toBe("running");
+            // A conversational session is not a workflow: nothing is written.
+            const chat = randomUUID();
+            await h.catalog.createSession(chat, {});
+            expect(await h.store.recordControllerFailed({ workflowSessionId: chat, message: "late" })).toEqual({ written: false });
         } finally {
             await h.close();
         }
