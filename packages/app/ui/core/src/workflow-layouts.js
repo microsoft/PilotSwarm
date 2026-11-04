@@ -5,14 +5,16 @@
  * dropped by the next save; a new step takes its automatic place.
  *
  * Bounded, because the profile is one document written whole: at most 50 workflows (the least recently changed are
- * dropped first), 200 steps each and 2,000 places in all; a workflow key is at most 256 characters, a step id at most
- * 128, and a place is whole pixels within ±100,000. Pure.
+ * dropped first), 200 steps each and 2,000 places in all; a workflow key is at most 256 characters, a place key at most
+ * 129 (a step id; owner batch 7, H2: a step inside a branch box is kept as '<parallel id>/<step id>', two ids of up to
+ * 64 characters and the '/'), and a place is whole pixels within ±100,000. Pure.
  */
 export const WORKFLOW_LAYOUTS_MAX_WORKFLOWS = 50;
 export const WORKFLOW_LAYOUT_MAX_STEPS = 200;
 export const WORKFLOW_LAYOUTS_MAX_PLACES = 2_000;
 const KEY_MAX = 256;
-const STEP_ID_MAX = 128;
+/** A place key: a step id, or '<parallel id>/<step id>' (two ids of at most 64 characters and '/'; review UI7-5). */
+export const WORKFLOW_LAYOUT_PLACE_KEY_MAX = 129;
 const COORDINATE_MAX = 100_000;
 
 const isRecord = value => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -34,7 +36,7 @@ export function normalizeWorkflowLayoutSteps(steps) {
     let count = 0;
     for (const [id, value] of Object.entries(steps)) {
         if (count >= WORKFLOW_LAYOUT_MAX_STEPS) break;
-        if (!usableKey(id, STEP_ID_MAX)) continue;
+        if (!usableKey(id, WORKFLOW_LAYOUT_PLACE_KEY_MAX)) continue;
         const place = placeOf(value);
         if (!place) continue;
         out[id] = place;

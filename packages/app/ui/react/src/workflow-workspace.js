@@ -2,7 +2,7 @@ import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { selectWorkflowViewSnapshot, workflowNodeViews, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import {
-    projectWorkflowV2, workflowV2Activity, workflowV2DraftInProgress, workflowV2NoticeCount, workflowV2NoticeLevel, workflowV2OpenCalls, workflowV2ShownNotices,
+    projectWorkflowV2, workflowV2Activity, workflowV2BranchPickKey, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2OpenCalls, workflowV2ShownNotices,
 } from "../../core/src/workflow-v2-view.js";
 import {
     workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
@@ -205,7 +205,8 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
     // f-06: the graph's view (x, y, zoom) is remembered for this workflow, so tabs, panels and sessions give it back exactly.
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }),
         [controller, sessionId]);
-    const noticeCount = workflowV2NoticeCount(notices) + (readError ? 1 : 0);
+    // UI7-2: shown for any notice or a failed read; quiet notices alone have no count and no tint.
+    const noticeBadge = workflowV2NoticeBadge(notices, Boolean(readError));
     const openCalls = workflowV2OpenCalls(test);
     const title = definition?.name || session?.title || "Workflow";
     return h("section", { className: "ps-workflow-main", "aria-label": "Workflow session", "data-tab": mainTab },
@@ -228,9 +229,9 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
                 testControls ? panelButton("test", { label: "Test…", glyph: "test" }) : null,
                 panelButton("log", { label: "Step log", glyph: "log" }),
                 activity ? panelButton("activity", { label: "Run activity", glyph: "activity" }) : null,
-                noticeCount ? panelButton("notices", { label: "Notices", glyph: "notices", badge: noticeCount,
-                    badgeLevel: readError ? "error" : workflowV2NoticeLevel(notices.filter(notice => !notice.quiet)),
-                    title: `${noticeCount} ${noticeCount === 1 ? "notice" : "notices"} about this workflow and its run.` }) : null,
+                noticeBadge.shown ? panelButton("notices", { label: "Notices", glyph: "notices", badge: noticeBadge.count || null, badgeLevel: noticeBadge.level,
+                    title: noticeBadge.count ? `${noticeBadge.count} ${noticeBadge.count === 1 ? "notice" : "notices"} about this workflow and its run.`
+                        : "Notes about this workflow. None needs your attention now." }) : null,
                 test ? panelButton("calls", { label: "Test calls", glyph: "calls", badge: openCalls || null, badgeLevel: openCalls ? "warning" : null,
                     title: openCalls ? `${openCalls} ${openCalls === 1 ? "call waits" : "calls wait"} for an answer.` : "The test run's calls and its virtual clock." }) : null,
                 h(WorkflowToolButton, { label: "Step details", glyph: "details", disabled: !selected, "aria-expanded": sideShown && sidePanel === null,
@@ -304,7 +305,8 @@ export function WorkflowNodePane({ controller, log = null }) {
     // The session rows loaded: the sessions under an agent step (owner decision q14; mock M14 "View owned subtree").
     const sessionsById = useControllerSelector(controller, state => state.sessions.byId);
     const [tab, setTab] = React.useState("details");
-    // The branch a branch step's details show (owner batch 7, H2), for that step only; its default otherwise.
+    // The branch a branch step's details show (owner batch 7, H2): kept for that workflow, run, parallel visit and step only
+    // (workflowV2BranchPickKey); its default otherwise.
     const [branchPick, setBranchPick] = React.useState(null);
     const tabId = React.useId();
     const notice = runNotice && !noticeInYaml ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }) : null;
@@ -346,8 +348,8 @@ export function WorkflowNodePane({ controller, log = null }) {
                     history: v2?.bound ? v2?.readModel?.run?.history ?? null : null,
                     onLoadOlder: restart => { controller.loadOlderWorkflowHistory(sessionId, { restart }).catch(() => {}); },
                     // A branch step's details show the branch chosen by its picker (owner batch 7, H2).
-                    branchIndex: branchPick?.stateId === selected.id ? branchPick.index : null,
-                    onBranch: index => setBranchPick({ stateId: selected.id, index }),
+                    branchIndex: branchPick?.key === workflowV2BranchPickKey(sessionId, v2?.runId ?? null, selected) ? branchPick.index : null,
+                    onBranch: index => setBranchPick({ key: workflowV2BranchPickKey(sessionId, v2?.runId ?? null, selected), index }),
                     // The variables the current visit applied and the accepted ones, compared on request (mock M15).
                     kv: v2?.bound && v2?.runId ? {
                         accepted: v2.readModel?.run?.kvRevision ?? null, snapshots: view.kvRevisions ?? null, compare: view.kvCompare ?? null,

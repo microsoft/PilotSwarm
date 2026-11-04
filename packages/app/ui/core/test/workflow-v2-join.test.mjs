@@ -9,8 +9,8 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-    projectWorkflowV2, workflowV2BranchChoice, workflowV2BranchChoices, workflowV2BranchList, workflowV2BranchNumber, workflowV2BranchSteps,
-    workflowV2ForEachText, workflowV2NodeLabel,
+    projectWorkflowV2, workflowV2BranchChoice, workflowV2BranchChoices, workflowV2BranchList, workflowV2BranchNumber, workflowV2BranchPickKey,
+    workflowV2BranchSteps, workflowV2ForEachText, workflowV2NodeLabel,
 } from "../src/workflow-v2-view.js";
 import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { WorkflowGroupBox, WorkflowJoinBar } from "../../react/src/workflow-graph.js";
@@ -122,7 +122,7 @@ test("a branch step's details show one branch's visit: the first running by defa
     assert.equal(review.branches.defaultIndex, 0);
     const prepare = byId(projection, "prepare");
     assert.deepEqual(prepare.branches.choices.map(choice => choice.label), ["Branch 1 · ended 'ready'", "Branch 2 · ended 'ready'"]);
-    assert.equal(prepare.branches.defaultIndex, 1, "no branch runs it: the one that ended last");
+    assert.equal(prepare.branches.defaultIndex, 1, "no branch runs it: the highest-numbered branch where it ended (no end time is recorded)");
     assert.equal(workflowV2BranchChoice(review.branches, 7).index, 0, "an unknown branch shows the default");
     assert.equal(workflowV2BranchChoices([], { id: "nx-fan-1" }), null);
     assert.equal(workflowV2BranchChoices(review.executions, null), null);
@@ -140,4 +140,68 @@ test("a branch step's details show one branch's visit: the first running by defa
     assert.ok(second.includes("2026-11-04 18:10:00 UTC") && !second.includes("child-0"), "the second branch's deadline, and no agent chat yet");
     // A step outside every branch has no picker.
     assert.ok(!details(projection, "pause").includes("data-field=\"branch\""));
+});
+
+/**
+ * Review UI7-3, UI7-6: three branches whose prepare visits all have visit number 1 (it counts within a branch), listed
+ * out of branch order: branch 3 ended 'ready', branch 2 still runs, branch 1 failed.
+ */
+const mixedRows = () => [
+    done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-m2", ...branch(2) }),
+    row("prepare", 1, "pending", { nodeExecutionId: "nx-prepare-m1", ...branch(1) }),
+    row("prepare", 1, "completed", { nodeExecutionId: "nx-prepare-m0", outcome: "crashed", resultKind: "runtime_error", winner: "controller",
+        errorPreview: JSON.stringify({ code: "crashed", message: "exit code 1" }), ...branch(0) }),
+];
+const mixed = (rows = mixedRows()) => projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [row("fan", 1, "pending", { branches: 3 }), ...rows] }) });
+
+test("a chosen branch's details say that branch's status and last outcome; the step's own are labelled all branches", () => {
+    const projection = mixed();
+    const prepare = byId(projection, "prepare");
+    // The step as a whole: one branch still runs it; the latest ended visit in the list failed.
+    assert.deepEqual([prepare.stateLabel, prepare.outcome, prepare.resultKind], ["Running", "crashed", "runtime_error"]);
+    assert.deepEqual(prepare.branches.choices.map(choice => [choice.index, choice.status.stateLabel, choice.lastOutcome]), [
+        [0, "Runtime error · crashed", { outcome: "crashed", resultKind: "runtime_error" }],
+        [1, "Running", null],
+        [2, "Done · ready", { outcome: "ready", resultKind: "business" }],
+    ]);
+    assert.equal(prepare.branches.defaultIndex, 1, "the first branch where it runs");
+    const html = index => details(projection, "prepare", { branchIndex: index, onBranch() {} });
+    // The picker lists every branch; the details' own values (each a <strong>) are the chosen branch's only.
+    const valuesMention = (markup, word) => new RegExp(`<strong>[^<]*${word}[^<]*</strong>`).test(markup);
+    const ready = html(2);
+    assert.ok(ready.includes("<span>Status</span><strong>Done · ready</strong>"), ready);
+    assert.ok(ready.includes("<span>Last outcome</span><strong>ready</strong>"), ready);
+    assert.ok(ready.includes("<span>All branches</span><strong>Running</strong>"), ready);
+    assert.ok(ready.includes("<span>Visits, all branches</span>"), ready);
+    assert.ok(!valuesMention(ready, "crashed"), "nothing of another branch's visit");
+    const failed = html(0);
+    assert.ok(failed.includes("<span>Status</span><strong>Runtime error · crashed</strong>"), failed);
+    assert.ok(failed.includes("<span>Last outcome</span><strong>crashed · runtime error</strong>"), failed);
+    assert.ok(failed.includes("In branch 1 of its parallel step."), failed);
+    const running = details(projection, "prepare");
+    assert.ok(running.includes("<span>Status</span><strong>Running</strong>") && running.includes("<span>Last outcome</span><strong>Not recorded</strong>"), running);
+    assert.ok(!valuesMention(running, "crashed"), "the running branch shows no ended branch's outcome");
+    // A step outside every branch keeps its plain rows.
+    const plain = details(projection, "pause");
+    assert.ok(plain.includes("<span>Visits</span>") && !plain.includes("All branches"), plain);
+});
+
+test("with no branch running the step, the default is the highest-numbered branch where it ended, whatever order the rows come in", () => {
+    const ended = mixedRows().filter(item => item.state === "completed");
+    for (const rows of [ended, [...ended].reverse()]) {
+        const prepare = byId(mixed(rows), "prepare");
+        assert.deepEqual(prepare.branches.choices.map(choice => choice.index), [0, 2]);
+        assert.equal(prepare.branches.defaultIndex, 2);
+    }
+});
+
+test("a branch choice is kept for its workflow, run, parallel visit and step only", () => {
+    const review = byId(running(), "review");
+    const key = workflowV2BranchPickKey("wf", "run-1", review);
+    assert.equal(key, workflowV2BranchPickKey("wf", "run-1", byId(running(), "review")), "the same step of the same visit");
+    assert.notEqual(key, workflowV2BranchPickKey("wf-2", "run-1", review), "another workflow with a step of the same name");
+    assert.notEqual(key, workflowV2BranchPickKey("wf", "run-2", review), "another run");
+    assert.notEqual(key, workflowV2BranchPickKey("wf", "run-1", { ...review, branches: { ...review.branches, parallelExecutionId: "nx-fan-2" } }),
+        "another visit of the parallel step");
+    assert.notEqual(key, workflowV2BranchPickKey("wf", "run-1", byId(running(), "prepare")), "another step");
 });

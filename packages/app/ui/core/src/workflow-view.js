@@ -284,8 +284,10 @@ export function workflowStepParent(state, session) {
 export const EMPTY_WORKFLOW_VIEW = Object.freeze({});
 
 /**
- * Whether a workflow's parent agent is working (owner batch 7, H1): its session row (`parent`) is in a turn, as the
- * session list shows it (its steadied status, else its status, is "running"). A wait, a schedule or an idle session
+ * Whether a workflow's parent agent is working (owner batch 7, H1): its session row (`parent`) is "running", as the
+ * session list steadies it (5 s hold): its steadied status (`rowVisualStatus`) when it has one, else its status. The
+ * hold is kept on purpose (review UI7-1): between two turns of the parent close together the screen does not flash the
+ * invalid state, and the calm state may stay up to 5 s after the parent stops. A wait, a schedule or an idle session
  * is not working. Pure.
  */
 export function workflowParentWorking(parent) {

@@ -21,7 +21,10 @@ import {
     WORKFLOW_LAYOUTS_MAX_WORKFLOWS,
     WORKFLOW_LAYOUT_MAX_STEPS,
     WORKFLOW_LAYOUTS_MAX_PLACES,
+    WORKFLOW_LAYOUT_PLACE_KEY_MAX,
 } from "../src/workflow-layouts.js";
+import { layoutWorkflowGraphTB, workflowPlaceKey } from "../src/workflow-graph-layout.js";
+import { workflowV2Definition } from "../src/workflow-v2-view.js";
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
@@ -53,7 +56,7 @@ test("places are whole pixels; bad places, bad step ids and __proto__ are droppe
         f: [100_000, -100_000],
         g: [null, 4],
         "": [1, 1],
-        [`x${"y".repeat(128)}`]: [1, 1],
+        [`x${"y".repeat(129)}`]: [1, 1],
     }));
     // Built with JSON.parse so __proto__ is an own key, as it would be in a stored JSON document.
     const withProto = JSON.parse(`{"__proto__": [5, 5], "h": [7, 8]}`);
@@ -65,10 +68,31 @@ test("places are whole pixels; bad places, bad step ids and __proto__ are droppe
     assert.equal(normalizeWorkflowLayoutSteps([[1, 2]]), null);
 });
 
-test("a step id of 128 characters is kept and one of 129 is dropped", () => {
-    const ok = "s".repeat(128);
-    const long = "s".repeat(129);
+test("a place key of 129 characters is kept and one of 130 is dropped", () => {
+    assert.equal(WORKFLOW_LAYOUT_PLACE_KEY_MAX, 129);
+    const ok = "s".repeat(129);
+    const long = "s".repeat(130);
     assert.deepEqual(normalizeWorkflowLayoutSteps({ [ok]: [1, 2], [long]: [3, 4] }), { [ok]: [1, 2] });
+});
+
+// Review UI7-5: a step inside a branch box is saved as '<parallel id>/<step id>'; with two ids of the most characters a
+// state id may have (64), that key is 129 characters, and it survives the profile's normalizer and a reload.
+test("a branch step's place with two 64-character ids survives the profile round trip", () => {
+    const parallel = `p${"a".repeat(63)}`, step = `s${"b".repeat(63)}`, end = `e${"c".repeat(63)}`;
+    const layout = layoutWorkflowGraphTB(workflowV2Definition({ revision: 1, initial: parallel, states: [
+        { id: parallel, type: "parallel", forEach: "${input.items}", concurrency: 1, join: "all_required", failFast: false,
+            body: { initial: step, states: [step, end] }, outcomes: ["joined", "blocked"], next: { joined: "done", blocked: "done" } },
+        { id: step, type: "script", runtime: "node", timeoutSeconds: 30, outcomes: ["ok"], next: { ok: end }, parallel },
+        { id: end, type: "terminal", outcome: "succeeded", parallel },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+    ] }));
+    const key = workflowPlaceKey(layout, step);
+    assert.equal(key, `${parallel}/${step}`);
+    assert.equal(key.length, 129);
+    const stored = workflowLayoutsWith({}, "session:wf", { [key]: [12.4, 30], [`group:${parallel}`]: [5, 6] }, 1);
+    assert.deepEqual(stored, { "session:wf": { at: 1, steps: { [key]: [12, 30], [`group:${parallel}`]: [5, 6] } } });
+    // As a profile read back from JSON.
+    assert.deepEqual(normalizeWorkflowLayouts(JSON.parse(JSON.stringify(stored))), stored);
 });
 
 test("bad workflow keys and entries without usable steps are dropped; a bad 'at' reads as 0", () => {

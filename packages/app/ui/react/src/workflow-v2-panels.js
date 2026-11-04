@@ -396,12 +396,14 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
         const branch = workflowV2BranchChoice(selected.branches, branchIndex);
         const current = branch ? branch.execution : selected.current;
         const description = branch ? describeWorkflowV2Execution(selected, current) : selected.description;
-        const lastOutcome = selected.outcome
-            ? `${selected.outcome}${selected.resultKind === "runtime_error" ? " · runtime error" : ""}` : "Not recorded";
+        const outcomeWords = (outcome, resultKind) => (outcome ? `${outcome}${resultKind === "runtime_error" ? " · runtime error" : ""}` : "Not recorded");
+        // With a branch chosen, Status and Last outcome are that branch's (review UI7-3); the step's own are "All branches".
+        const chosen = branch?.status ? branch : null;
         return h(React.Fragment, null,
-            property("Status", selected.stateLabel),
-            property("Visits", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
-            property("Last outcome", lastOutcome),
+            property("Status", chosen ? chosen.status.stateLabel : selected.stateLabel),
+            property(chosen ? "Visits, all branches" : "Visits", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
+            property("Last outcome", chosen ? outcomeWords(chosen.lastOutcome?.outcome, chosen.lastOutcome?.resultKind) : outcomeWords(selected.outcome, selected.resultKind)),
+            chosen ? property("All branches", selected.stateLabel) : null,
             // Why the latest visit ended (owner decision q14; mock M14 "Inspect cancellation").
             workflowV2VisitEnding(current) ? property("Why it ended", workflowV2VisitEnding(current).text) : null,
             branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch }) : null,

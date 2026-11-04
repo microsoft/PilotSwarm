@@ -11,7 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import { selectWorkflowViewSnapshot, workflowParentWorking, workflowViewSnapshotEqual } from "../src/workflow-view.js";
 import {
-    projectWorkflowV2, workflowV2DraftInProgress, workflowV2NoticeCount, workflowV2RevisionErrorsText, workflowV2ShownNotices,
+    projectWorkflowV2, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2NoticeCount, workflowV2RevisionErrorsText, workflowV2ShownNotices,
 } from "../src/workflow-v2-view.js";
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
 import { readModel } from "./workflow-v2-fixtures.mjs";
@@ -38,10 +38,20 @@ function mount(model, parentStatus) {
 const main = ({ controller }) => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, icon: null }));
 const side = ({ controller }) => renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller }));
 const tool = (html, name) => html.match(new RegExp(`<button [^>]*aria-label="${name}"[^>]*>`))?.[0] ?? null;
+/** The Notices button's badge as drawn: its count and tint, or null for a button without one (or no button). */
+const badgeOf = html => {
+    const button = html.match(/<button [^>]*aria-label="Notices"[^>]*>([\s\S]*?)<\/button>/)?.[1] ?? "";
+    const badge = button.match(/<span class="ps-workflow-tool-badge"(?: data-level="([a-z]+)")?[^>]*>([^<]*)<\/span>/);
+    return badge ? { level: badge[1] ?? null, count: badge[2] } : null;
+};
 
-test("the parent agent works while its session is in a turn; a wait, a schedule, a question or an idle session does not", () => {
+test("the parent agent works while it is running, as the session list steadies it (5 s hold); a wait, a schedule, a question or an idle session does not", () => {
     assert.equal(workflowParentWorking({ status: "running" }), true);
-    assert.equal(workflowParentWorking({ status: "idle", rowVisualStatus: "running" }), true, "the list's steadied status wins");
+    // The 5 s hold is kept on purpose (review UI7-1): a parent between two turns close together still reads as running,
+    // so the invalid state does not flash; one that has stopped reads so once the hold ends.
+    assert.equal(workflowParentWorking({ status: "idle", rowVisualStatus: "running" }), true, "during the hold, the steadied status wins");
+    assert.equal(workflowParentWorking({ status: "idle", rowVisualStatus: "idle" }), false, "after the hold");
+    assert.equal(workflowParentWorking({ status: "running", rowVisualStatus: "idle" }), false, "a new turn reads as running once its hold ends");
     assert.equal(workflowParentWorking({ status: "running", rowVisualStatus: "cron_waiting" }), false);
     for (const status of ["idle", "waiting", "input_required", "completed", "failed"]) assert.equal(workflowParentWorking({ status }), false, status);
     assert.equal(workflowParentWorking(undefined), false);
@@ -79,23 +89,38 @@ test("the calm state is for an invalid latest revision while the parent agent wo
     assert.equal(workflowV2NoticeCount(workflowV2ShownNotices(newer.banners)), 1);
 });
 
-test("while the parent agent writes: the calm screen with its errors folded, no alert and no Notices count; otherwise the invalid state", () => {
+test("while the parent agent writes: the calm screen with its errors folded, no alert, and Notices without a count; otherwise the invalid state", () => {
     const writing = mount(invalid(), "running");
     const html = main(writing);
     assert.match(html, /<div class="ps-workflow-empty is-drafting" role="status" data-drafting="2"><strong>The agent is still writing this workflow\.<\/strong><details class="ps-workflow-draft-errors"><summary>Revision 2 has 1 error<\/summary>/);
     assert.ok(html.includes("route goes nowhere"), "the errors are there, folded");
     assert.ok(!html.includes("role=\"alert\"") && !html.includes("This workflow definition is invalid"), html);
-    assert.equal(tool(html, "Notices"), null, "the revision's errors are not counted");
+    // Review UI7-2: the quiet notice stays reachable; the button has no count and no tint.
+    assert.ok(tool(html, "Notices"), "the Notices button stays");
+    assert.equal(badgeOf(html), null, "the revision's errors are not counted");
     assert.ok(side(writing).includes("The agent is still writing this workflow."), "the side pane says the same");
     for (const status of ["idle", "waiting", null]) {
         const shown = main(mount(invalid(), status));
         assert.ok(shown.includes("This workflow definition is invalid") && shown.includes("role=\"alert\""), `${status}: the invalid state`);
         assert.ok(!shown.includes("is-drafting"), `${status}`);
-        assert.ok(tool(shown, "Notices"), `${status}: its errors are counted`);
+        assert.deepEqual(badgeOf(shown), { level: "error", count: "1" }, `${status}: its errors are counted`);
     }
-    // A newer invalid revision beside a published graph: the graph is drawn, and its errors are not counted while it writes.
+    // A newer invalid revision beside a published graph: the graph is drawn; while the agent writes, its errors are listed
+    // behind Notices without a count or tint, so the notice can still be read.
     const graph = main(mount(newerInvalid(), "running"));
     assert.ok(graph.includes("data-node-id"));
-    assert.equal(tool(graph, "Notices"), null);
-    assert.ok(tool(main(mount(newerInvalid(), "idle")), "Notices"));
+    assert.ok(tool(graph, "Notices"));
+    assert.equal(badgeOf(graph), null);
+    assert.deepEqual(badgeOf(main(mount(newerInvalid(), "idle"))), { level: "error", count: "1" });
+});
+
+test("the Notices button: shown for any notice or a failed read; only counted notices give it a count and a tint", () => {
+    const quiet = { level: "info", code: "draft-in-progress", quiet: true, text: "The agent is still writing this workflow. Revision 2 has 1 error and cannot run." };
+    assert.deepEqual(workflowV2NoticeBadge([]), { shown: false, count: 0, level: null });
+    assert.deepEqual(workflowV2NoticeBadge([quiet]), { shown: true, count: 0, level: null }, "quiet only: no count, no tint");
+    // A quiet revision notice beside an independent warning: only the warning is counted and tints the button.
+    assert.deepEqual(workflowV2NoticeBadge([quiet, { level: "warning", text: "This run used revision 1." }]), { shown: true, count: 1, level: "warning" });
+    assert.deepEqual(workflowV2NoticeBadge([quiet], true), { shown: true, count: 1, level: "error" }, "a failed read counts as an error");
+    assert.deepEqual(workflowV2NoticeBadge([], true), { shown: true, count: 1, level: "error" });
+    assert.deepEqual(workflowV2NoticeBadge([{ level: "info", text: "Draft revision 1 · not published." }]), { shown: true, count: 1, level: "info" });
 });

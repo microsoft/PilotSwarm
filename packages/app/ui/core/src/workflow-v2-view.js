@@ -246,6 +246,18 @@ export function workflowV2NoticeCount(notices) {
     return Array.isArray(notices) ? notices.filter(notice => !notice?.quiet).length : 0;
 }
 
+/**
+ * The Notices button (H1; review UI7-2): `shown` whenever there is a notice, quiet ones included, or a failed read, so a
+ * quiet notice stays reachable; `count`, the counted notices and the failed read; `level`, its tint, from the counted
+ * ones only (a failed read is an error). A button with only quiet notices has no count and no tint. Pure.
+ */
+export function workflowV2NoticeBadge(notices, readError = false) {
+    const list = Array.isArray(notices) ? notices.filter(isRecord) : [];
+    const counted = list.filter(notice => !notice.quiet);
+    const count = counted.length + (readError ? 1 : 0);
+    return { shown: list.length > 0 || Boolean(readError), count, level: readError ? "error" : counted.length ? workflowV2NoticeLevel(counted) : null };
+}
+
 /** The most serious level among notices, for the Notices button's tint: "error", "warning", "info", or null for none. */
 export function workflowV2NoticeLevel(notices) {
     const levels = new Set((Array.isArray(notices) ? notices : []).map(notice => notice?.level));
@@ -799,6 +811,33 @@ export function describeWorkflowV2Execution(node, execution) {
     return lines;
 }
 
+/**
+ * One visit's state as the graph says it (`run`, the shown run's status): a pending visit while the run runs, is paused,
+ * is not certain or ended first; an ended visit by its result. { state, phase, stateLabel, outcome, resultKind }; a
+ * pending visit has no outcome of its own. The step's node view says its shown visit this way; a branch step's picker
+ * says each branch's visit this way (review UI7-3).
+ */
+function visitStatus(node, execution, run) {
+    const kind = workflowV2Kind(node);
+    if (execution.status === "pending") {
+        if (run.ended) return { state: "cancelled", phase: "ended-early", stateLabel: "Run ended first" };
+        if (run.phase === "unverified") return { state: "idle", phase: "unverified", stateLabel: "Pending · run status not certain" };
+        if (run.phase === "paused") return { state: "idle", phase: "paused", stateLabel: "Pending · run paused" };
+        return { state: "running", phase: kind === "script" ? "running" : "waiting", stateLabel: pendingText(kind, execution) };
+    }
+    const ended = { outcome: execution.outcome, resultKind: execution.resultKind };
+    if (execution.resultKind === "runtime_error") {
+        return { ...ended, state: "failed", phase: "error",
+            stateLabel: `Runtime error${execution.outcome ? ` · ${execution.outcome}` : execution.effectStatus ? ` · action ${execution.effectStatus}` : ""}` };
+    }
+    if (node.type === "terminal") {
+        return { ...ended, outcome: node.outcome, state: node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done",
+            phase: "done", stateLabel: `Ended · ${node.outcome}` };
+    }
+    if (execution.resultKind === "business") return { ...ended, state: "done", phase: "done", stateLabel: outcomeText(kind, execution.outcome) };
+    return { ...ended, state: "done", phase: "unclassified", stateLabel: "Completed · how it ended was not recorded" };
+}
+
 function nodeView(node, executions, context) {
     const kind = workflowV2Kind(node);
     const list = executions.filter(item => item.stateId === node.id).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
@@ -811,29 +850,12 @@ function nodeView(node, executions, context) {
     let state = "idle", phase = "not-reached", stateLabel = context.stateless ?? (context.hasRun ? "Not reached" : "No run");
     const result = latestDone || null;
     let outcome = result?.outcome, resultKind = result?.resultKind;
-    if (pending && !(node.type === "terminal" && context.run.ended)) {
-        if (context.run.ended) {
-            state = "cancelled"; phase = "ended-early"; stateLabel = "Run ended first";
-        } else if (context.run.phase === "unverified") {
-            state = "idle"; phase = "unverified"; stateLabel = "Pending · run status not certain";
-        } else if (context.run.phase === "paused") {
-            state = "idle"; phase = "paused"; stateLabel = "Pending · run paused";
-        } else {
-            state = "running"; phase = kind === "script" ? "running" : "waiting"; stateLabel = pendingText(kind, pending);
-        }
-    } else if (result) {
-        if (result.resultKind === "runtime_error") {
-            state = "failed"; phase = "error";
-            stateLabel = `Runtime error${result.outcome ? ` · ${result.outcome}` : result.effectStatus ? ` · action ${result.effectStatus}` : ""}`;
-        } else if (node.type === "terminal") {
-            outcome = node.outcome;
-            state = node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done";
-            phase = "done"; stateLabel = `Ended · ${node.outcome}`;
-        } else if (result.resultKind === "business") {
-            state = "done"; phase = "done"; stateLabel = outcomeText(kind, result.outcome);
-        } else {
-            state = "done"; phase = "unclassified"; stateLabel = "Completed · how it ended was not recorded";
-        }
+    // While a visit is pending its status is said, and Last outcome stays the latest ended visit's.
+    const shown = pending && !(node.type === "terminal" && context.run.ended) ? pending : result;
+    if (shown) {
+        const status = visitStatus(node, shown, context.run);
+        ({ state, phase, stateLabel } = status);
+        if (shown === result) ({ outcome, resultKind } = status);
     } else if (reachedByRun) {
         state = node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done";
         phase = "done"; outcome = node.outcome; resultKind = "business"; stateLabel = `Ended · ${node.outcome}`;
@@ -852,7 +874,9 @@ function nodeView(node, executions, context) {
     };
     // Owner batch 7 (H2): a parallel step's branch box and join bar; a branch step's visit in each branch, for its picker.
     if (node.type === "parallel") view.joinBar = workflowV2JoinView(view, context);
-    if (typeof node.parallel === "string") view.branches = workflowV2BranchChoices(list, context.parallelVisits?.get(node.parallel) ?? null);
+    if (typeof node.parallel === "string") {
+        view.branches = workflowV2BranchChoices(list, context.parallelVisits?.get(node.parallel) ?? null, { node, run: context.run });
+    }
     return view;
 }
 
@@ -1254,26 +1278,52 @@ export function workflowV2JoinView(view, context) {
 
 /**
  * A branch step's visits in the shown visit of its parallel step, for its details' branch picker (owner batch 7, H2):
- * `{ parallelExecutionId, choices, defaultIndex }`, a choice per branch that reached the step ({ index, execution, label }:
- * its latest visit of the step in that branch), by branch; the default is the first branch where the step runs, else
- * the branch whose visit ended last. Null when the parallel step has no shown visit or no branch reached the step. Pure.
+ * `{ parallelExecutionId, choices, defaultIndex }`, a choice per branch that reached the step, by branch: { index,
+ * execution (its latest visit of the step in that branch, by the visit numbers within the branch), label } and, given
+ * the step (`node`) and the run's status (`run`), `status` (that visit's state, as the step's own is said) and
+ * `lastOutcome` (the latest ended visit in that branch: its outcome and result kind), so the details say the chosen
+ * branch's status and outcome, never another branch's (review UI7-3). The default is the first branch where the step
+ * runs; else, as the read model records no end time (visit numbers count within a branch, not across branches), the
+ * highest-numbered branch where it ended (review UI7-6). Null when the parallel step has no shown visit or no branch
+ * reached the step. Pure.
  */
-export function workflowV2BranchChoices(executions, parallelVisit) {
+export function workflowV2BranchChoices(executions, parallelVisit, { node = null, run = null } = {}) {
     if (!isRecord(parallelVisit) || typeof parallelVisit.id !== "string") return null;
     const byBranch = new Map();
+    const doneByBranch = new Map();
     for (const execution of Array.isArray(executions) ? executions : []) {
         const branch = execution?.branch;
         if (!isRecord(branch) || branch.parallelNodeExecutionId !== parallelVisit.id || !Number.isSafeInteger(branch.index)) continue;
         const prior = byBranch.get(branch.index);
         if (!prior || (execution.ordinal ?? 0) >= (prior.ordinal ?? 0)) byBranch.set(branch.index, execution);
+        const priorDone = doneByBranch.get(branch.index);
+        if (execution.status === "completed" && (!priorDone || (execution.ordinal ?? 0) >= (priorDone.ordinal ?? 0))) doneByBranch.set(branch.index, execution);
     }
     if (!byBranch.size) return null;
-    const choices = [...byBranch].sort((a, b) => a[0] - b[0]).map(([index, execution]) => ({ index, execution,
-        label: `Branch ${workflowV2BranchNumber(index)} · ${execution.status === "pending" ? "running" : execution.outcome ? `ended '${execution.outcome}'` : "ended"}` }));
+    const choices = [...byBranch].sort((a, b) => a[0] - b[0]).map(([index, execution]) => {
+        const done = doneByBranch.get(index) ?? null;
+        return {
+            index, execution,
+            label: `Branch ${workflowV2BranchNumber(index)} · ${execution.status === "pending" ? "running" : execution.outcome ? `ended '${execution.outcome}'` : "ended"}`,
+            ...(isRecord(node) && isRecord(run) ? {
+                status: visitStatus(node, execution, run),
+                // A branch's end has its terminal's outcome, as the step's own Last outcome does.
+                lastOutcome: done ? { outcome: (node.type === "terminal" && done.resultKind !== "runtime_error" ? node.outcome : done.outcome) ?? null,
+                    resultKind: done.resultKind ?? null } : null,
+            } : {}),
+        };
+    });
     const running = choices.find(choice => choice.execution.status === "pending");
-    const ended = choices.filter(choice => choice.execution.status === "completed")
-        .reduce((last, choice) => (!last || (choice.execution.ordinal ?? 0) > (last.execution.ordinal ?? 0) ? choice : last), null);
+    const ended = choices.filter(choice => choice.execution.status === "completed").at(-1);
     return { parallelExecutionId: parallelVisit.id, choices, defaultIndex: (running ?? ended ?? choices[0]).index };
+}
+
+/**
+ * What a person's branch choice is kept for: the workflow session, the shown run, the parallel step's visit and the
+ * step. Another workflow, run or visit of the parallel step starts again from the default branch. Pure.
+ */
+export function workflowV2BranchPickKey(sessionId, runId, node) {
+    return JSON.stringify([sessionId ?? null, runId ?? null, node?.branches?.parallelExecutionId ?? null, node?.id ?? null]);
 }
 
 /** The choice a branch picker shows: the one for `index` when the step has it, else the default. Null without choices. Pure. */

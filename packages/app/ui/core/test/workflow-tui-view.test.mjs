@@ -94,11 +94,12 @@ test("w opens the view on the pending agent state: its state, transitions with t
     assert.equal(state.ui.modal.sessionId, "wf");
     const view = selectWorkflowViewModal(state, 110);
     assert.equal(view.title, "Workflow: review-flow · Running");
-    // A branch's end says so, and the parallel step's join follows its branch steps (owner batch 7, H2).
+    // A branch's end says so; the parallel step is followed by its branch steps, then its join line, then its continuations
+    // (owner batch 7, H2; review UI7-4).
     assert.deepEqual(view.rows.map(rowText).map(text => text.trim().split(/\s+/).slice(0, 3).join(" ")), [
-        "▶ ● review", "✓ fix script", "○ fan parallel", "○ work script", "○ done ends", "○ failed ends", "○ branch_done branch", "⋯ join ·",
+        "▶ ● review", "✓ fix script", "○ fan parallel", "○ work script", "○ branch_done branch", "⋯ join ·", "○ done ends", "○ failed ends",
     ]);
-    assert.equal(rowText(view.rows[7]).trim(), "⋯ join · all required");
+    assert.equal(rowText(view.rows[5]).trim(), "⋯ join · all required");
     assert.equal(view.selectedRowIndex, 0);
     assert.match(rowText(view.rows[0]), /agent · code-reviewer\s+Agent working · waiting for its typed result ×3/);
     const details = lineTexts(view);
@@ -134,12 +135,60 @@ test("↑↓ select states in graph order; the loop's other state, a parallel st
     // The parallel step's details name its join (H2); no time limit is shown for it.
     assert.ok(lineTexts(view).includes("Join: all required"), lineTexts(view).join("\n"));
     assert.ok(!lineTexts(view).some(line => line.includes("⏱")), lineTexts(view).join("\n"));
+    // Its branch steps come next; ↓ passes over the join line to the continuation.
+    await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    assert.equal(selectWorkflowViewModal(store.getState(), 110).selectedRowIndex, 3);
+    await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    view = selectWorkflowViewModal(store.getState(), 110);
+    assert.equal(view.selectedRowIndex, 4);
+    assert.ok(lineTexts(view).includes("The branch ends at this step."), lineTexts(view).join("\n"));
+    await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    view = selectWorkflowViewModal(store.getState(), 110);
+    assert.equal(view.selectedRowIndex, 6, "the join line is not a state: the selection goes from the branch's end to done");
+    assert.equal(selectWorkflowViewSelection(store.getState()).selected.id, "done");
     for (let i = 0; i < 10; i++) await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
     view = selectWorkflowViewModal(store.getState(), 110);
-    assert.equal(view.selectedRowIndex, 6, "the selection stops at the last state; the join line after it is not a state");
+    assert.equal(view.selectedRowIndex, 7, "the selection stops at the last state");
     assert.ok(lineTexts(view).includes("The workflow ends at this step."));
     for (let i = 0; i < 10; i++) await controller.handleCommand(UI_COMMANDS.MODAL_PREV);
     assert.equal(selectWorkflowViewModal(store.getState(), 110).selectedRowIndex, 0, "and at the first");
+});
+
+test("two parallel steps: each is followed by its branch steps and its join line, before its continuations; ↑↓ pass over both join lines", async () => {
+    const step = (id, parallel, next) => ({ id, type: "script", runtime: "node", timeoutSeconds: 30, outcomes: ["ok"], next: { ok: next }, parallel });
+    const fan = (id, initial, members, next, extra = {}) => ({ id, type: "parallel", forEach: `\${input.${id}}`, concurrency: 1, join: "all_required",
+        failFast: false, body: { initial, states: members }, outcomes: ["joined", "blocked"], next, ...extra });
+    const two = [
+        fan("a", "a_work", ["a_work", "a_end"], { joined: "b", blocked: "failed" }),
+        step("a_work", "a", "a_end"),
+        { id: "a_end", type: "terminal", outcome: "succeeded", parallel: "a" },
+        fan("b", "b_work", ["b_work", "b_end"], { joined: "done", blocked: "failed" }, { concurrency: 2, failFast: true }),
+        step("b_work", "b", "b_end"),
+        { id: "b_end", type: "terminal", outcome: "succeeded", parallel: "b" },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+        { id: "failed", type: "terminal", outcome: "failed" },
+    ];
+    const { controller, store } = harness({ events: [], model: readModel({ graph: { revision: 1, initial: "a", states: two }, revision: { name: "two-fans" } }) });
+    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    let view = selectWorkflowViewModal(store.getState(), 110);
+    const words = view.rows.map(rowText).map(text => text.trim().split(/\s+/).slice(0, 3).join(" "));
+    assert.deepEqual(words.slice(0, 8), [
+        "▶ ○ a", "○ a_work script", "○ a_end branch", "⋯ join ·", "○ b parallel", "○ b_work script", "○ b_end branch", "⋯ join ·",
+    ], words.join("\n"));
+    assert.deepEqual(words.slice(8).sort(), ["○ done ends", "○ failed ends"]);
+    assert.equal(view.selectedRowIndex, 0);
+    const rowOfNext = async () => {
+        await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+        view = selectWorkflowViewModal(store.getState(), 110);
+        return [selectWorkflowViewSelection(store.getState()).selected.id, view.selectedRowIndex];
+    };
+    assert.deepEqual(await rowOfNext(), ["a_work", 1]);
+    assert.deepEqual(await rowOfNext(), ["a_end", 2]);
+    assert.deepEqual(await rowOfNext(), ["b", 4], "past the first join line");
+    assert.deepEqual(await rowOfNext(), ["b_work", 5]);
+    assert.deepEqual(await rowOfNext(), ["b_end", 6]);
+    const [id, row] = await rowOfNext();
+    assert.ok(["done", "failed"].includes(id) && row === 8, `past the second join line: ${id} at ${row}`);
 });
 
 test("Tab chooses an occurrence and Enter opens that occurrence's actual chat; nothing is sent", async () => {

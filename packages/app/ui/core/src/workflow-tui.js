@@ -204,8 +204,32 @@ function occurrencesOf(node) {
 }
 
 /**
- * The view's states in graph order, each with what the TUI shows: its line label, state label, transitions and
- * agent occurrences. Pure.
+ * The states grouped as the portal draws a parallel step (owner batch 7, H2; review UI7-4): each parallel step, then
+ * its branch steps in graph order, then everything else in graph order, so its continuations come after its branch
+ * steps (and after the join line the list draws after them). `entries` are in graph order. Pure.
+ */
+function groupedOrder(entries) {
+    const ids = new Set(entries.map(entry => entry.id));
+    const bodies = new Map();
+    for (const entry of entries) {
+        const parallel = entry.node?.parallel;
+        if (typeof parallel !== "string" || parallel === entry.id || !ids.has(parallel)) continue;
+        if (!bodies.has(parallel)) bodies.set(parallel, []);
+        bodies.get(parallel).push(entry);
+    }
+    if (!bodies.size) return entries;
+    const out = [];
+    for (const entry of entries) {
+        if (typeof entry.node?.parallel === "string" && bodies.has(entry.node.parallel)) continue;
+        out.push(entry);
+        if (bodies.has(entry.id)) out.push(...bodies.get(entry.id));
+    }
+    return out;
+}
+
+/**
+ * The view's states in graph order, a parallel step's branch steps right after it (groupedOrder), each with what the
+ * TUI shows: its line label, state label, transitions and agent occurrences. Pure.
  */
 export function workflowViewNodes(projection) {
     const order = workflowGraphOrder(projection?.definition);
@@ -228,7 +252,7 @@ export function workflowViewNodes(projection) {
             occurrences: occurrencesOf(node),
         });
     }
-    return nodes;
+    return groupedOrder(nodes);
 }
 
 /** The state shown first: the modal's selection, else the pending state (v2) or the live current state, the initial state, the first. */
@@ -1267,8 +1291,9 @@ function joinRow(join, width) {
 }
 
 /**
- * The list's rows: one per state in graph order and, after the last branch step of each parallel step, its join line
- * (H2). `rowOf` maps a state's index to its row.
+ * The list's rows: one per state, in the order workflowViewNodes gives, and after the branch steps of each parallel
+ * step its join line (H2). The join line is not a state: `rowOf` maps a state's index to its row, so the selection and
+ * ↑↓ skip it.
  */
 function listRows(nodes, selectedIndex, idWidth, labelWidth, width) {
     const lastMember = new Map();
@@ -1544,7 +1569,7 @@ function detailLines(selection, width) {
             add(`  ${route.label} → ${route.target}${notes.length ? ` · ${notes.join(" · ")}` : ""}`);
         }
     } else if (node.type === "terminal") {
-        add("The workflow ends at this step.", "gray");
+        add(typeof node.parallel === "string" ? "The branch ends at this step." : "The workflow ends at this step.", "gray");
     }
     if (occurrences.length) {
         add("Agent chats (Tab: choose · Enter: open):", "cyan");
