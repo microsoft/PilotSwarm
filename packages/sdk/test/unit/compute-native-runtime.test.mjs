@@ -17,8 +17,8 @@ const require = createRequire(import.meta.url);
 const osEnvironment = () => Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     ["path", "systemroot", "windir", "temp", "tmp", "comspec", "pathext"].includes(key.toLowerCase())));
 
-async function until(description, read) {
-    const deadline = Date.now() + 20_000;
+async function until(description, read, timeoutMs = 20_000) {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) { const result = await read(); if (result) return result; await delay(25); }
     throw new Error(`Timed out waiting for ${description}`);
 }
@@ -163,8 +163,10 @@ test("real SDK1.0.13/CLI1.0.83 native capture and cold resume under an enforced 
                 environment: { ...environment, COPILOT_CONNECTION_TOKEN: token }, directory: work, output: log });
             const port = await until("native runtime listener", async () => {
                 const text = await fs.readFile(log, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; });
-                return Number(text.match(/listening on port (\d+)/i)?.[1]) || null;
-            });
+                const port = Number(text.match(/listening on port (\d+)/i)?.[1]) || null;
+                if (!port && (await scope("inspect")).members.length === 0) throw new Error("Native runtime exited before listening: " + text.slice(-4000));
+                return port;
+            }, 120_000);
             currentClient = new CopilotClient({ connection: RuntimeConnection.forUri(`127.0.0.1:${port}`, { connectionToken: token }),
                 logLevel: "error", requestHandler: new LoopbackAuthority() });
             clients.push(currentClient); await currentClient.start();

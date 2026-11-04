@@ -1,6 +1,6 @@
 /**
- * Migration 0084 — compute targets and the host bindings PilotSwarm holds.
- * See docs/proposals/compute-providers.md and migrations/0084_diff.md.
+ * Migration 0088 — compute targets and the host bindings PilotSwarm holds.
+ * See docs/proposals/compute-providers.md and migrations/0088_diff.md.
  *
  * A compute target is a registered place where a session's agent runtime
  * can run: one instance of a compute type (the worker's own process, a

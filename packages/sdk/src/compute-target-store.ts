@@ -1,6 +1,6 @@
 /**
  * Compute targets — the data access layer over the `cms_compute_target_*`
- * procedures (migration 0084). Like ProviderStore, every rule about who may
+ * procedures (migration 0088). Like ProviderStore, every rule about who may
  * do what lives in SQL; this class adds shape and a typed error.
  */
 import type { Pool } from "pg";

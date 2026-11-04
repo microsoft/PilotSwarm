@@ -1,4 +1,4 @@
-/** Candidate numbering on the pinned compute branch; reconcile before integrating current main. */
+/** Native execution authority and completion, following main's MOTD migrations. */
 export function computeNativeMigration(schema: string): string {
     const s = `"${schema.replace(/"/g, '""')}"`;
     return `

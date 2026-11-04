@@ -112,11 +112,11 @@ test("the creation config projection keeps computeTarget only when set", () => {
     assert.equal(projectSerializableSessionConfig({ model: "p:m", computeTarget: "shared/team-sandboxes" }, 30).computeTarget, "shared/team-sandboxes");
 });
 
-test("migration 0084 adds compute targets after 0083", () => {
+test("migration 0088 adds compute targets after main's 0087", () => {
     const migrations = CMS_MIGRATIONS("ps_test");
-    const at = migrations.findIndex((m) => m.version === "0084");
+    const at = migrations.findIndex((m) => m.version === "0088");
     assert.ok(at > 0);
-    assert.equal(migrations[at - 1].version, "0083");
+    assert.equal(migrations[at - 1].version, "0087");
     assert.equal(migrations[at].name, "compute_targets");
     const sql = migrations[at].sql;
     for (const fn of [

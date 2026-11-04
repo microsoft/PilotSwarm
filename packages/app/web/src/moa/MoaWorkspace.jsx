@@ -5,7 +5,7 @@ import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionCompose
 import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
-import { paneLayout, boxStyle, emptySessionPanes } from "./pane-layout.js";
+import { paneLayout, boxStyle, emptySessionPanes, MOA_PANE_GAP_PX } from "./pane-layout.js";
 import { usePaneDrag } from "./use-pane-drag.js";
 
 // Only an explicit terminal signal clears bindings; catalog absence is not deletion.
@@ -298,7 +298,9 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
     const session = state.sessions.byId[selected];
     const canvases = [1, 2, 3, 4, 5].map(slot => ({ slot, ...state.canvas?.bySessionId?.[canvasKey(selected, slot)] })).filter(c => c.latestRev > 0 && c.sizeBytes !== 0);
     return <Modal title="Sessions" onClose={onClose} hideHeader>
-        <SessionPane controller={controller} structuredRows showDetailBox panelClassName="ps-moa-session-picker" actions={<><button className="ps-mini-button" aria-label="Close dialog" onClick={onClose}>×</button></>} selection={{ onCreate, sessionId: selected, query, onQuery: setQuery, onSelect: id => { setSelected(id); setKind("chat"); } }} />
+        {/* The picker's list is the phone slide-over's list, on every screen:
+            the same rows and sub-agent chevrons. */}
+        <SessionPane controller={controller} showDetailBox rowDisclosure panelClassName="ps-moa-session-picker ps-mobile-session-pane is-phone-picker" actions={<><button className="ps-mini-button" aria-label="Close dialog" onClick={onClose}>×</button></>} selection={{ onCreate, sessionId: selected, query, onQuery: setQuery, onSelect: id => { setSelected(id); setKind("chat"); } }} />
         <footer className="ps-moa-picker-detail"><div>{session?.title || (selected ? selected : "Select a session")}</div>
             <div className="ps-moa-row"><label htmlFor="moa-content-kind">Show</label><select id="moa-content-kind" value={kind} onChange={e => setKind(e.target.value)} disabled={!selected}>
                 <option value="chat">Session chat</option>{canvases.map(c => <option key={c.slot} value={c.slot}>Canvas {c.slot}{c.name ? ` · ${c.name}` : ""}</option>)}
@@ -602,8 +604,9 @@ function PaneDivider({ item, stage, onPreview, onResize }) {
             if (!start.current || e.pointerId !== start.current.pointerId) return;
             const rect = stage.current.getBoundingClientRect(), row = node.direction === "row";
             const size = row ? rect.width : rect.height, axis = bounds[row ? "x" : "y"], extent = bounds[row ? "width" : "height"];
-            const offset = (row ? e.clientX - rect.left : e.clientY - rect.top) - axis[0] * size - axis[1] - 4;
-            ratio.current = Math.max(10, Math.min(90, 100 * offset / Math.max(1, extent[0] * size + extent[1] - 8)));
+            // The pointer marks the middle of the gap, so the first pane ends half a gap before it.
+            const offset = (row ? e.clientX - rect.left : e.clientY - rect.top) - axis[0] * size - axis[1] - MOA_PANE_GAP_PX / 2;
+            ratio.current = Math.max(10, Math.min(90, 100 * offset / Math.max(1, extent[0] * size + extent[1] - MOA_PANE_GAP_PX)));
             onPreview({ id: node.id, ratio: ratio.current });
         }} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={() => { if (start.current) cancel(); }} />;
 }

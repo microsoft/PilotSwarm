@@ -6,7 +6,7 @@ import { PgComputeExecutionAuthority } from "../../src/compute-execution-store.t
 import { prepareComputeWriteback, publishComputeWriteback } from "../../src/compute-writeback.ts";
 import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
 import { runMigrations } from "../../src/pg-migrator.ts";
-import { computeNativeMigration } from "../../src/migrations/compute-native-0085.ts";
+import { computeNativeMigration } from "../../src/migrations/compute-native-0089.ts";
 
 // Explicit dedicated test database only: never fall back to a live DATABASE_URL.
 const database = process.env.PS_TEST_DATABASE_URL;
@@ -14,10 +14,11 @@ async function withCatalog(run, beforeInitialize) {
     const schema = `ps_native_${randomUUID().replaceAll("-", "")}`;
     const pool = new pg.Pool({ connectionString: database });
     const catalog = await PgSessionCatalog.create(database, schema);
+    let before;
     try {
-        await beforeInitialize?.({ catalog, pool, schema });
+        before = await beforeInitialize?.({ catalog, pool, schema });
         await catalog.initialize();
-        await run({ catalog, pool, schema });
+        await run({ catalog, pool, schema, before });
     }
     finally {
         await catalog.close();
@@ -48,17 +49,29 @@ function completion() {
 }
 
 describe.skipIf(!database).concurrent("native authority/completion (requires explicit PS_TEST_DATABASE_URL)", () => {
-    it("upgrades the pinned schema without changing existing local sessions and is idempotent", async () => {
-        await withCatalog(async ({ catalog, pool, schema }) => {
+    it("upgrades main 0087 through both compute migrations without changing local sessions or MOTD data", async () => {
+        await withCatalog(async ({ catalog, pool, schema, before }) => {
             expect((await catalog.getSession("local-before-native")).isSystem).toBe(true);
             expect((await pool.query(`SELECT data FROM "${schema}".session_events WHERE session_id='local-before-native'`)).rows[0].data).toEqual({ retained: true });
-            expect((await pool.query(`SELECT max(version) AS version FROM "${schema}".schema_migrations`)).rows[0].version).toBe("0085");
+            expect((await pool.query(`SELECT max(version) AS version FROM "${schema}".schema_migrations`)).rows[0].version).toBe("0089");
+            expect((await pool.query(`SELECT * FROM "${schema}".schema_migrations WHERE version <= '0087' ORDER BY version`)).rows).toEqual(before.migrations);
+            expect((await pool.query(`SELECT * FROM "${schema}".motds`)).rows).toEqual(before.motds);
+            const target = await catalog.computeTargets.create({ name: "shared/upgrade", kind: "fixture" }, null, true);
+            expect(target.name).toBe("shared/upgrade");
+            catalog.defaultComputeTarget = "shared/upgrade";
+            await catalog.createSession("default-target-system", { isSystem: true });
+            expect((await catalog.getSessionCreationConfig("default-target-system")).computeTargetId).toBe(target.id);
             await pool.query(computeNativeMigration(schema));
             expect(await catalog.computeExecution.inspect("local-before-native")).toBeNull();
         }, async ({ catalog, pool, schema }) => {
-            await runMigrations(pool, schema, CMS_MIGRATIONS(schema).filter(migration => migration.version < "0085"), 0x636d73);
+            await runMigrations(pool, schema, CMS_MIGRATIONS(schema).filter(migration => migration.version <= "0087"), 0x636d73);
             await catalog.createSession("local-before-native", { isSystem: true });
             await catalog.recordEvents("local-before-native", [{ eventType: "session.fixture", data: { retained: true } }]);
+            await catalog.motds.create({ principal: { provider: "test", subject: "migration-admin" }, isAdmin: true }, {
+                bodyMd: "Preserved message", requestId: randomUUID(), fromAt: "2020-01-01T00:00:00Z",
+            });
+            return { migrations: (await pool.query(`SELECT * FROM "${schema}".schema_migrations ORDER BY version`)).rows,
+                motds: (await pool.query(`SELECT * FROM "${schema}".motds`)).rows };
         });
     });
 

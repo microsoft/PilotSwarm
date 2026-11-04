@@ -1,5 +1,5 @@
 /**
- * Compute targets — the schema and stored procedures of migration 0084
+ * Compute targets — the schema and stored procedures of migration 0088
  * (docs/proposals/compute-providers.md), and the create-time session check.
  *
  * Like provider-budgets.test.js, the file migrates one schema and truncates

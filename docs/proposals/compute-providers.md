@@ -157,7 +157,7 @@ a reason. The agent never falls back to running on the worker.
 
 - A session without a target runs exactly as today: same tools, same prompt,
   same steps. Only sessions that name a target see anything new.
-- No orchestration change. Migration 0084 is new and additive.
+- The original framework used an additive migration; its target registry is now migration 0088.
 
 **Main choices**
 
@@ -337,7 +337,7 @@ replacement for it.
 
 ### 4.1 Targets and names
 
-Migration 0084 adds `compute_targets`. An administrator registers a target;
+Migration 0088 adds `compute_targets`. An administrator registers a target;
 every signed-in user can run a session on it. **(built)**
 
 Every target is named `<owner>/<label>`, and the owner part is the reserved
@@ -800,7 +800,7 @@ not that reference.
 The design is additive. A session without a target runs exactly as today: the
 runtime runs in the worker, with the same tools, the same prompt and the same
 steps — on 1.0.83 as it did on 1.0.82, because the only new branch in the
-orchestration is the one a compute target opens. Migration 0084 only adds a
+orchestration is the one a compute target opens. Migration 0088 only adds a
 table and its procedures; it changes no existing row. There is no feature
 flag: the new behaviour appears only for a session that names a target.
 
@@ -1289,7 +1289,7 @@ branch; section 12 lists what was deliberately left out.
 |---|---|---|
 | `compute.ts` | Provider interface, registry, target names, endpoint-to-connection, the rules a remote endpoint must meet | built |
 | `compute-bridge.ts` | The loopback bridge, one per host, in front of every remote runtime, and the registry that keeps one per host and closes it when its last session lets go | built |
-| `migrations/compute-targets-0084.ts`, `0084_diff.md` | `compute_targets` and its procedures (extended in place; never edit 0083 or older) | built |
+| `migrations/compute-targets-0088.ts`, `0088_diff.md` | `compute_targets` and its procedures; existing main migrations remain unchanged | built |
 | `compute-target-store.ts`, `cms.ts` | The target store; the create-time check | built |
 | `types.ts`, `client.ts` | `computeTarget` on the session config | built |
 | `compute-runtime.ts` | Placeholder credentials and current-attempt model request handling | built |

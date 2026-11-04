@@ -34,6 +34,8 @@ internal static class Program
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int handle);
@@ -80,12 +82,25 @@ internal static class Program
     }
     static void KillAndDrain(IntPtr job)
     {
-        Check(TerminateJobObject(job, 137));
-        var deadline = Stopwatch.StartNew();
-        while (Members(job).Length != 0) {
-            if (deadline.Elapsed > TimeSpan.FromSeconds(10)) throw new TimeoutException("Kernel job still has active writers");
-            Thread.Sleep(10);
-        }
+        var handles = new List<IntPtr>();
+        try {
+            foreach (uint pid in Members(job)) {
+                var handle = OpenProcess(0x00100000, false, pid);
+                if (handle == IntPtr.Zero) {
+                    if (Marshal.GetLastWin32Error() != 87) throw new Win32Exception(Marshal.GetLastWin32Error());
+                } else handles.Add(handle);
+            }
+            Check(TerminateJobObject(job, 137));
+            var deadline = Stopwatch.StartNew();
+            foreach (var handle in handles) {
+                uint remaining = (uint)Math.Max(0, 10000 - deadline.ElapsedMilliseconds);
+                if (WaitForSingleObject(handle, remaining) != 0) throw new TimeoutException("A native writer process has not exited");
+            }
+            while (Members(job).Length != 0) {
+                if (deadline.Elapsed > TimeSpan.FromSeconds(10)) throw new TimeoutException("Kernel job still has active writers");
+                Thread.Sleep(10);
+            }
+        } finally { foreach (var handle in handles) CloseHandle(handle); }
     }
     static int Main(string[] args)
     {

@@ -8,6 +8,31 @@ import { isIP } from "node:net";
 import { log, run } from "./common.mjs";
 import { deploysPostgres } from "./database-env.mjs";
 
+// HorizonDB API 2026-10-01-preview keeps compute and the settings group on a
+// pool. This module and the Bicep module use one pool with a fixed name.
+export const HORIZONDB_API_VERSION = "2026-10-01-preview";
+export const HORIZONDB_POOL_NAME = "DefaultPool";
+
+function horizonDbBase({ subscription, group }) {
+  return `/subscriptions/${subscription}/resourceGroups/${group}/providers/Microsoft.HorizonDb`;
+}
+
+export function horizonDbPoolUrl({ subscription, group, cluster }) {
+  return `https://management.azure.com${horizonDbBase({ subscription, group })}/clusters/${cluster}/pools/${HORIZONDB_POOL_NAME}?api-version=${HORIZONDB_API_VERSION}`;
+}
+
+// True when the pool exists, false when Azure says it (or its cluster) is not
+// there. Any other failure stops the deploy: guessing "absent" would send a
+// pool PUT with the built-in settings group and detach the extension group.
+export function horizonDbPoolExists(names, { runFn = run } = {}) {
+  const result = runFn("az", ["rest", "--method", "get", "--url", horizonDbPoolUrl(names), "--output", "json"],
+    { capture: true, allowFail: true });
+  if (result.status === 0) return true;
+  const stderr = String(result.stderr || "");
+  if (/ResourceNotFound|ParentResourceNotFound|ResourceGroupNotFound/.test(stderr)) return false;
+  throw new Error(`Cannot check whether the HorizonDB pool exists: ${stderr.trim().split(/\r?\n/)[0].slice(0, 300) || `exit ${result.status}`}`);
+}
+
 export function horizonDbEnabled(env) {
   return String(env.HORIZONDB_ENABLED ?? "false").toLowerCase() === "true";
 }
@@ -68,7 +93,7 @@ function setSecret(vault, name, value) {
   }
 }
 
-export function prepareHorizonDbEnvForRender(env) {
+export function prepareHorizonDbEnvForRender(env, { runFn = run } = {}) {
   if (!horizonDbEnabled(env)) throw new Error("HorizonDB module requires HORIZONDB_ENABLED=true.");
   for (const key of ["SUBSCRIPTION_ID", "RESOURCE_GROUP", "RESOURCE_PREFIX", "KV_NAME", "AKS_OUTBOUND_IP"]) {
     if (!env[key]) throw new Error(`HorizonDB module requires ${key} from base-infra.`);
@@ -82,24 +107,13 @@ export function prepareHorizonDbEnvForRender(env) {
   env.HORIZONDB_ADMIN_PASSWORD_SECRET_NAME ||= "horizondb-admin-password";
   env.HORIZONDB_URL_SECRET_NAME ||= "horizondb-url";
   env.HORIZONDB_VCORES ||= "4";
-  env.HORIZONDB_REPLICA_COUNT ||= "1";
+  // HORIZONDB_REPLICA_COUNT is the name used before the pool API.
+  env.HORIZONDB_NODE_COUNT ||= env.HORIZONDB_REPLICA_COUNT || "1";
   env.HORIZONDB_PARAMETER_GROUP_NAME ||= `${env.HORIZONDB_CLUSTER_NAME}-pg17-ext`;
-
-  for (const [key, type, name] of [
-    ["HORIZONDB_PARAMETER_GROUP_CREATE", "Microsoft.HorizonDb/parameterGroups", env.HORIZONDB_PARAMETER_GROUP_NAME],
-    ["HORIZONDB_CLUSTER_CREATE", "Microsoft.HorizonDB/clusters", env.HORIZONDB_CLUSTER_NAME],
-  ]) {
-    const result = run("az", [
-      "resource", "show", "--subscription", env.SUBSCRIPTION_ID,
-      "--resource-group", env.RESOURCE_GROUP, "--resource-type", type,
-      "--name", name, "--api-version", "2026-01-20-preview",
-      "--query", "id", "-o", "tsv",
-    ], { capture: true, allowFail: true });
-    env[key] = result.status === 0 && result.stdout.trim() ? "false" : "true";
-  }
-  if (env.HORIZONDB_CLUSTER_CREATE === "false" && env.HORIZONDB_PARAMETER_GROUP_CREATE === "true") {
-    throw new Error("Existing HorizonDB cluster is missing its extension parameter group; restore it before retrying.");
-  }
+  const exists = horizonDbPoolExists({
+    subscription: env.SUBSCRIPTION_ID, group: env.RESOURCE_GROUP, cluster: env.HORIZONDB_CLUSTER_NAME,
+  }, { runFn });
+  env.HORIZONDB_POOL_CREATE = exists ? "false" : "true";
 }
 
 export function seedHorizonDbAdminPassword(env) {
@@ -133,38 +147,67 @@ export function seedHorizonDbConnectionUrl(env) {
   }
 }
 
-// HorizonDB can create a cluster with its system default parameter group even
-// when the create request names a custom group. Verify the live connection
-// after Bicep, then attach the declared group before the worker starts its
-// extension migrations. This also repairs existing stamps on later deploys.
-export async function ensureHorizonDbParameterGroup(env, { runFn = run, sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+// A new HorizonDB pool must start on the built-in settings group, so the
+// extension group is attached here, after Bicep, before the worker runs its
+// extension migrations. Later deploys find it attached and return at once.
+//
+// While an attach runs (about two minutes, one server restart), the pool GET
+// still shows the previous group as InSync, so the script waits instead of
+// sending another PATCH. But the first PATCH soon after a pool is created can
+// end "Succeeded" without attaching anything. So when the GET still shows
+// another group four minutes after a PATCH, the PATCH is sent again (at most
+// three PATCHes in all).
+export const HORIZONDB_ATTACH_RESEND_POLLS = 24;
+export const HORIZONDB_ATTACH_MAX_PATCHES = 3;
+export async function ensureHorizonDbParameterGroup(env, {
+  runFn = run,
+  sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)),
+  attempts = 90,
+} = {}) {
   if (!horizonDbEnabled(env)) return;
   const { SUBSCRIPTION_ID: subscription, RESOURCE_GROUP: group, HORIZONDB_CLUSTER_NAME: cluster,
     HORIZONDB_PARAMETER_GROUP_NAME: parameterGroup } = env;
   if (!subscription || !group || !cluster || !parameterGroup) {
     throw new Error("HorizonDB parameter-group verification requires subscription, resource group, cluster and group names.");
   }
-  const base = `/subscriptions/${subscription}/resourceGroups/${group}/providers/Microsoft.HorizonDb`;
-  const desiredId = `${base}/parameterGroups/${parameterGroup}`;
-  const url = `https://management.azure.com${base}/clusters/${cluster}?api-version=2026-01-20-preview`;
-  let requested = false;
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const current = JSON.parse(runFn("az", ["rest", "--method", "get", "--url", url, "--output", "json"], { capture: true }).stdout);
-    const attached = current.properties?.parameterGroup;
-    if (attached?.id?.toLowerCase() === desiredId.toLowerCase() &&
-        attached.syncStatus === "InSync" && current.properties?.provisioningState === "Succeeded") {
-      log("ok", "HorizonDB cluster is using its declared extension parameter group.");
+  const desiredId = `${horizonDbBase({ subscription, group })}/parameterGroups/${parameterGroup}`;
+  const poolUrl = horizonDbPoolUrl({ subscription, group, cluster });
+  const restartUrl = poolUrl.replace(`/pools/${HORIZONDB_POOL_NAME}?`, `/pools/${HORIZONDB_POOL_NAME}/restart?`);
+  let patchesSent = 0;
+  let lastPatchAttempt = -1;
+  let restartRequested = false;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const pool = JSON.parse(runFn("az", ["rest", "--method", "get", "--url", poolUrl, "--output", "json"], { capture: true }).stdout);
+    const ready = pool.properties?.provisioningState === "Succeeded";
+    const attached = pool.properties?.parameterGroup ?? {};
+    const isDeclared = String(attached.parameterGroupResourceId || "").toLowerCase() === desiredId.toLowerCase();
+    const status = attached.syncStatus;
+    if (ready && isDeclared && status === "InSync") {
+      log("ok", "HorizonDB pool is using its declared extension parameter group.");
       return;
     }
-    if (!requested && current.properties?.provisioningState === "Succeeded" &&
-        (attached?.id?.toLowerCase() !== desiredId.toLowerCase() || attached?.syncStatus !== "InSync")) {
-      const body = JSON.stringify({ properties: { parameterGroup: { id: desiredId, applyImmediately: true } } });
-      runFn("az", ["rest", "--method", "patch", "--url", url,
+    if (ready && isDeclared && status === "FailedToApply" && patchesSent > 0) {
+      throw new Error("HorizonDB could not apply the extension parameter group (syncStatus FailedToApply).");
+    }
+    if (ready && isDeclared && status === "PendingReboot" && !restartRequested) {
+      // Static settings such as shared_preload_libraries wait for a restart
+      // that only the customer can start.
+      runFn("az", ["rest", "--method", "post", "--url", restartUrl], { capture: true });
+      restartRequested = true;
+      log("info", "Restarting the HorizonDB pool to apply pending extension settings.");
+    } else if (ready && (!isDeclared || (status === "FailedToApply" && patchesSent === 0)) &&
+        patchesSent < HORIZONDB_ATTACH_MAX_PATCHES &&
+        (patchesSent === 0 || attempt - lastPatchAttempt >= HORIZONDB_ATTACH_RESEND_POLLS)) {
+      // FailedToApply before this deploy's own attempt is retried once.
+      if (patchesSent > 0) log("warn", "HorizonDB pool still shows another settings group four minutes after the attach request; sending it again.");
+      const body = JSON.stringify({ properties: { parameterGroup: { parameterGroupResourceId: desiredId, applyMethod: "Immediate" } } });
+      runFn("az", ["rest", "--method", "patch", "--url", poolUrl,
         "--headers", "Content-Type=application/json", "--body", body], { capture: true });
-      requested = true;
-      log("info", "Applying the declared HorizonDB parameter group (including pending setting changes).");
+      patchesSent += 1;
+      lastPatchAttempt = attempt;
+      log("info", "Attaching the declared HorizonDB extension parameter group (about two minutes, one restart).");
     }
     await sleepFn(10000);
   }
-  throw new Error("HorizonDB extension parameter group did not become active within ten minutes.");
+  throw new Error("HorizonDB extension parameter group did not become active within fifteen minutes.");
 }

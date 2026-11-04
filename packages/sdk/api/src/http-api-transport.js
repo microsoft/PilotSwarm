@@ -473,6 +473,12 @@ export class HttpApiTransport {
     updateComputeTarget(input = {}) { return this.api.call("updateComputeTarget", input); }
     deleteComputeTarget(name) { return this.api.call("deleteComputeTarget", { name }); }
     listFeatureFlags() { return this.api.call("listFeatureFlags"); }
+    getCurrentMotd() { return this.api.call("getCurrentMotd"); }
+    dismissMotd(motdId) { return this.api.call("dismissMotd", { motdId }); }
+    getMotdImage(motdId, mobile = false, options) { return this.api.call("getMotdImage", { motdId, mobile }, options); }
+    listMotds(limit, before) { return this.api.call("listMotds", { limit, before }); }
+    createMotd(input, options) { return this.api.call("createMotd", input, options); }
+    deleteMotd(motdId) { return this.api.call("deleteMotd", { motdId }); }
     getClusterFeatureFlags() { return this.api.call("getClusterFeatureFlags"); }
     getMyFeatureFlags() { return this.api.call("getMyFeatureFlags"); }
     getUserFeatureFlags(userId) { return this.api.call("getUserFeatureFlags", { userId }); }
