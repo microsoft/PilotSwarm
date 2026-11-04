@@ -19,10 +19,21 @@
  *   longer happen with failFast and without; a time limit with 1 of 3
  *   finished (its output kept, the running one cancelled, the queued one not
  *   started; a late result loses); a binding with fewer items than k, and no
- *   items; the time limit and the join at one virtual instant (a test run's
- *   clock: one decision); the time limit while the run is paused; a worker
- *   restart, and a continue-as-new, while the time limit is pending; an IR 8
- *   parallel run schedules what it did before.
+ *   items; the time limit and the branch's last result at one virtual
+ *   instant (a test run's clock: the result counts, one decision, joined);
+ *   the time limit while the run is paused; a worker restart, and a
+ *   continue-as-new, while the time limit is pending; an IR 8 parallel run
+ *   schedules what it did before.
+ * - J1b (owner decision join-k-of-n, formal questions Q1 to Q3 and finding
+ *   H1): the store's one count for the join and the time limit (pure: commit
+ *   order with ties by index, late successes, time-limit cancellations,
+ *   failFast); the store: join due at the time limit with a success not yet
+ *   admitted, a k-th success after the deadline at the join (timed_out), k
+ *   impossible before the time limit (blocked, timedOut), the report keeping
+ *   a finished branch's result, H1 (A on time, B late and admitted first:
+ *   joined with A), with and without a join due first; the controller: a
+ *   join due while paused, blocked at the time limit, and H1 and a late
+ *   success across a worker restart.
  *
  * Branch scripts run as real script processes; the race cases rely on timing
  * margins of at least a second between the branches that win and those that
@@ -39,7 +50,9 @@ import {
     WORKFLOW_V2_PARALLEL_MAX_ITEMS,
 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
-import { PARALLEL_TIMEOUT_MESSAGE } from "../../src/workflow/v2/parallel.ts";
+import {
+    PARALLEL_TIMEOUT_MESSAGE, parallelBranchEnd, parallelBranchStates, parallelSuccesses, parallelVerdict,
+} from "../../src/workflow/v2/parallel.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowV2View, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
@@ -218,6 +231,92 @@ describe("workflow v2 parallel joins: compiler and IR 9", () => {
     });
 });
 
+// ─── J1b: the store's one count (pure) ───────────────────────
+
+describe("workflow v2 parallel joins: the store's one count for the join and the time limit (J1b)", () => {
+    const P = "nx-00ab";
+    const ir = compileWorkflowV2(yamlOf(joinDoc({ items: [{ ms: 0 }, { ms: 0 }, { ms: 0 }], join: { first: 2 }, timeoutSeconds: 60 })), PARALLEL).ir;
+    let clock = 0;
+    /** A stored node execution of branch `index`: completed (with `outcome`, `resultKind`, `winner`) or pending. */
+    const row = (index, nodeId, fields = {}) => ({
+        nodeExecutionId: `${nodeId}-${index}`, scopeId: branchScopeId(P, index), nodeId, state: "completed", outcome: null, resultKind: null,
+        output: { index }, error: null, winner: "controller", enteredAt: new Date(1_000 + (clock += 1)), completedAt: new Date(2_000 + clock), ...fields,
+    });
+    const elapsed = (index, fields) => row(index, "hold", { outcome: "elapsed", resultKind: "business", ...fields });
+    const done = index => row(index, "done", { outcome: "succeeded", resultKind: "business" });
+    const failed = index => row(index, "hold", { outcome: "execution_failed", resultKind: "runtime_error", output: null, error: { code: "execution_failed" } });
+    const states = (rows, committed, notStarted = []) => parallelBranchStates(ir, P, 3, rows, new Map(Object.entries(committed)), new Set(notStarted));
+    const verdict = (branches, options = {}) => parallelVerdict({ join: { first: 2 }, failFast: false, total: 3, branches, pastDeadline: false, timeLimit: false, ...options });
+
+    it("counts every success committed by the time limit, admitted or not, in commit order with ties by index (O3)", () => {
+        // Branch 2 and branch 0 were committed at one instant (rank 1), branch 1 later: the first 2 are 0 and 2, in that order.
+        const finished = states([elapsed(0), elapsed(1), elapsed(2)],
+            { "hold-0": { rank: 1, inTime: true }, "hold-1": { rank: 2, inTime: true }, "hold-2": { rank: 1, inTime: true } });
+        expect(finished.map(branch => [branch.ended, branch.success, branch.confirmed])).toEqual([
+            ["finished", true, false], ["finished", true, false], ["finished", true, false]]);
+        expect(parallelSuccesses(finished).map(branch => branch.index)).toEqual([0, 2, 1]);
+        // Not admitted: the join waits for their terminals before the time limit, and is due after it.
+        expect(verdict(finished)).toEqual({ kind: "wait" });
+        expect(verdict(finished, { pastDeadline: true })).toEqual({ kind: "join_due", winners: [0, 2] });
+        expect(verdict(finished, { pastDeadline: true, timeLimit: true })).toEqual({ kind: "join_due", winners: [0, 2] });
+        // Admitted and decided at their terminals: joined with them, in commit order. The time limit itself never joins.
+        const confirmed = states([elapsed(0), done(0), elapsed(1), elapsed(2), done(2)],
+            { "hold-0": { rank: 2, inTime: true }, "done-0": { rank: 4, inTime: true }, "hold-1": { rank: 3, inTime: true },
+                "hold-2": { rank: 1, inTime: true }, "done-2": { rank: 5, inTime: true } });
+        expect(confirmed.map(branch => [branch.ended, branch.confirmed])).toEqual([["terminal", true], ["finished", false], ["terminal", true]]);
+        const joined = verdict(confirmed);
+        expect(joined.kind).toBe("joined");
+        expect(joined.winners.map(branch => branch.index)).toEqual([2, 0]);
+        expect(verdict(confirmed, { pastDeadline: true, timeLimit: true })).toEqual({ kind: "join_due", winners: [2, 0] });
+        // H1: the first k in commit order decide, not the order the controller admitted their terminals in.
+        const h1 = states([elapsed(0), done(0), elapsed(1)], { "hold-0": { rank: 2, inTime: false }, "done-0": { rank: 3, inTime: false },
+            "hold-1": { rank: 1, inTime: true } });
+        expect(parallelVerdict({ join: { first: 1 }, failFast: false, total: 3, branches: h1, pastDeadline: true, timeLimit: false }))
+            .toEqual({ kind: "join_due", winners: [1] });
+    });
+
+    it("a success committed after the time limit does not count; a time-limit cancellation is no failure before it (Q1, Q3)", () => {
+        const late = states([elapsed(0), done(0), elapsed(1), failed(2)],
+            { "hold-0": { rank: 1, inTime: true }, "done-0": { rank: 4, inTime: true }, "hold-1": { rank: 2, inTime: false }, "hold-2": { rank: 3, inTime: false } });
+        // One success counted, and the failure came after the time limit: timed_out, with the late success marked in the report.
+        expect(verdict(late, { pastDeadline: true })).toEqual({ kind: "timed_out" });
+        expect(parallelBranchEnd(late[1])).toMatchObject({ index: 1, ended: "finished", late: true });
+        expect(parallelBranchEnd(late[0]).late).toBeUndefined();
+        // Two failures by the time limit: k could no longer happen, so it is blocked with timedOut.
+        const impossible = states([failed(0), failed(1), row(2, "hold", { state: "pending", outcome: null, resultKind: null, output: null, completedAt: null })],
+            { "hold-0": { rank: 1, inTime: true }, "hold-1": { rank: 2, inTime: true } });
+        expect(impossible.map(branch => branch.ended)).toEqual(["error", "error", "running"]);
+        expect(verdict(impossible)).toEqual({ kind: "wait" });
+        expect(verdict(impossible, { failFast: true })).toEqual({ kind: "blocked", timedOut: false, cancel: "failFast" });
+        expect(verdict(impossible, { pastDeadline: true, timeLimit: true })).toEqual({ kind: "blocked", timedOut: true, cancel: "timeout" });
+        // A branch the time limit cancelled is not a failure before it, even when its row's time equals the deadline.
+        const cut = states([failed(0), row(1, "hold", { outcome: "cancelled", resultKind: "runtime_error", winner: "join_timeout", output: null })],
+            { "hold-0": { rank: 1, inTime: true }, "hold-1": { rank: 2, inTime: true } });
+        expect(cut[1]).toMatchObject({ ended: "cancelled", cancelledBy: "timeout", failure: true });
+        expect(verdict(cut, { pastDeadline: true, timeLimit: true })).toEqual({ kind: "timed_out" });
+    });
+
+    it("blocks before the time limit only with failFast or when every branch ended; a branch that will not start has ended", () => {
+        // Branch 2 never started; its controller will not start it (a cut), and two branches failed.
+        const ended = states([failed(0), failed(1)], { "hold-0": { rank: 1, inTime: true }, "hold-1": { rank: 2, inTime: true } }, [2]);
+        expect(ended.map(branch => [branch.ended, branch.done])).toEqual([["error", true], ["error", true], ["not_started", true]]);
+        expect(verdict(ended)).toEqual({ kind: "blocked", timedOut: false, cancel: "failFast" });
+        // The same branch only queued: the join waits for it.
+        expect(verdict(states([failed(0), failed(1)], { "hold-0": { rank: 1, inTime: true }, "hold-1": { rank: 2, inTime: true } }))).toEqual({ kind: "wait" });
+        // A result that routes to another step is finished but neither a success nor a failure; one that takes no route is an error.
+        const routes = states([row(0, "work", { outcome: "hold", resultKind: "business" }), row(1, "work", { outcome: "nope", resultKind: "business" })],
+            { "work-0": { rank: 1, inTime: true }, "work-1": { rank: 2, inTime: true } });
+        expect(routes.slice(0, 2).map(branch => [branch.ended, branch.success, branch.failure, branch.nodeExecutionId])).toEqual([
+            ["finished", false, false, "work-0"], ["error", false, true, "work-1"]]);
+        // A join of every branch: joined in index order once each succeeded and was admitted.
+        const all = states([elapsed(2), done(2), elapsed(0), done(0), elapsed(1), done(1)], Object.fromEntries(
+            ["hold-2", "done-2", "hold-0", "done-0", "hold-1", "done-1"].map((id, at) => [id, { rank: at + 1, inTime: true }])));
+        const joined = parallelVerdict({ join: "all_required", failFast: false, total: 3, branches: all, pastDeadline: false, timeLimit: false });
+        expect(joined.kind).toBe("joined");
+        expect(joined.winners.map(branch => branch.index)).toEqual([0, 1, 2]);
+    });
+});
+
 // ─── The store ───────────────────────────────────────────────
 
 /** A published workflow of `doc` with an admitted live run (no controller), and its parallel state's node execution id. */
@@ -275,7 +374,7 @@ describe("workflow v2 parallel joins: the store", () => {
             const report = {
                 joined: false, timedOut: true, total: 2, needed: 2, succeeded: 0, failFast: false,
                 branches: [
-                    { index: 0, ended: "cancelled", nodeExecutionId: hold, outcome: "cancelled", resultKind: "runtime_error",
+                    { index: 0, ended: "cancelled", nodeExecutionId: hold, outcome: "cancelled", resultKind: "runtime_error", cancelledBy: "timeout",
                         error: { code: "cancelled", message: "The parallel state's time limit passed before its join, so this branch was cancelled." } },
                     { index: 1, ended: "not_started", nodeExecutionId: null, outcome: null, resultKind: null },
                 ],
@@ -331,6 +430,214 @@ describe("workflow v2 parallel joins: the store", () => {
             await pause(1_100);
             expect(await h.store.elapseParallelNode(run.fan)).toMatchObject({ result: "decided", node: { outcome: "joined", resultKind: "business" } });
             expect(await h.store.readNodeExecution(first)).toMatchObject({ outcome: "elapsed" });
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
+// ─── J1b: the store's one count, in the store ────────────────
+
+/** A run's branch state ids, and store calls that stand in for a controller that is slow, or admits in another order. */
+function branchesOf(h, run) {
+    const at = (index, nodeId) => nodeExecutionIdFor(run.runId, branchScopeId(run.fan, index), nodeId, 1);
+    const enter = (index, nodeId, nodeType, predecessorId, arrivalRoute, waitSeconds = null) => h.store.enterNode({
+        runId: run.runId, nodeExecutionId: at(index, nodeId), scopeId: branchScopeId(run.fan, index), nodeId, ordinal: 1, nodeType, predecessorId,
+        arrivalRoute, inputText: canonicalJson({ index }), kvRevision: 1, waitSeconds, immediate: null,
+    });
+    const result = (outcome, value) => ({ outcome, resultKind: "business", valueText: canonicalJson(value), winner: "controller" });
+    return {
+        at,
+        /** The branch's wait, entered as its first state (pending). */
+        hold: index => enter(index, "hold", "wait", run.fan, BRANCH_ROUTE, 600),
+        /** Its work, entered as its first state (pending). */
+        work: index => enter(index, "work", "script", run.fan, BRANCH_ROUTE),
+        /** The wait's success (elapsed, which routes to the succeeded terminal), stored now. */
+        succeed: index => h.store.completeNode(at(index, "hold"), result("elapsed", { index })),
+        /** The wait's error with no route: the branch ends without success. */
+        fail: index => h.store.completeNode(at(index, "hold"), { outcome: "execution_failed", resultKind: "runtime_error",
+            valueText: canonicalJson({ code: "execution_failed", message: "no" }), winner: "controller" }),
+        /** Admit the branch's terminal and decide it succeeded, as the controller's endBranch does. */
+        confirm: async index => {
+            const entered = await enter(index, "done", "terminal", at(index, "hold"), "elapsed");
+            expect(entered, `the terminal of branch ${index}`).toMatchObject({ admitted: true });
+            return h.store.completeNode(at(index, "done"), result("succeeded", { index }));
+        },
+        /** The join's question, as the join activity asks it. */
+        join: (notStarted = []) => h.store.decideParallelJoin({ nodeExecutionId: run.fan, notStarted,
+            joined: output => ({ outcome: "joined", resultKind: "business", valueText: canonicalJson(output), winner: "controller" }) }),
+    };
+}
+const enterFanOf = (h, { runId, fan }, items, seconds) => h.store.enterNode({
+    runId, nodeExecutionId: fan, scopeId: "root", nodeId: "fan", ordinal: 1, nodeType: "parallel", predecessorId: null, arrivalRoute: null,
+    inputText: canonicalJson(items), kvRevision: 1, waitSeconds: seconds, immediate: null,
+});
+/** Wait until the store's clock is past the parallel state's deadline. */
+const pastDeadlineOf = async (h, run) => {
+    const { deadlineAt } = await h.store.readNodeExecution(run.fan);
+    await until(async () => Date.now() >= deadlineAt.getTime() + 300, "the time limit to pass", 10_000);
+};
+
+describe("workflow v2 parallel joins: the store's one count for the join and the time limit (J1b)", () => {
+    it("(a) the time limit with k successes committed by it, none admitted, is a join due: nothing decided, the rest cancelled; the join then joins them", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const run = await storedRun(h, joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: 1 }));
+            await enterFanOf(h, run, [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }], 1);
+            const b = branchesOf(h, run);
+            await b.hold(0);
+            await b.hold(1);
+            await b.succeed(0);
+            // Before the time limit its terminal is not admitted yet: the join waits.
+            expect(await b.join()).toMatchObject({ result: "wait", node: { state: "pending" } });
+            await pastDeadlineOf(h, run);
+            const due = await h.store.elapseParallelNode(run.fan);
+            expect(due).toMatchObject({ result: "join_due", node: { state: "pending" }, cancelled: [b.at(1, "hold")] });
+            expect(await h.store.readNodeExecution(b.at(1, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join_timeout" });
+            // Again: still due, nothing new.
+            expect(await h.store.elapseParallelNode(run.fan)).toMatchObject({ result: "join_due", cancelled: [] });
+            // Past the time limit a branch admits only its terminal: branch 2 does not start; branch 0's terminal is admitted.
+            expect(await b.hold(2)).toMatchObject({ admitted: false, reason: "cut" });
+            expect(await b.join([])).toMatchObject({ result: "wait" });
+            await b.confirm(0);
+            const joined = await b.join([2]);
+            expect(joined).toMatchObject({ result: "won", node: { state: "completed", outcome: "joined", output: [{ index: 0, output: { index: 0 } }] } });
+            // Exactly one decision (O1): the time limit, and the join again, find it decided.
+            expect(await h.store.elapseParallelNode(run.fan)).toMatchObject({ result: "decided", node: { outcome: "joined" } });
+            expect(await b.join([2])).toMatchObject({ result: "decided", node: { outcome: "joined" } });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("(b) a k-th success committed after the deadline does not count when the join is reached first: timed_out, the late success marked", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const run = await storedRun(h, joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: 1 }));
+            await enterFanOf(h, run, [{ seconds: 600 }, { seconds: 600 }], 1);
+            const b = branchesOf(h, run);
+            await b.hold(0);
+            await pastDeadlineOf(h, run);
+            // No time-limit decision ran: the success is stored after the deadline, and the controller admits its terminal and asks.
+            await b.succeed(0);
+            await b.confirm(0);
+            const decided = await b.join([1]);
+            expect(decided).toMatchObject({ result: "won", node: { outcome: "timed_out", resultKind: "runtime_error" } });
+            expect(decided.node.error).toEqual({ code: "timed_out", message: PARALLEL_TIMEOUT_MESSAGE, details: {
+                joined: false, timedOut: true, total: 2, needed: 1, succeeded: 0, failFast: false,
+                branches: [
+                    { index: 0, ended: "terminal", nodeExecutionId: b.at(0, "done"), outcome: "succeeded", resultKind: "business", output: { index: 0 }, late: true },
+                    { index: 1, ended: "not_started", nodeExecutionId: null, outcome: null, resultKind: null },
+                ],
+            } });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("(c) k impossible before the time limit without failFast: the join waits; the time limit decides blocked with timedOut (Q3)", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const items = [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }];
+            const run = await storedRun(h, joinDoc({ items, join: { first: 2 }, timeoutSeconds: 1 }));
+            await enterFanOf(h, run, items, 1);
+            const b = branchesOf(h, run);
+            for (const index of [0, 1, 2]) await b.hold(index);
+            await b.fail(0);
+            await b.fail(1);
+            // Two of three failed: 2 successes can no longer happen. Without failFast the third runs on.
+            expect(await b.join()).toMatchObject({ result: "wait" });
+            await pastDeadlineOf(h, run);
+            const decided = await h.store.elapseParallelNode(run.fan);
+            expect(decided).toMatchObject({ result: "elapsed", cancelled: [b.at(2, "hold")], node: { outcome: "blocked", resultKind: "business" } });
+            expect(decided.node.output).toMatchObject({ joined: false, timedOut: true, total: 3, needed: 2, succeeded: 0, failFast: false });
+            expect(decided.node.output.branches.map(branch => [branch.index, branch.ended, branch.cancelledBy ?? null])).toEqual([
+                [0, "error", null], [1, "error", null], [2, "cancelled", "timeout"]]);
+            expect(await h.store.readNodeExecution(b.at(2, "hold"))).toMatchObject({ winner: "join_timeout" });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("(d) the report keeps a finished branch's result when its next state was never admitted, with every index once (O4)", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const items = [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }, { seconds: 600 }];
+            const run = await storedRun(h, joinDoc({ items, timeoutSeconds: 1 }));
+            await enterFanOf(h, run, items, 1);
+            const b = branchesOf(h, run);
+            await b.hold(0);
+            await b.succeed(0);
+            // Branch 1's work routed to its wait, which was never admitted.
+            await b.work(1);
+            await h.store.completeNode(b.at(1, "work"), { outcome: "hold", resultKind: "business", valueText: canonicalJson({ index: 1, seconds: 600 }), winner: "controller" });
+            await b.hold(2);
+            await pastDeadlineOf(h, run);
+            const decided = await h.store.elapseParallelNode(run.fan);
+            expect(decided).toMatchObject({ result: "elapsed", node: { outcome: "timed_out" }, cancelled: [b.at(2, "hold")] });
+            const report = decided.node.error.details;
+            expect(report).toMatchObject({ joined: false, timedOut: true, total: 4, needed: 4, succeeded: 1 });
+            expect(report.branches).toEqual([
+                { index: 0, ended: "finished", nodeExecutionId: b.at(0, "hold"), outcome: "elapsed", resultKind: "business", output: { index: 0 } },
+                { index: 1, ended: "finished", nodeExecutionId: b.at(1, "work"), outcome: "hold", resultKind: "business", output: { index: 1, seconds: 600 } },
+                { index: 2, ended: "cancelled", nodeExecutionId: b.at(2, "hold"), outcome: "cancelled", resultKind: "runtime_error", cancelledBy: "timeout",
+                    error: expect.objectContaining({ code: "cancelled" }) },
+                { index: 3, ended: "not_started", nodeExecutionId: null, outcome: null, resultKind: null },
+            ]);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("H1: k = 1, A committed on time and not admitted, B committed late and admitted first: joined with A, with or without a join due first", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            for (const timeFirst of [false, true]) {
+                const items = [{ seconds: 600 }, { seconds: 600 }];
+                const run = await storedRun(h, joinDoc({ items, join: { first: 1 }, timeoutSeconds: 1 }));
+                await enterFanOf(h, run, items, 1);
+                const b = branchesOf(h, run);
+                await b.hold(0);
+                await b.hold(1);
+                // A is branch 1, on time; B is branch 0, after the deadline.
+                await b.succeed(1);
+                await pastDeadlineOf(h, run);
+                await b.succeed(0);
+                if (timeFirst) expect(await h.store.elapseParallelNode(run.fan), "the time limit first").toMatchObject({ result: "join_due", cancelled: [] });
+                // B's terminal is admitted first (its cursor comes first): B does not count, A is not admitted yet.
+                await b.confirm(0);
+                expect(await b.join(), `B admitted first (time limit first: ${timeFirst})`).toMatchObject({ result: "wait" });
+                await b.confirm(1);
+                expect(await b.join(), `then A (time limit first: ${timeFirst})`).toMatchObject({ result: "won",
+                    node: { outcome: "joined", output: [{ index: 1, output: { index: 1 } }] } });
+            }
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("joins the first k in commit order, not in index or admission order (O3); the others are cancelled by the join", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const items = [{ seconds: 600 }, { seconds: 600 }, { seconds: 600 }, { seconds: 600 }];
+            const run = await storedRun(h, joinDoc({ items, join: { first: 2 } }));
+            await enterFanOf(h, run, items, null);
+            const b = branchesOf(h, run);
+            for (const index of [0, 1, 2, 3]) await b.hold(index);
+            await b.succeed(2);
+            await b.succeed(0);
+            await b.succeed(1);
+            // Admitted in index order: after 0 and 1 the first two committed (2, then 0) are not both admitted yet.
+            await b.confirm(0);
+            await b.confirm(1);
+            expect(await b.join()).toMatchObject({ result: "wait" });
+            await b.confirm(2);
+            const joined = await b.join();
+            expect(joined).toMatchObject({ result: "won", node: { outcome: "joined", output: [{ index: 2, output: { index: 2 } }, { index: 0, output: { index: 0 } }] },
+                cancelled: [b.at(3, "hold")] });
+            expect(await h.store.readNodeExecution(b.at(3, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+            // The joined state lets no branch admit anything more (O5).
+            expect(await b.work(3)).toMatchObject({ admitted: false, reason: "cut" });
         } finally {
             await h.stop();
         }
@@ -523,7 +830,7 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
                 joined: false, timedOut: true, total: 3, needed: 3, succeeded: 1, failFast: false,
                 branches: [
                     { index: 0, ended: "terminal", nodeExecutionId: at(0, "done"), outcome: "succeeded", resultKind: "business", output: { index: 0, ms: 0 } },
-                    { index: 1, ended: "cancelled", nodeExecutionId: cut.nodeExecutionId, outcome: "cancelled", resultKind: "runtime_error",
+                    { index: 1, ended: "cancelled", nodeExecutionId: cut.nodeExecutionId, outcome: "cancelled", resultKind: "runtime_error", cancelledBy: "timeout",
                         error: expect.objectContaining({ code: "cancelled" }) },
                     { index: 2, ended: "not_started", nodeExecutionId: null, outcome: null, resultKind: null },
                 ],
@@ -555,7 +862,8 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
         }
     });
 
-    it("the time limit and the last branch at one instant of a test run's clock: one decision, timed_out, and nothing of the branch routed", { timeout: TIMEOUT }, async () => {
+    // J1b (e): at one instant of a test run's clock, the branch's result at the time limit is decided first and counts.
+    it("the time limit and the last branch at one instant of a test run's clock: the branch's result counts, and the state joins once", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const parentId = randomUUID();
@@ -578,17 +886,18 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
             // Both deadlines are 60 virtual seconds after the same virtual instant.
             expect(holdRow.deadlineAt).toEqual(fanRow.deadlineAt);
             expect(await update({ operation: "test_advance", operation_id: "advance-1", run_id: runId, seconds: 60 })).toMatchObject({ ok: true });
+            // The advance elapsed the wait first; the time limit then found its success and decided nothing (the join was due).
+            expect(await h.store.readNodeExecution(hold)).toMatchObject({ outcome: "elapsed", winner: "controller" });
             const run = await ended(h, runId);
-            expect(run).toMatchObject({ status: "completed", terminalNodeId: "late" });
-            expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "timed_out", resultKind: "runtime_error" });
-            expect((await h.store.readNodeExecution(fan)).error.details).toMatchObject({ timedOut: true, succeeded: 0,
-                branches: [expect.objectContaining({ index: 0, ended: "cancelled" })] });
-            // One decision: no join, and the branch's wait (elapsed or cancelled in the same advance) led nowhere.
+            expect(run).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: [expect.objectContaining({ index: 0, seconds: 60 })] });
+            expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "joined", resultKind: "business" });
+            // One decision, the join: no time-limit result, and nothing of the branch cancelled.
             const events = await eventsOf(h, workflowSessionId);
             expect(events.filter(event => event.data?.nodeExecutionId === fan && event.eventType !== "workflow.state_started").map(event => event.eventType))
-                .toEqual(["workflow.state_failed"]);
-            expect((await branchRows(h, runId, fan, 0)).map(node => node.nodeId).sort()).toEqual(["hold", "work"]);
-            expect((await h.store.listNodeExecutions(runId)).filter(node => node.scopeId === "root").map(node => node.nodeId)).toEqual(["fan", "late"]);
+                .toEqual(["workflow.state_completed"]);
+            expect(events.filter(event => event.eventType === "workflow.branches_cancelled")).toEqual([]);
+            expect((await branchRows(h, runId, fan, 0)).map(node => node.nodeId).sort()).toEqual(["done", "hold", "work"]);
+            expect((await h.store.listNodeExecutions(runId)).filter(node => node.scopeId === "root").map(node => node.nodeId)).toEqual(["fan", "finished"]);
         } finally {
             await h.stop();
         }
@@ -742,6 +1051,117 @@ describe("workflow v2 parallel states of IR 8 (controller 1.9.0, test-only)", ()
             if (cancelled !== null) expect(await h.store.readNodeExecution(cancelled)).toMatchObject({ winner: "fail_fast" });
         } finally {
             await h.stop();
+        }
+    });
+});
+
+describe("workflow v2 parallel joins and time limits, J1b: controller 1.9.0 (inactive, test-only registration)", () => {
+    it("(a) a success committed before the time limit while the run was paused still joins after the resume: the time limit finds the join due", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId, fan, at } = await started(h, joinDoc({ items: [{ seconds: 2 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: 4 }));
+            await until(async () => {
+                const rows = await Promise.all([h.store.readNodeExecution(at(0, "hold")), h.store.readNodeExecution(at(1, "hold"))]);
+                return rows.every(row => row?.state === "pending");
+            }, "both branches' waits");
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "pause", runId: null, reason: "slow controller" }, { actor: ACTOR, operationId: "pause-1" });
+            // While paused, the first wait elapses by its deadline (2 s), then the time limit (4 s) finds its success: the join is
+            // due, nothing is decided, and the other branch's wait is cancelled at the time limit.
+            const fanRow = await h.store.readNodeExecution(fan);
+            await until(async () => (await h.store.readNodeExecution(at(1, "hold")))?.state === "completed", "the time limit to pass while paused", 30_000);
+            expect(await h.store.readNodeExecution(at(1, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join_timeout" });
+            const first = await h.store.readNodeExecution(at(0, "hold"));
+            expect(first).toMatchObject({ outcome: "elapsed" });
+            expect(first.completedAt.getTime()).toBeLessThanOrEqual(fanRow.deadlineAt.getTime());
+            await pause(500);
+            expect(await h.store.readNodeExecution(fan)).toMatchObject({ state: "pending" });
+            expect((await h.store.readRun(runId)).status).toBe("paused");
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "resume", runId: null, reason: null }, { actor: ACTOR, operationId: "resume-1" });
+            const run = await ended(h, runId);
+            expect(run).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: [{ index: 0, output: expect.objectContaining({ index: 0 }) }] });
+            expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "joined" });
+            expect((await h.store.readNodeExecution(fan)).completedAt.getTime()).toBeGreaterThan(fanRow.deadlineAt.getTime());
+            // Its terminal was admitted after the time limit; nothing more of the cancelled branch was.
+            expect(await h.store.readNodeExecution(at(0, "done"))).toMatchObject({ outcome: "succeeded" });
+            expect((await branchRows(h, runId, fan, 1)).map(node => node.nodeId).sort()).toEqual(["hold", "work"]);
+            const events = await eventsOf(h, workflowSessionId);
+            expect(events.filter(event => event.data?.nodeExecutionId === fan && event.eventType !== "workflow.state_started").map(event => event.eventType))
+                .toEqual(["workflow.state_completed"]);
+            expect(events.filter(event => event.eventType === "workflow.branches_cancelled").map(event => event.data))
+                .toEqual([expect.objectContaining({ cancelled: [at(1, "hold")], reason: "timeout" })]);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("(c) k can no longer happen and failFast is off: the rest run on, and the time limit ends it blocked with timedOut (Q3)", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { runId, fan, at } = await started(h, joinDoc({ items: [{ fail: true, ms: 100 }, { seconds: 600 }], join: { first: 2 }, timeoutSeconds: 3 }));
+            const run = await ended(h, runId);
+            expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "stuck" });
+            const fanRow = await h.store.readNodeExecution(fan);
+            expect(fanRow).toMatchObject({ outcome: "blocked", resultKind: "business" });
+            expect(fanRow.completedAt.getTime()).toBeGreaterThanOrEqual(fanRow.deadlineAt.getTime());
+            expect(run.terminalOutput).toMatchObject({ joined: false, timedOut: true, total: 2, needed: 2, succeeded: 0, failFast: false });
+            expect(run.terminalOutput.branches.map(branch => [branch.index, branch.ended, branch.outcome, branch.cancelledBy ?? null])).toEqual([
+                [0, "terminal", "blocked", null], [1, "cancelled", "cancelled", "timeout"]]);
+            expect(await h.store.readNodeExecution(at(1, "hold"))).toMatchObject({ winner: "join_timeout" });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("H1 and (b) across a worker restart: A on time and B late, collected together and B admitted first, join with A; a late success alone times out", { timeout: 180_000 }, async () => {
+        const base = await restartBaseOf(getEnv());
+        const workers = [await restartRuntimeOn(base)];
+        try {
+            const parent = randomUUID();
+            await base.catalog.createSession(parent, {});
+            const start = async doc => {
+                const workflowSessionId = randomUUID();
+                const created = await createWorkflowV2(base.host, { workflowSessionId, parentSessionId: parent, yaml: yamlOf(doc), actor: ACTOR,
+                    operationId: "start", start: { inputs: {} } });
+                expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
+                const runId = created.receipt.run.runId;
+                const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
+                return { workflowSessionId, runId, fan, hold: index => nodeExecutionIdFor(runId, branchScopeId(fan, index), "hold", 1) };
+            };
+            const race = await start(joinDoc({ items: [{ seconds: 600 }, { seconds: 600 }], join: { first: 1 }, timeoutSeconds: 8 }));
+            const alone = await start(joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: 8 }));
+            const holds = [race.hold(0), race.hold(1), alone.hold(0)];
+            await until(async () => (await Promise.all(holds.map(id => base.store.readNodeExecution(id)))).every(row => row?.state === "pending"),
+                "every branch's wait persisted as pending", 90_000);
+            await workers[0].stop();
+            const [raceFan, aloneFan] = await Promise.all([race.fan, alone.fan].map(id => base.store.readNodeExecution(id)));
+            const elapsed = { outcome: "elapsed", resultKind: "business", valueText: canonicalJson({ seconds: 600 }), winner: "controller" };
+            // A (branch 1 of the race) is stored before the deadline while no runtime runs.
+            expect(await base.store.completeNode(race.hold(1), elapsed)).toMatchObject({ won: true });
+            expect(Date.now(), "VOID (not a product result): A was stored after the time limit; run the case again").toBeLessThan(raceFan.deadlineAt.getTime());
+            // B (branch 0) and the lone branch are stored after their deadlines.
+            await until(async () => Date.now() >= Math.max(raceFan.deadlineAt.getTime(), aloneFan.deadlineAt.getTime()) + 500, "the deadlines to pass", 30_000);
+            expect(await base.store.completeNode(race.hold(0), elapsed)).toMatchObject({ won: true });
+            expect(await base.store.completeNode(alone.hold(0), elapsed)).toMatchObject({ won: true });
+            workers.push(await restartRuntimeOn(base));
+            const endOf = runId => until(async () => {
+                const current = await base.store.readRun(runId);
+                return current && ENDED.includes(current.status) ? current : null;
+            }, `run ${runId} to end`, 90_000);
+            // H1: joined with A, although B's terminal was admitted first (its cursor comes first).
+            const raced = await endOf(race.runId);
+            expect(raced).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: [{ index: 1, output: expect.anything() }] });
+            const terminals = await Promise.all([0, 1].map(index => base.store.readNodeExecution(nodeExecutionIdFor(race.runId, branchScopeId(race.fan, index), "done", 1))));
+            expect(terminals.map(row => row?.outcome ?? null)).toEqual(["succeeded", "succeeded"]);
+            expect(terminals[0].enteredAt.getTime()).toBeLessThanOrEqual(terminals[1].enteredAt.getTime());
+            // (b): the lone success came after the time limit: timed_out, its result kept as finished and marked late.
+            const lone = await endOf(alone.runId);
+            expect(lone).toMatchObject({ status: "completed", terminalNodeId: "late" });
+            const details = (await base.store.readNodeExecution(alone.fan)).error.details;
+            expect(details).toMatchObject({ timedOut: true, total: 1, needed: 1, succeeded: 0 });
+            expect(details.branches).toEqual([expect.objectContaining({ index: 0, ended: "finished", nodeExecutionId: alone.hold(0), outcome: "elapsed", late: true })]);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await base.catalog.close();
         }
     });
 });

@@ -141,8 +141,8 @@ export const SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC = {
         + "items; concurrency 1-16, default 1; join: all (or all_required; every branch) or {first: k} (joined at the first k successes); "
         + "failFast; optional timeoutSeconds, which needs a timed_out route; body: {initial, states}): one branch per item through its body, "
         + "whose states read ${branch.item} and ${branch.index}, routing 'joined' with the branch outputs in order (with {first: k}, "
-        + "[{index, output}] of the first k, in the order they finished, the others cancelled), 'blocked' with every branch's result once k "
-        + "successes can no longer happen, or timed_out when its time limit passes first.",
+        + "[{index, output}] of the first k, in the order their successes were stored, the others cancelled), 'blocked' with every branch's result "
+        + "once k successes can no longer happen, or timed_out when fewer than k successes were stored by its time limit.",
     parameters: SPAWN_WORKFLOW_TOOL_SPEC.parameters,
 } as const;
 

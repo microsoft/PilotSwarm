@@ -133,7 +133,9 @@ spends model tokens, and its results vary as a model's do.
 - `{ "operation": "test_advance", "run_id": "<test run>", "seconds": 600 }`
   (1 to 2,592,000, once per `operation_id`) moves it forward and decides, in
   deadline order, what became due: a wait or a receive's wait `elapsed`, a
-  request or an agent state `timed_out`. A result that won first stands.
+  request or an agent state `timed_out`, and a parallel state's time limit.
+  A result that won first stands. At one instant, a parallel state's branches
+  come first: a branch success at its time limit counts toward its join.
 - Real time never ends a test run's deadline.
 - `send_workflow_input` with the test run's `run_id` gives its receives typed
   input. A message before the virtual deadline wins; after it, the receive

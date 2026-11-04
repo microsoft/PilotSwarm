@@ -166,15 +166,25 @@ the interface's digest with the package revision.
 Outcomes: `joined` and `blocked`. Routes for both are required.
 
 - `joined` with `all`: the branch outputs in list order. With `{ first: k }`:
-  `[{ index, output }]` of the first k successes, in the order they finished;
-  the other branches are cancelled or not started.
+  `[{ index, output }]` of the first k successes, in the order the store
+  saved them (ties: lower index first); the other branches are cancelled or
+  not started.
 - `blocked`: k successes can no longer happen (with `{ first: k }` and fewer
-  than k items, at once). Output: `{ joined: false, timedOut: false, total,
-  needed, succeeded, failFast, branches: [{ index, ended, nodeExecutionId,
-  outcome, resultKind, output or error }] }`, where `ended` is `terminal`,
-  `error`, `cancelled` or `not_started`.
-- With `timeoutSeconds`: the runtime error `timed_out` when the time limit
-  passes first. Its `details` is the same report with `timedOut: true`.
+  than k items, at once). Output: `{ joined: false, timedOut, total, needed,
+  succeeded, failFast, branches: [{ index, ended, nodeExecutionId, outcome,
+  resultKind, output or error, cancelledBy?, late? }] }`. `ended` is
+  `terminal`, `error`, `cancelled`, `not_started` or `finished` (its last
+  step's result was saved, but its next step never started; the result is
+  kept). `cancelledBy` is `failFast`, `join` or `timeout`. `late` marks a
+  success saved after the time limit. A report too large to store drops
+  every `output` and `error` and adds `truncated: true`.
+- With `timeoutSeconds`: a success counts only when it was saved at or
+  before the time limit. When the time limit passes with k such successes,
+  the state still joins. With fewer, it ends with the runtime error
+  `timed_out`, whose `details` is the same report with `timedOut: true`;
+  if k could already no longer happen then, it is `blocked` with
+  `timedOut: true` instead.
+- `outputSchema` checks only the joined output, never a report.
 
 ### terminal
 

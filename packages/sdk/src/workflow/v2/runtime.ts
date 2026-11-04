@@ -43,7 +43,8 @@ import {
 } from "./json.js";
 import { schemaSetFor, type SchemaProblem } from "./schema.js";
 import {
-    branchCancelError, branchScopeId, branchSucceeded, parallelNeeded, parallelReportText, parseBranchScope, type BranchCancelReason, type ParallelBranchEnd,
+    BRANCH_CANCEL_WINNERS, branchCancelError, branchScopeId, branchSucceeded, parallelCutOf, parallelNeeded, parallelReportText, parseBranchScope,
+    type BranchCancelReason, type ParallelBranchEnd,
 } from "./parallel.js";
 import { intakeEnvelopeSha256, type IntakeEnvelope } from "./intake.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
@@ -64,6 +65,7 @@ import {
     nodeExecutionIdFor,
     WorkflowStoreError,
     type NodeResultInput,
+    type ParallelSettled,
     type RecipientRefusal,
     type SessionProjection,
     type WorkflowNodeExecutionRow,
@@ -410,10 +412,11 @@ export interface ControllerParallel {
     total: number;
     nextIndex: number;
     results: Array<{ index: number; nodeExecutionId: string | null; via: "terminal" | "error" | "cancelled" | "not_started" }>;
-    /** The remaining branches were cancelled (failFast, or IR 9: the join had its successes, or the state's own time limit passed). */
+    /**
+     * No queued branch starts any more: the remaining branches were cancelled (failFast; IR 9: the state was decided), or
+     * (IR 9) the state's own time limit passed.
+     */
     cancelled: boolean;
-    /** IR 9, a join of the first k only: the branches that succeeded, by index, in the order they ended (absent for every other join). */
-    wins?: number[];
 }
 
 export interface ControllerInput {
@@ -440,9 +443,10 @@ export interface ControllerPlan {
         next: Record<string, string>;
         /**
          * A parallel state's body initial, concurrency and failure policy (1.9.0 plans only), and IR 9: `first`, the k of a
-         * join of the first k successes (absent for a join of every branch, so a plan of IR 8 reads as it was written).
+         * join of the first k successes (absent for a join of every branch), and `timeLimit` when it has its own time limit
+         * (absent without one), so a plan of IR 8 reads as it was written. With either, the store decides its join.
          */
-        parallel?: { initial: string; concurrency: number; failFast: boolean; first?: number };
+        parallel?: { initial: string; concurrency: number; failFast: boolean; first?: number; timeLimit?: true };
     }>;
     /**
      * A test run (1.9.0 plans only; migration 0102): its agent, send and request states are intercepted (no child, delivery
@@ -473,6 +477,8 @@ interface CollectedResult {
     nodeExecutionId: string;
     outcome: string;
     resultKind: "business" | "runtime_error";
+    /** IR 9: a branch state its parallel state's join or time limit cancelled (winner join or join_timeout); its result goes nowhere. */
+    cut?: true;
 }
 
 class ControllerProtocolError extends Error {
@@ -533,8 +539,6 @@ function parseControllerState(value: unknown): ControllerState {
         const item = record(raw, `parallel ${index}`);
         const count = (value: unknown, what: string) => { expect(typeof value === "number" && Number.isSafeInteger(value) && value >= 0, `parallel ${index} ${what} is invalid`); return value as number; };
         expect(Array.isArray(item.results) && typeof item.cancelled === "boolean", `parallel ${index} is invalid`);
-        expect(item.wins === undefined || (Array.isArray(item.wins) && item.wins.every(win => typeof win === "number" && Number.isSafeInteger(win) && win >= 0)),
-            `parallel ${index} wins are invalid`);
         return {
             nodeExecutionId: text(item.nodeExecutionId, "nodeExecutionId"), nodeId: text(item.nodeId, "nodeId"),
             total: count(item.total, "total"), nextIndex: count(item.nextIndex, "nextIndex"),
@@ -546,7 +550,6 @@ function parseControllerState(value: unknown): ControllerState {
                     via: result.via as ControllerParallel["results"][number]["via"] };
             }),
             cancelled: item.cancelled as boolean,
-            ...(item.wins !== undefined ? { wins: [...item.wins as number[]] } : {}),
         };
     });
     return {
@@ -589,11 +592,12 @@ function parsePlan(value: unknown, requests = false): ControllerPlan {
             const parallel = record(item.parallel, `plan node ${id} parallel`);
             expect(typeof parallel.concurrency === "number" && Number.isSafeInteger(parallel.concurrency) && parallel.concurrency >= 1
                 && typeof parallel.failFast === "boolean"
-                && (parallel.first === undefined || (typeof parallel.first === "number" && Number.isSafeInteger(parallel.first) && parallel.first >= 1)),
+                && (parallel.first === undefined || (typeof parallel.first === "number" && Number.isSafeInteger(parallel.first) && parallel.first >= 1))
+                && (parallel.timeLimit === undefined || parallel.timeLimit === true),
             `plan node ${id} parallel is invalid`);
             parsed[id] = { type: "parallel", next: routes,
                 parallel: { initial: text(parallel.initial, "parallel initial"), concurrency: parallel.concurrency, failFast: parallel.failFast,
-                    ...(typeof parallel.first === "number" ? { first: parallel.first } : {}) } };
+                    ...(typeof parallel.first === "number" ? { first: parallel.first } : {}), ...(parallel.timeLimit === true ? { timeLimit: true as const } : {}) } };
             continue;
         }
         parsed[id] = item.type === "messaging"
@@ -715,7 +719,9 @@ function parseCollected(value: unknown): CollectedResult[] {
     return value.map((item, index) => {
         const result = record(item, `collected ${index}`);
         expect(result.resultKind === "business" || result.resultKind === "runtime_error", "collected kind is invalid");
-        return { nodeExecutionId: text(result.nodeExecutionId, "nodeExecutionId"), outcome: text(result.outcome, "outcome"), resultKind: result.resultKind };
+        expect(result.cut === undefined || result.cut === true, "collected cut is invalid");
+        return { nodeExecutionId: text(result.nodeExecutionId, "nodeExecutionId"), outcome: text(result.outcome, "outcome"), resultKind: result.resultKind,
+            ...(result.cut === true ? { cut: true as const } : {}) };
     });
 }
 
@@ -735,6 +741,17 @@ function parseTerminalFinish(value: unknown): { routed: false; result: Controlle
     if (finished.routed === undefined) return { routed: false, result: parseResult(value) };
     const routed = record(finished.routed, "finish route");
     return { routed: true, nodeExecutionId: text(routed.nodeExecutionId, "nodeExecutionId"), code: text(routed.code, "code") };
+}
+
+/**
+ * The answer of the join of a parallel state of IR 9 (the store decides it): decided (now or before), with why its
+ * controller cuts the branches still running, or not yet.
+ */
+function parseJoinAnswer(value: unknown): { decided: true; cut: BranchCancelReason } | { decided: false } {
+    const answer = record(value, "join result");
+    if (answer.decided === false) return { decided: false };
+    expect(answer.decided === true && (answer.cut === "join" || answer.cut === "timeout" || answer.cut === "failFast"), "join result is invalid");
+    return { decided: true, cut: answer.cut };
 }
 
 /** The route a stored result takes: its business outcome, or its error code, or the failure catch; null when unhandled. */
@@ -1238,15 +1255,18 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
     };
     /**
-     * Join `parallel` once every branch ended: the join decides its node (joined or blocked) for its cursor to collect.
-     * Its own time limit (IR 9) then has nothing left to decide.
+     * Join `parallel` once every branch ended: the join decides its node (joined or blocked) for its cursor to collect
+     * (IR 8, and IR 9 without a join of the first k or a time limit).
      */
     const joinIfDone = function* (parallel: ControllerParallel): Generator<ScheduledTask, void, unknown> {
         if (parallel.results.length < parallel.total) return;
         yield* persistentlyTagged(ctx, R.join, { runId: input.runId, parallelNodeExecutionId: parallel.nodeExecutionId, results: parallel.results });
         state.parallels = parallels().filter(item => item !== parallel);
-        const own = state.cursors.find(item => item.pending === parallel.nodeExecutionId);
-        if (own !== undefined && own.deadlineMs !== null) own.deadlineMs = null;
+    };
+    /** IR 9: whether the store decides this parallel state's join (a join of the first k, or a state with its own time limit). */
+    const storeJoins = (parallel: ControllerParallel): boolean => {
+        const spec = plan.nodes[parallel.nodeId]?.parallel;
+        return spec !== undefined && (spec.first !== undefined || spec.timeLimit === true);
     };
     /** Node executions whose branches a cancellation dropped in this pass (their results go nowhere). */
     const dropped = new Set<string>();
@@ -1266,36 +1286,86 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             if (other.pending !== null) dropped.add(other.pending);
         }
         state.cursors = state.cursors.filter(item => !others.includes(item));
+        closeBranches(parallel);
+    };
+    /** Start no queued branch of `parallel` any more: each is recorded not started. */
+    const closeBranches = (parallel: ControllerParallel): void => {
+        parallel.cancelled = true;
         for (let index = parallel.nextIndex; index < parallel.total; index += 1) parallel.results.push({ index, nodeExecutionId: null, via: "not_started" });
         parallel.nextIndex = parallel.total;
     };
     /**
-     * A branch ended (at its terminal, by an error no route takes, or by a
-     * cancellation): record how, drop its cursor, cancel the others when it did
-     * not succeed under failFast, start the next ones, and join when all ended.
-     * IR 9, a join of the first k: the k-th success cancels the branches still
-     * running and joins at once; once k successes can no longer happen,
-     * failFast cancels the others at once, and without it they run to their end.
+     * IR 9: ask the store to decide `parallel`'s join (its one count of the successes committed, admitted or not, by the
+     * state's time limit; formal finding H1). Decided (now, or before by its time limit): the branches still running are
+     * cut for the reason the decision gives (PJ-C3), and the state's own cursor collects its result. Otherwise nothing
+     * changes here: its winners' terminals are still to be admitted, or its branches still run.
      */
-    const endBranch = function* (cursor: ControllerCursor, via: "terminal" | "error", nodeExecutionId: string, succeeded: boolean)
-        : Generator<ScheduledTask, void, unknown> {
+    const askJoin = function* (parallel: ControllerParallel): Generator<ScheduledTask, boolean, unknown> {
+        const answer = parseJoinAnswer(yield* persistentlyTagged(ctx, R.join,
+            { runId: input.runId, parallelNodeExecutionId: parallel.nodeExecutionId, results: parallel.results }));
+        if (!answer.decided) return false;
+        yield* cutBranches(parallel, answer.cut === "failFast" ? undefined : answer.cut);
+        state.parallels = parallels().filter(item => item !== parallel);
+        const own = state.cursors.find(item => item.pending === parallel.nodeExecutionId);
+        if (own !== undefined) own.deadlineMs = null;
+        return true;
+    };
+    /** The running parallel state that a branch cursor belongs to. */
+    const parallelOf = (cursor: ControllerCursor): ControllerParallel => {
         const scope = parseBranchScope(cursor.scopeId);
         const parallel = scope === null ? undefined : parallels().find(item => item.nodeExecutionId === scope.parallelNodeExecutionId);
-        expect(scope !== null && parallel !== undefined, `cursor ${cursor.scopeId} is not a running branch`);
+        expect(parallel !== undefined, `cursor ${cursor.scopeId} is not a running branch`);
+        return parallel;
+    };
+    /**
+     * A branch ended (at its terminal, by an error no route takes, or IR 9: cut by its state's time limit or decision, or
+     * refused before its first state): record how, drop its cursor, then decide. IR 8 (and a join of every branch without
+     * a time limit): cancel the others when it did not succeed under failFast, start the next ones, and join when all
+     * ended. IR 9, a join of the first k or a time limit: the store decides the join (askJoin); until it does, the next
+     * ones start.
+     */
+    const endBranch = function* (cursor: ControllerCursor, via: "terminal" | "error" | "cancelled" | "not_started", nodeExecutionId: string | null,
+        succeeded: boolean): Generator<ScheduledTask, void, unknown> {
+        const parallel = parallelOf(cursor);
+        const index = parseBranchScope(cursor.scopeId)!.index;
         state.cursors = state.cursors.filter(item => item !== cursor);
-        parallel.results.push({ index: scope.index, nodeExecutionId, via });
+        parallel.results.push({ index, nodeExecutionId, via });
+        if (storeJoins(parallel)) {
+            if (!(yield* askJoin(parallel)) && !parallel.cancelled) startBranches(parallel);
+            return;
+        }
         const spec = plan.nodes[parallel.nodeId]?.parallel;
-        if (spec?.first !== undefined) {
-            const wins = parallel.wins ??= [];
-            if (succeeded) wins.push(scope.index);
-            const enough = wins.length >= spec.first;
-            const impossible = parallel.results.length - wins.length > parallel.total - spec.first;
-            if (!parallel.cancelled && (enough || (impossible && spec.failFast))) yield* cutBranches(parallel, enough ? "join" : undefined);
-            else startBranches(parallel);
-        } else if (!succeeded && spec?.failFast === true && !parallel.cancelled) {
-            yield* cutBranches(parallel);
-        } else startBranches(parallel);
+        if (!succeeded && spec?.failFast === true && !parallel.cancelled) yield* cutBranches(parallel);
+        else startBranches(parallel);
         yield* joinIfDone(parallel);
+    };
+    /**
+     * IR 9: the parallel states among `due` whose time limit the store found passed (not reported not due): each one's
+     * timer has nothing left to do, and its join is asked (askJoin) after every due state was settled here, so a cut of
+     * its branches never meets a cursor this pass still reads.
+     */
+    const askTimedJoins = function* (due: string[], notDue: Array<{ nodeExecutionId: string }>): Generator<ScheduledTask, void, unknown> {
+        for (const nodeExecutionId of due) {
+            if (notDue.some(wait => wait.nodeExecutionId === nodeExecutionId)) continue;
+            const parallel = (state.parallels ?? []).find(item => item.nodeExecutionId === nodeExecutionId);
+            if (parallel === undefined) continue;
+            const own = state.cursors.find(cursor => cursor.pending === nodeExecutionId);
+            if (own !== undefined) own.deadlineMs = null;
+            yield* askJoin(parallel);
+        }
+    };
+    /**
+     * IR 9: a branch cursor whose work its state's time limit or decision cut (that work's effect or child is asked to
+     * stop, as at any cut: the store already decided the work), or that may admit nothing more: its branch ends.
+     */
+    const cutBranch = function* (cursor: ControllerCursor, nodeExecutionId: string | null): Generator<ScheduledTask, void, unknown> {
+        const parallel = parallelOf(cursor);
+        closeBranches(parallel);
+        if (nodeExecutionId !== null) {
+            yield* persistentlyTagged(ctx, R.cancelBranches, { runId: input.runId, scopeIds: [cursor.scopeId], reason: "timeout" });
+        }
+        const first = nodeExecutionId === null && cursor.arrivalRoute === BRANCH_ROUTE && cursor.predecessorId === parallel.nodeExecutionId;
+        yield* endBranch(cursor, first ? "not_started" : "cancelled", nodeExecutionId, false);
     };
 
     for (;;) {
@@ -1328,9 +1398,13 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }));
             if (!entered.admitted) {
-                // IR 9: a branch whose parallel state was already decided (its own time limit, by the store's clock or a test
-                // run's) admits nothing more; the parallel state's result, collected below, cuts its branches.
-                if (entered.cut) continue;
+                // IR 9: a branch whose parallel state was decided, or whose time limit passed (by the store's clock or a test
+                // run's), admits nothing more but its terminal: the branch ends, no queued branch starts, and the join is asked.
+                if (entered.cut) {
+                    yield* cutBranch(cursor, null);
+                    rerouted = true;
+                    continue;
+                }
                 // A run past its deadline admits nothing (stopping, paused or not): the store ends it, or reports the time left.
                 if (entered.expired) {
                     const expired = yield* expireRun();
@@ -1400,18 +1474,23 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             // A parallel state (IR 8) waits for its join: its branches run as cursors of their own, at most its concurrency at
             // a time; each starts at the body's initial state with its manifest item. IR 9: its own time limit is a deadline on
             // this controller's timers, as a wait's (the store's clock decides it); a join of the first k that has fewer than k
-            // items starts no branch and is blocked at once.
+            // items starts no branch and the store blocks it at once.
             if (node.type === "parallel") {
                 cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
                 if (entered.state === "pending" && !parallels().some(item => item.nodeExecutionId === entered.nodeExecutionId)) {
                     expect(entered.branches !== null, `parallel ${entered.nodeExecutionId} reported no branches`);
                     const first = node.parallel?.first;
                     const parallel: ControllerParallel = { nodeExecutionId: entered.nodeExecutionId, nodeId: cursor.nodeId, total: entered.branches,
-                        nextIndex: 0, results: [], cancelled: false, ...(first !== undefined ? { wins: [] } : {}) };
+                        nextIndex: 0, results: [], cancelled: false };
                     parallels().push(parallel);
-                    if (first !== undefined && first > parallel.total) yield* cutBranches(parallel);
-                    else startBranches(parallel);
-                    yield* joinIfDone(parallel);
+                    if (storeJoins(parallel)) {
+                        if (first !== undefined && first > parallel.total) closeBranches(parallel);
+                        else startBranches(parallel);
+                        if (parallel.results.length >= parallel.total) yield* askJoin(parallel);
+                    } else {
+                        startBranches(parallel);
+                        yield* joinIfDone(parallel);
+                    }
                     rerouted = true;
                 }
                 continue;
@@ -1502,6 +1581,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                         // collection above, at once (this pass continues), and again at each wake until its end is recorded.
                         owner.deadlineMs = null;
                     }
+                    // IR 9 (Q2): a parallel state whose time limit passed is asked for its join now: its branches are cut at
+                    // once when the time limit decided it, and its join may be due; its route waits for the resume.
+                    yield* askTimedJoins(due, notDue);
                     continue;
                 }
                 if (runDeadlineMs !== null) pausedTimerMs = Math.min(pausedTimerMs, runDeadlineMs - current);
@@ -1538,6 +1620,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                         owner.deadlineMs = reported + wait.remainingMs;
                     }
                 }
+                // IR 9: a parallel state whose time limit passed is asked for its join before any result is collected, so a
+                // decision cuts its branches first (PJ-C5), and a join that is due waits for its winners' terminals.
+                yield* askTimedJoins(due, notDue);
             }
             // A test run's requests are intercepted: no responder is observed.
             const requests = plan.test === true ? []
@@ -1570,14 +1655,15 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 }
             }
         }
-        // IR 9: a parallel state decided while its branches still run (its own time limit, by the store's clock or a test
-        // run's) has its branches cut now: their pending work is cancelled with their effects and children, and no result of
-        // theirs is routed. Only a state with its own time limit is ever decided so; a join removes its parallel first.
+        // IR 9: a parallel state decided while its branches still run (its own time limit by a test run's clock, which no
+        // elapse here reported) has its branches cut now: their pending work is cancelled with their effects and children,
+        // and no result of theirs is routed. Only its time limit decides a state so (timed_out, or blocked); a join, and a
+        // time limit this controller elapsed, remove the state's branches first (askJoin).
         dropped.clear();
         for (const result of collected) {
             const parallel = (state.parallels ?? []).find(item => item.nodeExecutionId === result.nodeExecutionId);
             if (parallel === undefined) continue;
-            yield* cutBranches(parallel, result.outcome === "timed_out" ? "timeout" : "join");
+            yield* cutBranches(parallel, result.outcome === PARALLEL_JOINED ? "join" : "timeout");
             state.parallels = parallels().filter(item => item !== parallel);
         }
         if (stopping !== null) {
@@ -1617,8 +1703,13 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 const next = plan.nodes[owner.nodeId].next;
                 const route = selectRoute(next, result);
                 // In a branch: its routes stay in its body; an error no route takes ends the branch (not the run, and never at
-                // the workflow's catch-all state).
+                // the workflow's catch-all state). IR 9: work its parallel state's time limit cancelled before the state was
+                // decided (its join is due) goes nowhere: the branch ends.
                 if (owner.scopeId !== ROOT_SCOPE) {
+                    if (result.cut === true) {
+                        yield* cutBranch(owner, result.nodeExecutionId);
+                        continue;
+                    }
                     if (route === null) {
                         yield* endBranch(owner, "error", result.nodeExecutionId, false);
                         continue;
@@ -2239,6 +2330,26 @@ function sendFailedProjection(workflowSessionId: string, executed: WorkflowNodeE
 }
 
 /**
+ * The projection of a parallel state's decision (its join or its time limit; IR 9 store.decideParallelJoin and
+ * store.elapseParallelNode): one workflow.state_completed (joined, blocked) or workflow.state_failed (timed_out, or a joined
+ * output its schema refused) event, with its branches and the successes that counted.
+ */
+function parallelDecidedProjection(run: WorkflowRunRow, executed: WorkflowNodeExecutionRow, decided: ParallelSettled): SessionProjection {
+    const { result } = decided;
+    return {
+        sessionId: run.workflowSessionId,
+        events: [{ eventType: result.resultKind === "business" ? "workflow.state_completed" : "workflow.state_failed", data: {
+            runId: run.runId, nodeExecutionId: executed.nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal, outcome: result.outcome,
+            resultKind: result.resultKind, branches: decided.total, succeeded: decided.succeeded,
+            ...(result.resultKind === "business"
+                ? { outputPreview: jsonbSafeText(result.valueText, 1_000) }
+                : { error: jsonbSafeText(result.valueText, 2_000) }),
+        } }],
+        update: { touch: true },
+    };
+}
+
+/**
  * How a send state's delivery is recorded (store.recordDelivery, and a
  * workflow recipient's acceptance that store.beginDelivery or
  * store.failDelivery finds): its state, and the projection of the state's
@@ -2829,7 +2940,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             } else if (node.type === "parallel") {
                 nodes[node.id] = { type: "parallel", next: node.next,
                     parallel: { initial: node.body.initial, concurrency: node.concurrency, failFast: node.failFast,
-                        ...(typeof node.join === "object" ? { first: node.join.first } : {}) } };
+                        ...(typeof node.join === "object" ? { first: node.join.first } : {}),
+                        ...(node.timeoutSeconds !== undefined ? { timeLimit: true as const } : {}) } };
             } else nodes[node.id] = { type: node.type, next: node.type === "terminal" ? {} : node.next };
         }
         const plan: ControllerPlan = {
@@ -3103,7 +3215,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     ...(node.type === "parallel" ? { branches: manifestSize(result.node) } : {}) };
             }
             if (result.reason === "inactive") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
-            // IR 9: the branch's parallel state was already decided (its own time limit); nothing more of the branch is admitted.
+            // IR 9: the branch's parallel state was already decided, or its time limit passed (then only a terminal is admitted).
             if (result.reason === "cut") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome, cut: true };
             if (result.reason === "expired") return expiredRefusal(result.run, requests);
             if (result.reason === "stopping") return stoppingRefusal(result.run, requests);
@@ -3191,7 +3303,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 if (stored.node.state === "completed") rows.push(stored.node);
             }
         }
-        const collected = rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind }));
+        // IR 9: a branch state its parallel state's join or time limit cancelled is marked, so its controller routes it nowhere
+        // (a branch cancelled under failFast, IR 8, is never collected: its controller dropped it first).
+        const collected = rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind,
+            ...(row.winner === BRANCH_CANCEL_WINNERS.join || row.winner === BRANCH_CANCEL_WINNERS.timeout ? { cut: true } : {}) }));
         if (!requests) return collected;
         // Controller 1.9.0: also the run's accepted stop, read after the results, so a stop accepted before this read
         // reaches the controller with them (it routes none of them then). A stop is never withdrawn.
@@ -3525,18 +3640,13 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a wait state or a receive state of run ${runId}.`);
             }
             if (executed.state !== "pending") continue;
-            // IR 9: a parallel state's own time limit (controller 1.9.0): timed_out, decided only here or by a test run's clock
-            // (store.elapseParallelNode), with its running branches' work cancelled in the same transaction. The controller cuts
-            // its branches (their effects and children) when it collects the result.
+            // IR 9: a parallel state's own time limit (controller 1.9.0), decided only here or by a test run's clock
+            // (store.elapseParallelNode, the store's one count): timed_out, or blocked when k could no longer happen by then,
+            // with its running branches' work cancelled in the same transaction; or its join is due (k successes were
+            // committed by the deadline) and nothing is decided. Either way the controller then asks the join (askJoin), which
+            // cuts its branches (their effects and children) once it is decided.
             if (executed.nodeType === "parallel") {
-                const elapsed = await store.elapseParallelNode(nodeExecutionId, decided => ({
-                    sessionId: run.workflowSessionId,
-                    events: [{ eventType: "workflow.state_failed", data: {
-                        runId, nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal, outcome: "timed_out", resultKind: "runtime_error",
-                        branches: decided.total, succeeded: decided.succeeded, error: jsonbSafeText(decided.valueText, 2_000),
-                    } }],
-                    update: { touch: true },
-                }));
+                const elapsed = await store.elapseParallelNode(nodeExecutionId, decided => parallelDecidedProjection(run, executed, decided));
                 if (elapsed.result === "not_due") notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
                 continue;
             }
@@ -4137,23 +4247,33 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /**
-     * Join a parallel state (controller 1.9.0; IR 8; all_required, D10) once
-     * every branch ended: its node is decided in one compare-and-swap.
-     * Joined when every branch ended at a terminal with outcome succeeded:
-     * the output is their outputs in manifest order, checked against the
-     * state's outputSchema (a mismatch, or an output too large to store, is
-     * invalid_output). IR 9, a join of the first k: joined when k branches
-     * succeeded; the output is `[{ index, output }]` of the first k in the
-     * order they ended (the order the controller lists them in, which its
-     * history fixes), checked the same way. Blocked otherwise: the output
-     * lists every branch in manifest order with how it ended (terminal;
-     * error: a result its routes do not take; cancelled; not_started), the
-     * node execution that ended it, its outcome and its output or error
-     * (dropped, with truncated true, when the list would not fit), and the
-     * successes needed (parallelReportText). The controller names the node
-     * execution that ended each branch, and each one is read from the store.
-     * A retry, a run end or the state's own time limit that decided the state
-     * first, finds the node decided.
+     * Join a parallel state (controller 1.9.0). IR 8, and IR 9 with a join of
+     * every branch and no time limit (all_required, D10): once every branch
+     * ended, its node is decided in one compare-and-swap. Joined when every
+     * branch ended at a terminal with outcome succeeded: the output is their
+     * outputs in manifest order, checked against the state's outputSchema (a
+     * mismatch, or an output too large to store, is invalid_output). Blocked
+     * otherwise: the output lists every branch in manifest order with how it
+     * ended (terminal; error: a result its routes do not take; cancelled;
+     * not_started), the node execution that ended it, its outcome and its
+     * output or error (dropped, with truncated true, when the list would not
+     * fit), and the successes needed (parallelReportText). The controller
+     * names the node execution that ended each branch, and each one is read
+     * from the store. A retry, or a run end that decided the state first,
+     * finds the node decided.
+     *
+     * IR 9, a join of the first k or a state with its own time limit (owner
+     * decision join-k-of-n, J1b): the controller asks whenever a branch ends
+     * and when the time limit passed, and the store decides from its own
+     * count, the one its time limit uses (store.decideParallelJoin; formal
+     * finding H1). The answer is `{ decided: false }` while it waits, else
+     * `{ decided: true, cut }` with why the branches still running are cut
+     * (the join, failFast or the time limit), also when the state was decided
+     * before (by its time limit, or by this activity's earlier attempt;
+     * PJ-C3). The joined output (`[{ index, output }]` of the first k in the
+     * store's commit order, or every branch's output in index order) is
+     * checked as above; outputSchema never checks a blocked or timed-out
+     * report. The controller's list names the branches it will never start.
      */
     runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.join, async (_actx, rawInput) => {
         const input = record(rawInput, "join input");
@@ -4163,7 +4283,6 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!executed || executed.runId !== run.runId || executed.nodeType !== "parallel") {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${parallelNodeExecutionId} is not a parallel state of run ${run.runId}.`);
         }
-        if (executed.state === "completed") return { outcome: executed.outcome };
         const ir = await irOf(run, true);
         const node = nodeOf(ir, executed.nodeId);
         if (node.type !== "parallel" || !Array.isArray(executed.input)) {
@@ -4179,10 +4298,32 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             expect(item.via === "terminal" || item.via === "error" || item.via === "cancelled" || item.via === "not_started", `results[${at}] is invalid`);
             ends.set(index as number, { nodeExecutionId: textOrNull(item.nodeExecutionId, "nodeExecutionId"), via: item.via as string });
         });
+        const joinedResult = (output: JsonValue): NodeResultInput => {
+            const problems = node.outputSchema ? schemaSetFor(run.irSha256, ir.schemaDefs).validate(node.outputSchema, output) : [];
+            if (problems.length > 0) {
+                return { ...runtimeError("invalid_output", `The joined output does not match ${node.outputSchema}.`, problemsJson(problems)), winner: "controller" };
+            }
+            try {
+                return { outcome: PARALLEL_JOINED, resultKind: "business", valueText: boundedCanonicalJson(output, "The joined output"), winner: "controller" };
+            } catch (error) {
+                if (!(error instanceof WorkflowJsonError)) throw error;
+                return { ...runtimeError("invalid_output", error.message), winner: "controller" };
+            }
+        };
+        if (typeof node.join === "object" || node.timeoutSeconds !== undefined) {
+            const settled = await store.decideParallelJoin({
+                nodeExecutionId: parallelNodeExecutionId,
+                notStarted: [...ends.entries()].flatMap(([index, item]) => item.via === "not_started" ? [index] : []),
+                joined: joinedResult,
+                projection: decided => parallelDecidedProjection(run, executed, decided),
+            });
+            return settled.result === "wait" ? { decided: false } : { decided: true, cut: parallelCutOf(settled.node) };
+        }
+        if (executed.state === "completed") return { outcome: executed.outcome };
         expect(ends.size === total, `the join of ${parallelNodeExecutionId} accounts for ${ends.size} of its ${total} branches`);
         const ids = [...ends.values()].flatMap(item => item.nodeExecutionId === null ? [] : [item.nodeExecutionId]);
         const rows = new Map((await store.readCompletedNodes(run.runId, ids)).map(row => [row.nodeExecutionId, row]));
-        const branches = [...ends.entries()].sort(([a], [b]) => a - b).map(([index, item]) => {
+        const endings: ParallelBranchEnd[] = [...ends.entries()].sort(([a], [b]) => a - b).map(([index, item]) => {
             const row = item.nodeExecutionId === null ? undefined : rows.get(item.nodeExecutionId);
             if (row !== undefined && row.scopeId !== branchScopeId(parallelNodeExecutionId, index)) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${row.nodeExecutionId} is not a state of branch ${index} of ${parallelNodeExecutionId}.`);
@@ -4191,36 +4332,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             if ((item.via === "terminal" || item.via === "error") && row === undefined) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Branch ${index} of ${parallelNodeExecutionId} ended without a decided state.`);
             }
-            return { index, ended: item.via, nodeExecutionId: item.nodeExecutionId, row };
+            return { index, ended: item.via as ParallelBranchEnd["ended"], nodeExecutionId: item.nodeExecutionId, row };
         });
-        const endings: ParallelBranchEnd[] = branches.map(item => ({ index: item.index, ended: item.ended as ParallelBranchEnd["ended"],
-            nodeExecutionId: item.nodeExecutionId, row: item.row }));
         const succeeded = endings.filter(branchSucceeded).length;
-        const needed = parallelNeeded(node.join, total);
-        // A join of the first k: the successes in the order the controller listed the branches' ends (the order of `ends`).
-        const winners = typeof node.join === "object"
-            ? [...ends.keys()].map(index => endings[index]).filter(branchSucceeded).slice(0, needed)
-            : [];
-        let result: NodeResultInput;
-        if (typeof node.join === "object" ? winners.length >= needed : succeeded === total) {
-            const output: JsonValue = typeof node.join === "object"
-                ? winners.map(item => ({ index: item.index, output: item.row?.output ?? null }))
-                : branches.map(item => item.row?.output ?? null);
-            const problems = node.outputSchema ? schemaSetFor(run.irSha256, ir.schemaDefs).validate(node.outputSchema, output) : [];
-            if (problems.length > 0) {
-                result = { ...runtimeError("invalid_output", `The joined output does not match ${node.outputSchema}.`, problemsJson(problems)), winner: "controller" };
-            } else {
-                try {
-                    result = { outcome: PARALLEL_JOINED, resultKind: "business", valueText: boundedCanonicalJson(output, "The joined output"), winner: "controller" };
-                } catch (error) {
-                    if (!(error instanceof WorkflowJsonError)) throw error;
-                    result = { ...runtimeError("invalid_output", error.message), winner: "controller" };
-                }
-            }
-        } else {
-            const valueText = parallelReportText({ total, needed, failFast: node.failFast, timedOut: false, branches: endings }, "The blocked join's report");
-            result = { outcome: PARALLEL_BLOCKED, resultKind: "business", valueText, winner: "controller" };
-        }
+        const result: NodeResultInput = succeeded === total
+            ? joinedResult(endings.map(item => item.row?.output ?? null))
+            : { outcome: PARALLEL_BLOCKED, resultKind: "business", winner: "controller",
+                valueText: parallelReportText({ total, needed: parallelNeeded(node.join, total), failFast: node.failFast, timedOut: false, branches: endings },
+                    "The blocked join's report") };
         const stored = await store.completeNode(parallelNodeExecutionId, result, {
             sessionId: run.workflowSessionId,
             events: [{ eventType: result.resultKind === "business" ? "workflow.state_completed" : "workflow.state_failed", data: {

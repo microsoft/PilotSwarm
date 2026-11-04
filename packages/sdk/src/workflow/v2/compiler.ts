@@ -292,14 +292,17 @@ export interface WorkflowIRAgent {
  * `joined` (every branch ended succeeded; its output is their outputs in
  * manifest order) or `blocked` (its output lists every branch's outcome and
  * output). IR 9: the join `{ first: k }` is joined as soon as k branches
- * succeeded (its output is `[{ index, output }]` of those k, in the order
- * they finished); the branches still running are cancelled and the queued
- * ones not started. Either join is blocked once k successes cannot happen:
- * with `failFast` the other branches are cancelled at once, without it they
- * run to their end first. IR 9: an optional `timeoutSeconds`, from the
- * state's entry, races the join: if it passes first, the state ends with the
- * runtime error timed_out (its details report every branch, finished ones
- * with their output or error) and its running branches are cancelled.
+ * succeeded (its output is `[{ index, output }]` of those k, in the order the
+ * store committed their successes, ties by index); the branches still running
+ * are cancelled and the queued ones not started. Either join is blocked once
+ * k successes cannot happen: with `failFast` the other branches are cancelled
+ * at once, without it they run to their end first. IR 9: an optional
+ * `timeoutSeconds`, from the state's entry, races the join: a success counts
+ * only when committed by then. When it passes, the running branches are
+ * cancelled; with k counted successes the state still joins, with fewer it
+ * ends with the runtime error timed_out (its details report every branch,
+ * finished ones with their output or error), or blocked when k could already
+ * no longer happen (owner decision join-k-of-n; formal questions Q1 to Q3).
  */
 export interface WorkflowIRParallel {
     id: string;

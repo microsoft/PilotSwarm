@@ -192,20 +192,24 @@ the branches.
   - `all` (the default; `all_required` is the same): every branch must
     succeed. `joined`: the output is their outputs in manifest order.
   - `{ first: k }`: joined as soon as k branches succeeded. The output is
-    `[{ index, output }]` of those k, in the order they finished. The branches
-    still running are cancelled, and the queued ones do not start. Use
-    `first: 1` for a race. k above the items of a literal list is an error;
-    with a binding that gives fewer than k items, the state is blocked at once.
+    `[{ index, output }]` of those k, in the order the store saved their
+    successes (ties: lower index first). The branches still running are
+    cancelled, and the queued ones do not start. Use `first: 1` for a race.
+    k above the items of a literal list is an error; with a binding that
+    gives fewer than k items, the state is blocked at once.
 - `blocked`: k successes can no longer happen. The output reports every
   branch (how it ended, its outcome and its output or error) and `needed`. No
   branch is dropped silently.
 - `failFast: true` cancels the other branches as soon as the join can no
   longer succeed. Without it, they run to their end, then the join blocks.
 - `timeoutSeconds` (optional, as a wait's seconds) is the state's own time
-  limit from its start. If it passes before the join, the state ends with
-  `timed_out`: running branches are cancelled, queued ones do not start, and
-  the error's `details` report every branch, with the output of each finished
-  one. A `timed_out` route is required with `timeoutSeconds`, and refused
+  limit from its start. A success counts only when the store saved it at or
+  before the time limit. When the time limit passes, running branches are
+  cancelled and queued ones do not start. With k counted successes the state
+  still joins. With fewer, it ends with `timed_out`, and the error's
+  `details` report every branch, with the result of each finished one; if k
+  could already no longer happen, it is `blocked` with `timedOut: true`.
+  A `timed_out` route is required with `timeoutSeconds`, and refused
   without it. While the run is paused the time limit keeps running, as a
   wait's does; the run takes the route after it resumes.
 
