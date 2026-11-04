@@ -38,10 +38,14 @@ test("Output shows the result of the branch chosen in Details, and says which br
     const fallback = render(node, "output");
     assert.ok(fallback.includes("Latest result of branch 2 in the loaded history for this step (the branch chosen in Details)."), fallback);
     assert.ok(fallback.includes("&quot;who&quot;: &quot;b&quot;") && !fallback.includes("&quot;a&quot;"), fallback);
-    const first = render(node, "output", { branchIndex: 0 });
+    // A reader that can read whole values (onReadWholeValue) gets the control for every ended visit, clipped or not.
+    const first = render(node, "output", { branchIndex: 0, onReadWholeValue: () => {} });
     assert.ok(first.includes("Latest result of branch 1 in the loaded history"), first);
     assert.ok(first.includes("&quot;who&quot;: &quot;a&quot;") && !first.includes("&quot;b&quot;"), first);
-    assert.match(first, /data-execution="nx-prepare-b0"/, "its whole value is read for that branch's visit");
+    assert.match(first, /data-action="whole-value"[^>]*data-execution="nx-prepare-b0"/, "its whole value is read for that branch's visit");
+    assert.ok(!first.includes('data-execution="nx-prepare-b1"'), "never for another branch's visit");
+    // Without a way to read whole values, there is no control (and no execution id) to show.
+    assert.ok(!render(node, "output", { branchIndex: 0 }).includes('data-action="whole-value"'));
     // The shown visit, by the branch: that branch's latest ended visit, never another's in its place.
     assert.equal(workflowV2ShownExecution(node, "run-1", null, node.branches.choices[0]).execution.id, "nx-prepare-b0");
     const running = prepare([...oneVisit().slice(0, 2), row("prepare", 1, "pending", { nodeExecutionId: "nx-prepare-b1", ...at("nx-fan-1", 1) })]);

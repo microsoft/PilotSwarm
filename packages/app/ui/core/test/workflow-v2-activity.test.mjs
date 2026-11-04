@@ -96,9 +96,11 @@ test("Q2: a step's reminder has a line in the workflow's activity and in the age
 
 test("one sentence table: each event says the same thing on every screen that shows it, and only those screens show it (ui-05)", () => {
     // Activity-only events have no step-log line; log-only events have no activity line; the run's control events have both.
-    assert.equal(workflowEventText("workflow.stop_requested", {}, "long"), null);
+    // A stop asked and a run stopped are control events: the step log shows them too (adversarial review R2-UI-6).
+    assert.equal(workflowEventText("workflow.cancelled", {}, "long"), null);
     assert.equal(workflowEventText("workflow.parent_notified", {}, "short"), null);
-    for (const type of ["workflow.paused", "workflow.resumed", "workflow.vars_set", "workflow.input_accepted", "workflow.recovered", "workflow.cancel_requested"]) {
+    for (const type of ["workflow.paused", "workflow.resumed", "workflow.vars_set", "workflow.input_accepted", "workflow.recovered", "workflow.cancel_requested",
+        "workflow.stop_requested", "workflow.stopped"]) {
         assert.ok(workflowEventText(type, {}, "short")?.text, `${type} short`);
         assert.ok(workflowEventText(type, {}, "long")?.text, `${type} long`);
     }
