@@ -7619,7 +7619,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
 
     return React.createElement(ScrollLinesPanel, {
         controller,
-        title: workflowLog ? [{ text: "Step log", color: "gray" }] : mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
+        // The step log sits in the side pane's Step log panel, which has its own title (batch 6, r-3): no second header.
+        title: workflowLog ? [] : mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
         titleRight: workflowLog ? null : mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         // Chat/Summary toggling lives on the top toolbar so the pane chrome
         // stays clean. The toolbar button is disabled for group sessions.
