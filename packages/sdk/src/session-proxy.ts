@@ -512,10 +512,12 @@ function decorateRehydrationSystemPrompt(text?: string, workerNodeId?: string): 
  * The sender a workflow's message is recorded with (batch 7, w-4): kind "workflow", the workflow's name (or its session),
  * and the header's type and ids; null for any other text.
  */
-function workflowUpdateSender(text: unknown): Record<string, unknown> | null {
+export function workflowUpdateSender(text: unknown): Record<string, unknown> | null {
     const header = parseWorkflowUpdateHeader(typeof text === "string" ? normalizePromptText(text) : text);
     if (!header) return null;
-    const name = header.fields.workflow ? header.fields.workflow.split("@")[0] : null;
+    // `workflow=<name>@<version>`: the version has no "@" (a semantic version), so the name is everything before the last one.
+    const workflow = header.fields.workflow ?? "";
+    const name = workflow.includes("@") ? workflow.slice(0, workflow.lastIndexOf("@")) : workflow || null;
     return {
         kind: "workflow",
         display: name || (header.fields.from ? `workflow ${header.fields.from.slice(0, 8)}` : "workflow"),
