@@ -42,6 +42,12 @@ Roots: `inputs`, `input`, `kv`, `runtime` (`runtime.error`), `branch`
 `[index]`, `["any key"]`. A template is any JSON value whose strings may be
 bindings. Text around a binding is refused.
 
+A template is a YAML value: an object is a map (`{ fact: "..." }`), not
+JSON text in quotes (`'{"fact": "..."}'` is one string). A template with no
+binding is checked against its contract or `inputSchema` when the draft is
+saved (`WORKFLOW_STATE_INPUT_INVALID`); JSON written as text where an object
+or array is expected gets the warning `WORKFLOW_INPUT_JSON_TEXT`.
+
 ## States
 
 Every state except a terminal has `transition: { next: { <route>: <state> } }`.

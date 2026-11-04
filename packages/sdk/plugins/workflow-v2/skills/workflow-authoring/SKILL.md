@@ -92,6 +92,15 @@ put them where the next state needs only that.
 - A state's `input:` is a JSON template:
   `input: { head: "${input.head}", round: 1 }`. Without `input:`, the state
   gets the value that arrived.
+- `input:` is a YAML value. Write an object as a YAML map or flow map, never
+  as JSON inside quotes: quoted, it is one string, and a contract that takes
+  an object refuses it (`invalid_input`). A fixed input is checked against
+  its contract or `inputSchema` when the draft is saved.
+
+  ```
+  input: '{"fact": "MVCC keeps old row versions"}'   # wrong: a string
+  input: { fact: "MVCC keeps old row versions" }     # right: an object
+  ```
 - The parent sets KV at start (`vars`) and with `update_workflow`
   `set_vars`. A state reads the KV snapshot it was admitted with. Scripts
   cannot write KV.
