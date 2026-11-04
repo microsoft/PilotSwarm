@@ -1,6 +1,7 @@
 import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
+import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
-import { ACTIVE_RUN_STATUSES, WorkflowStoreError, type WorkflowStore } from "./store.js";
+import { ACTIVE_RUN_STATUSES, type WorkflowStore } from "./store.js";
 
 /**
  * Workflow v2 request states: the responder's tool and the durable wake
@@ -171,10 +172,10 @@ export async function respondSessionRequestFromTool(args: Record<string, unknown
             error: { code: result.code, message: refusalMessage(result.code) },
         });
     } catch (error) {
-        if (error instanceof WorkflowStoreError) {
-            return payload({ ok: false, error: { code: error.code, message: jsonbSafeText(error.message, 2_000), details: error.details ?? null } });
-        }
-        throw error;
+        // Adversarial review R2-SF-4: the shared workflow failure, with the secrets in its message and details hidden; any
+        // other error is coded too, with its message sanitized, never its own text.
+        const failure = workflowStoreFailure(error);
+        return payload({ ok: false, error: { code: failure.code, message: jsonbSafeText(failure.message, 2_000), details: failure.details ?? null } });
     }
 }
 

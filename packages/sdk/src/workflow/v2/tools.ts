@@ -8,6 +8,7 @@ import {
     type JsonValue,
 } from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
+import { schemaWithoutLiterals } from "./schema.js";
 import { parseBindingExpression, WorkflowBindingError, type BindingExpression } from "./bindings.js";
 import {
     parseWorkflowReadCursor, WORKFLOW_READ_OPEN_MAX, WORKFLOW_READ_PAGE_MAX, workflowReadCursor, workflowReadLimit,
@@ -1034,6 +1035,31 @@ export function workflowV2ResolvedInputsSchema(ir: { inputsSchema: string | null
 /** The most values one resolution may make (SF-4); a schema of 32 KiB has far fewer. */
 const INPUTS_SCHEMA_VIEW_MAX_VALUES = 20_000;
 const INPUTS_SCHEMA_OVER_BUDGET = new Error("The resolved input schema is too large to show.");
+
+/**
+ * The workflow view as a person who may read the workflow session but not change the workflow sees it (adversarial
+ * review R2-SF-2), as that person cannot read its YAML either: the input schema keeps its shape without the values and
+ * notes its author wrote (schemaWithoutLiterals), and each diagnostic keeps its severity and code, with a fixed sentence
+ * instead of its path, line and message (which can quote the definition). The rest is as read; a page or one value
+ * (without a graph or a revision) is unchanged. The portal applies it for such a person, over its GET route and so for
+ * the MCP server's web mode; whoever may change the workflow gets the whole view.
+ */
+export function workflowV2ReaderView<T>(view: T): T {
+    if (!isJsonObject(view)) return view;
+    const out: JsonObject = { ...view };
+    if (isJsonObject(out.graph) && out.graph.inputsSchema !== undefined && out.graph.inputsSchema !== null) {
+        out.graph = { ...out.graph, inputsSchema: schemaWithoutLiterals(out.graph.inputsSchema) };
+    }
+    if (isJsonObject(out.revision) && Array.isArray(out.revision.diagnostics)) {
+        out.revision = { ...out.revision, diagnostics: out.revision.diagnostics.map(item => {
+            const severity = isJsonObject(item) && item.severity === "warning" ? "warning" : "error";
+            const code = isJsonObject(item) && typeof item.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(item.code) ? item.code : "WORKFLOW_DIAGNOSTIC";
+            return { severity, code, message: `This version has ${severity === "warning" ? "a warning" : "an error"}. `
+                + "People who can change this workflow see where and why." };
+        }) };
+    }
+    return out as T;
+}
 
 async function readOverview(store: WorkflowStore, workflowSessionId: string, options: WorkflowV2ReadOptions): Promise<{ [key: string]: JsonValue }> {
     const definition = await store.readDefinition(workflowSessionId);

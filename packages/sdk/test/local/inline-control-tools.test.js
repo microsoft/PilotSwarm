@@ -1594,6 +1594,27 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
         expect(failing.traces.join("\n")).toContain("store unavailable");
     });
 
+    // Adversarial review R2-RT-3: a failed gate's trace and a failed completion's answer go through the workflow sanitizer.
+    it("R2-RT-3: a failed gate is traced, and a failed completion answered, with no secret of the error", async () => {
+        const CANARY = "canary-r2rt3-5d1e";
+        const failing = stepChild([{ assistantContent: "It seems fine." }],
+            { gate: new Error(`connect postgres://svc:${CANARY}@db.invalid/wf failed; token=${CANARY}`) });
+        await failing.run();
+        const trace = failing.traces.join("\n");
+        expect(trace).toContain("the step reminder's check failed; no reminder: connect <url> failed;");
+        expect(trace).not.toContain(CANARY);
+        const h = stepChild([{ toolCalls: [COMPLETE], assistantContent: "Done." }]);
+        h.completeWorkflowNode.mockImplementation(async () => { throw new Error(`store at https://u:${CANARY}@x.invalid refused; secret=${CANARY}`); });
+        const results = [];
+        h.fakeSession.on("tool.execution_complete", payload => {
+            if (payload.data?.toolName === "complete_workflow_node") results.push(payload.data.result);
+        });
+        await h.run();
+        expect(results).toHaveLength(1);
+        expect(results[0]).not.toContain(CANARY);
+        expect(JSON.parse(results[0])).toMatchObject({ ok: false, error: { code: "WORKFLOW_ERROR" } });
+    });
+
     it("a session that is not an agent state's own child, or a turn without the gate, gets none", async () => {
         const other = stepChild([{ assistantContent: "It seems fine." }], { config: {} });
         expect(reminded(await other.run())).toEqual([]);

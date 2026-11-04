@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets } from "../../dist/workflow/v2/redact.js";
 import { sanitizeWorkflowErrorText, workflowAdapterFailure, workflowStoreFailure } from "../../dist/workflow/v2/failure.js";
 import { WorkflowStoreError } from "../../dist/workflow/v2/store.js";
+import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "../../dist/workflow/v2/agent-node-service.js";
+import { respondSessionRequestFromTool } from "../../dist/workflow/v2/request-service.js";
+import { WorkflowSchemaSet } from "../../dist/workflow/v2/schema.js";
 
 // Adversarial review SF-6: one secret-safe projection of workflow error text, wherever it is persisted or shown.
 
@@ -202,4 +205,39 @@ test("E2bH-SF6-1: an event's lastError field is an error field: its secrets are 
     const out = redactWorkflowEventData({ runId: "r", exchangeId: "x", attempts: 8, lastError: `enqueue failed: token=${SENTINEL}` });
     assert.equal(out.lastError, "enqueue failed: token=<hidden>");
     assert.equal(out.attempts, 8);
+});
+
+// Adversarial review R2-SF-4 (with R2-RT-3): the agent's completion tool and the request answer tool answer every failure
+// through the same secret-safe projection, and a problem's message names no literal value of the schema's author.
+test("R2-SF-4: complete_workflow_node's and respond_session_request's failures are coded, with their secrets hidden", async () => {
+    const leaking = [
+        new Error(`connect to postgres://app:${SENTINEL}@db.example:5432/wf failed; token=${SENTINEL}`),
+        new WorkflowStoreError("NODE_CLOSED", `closed (token=${SENTINEL})`, { token: SENTINEL, nested: { url: `https://u:${SENTINEL}@x.example/y`, n: 1 } }),
+    ];
+    for (const error of leaking) {
+        const completion = await completeWorkflowNodeFromTool({ outcome: "accepted", output: {}, operation_id: "op" },
+            { callerSessionId: "child", client: null, store: { completeAgentNode: async () => { throw error; } } });
+        const response = await respondSessionRequestFromTool({ request_id: "r", response: {}, operation_id: "op" },
+            { callerSessionId: "parent", store: { respondToRequest: async () => { throw error; } } });
+        for (const text of [completion, response, workflowCompletionFailure(error)]) {
+            assert.ok(!text.includes(SENTINEL), text);
+            const answer = JSON.parse(text);
+            assert.equal(answer.ok, false);
+            assert.equal(answer.error.code, error instanceof WorkflowStoreError ? "NODE_CLOSED" : "WORKFLOW_ERROR", text);
+        }
+    }
+    // A refusal's problems (the store's answer) have their secrets hidden too.
+    const refused = await completeWorkflowNodeFromTool({ outcome: "accepted", output: {}, operation_id: "op" }, { callerSessionId: "child", client: null,
+        store: { completeAgentNode: async () => ({ kind: "refused", replayed: false, code: "OUTPUT_INVALID",
+            problems: [{ path: "/", message: `bad token=${SENTINEL}` }], attemptsLeft: 2, state: "pending" }) } });
+    assert.ok(!refused.includes(SENTINEL), refused);
+    assert.deepEqual(JSON.parse(refused).error.code, "OUTPUT_INVALID");
+});
+
+test("R2-SF-4: a problem's message names no value of a const or an enum; its other details stay", () => {
+    const set = new WorkflowSchemaSet({ C: { const: `${SENTINEL}-c` }, E: { enum: ["a", `${SENTINEL}-e`] }, N: { type: "integer", minimum: 3 } });
+    const problems = [...set.validate("C", "x"), ...set.validate("E", "x")];
+    assert.deepEqual(problems.map(problem => problem.message), ["must be equal to constant", "must be equal to one of the allowed values"]);
+    assert.ok(!JSON.stringify(problems).includes(SENTINEL));
+    assert.deepEqual(set.validate("N", 1).map(problem => problem.message), ["must be >= 3 {\"comparison\":\">=\",\"limit\":3}"]);
 });

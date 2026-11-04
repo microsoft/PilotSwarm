@@ -446,3 +446,95 @@ test("M-01: with the ownership switch off, every read selector of a hidden workf
         await sharedHarness.close();
     }
 });
+
+// Adversarial review R2-SF-2: a person the workflow session is shared with for reading cannot read the definition's YAML,
+// so the view keeps from them what its author wrote as values in the input schema (default, const, enum, examples, notes)
+// and what diagnostics quote of it (paths, $ref text, messages). The owner (who may change it) reads all of it. Synthetic
+// sentinel values only.
+const SENTINEL = "sentinel-r2sf2-7f3a";
+function sentinelView(sessionId) {
+    return {
+        workflowId: sessionId,
+        definition: { state: "draft", semver: "1.0.0", currentRevision: 2, publishedRevision: 1 },
+        revision: { revision: 2, definitionHash: "h", valid: false, irSha256: null, name: "w", diagnostics: [
+            { severity: "error", code: "WORKFLOW_SCHEMA_INVALID", path: `schemas.${SENTINEL}.$ref`, line: 7,
+                message: `only local references '#/schemas/<Name>' are allowed (got 'https://user:${SENTINEL}@example.invalid/s')` },
+            { severity: "warning", code: "WORKFLOW_FAILURE_UNHANDLED", path: "states.calc.transition.next", message: `no failure route ${SENTINEL}` },
+        ] },
+        graph: { revision: 1, initial: "calc", states: [], inputsSchema: {
+            type: "object", title: SENTINEL, description: SENTINEL, $comment: SENTINEL, required: ["token", "mode"],
+            properties: {
+                token: { type: "string", default: SENTINEL, examples: [SENTINEL], minLength: 4 },
+                mode: { enum: ["a", SENTINEL], const: SENTINEL },
+                list: { type: "array", items: { type: "string", default: SENTINEL }, maxItems: 3 },
+                pick: { anyOf: [{ const: SENTINEL }, { type: "integer", description: SENTINEL }] },
+            },
+        } },
+        runs: [],
+        run: null,
+    };
+}
+
+test("R2-SF-2: a reader who cannot change the workflow gets its input schema without its literal values and its diagnostics without their details; the owner gets all", async () => {
+    const owner = { provider: "dev", subject: "alice" };
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.start = async () => {};
+    runtime.authz = { ...runtime.authz, enforce: true };
+    runtime.transport = {
+        getSessionAccess: async (sessionId, viewer) => ({
+            rootSessionId: sessionId, isSystem: false, visibility: "shared_read", owner: { ...owner, displayName: "Alice" },
+            viewerIsOwner: viewer.provider === owner.provider && viewer.subject === owner.subject, viewerShareAccess: null,
+        }),
+        recordAuthzAudit: async () => {},
+        readWorkflow: async (sessionId) => sentinelView(sessionId),
+    };
+    const requireAuth = (req, _res, next) => {
+        req.auth = { principal: { provider: "dev", subject: String(req.headers["x-test-user"] || "alice") },
+            authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] } };
+        next();
+    };
+    const app = express();
+    app.use(express.json());
+    app.use("/api/v1", createApiRouter({ runtime, requireAuth }));
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const client = (subject) => new WebPilotSwarmManagementClient({ api: new ApiClient({ apiUrl: origin,
+        fetchImpl: (url, init = {}) => fetch(url, { ...init, headers: { ...init.headers, "x-test-user": subject } }) }) });
+    try {
+        // The owner: the whole view, by the runtime and by the web-backed client (the MCP server's web mode).
+        for (const view of [await runtime.call("readWorkflow", { sessionId: "wf1" }, as("alice")), await client("alice").readWorkflow("wf1")]) {
+            assert.deepEqual(view, sentinelView("wf1"));
+        }
+        // A reader: no sentinel anywhere, by the runtime, the GET route and the web-backed client.
+        const reads = [
+            await runtime.call("readWorkflow", { sessionId: "wf1" }, as("bob")),
+            (await (await fetch(`${origin}/api/v1/sessions/wf1/workflow`, { headers: { "x-test-user": "bob" } })).json()).result,
+            await client("bob").readWorkflow("wf1"),
+        ];
+        for (const view of reads) {
+            assert.equal(JSON.stringify(view).includes(SENTINEL), false, JSON.stringify(view));
+            assert.equal(JSON.stringify(view).includes("example.invalid"), false);
+            // The schema's shape stays: types, properties, required names, lengths, items and alternatives.
+            assert.deepEqual(view.graph.inputsSchema, {
+                type: "object", required: ["token", "mode"],
+                properties: {
+                    token: { type: "string", minLength: 4 },
+                    mode: {},
+                    list: { type: "array", items: { type: "string" }, maxItems: 3 },
+                    pick: { anyOf: [{}, { type: "integer" }] },
+                },
+            });
+            // Each diagnostic: its severity and code, and a fixed sentence.
+            assert.deepEqual(view.revision.diagnostics, [
+                { severity: "error", code: "WORKFLOW_SCHEMA_INVALID", message: "This version has an error. People who can change this workflow see where and why." },
+                { severity: "warning", code: "WORKFLOW_FAILURE_UNHANDLED", message: "This version has a warning. People who can change this workflow see where and why." },
+            ]);
+            // The rest is as read.
+            assert.deepEqual({ ...view, graph: undefined, revision: undefined }, { ...sentinelView("wf1"), graph: undefined, revision: undefined });
+            assert.equal(view.revision.valid, false);
+        }
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+});

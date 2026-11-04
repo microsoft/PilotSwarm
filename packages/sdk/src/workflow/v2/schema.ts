@@ -1,5 +1,5 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
-import type { ErrorObject } from "ajv";
+import type { AnySchemaObject, ErrorObject, FuncKeywordDefinition, SchemaValidateFunction } from "ajv";
 import { isJsonObject, type JsonValue } from "./json.js";
 
 type Validator = NonNullable<ReturnType<Ajv2020["getSchema"]>>;
@@ -54,6 +54,170 @@ const DEPENDENCIES_REFUSAL = "'dependencies' is not supported in workflow schema
 /** A `$ref` names one whole schema (review R1 of the owner batch): `#/schemas/<Name>` or `#/$defs/<Name>`, nothing after the name. */
 export function wholeSchemaRefusal(value: string): string {
     return `a $ref names one whole schema: '#/schemas/<Name>', with nothing after the name (got '${value}').`;
+}
+
+/**
+ * The most schema parts one schema may stand for once every `$ref` in it is replaced by the schema it names, each time it
+ * is named (adversarial review R2-SF-1): a few lines of YAML that name a schema twice, which names one twice, and so on,
+ * would otherwise make one check of a small value do millions of checks.
+ */
+export const WORKFLOW_SCHEMA_MAX_EXPANDED_PARTS = 10_000;
+/**
+ * The most items a list may have when its schema asks for unique items that are not all plain values (R2-SF-1): those
+ * items are compared with each other, and many of them would take very long.
+ */
+export const WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX = 100;
+
+/** Keywords whose schemas apply to a property, an item or a property name of the value: a `$ref` under one goes one level into it. */
+const CHILD_KEYWORDS: ReadonlySet<string> = new Set([
+    "properties", "patternProperties", "additionalProperties", "unevaluatedProperties", "propertyNames",
+    "items", "prefixItems", "additionalItems", "unevaluatedItems", "contains", "contentSchema",
+]);
+/** Keywords that only hold schemas (a `$ref` names only a whole workflow schema, never one in these): never applied to a value. */
+const HOLDER_KEYWORDS: ReadonlySet<string> = new Set(["$defs", "definitions"]);
+const PLAIN_TYPES: ReadonlySet<string> = new Set(["string", "number", "integer", "boolean", "null"]);
+
+/** Whether a schema's `items` has a type of plain values only (strings, numbers, booleans, null): such items are not compared one by one. */
+function plainItems(schema: Record<string, JsonValue>): boolean {
+    const items = schema.items;
+    if (!isJsonObject(items)) return false;
+    const types = typeof items.type === "string" ? [items.type] : Array.isArray(items.type) ? items.type : [];
+    return types.length > 0 && types.every(type => typeof type === "string" && PLAIN_TYPES.has(type));
+}
+
+interface SchemaShape {
+    /** Schema parts in schema positions, references not replaced. */
+    parts: number;
+    /** Each `$ref` to a workflow schema, with whether it is under a keyword that goes into the value. */
+    refs: Array<{ name: string; deeper: boolean }>;
+    /** The first `uniqueItems` whose items may be compared one by one without a small maxItems. */
+    uniqueItems: string | null;
+}
+
+function shapeOf(schema: JsonValue, path: string): SchemaShape {
+    const shape: SchemaShape = { parts: 0, refs: [], uniqueItems: null };
+    const visit = (value: JsonValue, at: string, deeper: boolean): void => {
+        shape.parts += 1;
+        if (!isJsonObject(value)) return;
+        if (value.uniqueItems === true && shape.uniqueItems === null && !plainItems(value)
+            && !(typeof value.maxItems === "number" && value.maxItems <= WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX)) shape.uniqueItems = `${at}.uniqueItems`;
+        for (const [key, item] of Object.entries(value)) {
+            const into = deeper || CHILD_KEYWORDS.has(key);
+            if (key === "$ref") {
+                if (typeof item === "string" && item.startsWith("#/$defs/")) shape.refs.push({ name: item.slice("#/$defs/".length), deeper });
+            } else if (HOLDER_KEYWORDS.has(key)) {
+                continue;
+            } else if (SUBSCHEMA_KEYWORDS.has(key)) {
+                visit(item, `${at}.${key}`, into);
+            } else if (SUBSCHEMA_ARRAY_KEYWORDS.has(key)) {
+                if (Array.isArray(item)) item.forEach((entry, index) => visit(entry, `${at}.${key}[${index}]`, into));
+            } else if (SUBSCHEMA_MAP_KEYWORDS.has(key) && isJsonObject(item)) {
+                for (const [name, entry] of Object.entries(item)) visit(entry, `${at}.${key}.${name}`, into);
+            }
+        }
+    };
+    visit(schema, path, false);
+    return shape;
+}
+
+/**
+ * Why a set of normalized workflow schemas could make a check of a small value take very long (adversarial review
+ * R2-SF-1), or null. Each schema's parts are counted with every `$ref` replaced by the schema it names, each time it is
+ * named; more than WORKFLOW_SCHEMA_MAX_EXPANDED_PARTS is refused. A schema may refer back to itself (directly or through
+ * others) in one place only, and that place must go into a property or an item of the value: two places can double the
+ * checks at each level of the value, and none would never end. `uniqueItems` on items that are not plain values needs
+ * a maxItems of at most WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX.
+ */
+export function schemaCostRefusal(defs: Record<string, JsonValue>): { path: string; message: string } | null {
+    const names = Object.keys(defs);
+    const shapes = new Map(names.map(name => [name, shapeOf(defs[name], `$defs.${name}`)] as const));
+    for (const shape of shapes.values()) {
+        if (shape.uniqueItems !== null) {
+            return { path: shape.uniqueItems, message: `uniqueItems on items that are not plain values (strings, numbers, booleans or null) needs `
+                + `maxItems of at most ${WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX} beside it: comparing many objects or lists with each other could take very long.` };
+        }
+    }
+    const referred = new Map(names.map(name => [name, shapes.get(name)!.refs.map(ref => ref.name).filter(target => shapes.has(target))] as const));
+    const targets = (name: string): readonly string[] => referred.get(name)!;
+    // The schemas that refer to each other (strongly connected), without recursion (Kosaraju): the first pass orders the
+    // schemas by when their search ended; the second takes them in reverse on the reversed references.
+    const finished: string[] = [];
+    const visited = new Set<string>();
+    for (const start of names) {
+        if (visited.has(start)) continue;
+        visited.add(start);
+        const stack: Array<{ name: string; next: number }> = [{ name: start, next: 0 }];
+        while (stack.length > 0) {
+            const top = stack[stack.length - 1];
+            const out = targets(top.name);
+            if (top.next < out.length) {
+                const target = out[top.next++];
+                if (!visited.has(target)) { visited.add(target); stack.push({ name: target, next: 0 }); }
+            } else {
+                finished.push(top.name);
+                stack.pop();
+            }
+        }
+    }
+    const referrers = new Map<string, string[]>(names.map(name => [name, []]));
+    for (const name of names) for (const target of targets(name)) referrers.get(target)!.push(name);
+    const component = new Map<string, number>();
+    const components: string[][] = [];
+    for (const start of [...finished].reverse()) {
+        if (component.has(start)) continue;
+        const members: string[] = [];
+        const pending = [start];
+        component.set(start, components.length);
+        while (pending.length > 0) {
+            const name = pending.pop()!;
+            members.push(name);
+            for (const referrer of referrers.get(name)!) {
+                if (!component.has(referrer)) { component.set(referrer, components.length); pending.push(referrer); }
+            }
+        }
+        components.push(members);
+    }
+    // Each schema that refers back to itself does so in one place, which goes into the value.
+    const cyclic = (index: number): boolean => components[index].length > 1 || targets(components[index][0]).includes(components[index][0]);
+    for (const [index, members] of components.entries()) {
+        if (!cyclic(index)) continue;
+        let goesDeeper = false;
+        for (const name of members) {
+            const back = shapes.get(name)!.refs.filter(ref => shapes.has(ref.name) && component.get(ref.name) === index);
+            if (back.length > 1) {
+                const through = members.length > 1 ? ` (through ${members.filter(member => member !== name).map(member => `'${member}'`).join(", ")})` : "";
+                return { path: `$defs.${name}`, message: `schema '${name}' refers back to itself${through} in ${back.length} places; it may do so in one place only, `
+                    + "because each further place could double the checks at every level of a value. Use one list of children, or {} for any value." };
+            }
+            if (back.some(ref => ref.deeper)) goesDeeper = true;
+        }
+        if (!goesDeeper) {
+            return { path: `$defs.${members[0]}`, message: `schema '${members[0]}' refers back to itself without going into a property or an item `
+                + "of the value, so checking a value against it would never end." };
+        }
+    }
+    // Expanded parts, schemas that are referred to first (the second pass found referrers before what they refer to). A
+    // reference back into its own schemas counts one part: the rule above bounds how often it applies.
+    const expanded = new Map<string, number>();
+    for (let index = components.length - 1; index >= 0; index -= 1) {
+        for (const name of components[index]) {
+            let parts = shapes.get(name)!.parts;
+            for (const ref of shapes.get(name)!.refs) {
+                if (!shapes.has(ref.name)) continue;
+                parts += component.get(ref.name) === index ? 1 : expanded.get(ref.name)!;
+                if (parts > WORKFLOW_SCHEMA_MAX_EXPANDED_PARTS) break;
+            }
+            expanded.set(name, Math.min(parts, WORKFLOW_SCHEMA_MAX_EXPANDED_PARTS + 1));
+        }
+    }
+    for (const name of names) {
+        if (expanded.get(name)! > WORKFLOW_SCHEMA_MAX_EXPANDED_PARTS) {
+            return { path: `$defs.${name}`, message: `schema '${name}' stands for more than ${WORKFLOW_SCHEMA_MAX_EXPANDED_PARTS.toLocaleString("en-US")} schema `
+                + "parts once each schema it names is put in its place, each time it is named, so checking even a small value could take very long. "
+                + "Name fewer schemas, or each one fewer times." };
+        }
+    }
+    return null;
 }
 
 /**
@@ -134,6 +298,29 @@ export function normalizeSchema(schema: unknown, path: string): JsonValue {
     return Object.fromEntries(out);
 }
 
+/** The keywords whose values the author wrote as data or notes: left out of a schema shown to a reader (schemaWithoutLiterals). */
+const LITERAL_KEYWORDS: ReadonlySet<string> = new Set(["default", "const", "enum", "examples", "title", "description", "$comment"]);
+
+/**
+ * A schema without the values its author wrote in it (adversarial review R2-SF-2): `default`, `const`, `enum`,
+ * `examples`, `title`, `description` and `$comment` are left out in every schema position, and so are `$defs` and
+ * `definitions` (schemas that are never applied). Its shape (types, properties, items, required names, lengths and
+ * limits) stays. For a person who may read a workflow but not its YAML.
+ */
+export function schemaWithoutLiterals(schema: JsonValue): JsonValue {
+    if (!isJsonObject(schema)) return schema;
+    const out: Array<[string, JsonValue]> = [];
+    for (const [key, value] of Object.entries(schema)) {
+        if (LITERAL_KEYWORDS.has(key) || HOLDER_KEYWORDS.has(key)) continue;
+        if (SUBSCHEMA_KEYWORDS.has(key)) out.push([key, schemaWithoutLiterals(value)]);
+        else if (SUBSCHEMA_ARRAY_KEYWORDS.has(key) && Array.isArray(value)) out.push([key, value.map(schemaWithoutLiterals)]);
+        else if (SUBSCHEMA_MAP_KEYWORDS.has(key) && isJsonObject(value)) {
+            out.push([key, Object.fromEntries(Object.entries(value).map(([name, item]) => [name, schemaWithoutLiterals(item)]))]);
+        } else out.push([key, value]);
+    }
+    return Object.fromEntries(out);
+}
+
 /**
  * The definitions a normalized schema references: the `$ref` keywords in its
  * schema positions, the same subschema keywords normalizeSchema follows,
@@ -164,8 +351,49 @@ export function schemaReferences(schema: JsonValue): string[] {
     return names;
 }
 
+/** A value's JSON with every object's keys in order, so equal values have the same text (no checks: the value is being validated). */
+function sortedJson(value: unknown): string {
+    if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+    if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`;
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${sortedJson(object[key])}`).join(",")}}`;
+}
+
+/**
+ * uniqueItems at a bounded cost, in place of Ajv's (adversarial review R2-SF-1). Ajv compares items that are not plain
+ * values each with each, and with allErrors it does so even when maxItems has already failed. Here plain items (the
+ * schema's items has a plain type; others are left to that items schema, as Ajv does) are looked up by their value, and
+ * other items by their JSON with sorted keys, at most WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX of them: a longer list fails this keyword
+ * without being compared (the compiler asks such a schema for that maxItems). Ajv's message, from the last items back.
+ */
+function uniqueItemsKeyword(): FuncKeywordDefinition {
+    const validate: SchemaValidateFunction = (schema: unknown, data: unknown, parentSchema?: AnySchemaObject): boolean => {
+        if (schema !== true || !Array.isArray(data) || data.length < 2) return true;
+        const plain = parentSchema !== undefined && isJsonObject(parentSchema) && plainItems(parentSchema);
+        if (!plain && data.length > WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX) {
+            validate.errors = [{ keyword: "uniqueItems", params: { limit: WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX },
+                message: `must NOT have more than ${WORKFLOW_SCHEMA_UNIQUE_ITEMS_MAX} items to be checked for duplicates` }];
+            return false;
+        }
+        const seen = new Map<string, number>();
+        for (let i = data.length - 1; i >= 0; i -= 1) {
+            const item: unknown = data[i];
+            if (plain && item !== null && typeof item === "object") continue;
+            const key = plain ? `${typeof item}:${String(item)}` : sortedJson(item);
+            const j = seen.get(key);
+            if (j !== undefined) {
+                validate.errors = [{ keyword: "uniqueItems", params: { i, j }, message: `must NOT have duplicate items (items ## ${j} and ${i} are identical)` }];
+                return false;
+            }
+            seen.set(key, i);
+        }
+        return true;
+    };
+    return { keyword: "uniqueItems", type: "array", schemaType: "boolean", errors: true, validate };
+}
+
 function createAjv(): Ajv2020 {
-    return new Ajv2020({
+    const ajv = new Ajv2020({
         allErrors: true,
         strict: true,
         strictTypes: false,
@@ -174,13 +402,23 @@ function createAjv(): Ajv2020 {
         validateFormats: false,
         allowUnionTypes: true,
     });
+    ajv.removeKeyword("uniqueItems");
+    ajv.addKeyword(uniqueItemsKeyword());
+    return ajv;
 }
 
+/**
+ * Ajv's params that carry a value the schema's author wrote (a const's, an enum's): left out of a problem's message
+ * (adversarial review R2-SF-4), which is returned to the caller, stored with the node and shown; the message still says
+ * what is wrong ("must be equal to constant", "must be equal to one of the allowed values").
+ */
+const LITERAL_PARAMS: ReadonlySet<string> = new Set(["allowedValue", "allowedValues"]);
+
 function describeErrors(errors: ErrorObject[] | null | undefined): SchemaProblem[] {
-    return (errors ?? []).slice(0, MAX_REPORTED_ERRORS).map(error => ({
-        path: error.instancePath || "/",
-        message: `${error.message ?? "is invalid"}${error.params && Object.keys(error.params).length ? ` ${JSON.stringify(error.params)}` : ""}`,
-    }));
+    return (errors ?? []).slice(0, MAX_REPORTED_ERRORS).map(error => {
+        const params = Object.fromEntries(Object.entries(error.params ?? {}).filter(([key]) => !LITERAL_PARAMS.has(key)));
+        return { path: error.instancePath || "/", message: `${error.message ?? "is invalid"}${Object.keys(params).length ? ` ${JSON.stringify(params)}` : ""}` };
+    });
 }
 
 /** Compiled validators for one definition's `$defs`. */
@@ -191,7 +429,9 @@ export class WorkflowSchemaSet {
     /**
      * Throws WorkflowSchemaError when a definition uses `pattern`, `patternProperties` or `dependencies`, or a `$ref` with
      * anything after the schema's name (refusedSchemaUseIn): a revision saved before those rules fails here, plainly,
-     * instead of running an expression nobody checked.
+     * instead of running an expression nobody checked. Also when the schemas could make a check take very long
+     * (schemaCostRefusal, review R2-SF-1): the compiler refuses such a definition through this, and a revision saved before
+     * that rule fails here.
      */
     constructor(readonly defs: Record<string, JsonValue>) {
         for (const [name, schema] of Object.entries(defs)) {
@@ -201,6 +441,8 @@ export class WorkflowSchemaSet {
                     + "a revision without it.", found.path);
             }
         }
+        const costly = schemaCostRefusal(defs);
+        if (costly) throw new WorkflowSchemaError(costly.message, costly.path);
         this.ajv.addSchema({ $id: WORKFLOW_SCHEMA_ROOT_ID, $defs: defs });
     }
 

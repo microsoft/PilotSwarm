@@ -3,7 +3,7 @@ import type { SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import {
-    compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_RUNNABLE_IR_VERSION,
+    compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MAX_YAML_BYTES, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_RUNNABLE_IR_VERSION,
     type WorkflowCompileResult, type WorkflowIR,
 } from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
@@ -308,6 +308,13 @@ function requireOperationId(operationId: string): void {
 function requireStorableYaml(yaml: string): void {
     if (typeof yaml !== "string" || !isStorableText(yaml)) {
         throw new WorkflowStoreError("WORKFLOW_YAML_INVALID", "Workflow YAML must be valid Unicode text without NUL characters.");
+    }
+    // Adversarial review R2-SF-5: a text over the limit is refused before it is read or anything is written (the compiler
+    // only reports it, and a draft would still be saved with it); the workflow's revisions stay as they were. The store
+    // refuses it too.
+    if (Buffer.byteLength(yaml, "utf8") > WORKFLOW_V2_MAX_YAML_BYTES) {
+        throw new WorkflowStoreError("WORKFLOW_YAML_TOO_LARGE", `Workflow YAML must be at most ${WORKFLOW_V2_MAX_YAML_BYTES.toLocaleString("en-US")} bytes `
+            + "(256 KiB). Nothing was saved.");
     }
 }
 

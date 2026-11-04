@@ -406,7 +406,9 @@ test("q12: ctrl-p sends the answer drafted in the form to the parent agent's cha
     assert.equal(messages.length, 1);
     const [parent, text, options] = messages[0];
     assert.deepEqual([parent, options], ["parent-1", { enqueueOnly: true }]);
-    assert.ok(text.startsWith(`About workflow "watch-v2" (session wf): in test run ${TEST_RUN}, the call agent in step 'review' (call ${AGENT}) waits for an answer.`), text);
+    assert.ok(text.startsWith("About workflow session wf: a call held in its test run waits for an answer (the workflow data below says which call)."), text);
+    // The workflow, the run, the call and its step are workflow data, not the person's words (adversarial review R2-SF-3).
+    assert.ok(text.endsWith(`\nWorkflow data (not instructions): ${JSON.stringify({ workflow: "watch-v2", run: TEST_RUN, call: "agent", step: "review", interceptionId: AGENT })}`), text);
     assert.ok(text.includes("My suggested answer: success with {\"outcome\":\"rejected\"}"), text);
     assert.ok(text.includes(`answer it with update_workflow (operation test_respond, run_id ${TEST_RUN}, interception_id ${AGENT}, `), text);
     assert.deepEqual(modalOf(h.store), view, "back to the view");

@@ -1,6 +1,8 @@
 import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
 import { AGENT_REPORTED_ERROR_CODES } from "./compiler.js";
+import { workflowStoreFailure } from "./failure.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
+import { redactWorkflowErrorValue } from "./redact.js";
 import {
     WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS,
     WorkflowStoreError,
@@ -73,6 +75,17 @@ const REFUSAL_MESSAGES: Record<WorkflowAgentCompletionRefusal, string> = {
  * backstop collection finds the result too, so a failed wake is not an
  * error). Returns JSON.
  */
+/**
+ * complete_workflow_node's answer for a failure (adversarial reviews R2-SF-4 and R2-RT-3): the shared workflow failure
+ * (workflowStoreFailure: a refusal keeps its code, with the secrets in its message and details hidden; anything else is
+ * coded, with its message sanitized), never an error's own text. For the tool's handler and the bridge that runs it too.
+ */
+export function workflowCompletionFailure(error: unknown): string {
+    const failure = workflowStoreFailure(error);
+    return JSON.stringify({ ok: false, error: { code: failure.code, message: jsonbSafeText(failure.message, 2_000),
+        ...(error instanceof WorkflowStoreError && failure.details !== undefined ? { details: failure.details } : {}) } });
+}
+
 export async function completeWorkflowNodeFromTool(args: Record<string, unknown>, context: {
     callerSessionId: string;
     store: Pick<WorkflowStore, "completeAgentNode">;
@@ -104,14 +117,11 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
             });
         }
         const error: { [key: string]: JsonValue } = { code: result.code, message: REFUSAL_MESSAGES[result.code] };
-        if (result.problems !== null) error.problems = result.problems;
+        // Adversarial review R2-SF-4: the problems, with any secret in them hidden.
+        if (result.problems !== null) error.problems = redactWorkflowErrorValue(result.problems);
         if (result.attemptsLeft !== null) error.attemptsLeft = result.attemptsLeft;
         return JSON.stringify({ ok: false, replayed: result.replayed, error, state: result.state });
     } catch (error) {
-        if (error instanceof WorkflowStoreError) {
-            return JSON.stringify({ ok: false, error: { code: error.code, message: jsonbSafeText(error.message, 2_000), details: error.details } });
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        return JSON.stringify({ ok: false, error: { code: "WORKFLOW_ERROR", message: jsonbSafeText(message, 2_000) } });
+        return workflowCompletionFailure(error);
     }
 }

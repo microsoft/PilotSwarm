@@ -78,7 +78,7 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
-import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
+import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
 import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
@@ -3012,7 +3012,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             /** complete_workflow_node (agent states, INACTIVE): the calling session is the host-stamped child of the state. */
             ...(workflowAgentChild ? {
                 completeWorkflowNode: async (args: Record<string, unknown>) => {
-                    const host = await workflowBridgeHost();
+                    // Adversarial review R2-RT-3: a host that cannot be made is the tool's coded answer, never the error's own text.
+                    let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
+                    try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient });
                 },
             } : {}),

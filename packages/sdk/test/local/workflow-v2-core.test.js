@@ -425,6 +425,19 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
                 { actor: ACTOR, operationId: "edit-stale" }), "REVISION_CONFLICT");
             await expectCode(updateWorkflowV2(h, id, { operation: "replace_definition", yaml: PIPELINE.replace('"1.0.0"', '"2.0.0"'), expectedRevision: 2 },
                 { actor: ACTOR, operationId: "edit-semver" }), "SEMVER_IMMUTABLE");
+            // Adversarial review R2-SF-5: YAML over 256 KiB is refused before it is read or saved: the draft keeps its revision,
+            // here and at the store; a creation with it leaves no session and no definition.
+            const oversize = `${PIPELINE}\n# ${"x".repeat(256 * 1024)}\n`;
+            await expectCode(updateWorkflowV2(h, id, { operation: "replace_definition", yaml: oversize, expectedRevision: 2 },
+                { actor: ACTOR, operationId: "edit-oversize" }), "WORKFLOW_YAML_TOO_LARGE");
+            await expectCode(h.store.replaceDraft({ workflowSessionId: id, expectedRevision: 2, yaml: oversize, compiled: replaced.receipt,
+                declaredSemver: "1.0.0", actor: ACTOR, operationId: "edit-oversize-store", requestSha256: "x", title: "Workflow: pipeline" }), "WORKFLOW_YAML_TOO_LARGE");
+            expect((await h.store.readDefinition(id)).currentRevision).toBe(2);
+            const tooLarge = randomUUID();
+            await expectCode(createWorkflowV2(h, { workflowSessionId: tooLarge, parentSessionId: null, yaml: oversize, actor: ACTOR, operationId: "create-oversize" }),
+                "WORKFLOW_YAML_TOO_LARGE");
+            expect(await h.store.readDefinition(tooLarge)).toBeNull();
+            expect(await client._catalog.getSession(tooLarge)).toBeNull();
             await expectCode(updateWorkflowV2(h, id, { operation: "publish", expectedRevision: 2, definitionHash: created.receipt.yamlSha256 },
                 { actor: ACTOR, operationId: "publish-wrong-hash" }), "DEFINITION_HASH_MISMATCH");
 

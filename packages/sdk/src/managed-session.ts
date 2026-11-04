@@ -28,7 +28,8 @@ import {
     workflowToolErrorPayload,
 } from "./workflow/v2/tools.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
-import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "./workflow/v2/agent-node-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
+import { sanitizeWorkflowErrorText } from "./workflow/v2/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/v2/agent-reminder.js";
 import { WORKFLOW_ASK_USER_REFUSAL } from "./workflow/v2/input-policy.js";
 import { interceptWorkflowTestTools } from "./workflow/v2/test-agent-tools.js";
@@ -1822,9 +1823,9 @@ export class ManagedSession {
                 return null;
             }
             if (raced.kind === "failed") {
-                const error = raced.error as { message?: unknown } | null | undefined;
+                // Adversarial review R2-RT-3: the error's text sanitized as every workflow failure's is, before it is traced.
                 trace?.(`[runTurn] session=${this.sessionId} the step reminder's check failed; no reminder: `
-                    + `${typeof error?.message === "string" ? error.message : String(raced.error)}`);
+                    + `${sanitizeWorkflowErrorText(raced.error) || "no reason was given"}`);
                 return null;
             }
             if (!raced.verdict.remind) {
@@ -3241,7 +3242,12 @@ export class ManagedSession {
                 handler: async (args: Record<string, unknown>) => {
                     if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(COMPLETE_WORKFLOW_NODE_TOOL);
                     if (!controlBridge?.completeWorkflowNode) return `Error: ${COMPLETE_WORKFLOW_NODE_TOOL} is not available in this session.`;
-                    return await controlBridge.completeWorkflowNode(args ?? {});
+                    // Adversarial review R2-RT-3: a failure of the bridge is the tool's coded answer, never the error's own text.
+                    try {
+                        return await controlBridge.completeWorkflowNode(args ?? {});
+                    } catch (error) {
+                        return workflowCompletionFailure(error);
+                    }
                 },
             })]
             : [];

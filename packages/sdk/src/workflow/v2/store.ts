@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import {
     AGENT_REPORTED_ERROR_CODES, MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, WAIT_MAX_SECONDS,
-    WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
+    WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MAX_YAML_BYTES, WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
 } from "./compiler.js";
 import {
     assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, jsonSha256, kindValueSha256, parseStoredJson, sha256Hex,
@@ -1582,6 +1582,17 @@ function storableId(value: unknown): value is string {
     return typeof value === "string" && isStorableText(value);
 }
 
+/**
+ * A definition's YAML is stored only up to WORKFLOW_V2_MAX_YAML_BYTES (adversarial review R2-SF-5): a larger one is refused
+ * before any write, so a draft is never saved with it (the service refuses it before it is read).
+ */
+function requireStoredYamlWithinLimit(yaml: string): void {
+    if (typeof yaml === "string" && Buffer.byteLength(yaml, "utf8") > WORKFLOW_V2_MAX_YAML_BYTES) {
+        throw new WorkflowStoreError("WORKFLOW_YAML_TOO_LARGE", `Workflow YAML must be at most ${WORKFLOW_V2_MAX_YAML_BYTES.toLocaleString("en-US")} bytes `
+            + "(256 KiB). Nothing was saved.");
+    }
+}
+
 /** Diagnostics as plain JSON (for error details). */
 export function diagnosticsJson(diagnostics: WorkflowDiagnostic[]): JsonValue {
     return diagnostics.map(item => ({
@@ -2216,6 +2227,7 @@ export class WorkflowStore {
         /** The published revision's agent pins as canonical JSON (migration 0103); null or absent when there are none. */
         agentPinsText?: string | null;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
+        requireStoredYamlWithinLimit(input.yaml);
         requirePublishable(input.compiled, input.publish || Boolean(input.start));
         if (input.start && !input.publish) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "Starting a live run requires publication.");
         return this.transaction(async client => {
@@ -2270,6 +2282,7 @@ export class WorkflowStore {
         requestSha256: string;
         title: string;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
+        requireStoredYamlWithinLimit(input.yaml);
         return this.transaction(async client => {
             await this.requireLiveSession(client, input.workflowSessionId);
             const definition = await this.lockDefinition(client, input.workflowSessionId);

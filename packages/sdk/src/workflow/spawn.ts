@@ -7,7 +7,8 @@ import type { WorkflowToolBinding } from "./tool-policy.js";
 import { isWorkflowParentContextUnavailable, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE } from "./tool-policy.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
 import { declaresWorkflowV2 } from "./v2/compiler.js";
-import { spawnWorkflowV2FromTool, type WorkflowToolHost } from "./v2/tools.js";
+import { sanitizeWorkflowErrorText } from "./v2/failure.js";
+import { spawnWorkflowV2FromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./v2/tools.js";
 
 export interface SpawnWorkflowDeps {
     /** The agent session calling spawn_workflow; it becomes the workflow's parent. */
@@ -106,6 +107,12 @@ export async function spawnWorkflowFromTool(
         if (isWorkflowParentContextUnavailable(error)) {
             return `[SYSTEM: spawn_workflow refused (${WORKFLOW_PARENT_CONTEXT_UNAVAILABLE}) — ${WORKFLOW_PARENT_CONTEXT_UNAVAILABLE_MESSAGE}]`;
         }
-        return `[SYSTEM: spawn_workflow failed — ${error instanceof Error ? error.message : String(error)}]`;
+        // Adversarial review R2-SF-4: never an error's own text. A v2 document's failure (its owner, its tool binding or its
+        // host could not be had) is the v2 tools' coded answer, its secrets hidden; a v1 one keeps its sentence, its message
+        // sanitized the same way.
+        let v2 = false;
+        try { v2 = declaresWorkflowV2(args.yaml); } catch { /* a v1 answer */ }
+        if (v2) return workflowToolErrorPayload(error);
+        return `[SYSTEM: spawn_workflow failed — ${sanitizeWorkflowErrorText(error) || "no reason was given"}]`;
     }
 }

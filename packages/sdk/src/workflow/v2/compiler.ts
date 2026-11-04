@@ -89,6 +89,8 @@ export const AGENT_PROMPT_MAX_BYTES = 32 * 1024;
 export const AGENT_REPORTED_ERROR_CODES = ["needs_input", "execution_failed"] as const;
 /** The largest response schema, with every schema it references, in UTF-8 bytes of their canonical JSON. */
 export const REQUEST_RESPONSE_SCHEMA_MAX_BYTES = 8 * 1024;
+/** Characters a workflow's name may not hold (R2-SF-3): control characters, line and paragraph separators, and direction controls. */
+const WORKFLOW_NAME_CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 /** A contract name: a name, '@' and a positive integer version, such as BuildEvent@1. */
 export const CONTRACT_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}@[1-9][0-9]{0,5}$/;
 export const WORKFLOW_V2_MAX_YAML_BYTES = 256 * 1024;
@@ -1186,7 +1188,11 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
     else {
         checkKeys(root.metadata, ["name", "version", "description"], "metadata", diagnostics);
         if (typeof root.metadata.name === "string" && root.metadata.name.trim() && root.metadata.name.length <= 128 && isStorableText(root.metadata.name)) {
-            name = root.metadata.name.trim();
+            // Adversarial review R2-SF-3: a name is one line of plain text, so where it is quoted (a message to the parent agent,
+            // a title) it cannot start a line of its own or turn text around.
+            if (WORKFLOW_NAME_CONTROL.test(root.metadata.name)) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", "metadata.name", "metadata.name must be one line of plain text, without line breaks or control characters.");
+            } else name = root.metadata.name.trim();
         } else diagnostics.error("WORKFLOW_FIELD_INVALID", "metadata.name", "metadata.name must be a non-empty string of at most 128 characters.");
         if (typeof root.metadata.version === "string" && SEMVER.test(root.metadata.version)) version = root.metadata.version;
         else diagnostics.error("WORKFLOW_SEMVER_INVALID", "metadata.version", "metadata.version must be a semantic version string such as \"1.0.0\" (quote it in YAML).");

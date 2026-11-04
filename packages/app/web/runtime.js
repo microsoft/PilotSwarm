@@ -1,5 +1,5 @@
 import { NodeSdkTransport } from "pilotswarm/host";
-import { workflowV2TestEnvironmentFromEnv } from "pilotswarm-sdk";
+import { workflowV2ReaderView, workflowV2TestEnvironmentFromEnv } from "pilotswarm-sdk";
 import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION, getOperation } from "pilotswarm-sdk/api";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
@@ -784,7 +784,9 @@ export class PortalRuntime {
             // When the deployment takes a person's workflow commands (INACTIVE), the view says which ones this workflow
             // takes, and this adds whether the caller may send them (updateWorkflow's own gate, decided on this read's access).
             // A draft's YAML (personCommands.draft: the scripts and prompts the graph does not show) is for a caller who may
-            // change the draft; it is left out for anyone else.
+            // change the draft; it is left out for anyone else. So are the values the definition's author wrote in its input
+            // schema and its diagnostics' paths and messages (adversarial review R2-SF-2, workflowV2ReaderView): a caller who
+            // can read the session but not change the workflow cannot read its YAML either.
             case "readWorkflow": {
                 // The read's options are the operation's declared query parameters (protocol.js), each passed only when given.
                 const readOptions = {};
@@ -798,9 +800,10 @@ export class PortalRuntime {
                     const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
                     if (!viewer.allowed) throw forbiddenError(`${viewer.reason ?? "You cannot change this workflow."} Its versions' YAML is for those who can.`);
                 }
-                const view = await this.transport.readWorkflow(safeParams.sessionId, readOptions);
-                if (!view || typeof view !== "object" || !view.personCommands || typeof view.personCommands !== "object") return view;
+                const read = await this.transport.readWorkflow(safeParams.sessionId, readOptions);
                 const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
+                const view = viewer.allowed ? read : workflowV2ReaderView(read);
+                if (!view || typeof view !== "object" || !view.personCommands || typeof view.personCommands !== "object") return view;
                 const { draft, ...personCommands } = view.personCommands;
                 return { ...view, personCommands: { ...personCommands, ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
             }

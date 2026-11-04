@@ -355,6 +355,22 @@ test("a chat without a live tool context gets a coded refusal in plain words, v1
         "[SYSTEM: spawn_workflow failed — Workflow tool delegation requires an owned, non-system parent.]");
 });
 
+// Adversarial review R2-SF-4: spawn_workflow's failure never carries the error's own text. A v2 document's is the v2 tools'
+// coded JSON; a v1 one keeps its sentence, with its message sanitized.
+test("R2-SF-4: a spawn_workflow failure hides the error's secrets: v2 coded, v1 sanitized", async () => {
+    const CANARY = "canary-r2sf4-spawn";
+    const v2Yaml = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: w, version: \"1.0.0\" }\ninitial: a\n"
+        + "states:\n  a: { type: wait, seconds: 1, transition: { next: { elapsed: b } } }\n  b: { type: terminal, outcome: succeeded }\n";
+    const v2 = spawnDeps({ workflowV2Host: async () => { throw new Error(`pool to postgres://svc:${CANARY}@db.invalid/x failed; token=${CANARY}`); } });
+    const answer = await spawnWorkflowFromTool({ yaml: v2Yaml }, { toolCallId: "s1" }, v2.deps);
+    assert.ok(!answer.includes(CANARY), answer);
+    const parsed = JSON.parse(answer);
+    assert.equal(parsed.ok, false);
+    assert.deepEqual(Object.keys(parsed.error).sort(), ["code", "message"]);
+    const v1 = spawnDeps({ createWorkflowSession: async () => { throw new Error(`catalog at postgres://svc:${CANARY}@db.invalid/x unavailable`); } });
+    assert.equal(await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "s2" }, v1.deps), "[SYSTEM: spawn_workflow failed — catalog at <url> unavailable]");
+});
+
 // ── Live view, cancellation commands, MCP and session tools ─────────
 
 import {
