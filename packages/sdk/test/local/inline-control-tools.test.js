@@ -60,6 +60,8 @@ class FakeCopilotSession {
                 assistantContent: this.assistantContent,
             };
         queueMicrotask(async () => {
+            // A run that starts only after send() resolved (as the CLI's, which accepts the prompt first): `delayMs`.
+            if (scriptedSend.delayMs) await new Promise((resolve) => setTimeout(resolve, scriptedSend.delayMs));
             for (const call of scriptedSend.toolCalls ?? []) {
                 if (this.aborted) break;
                 const tool = this.registeredTools.find((candidate) => candidate.name === call.name);
@@ -1715,10 +1717,9 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
     // accepted the prompt, before the send gate opens, so a Stop its observer asks for keeps the gate closed and nothing
     // more is sent.
     it("E2: the reminder's event is published after the SDK accepted the prompt; a Stop from its observer keeps the gate closed", async () => {
-        // The reminder's run first calls a tool, so its run is still going when the SDK accepted the prompt (as with the CLI).
-        const told = { name: "send_session_message", args: { session_id: "parent-1", subject: "FYI", body: "still on it" } };
+        // The reminder's run starts only after send() resolved, as the CLI's run does once it accepted the prompt (delayMs).
         const reminderTurn = async ({ stopOnEvent }) => {
-            const h = stepChild([{ assistantContent: "It seems fine." }, { toolCalls: [told], assistantContent: "Still fine." },
+            const h = stepChild([{ assistantContent: "It seems fine." }, { delayMs: 20, assistantContent: "Still fine." },
                 { assistantContent: "never sent" }]);
             const live = new LiveTurnControl({ sessionId: "step-child", turn: 0, start: 0,
                 abort: async reason => { h.managed.requestStop(reason); h.managed.abort(); } });
