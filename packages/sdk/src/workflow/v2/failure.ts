@@ -18,7 +18,7 @@ const UNAVAILABLE_SQLSTATES: ReadonlySet<string> = new Set([
 ]);
 /** Socket and lookup errors of a connection that could not be made or was lost. */
 const UNAVAILABLE_ERRNOS: ReadonlySet<string> = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "EHOSTUNREACH", "ENETUNREACH"]);
-const UNAVAILABLE_TEXT = /too many connections|remaining connection slots|connection terminated|timeout exceeded when trying to connect|could not connect|connection refused|cannot connect now|the database system is (starting|shutting) down|pool (is )?(closed|ended|draining)/i;
+const UNAVAILABLE_TEXT = /too many connections|remaining connection slots|connection terminated|timeout exceeded when trying to connect|could not connect|connection refused|cannot connect now|the database system is (starting up|shutting down)|pool (is )?(closed|ended|draining)/i;
 const MESSAGE_MAX = 500;
 
 /** A message that is safe to show: no URL, no secret value, one line, bounded. */

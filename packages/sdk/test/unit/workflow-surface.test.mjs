@@ -76,7 +76,8 @@ test("workflow v2 tools are declared beside spawn_workflow with typed operations
         ["cancel", "pause", "publish", "publish_and_start", "recover", "replace_definition", "resume", "set_vars", "start"]);
     assert.deepEqual([...update.parameters.required].sort(), ["operation", "operation_id", "workflow_id"]);
     assert.deepEqual(Object.keys(update.parameters.properties).sort(),
-        ["definition_hash", "delete", "expected_kv_revision", "expected_revision", "inputs", "operation", "operation_id", "reason", "run_id", "set", "vars", "workflow_id", "yaml"]);
+        ["definition_hash", "delete", "expected_kv_revision", "expected_revision", "inputs", "notify_on_completion", "operation", "operation_id", "reason", "run_id", "set", "vars",
+            "workflow_id", "yaml"]);
     assert.ok(update.description.includes("recover") && update.description.includes("needsRecovery"), "update_workflow describes recover");
     for (const operation of ["set_vars", "pause", "resume", "cancel", "expected_kv_revision"]) {
         assert.ok(update.description.includes(operation), `update_workflow describes ${operation}`);

@@ -74,9 +74,9 @@ test("anything that is not such a cursor is refused, and nothing is guessed", ()
     refused({ ...workflowReadCursor("wf", "run-1", "outbox", POSITIONS.outbox), after: { ...POSITIONS.outbox, exchangeId: 7 } });
 });
 
-test("each refusal of a read has its HTTP status: what does not exist 404, an invalid read 400", () => {
+test("each refusal of a read has its HTTP status: what does not exist 404, an invalid read 400, an unavailable store 503", () => {
     assert.deepEqual({ ...WORKFLOW_READ_STATUS }, {
         WORKFLOW_NOT_FOUND: 404, RUN_NOT_FOUND: 404, EXECUTION_NOT_FOUND: 404, KV_REVISION_NOT_FOUND: 404, DEFINITION_REVISION_NOT_FOUND: 404, WORKFLOW_CURSOR_INVALID: 400,
-        WORKFLOW_READ_INVALID: 400,
+        WORKFLOW_READ_INVALID: 400, WORKFLOW_STORE_UNAVAILABLE: 503,
     });
 });
