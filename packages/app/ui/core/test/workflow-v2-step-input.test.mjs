@@ -315,9 +315,61 @@ test("UI-4: an earlier read of a step's inputs that answers last is dropped; clo
     assert.equal(h.view().stepInput, null, "closed: the read on its way was dropped");
 });
 
-test("UI-4: the editor keeps the person's changed fields when the same step is read again, until they load the new reading", () => {
-    const source = String(WorkflowV2StepInputEditor);
-    assert.match(source, /if \(dirty && value && appliedStep\.current === chosen\) \{ setWaiting\(value\); return; \}/);
-    assert.match(source, /Load the new inputs/);
-    assert.match(source, /const changeRows = update => \{ setRows\(update\); setDirty\(true\);/);
+// Verification of UI-4 (M-16): the editor's fields through reads of the same step, by the transitions the editor uses.
+test("UI-4: changed fields survive a read of the same step (loading, then loaded or failed); the new reading waits", async () => {
+    const { workflowV2StepInputEditorState: next, workflowV2StepInputEdited: edited, workflowV2StepInputLoadWaiting: loadWaiting } =
+        await import("../src/workflow-v2-commands.js");
+    const reading = revision => ({ ...STEP_INPUT, revision });
+    const names = state => state.rows.map(row => row.name);
+    let state = next(null, { step: "review", value: reading(2) });
+    assert.equal(state.dirty, false);
+    const firstNames = names(state);
+    assert.ok(firstNames.length > 0);
+    // The person changes a field.
+    state = edited(state, rows => rows.map((row, index) => (index === 0 ? { ...row, source: "fixed", detail: "kept" } : row)));
+    assert.equal(state.dirty, true);
+    const changed = state.rows[0];
+    // A newer draft revision is read: loading (no value), then the new reading.
+    state = next(state, { step: "review", value: null });
+    assert.deepEqual(state.rows[0], changed, "kept while loading");
+    const newer = reading(3);
+    state = next(state, { step: "review", value: newer });
+    assert.deepEqual(state.rows[0], changed, "kept when the new reading arrives");
+    assert.equal(state.waiting, newer);
+    // A failed read (no value again) keeps them too.
+    state = next(state, { step: "review", value: null });
+    assert.deepEqual(state.rows[0], changed);
+    // Loading the new reading replaces them, and the editor is clean again.
+    state = loadWaiting(state);
+    assert.equal(state.dirty, false);
+    assert.equal(state.waiting, null);
+    assert.notEqual(state.rows[0].detail, "kept");
+});
+
+test("UI-4: another step takes its own reading; back on the first step, its reading as it is (A-B-A)", async () => {
+    const { workflowV2StepInputEditorState: next, workflowV2StepInputEdited: edited } = await import("../src/workflow-v2-commands.js");
+    const a = { ...STEP_INPUT, state: "review", revision: 2 };
+    const b = { ...STEP_INPUT, state: "draft_reply", revision: 2, fields: [] };
+    let state = next(null, { step: "review", value: a });
+    state = edited(state, rows => rows.map((row, index) => (index === 0 ? { ...row, detail: "changed on A" } : row)));
+    state = next(state, { step: "draft_reply", value: null });
+    assert.equal(state.step, "draft_reply");
+    assert.equal(state.dirty, false);
+    state = next(state, { step: "draft_reply", value: b });
+    assert.equal(state.step, "draft_reply");
+    state = next(state, { step: "review", value: a });
+    assert.equal(state.step, "review");
+    assert.notEqual(state.rows[0]?.detail, "changed on A");
+});
+
+test("UI-4: fields changed before the first reading arrives are kept, and that reading waits", async () => {
+    const { workflowV2StepInputEditorState: next, workflowV2StepInputEdited: edited } = await import("../src/workflow-v2-commands.js");
+    let state = next(null, { step: "review", value: null });
+    state = edited(state, rows => [...rows, { name: "extra", required: false, declared: false, type: null, description: null, source: "fixed", detail: "1", keepable: false, keepText: null }]);
+    const first = { ...STEP_INPUT, revision: 2 };
+    state = next(state, { step: "review", value: first });
+    assert.deepEqual(state.rows.map(row => row.name), ["extra"]);
+    assert.equal(state.waiting, first);
+    // The same reading again changes nothing.
+    assert.equal(next(state, { step: "review", value: first }), state);
 });

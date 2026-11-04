@@ -996,6 +996,34 @@ export const WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS = Object.freeze({
  * previous step's field path, or a fixed value as JSON, a text value as it is). `keep` is offered only for a field whose
  * value is written in a way the editor does not change (a default, a value built of several parts). Pure.
  */
+/**
+ * The step-input editor's fields as a value (adversarial review UI-4 and its verification): `step` the step they are
+ * of, `rows` the fields shown, `dirty` whether the person changed them, `waiting` a newer reading of the same step held
+ * back while they are changed. Given the step chosen and its reading (`value`, null while it is read or when the read
+ * failed): the person's changed fields of the same step are kept through a read and its failure, and a new reading
+ * then waits (workflowV2StepInputLoadWaiting takes it); another step, or unchanged fields, take the reading as it is.
+ * Pure.
+ */
+export function workflowV2StepInputEditorState(previous, { step, value }) {
+    if (previous && previous.dirty && previous.step === step) {
+        if (!value || previous.waiting === value) return previous;
+        return { ...previous, waiting: value };
+    }
+    if (previous && !previous.dirty && previous.step === step && previous.reading === value) return previous;
+    return { step, rows: workflowV2StepInputRows(value), dirty: false, waiting: null, reading: value ?? null };
+}
+
+/** The person changed the fields (`rows`, or a function of the current ones): they are kept until loaded again. Pure. */
+export function workflowV2StepInputEdited(previous, rows) {
+    return { ...previous, rows: typeof rows === "function" ? rows(previous.rows) : rows, dirty: true };
+}
+
+/** The person loads the newer reading held back while they changed the fields. Pure. */
+export function workflowV2StepInputLoadWaiting(previous) {
+    if (!previous.waiting) return previous;
+    return { step: previous.step, rows: workflowV2StepInputRows(previous.waiting), dirty: false, waiting: null, reading: previous.waiting };
+}
+
 export function workflowV2StepInputRows(stepInput) {
     const fields = Array.isArray(stepInput?.fields) ? stepInput.fields.filter(isRecord) : [];
     return fields.map(field => {

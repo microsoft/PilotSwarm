@@ -9,6 +9,7 @@ import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
     workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
+    workflowV2StepInputEditorState, workflowV2StepInputEdited, workflowV2StepInputLoadWaiting,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
     workflowV2AnswerSourceText, WORKFLOW_V2_ASK_PARENT_KINDS, workflowV2AskParentSent, workflowV2InputsBoxEmpty, workflowV2SampleInputs,
 } from "../../core/src/workflow-v2-commands.js";
@@ -905,7 +906,10 @@ export function WorkflowV2YamlView({ controller, sessionId, model, reads = null 
  */
 export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded, preview, draftRevision, draftYaml, busy, unsaved }) {
     const [state, setState] = React.useState(steps[0]);
-    const [rows, setRows] = React.useState(() => workflowV2StepInputRows(loaded?.state === steps[0] && loaded.phase === "loaded" ? loaded.value : null));
+    const [edit, setEdit] = React.useState(() => workflowV2StepInputEditorState(null,
+        { step: steps[0], value: loaded?.state === steps[0] && loaded.phase === "loaded" ? loaded.value : null }));
+    const rows = edit.rows;
+    const waiting = edit.waiting;
     const [error, setError] = React.useState(null);
     const [newField, setNewField] = React.useState("");
     const listId = React.useId();
@@ -913,27 +917,17 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
     React.useEffect(() => { controller.loadWorkflowStepInput?.(sessionId, chosen)?.catch?.(() => {}); }, [controller, sessionId, chosen, draftRevision]);
     const mine = loaded && loaded.state === chosen ? loaded : null;
     const value = mine?.phase === "loaded" ? mine.value : null;
-    // UI-4: the person's changed fields are kept when the same step's inputs are read again (a newer draft revision);
-    // the newer reading waits until they choose to load it. Another step, or no change, takes the reading at once.
-    const [dirty, setDirty] = React.useState(false);
-    const [waiting, setWaiting] = React.useState(null);
-    const appliedStep = React.useRef(chosen);
-    React.useEffect(() => {
-        if (dirty && value && appliedStep.current === chosen) { setWaiting(value); return; }
-        appliedStep.current = chosen;
-        setRows(workflowV2StepInputRows(value));
-        setError(null);
-        setDirty(false);
-        setWaiting(null);
-    }, [value]);
+    // UI-4: the person's changed fields of a step are kept while its inputs are read again (loading, a failed read) and
+    // when a newer reading arrives, which then waits until they choose to load it (workflowV2StepInputEditorState).
+    React.useEffect(() => { setEdit(current => workflowV2StepInputEditorState(current, { step: chosen, value })); }, [value, chosen]);
+    // A reading taken as it is clears the last refusal shown.
+    React.useEffect(() => { if (!edit.dirty) setError(null); }, [edit.reading, edit.step]);
     const loadWaiting = () => {
-        setRows(workflowV2StepInputRows(waiting));
-        setDirty(false);
-        setWaiting(null);
+        setEdit(current => workflowV2StepInputLoadWaiting(current));
         controller.forgetWorkflowStepInputPreview?.(sessionId);
     };
     // Any change to the fields drops the prepared change (and one still being prepared): it no longer says what is shown.
-    const changeRows = update => { setRows(update); setDirty(true); controller.forgetWorkflowStepInputPreview?.(sessionId); };
+    const changeRows = update => { setEdit(current => workflowV2StepInputEdited(current, update)); controller.forgetWorkflowStepInputPreview?.(sessionId); };
     const setRow = (index, patch) => changeRows(current => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
     const request = workflowV2StepInputRequest(rows);
     // A prepared change is shown, and saved, only while it was prepared from exactly these fields.
