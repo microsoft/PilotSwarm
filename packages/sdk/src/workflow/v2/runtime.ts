@@ -1387,19 +1387,49 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
         if (rerouted) continue;
 
-        // 1a. Paused, as 1.8.0. A request's deadline is not paused: its elapse waits for the resume to be collected.
+        // 1a. Paused, as 1.8.0: nothing is admitted and no result is routed until the resume. The deadlines keep running
+        // (adversarial review RT-6): the run's (D03), and each pending state's own. A pending state past its deadline is
+        // elapsed now (the store's clock decides) and an agent state's child is ended now; its result is routed after the
+        // resume, as any other. The paused timer wakes at the nearest deadline.
         if (paused) {
             publishStatus(ctx, input, plan, state, "waiting");
-            // A paused run's deadline keeps running (D03): it wakes at the deadline too.
             let pausedTimerMs = plan.wakeBackstopMs;
-            if (runDeadlineMs !== null) {
+            const nodeDeadlines = state.cursors.flatMap(cursor => cursor.pending !== null && cursor.deadlineMs !== null
+                ? [{ nodeExecutionId: cursor.pending, deadlineMs: cursor.deadlineMs }] : []);
+            if (runDeadlineMs !== null || nodeDeadlines.length > 0) {
                 const current = parseNow(yield ctx.utcNow());
-                if (current >= runDeadlineMs) {
+                if (runDeadlineMs !== null && current >= runDeadlineMs) {
                     const expired = yield* expireRun();
                     if (expired !== null) return expired;
                     continue;
                 }
-                pausedTimerMs = Math.max(1, Math.min(pausedTimerMs, runDeadlineMs - current));
+                const due = nodeDeadlines.filter(wait => wait.deadlineMs <= current).map(wait => wait.nodeExecutionId);
+                if (due.length > 0) {
+                    const notDue = parseElapse(yield* storeTagged(ctx, R.elapse, { runId: input.runId, nodeExecutionIds: due }));
+                    const reported = notDue.length > 0 ? parseNow(yield ctx.utcNow()) : current;
+                    for (const nodeExecutionId of due) {
+                        const owner = state.cursors.find(cursor => cursor.pending === nodeExecutionId);
+                        expect(owner !== undefined, `elapsed ${nodeExecutionId} is not pending`);
+                        const later = notDue.find(wait => wait.nodeExecutionId === nodeExecutionId);
+                        if (later) {
+                            owner.deadlineMs = reported + later.remainingMs;
+                            continue;
+                        }
+                        // Decided by its deadline: its result waits for the resume; it is not elapsed again.
+                        owner.deadlineMs = null;
+                        if (plan.nodes[owner.nodeId]?.type === "agent" && (plan.test !== true || plan.realAgents === true)) {
+                            try {
+                                yield* storeTagged(ctx, R.endAgent, { runId: input.runId, nodeExecutionId });
+                            } catch (error) {
+                                ctx.traceWarn(`[workflow-v2] run=${input.runId} the child of ${nodeExecutionId} was not ended yet: ${workflowErrorMessage(error)}`);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if (runDeadlineMs !== null) pausedTimerMs = Math.min(pausedTimerMs, runDeadlineMs - current);
+                for (const wait of nodeDeadlines) pausedTimerMs = Math.min(pausedTimerMs, wait.deadlineMs - current);
+                pausedTimerMs = Math.max(1, pausedTimerMs);
             }
             const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(pausedTimerMs)));
             if (raced.index === 0) {

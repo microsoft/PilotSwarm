@@ -536,6 +536,65 @@ describe("workflow v2 parallel states: controller 1.9.0 (inactive, test-only reg
     });
 });
 
+/**
+ * Adversarial review RT-6: a paused run still keeps its pending states' deadlines. Two branches: the first takes a
+ * 1-second wait, the second a 4-second wait. The run is paused while both wait. The first wait elapses and its next
+ * state is refused (the controller is now on its paused path); the second wait must still elapse at its deadline while
+ * the run is paused, and nothing after it is admitted until the resume.
+ */
+function pausedDeadlines() {
+    return {
+        ...head("paused-deadlines"),
+        initialInput: { items: [1, 2] },
+        initial: "fan",
+        states: {
+            fan: {
+                type: "parallel", forEach: "${input.items}", concurrency: 2,
+                body: {
+                    initial: "pick",
+                    states: {
+                        pick: {
+                            type: "script", outcomes: ["short", "long"],
+                            source: "await setResult(context.branch.index === 0 ? \"short\" : \"long\", {});\n",
+                            transition: { next: { short: "shortWait", long: "longWait" } },
+                        },
+                        shortWait: { type: "wait", seconds: 1, transition: { next: { elapsed: "done" } } },
+                        longWait: { type: "wait", seconds: 4, transition: { next: { elapsed: "done" } } },
+                        done: { type: "terminal", outcome: "succeeded", output: "${branch.item}" },
+                    },
+                },
+                transition: { next: { joined: "finished", blocked: "stuck", failure: "failed" } },
+            },
+            ...OUTER,
+        },
+    };
+}
+
+describe("workflow v2 parallel states: deadlines while paused (controller 1.9.0, test-only)", () => {
+    it("elapses a pending state at its deadline while the run is paused, and admits nothing until the resume", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId, at } = await started(h, pausedDeadlines());
+            const longWait = at(1, "longWait");
+            await until(async () => (await h.store.readNodeExecution(longWait))?.state === "pending"
+                && (await h.store.readNodeExecution(at(0, "shortWait")))?.state === "pending", "both waits");
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "pause", runId: null, reason: "look first" },
+                { actor: ACTOR, operationId: "pause-1" });
+            // The long wait elapses at its deadline though the run is paused.
+            await until(async () => (await h.store.readNodeExecution(longWait))?.state === "completed", "the long wait to elapse while paused", 30_000);
+            expect(await h.store.readNodeExecution(longWait)).toMatchObject({ outcome: "elapsed" });
+            expect((await h.store.readRun(runId)).status).toBe("paused");
+            // Nothing after the waits was admitted.
+            const admitted = (await h.store.listNodeExecutions(runId)).map(node => node.nodeId);
+            expect(admitted.filter(nodeId => nodeId === "done")).toEqual([]);
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "resume", runId: null, reason: null }, { actor: ACTOR, operationId: "resume-1" });
+            expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: [1, 2] });
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
 // Adapted from the independent test design 090ad919-r2 (P1): a worker restart while every branch of a parallel state
 // waits (design 02 "Parallel scope and join": all_required, duplicates do not count; R21, R27; T101). Two runtimes run in
 // turn over one catalog and provider (the wait restart test's split); each is stopped once. The precondition is read from
