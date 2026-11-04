@@ -396,6 +396,17 @@ export interface ControllerState {
     catchAllEntered: boolean;
     /** Controller 1.9.0: the parallel states whose branches run (absent: none; 1.8.0 never has any). */
     parallels?: ControllerParallel[];
+    /**
+     * Controller 1.9.0 (J1d): cut branches whose work's effect or child could not be stopped or ended yet, with why they
+     * were cut; tried again at most once per backstop period, paused or not, until none is owed (absent: none).
+     */
+    owedCuts?: ControllerOwedCut[];
+}
+
+/** A cut branch whose work's effect stop or child end is still owed (J1d), and why it was cut. */
+export interface ControllerOwedCut {
+    scopeId: string;
+    reason: BranchCancelReason;
 }
 
 /**
@@ -552,12 +563,19 @@ function parseControllerState(value: unknown): ControllerState {
             cancelled: item.cancelled as boolean,
         };
     });
+    expect(state.owedCuts === undefined || Array.isArray(state.owedCuts), "owedCuts is not a list");
+    const owedCuts = state.owedCuts === undefined ? undefined : (state.owedCuts as unknown[]).map((raw, index) => {
+        const item = record(raw, `owed cut ${index}`);
+        expect(item.reason === "failFast" || item.reason === "join" || item.reason === "timeout", `owed cut ${index} reason is invalid`);
+        return { scopeId: text(item.scopeId, "scopeId"), reason: item.reason as BranchCancelReason };
+    });
     return {
         irSha256: text(state.irSha256, "irSha256"),
         steps: state.steps,
         ordinals: parsedOrdinals,
         catchAllEntered: state.catchAllEntered === true,
         ...(parallels !== undefined ? { parallels } : {}),
+        ...(owedCuts !== undefined ? { owedCuts } : {}),
         cursors: state.cursors.map((cursor, index) => {
             const item = record(cursor, `cursor ${index}`);
             const deadlineMs = item.deadlineMs === undefined || item.deadlineMs === null ? null : item.deadlineMs;
@@ -758,6 +776,17 @@ function parseJoinAnswer(value: unknown): { decided: true; cut: BranchCancelReas
     if (answer.decided === false) return { decided: false };
     expect(answer.decided === true && (answer.cut === "join" || answer.cut === "timeout" || answer.cut === "failFast"), "join result is invalid");
     return { decided: true, cut: answer.cut };
+}
+
+/**
+ * The answer of the cancellation of cut branches (controller 1.9.0): the branches whose work's effect or child could not
+ * be stopped or ended yet (J1d; none in an answer recorded before J1d, whose activity failed instead while any was owed).
+ */
+function parseBranchCancel(value: unknown): { owedScopeIds: string[] } {
+    const answer = record(value, "cancel branches result");
+    if (answer.owedScopeIds === undefined) return { owedScopeIds: [] };
+    expect(Array.isArray(answer.owedScopeIds), "owedScopeIds is not a list");
+    return { owedScopeIds: answer.owedScopeIds.map((id, index) => text(id, `owedScopeIds[${index}]`)) };
 }
 
 /** The route a stored result takes: its business outcome, or its error code, or the failure catch; null when unhandled. */
@@ -1231,6 +1260,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     const pausedEnded = new Set<string>();
     // When the waiting requests' responders were last observed (once per backstop period; not carried by continue-as-new).
     let observedAtMs: number | null = null;
+    // When the owed stops and ends of cut branches were last tried (J1d; once per backstop period; not carried by
+    // continue-as-new: the next execution tries them at its first chance).
+    let owedTriedAtMs: number | null = null;
     // The run's accepted stop, as the store last reported its deadline (not carried by continue-as-new: a stop is never
     // withdrawn, and the next execution reads it again at its first admission or collection).
     let stopping: { deadlineMs: number } | null = null;
@@ -1289,6 +1321,50 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     };
     /** Node executions whose branches a cancellation dropped in this pass (their results go nowhere). */
     const dropped = new Set<string>();
+    const owedCuts = (): ControllerOwedCut[] => state.owedCuts ?? [];
+    /** Record the branches of `scopeIds` whose stop or end is still owed (J1d), each once; none owed clears them. */
+    const owe = (scopeIds: readonly string[], reason: BranchCancelReason, tried: readonly string[] = scopeIds): void => {
+        const kept = owedCuts().filter(item => !tried.includes(item.scopeId));
+        const added = scopeIds.filter(scopeId => !kept.some(item => item.scopeId === scopeId)).map(scopeId => ({ scopeId, reason }));
+        const next = [...kept, ...added];
+        if (next.length > 0) state.owedCuts = next;
+        else delete state.owedCuts;
+    };
+    /**
+     * Cut the branches of `scopeIds` (review J1C-1 and J1d): the store decides their pending work cancelled for `reason`
+     * (failFast when absent, as an IR 8 plan's history records it), which is retried until it is stored, as before. Then
+     * every effect is asked to stop and every agent child is ended, each once: one that could not be is owed, and the
+     * controller goes on at once (retryOwedCuts tries it again; a run's end ends every owed child). The controller no
+     * longer waits, for up to half an hour, for a child that cannot be ended.
+     */
+    const cutWork = function* (scopeIds: string[], reason?: Exclude<BranchCancelReason, "failFast">): Generator<ScheduledTask, void, unknown> {
+        const answer = parseBranchCancel(yield* persistentlyTagged(ctx, R.cancelBranches, { runId: input.runId, scopeIds, ...(reason ? { reason } : {}) }));
+        if (answer.owedScopeIds.length > 0) {
+            ctx.traceWarn(`[workflow-v2] run=${input.runId} cut branches ${answer.owedScopeIds.join(", ")} still owe a stop or an end; tried again later`);
+        }
+        owe(answer.owedScopeIds, reason ?? "failFast", scopeIds);
+    };
+    /**
+     * Try the owed stops and ends of cut branches again (J1d), at most once per backstop period, active, stopping or paused:
+     * one store attempt per reason (its short retries), never more. What is still owed stays owed; a failure is traced, and
+     * the controller goes on (the store already decided their work; nothing of theirs is routed).
+     */
+    const retryOwedCuts = function* (): Generator<ScheduledTask, void, unknown> {
+        if (owedCuts().length === 0) return;
+        const current = parseNow(yield ctx.utcNow());
+        if (owedTriedAtMs !== null && current - owedTriedAtMs < plan.wakeBackstopMs) return;
+        owedTriedAtMs = current;
+        for (const reason of ["failFast", "join", "timeout"] as const) {
+            const scopeIds = owedCuts().filter(item => item.reason === reason).map(item => item.scopeId);
+            if (scopeIds.length === 0) continue;
+            try {
+                const answer = parseBranchCancel(yield* storeTagged(ctx, R.cancelBranches, { runId: input.runId, scopeIds, ...(reason !== "failFast" ? { reason } : {}) }));
+                owe(answer.owedScopeIds, reason, scopeIds);
+            } catch (error) {
+                ctx.traceWarn(`[workflow-v2] run=${input.runId} the owed stops and ends of cut branches were not tried yet: ${workflowErrorMessage(error)}`);
+            }
+        }
+    };
     /**
      * Cancel the branches of `parallel` that still run (their pending work is decided cancelled for `reason`; failFast
      * when absent, as an IR 8 plan's history records it) and record the queued ones not started: their cursors are
@@ -1297,9 +1373,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     const cutBranches = function* (parallel: ControllerParallel, reason?: Exclude<BranchCancelReason, "failFast">): Generator<ScheduledTask, void, unknown> {
         parallel.cancelled = true;
         const others = branchesOf(parallel);
-        if (others.length > 0) {
-            yield* persistentlyTagged(ctx, R.cancelBranches, { runId: input.runId, scopeIds: others.map(item => item.scopeId), ...(reason ? { reason } : {}) });
-        }
+        if (others.length > 0) yield* cutWork(others.map(item => item.scopeId), reason);
         for (const other of others) {
             parallel.results.push({ index: parseBranchScope(other.scopeId)!.index, nodeExecutionId: other.pending, via: "cancelled" });
             if (other.pending !== null) dropped.add(other.pending);
@@ -1380,9 +1454,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     const cutBranch = function* (cursor: ControllerCursor, nodeExecutionId: string | null): Generator<ScheduledTask, void, unknown> {
         const parallel = parallelOf(cursor);
         closeBranches(parallel);
-        if (nodeExecutionId !== null) {
-            yield* persistentlyTagged(ctx, R.cancelBranches, { runId: input.runId, scopeIds: [cursor.scopeId], reason: "timeout" });
-        }
+        if (nodeExecutionId !== null) yield* cutWork([cursor.scopeId], "timeout");
         const first = nodeExecutionId === null && cursor.arrivalRoute === BRANCH_ROUTE && cursor.predecessorId === parallel.nodeExecutionId;
         yield* endBranch(cursor, first ? "not_started" : "cancelled", nodeExecutionId, false);
     };
@@ -1400,6 +1472,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
      */
     const pausedPass = function* (seen: CollectedResult[] | null): Generator<ScheduledTask, { result: ControllerResult | null } | null, unknown> {
         publishStatus(ctx, input, plan, state, "waiting");
+        // J1d: the owed stops and ends of cut branches are tried again while paused too.
+        yield* retryOwedCuts();
         let pausedTimerMs = plan.wakeBackstopMs;
         const realAgent = (nodeId: string): boolean => plan.nodes[nodeId]?.type === "agent" && (plan.test !== true || plan.realAgents === true);
         if (seen !== null) {
@@ -1817,7 +1891,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
 
         // 3. Nothing is ready: wait for a wake (a response's included), a lifecycle command or the nearest deadline (a
-        // stopping run's stop deadline included).
+        // stopping run's stop deadline included). The owed stops and ends of cut branches are tried again first (J1d); the
+        // wait is at most a backstop period, so they are tried that often.
+        yield* retryOwedCuts();
         publishStatus(ctx, input, plan, state, "running");
         const deadlines = waits().map(wait => wait.deadlineMs);
         if (stopping !== null) deadlines.push(stopping.deadlineMs);
@@ -4262,14 +4338,18 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * winner join_timeout: the store cancelled their work when it decided the
      * time limit, so this only finds them). Then the effect of every such
      * script is asked to stop, and the child of every such agent state is
-     * ended. Every one is tried; when one could not be stopped or ended (it is
-     * recorded, workflow.agent_end_failed for a child), the activity fails
-     * after the others, so its durable retry reads the list again and tries
-     * the ones still owed (review J1-R2; as endWorkflowV2RunAgents does at a
-     * run's end): the controller drops the branches only once their work is
-     * stopped, and a loser's child never runs on until the run ends. The list
-     * comes from the store on every execution, and a child already ended is
-     * not ended again.
+     * ended. Every one is tried once (review J1-R2); one that could not be
+     * stopped or ended is recorded (workflow.agent_end_failed for a child)
+     * and its branch is answered owed (`owedScopeIds`; review J1C-1 and J1d):
+     * the controller goes on at once and asks again for those branches at
+     * most once per backstop period, paused or not, so a loser's child does
+     * not run on and the controller does not wait on it (before J1d this
+     * activity failed while any was owed, and its retries held the
+     * controller for up to half an hour). A run's end also ends every owed
+     * child (endWorkflowV2RunAgents). The list comes from the store on every
+     * execution, and a child already ended is not ended again. A store that
+     * cannot be reached fails the activity, as before: the cancellation is
+     * not stored until it is.
      */
     runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.cancelBranches, async (actx, rawInput) => {
         const input = record(rawInput, "cancel branches input");
@@ -4285,10 +4365,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!client) throw new Error("Workflow branch cancellation needs the durable client.");
         const { cancelled } = await store.cancelBranchScopes({
             runId: run.runId, scopeIds, reason,
-            projection: decided => ({
+            // J1d: the event names only the branches whose work this cut (still running), never one that had already ended.
+            projection: (decided, cut) => ({
                 sessionId: run.workflowSessionId,
                 events: [{ eventType: "workflow.branches_cancelled", data: {
-                    runId: run.runId, scopeIds: scopeIds.slice(0, WORKFLOW_V2_PARALLEL_MAX_ITEMS), cancelledCount: decided.length,
+                    runId: run.runId, scopeIds: cut.slice(0, WORKFLOW_V2_PARALLEL_MAX_ITEMS), cancelledCount: decided.length,
                     cancelled: decided.slice(0, WORKFLOW_V2_PARALLEL_MAX_ITEMS), ...(reason !== "failFast" ? { reason } : {}),
                 } }],
                 update: { touch: true },
@@ -4325,8 +4406,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 ...(reason === "failFast" ? { failFast: true } : { branchesCancelled: reason }) } }]);
         }
         if (owed.length > 0) {
-            throw new Error(`The cancelled branch states ${owed.slice(0, 20).join(", ")}${owed.length > 20 ? ` and ${owed.length - 20} more` : ""} `
-                + "were not stopped or ended yet; this is tried again.");
+            actx.traceWarn(`[workflow-v2] run=${run.runId} the cancelled branch states ${owed.slice(0, 20).join(", ")}`
+                + `${owed.length > 20 ? ` and ${owed.length - 20} more` : ""} were not stopped or ended yet; their branches are owed.`);
+            // J1d: the branches still owed, in the order named.
+            const owedScopes = new Set<string>();
+            for (const nodeExecutionId of owed) {
+                const executed = await store.readNodeExecution(nodeExecutionId);
+                if (executed) owedScopes.add(executed.scopeId);
+            }
+            return { cancelled: cancelled.length, owedScopeIds: scopeIds.filter(scopeId => owedScopes.has(scopeId)) };
         }
         return { cancelled: cancelled.length };
     });

@@ -376,6 +376,21 @@ Each running script state holds one of the worker's activity slots
 runs, and agent turns use the same slots. Raise the setting, or keep scripts
 short, when workflows run beside busy agents.
 
+Size the slots for parallel states too. Each branch that runs a script holds
+a slot until the script ends. The controller's own steps (collecting results,
+admitting the next step, deciding a join, cancelling the other branches) need
+a free slot as well. With fewer slots than running branches plus one, the
+branches run in waves and the controller waits behind them. The result does
+not change: a join of the first k still takes the first k successes that the
+store saved, and a time limit is still decided by the store's clock. But the
+decision comes later, and a branch that would have been cancelled can finish
+first (it keeps its result and is not a winner). Across a deployment's
+workers, give at least the `concurrency` of the widest parallel state that
+runs scripts plus one, and add the slots its agents use. If a cancelled
+branch's script or agent chat cannot be stopped at once, the controller goes
+on and tries again at most once per wake period; the run's end ends any agent
+chat still owed.
+
 Isolation, in this version:
 
 - A script gets a fresh temporary directory as its working directory and

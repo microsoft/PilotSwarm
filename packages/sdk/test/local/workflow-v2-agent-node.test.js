@@ -25,8 +25,9 @@
  *   IR 9, the first decided agent's failed end, and the node limit end
  *   nothing before the resume); an agent state in a parallel branch that the
  *   parallel state's own time limit cancels (IR 9) has its child ended; the
- *   child of a loser branch whose end fails is ended once the end works,
- *   while the run still runs (review J1-R2).
+ *   child of a loser branch whose end fails is owed: the run goes on at
+ *   once, and the end is tried again, running or paused, until it works
+ *   (reviews J1-R2 and J1C-1, J1d).
  *
  * The child session is a test double (an orchestration that records the
  * messages its queue gets); the test completes the state through the real
@@ -790,9 +791,10 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
         }
     });
 
-    // Review J1-R2 (owner decision join-k-of-n): the cancellation of a join's losers fails while a child's end fails, so its
-    // durable retry ends that child once the end works; the child does not run on until the run ends.
-    it("ends the child of a loser agent branch whose end fails at first, while the run still runs: the cancellation is tried again", { timeout: TIMEOUT }, async () => {
+    // Review J1-R2 and J1C-1 (owner decision join-k-of-n, J1d): a loser's child whose end fails is owed. The controller goes on
+    // at once (it no longer waits on that end), and tries the end again at most once per backstop period, active or paused
+    // (the paused collector of review R2-RT-1), until the child is ended; the child does not run on until the run ends.
+    it("J1d: ends the child of a loser agent branch whose end fails at first: the run goes on at once, and the end is tried again, paused too", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const { workflowSessionId, runId } = await started(h, RACE_AGENT_YAML);
@@ -817,25 +819,34 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
             };
             expect(await completeAs(h, winner.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "win-1" }))
                 .toMatchObject({ ok: true });
-            // The join decides with the winner and cancels the loser's state for it; its child's end is tried, fails, and is
-            // tried again (the activity fails while the end is owed).
+            // The join decides with the winner and cancels the loser's state for it; the loser's end fails and is owed.
             await until(async () => (await h.store.readNodeExecution(fan))?.state === "completed", "the join");
             expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "joined", output: [{ index: 0, output: { verdict: "ok" } }] });
             expect(await h.store.readNodeExecution(loser.nodeExecutionId)).toMatchObject({ outcome: "cancelled", winner: "join" });
-            await until(async () => blocked.attempts >= 2 || null, "the loser's end to be tried again", 60_000);
+            // The run goes on past the join while the end is still owed: the controller did not wait on it.
+            await until(async () => (await h.store.listNodeExecutions(runId)).some(node => node.nodeId === "hold" && node.state === "pending"),
+                "the run to go on after the join while the end is owed", 30_000);
+            expect(blocked.on).toBe(true);
+            // The end is tried again at later wakes, while the run runs.
+            await until(async () => blocked.attempts >= 2 || null, "the loser's end to be tried again", 30_000);
             expect((await childMessages(h, loser.childSessionId)).filter(message => message?.type === "cmd")).toEqual([]);
-            // The store answers again: the next attempt ends the child, and only then does the run go on past the join.
+            // Paused (the controller finds it at its next collection: every cursor waits on work), the end is still tried.
+            await pauseRun(h, workflowSessionId);
+            const atPause = blocked.attempts;
+            await until(async () => blocked.attempts >= atPause + 2 || null, "the loser's end to be tried again while paused", 30_000);
+            expect((await h.store.readRun(runId)).status).toBe("paused");
+            // The store answers again: the next attempt, while still paused, ends the child.
             blocked.on = false;
             expect(await lifecycleCommand(h, loser.childSessionId)).toMatchObject({ cmd: "cancel", id: `workflow-agent-end:${loser.nodeExecutionId}` });
             expect(await h.store.readAgentInvocation(loser.nodeExecutionId)).toMatchObject({ endRequested: "cancel", endSentAt: expect.any(Date) });
-            await until(async () => (await h.store.listNodeExecutions(runId)).some(node => node.nodeId === "hold" && node.state === "pending"),
-                "the run to go on after the join");
-            expect((await h.store.readRun(runId)).status).toBe("running");
+            expect((await h.store.readRun(runId)).status).toBe("paused");
             const events = await h.catalog.getSessionEvents(workflowSessionId, 0, 500);
             expect(events.filter(event => event.eventType === "workflow.agent_end_failed" && event.data.nodeExecutionId === loser.nodeExecutionId).length)
-                .toBeGreaterThanOrEqual(2);
-            // The winner's child was told done.
+                .toBeGreaterThanOrEqual(atPause + 2);
+            // The winner's child was told done; the cancellation event names the loser's branch only (J1d).
             expect(await lifecycleCommand(h, winner.childSessionId)).toMatchObject({ cmd: "done" });
+            expect(events.filter(event => event.eventType === "workflow.branches_cancelled").map(event => event.data))
+                .toEqual([expect.objectContaining({ scopeIds: [branchScopeId(fan, 1)], cancelled: [loser.nodeExecutionId], reason: "join" })]);
         } finally {
             await h.stop();
         }

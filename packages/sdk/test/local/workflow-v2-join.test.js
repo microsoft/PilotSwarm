@@ -791,6 +791,7 @@ describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive,
                 });
             }
             const events = await eventsOf(h, workflowSessionId);
+            // J1d: the cancellation names only the branches still running; the winner (#0) ended at its terminal and is not cut.
             expect(events.filter(event => event.eventType === "workflow.branches_cancelled").map(event => event.data)).toEqual([expect.objectContaining({
                 runId, scopeIds: [1, 2].map(index => branchScopeId(fan, index)), cancelled: [at(1, "work"), at(2, "work")].sort(), cancelledCount: 2, reason: "join",
             })]);
@@ -1188,8 +1189,9 @@ describe("workflow v2 parallel joins and time limits, J1b: controller 1.9.0 (ina
             const events = await eventsOf(h, workflowSessionId);
             expect(events.filter(event => event.data?.nodeExecutionId === fan && event.eventType !== "workflow.state_started").map(event => event.eventType))
                 .toEqual(["workflow.state_completed"]);
+            // J1d: the join due cut only the branch still running, never the winner, whose terminal is admitted next.
             expect(events.filter(event => event.eventType === "workflow.branches_cancelled").map(event => event.data))
-                .toEqual([expect.objectContaining({ cancelled: [at(1, "hold")], reason: "timeout" })]);
+                .toEqual([expect.objectContaining({ scopeIds: [branchScopeId(fan, 1)], cancelled: [at(1, "hold")], reason: "timeout" })]);
         } finally {
             await h.stop();
         }

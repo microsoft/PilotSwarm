@@ -6137,7 +6137,8 @@ export class WorkflowStore {
      * A run that has ended, or whose session was deleted, changes nothing
      * here: its end decided what was pending.
      */
-    async cancelBranchScopes(input: { runId: string; scopeIds: string[]; reason?: BranchCancelReason; projection?: (cancelled: string[]) => SessionProjection })
+    async cancelBranchScopes(input: { runId: string; scopeIds: string[]; reason?: BranchCancelReason;
+        projection?: (cancelled: string[], scopeIds: string[]) => SessionProjection })
         : Promise<{ active: boolean; cancelled: Array<{ nodeExecutionId: string; nodeType: string; reason: BranchCancelReason }> }> {
         const reason = input.reason ?? "failFast";
         return this.transaction(async client => {
@@ -6151,12 +6152,14 @@ export class WorkflowStore {
                         SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $3, output = NULL,
                             winner = $4, completed_at = clock_timestamp()
                       WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND state = 'pending'
-                      RETURNING node_execution_id`,
+                      RETURNING node_execution_id, scope_id`,
                     [input.runId, input.scopeIds, canonicalJson(branchCancelError(reason)), BRANCH_CANCEL_WINNERS[reason]]);
                 const now = decided.map(row => str(row, "node_execution_id")).sort();
                 if (now.length > 0) {
                     await this.decidePendingSendsIn(client, workflowSessionId, input.runId, now);
-                    await this.project(client, input.projection?.(now));
+                    // The branches whose work this cancelled, in the order named (J1d): a branch that had already ended is not one.
+                    const cut = new Set(decided.map(row => str(row, "scope_id")));
+                    await this.project(client, input.projection?.(now, input.scopeIds.filter(scopeId => cut.has(scopeId))));
                 }
             }
             const { rows } = await client.query(
@@ -6290,7 +6293,10 @@ export class WorkflowStore {
         const verdict = parallelVerdict({ join: parallel.join, failFast: parallel.failFast, total, branches: await read(), pastDeadline, timeLimit: input.timeLimit });
         if (verdict.kind === "wait") return { node, cancelled: [], decided: null };
         const reason: BranchCancelReason = verdict.kind === "joined" ? "join" : verdict.kind === "blocked" ? verdict.cancel : "timeout";
-        const cancelled = await this.cancelBranchWorkIn(client, run, scopeIds, reason);
+        // J1d: only the branches still running are cut. A winner is never one of them: it ends at its terminal (a joined
+        // state's winners were decided there; a join due admits their terminals next).
+        const winners = new Set(verdict.kind === "joined" ? verdict.winners.map(branch => branch.index) : verdict.kind === "join_due" ? verdict.winners : []);
+        const cancelled = await this.cancelBranchWorkIn(client, run, scopeIds.filter((_, index) => !winners.has(index)), reason);
         if (verdict.kind === "join_due") return { node, cancelled, decided: null };
         const branches = await read();
         const succeeded = parallelSuccesses(branches).length;
@@ -6354,13 +6360,16 @@ export class WorkflowStore {
                 SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $3, output = NULL,
                     winner = $4, completed_at = clock_timestamp()
               WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND state = 'pending' AND node_type <> 'terminal'
-              RETURNING node_execution_id`,
+              RETURNING node_execution_id, scope_id`,
             [run.runId, scopeIds, canonicalJson(branchCancelError(reason)), BRANCH_CANCEL_WINNERS[reason]]);
         const cancelled = rows.map(row => str(row, "node_execution_id")).sort();
         if (cancelled.length > 0) {
             await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId, cancelled);
+            // J1d: the event names only the branches still running whose work this cut, in index order; a winner, which ended
+            // at its terminal, and a branch that had already ended or never started, are not among them.
+            const cut = new Set(rows.map(row => str(row, "scope_id")));
             await this.project(client, { sessionId: run.workflowSessionId, events: [{ eventType: "workflow.branches_cancelled", data: {
-                runId: run.runId, scopeIds: scopeIds.slice(0, 64), cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 64),
+                runId: run.runId, scopeIds: scopeIds.filter(scopeId => cut.has(scopeId)).slice(0, 64), cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 64),
                 ...(reason !== "failFast" ? { reason } : {}),
             } }], update: { touch: true } });
         }
