@@ -6,6 +6,7 @@ import type {
 } from "./types.js";
 
 type TerminalSessionLike = {
+    sessionKind?: string | null;
     parentSessionId?: string | null;
     isSystem?: boolean;
     rowState?: string | null;
@@ -32,6 +33,12 @@ export function isCompletedTerminalSession(input: TerminalSessionLike): boolean 
 
 export function deriveSessionStatus(input: TerminalSessionLike): PilotSwarmSessionStatus {
     if (input.orchestrationStatus === "Failed") return "failed";
+    // A workflow's row is written by the workflow store, and a terminal one is its run's end. It stands while the
+    // controller finishes (it ends the step children and tells the parent first, still publishing "running"), so a read
+    // in that moment answers the run's end, as the row and the session list do (review note on F-C2).
+    if (input.sessionKind === "workflow" && (input.rowState === "failed" || input.rowState === "completed" || input.rowState === "cancelled")) {
+        return input.rowState;
+    }
     if (isCompletedTerminalSession(input)) return "completed";
     if (input.orchestrationStatus === "Running" && !input.status) {
         if (input.rowState === "error" || input.rowState === "failed" || input.rowState === "completed") {
@@ -58,6 +65,7 @@ export function deriveStatusFromCmsAndRuntime(opts: {
     const row = opts.row ?? null;
     const customStatus = opts.customStatus ?? {};
     return deriveSessionStatus({
+        sessionKind: row?.sessionKind,
         parentSessionId: row?.parentSessionId,
         isSystem: row?.isSystem,
         rowState: row?.state,

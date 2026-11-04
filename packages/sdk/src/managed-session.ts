@@ -3621,6 +3621,9 @@ export class ManagedSession {
         // (Typed by an assertion: it is set in the event handler, so its type must not narrow to null here.)
         let quietedEmptyAnswer = null as CapturedEvent | null;
         let turnRanToEnd = false;
+        // Review Q1 of the owner batch: answer text seen in this run, streamed (a nonempty delta) or final. A run that streamed
+        // text and then got the empty-answer error was cut short, not empty: it is never quieted.
+        let sawAnswerText = false as boolean;
         const textEmittedToolCallRef: { current: { toolName: string; rawContent: string } | null } = { current: null };
 
         // Streaming progress + turn timing state.
@@ -3865,6 +3868,7 @@ export class ManagedSession {
 
                     if (eventType === "assistant.message") {
                         const content = extractAssistantMessageContent({ data: eventData });
+                        if (typeof content === "string" && content.length > 0) sawAnswerText = true;
                         const textToolCall = detectTextEmittedToolCall(content);
                         if (textToolCall) {
                             textEmittedToolCallRef.current = textToolCall;
@@ -3924,6 +3928,7 @@ export class ManagedSession {
                             ? ((eventData as any).deltaContent ?? (eventData as any).delta ?? (eventData as any).content ?? "")
                             : "";
                         if (typeof deltaText === "string") streamingDeltaChars += deltaText.length;
+                        if (typeof deltaText === "string" && deltaText.length > 0) sawAnswerText = true;
                         liveTurn?.messageDelta(eventData);
                         // Don't record the delta itself in collectedEvents —
                         // it's pure noise for replay. Only emit the throttled
@@ -4398,6 +4403,7 @@ export class ManagedSession {
         // and no tool action, no other error, no corrective prompt and no steer. Otherwise it is recorded as before.
         if (quietedEmptyAnswer !== null) {
             const nothingElse = !finalContent
+                && !sawAnswerText
                 && deferredSessionError === null
                 && turnState.pendingActions.length === 0
                 && !collectedEvents.some(e => e.eventType === "tool.execution_start" || e.eventType === "session.error"

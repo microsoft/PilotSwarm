@@ -1331,6 +1331,27 @@ describe("inline control tool execution", () => {
             expect(recorded).not.toContain("session.empty_answer");
         });
 
+        // Review Q1 of the owner batch: text that was streamed and then cut off by the empty-answer error is not an empty answer.
+        it("streamed answer text with no final message, then the empty-answer error, is an error as before", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.scriptedSends = [{ assistantDeltas: ["The child finished: "], assistantContent: null,
+                events: [{ type: "session.error", data: EMPTY }] }];
+            const { result, recorded } = await quietTurn(fakeSession);
+            expect(result.type).toBe("error");
+            expect(result.message).toContain("No response was returned");
+            expect(result.events.some(event => event.eventType === "session.error")).toBe(true);
+            expect(recorded).toContain("session.error");
+            expect(recorded).not.toContain("session.empty_answer");
+        });
+
+        it("an empty streamed delta is not answer text: the turn is still quiet", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.scriptedSends = [{ assistantDeltas: [""], assistantContent: null, events: [{ type: "session.error", data: EMPTY }] }];
+            const { result, recorded } = await quietTurn(fakeSession);
+            expect(result).toMatchObject({ type: "completed", content: "" });
+            expect(recorded).not.toContain("session.error");
+        });
+
         it("an answer with content keeps its content; the error is recorded as before", async () => {
             const fakeSession = new FakeCopilotSession();
             fakeSession.assistantContent = "Noted.";

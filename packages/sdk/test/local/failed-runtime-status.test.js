@@ -1,5 +1,5 @@
 import { describe, it } from "vitest";
-import { deriveStatusFromCmsAndRuntime, resolveStaleRunningRowRecovery, shouldSyncFailedStatus } from "../../src/session-status.ts";
+import { deriveSessionStatus, deriveStatusFromCmsAndRuntime, resolveStaleRunningRowRecovery, shouldSyncFailedStatus } from "../../src/session-status.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
@@ -154,16 +154,31 @@ describe("F-C2: a session read while its orchestration still runs, with its row 
         return { updates, read: () => PilotSwarmClient.prototype._getSessionInfo.call(sdk, row.sessionId) };
     }
 
-    it("leaves a failed workflow row failed, with its lastError", async () => {
+    it("leaves a failed workflow row failed, with its lastError, and answers failed with that error", async () => {
         const { updates, read } = reader(rowOf("workflow"));
-        await read();
+        const info = await read();
         assertEqual(JSON.stringify(updates), "[]", "no write to the workflow's row");
+        // The returned detail agrees with the row (and the session list) while the controller still runs.
+        assertEqual(info.status, "failed", "returned status");
+        assertEqual(info.error, LAST_ERROR, "returned error");
+        assertEqual(info.sessionKind, "workflow");
     });
 
     it("still recovers an agent session's stale failed row to the runtime's status", async () => {
         const { updates, read } = reader(rowOf("agent"));
-        await read();
+        const info = await read();
         assertEqual(JSON.stringify(updates), JSON.stringify([["s-1", { state: "running", lastError: null, waitReason: null }]]));
+        assertEqual(info.status, "running", "an agent's live runtime still wins over its stale row");
+    });
+
+    it("a workflow's terminal row is its status whatever the runtime still publishes; an agent's is not", () => {
+        for (const rowState of ["failed", "completed", "cancelled"]) {
+            assertEqual(deriveSessionStatus({ sessionKind: "workflow", rowState, status: "running", orchestrationStatus: "Running" }), rowState);
+        }
+        assertEqual(deriveSessionStatus({ sessionKind: "workflow", rowState: "running", status: "running", orchestrationStatus: "Running" }), "running");
+        assertEqual(deriveSessionStatus({ sessionKind: "agent", rowState: "failed", status: "running", orchestrationStatus: "Running" }), "running");
+        // A failed orchestration is still failed.
+        assertEqual(deriveSessionStatus({ sessionKind: "workflow", rowState: "completed", orchestrationStatus: "Failed" }), "failed");
     });
 });
 
