@@ -1049,6 +1049,8 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     if (unknown) banners.push({ level: "warning", text: `${unknown === 1 ? "1 visit belongs" : `${unknown} visits belong`} to steps that are not in this graph.` });
     const context = { run: status, hasRun: status.phase !== "none", terminalState: bound ? status.terminalState ?? run?.terminalState ?? null : null,
         complete: Boolean(run && bound && run.history.complete), stateless: !bound && runId ? "Not shown on the graph" : undefined,
+        // Every open row is listed (R2-UI-7): the branches running now are all known even when older history is not loaded.
+        openComplete: Boolean(run && bound && run.history.openComplete),
         pins: agentPinSource(shared, run, bound, active) };
     // Each parallel state's branches as the loaded executions show them (mock M21 active and queued counts, M22 a blocked join).
     context.branchProgress = workflowV2BranchProgress(executions, active?.states || []);
@@ -1288,8 +1290,11 @@ function branchProgressLines(node, execution, context) {
     const progress = context.branchProgress?.get(execution.id) ?? { started: 0, active: 0, succeeded: 0 };
     const note = context.complete ? "" : " (in the loaded history)";
     if (execution.status === "pending") {
-        const queued = Math.max(0, execution.branches - progress.started);
-        return [`Branches now${note}: ${progress.active} active, ${queued} queued, ${progress.started - progress.active} ended.`];
+        const counts = workflowV2BranchCounts(execution.branches, progress, context);
+        return [counts.partial
+            ? `Branches now${note}: ${counts.runningExact ? "" : "at least "}${counts.running} active, at least ${counts.done} ended, `
+                + `${counts.unknown} not in the loaded history (queued, or ended earlier).`
+            : `Branches now: ${counts.running} active, ${counts.queued} queued, ${counts.done} ended.`];
     }
     if (execution.outcome === "blocked") {
         // A join of the first k (owner decision join-k-of-n) says how many it needed; J1b: that its time limit passed.
@@ -1440,14 +1445,30 @@ export function workflowV2JoinView(view, context) {
         : view.state === "done" ? (view.outcome === "joined" || view.outcome === "blocked" ? view.outcome : "done")
             : view.state === "failed" || view.state === "cancelled" ? view.state : "idle";
     const progress = running && visit ? context.branchProgress?.get(visit.id) ?? { started: 0, active: 0 } : null;
-    const counts = progress && Number.isSafeInteger(visit.branches)
-        ? { running: progress.active, queued: Math.max(0, visit.branches - progress.started), done: progress.started - progress.active } : null;
+    const counts = progress && Number.isSafeInteger(visit.branches) ? workflowV2BranchCounts(visit.branches, progress, context) : null;
     const rule = workflowV2JoinRule(view, visit);
     return {
         id: `join:${view.id}`, state, rule, label: `join · ${rule}`, stateText: blockedAtLimit ? "blocked · time limit passed" : JOIN_WORDS[state] ?? null,
         limit: workflowV2JoinLimit(view, visit, { running, timedOut: timedOut || blockedAtLimit }),
-        group: { label: "Each branch", counts, text: counts ? `${counts.running} running · ${counts.queued} queued · ${counts.done} done` : null },
+        group: { label: "Each branch", counts, text: counts === null ? null : counts.partial
+            ? `${counts.runningExact ? "" : "at least "}${counts.running} running · at least ${counts.done} done · ${counts.unknown} unknown`
+            : `${counts.running} running · ${counts.queued} queued · ${counts.done} done` },
     };
+}
+
+/**
+ * A running parallel visit's branches now (adversarial review R2-UI-7), from the loaded executions (`progress`,
+ * workflowV2BranchProgress) and its `total`. With every execution of the run loaded the counts are exact: { running,
+ * queued, done }. Without, a branch with no loaded row may have ended in the older history as well as not started:
+ * { running, done (at least), unknown, partial: true, runningExact } and no queued count; running is exact while every
+ * open row is listed (the read lists them all). Pure.
+ */
+export function workflowV2BranchCounts(total, progress, context) {
+    const started = Math.max(0, progress?.started ?? 0);
+    const running = Math.max(0, progress?.active ?? 0);
+    const done = Math.max(0, started - running);
+    if (context?.complete) return { running, queued: Math.max(0, total - started), done };
+    return { running, done, unknown: Math.max(0, total - started), partial: true, runningExact: context?.openComplete === true };
 }
 
 /**

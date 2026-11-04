@@ -96,3 +96,34 @@ test("the step log keys a poll summary by run, scope and step: two branches' vis
     const single = buildHistoryModel([started(), begin(0, 1), complete(0, 1), begin(0, 2), complete(0, 2), begin(0, 3), complete(0, 3)]);
     assert.deepEqual(single.chat.filter(item => item.workflowProgress).map(item => item.workflowProgress.count), [3]);
 });
+
+// Adversarial review R2-UI-7: with more executions than one read returns, the branch box does not call branches it has
+// not seen queued: done is at least what is loaded, and the rest is unknown (queued, or ended in the older history).
+test("R2-UI-7: a long run's branch counts are marked partial: at least N done, the unseen ones unknown, never queued", () => {
+    const rows = [row("fan", 1, "pending", { nodeExecutionId: "nx-fan-1", branches: 64 })];
+    // The newest 200 rows: branches 41 to 62 looped nine times each and are between steps; branches 63 and 64 run.
+    for (let index = 40; index < 62; index++) {
+        for (let visit = 1; visit <= 9; visit++) {
+            rows.push(done("poll", visit, "unchanged", { nodeExecutionId: `nx-poll-${index}-${visit}`, ...branch("nx-fan-1", index) }));
+        }
+    }
+    rows.push(row("poll", 10, "pending", { nodeExecutionId: "nx-poll-62-10", ...branch("nx-fan-1", 62) }));
+    rows.push(row("poll", 4, "pending", { nodeExecutionId: "nx-poll-63-4", ...branch("nx-fan-1", 63) }));
+    assert.ok(rows.length > 200);
+    const cursor = { v: 1, workflowId: "wf-1", runId: "run-1", section: "executions", order: "newest_first", after: { seq: "1" } };
+    const partial = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
+        run: { pages: { executions: { nextCursor: cursor, openComplete: true } } } }) }), "fan");
+    assert.deepEqual(partial.joinBar.group.counts, { running: 2, done: 22, unknown: 40, partial: true, runningExact: true });
+    assert.equal(partial.joinBar.group.text, "2 running · at least 22 done · 40 unknown");
+    assert.ok(partial.description.includes(
+        "Branches now (in the loaded history): 2 active, at least 22 ended, 40 not in the loaded history (queued, or ended earlier)."), partial.description.join("\n"));
+    // Open rows not all listed: the running count is a lower bound too.
+    const unlisted = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
+        run: { pages: { executions: { nextCursor: cursor, openComplete: false } } } }) }), "fan");
+    assert.equal(unlisted.joinBar.group.text, "at least 2 running · at least 22 done · 40 unknown");
+    // Every execution loaded (no older page): the counts are exact, and the branches not seen are queued.
+    const whole = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
+        run: { pages: { executions: { openComplete: true } } } }) }), "fan");
+    assert.deepEqual(whole.joinBar.group.counts, { running: 2, queued: 40, done: 22 });
+    assert.equal(whole.joinBar.group.text, "2 running · 40 queued · 22 done");
+});
