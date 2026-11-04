@@ -300,6 +300,8 @@ export function WorkflowNodePane({ controller, log = null }) {
     // The session rows loaded: the sessions under an agent step (owner decision q14; mock M14 "View owned subtree").
     const sessionsById = useControllerSelector(controller, state => state.sessions.byId);
     const [tab, setTab] = React.useState("details");
+    // The branch a branch step's details show (owner batch 7, H2), for that step only; its default otherwise.
+    const [branchPick, setBranchPick] = React.useState(null);
     const tabId = React.useId();
     const notice = runNotice && !noticeInYaml ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }) : null;
     if (sidePanel) return h(WorkflowSidePanel, { controller, workflow, log, notice });
@@ -339,6 +341,9 @@ export function WorkflowNodePane({ controller, log = null }) {
                     onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId: v2?.runId ?? null, executionId }).catch(() => {}); },
                     history: v2?.bound ? v2?.readModel?.run?.history ?? null : null,
                     onLoadOlder: restart => { controller.loadOlderWorkflowHistory(sessionId, { restart }).catch(() => {}); },
+                    // A branch step's details show the branch chosen by its picker (owner batch 7, H2).
+                    branchIndex: branchPick?.stateId === selected.id ? branchPick.index : null,
+                    onBranch: index => setBranchPick({ stateId: selected.id, index }),
                     // The variables the current visit applied and the accepted ones, compared on request (mock M15).
                     kv: v2?.bound && v2?.runId ? {
                         accepted: v2.readModel?.run?.kvRevision ?? null, snapshots: view.kvRevisions ?? null, compare: view.kvCompare ?? null,

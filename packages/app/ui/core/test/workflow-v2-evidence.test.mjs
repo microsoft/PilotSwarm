@@ -40,10 +40,11 @@ const model = () => readModel({ graph, nodeExecutions: [
 test("a parallel step's visit lists each branch, and a blocked join names the branches that block it", () => {
     const fan = projectWorkflowV2({ readModel: model() }).nodes.find(node => node.id === "fan");
     assert.deepEqual(fan.evidence, {
-        total: 3, succeeded: 1, running: 0, blocked: true, blocking: [1, 2], rows: [
-            { index: 0, status: "succeeded", step: "branch_done", outcome: "succeeded", result: "{\"ok\":true}", why: null },
-            { index: 1, status: "did not succeed", step: "work", outcome: "crashed", result: null, why: "A runtime error (crashed): exit code 1" },
-            { index: 2, status: "not started", step: null, outcome: null, result: null, why: null },
+        total: 3, succeeded: 1, running: 0, queued: 0, blocked: true, blocking: [1, 2], rows: [
+            { index: 0, status: "succeeded", step: "branch_done", outcome: "succeeded", result: "{\"ok\":true}", why: null, deadline: null, agent: null },
+            { index: 1, status: "did not succeed", step: "work", outcome: "crashed", result: null, why: "A runtime error (crashed): exit code 1",
+                deadline: null, agent: null },
+            { index: 2, status: "not started", step: null, outcome: null, result: null, why: null, deadline: null, agent: null },
         ],
     });
     // Running, an ended branch, another branch's failure, and a history that is not all loaded.
@@ -58,6 +59,15 @@ test("a parallel step's visit lists each branch, and a blocked join names the br
         ["running", null], ["did not succeed", "It ended at 'failed_end' (failed)"], ["did not succeed", "Another branch failed, so this one was cancelled"],
         ["not in the loaded history", null]]);
     assert.deepEqual([running.running, running.blocked, running.blocking], [1, false, []]);
+    // Owner batch 7 (H2): while the visit runs with its whole history loaded, a branch not begun is queued; a running
+    // branch names its current step's deadline, and an agent step's created chat.
+    const live = workflowV2BranchEvidence([
+        { ...executions[0], deadline: "2026-11-04T18:10:00.000Z", agent: { childSessionId: "child-0", spawned: true } },
+        { id: "d", stateId: "work", ordinal: 2, status: "pending", agent: { childSessionId: "child-1", spawned: false }, ...branch(1) },
+    ], states, { id: "nx-fan-1", status: "pending", branches: 3 }, true);
+    assert.deepEqual(live.rows.map(row => [row.index, row.status, row.deadline, row.agent]), [
+        [0, "running", "2026-11-04T18:10:00.000Z", "child-0"], [1, "running", null, null], [2, "queued", null, null]]);
+    assert.deepEqual([live.running, live.queued, live.succeeded], [2, 1, 0]);
     assert.equal(workflowV2BranchEvidence([], states, { id: "x", status: "completed" }), null);
     // Only a parallel step has evidence.
     assert.equal(projectWorkflowV2({ readModel: model() }).nodes.find(node => node.id === "work").evidence, undefined);
@@ -118,16 +128,20 @@ test("the controller sends the question to the parent's chat as an ordinary mess
         { ok: false, reason: "This workflow has no parent agent to ask." });
 });
 
-test("the portal shows a parallel step's branch results and the three ways to ask the parent agent", () => {
+test("the portal shows a parallel step's branches and the three ways to ask the parent agent", () => {
     const projected = projectWorkflowV2({ readModel: model() });
     const fan = projected.nodes.find(node => node.id === "fan");
     const render = props => renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "details", selected: fan, nodes: projected.nodes,
         select: () => {}, runOutput: null, runError: null, runId: RUN, ...props }));
     const html = render({ onAskParent: async () => ({ ok: true }) });
-    assert.match(html, /aria-label="Branch results"><h3>Branch results<\/h3><p[^>]*>1 of 3 branches succeeded\.<\/p>/);
-    assert.match(html, /<p role="status" data-blocking="1,2"[^>]*>The join is blocked by branches 1, 2\.<\/p>/);
-    assert.match(html, /<tr data-branch="1" data-status="did not succeed"><td>1<\/td><td>did not succeed<\/td><td>work<\/td><td>—<\/td><td>A runtime error \(crashed\): exit code 1<\/td><\/tr>/);
-    assert.match(html, /<tr data-branch="0" data-status="succeeded"><td>0<\/td><td>succeeded<\/td><td>branch_done<\/td><td>\{&quot;ok&quot;:true\}<\/td><td>—<\/td><\/tr>/);
+    // Owner batch 7 (H2): one Branches table (#, current step, status, deadline, result, agent chat). People read branches from
+    // 1; the data attributes keep the index from 0.
+    assert.match(html, /aria-label="Branches"><h3>Branches<\/h3><p[^>]*>1 of 3 branches succeeded\.<\/p>/);
+    assert.match(html, /<p role="status" data-blocking="1,2"[^>]*>The join is blocked by branches 2, 3\.<\/p>/);
+    assert.match(html, /<th>#<\/th><th>Current step<\/th><th>Status<\/th><th>Deadline<\/th><th>Result<\/th><th>Agent chat<\/th>/);
+    assert.match(html, /<tr data-branch="1" data-status="did not succeed"><td>2<\/td><td>work<\/td><td>did not succeed<\/td><td>—<\/td><td>A runtime error \(crashed\): exit code 1<\/td><td>—<\/td><\/tr>/);
+    assert.match(html, /<tr data-branch="0" data-status="succeeded"><td>1<\/td><td>branch_done<\/td><td>succeeded<\/td><td>—<\/td><td>\{&quot;ok&quot;:true\}<\/td><td>—<\/td><\/tr>/);
+    assert.match(html, /<tr data-branch="2" data-status="not started"><td>3<\/td><td>—<\/td><td>not started<\/td><td>—<\/td><td>—<\/td><td>—<\/td><\/tr>/);
     assert.match(html, /aria-label="Ask the parent agent"[^>]*><h3>Ask the parent agent<\/h3>/);
     for (const label of ["Send findings", "Ask for rework", "Ask for approval"]) assert.ok(html.includes(`>${label}</button>`), label);
     assert.ok(!html.includes("data-action=\"ask-parent-send\""), "nothing to send until a kind is chosen");
@@ -138,8 +152,9 @@ test("the TUI lists a parallel step's branch results and the branches that block
     const h = seeded();
     h.store.dispatch({ type: "ui/modal", modal: { type: "workflowView", sessionId: "wf", selectedNodeId: "fan", detailsScroll: 0 } });
     const lines = selectWorkflowViewModal(h.store.getState(), 160, 80).detailsLines.map(line => line.text.trim());
-    for (const line of ["Branch results: 1 of 3 succeeded", "The join is blocked by branches 1, 2.", "branch 0 · succeeded · at 'branch_done' · {\"ok\":true}",
-        "branch 1 · did not succeed · at 'work' · A runtime error (crashed): exit code 1", "branch 2 · not started"]) {
+    // People read branches from 1 (owner batch 7, H2).
+    for (const line of ["Branch results: 1 of 3 succeeded", "The join is blocked by branches 2, 3.", "branch 1 · succeeded · at 'branch_done' · {\"ok\":true}",
+        "branch 2 · did not succeed · at 'work' · A runtime error (crashed): exit code 1", "branch 3 · not started"]) {
         assert.ok(lines.includes(line), `${line}\n${lines.join("\n")}`);
     }
 });

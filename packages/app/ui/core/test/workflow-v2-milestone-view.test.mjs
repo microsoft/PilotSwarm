@@ -101,7 +101,8 @@ test("an agent state's node names its child session and opens its actual chat; a
     ] }) });
     assert.equal(byId(branched, "fan").stateLabel, "Running its branches");
     assert.ok(byId(branched, "fan").description.includes("3 branches from its manifest."));
-    assert.ok(byId(branched, "work").description.includes("In branch 0 of its parallel step."));
+    // People read branches from 1 (owner batch 7, H2); the data's index is 0.
+    assert.ok(byId(branched, "work").description.includes("In branch 1 of its parallel step."));
     // Mock M21: the branches now, from the loaded executions: one begun and still working, two not begun yet.
     assert.ok(byId(branched, "fan").description.includes("Branches now: 1 active, 2 queued, 0 ended."), byId(branched, "fan").description.join("\n"));
     const progressed = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
@@ -210,7 +211,13 @@ test("the portal's Details: a transition selects its state, the agent child open
 
     const fan = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [done("review", 1, "accepted"), row("fan", 1, "pending", { branches: 3 })] }) }), "fan");
     const fanHtml = renderToStaticMarkup(WorkflowV2NodeContent({ tab: "details", selected: fan, nodes: projection.nodes, select() {} }));
-    for (const [label, value] of [["Branches start at", "work"], ["Concurrency", "Up to 2 branches at a time"], ["Join", "Every branch must succeed"], ["Branches", "3"]]) {
+    // Owner batch 7 (H2): its For each section (where the items come from, how many at a time, the join rule), its branch steps
+    // from the first, and its routes from the join.
+    for (const [label, value] of [["Items", "the list in ${input.items}"], ["At a time", "Up to 2 branches at a time"], ["Join", "Every branch must succeed"],
+        ["Branches", "3"]]) {
         assert.ok(fanHtml.includes(`<span>${label}</span><strong>${value}</strong>`), `${label}: ${fanHtml}`);
     }
+    assert.ok(fanHtml.indexOf("<h3>For each</h3>") < fanHtml.indexOf("<h3>Branch steps</h3>"), fanHtml);
+    assert.ok(fanHtml.indexOf("data-branch-step=\"work\"") < fanHtml.indexOf("data-branch-step=\"branch_done\""), "the first step first");
+    assert.ok(fanHtml.includes("<h3>Next steps from the join</h3>"), fanHtml);
 });

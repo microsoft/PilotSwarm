@@ -198,7 +198,8 @@ export function workflowV2NodeLabel(node) {
         case "request": return `request · ${node.contract}`;
         case "agent": return node.invoke?.source === "agent" ? `agent · ${node.invoke.name}` : "agent · inline prompt";
         case "parallel": return `parallel · ${node.concurrency === 1 ? "one branch at a time" : `up to ${node.concurrency} branches`}`;
-        case "terminal": return `ends · ${node.outcome}`;
+        // A branch's end is not the workflow's (owner batch 7, H2).
+        case "terminal": return `${typeof node.parallel === "string" ? "branch ends" : "ends"} · ${node.outcome}`;
         default: return String(node?.type || "step");
     }
 }
@@ -209,13 +210,18 @@ export function workflowV2RouteKind(node, label) {
     return Array.isArray(node.outcomes) && node.outcomes.includes(label) ? "outcome" : "error";
 }
 
-/** Mark each laid-out edge as an outcome route, a runtime-error route, or both (labels merged onto one edge). */
+/**
+ * Mark each laid-out edge as an outcome route, a runtime-error route, or both (labels merged onto one edge). A route
+ * that leaves a parallel step's join bar (owner batch 7, H2) is its parallel step's (`owner`); a branch end's line into
+ * the join bar is "join".
+ */
 export function annotateWorkflowV2Edges(definition, layout) {
     const byId = new Map(definition.states.map(node => [node.id, node]));
     for (const edge of layout.edges) {
-        // A parallel state's edge to its body's first state is how each branch starts, not a route.
+        // A parallel state's edge to its body's first state (or into its branch box) is how each branch starts, not a route.
         if (edge.branch) { edge.kind = "branch"; continue; }
-        const kinds = new Set(edge.outcomes.map(label => workflowV2RouteKind(byId.get(edge.from), label)));
+        if (edge.join) { edge.kind = "join"; continue; }
+        const kinds = new Set(edge.outcomes.map(label => workflowV2RouteKind(byId.get(edge.owner ?? edge.from), label)));
         edge.kind = kinds.size > 1 ? "mixed" : [...kinds][0];
     }
     return layout;
@@ -777,7 +783,7 @@ export function describeWorkflowV2Execution(node, execution) {
         if (Number.isSafeInteger(execution.branches)) lines.push(`${execution.branches} branch${execution.branches === 1 ? "" : "es"} from its manifest.`);
         if (pending) lines.push(`Branches start at '${node.body?.initial}', ${node.concurrency === 1 ? "one at a time" : `up to ${node.concurrency} at a time`}.`);
     }
-    if (execution.branch && Number.isSafeInteger(execution.branch.index)) lines.push(`In branch ${execution.branch.index} of its parallel step.`);
+    if (execution.branch && Number.isSafeInteger(execution.branch.index)) lines.push(`In branch ${workflowV2BranchNumber(execution.branch.index)} of its parallel step.`);
     if (execution.catchAll) lines.push("Entered as the workflow's catch-all step after an unhandled runtime error.");
     return lines;
 }
@@ -824,7 +830,7 @@ function nodeView(node, executions, context) {
     // Every loaded visit, newest first: older history a person loaded reaches any visit of the state.
     const history = [...list].reverse();
     const binding = workflowV2AgentBinding(node, context.pins);
-    return {
+    const view = {
         ...node, shape: "v2", kind, label: workflowV2NodeLabel(node), state, phase, stateLabel, runs,
         ...(binding ? { binding } : {}),
         partial: !context.complete || stalePending || runs > list.length,
@@ -833,6 +839,10 @@ function nodeView(node, executions, context) {
         description: [...describeWorkflowV2Execution(node, pending || latestDone), ...branchProgressLines(node, pending || latestDone, context)],
         ...(node.type === "parallel" ? { evidence: workflowV2BranchEvidence(context.executions, context.states, pending || latestDone, context.complete) } : {}),
     };
+    // Owner batch 7 (H2): a parallel step's branch box and join bar; a branch step's visit in each branch, for its picker.
+    if (node.type === "parallel") view.joinBar = workflowV2JoinView(view, context);
+    if (typeof node.parallel === "string") view.branches = workflowV2BranchChoices(list, context.parallelVisits?.get(node.parallel) ?? null);
+    return view;
 }
 
 /**
@@ -924,6 +934,11 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     // Each branch's result for a parallel step's evidence (owner decision q16; mocks M22 to M24).
     context.executions = executions;
     context.states = active?.states || [];
+    // Owner batch 7 (H2): each parallel step's shown visit, for its branch steps' branch pickers.
+    context.parallelVisits = new Map(context.states.filter(node => node?.type === "parallel").map(node => {
+        const visit = shownVisit(executions.filter(item => item.stateId === node.id).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0)));
+        return [node.id, visit.pending ?? visit.latestDone];
+    }));
     const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
     return {
         shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
@@ -1129,6 +1144,112 @@ function branchProgressLines(node, execution, context) {
     }
     if (execution.outcome === "blocked") return [`Join blocked${note}: ${progress.succeeded} of ${execution.branches} branches succeeded.`];
     return [];
+}
+
+// ── A parallel step's branch box, join bar and branch picker (owner batch 7, H2) ─────────────────────────────────────
+
+const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+
+/**
+ * A branch's number as people read it: its index plus one, so the first branch is "branch 1" (owner batch 7, H2). The
+ * data (events, the read model, the parent agent's messages) keep the index from 0. Pure.
+ */
+export function workflowV2BranchNumber(index) {
+    return Number.isSafeInteger(index) ? index + 1 : index;
+}
+
+/** "branches 2, 3" or "branch 2" for the branch indexes given (from 0), as people read them. Pure. */
+export function workflowV2BranchList(indexes) {
+    const list = Array.isArray(indexes) ? indexes : [];
+    return `${list.length === 1 ? "branch" : "branches"} ${list.map(workflowV2BranchNumber).join(", ")}`;
+}
+
+/** "the list in ${input.items}" for a binding, "3 items" for a literal list (never its values: SF-3). Pure. */
+export function workflowV2ForEachText(forEach) {
+    if (typeof forEach === "string" && forEach) return `the list in ${forEach}`;
+    if (isRecord(forEach) && Number.isSafeInteger(forEach.count)) return `${plural(forEach.count, "item")} in the definition`;
+    return "a list this view does not show";
+}
+
+/**
+ * A parallel step's branch steps in the order a branch meets them (owner batch 7, H2): from its first step along its
+ * routes, breadth first, then any step no route reaches, in body order. Only steps of `states`. Pure.
+ */
+export function workflowV2BranchSteps(parallel, states) {
+    const byId = new Map((Array.isArray(states) ? states : []).filter(isRecord).map(node => [node.id, node]));
+    const members = (Array.isArray(parallel?.body?.states) ? parallel.body.states : []).filter(id => byId.has(id));
+    const inBody = new Set(members);
+    const order = [];
+    const queue = inBody.has(parallel?.body?.initial) ? [parallel.body.initial] : [];
+    while (queue.length) {
+        const id = queue.shift();
+        if (order.includes(id)) continue;
+        order.push(id);
+        for (const target of Object.values(byId.get(id).next || {})) if (inBody.has(target) && !order.includes(target)) queue.push(target);
+    }
+    return [...order, ...members.filter(id => !order.includes(id))];
+}
+
+/** The visit of a state the graph shows: its pending visit unless a later one ended, else its latest ended visit. */
+function shownVisit(list) {
+    const latestDone = list.findLast(item => item.status === "completed");
+    const pending = list.findLast(item => item.status === "pending" && (!latestDone || (item.ordinal ?? 0) >= (latestDone.ordinal ?? 0)));
+    return { pending: pending ?? null, latestDone: latestDone ?? null };
+}
+
+const JOIN_WORDS = { waiting: "waiting for its branches", joined: "joined", blocked: "blocked", failed: "failed", cancelled: "ended early" };
+
+/**
+ * What a parallel step's branch box and join bar show (owner batch 7, H2): the join's `state` (idle, waiting, joined,
+ * blocked, done, failed or cancelled, from the step's own state and outcome), its `rule` ("all required") and `label`
+ * ("join · all required"), its `stateText`, and the box's label ("Each branch") with, while the step runs, its branches
+ * now: `counts` { running, queued, done } and their `text`. `view` is the parallel step's node view. The join shows no
+ * time limit: the engine has none for it. Pure.
+ */
+export function workflowV2JoinView(view, context) {
+    const visit = view.pending || view.result || null;
+    const running = view.state === "running";
+    const state = running ? "waiting"
+        : view.state === "done" ? (view.outcome === "joined" || view.outcome === "blocked" ? view.outcome : "done")
+            : view.state === "failed" || view.state === "cancelled" ? view.state : "idle";
+    const progress = running && visit ? context.branchProgress?.get(visit.id) ?? { started: 0, active: 0 } : null;
+    const counts = progress && Number.isSafeInteger(visit.branches)
+        ? { running: progress.active, queued: Math.max(0, visit.branches - progress.started), done: progress.started - progress.active } : null;
+    const rule = view.join === "all_required" || view.join === undefined ? "all required" : String(view.join);
+    return {
+        id: `join:${view.id}`, state, rule, label: `join · ${rule}`, stateText: JOIN_WORDS[state] ?? null,
+        group: { label: "Each branch", counts, text: counts ? `${counts.running} running · ${counts.queued} queued · ${counts.done} done` : null },
+    };
+}
+
+/**
+ * A branch step's visits in the shown visit of its parallel step, for its details' branch picker (owner batch 7, H2):
+ * `{ parallelExecutionId, choices, defaultIndex }`, a choice per branch that reached the step ({ index, execution, label }:
+ * its latest visit of the step in that branch), by branch; the default is the first branch where the step runs, else
+ * the branch whose visit ended last. Null when the parallel step has no shown visit or no branch reached the step. Pure.
+ */
+export function workflowV2BranchChoices(executions, parallelVisit) {
+    if (!isRecord(parallelVisit) || typeof parallelVisit.id !== "string") return null;
+    const byBranch = new Map();
+    for (const execution of Array.isArray(executions) ? executions : []) {
+        const branch = execution?.branch;
+        if (!isRecord(branch) || branch.parallelNodeExecutionId !== parallelVisit.id || !Number.isSafeInteger(branch.index)) continue;
+        const prior = byBranch.get(branch.index);
+        if (!prior || (execution.ordinal ?? 0) >= (prior.ordinal ?? 0)) byBranch.set(branch.index, execution);
+    }
+    if (!byBranch.size) return null;
+    const choices = [...byBranch].sort((a, b) => a[0] - b[0]).map(([index, execution]) => ({ index, execution,
+        label: `Branch ${workflowV2BranchNumber(index)} · ${execution.status === "pending" ? "running" : execution.outcome ? `ended '${execution.outcome}'` : "ended"}` }));
+    const running = choices.find(choice => choice.execution.status === "pending");
+    const ended = choices.filter(choice => choice.execution.status === "completed")
+        .reduce((last, choice) => (!last || (choice.execution.ordinal ?? 0) > (last.execution.ordinal ?? 0) ? choice : last), null);
+    return { parallelExecutionId: parallelVisit.id, choices, defaultIndex: (running ?? ended ?? choices[0]).index };
+}
+
+/** The choice a branch picker shows: the one for `index` when the step has it, else the default. Null without choices. Pure. */
+export function workflowV2BranchChoice(branches, index = null) {
+    if (!isRecord(branches) || !Array.isArray(branches.choices) || !branches.choices.length) return null;
+    return branches.choices.find(choice => choice.index === index) ?? branches.choices.find(choice => choice.index === branches.defaultIndex) ?? branches.choices[0];
 }
 
 /**
@@ -1456,11 +1577,13 @@ export function workflowV2SessionSubtree(byId, rootId, limit = 50) {
 
 /**
  * Each branch of one visit of a parallel step (owner decision q16; mocks M22 "JOIN BLOCKED k / n", M23 "Inspect
- * conflict", M24 "Inspect evidence"): by branch, where it is (running, succeeded, did not succeed, or not started),
- * its last step, its outcome, a short result and, for a branch that did not succeed, why. From the executions loaded
- * (`complete`: whether every one is): a branch with none may only be outside the loaded history. A blocked join names
- * the branches that block it. { total, succeeded, running, blocked, blocking, rows }, or null when the visit names no
- * branch count. Pure.
+ * conflict", M24 "Inspect evidence"): by branch, where it is (running, succeeded, did not succeed, not started, or
+ * queued while the visit runs), its last step, its outcome, a short result and, for a branch that did not succeed, why;
+ * owner batch 7 (H2): its current step's deadline and, when that step is an agent step, its agent chat (`agent`, the
+ * chat's session id). From the executions loaded (`complete`: whether every one is): a branch with none may only be
+ * outside the loaded history. A blocked join names the branches that block it. { total, succeeded, running, queued,
+ * blocked, blocking, rows }, or null when the visit names no branch count. `index` and `blocking` count from 0 (the
+ * data's); people read them through workflowV2BranchNumber. Pure.
  */
 export function workflowV2BranchEvidence(executions, states, parallel, complete = true) {
     if (!isRecord(parallel) || !Number.isSafeInteger(parallel.branches) || parallel.branches < 0) return null;
@@ -1476,7 +1599,8 @@ export function workflowV2BranchEvidence(executions, states, parallel, complete 
     for (let index = 0; index < parallel.branches; index += 1) {
         const list = (groups.get(index) ?? []).slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
         if (!list.length) {
-            rows.push({ index, status: complete ? "not started" : "not in the loaded history", step: null, outcome: null, result: null, why: null });
+            rows.push({ index, status: !complete ? "not in the loaded history" : parallel.status === "pending" ? "queued" : "not started",
+                step: null, outcome: null, result: null, why: null, deadline: null, agent: null });
             continue;
         }
         const pending = list.find(item => item.status === "pending") ?? null;
@@ -1492,11 +1616,15 @@ export function workflowV2BranchEvidence(executions, states, parallel, complete 
                     : `It stopped at step '${last.stateId}'`);
         const preview = typeof last.outputPreview === "string" && last.outputPreview && last.outputPreview !== "null" ? clipped(last.outputPreview, 160) : null;
         rows.push({ index, status: pending ? "running" : succeeded ? "succeeded" : "did not succeed", step: last.stateId, outcome: last.outcome ?? null,
-            result: preview, why });
+            result: preview, why, deadline: pending && typeof pending.deadline === "string" && pending.deadline ? pending.deadline : null,
+            // Its agent chat, once created (as the step's Agent session opens it).
+            agent: isRecord(last.agent) && last.agent.spawned === true && typeof last.agent.childSessionId === "string" && last.agent.childSessionId
+                ? last.agent.childSessionId : null });
     }
     const blocked = parallel.status === "completed" && parallel.outcome === "blocked";
+    const count = status => rows.filter(row => row.status === status).length;
     return {
-        total: parallel.branches, succeeded: rows.filter(row => row.status === "succeeded").length, running: rows.filter(row => row.status === "running").length,
+        total: parallel.branches, succeeded: count("succeeded"), running: count("running"), queued: count("queued"),
         blocked, blocking: blocked ? rows.filter(row => row.status !== "succeeded").map(row => row.index) : [], rows,
     };
 }

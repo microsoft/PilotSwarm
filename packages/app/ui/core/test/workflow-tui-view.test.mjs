@@ -94,9 +94,11 @@ test("w opens the view on the pending agent state: its state, transitions with t
     assert.equal(state.ui.modal.sessionId, "wf");
     const view = selectWorkflowViewModal(state, 110);
     assert.equal(view.title, "Workflow: review-flow · Running");
+    // A branch's end says so, and the parallel step's join follows its branch steps (owner batch 7, H2).
     assert.deepEqual(view.rows.map(rowText).map(text => text.trim().split(/\s+/).slice(0, 3).join(" ")), [
-        "▶ ● review", "✓ fix script", "○ fan parallel", "○ work script", "○ done ends", "○ failed ends", "○ branch_done ends",
+        "▶ ● review", "✓ fix script", "○ fan parallel", "○ work script", "○ done ends", "○ failed ends", "○ branch_done branch", "⋯ join ·",
     ]);
+    assert.equal(rowText(view.rows[7]).trim(), "⋯ join · all required");
     assert.equal(view.selectedRowIndex, 0);
     assert.match(rowText(view.rows[0]), /agent · code-reviewer\s+Agent working · waiting for its typed result ×3/);
     const details = lineTexts(view);
@@ -129,9 +131,12 @@ test("↑↓ select states in graph order; the loop's other state, a parallel st
     view = selectWorkflowViewModal(store.getState(), 110);
     assert.ok(lineTexts(view).includes("  each branch → work · where each branch starts"));
     assert.ok(lineTexts(view).includes("  joined → done"));
+    // The parallel step's details name its join (H2); no time limit is shown for it.
+    assert.ok(lineTexts(view).includes("Join: all required"), lineTexts(view).join("\n"));
+    assert.ok(!lineTexts(view).some(line => line.includes("⏱")), lineTexts(view).join("\n"));
     for (let i = 0; i < 10; i++) await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
     view = selectWorkflowViewModal(store.getState(), 110);
-    assert.equal(view.selectedRowIndex, 6, "the selection stops at the last state");
+    assert.equal(view.selectedRowIndex, 6, "the selection stops at the last state; the join line after it is not a state");
     assert.ok(lineTexts(view).includes("The workflow ends at this step."));
     for (let i = 0; i < 10; i++) await controller.handleCommand(UI_COMMANDS.MODAL_PREV);
     assert.equal(selectWorkflowViewModal(store.getState(), 110).selectedRowIndex, 0, "and at the first");

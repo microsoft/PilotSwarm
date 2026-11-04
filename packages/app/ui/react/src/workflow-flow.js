@@ -3,7 +3,8 @@ import {
     Background, BackgroundVariant, Handle, MarkerType, Panel, Position, ReactFlow, getBezierPath, getViewportForBounds, useReactFlow, useStore,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
-import { WorkflowEdgeShape, WorkflowStepCard } from "./workflow-graph.js";
+import { WorkflowEdgeShape, WorkflowGroupBox, WorkflowJoinBar, WorkflowStepCard } from "./workflow-graph.js";
+import { workflowGraphPlaces, workflowPlaceKey } from "../../core/src/workflow-graph-layout.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 
 const h = React.createElement;
@@ -36,6 +37,12 @@ const h = React.createElement;
  * (`viewport`) is where a new flow starts, so switching tabs, panels or sessions and back restores it exactly. A new
  * graph (definition or revision) mounts a new flow; without a remembered view of its own it is fitted once. A run's
  * progress never moves the view.
+ *
+ * Owner batch 7 (H2): a parallel step's branch box is a React Flow parent node; its steps and its join bar are its
+ * children, placed relative to it, so dragging the box by its label row moves them all. A step inside it can still be
+ * dragged on its own; its place is saved relative to its box ('<parallel id>/<step id>', workflowPlaceKey) and the box's
+ * as it is. The join bar moves only with its box; a click on it selects the parallel step. An edge between two boxes of
+ * one branch box that moved only as a whole keeps its route, moved with the box.
  */
 
 const MIN_ZOOM = 0.2;
@@ -52,17 +59,22 @@ const LOOP_REACH_PX = 150;
 const MARKER = { type: MarkerType.ArrowClosed, width: 16, height: 16 };
 /** A step node's wrapper takes the pointer: React Flow would set pointer-events none on a node it may not select. */
 const NODE_STYLE = Object.freeze({ pointerEvents: "all" });
+/** A branch box takes the pointer only on its label row (CSS), so the graph is still moved by dragging inside it (H2). */
+const GROUP_STYLE = Object.freeze({ pointerEvents: "none" });
 
-/** The box around every step at its place (`moved`: Map id -> { x, y } for the boxes moved), or the layout's own box. */
+/**
+ * The box around every box at its place (`moved`: Map place key -> { x, y } for the boxes moved; workflowGraphPlaces),
+ * or the layout's own box. A branch box counts its stack; a step moved on its own, room for its loop beside it.
+ */
 export function workflowGraphBounds(layout, moved = null) {
     if (!moved?.size) return { x: 0, y: 0, width: layout.width, height: layout.height };
     let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-    for (const [id, box] of layout.positions) {
-        const at = moved.get(id) ?? box;
-        left = Math.min(left, at.x);
-        top = Math.min(top, at.y);
-        right = Math.max(right, at.x + box.width + (moved.has(id) ? LOOP_REACH_PX / 2 : 0));
-        bottom = Math.max(bottom, at.y + box.height);
+    for (const box of workflowGraphPlaces(layout, moved).values()) {
+        const stack = box.stack ?? 0;
+        left = Math.min(left, box.x);
+        top = Math.min(top, box.y);
+        right = Math.max(right, box.x + box.width + stack + (box.self && box.stack === undefined ? LOOP_REACH_PX / 2 : 0));
+        bottom = Math.max(bottom, box.y + box.height + stack);
     }
     return Number.isFinite(left) ? { x: left, y: top, width: right - left, height: bottom - top } : { x: 0, y: 0, width: layout.width, height: layout.height };
 }
@@ -79,16 +91,45 @@ export function workflowViewportOf(value) {
     return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(zoom) && zoom >= MIN_ZOOM && zoom <= MAX_ZOOM ? { x, y, zoom } : null;
 }
 
-/** The saved places of the steps this layout has, as Map id -> { x, y }. */
+/** The place keys of every box this layout lets a person move: its steps (workflowPlaceKey) and its branch boxes (H2). */
+function placeKeysOf(layout) {
+    const keys = new Set([...(layout.groups?.values() ?? [])].map(group => group.id));
+    for (const id of layout.positions.keys()) keys.add(workflowPlaceKey(layout, id));
+    return keys;
+}
+
+/** The saved places of the boxes this layout has, as Map place key -> { x, y }. */
 function placesOf(places, layout) {
     const moved = new Map();
     if (!places || typeof places !== "object") return moved;
-    for (const [id, place] of Object.entries(places)) {
-        if (!layout.positions.has(id) || !Array.isArray(place) || place.length !== 2) continue;
+    const keys = placeKeysOf(layout);
+    for (const [key, place] of Object.entries(places)) {
+        if (!keys.has(key) || !Array.isArray(place) || place.length !== 2) continue;
         const [x, y] = place;
-        if (Number.isFinite(x) && Number.isFinite(y)) moved.set(id, { x, y });
+        if (Number.isFinite(x) && Number.isFinite(y)) moved.set(key, { x, y });
     }
     return moved;
+}
+
+/**
+ * How an edge is drawn now (H2): null, its automatic route; `{ offset }`, that route moved with the branch box both its
+ * boxes sit in, when only the box moved; `{ curve: true }`, a curve between the boxes where they are.
+ */
+function edgeMotion(edge, shown) {
+    const from = shown.get(edge.from), to = shown.get(edge.to);
+    if (!from?.moved && !to?.moved) return null;
+    if (from && to && from.parent && from.parent === to.parent && !from.self && !to.self) {
+        const group = shown.get(from.parent);
+        return { offset: [group.dx, group.dy] };
+    }
+    return { curve: true };
+}
+
+/** Whether React Flow can keep a node object it made: the same kind, parent, place, size and data. */
+function sameNode(prior, next) {
+    return Boolean(prior) && prior.type === next.type && prior.parentId === next.parentId && prior.position.x === next.position.x
+        && prior.position.y === next.position.y && prior.width === next.width && prior.height === next.height
+        && Object.keys(next.data).every(key => prior.data[key] === next.data[key]);
 }
 
 /**
@@ -103,13 +144,32 @@ function StepNode({ data }) {
         h(Handle, { type: "source", position: Position.Bottom, isConnectable: false, className: "ps-workflow-handle" }));
 }
 
+/** A parallel step's branch box (H2), with a handle at its top where the edge from the parallel step arrives. */
+function GroupNode({ data }) {
+    return h(React.Fragment, null,
+        h(Handle, { type: "target", position: Position.Top, isConnectable: false, className: "ps-workflow-handle" }),
+        h(WorkflowGroupBox, data));
+}
+
+/** A parallel step's join bar (H2): the branch ends arrive at its top, the parallel step's routes leave from its bottom. */
+function JoinNode({ data }) {
+    return h(React.Fragment, null,
+        h(Handle, { type: "target", position: Position.Top, isConnectable: false, className: "ps-workflow-handle" }),
+        h(WorkflowJoinBar, data),
+        h(Handle, { type: "source", position: Position.Bottom, isConnectable: false, className: "ps-workflow-handle" }));
+}
+
 /**
- * One edge: the automatic route while neither box it joins has moved; otherwise a smooth curve from the source's bottom
- * to the target's top as React Flow places them now (f-03), or, for a step's own loop, a curve out beside its right edge.
+ * One edge: the automatic route while neither box it joins has moved, or that route moved with the branch box both its
+ * boxes are in (H2); otherwise a smooth curve from the source's bottom to the target's top as React Flow places them now
+ * (f-03), or, for a step's own loop, a curve out beside its right edge.
  */
 function StepEdge({ data, markerEnd, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition }) {
     const edge = data.edge;
-    if (!data.moved) return h(WorkflowEdgeShape, { edge, markerEnd });
+    if (!data.motion) return h(WorkflowEdgeShape, { edge, markerEnd });
+    if (data.motion.offset) {
+        return h("g", { transform: `translate(${data.motion.offset[0]},${data.motion.offset[1]})` }, h(WorkflowEdgeShape, { edge, markerEnd }));
+    }
     if (edge.from === edge.to) {
         const path = `M${sourceX},${sourceY} C${sourceX + LOOP_REACH_PX},${sourceY + 60} ${targetX + LOOP_REACH_PX},${targetY - 60} ${targetX},${targetY}`;
         return h(WorkflowEdgeShape, { edge: { ...edge, path, labelX: sourceX + LOOP_REACH_PX * 0.75, labelY: (sourceY + targetY) / 2 }, markerEnd });
@@ -119,7 +179,7 @@ function StepEdge({ data, markerEnd, sourceX, sourceY, targetX, targetY, sourceP
 }
 
 // Stable for React Flow: new objects on each render would make it re-create every step and edge.
-const NODE_TYPES = { workflowStep: StepNode };
+const NODE_TYPES = { workflowStep: StepNode, workflowGroup: GroupNode, workflowJoin: JoinNode };
 const EDGE_TYPES = { workflowEdge: StepEdge };
 const panZoomReady = state => Boolean(state.panZoom);
 
@@ -206,66 +266,93 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
     selectRef.current = select;
     const onSelect = React.useCallback(id => selectRef.current(id), []);
     const selectedId = selected?.id ?? null;
-    // The same step objects while nothing about a step changed, so React Flow keeps what it measured and a drag re-creates
-    // only the box that moves.
+    // Where every box is drawn now: the saved places, each drag's, and a branch box's steps and join bar with it (H2).
+    const shown = React.useMemo(() => workflowGraphPlaces(layout, moved), [layout, moved]);
+    // The same node objects while nothing about a box changed, so React Flow keeps what it measured and a drag re-creates
+    // only the box that moves. A branch box comes before the boxes in it, as React Flow needs a parent first.
     const made = React.useRef(new Map());
     const flowNodes = React.useMemo(() => {
         const next = new Map();
-        const list = nodes.flatMap(node => {
+        const byId = new Map(nodes.map(node => [node.id, node]));
+        const keep = flowNode => {
+            const prior = made.current.get(flowNode.id);
+            const kept = sameNode(prior, flowNode) ? prior : flowNode;
+            next.set(flowNode.id, kept);
+            return kept;
+        };
+        const fixed = { connectable: false, selectable: false, deletable: false, focusable: false };
+        const handles = (width, height, top = true, bottom = true) => [
+            ...(top ? [{ id: null, type: "target", position: Position.Top, x: width / 2, y: 0, width: 1, height: 1 }] : []),
+            ...(bottom ? [{ id: null, type: "source", position: Position.Bottom, x: width / 2, y: height, width: 1, height: 1 }] : []),
+        ];
+        const groups = [...(layout.groups?.values() ?? [])].flatMap(group => {
+            const place = shown.get(group.id);
+            if (!place) return [];
+            return [keep({ id: group.id, type: "workflowGroup", position: { x: place.at.x, y: place.at.y }, width: group.width, height: group.height,
+                data: { group, node: byId.get(group.parallel) ?? null }, ...fixed, draggable: true,
+                // Dragged by its label row only; the rest of the box lets a press reach the graph.
+                dragHandle: ".ps-workflow-group-head", className: "nopan", style: GROUP_STYLE, handles: handles(group.width, group.height, true, false) })];
+        });
+        const steps = nodes.flatMap(node => {
             const box = layout.positions.get(node.id);
-            if (!box) return [];
-            const at = moved.get(node.id) ?? box;
-            const isSelected = node.id === selectedId;
-            const prior = made.current.get(node.id);
-            if (prior && prior.data.node === node && prior.data.selected === isSelected && prior.data.onSelect === onSelect
-                && prior.position.x === at.x && prior.position.y === at.y && prior.width === box.width && prior.height === box.height) {
-                next.set(node.id, prior);
-                return [prior];
-            }
-            const flowNode = {
-                id: node.id, type: "workflowStep", position: { x: at.x, y: at.y }, width: box.width, height: box.height,
-                data: { node, selected: isSelected, onSelect },
-                draggable: true, connectable: false, selectable: false, deletable: false, focusable: false,
+            const place = shown.get(node.id);
+            if (!box || !place) return [];
+            return [keep({
+                id: node.id, type: "workflowStep", position: { x: place.at.x, y: place.at.y }, width: box.width, height: box.height,
+                ...(place.parent ? { parentId: place.parent } : {}),
+                data: { node, selected: node.id === selectedId, onSelect },
+                ...fixed, draggable: true,
                 // A press on a step is the step's own (a click selects it, a drag moves it); it never moves the graph.
                 className: "nopan", style: NODE_STYLE,
                 // Where its edges meet it, given as well as measured, so edges draw before the steps are measured and stay
                 // drawn when a run's progress hands React Flow new step objects.
-                handles: [
-                    { id: null, type: "target", position: Position.Top, x: box.width / 2, y: 0, width: 1, height: 1 },
-                    { id: null, type: "source", position: Position.Bottom, x: box.width / 2, y: box.height, width: 1, height: 1 },
-                ],
-            };
-            next.set(node.id, flowNode);
-            return [flowNode];
+                handles: handles(box.width, box.height),
+            })];
+        });
+        const joins = [...(layout.joins?.values() ?? [])].flatMap(join => {
+            const place = shown.get(join.id);
+            if (!place) return [];
+            return [keep({ id: join.id, type: "workflowJoin", position: { x: place.at.x, y: place.at.y }, width: join.width, height: join.height,
+                ...(place.parent ? { parentId: place.parent } : {}),
+                data: { join, node: byId.get(join.parallel) ?? null, selected: join.parallel === selectedId, onSelect },
+                ...fixed, draggable: false, className: "nopan", style: NODE_STYLE, handles: handles(join.width, join.height) })];
         });
         made.current = next;
-        return list;
-    }, [layout, nodes, selectedId, onSelect, moved]);
-    // An edge is redrawn as a curve once a box it joins has moved; which ones have is all that changes it.
-    const movedIds = [...moved.keys()].sort().join("\u0000");
+        return [...groups, ...steps, ...joins];
+    }, [layout, nodes, selectedId, onSelect, shown]);
+    // An edge keeps its route until a box it joins moves; how each edge is drawn is all that changes it.
+    const motions = layout.edges.map(edge => edgeMotion(edge, shown));
+    const motionKey = JSON.stringify(motions);
     const flowEdges = React.useMemo(() => layout.edges.map((edge, index) => ({
-        id: `e${index}`, source: edge.from, target: edge.to, type: "workflowEdge", data: { edge, moved: moved.has(edge.from) || moved.has(edge.to) },
+        id: `e${index}`, source: edge.from, target: edge.to, type: "workflowEdge", data: { edge, motion: motions[index] },
         markerEnd: MARKER, selectable: false, deletable: false, focusable: false, reconnectable: false,
-    })), [layout, movedIds]);
-    // A box follows the pointer while it is dragged (the flow is controlled: React Flow says where, this keeps it).
+    })), [layout, motionKey]);
+    // A box follows the pointer while it is dragged (the flow is controlled: React Flow says where, this keeps it). A box
+    // inside a branch box is told relative to it, and kept so (H2).
     const onNodesChange = React.useCallback(changes => {
         const placed = changes.filter(change => change?.type === "position" && change.position);
         if (!placed.length) return;
+        const shownLayout = latest.current.layout;
         setMoved(current => {
             const next = new Map(current);
-            for (const change of placed) next.set(change.id, { x: Math.round(change.position.x), y: Math.round(change.position.y) });
+            for (const change of placed) {
+                const key = workflowPlaceKey(shownLayout, change.id);
+                if (key) next.set(key, { x: Math.round(change.position.x), y: Math.round(change.position.y) });
+            }
             return next;
         });
     }, []);
     // Saved once, at the end of a drag: every moved box this graph has, the one just dropped where it was dropped.
     const onNodeDragStop = React.useCallback((_event, _node, dropped) => {
-        const { moved: current, layout: shown, onPlaces: tell } = latest.current;
+        const { moved: current, layout: shownLayout, onPlaces: tell } = latest.current;
         const steps = {};
-        for (const [id, at] of current) steps[id] = [at.x, at.y];
+        for (const [key, at] of current) steps[key] = [at.x, at.y];
         for (const item of Array.isArray(dropped) ? dropped : []) {
-            if (item?.id && item.position) steps[item.id] = [Math.round(item.position.x), Math.round(item.position.y)];
+            const key = item?.id ? workflowPlaceKey(shownLayout, item.id) : null;
+            if (key && item.position) steps[key] = [Math.round(item.position.x), Math.round(item.position.y)];
         }
-        const kept = Object.fromEntries(Object.entries(steps).filter(([id]) => shown.positions.has(id)));
+        const keys = placeKeysOf(shownLayout);
+        const kept = Object.fromEntries(Object.entries(steps).filter(([key]) => keys.has(key)));
         tell?.(Object.keys(kept).length ? kept : null);
     }, []);
     const reset = React.useCallback(() => {

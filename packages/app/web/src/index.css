@@ -5321,6 +5321,50 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-edge-label rect { fill: var(--ps-surface); stroke: color-mix(in srgb, var(--ps-border) 70%, transparent); stroke-width: 1; }
 .ps-workflow-edge-label text { fill: var(--ps-muted); font-size: 10px; }
 .ps-workflow-edge[data-kind="error"] .ps-workflow-edge-label text { fill: var(--ps-danger); }
+/* Owner batch 7 (H2): a parallel step's branch box, dashed and drawn as a stack (two outlines behind it, from its
+   shadows, which are never painted inside it), and its join bar under it. The box lets a press through to the graph
+   except on its label row, where it is dragged. */
+.ps-workflow-group-slot, .ps-workflow-join-slot { position: absolute; }
+.ps-workflow-group {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1.5px dashed color-mix(in srgb, var(--ps-muted) 75%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ps-surface) 55%, transparent);
+  box-shadow: 4px 4px 0 -1.5px var(--ps-surface), 4px 4px 0 0 var(--ps-border), 8px 8px 0 -1.5px var(--ps-surface), 8px 8px 0 0 var(--ps-border);
+  pointer-events: none;
+}
+.ps-workflow-group.is-waiting { border-color: var(--ps-accent); }
+.ps-workflow-group.is-joined, .ps-workflow-group.is-done { border-color: var(--ps-success); }
+.ps-workflow-group.is-blocked, .ps-workflow-group.is-failed { border-color: var(--ps-danger); }
+.ps-workflow-group-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 8px 12px; pointer-events: auto; cursor: grab; }
+.ps-workflow-graph-static .ps-workflow-group-head { cursor: default; }
+.ps-workflow-group-label { flex: none; color: var(--ps-foreground); font-size: 11px; font-weight: 600; }
+.ps-workflow-group-counts { min-width: 0; overflow: hidden; color: var(--ps-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.ps-workflow-join {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  align-content: start;
+  gap: 1px;
+  padding: 0 4px;
+  color: var(--ps-muted);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+  cursor: pointer;
+  outline: none;
+}
+.ps-workflow-join-bar { display: block; height: 7px; margin-bottom: 3px; border-radius: 3px; background: var(--ps-muted); }
+.ps-workflow-join-rule { min-width: 0; color: var(--ps-foreground); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-workflow-join.is-waiting .ps-workflow-join-bar { background: var(--ps-accent); }
+.ps-workflow-join.is-joined .ps-workflow-join-bar, .ps-workflow-join.is-done .ps-workflow-join-bar { background: var(--ps-success); }
+.ps-workflow-join.is-blocked .ps-workflow-join-bar, .ps-workflow-join.is-failed .ps-workflow-join-bar { background: var(--ps-danger); }
+.ps-workflow-join.is-cancelled .ps-workflow-join-bar { background: var(--ps-warning); }
+.ps-workflow-join.is-selected .ps-workflow-join-bar, .ps-workflow-join:focus-visible .ps-workflow-join-bar { box-shadow: 0 0 0 2px var(--ps-accent); }
 /* React Flow, in the app's colours in every theme: edges and arrowheads in the muted text colour, the dots of the
    background from the border colour, the attribution on the surface. */
 .ps-workflow-flow {

@@ -4,7 +4,7 @@ import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
     compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
-    workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue,
+    workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue, workflowV2BranchList, workflowV2BranchNumber,
 } from "./workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
@@ -1255,6 +1255,39 @@ function nodeRow(entry, selected, idWidth, labelWidth, width) {
     ];
 }
 
+const JOIN_COLORS = { waiting: "yellow", joined: "green", done: "green", blocked: "red", failed: "red", cancelled: "gray", idle: "gray" };
+
+/**
+ * A parallel step's join line in the list (owner batch 7, H2): after its branch steps, where every branch meets, with
+ * its rule and its state. It is not a state: ↑↓ pass over it.
+ */
+function joinRow(join, width) {
+    const text = `  ⋯ ${join.label}${join.stateText ? ` · ${join.stateText}` : ""}`;
+    return [{ text: bounded(text, Math.max(20, width)), color: JOIN_COLORS[join.state] ?? "gray" }];
+}
+
+/**
+ * The list's rows: one per state in graph order and, after the last branch step of each parallel step, its join line
+ * (H2). `rowOf` maps a state's index to its row.
+ */
+function listRows(nodes, selectedIndex, idWidth, labelWidth, width) {
+    const lastMember = new Map();
+    nodes.forEach((entry, index) => { if (typeof entry.node?.parallel === "string") lastMember.set(entry.node.parallel, index); });
+    const joinAfter = new Map();
+    for (const entry of nodes) {
+        const at = lastMember.get(entry.id);
+        if (entry.node?.joinBar && at !== undefined) joinAfter.set(at, entry.node.joinBar);
+    }
+    const rows = [];
+    const rowOf = [];
+    nodes.forEach((entry, index) => {
+        rowOf.push(rows.length);
+        rows.push(nodeRow(entry, index === selectedIndex, idWidth, labelWidth, width));
+        if (joinAfter.has(index)) rows.push(joinRow(joinAfter.get(index), width));
+    });
+    return { rows, rowOf };
+}
+
 /** The portal's history wording (its Result column). */
 const resultWord = execution => execution.status === "pending" ? "Pending"
     : execution.resultKind === "business" ? "Outcome"
@@ -1490,14 +1523,16 @@ function detailLines(selection, width) {
             const evidence = node.evidence;
             add(`Branch results: ${evidence.succeeded} of ${evidence.total} succeeded${evidence.running ? `, ${evidence.running} running` : ""}`, "cyan");
             if (evidence.blocked && evidence.blocking.length) {
-                add(`  The join is blocked by ${evidence.blocking.length === 1 ? "branch" : "branches"} ${evidence.blocking.join(", ")}.`, "yellow");
+                add(`  The join is blocked by ${workflowV2BranchList(evidence.blocking)}.`, "yellow");
             }
             for (const row of evidence.rows.slice(0, EVIDENCE_ROWS)) {
-                add(`  branch ${row.index} · ${row.status}${row.step ? ` · at '${row.step}'` : ""}${row.why ? ` · ${row.why}` : row.result ? ` · ${row.result}` : ""}`,
+                add(`  branch ${workflowV2BranchNumber(row.index)} · ${row.status}${row.step ? ` · at '${row.step}'` : ""}${row.why ? ` · ${row.why}` : row.result ? ` · ${row.result}` : ""}`,
                     row.status === "did not succeed" ? "yellow" : "gray");
             }
             if (evidence.rows.length > EVIDENCE_ROWS) add(`  … ${evidence.rows.length - EVIDENCE_ROWS} more branches (the portal lists them all)`, "gray");
         }
+        // A parallel step's join (owner batch 7, H2), as the portal's join bar says it.
+        if (node.joinBar) add(`Join: ${node.joinBar.rule}${node.joinBar.stateText ? ` · ${node.joinBar.stateText}` : ""}`, "cyan");
     } else if (node.outcome) {
         add(`Last outcome: ${node.outcome}`);
     }
@@ -1596,7 +1631,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
     const contentWidth = width - 4;
     const idWidth = Math.min(20, Math.max(4, ...selection.nodes.map(entry => entry.id.length)));
     const labelWidth = Math.min(24, Math.max(6, ...selection.nodes.map(entry => entry.label.length)));
-    const nodeRows = selection.nodes.map((entry, index) => nodeRow(entry, index === selection.selectedIndex, idWidth, labelWidth, contentWidth));
+    const { rows: nodeRows, rowOf } = listRows(selection.nodes, selection.selectedIndex, idWidth, labelWidth, contentWidth);
     const rows = nodeRows.length ? nodeRows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No steps to show.", color: "gray" }]];
     const detailsLines = detailLines(selection, contentWidth);
     // The details scroll (PgUp/PgDn) within what its panel can show: never past its last line.
@@ -1605,7 +1640,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
     return {
         title: bounded(`Workflow: ${selection.projection.name} · ${selection.projection.status}`, contentWidth),
         rows,
-        selectedRowIndex: selection.selectedIndex,
+        selectedRowIndex: rowOf[selection.selectedIndex] ?? 0,
         detailsTitle: selection.selected
             ? `Step ${bounded(selection.selected.id, 30)} — ↑↓ step · ←→ run · Tab agent chat · Enter open · Esc close` : "Workflow",
         detailsLines,

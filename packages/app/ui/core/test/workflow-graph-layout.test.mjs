@@ -4,8 +4,10 @@
 // Run: node --test packages/app/ui/core/test/workflow-graph-layout.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { layoutWorkflowGraphTB, workflowEdgeCurve, workflowEdgeLabelText, WORKFLOW_GRAPH_NODE_WIDTH, WORKFLOW_GRAPH_NODE_HEIGHT }
-    from "../src/workflow-graph-layout.js";
+import {
+    layoutWorkflowGraphTB, workflowEdgeCurve, workflowEdgeLabelText, workflowGraphBodies, workflowGraphPlaces, workflowPlaceKey,
+    WORKFLOW_GRAPH_GROUP_HEADER, WORKFLOW_GRAPH_NODE_WIDTH, WORKFLOW_GRAPH_NODE_HEIGHT,
+} from "../src/workflow-graph-layout.js";
 import { workflowDefinition } from "../src/workflow-view.js";
 import { workflowV2Definition } from "../src/workflow-v2-view.js";
 import { startedData } from "./workflow-v2-fixtures.mjs";
@@ -154,25 +156,112 @@ test("version 2: merged outcomes, runtime-error routes, the loop back to poll, a
     assertInside(layout);
 });
 
-test("a parallel state leads to its body's first state by an 'each branch' edge", () => {
-    const definition = workflowV2Definition({ revision: 1, initial: "review", states: [
-        { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer", package: "review-kit", version: "1.2.0" }, timeoutSeconds: 600,
-            outcomes: ["accepted"], next: { accepted: "fan", timed_out: "failed" } },
-        { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
-            body: { initial: "work", states: ["work", "branch_done"] }, outcomes: ["joined", "blocked"], next: { joined: "done", blocked: "failed" } },
-        { id: "work", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["ok"], next: { ok: "branch_done" }, parallel: "fan" },
-        { id: "branch_done", type: "terminal", outcome: "succeeded", parallel: "fan" },
-        { id: "done", type: "terminal", outcome: "succeeded" },
-        { id: "failed", type: "terminal", outcome: "failed" },
-    ] });
-    const layout = layoutWorkflowGraphTB(definition);
-    const start = edgeOf(layout, "fan", "work");
-    assert.ok(start, "the fan-out edge exists");
-    assert.deepEqual([start.kind, start.outcome, start.branch, start.outcomes], ["branch", "each branch", true, []]);
-    assert.equal(edgeOf(layout, "fan", "done").kind, "outcome");
+// Owner batch 7 (H2): fork, branch box, join bar. An agent review leads to a parallel step whose body is a script and a
+// branch end; the parallel step joins to done, and a blocked join or the review's timeout goes to failed.
+const fanned = () => workflowV2Definition({ revision: 1, initial: "review", states: [
+    { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer", package: "review-kit", version: "1.2.0" }, timeoutSeconds: 600,
+        outcomes: ["accepted"], next: { accepted: "fan", timed_out: "failed" } },
+    { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
+        body: { initial: "work", states: ["work", "branch_done"] }, outcomes: ["joined", "blocked"], next: { joined: "done", blocked: "failed" } },
+    { id: "work", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["ok"], next: { ok: "branch_done" }, parallel: "fan" },
+    { id: "branch_done", type: "terminal", outcome: "succeeded", parallel: "fan" },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+    { id: "failed", type: "terminal", outcome: "failed" },
+] });
+
+/** `inner` lies inside `outer` (boxes { x, y, width, height }). */
+const within = (inner, outer) => inner.x >= outer.x && inner.y >= outer.y
+    && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+
+test("a parallel step's body is a branch box under it, its branch ends lead to a join bar, and its routes leave from the bar", () => {
+    const layout = layoutWorkflowGraphTB(fanned());
+    assert.deepEqual([...layout.groups.keys()], ["fan"]);
+    const group = layout.groups.get("fan");
+    assert.deepEqual([group.id, group.parallel, group.members], ["group:fan", "fan", ["work", "branch_done"]]);
+    // Its steps are inside it, under its label; nothing else is.
+    const steps = { x: group.x, y: group.y + WORKFLOW_GRAPH_GROUP_HEADER, width: group.width, height: group.height - WORKFLOW_GRAPH_GROUP_HEADER };
+    for (const id of ["work", "branch_done"]) assert.ok(within(layout.positions.get(id), steps), `${id} is inside the branch box`);
+    for (const id of ["review", "fan", "done", "failed"]) {
+        const box = layout.positions.get(id);
+        const overlaps = box.x < group.x + group.width + group.stack && box.x + box.width > group.x
+            && box.y < group.y + group.height + group.stack && box.y + box.height > group.y;
+        assert.equal(overlaps, false, `${id} is outside the branch box and its stack`);
+    }
+    assert.ok(top(layout, "work") > top(layout, "fan") && group.y > top(layout, "fan"), "the box is under the parallel step");
+    assert.ok(top(layout, "branch_done") > top(layout, "work"));
+    // The join bar is under the box; done and failed are under the bar.
+    const join = layout.joins.get("fan");
+    assert.deepEqual([join.id, join.parallel], ["join:fan", "fan"]);
+    assert.ok(join.y >= group.y + group.height, "the join bar is under the box");
+    assert.ok(top(layout, "done") > join.y && top(layout, "failed") > join.y);
+    // One edge from the parallel step into the box, without a label; none from it to its body's first step or to its targets.
+    const into = edgeOf(layout, "fan", "group:fan");
+    assert.deepEqual([into.kind, into.branch, into.start, into.outcomes, into.labelText, into.labelWidth], ["branch", true, "work", [], "", 0]);
+    assert.ok(Math.abs(into.points.at(-1)[1] - group.y) <= 1, "it ends at the top of the box");
+    assert.equal(edgeOf(layout, "fan", "work"), undefined);
+    assert.equal(edgeOf(layout, "fan", "done"), undefined);
+    assert.equal(edgeOf(layout, "fan", "failed"), undefined);
+    // The branch's own route stays inside the box; its end leads to the join bar.
+    assert.equal(edgeOf(layout, "work", "branch_done").kind, "outcome");
+    const end = edgeOf(layout, "branch_done", "join:fan");
+    assert.deepEqual([end.kind, end.join, end.owner, end.labelText, end.labelWidth], ["join", true, "fan", "", 0]);
+    assert.deepEqual(end.points.at(-1), [end.points.at(-1)[0], join.y], "it ends on the bar");
+    assert.ok(end.points.at(-1)[0] >= join.x && end.points.at(-1)[0] <= join.x + join.width);
+    assert.ok(end.points[0][1] >= layout.positions.get("branch_done").y, "it leaves from the branch end");
+    // Joined and blocked leave from the bar, as the parallel step's routes.
+    for (const [target, outcome] of [["done", "joined"], ["failed", "blocked"]]) {
+        const route = edgeOf(layout, "join:fan", target);
+        assert.deepEqual([route.kind, route.owner, route.outcome, route.labelText], ["outcome", "fan", outcome, outcome]);
+    }
     assert.equal(edgeOf(layout, "review", "failed").kind, "error");
-    assert.ok(top(layout, "work") > top(layout, "fan"));
+    assert.equal(edgeOf(layout, "review", "fan").kind, "outcome");
+    assert.equal(layout.edges.length, 7);
+    assertCurvesClearOfSteps(layout);
     assertInside(layout);
+    for (const box of [group, join]) assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= layout.width && box.y + box.height <= layout.height);
+    assert.ok(group.x + group.width + group.stack <= layout.width && group.y + group.height + group.stack <= layout.height, "the stack is drawn too");
+});
+
+test("bodies: a parallel step's body steps in body order, each step in one body; a graph without one has no box or bar", () => {
+    const { bodies, memberOf } = workflowGraphBodies(fanned().states);
+    assert.deepEqual([...bodies], [["fan", ["work", "branch_done"]]]);
+    assert.deepEqual([...memberOf], [["work", "fan"], ["branch_done", "fan"]]);
+    // A parallel step whose body names no step of the graph keeps the old 'each branch' edge and no box.
+    const empty = workflowGraphBodies([{ id: "p", type: "parallel", body: { initial: "x", states: ["x"] } }]);
+    assert.equal(empty.bodies.size, 0);
+    for (const definition of [jokes, retry, quality, workflowDefinition(startedData)]) {
+        const layout = layoutWorkflowGraphTB(definition);
+        assert.deepEqual([layout.groups.size, layout.joins.size], [0, 0]);
+        assert.ok(layout.edges.every(edge => !edge.join && !edge.owner && edge.labelWidth > 0));
+    }
+});
+
+test("a moved branch box carries its steps and join bar; a step inside it is placed relative to it, under its own key", () => {
+    const layout = layoutWorkflowGraphTB(fanned());
+    const group = layout.groups.get("fan"), join = layout.joins.get("fan"), work = layout.positions.get("work");
+    assert.equal(workflowPlaceKey(layout, "work"), "fan/work");
+    assert.equal(workflowPlaceKey(layout, "group:fan"), "group:fan");
+    assert.equal(workflowPlaceKey(layout, "review"), "review");
+    assert.equal(workflowPlaceKey(layout, "join:fan"), null, "the join bar moves only with its box");
+    assert.equal(workflowPlaceKey(layout, "nope"), null);
+    // As laid out: every box where the layout put it, a step inside the box placed relative to it.
+    const still = workflowGraphPlaces(layout);
+    assert.deepEqual([still.get("work").x, still.get("work").y, still.get("work").parent], [work.x, work.y, "group:fan"]);
+    assert.deepEqual(still.get("work").at, { x: work.x - group.x, y: work.y - group.y });
+    assert.equal(still.get("review").parent, null);
+    assert.ok([...still.values()].every(box => !box.moved));
+    // The box moved: its steps and its bar move with it; nothing else does.
+    const moved = workflowGraphPlaces(layout, new Map([["group:fan", { x: group.x + 100, y: group.y + 40 }]]));
+    assert.deepEqual([moved.get("group:fan").dx, moved.get("group:fan").dy, moved.get("group:fan").self], [100, 40, true]);
+    assert.deepEqual([moved.get("work").x, moved.get("work").y, moved.get("work").moved, moved.get("work").self], [work.x + 100, work.y + 40, true, false]);
+    assert.deepEqual([moved.get("join:fan").x, moved.get("join:fan").y, moved.get("join:fan").moved], [join.x + 100, join.y + 40, true]);
+    assert.equal(moved.get("review").moved, false);
+    // A step moved inside the box keeps its place in it when the box moves too.
+    const both = workflowGraphPlaces(layout, new Map([["group:fan", { x: group.x + 100, y: group.y }], ["fan/work", { x: 5, y: 60 }]]));
+    assert.deepEqual([both.get("work").x, both.get("work").y, both.get("work").self], [group.x + 105, group.y + 60, true]);
+    // A place saved under the bare step id (before the box existed) is not one inside it.
+    const old = workflowGraphPlaces(layout, new Map([["work", { x: 0, y: 0 }]]));
+    assert.deepEqual([old.get("work").x, old.get("work").y], [work.x, work.y]);
 });
 
 test("a step that loops on itself keeps one edge with its outcomes joined, beside the step", () => {
@@ -210,7 +299,7 @@ test("a long outcome is drawn to 20 characters, and its box is sized to what is 
 
 test("the same definition always gives the same layout", () => {
     const snapshot = layout => JSON.stringify({ width: layout.width, height: layout.height, positions: [...layout.positions], edges: layout.edges });
-    for (const definition of [jokes, retry, quality, workflowDefinition(startedData)]) {
+    for (const definition of [jokes, retry, quality, workflowDefinition(startedData), fanned()]) {
         assert.equal(snapshot(layoutWorkflowGraphTB(definition)), snapshot(layoutWorkflowGraphTB(definition)));
     }
 });

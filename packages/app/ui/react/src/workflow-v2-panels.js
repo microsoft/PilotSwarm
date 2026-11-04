@@ -3,6 +3,7 @@ import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
     workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2ShownNotices, workflowV2VisitEnding, workflowV2WholeValue,
+    describeWorkflowV2Execution, workflowV2BranchChoice, workflowV2BranchList, workflowV2BranchNumber, workflowV2BranchSteps, workflowV2ForEachText,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -188,14 +189,9 @@ function kindProperties(node, current) {
         if (node.timeoutSeconds !== undefined) rows.push(["Deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
         if (current?.deadline) rows.push(["Deadline at", workflowV2EventTime(current.deadline) ?? current.deadline]);
     }
-    if (node.kind === "parallel") {
-        rows.push(["Branches start at", String(node.body?.initial ?? "—")],
-            ["Concurrency", node.concurrency === 1 ? "One branch at a time" : `Up to ${node.concurrency} branches at a time`],
-            ["Join", `${node.join === "all_required" ? "Every branch must succeed" : String(node.join)}${node.failFast ? " · the first failure cancels the others" : ""}`]);
-        if (Number.isSafeInteger(current?.branches)) rows.push(["Branches", String(current.branches)]);
-    }
+    // A parallel step's own rows are its For each section (ParallelSections; owner batch 7, H2).
     if (node.parallel) rows.push(["Parallel step", String(node.parallel)]);
-    if (current?.branch && Number.isSafeInteger(current.branch.index)) rows.push(["Branch", String(current.branch.index)]);
+    if (current?.branch && Number.isSafeInteger(current.branch.index)) rows.push(["Branch", String(workflowV2BranchNumber(current.branch.index))]);
     return rows;
 }
 
@@ -227,20 +223,60 @@ function AgentChild({ agent, openSession, subtree = [] }) {
 
 /**
  * Each branch of a parallel step's visit (owner decision q16; mocks M22 "JOIN BLOCKED k / n", M23 "Inspect conflict",
- * M24 "Inspect evidence"): how many succeeded, which ones block a blocked join, and per branch where it is, its last
- * step, a short result and why it did not succeed.
+ * M24 "Inspect evidence"; owner batch 7, H2): how many succeeded, run and wait, which ones block a blocked join, and per
+ * branch its current (or last) step, where it is, that step's deadline, its result or why it did not succeed, and its
+ * agent chat when that step is an agent step. Branches are numbered from 1 for people; the data attributes keep the
+ * index from 0.
  */
-function BranchEvidence({ evidence }) {
-    return h("div", { className: "ps-workflow-evidence", "aria-label": "Branch results" },
-        h("h3", null, "Branch results"),
-        h("p", { style: { margin: 0 } }, `${evidence.succeeded} of ${evidence.total} branches succeeded${evidence.running ? `, ${evidence.running} running` : ""}.`),
+function BranchEvidence({ evidence, openSession = null }) {
+    const counts = [`${evidence.succeeded} of ${evidence.total} branches succeeded`, evidence.running ? `${evidence.running} running` : null,
+        evidence.queued ? `${evidence.queued} queued` : null].filter(Boolean).join(", ");
+    return h("div", { className: "ps-workflow-evidence", "aria-label": "Branches" },
+        h("h3", null, "Branches"),
+        h("p", { style: { margin: 0 } }, `${counts}.`),
         evidence.blocked && evidence.blocking.length ? h("p", { role: "status", "data-blocking": evidence.blocking.join(","), style: { margin: 0, color: TONES.warning } },
-            `The join is blocked by ${evidence.blocking.length === 1 ? "branch" : "branches"} ${evidence.blocking.join(", ")}.`) : null,
+            `The join is blocked by ${workflowV2BranchList(evidence.blocking)}.`) : null,
         evidence.rows.length ? h("table", null,
-            h("thead", null, h("tr", null, ["Branch", "Status", "Last step", "Result", "Why"].map(label => h("th", { key: label }, label)))),
+            h("thead", null, h("tr", null, ["#", "Current step", "Status", "Deadline", "Result", "Agent chat"].map(label => h("th", { key: label }, label)))),
             h("tbody", null, evidence.rows.map(row => h("tr", { key: row.index, "data-branch": row.index, "data-status": row.status },
-                h("td", null, String(row.index)), h("td", null, row.status), h("td", null, row.step ?? "—"), h("td", null, row.result ?? "—"),
-                h("td", null, row.why ?? "—"))))) : null);
+                h("td", null, String(workflowV2BranchNumber(row.index))), h("td", null, row.step ?? "—"), h("td", null, row.status),
+                h("td", null, row.deadline ? workflowV2EventTime(row.deadline) ?? row.deadline : "—"),
+                h("td", null, row.why ?? row.result ?? (row.outcome ? `ended '${row.outcome}'` : "—")),
+                h("td", null, !row.agent ? "—" : openSession ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-branch-chat",
+                    "data-session": row.agent, onClick: () => openSession(row.agent) }, "Open chat") : row.agent))))) : null);
+}
+
+/**
+ * A parallel step's details (owner batch 7, H2): For each (where its items come from, never a literal list's values;
+ * how many run at a time; the join rule), its Branch steps (each selects that step) and its Branches. No hooks: tests
+ * call it as a function.
+ */
+function ParallelSections({ selected, current, nodes, select, openSession }) {
+    const property = (label, value) => h("div", { className: "ps-workflow-property", key: label }, h("span", null, label), h("strong", null, value));
+    const steps = workflowV2BranchSteps(selected, nodes);
+    return h(React.Fragment, null,
+        h("h3", null, "For each"),
+        property("Items", workflowV2ForEachText(selected.forEach)),
+        property("At a time", selected.concurrency === 1 ? "One branch at a time" : `Up to ${selected.concurrency} branches at a time`),
+        property("Join", `${selected.join === "all_required" ? "Every branch must succeed" : String(selected.join)}${selected.failFast ? " · the first failure cancels the others" : ""}`),
+        Number.isSafeInteger(current?.branches) ? property("Branches", String(current.branches)) : null,
+        steps.length ? h(React.Fragment, null,
+            h("h3", null, "Branch steps"),
+            steps.map(id => h("button", { key: id, type: "button", className: "ps-workflow-transition", "data-branch-step": id,
+                disabled: !nodes.some(node => node.id === id), onClick: () => select(id) },
+            id, nodes.find(node => node.id === id)?.label ? ` · ${nodes.find(node => node.id === id).label}` : ""))) : null,
+        selected.evidence ? h(BranchEvidence, { evidence: selected.evidence, openSession }) : null);
+}
+
+/**
+ * Which branch a branch step's details show (owner batch 7, H2): a choice per branch that reached the step in the shown
+ * visit of its parallel step; by default the first where it runs, else the one that ended last. `onBranch(index)` chooses.
+ */
+function BranchPicker({ branches, chosen, onBranch = null }) {
+    return h("label", { className: "ps-workflow-field ps-workflow-branch-picker" }, h("span", null, "Branch"),
+        h("select", { className: "ps-workflow-input", value: String(chosen.index), "data-field": "branch", disabled: !onBranch,
+            onChange: event => onBranch?.(Number(event.target.value)) },
+        branches.choices.map(choice => h("option", { key: choice.index, value: String(choice.index) }, choice.label))));
 }
 
 /**
@@ -338,11 +374,14 @@ function KvApplied({ execution, runId, kv }) {
  */
 export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError, openSession = null, runId = null, selection = null,
     onSelectExecution = null, onTab = null, executionValues = null, onReadWholeValue = null, history = null, onLoadOlder = null, kv = null,
-    events = null, sessionsById = null, onAskParent = null }) {
+    events = null, sessionsById = null, onAskParent = null, branchIndex = null, onBranch = null }) {
     const property = (label, value) => h("div", { className: "ps-workflow-property", key: label },
         h("span", null, label), h("strong", null, value));
-    const current = selected.current;
     if (tab === "details") {
+        // A branch step's details show one branch's visit, chosen by its picker (owner batch 7, H2; `branchIndex`, `onBranch`).
+        const branch = workflowV2BranchChoice(selected.branches, branchIndex);
+        const current = branch ? branch.execution : selected.current;
+        const description = branch ? describeWorkflowV2Execution(selected, current) : selected.description;
         const lastOutcome = selected.outcome
             ? `${selected.outcome}${selected.resultKind === "runtime_error" ? " · runtime error" : ""}` : "Not recorded";
         return h(React.Fragment, null,
@@ -351,10 +390,13 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             property("Last outcome", lastOutcome),
             // Why the latest visit ended (owner decision q14; mock M14 "Inspect cancellation").
             workflowV2VisitEnding(current) ? property("Why it ended", workflowV2VisitEnding(current).text) : null,
+            branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch }) : null,
             kindProperties(selected, current).map(([label, value]) => property(label, value)),
-            selected.description.map((line, i) => h("p", { key: i }, line)),
-            selected.type === "terminal" ? h("p", null, selected.summary || "The workflow ends at this step.") : null,
-            selected.next ? h("h3", null, "Next steps") : null,
+            description.map((line, i) => h("p", { key: i }, line)),
+            selected.type === "terminal" ? h("p", null, selected.summary || (selected.parallel ? "The branch ends at this step." : "The workflow ends at this step.")) : null,
+            selected.kind === "parallel" ? h(ParallelSections, { selected, current, nodes, select, openSession }) : null,
+            // A parallel step's routes leave from its join bar, once every branch has ended (H2).
+            selected.next ? h("h3", null, selected.kind === "parallel" ? "Next steps from the join" : "Next steps") : null,
             Object.entries(selected.next || {}).map(([label, target]) =>
                 h("button", { key: label, type: "button", className: "ps-workflow-transition",
                     disabled: !nodes.some(node => node.id === target), onClick: () => select(target) },
@@ -372,8 +414,7 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                 h(Value, { value: current.outbox.payloadPreview, label: "Sent payload" })) : null,
             // Who did what in this visit, from the workflow's events (owner decision q14; mock M09 "Inspect audit").
             events && current?.id ? h(ActivityDetails, { rows: workflowV2Activity(events, { runId, nodeExecutionId: current.id }), label: "Activity of this visit" }) : null,
-            // Each branch's result for a parallel step, and asking the parent agent about this visit (owner decision q16).
-            selected.evidence ? h(BranchEvidence, { evidence: selected.evidence }) : null,
+            // Asking the parent agent about this visit (owner decision q16).
             onAskParent && current?.id ? h(AskParent, { key: current.id, onAskParent, executionId: current.id }) : null);
     }
     if (tab === "output") {
