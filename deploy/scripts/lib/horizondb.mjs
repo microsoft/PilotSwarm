@@ -152,8 +152,13 @@ export function seedHorizonDbConnectionUrl(env) {
 // extension migrations. Later deploys find it attached and return at once.
 //
 // While an attach runs (about two minutes, one server restart), the pool GET
-// still shows the previous group as InSync. So send one PATCH and wait until
-// the GET shows the declared group; a second PATCH would start another attach.
+// still shows the previous group as InSync, so the script waits instead of
+// sending another PATCH. But the first PATCH soon after a pool is created can
+// end "Succeeded" without attaching anything. So when the GET still shows
+// another group four minutes after a PATCH, the PATCH is sent again (at most
+// three PATCHes in all).
+export const HORIZONDB_ATTACH_RESEND_POLLS = 24;
+export const HORIZONDB_ATTACH_MAX_PATCHES = 3;
 export async function ensureHorizonDbParameterGroup(env, {
   runFn = run,
   sleepFn = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -168,7 +173,8 @@ export async function ensureHorizonDbParameterGroup(env, {
   const desiredId = `${horizonDbBase({ subscription, group })}/parameterGroups/${parameterGroup}`;
   const poolUrl = horizonDbPoolUrl({ subscription, group, cluster });
   const restartUrl = poolUrl.replace(`/pools/${HORIZONDB_POOL_NAME}?`, `/pools/${HORIZONDB_POOL_NAME}/restart?`);
-  let attachRequested = false;
+  let patchesSent = 0;
+  let lastPatchAttempt = -1;
   let restartRequested = false;
   for (let attempt = 0; attempt < attempts; attempt++) {
     const pool = JSON.parse(runFn("az", ["rest", "--method", "get", "--url", poolUrl, "--output", "json"], { capture: true }).stdout);
@@ -180,7 +186,7 @@ export async function ensureHorizonDbParameterGroup(env, {
       log("ok", "HorizonDB pool is using its declared extension parameter group.");
       return;
     }
-    if (ready && isDeclared && status === "FailedToApply" && attachRequested) {
+    if (ready && isDeclared && status === "FailedToApply" && patchesSent > 0) {
       throw new Error("HorizonDB could not apply the extension parameter group (syncStatus FailedToApply).");
     }
     if (ready && isDeclared && status === "PendingReboot" && !restartRequested) {
@@ -189,12 +195,16 @@ export async function ensureHorizonDbParameterGroup(env, {
       runFn("az", ["rest", "--method", "post", "--url", restartUrl], { capture: true });
       restartRequested = true;
       log("info", "Restarting the HorizonDB pool to apply pending extension settings.");
-    } else if (ready && !attachRequested && (!isDeclared || status === "FailedToApply")) {
+    } else if (ready && (!isDeclared || (status === "FailedToApply" && patchesSent === 0)) &&
+        patchesSent < HORIZONDB_ATTACH_MAX_PATCHES &&
+        (patchesSent === 0 || attempt - lastPatchAttempt >= HORIZONDB_ATTACH_RESEND_POLLS)) {
       // FailedToApply before this deploy's own attempt is retried once.
+      if (patchesSent > 0) log("warn", "HorizonDB pool still shows another settings group four minutes after the attach request; sending it again.");
       const body = JSON.stringify({ properties: { parameterGroup: { parameterGroupResourceId: desiredId, applyMethod: "Immediate" } } });
       runFn("az", ["rest", "--method", "patch", "--url", poolUrl,
         "--headers", "Content-Type=application/json", "--body", body], { capture: true });
-      attachRequested = true;
+      patchesSent += 1;
+      lastPatchAttempt = attempt;
       log("info", "Attaching the declared HorizonDB extension parameter group (about two minutes, one restart).");
     }
     await sleepFn(10000);

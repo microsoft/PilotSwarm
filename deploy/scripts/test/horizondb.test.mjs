@@ -101,6 +101,22 @@ test("a new pool on the built-in group gets one attach request and the deploy wa
   assert.equal(calls.filter((c) => c.method === "get").length, 5);
 });
 
+test("a PATCH that ends without attaching is sent again after four minutes, at most three times", async () => {
+  // Seen on a new pool: the first PATCH ends "Succeeded" and the pool stays on the built-in group.
+  const dropped = fakePoolApi([...Array(25).fill(["Succeeded", builtInGroupId, "InSync"]), ["Succeeded", stampGroupId, "InSync"]]);
+  await ensureHorizonDbParameterGroup(horizonEnv(stampNames), { runFn: dropped.runFn, sleepFn: async () => {} });
+  const order = dropped.calls.map((c) => c.method);
+  assert.equal(order.filter((m) => m === "patch").length, 2);
+  assert.equal(order.indexOf("patch", order.indexOf("patch") + 1) - order.indexOf("patch"), 25, "resend comes 24 polls (four minutes) later");
+
+  const never = fakePoolApi([["Succeeded", builtInGroupId, "InSync"]]);
+  await assert.rejects(
+    ensureHorizonDbParameterGroup(horizonEnv(stampNames), { runFn: never.runFn, sleepFn: async () => {} }),
+    /did not become active within fifteen minutes/,
+  );
+  assert.equal(never.calls.filter((c) => c.method === "patch").length, 3);
+});
+
 test("an attached group that is InSync needs no change", async () => {
   const { calls, runFn } = fakePoolApi([["Succeeded", stampGroupId.toUpperCase(), "InSync"]]);
   await ensureHorizonDbParameterGroup(horizonEnv(stampNames), { runFn, sleepFn: async () => {} });
