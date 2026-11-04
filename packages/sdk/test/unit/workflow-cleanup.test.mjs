@@ -47,10 +47,12 @@ test("worker shutdown still stops Copilot clients after an executor cleanup reje
     assert.deepEqual(f.calls, ["client-stop"]);
 });
 
-// Adversarial review RT-2 and its verifications (VR-1..3, tests M-08; E1b, tests E1-T1..T8): the script states of one
-// workflow share its native tool session. Their tool calls run one at a time, each checked when its turn comes; a close
-// aborts only its own running call and stops only the background work its own calls started while others hold the
-// session; the last close tears the session down.
+// Adversarial review RT-2 and its verifications (VR-1..3, tests M-08; E1b, tests E1-T1..T8; E1c, tests E1b-T2, T5..T8): the
+// script states of one workflow share its native tool session. Their tool calls run one at a time, each checked when its
+// turn comes, after its authorization and just before it runs; a close aborts only its own running call and stops only
+// the background tasks its own calls started while others hold the session; the last close tears the session down. Only
+// the share that holds the session in the current worker generation removes its warm handle, releases its folders or
+// raises its failure barrier; late work that ends and is cleaned up lifts the barrier it raised.
 
 const ECHO = { name: "echo", input_schema: { type: "object" } };
 const toolBinding = { parentSessionId: "parent", policy: "p", boundAgentFingerprint: "f", config: {}, tools: [workflowToolGrant(ECHO)], excludedTools: [] };
@@ -63,7 +65,7 @@ function gate() {
 }
 
 async function until(check, label) {
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < 400; i++) {
         if (check()) return;
         await tick(5);
     }
@@ -71,16 +73,20 @@ async function until(check, label) {
 }
 
 /**
- * A manager whose native sessions are fakes. Each setup makes a new session (n); `calls` records what happens, in order.
- * A tool call: `hold` makes it wait on a gate; `background` starts a task (its start time is the call's); `write` and
- * `read` set and read one shared flag. A cancel with time windows ("cancel-own") stops the tasks started in them; one
- * without ("cancel") stops all. `createHold(n)` and `factoryHold(n)` make a setup or a tool catalog check wait.
+ * A manager whose native sessions are fakes. Each setup makes a new session (n), kept as the warm handle; `calls`
+ * records what happens, in order. A tool call: `hold` makes it wait on a gate; `background` starts a task with an id and
+ * its start time (none with `untimed`); `write` and `read` set and read one shared flag; `moveTask` moves a task's start
+ * time into this call; `delay` makes it take that many milliseconds. `authorize`, `createHold(n)`, `factoryHold(n)` and `metadataHold()` make an authorization, a setup,
+ * a tool catalog check or a call's catalog read wait. A cancel with `select` ("cancel-own") stops the tasks it selects;
+ * one without ("cancel") stops all. `listFails` makes listing the tasks fail.
  */
-function shareFixture({ authorize = async () => {}, createFails = null, createHold = () => null, factoryHold = () => null, cancelGate = null,
-    cancelFails = false, ownCancelFails = false, release = { released: false, cancelled: 0 } } = {}) {
+function shareFixture({ authorize = async () => {}, createFails = null, createHold = () => null, factoryHold = () => null, metadataHold = () => null,
+    cancelGate = null, cancelFails = false, cancelFailsFor = () => false, ownCancelFails = false, listFails = false,
+    release = { released: false, cancelled: 0 } } = {}) {
     const calls = [];
     const sessions = [];
     const flag = { written: false };
+    let tasks = 0;
     const manager = new SessionManager(undefined, null, {});
     manager.sessionCatalog = { getSession: async () => ({ rootSessionId: "parent" }) };
     manager.authorizeWorkflowTools = (...args) => authorize(...args);
@@ -93,42 +99,57 @@ function shareFixture({ authorize = async () => {}, createFails = null, createHo
         if (hold) await hold;
         const session = { n, tasks: [], aborted: 0 };
         sessions.push(session);
+        let catalogChecked = false;
         const cli = { rpc: { tools: {
             initializeAndValidate: async () => { const held = factoryHold(n); if (held) await held; },
-            getCurrentMetadata: async () => ({ tools: [ECHO] }),
+            getCurrentMetadata: async () => {
+                if (catalogChecked) { const held = metadataHold(); if (held) await held; }
+                catalogChecked = true;
+                return { tools: [ECHO] };
+            },
             execute: async ({ arguments: args }) => {
                 calls.push(`execute:${n}:${args.label}`);
-                if (args.background) session.tasks.push({ label: args.label, startedAt: Date.now(), running: true });
+                if (args.background) session.tasks.push({ id: `task-${++tasks}`, label: args.label, startedAt: args.untimed ? undefined : Date.now(), running: true });
+                if (args.moveTask) session.tasks.find(task => task.label === args.moveTask).startedAt = Date.now();
                 if (args.write) flag.written = true;
+                if (args.delay) await tick(args.delay);
                 if (args.hold) await args.hold;
                 const text = args.read ? (flag.written ? "ready" : "not yet") : `done ${args.label} on ${n}`;
                 return { resultType: "success", textResultForLlm: text };
             },
         } }, abort: async () => { session.aborted += 1; calls.push(`abort:${n}`); } };
-        return {
+        const handle = {
+            n,
             prepareWorkflowTools: async () => { calls.push(`prepare:${n}`); },
             getWorkflowToolSession: () => cli,
-            cancelBackgroundTasks: async ({ startedWithin } = {}) => {
-                if (startedWithin) {
+            activeBackgroundTasks: async () => {
+                if (listFails) throw new Error("tasks cannot be listed");
+                return session.tasks.filter(task => task.running).map(task => ({ id: task.id, type: "shell" }));
+            },
+            cancelBackgroundTasks: async ({ select } = {}) => {
+                if (select) {
                     calls.push(`cancel-own:${n}`);
                     if (ownCancelFails) throw new Error("background shell remains");
-                    for (const task of session.tasks) {
-                        if (startedWithin.some(window => task.startedAt >= window.since && task.startedAt <= window.until)) task.running = false;
-                    }
+                    for (const task of session.tasks) if (task.running && select({ id: task.id, startedAt: task.startedAt })) task.running = false;
                     return 0;
                 }
                 calls.push(`cancel:${n}`);
                 if (cancelGate) await cancelGate.opened;
-                if (cancelFails) throw new Error("background shell remains");
+                if (cancelFails || cancelFailsFor(n)) throw new Error("background shell remains");
                 for (const task of session.tasks) task.running = false;
                 return 0;
             },
             destroy: async () => { calls.push(`disconnect:${n}`); },
         };
+        manager.sessions.set("child", handle);
+        return handle;
     };
     manager.releaseWorkspace = async () => { calls.push("release"); return release; };
+    manager.clients.set("fixture", { stop: async () => { calls.push("client-stop"); return []; } });
     const open = (step, options) => manager.openWorkflowToolExecutor("child", toolBinding, step, options);
-    return { manager, calls, sessions, open, owners: () => manager.workflowToolShares.get("child")?.owners ?? 0 };
+    const running = label => sessions.flatMap(session => session.tasks).find(task => task.label === label)?.running;
+    return { manager, calls, sessions, open, running, owners: () => manager.workflowToolShares.get("child")?.owners ?? 0,
+        barrier: () => manager.workflowExecutorFailures.get("child") ?? null };
 }
 
 test("E1-T1: two script states share one session; a state that waits for its sibling's tool call sees it while both stay open", async () => {
@@ -221,22 +242,46 @@ test("VR-1: a call waiting for its turn is refused when its turn comes if its au
     assert.equal(f.owners(), 0);
 });
 
-test("VR-3: a close stops only the background work its own calls started while another state keeps the session", async () => {
+test("VR-3: a close stops only the background tasks its own calls started while another state keeps the session", async () => {
     const f = shareFixture();
     const first = await f.open(1);
     const second = await f.open(2);
     await first.call("echo", { label: "first-bg", background: true });
-    await tick(3);
     await second.call("echo", { label: "second-bg", background: true });
-    await tick(3);
     await first.close();
-    assert.deepEqual(f.sessions[0].tasks.map(task => [task.label, task.running]), [["first-bg", false], ["second-bg", true]]);
+    assert.deepEqual([f.running("first-bg"), f.running("second-bg")], [false, true]);
     assert.ok(f.calls.includes("cancel-own:1"));
     assert.equal(f.calls.includes("disconnect:1"), false);
     assert.equal(await second.call("echo", { label: "still" }), "done still on 1");
     await second.close();
-    assert.deepEqual(f.sessions[0].tasks.map(task => task.running), [false, false]);
+    assert.deepEqual([f.running("first-bg"), f.running("second-bg")], [false, false]);
     assert.deepEqual(f.calls.slice(-3), ["cancel:1", "disconnect:1", "release"]);
+});
+
+test("VR-3 (E1c): a task claimed by one owner's call is never another's, even when its start time falls in the other's call", async () => {
+    const f = shareFixture();
+    const first = await f.open(1);
+    const second = await f.open(2);
+    await first.call("echo", { label: "first-bg", background: true });
+    // The second's call moves the first's task's start time into its own window, and starts one of its own.
+    await second.call("echo", { label: "second-bg", background: true, moveTask: "first-bg" });
+    await second.close();
+    assert.deepEqual([f.running("first-bg"), f.running("second-bg")], [true, false], "the first's task is the first's alone");
+    await first.close();
+    assert.equal(f.running("first-bg"), false);
+});
+
+test("VR-3 (E1c): a task no listing caught and with no start time is left to the last owner's teardown", async () => {
+    const f = shareFixture({ listFails: true });
+    const first = await f.open(1);
+    const second = await f.open(2);
+    await first.call("echo", { label: "untimed", background: true, untimed: true });
+    await first.call("echo", { label: "timed", background: true, delay: 5 });
+    await first.close();
+    // Not listed: the timed one is the first's by its start time; the untimed one is nobody's until the end.
+    assert.deepEqual([f.running("untimed"), f.running("timed")], [true, false]);
+    await second.close();
+    assert.equal(f.running("untimed"), false);
 });
 
 test("VR-3: a close whose own cancel leaves work running blocks the workflow's tools until recovery", async () => {
@@ -249,6 +294,110 @@ test("VR-3: a close whose own cancel leaves work running blocks the workflow's t
     await assert.rejects(second.call("echo", { label: "blocked" }), /requires recovery/);
     await second.close();
     assert.equal(f.owners(), 0);
+});
+
+test("E1b-T5: a sibling's cleanup that fails while another call waits for its authority stops that call before it runs", async () => {
+    let hold = null;
+    const f = shareFixture({ authorize: async () => { if (hold) await hold.opened; }, ownCancelFails: true });
+    const first = await f.open(1);
+    const second = await f.open(2);
+    await second.call("echo", { label: "bg", background: true });
+    hold = gate();
+    const waiting = first.call("echo", { label: "after-barrier" });
+    await tick();
+    await assert.rejects(second.close(), /background shell remains/);
+    assert.ok(f.barrier());
+    hold.open();
+    await assert.rejects(waiting, /requires recovery/);
+    assert.equal(f.calls.includes("execute:1:after-barrier"), false);
+    hold = null;
+    await first.close();
+});
+
+test("E1b-T5: a barrier raised while a call reads the tool catalog stops it just before it runs", async () => {
+    let metadata = null;
+    const f = shareFixture({ metadataHold: () => metadata?.opened ?? null, ownCancelFails: true });
+    const first = await f.open(1);
+    const second = await f.open(2);
+    await second.call("echo", { label: "bg", background: true });
+    metadata = gate();
+    const reading = first.call("echo", { label: "late" });
+    await tick();
+    await assert.rejects(second.close(), /background shell remains/);
+    metadata.open();
+    await assert.rejects(reading, /requires recovery/);
+    assert.equal(f.calls.includes("execute:1:late"), false);
+    await first.close();
+});
+
+test("E1b-T2: a close or a script's end at each stage: nothing runs after it, and each reservation is released", async () => {
+    // During the opening's authorization: the script's end stops it at once.
+    let hold = gate();
+    const f = shareFixture({ authorize: async () => { if (hold) await hold.opened; } });
+    const stop = new AbortController();
+    const opening = f.open(1, { signal: stop.signal });
+    await tick();
+    stop.abort();
+    await assert.rejects(opening, /script ended before its workflow tools were available/);
+    await until(() => f.owners() === 0, "the reservation to be released");
+    hold.open();
+    hold = null;
+
+    // During a call's authorization, and during its catalog read: the close rejects the call; it never runs.
+    const executor = await f.open(2);
+    hold = gate();
+    const inAuthorize = executor.call("echo", { label: "in-authorize" });
+    await tick();
+    const closing = executor.close();
+    await assert.rejects(inAuthorize, /closed/);
+    hold.open();
+    hold = null;
+    await closing;
+    assert.equal(f.calls.some(call => call.includes("in-authorize")), false);
+    assert.equal(f.owners(), 0);
+
+    let metadata = null;
+    const g = shareFixture({ metadataHold: () => metadata?.opened ?? null });
+    const reader = await g.open(1);
+    metadata = gate();
+    const inMetadata = reader.call("echo", { label: "in-metadata" });
+    await tick();
+    const shut = reader.close();
+    await assert.rejects(inMetadata, /closed/);
+    metadata.open();
+    await shut;
+    assert.equal(g.calls.some(call => call.includes("in-metadata")), false);
+    assert.equal(g.owners(), 0);
+});
+
+test("E1b-T8, E1-R2: an authorization that hangs fails within its deadline, at the opening and at a call, and the turn moves on", async () => {
+    let hangs = 0;
+    const f = shareFixture({ authorize: () => {
+        if (hangs > 0) { hangs -= 1; return new Promise(() => {}); }
+        return Promise.resolve();
+    } });
+    f.manager.workflowToolSetupDeadlineMs = 50;
+    // The opening's own authorization hangs (the setup's does not).
+    hangs = 1;
+    await assert.rejects(f.open(1), /workflow authorization did not finish within 50 ms/);
+    await until(() => f.owners() === 0, "the reservation to be released");
+    const first = await f.open(2);
+    const second = await f.open(3);
+    const stop = new AbortController();
+    const third = await f.open(4, { signal: stop.signal });
+    // A call's authorization hangs: it fails within the deadline.
+    hangs = 1;
+    await assert.rejects(first.call("echo", { label: "hung" }), /workflow authorization did not finish within 50 ms/);
+    // The script's end stops a hung authorization at once.
+    hangs = 1;
+    const stopped = third.call("echo", { label: "stopped" });
+    await tick();
+    stop.abort();
+    await assert.rejects(stopped, /script ended; its workflow tool call did not run/);
+    // The turn moved on.
+    assert.equal(await second.call("echo", { label: "next" }), "done next on 2");
+    assert.equal(f.calls.some(call => call.includes("hung") || call.includes("stopped")), false);
+    for (const executor of [first, second, third]) await executor.close();
 });
 
 test("VR-2: an opening that waited on a teardown that then failed is refused, and so are later ones", async () => {
@@ -281,7 +430,7 @@ test("M-08 failed setup: the opening is refused, and the next one sets up its ow
     await next.close();
 });
 
-test("E1-T2, E1-R2: a setup that hangs fails its opening within its deadline, releases the share, and is torn down if it ever finishes", async () => {
+test("E1-T2, E1b-T7: a setup that hangs fails within its deadline; when it ends and is torn down, its barrier is lifted", async () => {
     const hold = gate();
     const f = shareFixture({ createHold: n => (n === 1 ? hold.opened : null) });
     f.manager.workflowToolSetupDeadlineMs = 50;
@@ -290,17 +439,46 @@ test("E1-T2, E1-R2: a setup that hangs fails its opening within its deadline, re
     // It may have left native state behind: later openings are refused at once, not left waiting.
     await assert.rejects(f.open(2), /requires recovery: A workflow tool setup did not finish in time/);
     hold.open();
-    await until(() => f.calls.includes("disconnect:1"), "the late setup's teardown");
+    await until(() => f.calls.includes("disconnect:1") && f.barrier() === null, "the late setup's teardown and recovery");
+    assert.ok(f.calls.includes("release"));
+    const next = await f.open(3);
+    assert.equal(await next.call("echo", { label: "recovered" }), "done recovered on 2");
+    await next.close();
 });
 
-test("E1-T2, E1-R2: a tool catalog check that hangs fails its opening within its deadline and tears its session down", async () => {
+test("E1-T2: a tool catalog check that hangs fails its opening within its deadline and tears its session down", async () => {
     const f = shareFixture({ factoryHold: () => new Promise(() => {}) });
     f.manager.workflowToolSetupDeadlineMs = 50;
     await assert.rejects(f.open(1), /workflow tool catalog check did not finish within 50 ms/);
     assert.equal(f.owners(), 0);
     assert.ok(f.calls.includes("disconnect:1"));
+    // The check never ended: its barrier stays.
     await assert.rejects(f.open(2), /requires recovery/);
     assert.equal(f.manager.workflowExecutors.size, 0);
+});
+
+test("E1b-T7: a tool catalog check that ends late lifts its barrier once its session is torn down", async () => {
+    const hold = gate();
+    const f = shareFixture({ factoryHold: n => (n === 1 ? hold.opened : null) });
+    f.manager.workflowToolSetupDeadlineMs = 50;
+    await assert.rejects(f.open(1), /workflow tool catalog check did not finish within 50 ms/);
+    await assert.rejects(f.open(2), /requires recovery/);
+    hold.open();
+    await until(() => f.barrier() === null, "the late check's recovery");
+    const next = await f.open(3);
+    await next.close();
+});
+
+test("E1b-R3: a barrier of an earlier worker generation is lifted at the next start", async () => {
+    const f = shareFixture({ cancelFails: true });
+    const first = await f.open(1);
+    await assert.rejects(first.close(), /background shell remains/);
+    await assert.rejects(f.open(2), /requires recovery/);
+    await f.manager.shutdown();
+    f.manager.startWorkflowTools();
+    assert.equal(f.barrier(), null);
+    const next = await f.open(3);
+    assert.equal(await next.call("echo", { label: "after-restart" }), "done after-restart on 2");
 });
 
 test("E1-T3, E1-R3: an executor made after its script ended is never handed out and makes no native call", async () => {
@@ -321,7 +499,6 @@ test("E1-T3, E1-R3: an executor made after its script ended is never handed out 
 test("E1-T4, E1-R3: an executor made after the worker began to shut down is never handed out", async () => {
     const held = gate();
     const f = shareFixture({ factoryHold: () => held.opened });
-    f.manager.clients.set("fixture", { stop: async () => { f.calls.push("client-stop"); return []; } });
     const opening = f.open(1);
     await tick();
     await f.manager.shutdown();
@@ -334,7 +511,6 @@ test("E1-T4, E1-R3: an executor made after the worker began to shut down is neve
 test("E1-T8, E1-R4: after a stop and a start of the same worker, new openings work and one from before the stop takes nothing", async () => {
     const held = gate();
     const f = shareFixture({ factoryHold: n => (n === 1 ? held.opened : null) });
-    f.manager.clients.set("fixture", { stop: async () => { f.calls.push("client-stop"); return []; } });
     const old = f.open(1);
     await tick();
     await f.manager.shutdown();
@@ -347,9 +523,50 @@ test("E1-T8, E1-R4: after a stop and a start of the same worker, new openings wo
     await fresh.close();
 });
 
+test("E1b-T6, E1b-R1: an earlier generation's late work cleans only its own handle, never the new share's", async () => {
+    const held = gate();
+    const f = shareFixture({ factoryHold: n => (n === 1 ? held.opened : null), cancelFails: false });
+    const old = f.open(1);
+    await tick();
+    await f.manager.shutdown();
+    f.manager.startWorkflowTools();
+    const fresh = await f.open(2);
+    const current = f.manager.sessions.get("child");
+    assert.equal(current.n, 2);
+    const releases = f.calls.filter(call => call === "release").length;
+    // The old opening ends now: it disconnects its own session 1 only.
+    held.open();
+    await assert.rejects(old, /shutting down/);
+    await until(() => f.calls.includes("disconnect:1"), "the old session's own cleanup");
+    assert.equal(f.manager.sessions.get("child"), current, "the new warm handle stays");
+    assert.equal(f.calls.filter(call => call === "release").length, releases, "no folder of the new share is released");
+    assert.equal(f.barrier(), null);
+    assert.equal(f.calls.includes("disconnect:2"), false);
+    assert.equal(await fresh.call("echo", { label: "still" }), "done still on 2");
+    await fresh.close();
+    assert.deepEqual(f.calls.slice(-3), ["cancel:2", "disconnect:2", "release"]);
+});
+
+test("E1b-T6, E1b-R1: an earlier generation's late cleanup that fails raises no barrier for the new share", async () => {
+    const held = gate();
+    const f = shareFixture({ factoryHold: n => (n === 1 ? held.opened : null), cancelFailsFor: n => n === 1 });
+    const old = f.open(1);
+    await tick();
+    await f.manager.shutdown();
+    f.manager.startWorkflowTools();
+    const fresh = await f.open(2);
+    held.open();
+    await assert.rejects(old, /shutting down/);
+    await until(() => f.calls.includes("cancel:1") && f.calls.includes("disconnect:1"), "the old session's own cleanup");
+    await tick(20);
+    assert.equal(f.barrier(), null, "an earlier generation's failure blocks nothing now");
+    assert.equal(await fresh.call("echo", { label: "ok" }), "done ok on 2");
+    await fresh.close();
+    assert.deepEqual(f.calls.slice(-3), ["cancel:2", "disconnect:2", "release"]);
+});
+
 test("M-08 shutdown with a call running and another waiting for its turn: both executors close, the waiting call never runs", async () => {
     const f = shareFixture();
-    f.manager.clients.set("fixture", { stop: async () => { f.calls.push("client-stop"); return []; } });
     const holder = await f.open(1);
     const other = await f.open(2);
     const held = gate();
@@ -364,7 +581,8 @@ test("M-08 shutdown with a call running and another waiting for its turn: both e
     await inFlight.catch(() => undefined);
     await assert.rejects(queued, /closed/);
     assert.equal(f.calls.includes("execute:1:queued"), false);
-    assert.ok(f.calls.includes("cancel:1") && f.calls.includes("disconnect:1"));
+    // Closed as their own generation's: the session is torn down and its folders released.
+    assert.ok(f.calls.includes("cancel:1") && f.calls.includes("disconnect:1") && f.calls.includes("release"));
     await assert.rejects(f.manager.openWorkflowToolExecutor("other", toolBinding, 1), /shutting down/);
 });
 

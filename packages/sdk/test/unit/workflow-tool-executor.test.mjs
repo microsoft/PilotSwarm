@@ -253,3 +253,30 @@ test("E1b: a close aborts this handle's own running call and disposes it only af
     assert.deepEqual(order, ["abort", "dispose:true"]);
     await assert.rejects(call, /closed/);
 });
+
+// E1c (E1b-R2): a shared check (the workflow session's failure barrier, a worker shutting down) refuses a call when its
+// turn comes, after its authorization, and just before it runs.
+test("E1b-R2: a shared check is made when a call's turn comes, after its authorization, and just before it runs", async () => {
+    let blocked = false;
+    const check = () => { if (blocked) throw new Error("Workflow executor requires recovery: a sibling's cleanup failed"); };
+    // Raised during the authorization.
+    const f = fixture({ authorize: async () => { blocked = true; } });
+    const executor = await createWorkflowToolExecutor({ ...f.options, check });
+    await assert.rejects(executor.call("bash", {}), /requires recovery/);
+    assert.equal(f.calls.length, 0);
+    await executor.close();
+    // Raised while the call reads the tool catalog.
+    blocked = false;
+    const g = fixture();
+    const second = await createWorkflowToolExecutor({ ...g.options, check });
+    const read = g.session.rpc.tools.getCurrentMetadata;
+    g.session.rpc.tools.getCurrentMetadata = async () => { blocked = true; return read(); };
+    await assert.rejects(second.call("bash", {}), /requires recovery/);
+    assert.equal(g.calls.length, 0);
+    // Raised before the turn: the authorization is not even asked.
+    const authorized = g.authorized;
+    await assert.rejects(second.call("bash", {}), /requires recovery/);
+    assert.equal(g.authorized, authorized);
+    assert.equal(g.calls.length, 0);
+    await second.close();
+});

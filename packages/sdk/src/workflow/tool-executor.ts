@@ -27,6 +27,11 @@ export interface WorkflowToolExecutorOptions {
     serially?: <T>(run: () => Promise<T>) => Promise<T>;
     /** The script ended (E1b): a call that has not started never starts. */
     signal?: AbortSignal;
+    /**
+     * What else stops a call that has not started (E1b-R2): it throws to refuse. Called when the call's turn comes,
+     * after its authorization and again just before the native execution.
+     */
+    check?: () => void;
 }
 
 async function cleanupWithin<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
@@ -62,7 +67,8 @@ export function workflowToolResult(result: ToolResult): unknown {
  * No prompt is sent: the native CLI pipeline executes an already-selected tool.
  *
  * On a shared session (`serially`, workflow v2 RT-2 and E1b), a call waits for its turn; when its turn comes it is
- * refused if this handle was closed or its script ended, then authority is checked, then it runs. A close rejects a
+ * refused if this handle was closed, its script ended or `check` refuses, then authority is checked, then the same
+ * refusals are checked again after the authorization and just before it runs (E1b-R2). A close rejects a
  * call still waiting at once (its turn then runs nothing), aborts the session only while this handle's own call runs,
  * waits for that call to end, and only then disposes the handle.
  */
@@ -84,6 +90,7 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
     const refuse = () => {
         if (closed) throw new Error("Workflow tool executor was cancelled.");
         if (ended()) throw new Error("The script ended; its workflow tool call did not run.");
+        options.check?.();
     };
     return {
         async call(name, args) {

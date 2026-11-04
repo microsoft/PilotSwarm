@@ -4567,11 +4567,13 @@ export class ManagedSession {
      * or a cancel still running after its caller gave up, off the tasks of a
      * later turn. A task without a readable `startedAt` is kept: nothing is
      * killed on missing data. A list of windows takes the tasks started in
-     * any of them (the tool calls of one workflow script state, E1b).
+     * any of them. `select` (a workflow script state's own tasks, by id or
+     * start time; E1c) replaces `startedWithin` when given.
      */
-    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin }: {
+    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin, select }: {
         rounds?: number; pauseMs?: number;
         startedWithin?: { since: number; until: number } | ReadonlyArray<{ since: number; until: number }>;
+        select?: (task: { id: string; startedAt?: unknown }) => boolean;
     } = {}): Promise<number> {
         const windows: ReadonlyArray<{ since: number; until: number }> | null = startedWithin === undefined ? null
             : "since" in startedWithin ? [startedWithin] : startedWithin;
@@ -4581,7 +4583,8 @@ export class ManagedSession {
                 : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
             return Number.isFinite(at) && windows.some(window => at >= window.since && at <= window.until);
         };
-        const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task) && startedInScope(task);
+        const active = (task: { id?: unknown; type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task)
+            && (select ? select({ id: String(task.id), startedAt: task.startedAt }) : startedInScope(task));
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
             const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
