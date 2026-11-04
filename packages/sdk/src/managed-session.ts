@@ -27,7 +27,7 @@ import {
     READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC,
     workflowToolErrorPayload,
 } from "./workflow/v2/tools.js";
-import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "./workflow/v2/request-service.js";
+import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC, workflowRespondFailure } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
 import { sanitizeWorkflowErrorText } from "./workflow/v2/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/v2/agent-reminder.js";
@@ -3230,7 +3230,12 @@ export class ManagedSession {
                 handler: async (args: Record<string, unknown>) => {
                     if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(RESPOND_SESSION_REQUEST_TOOL);
                     if (!controlBridge?.respondSessionRequest) return `Error: ${RESPOND_SESSION_REQUEST_TOOL} is not available in this session.`;
-                    return await controlBridge.respondSessionRequest(args ?? {});
+                    // Re-check S-SF-F3: a failure of the bridge is the tool's coded answer, never the error's own text.
+                    try {
+                        return await controlBridge.respondSessionRequest(args ?? {});
+                    } catch (error) {
+                        return workflowRespondFailure(error);
+                    }
                 },
             })]
             : [];

@@ -152,6 +152,16 @@ function payload(value: { [key: string]: JsonValue }): string {
  * optimization; its failure changes nothing: the dispatcher's passes and
  * the controller's backstop remain).
  */
+/**
+ * respond_session_request's answer for a failure (re-check S-SF-F3 of adversarial review R2-SF-4): the shared workflow
+ * failure (workflowStoreFailure: a refusal keeps its code, with the secrets in its message and details hidden; anything
+ * else is coded, with its message sanitized), never an error's own text. For the tool's handler and the bridge that runs it.
+ */
+export function workflowRespondFailure(error: unknown): string {
+    const failure = workflowStoreFailure(error);
+    return payload({ ok: false, error: { code: failure.code, message: jsonbSafeText(failure.message, 2_000), details: failure.details ?? null } });
+}
+
 export async function respondSessionRequestFromTool(args: Record<string, unknown>, context: {
     callerSessionId: string; store: WorkflowStore; dispatcher?: Pick<WorkflowResponseWakeDispatcher, "dispatchNow"> | null;
 }): Promise<string> {
@@ -174,8 +184,7 @@ export async function respondSessionRequestFromTool(args: Record<string, unknown
     } catch (error) {
         // Adversarial review R2-SF-4: the shared workflow failure, with the secrets in its message and details hidden; any
         // other error is coded too, with its message sanitized, never its own text.
-        const failure = workflowStoreFailure(error);
-        return payload({ ok: false, error: { code: failure.code, message: jsonbSafeText(failure.message, 2_000), details: failure.details ?? null } });
+        return workflowRespondFailure(error);
     }
 }
 

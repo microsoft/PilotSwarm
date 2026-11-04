@@ -77,12 +77,21 @@ const CHILD_KEYWORDS: ReadonlySet<string> = new Set([
 const HOLDER_KEYWORDS: ReadonlySet<string> = new Set(["$defs", "definitions"]);
 const PLAIN_TYPES: ReadonlySet<string> = new Set(["string", "number", "integer", "boolean", "null"]);
 
-/** Whether a schema's `items` has a type of plain values only (strings, numbers, booleans, null): such items are not compared one by one. */
-function plainItems(schema: Record<string, JsonValue>): boolean {
-    const items = schema.items;
-    if (!isJsonObject(items)) return false;
-    const types = typeof items.type === "string" ? [items.type] : Array.isArray(items.type) ? items.type : [];
+/** Whether a schema requires a type of plain values only (strings, numbers, booleans, null). */
+function plainTyped(schema: JsonValue): boolean {
+    if (!isJsonObject(schema)) return false;
+    const types = typeof schema.type === "string" ? [schema.type] : Array.isArray(schema.type) ? schema.type : [];
     return types.length > 0 && types.every(type => typeof type === "string" && PLAIN_TYPES.has(type));
+}
+
+/**
+ * Whether every item of a list a schema checks must be a plain value: its `items` has a plain type, and so has each
+ * schema of its `prefixItems`, which apply to the first items instead (re-check S-SF-F1: a tuple of objects before plain
+ * items is not plain). Such items are looked up by value, never compared one by one.
+ */
+function plainItems(schema: Record<string, JsonValue>): boolean {
+    if (!plainTyped(schema.items)) return false;
+    return schema.prefixItems === undefined || (Array.isArray(schema.prefixItems) && schema.prefixItems.every(plainTyped));
 }
 
 interface SchemaShape {
@@ -298,25 +307,45 @@ export function normalizeSchema(schema: unknown, path: string): JsonValue {
     return Object.fromEntries(out);
 }
 
-/** The keywords whose values the author wrote as data or notes: left out of a schema shown to a reader (schemaWithoutLiterals). */
-const LITERAL_KEYWORDS: ReadonlySet<string> = new Set(["default", "const", "enum", "examples", "title", "description", "$comment"]);
+/** The keywords of a schema shown to a reader that hold schemas (schemaWithoutLiterals): followed, and kept. */
+const READER_SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
+    "not", "if", "then", "else", "items", "contains", "additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties",
+]);
+const READER_SCHEMA_LIST_KEYWORDS: ReadonlySet<string> = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+const READER_SCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set(["properties", "dependentSchemas"]);
+/** The shape keywords a reader is shown, with the kind of value each may have: a count, a number, a flag. */
+const READER_COUNT_KEYWORDS: ReadonlySet<string> = new Set([
+    "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties", "minContains", "maxContains",
+]);
+const READER_NUMBER_KEYWORDS: ReadonlySet<string> = new Set(["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"]);
+const JSON_TYPES: ReadonlySet<string> = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
+const nameList = (value: JsonValue): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
 
 /**
- * A schema without the values its author wrote in it (adversarial review R2-SF-2): `default`, `const`, `enum`,
- * `examples`, `title`, `description` and `$comment` are left out in every schema position, and so are `$defs` and
- * `definitions` (schemas that are never applied). Its shape (types, properties, items, required names, lengths and
- * limits) stays. For a person who may read a workflow but not its YAML.
+ * A schema as a person who may read a workflow but not its YAML sees it (adversarial review R2-SF-2 and its re-check
+ * S-SF-F2): only its shape, by an allowlist. Kept: the schema keywords that hold schemas (properties, items,
+ * prefixItems, additionalProperties, allOf, anyOf, oneOf, not, if, then, else, contains, propertyNames,
+ * dependentSchemas, unevaluated*), each schema in them projected the same way, and type, required, dependentRequired,
+ * uniqueItems and the counts and limits (lengths, item and property counts, minimum, maximum, multipleOf), each only
+ * with a value of its kind. Everything else is left out: default, const, enum, examples, title, description,
+ * $comment, format, contentMediaType, contentEncoding, contentSchema, $defs, and any other or unknown keyword
+ * (vendor ones included), so no text the author wrote there reaches the reader. Property names stay: they are the shape.
  */
 export function schemaWithoutLiterals(schema: JsonValue): JsonValue {
-    if (!isJsonObject(schema)) return schema;
+    if (!isJsonObject(schema)) return typeof schema === "boolean" ? schema : {};
     const out: Array<[string, JsonValue]> = [];
     for (const [key, value] of Object.entries(schema)) {
-        if (LITERAL_KEYWORDS.has(key) || HOLDER_KEYWORDS.has(key)) continue;
-        if (SUBSCHEMA_KEYWORDS.has(key)) out.push([key, schemaWithoutLiterals(value)]);
-        else if (SUBSCHEMA_ARRAY_KEYWORDS.has(key) && Array.isArray(value)) out.push([key, value.map(schemaWithoutLiterals)]);
-        else if (SUBSCHEMA_MAP_KEYWORDS.has(key) && isJsonObject(value)) {
+        if (READER_SCHEMA_KEYWORDS.has(key)) out.push([key, schemaWithoutLiterals(value)]);
+        else if (READER_SCHEMA_LIST_KEYWORDS.has(key) && Array.isArray(value)) out.push([key, value.map(schemaWithoutLiterals)]);
+        else if (READER_SCHEMA_MAP_KEYWORDS.has(key) && isJsonObject(value)) {
             out.push([key, Object.fromEntries(Object.entries(value).map(([name, item]) => [name, schemaWithoutLiterals(item)]))]);
-        } else out.push([key, value]);
+        } else if (key === "type" && ((typeof value === "string" && JSON_TYPES.has(value)) || (nameList(value) && value.every(item => JSON_TYPES.has(item))))) {
+            out.push([key, value]);
+        } else if (key === "required" && nameList(value)) out.push([key, value]);
+        else if (key === "dependentRequired" && isJsonObject(value) && Object.values(value).every(nameList)) out.push([key, value]);
+        else if (key === "uniqueItems" && typeof value === "boolean") out.push([key, value]);
+        else if (READER_COUNT_KEYWORDS.has(key) && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) out.push([key, value]);
+        else if (READER_NUMBER_KEYWORDS.has(key) && typeof value === "number" && Number.isFinite(value)) out.push([key, value]);
     }
     return Object.fromEntries(out);
 }

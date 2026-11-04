@@ -13,6 +13,7 @@ import { createWorkflowV2, dispatchWorkflowV2Run, updateWorkflowV2 } from "../..
 import { WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_STORE_RETRY, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { runScriptNode } from "../../src/workflow/runner.ts";
 import { schemaSetFor } from "../../src/workflow/v2/schema.ts";
+import { WORKFLOW_V2_REVISION_LIMITS } from "../../src/workflow/v2/store.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-core-test" };
@@ -438,6 +439,30 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
                 "WORKFLOW_YAML_TOO_LARGE");
             expect(await h.store.readDefinition(tooLarge)).toBeNull();
             expect(await client._catalog.getSession(tooLarge)).toBeNull();
+            // Re-check S-SF-F5: a workflow keeps at most so many revisions and so much YAML (generous limits, lowered here):
+            // a draft past either is refused, and keeps its revisions.
+            const capped = randomUUID();
+            await createWorkflowV2(h, { workflowSessionId: capped, parentSessionId: null, yaml: PIPELINE, actor: ACTOR, operationId: "create-capped" });
+            h.store.revisionLimits = { maxRevisions: 2, maxYamlBytes: 64 * 1024 * 1024 };
+            try {
+                const second = PIPELINE.replace("name: pipeline", "name: pipeline, description: second");
+                expect((await updateWorkflowV2(h, capped, { operation: "replace_definition", yaml: second, expectedRevision: 1 },
+                    { actor: ACTOR, operationId: "capped-2" })).receipt.revision).toBe(2);
+                const refusedCount = await expectCode(updateWorkflowV2(h, capped, { operation: "replace_definition", yaml: PIPELINE, expectedRevision: 2 },
+                    { actor: ACTOR, operationId: "capped-3" }), "WORKFLOW_REVISION_LIMIT");
+                expect(refusedCount.details).toMatchObject({ revisions: 2, maxRevisions: 2 });
+                expect((await h.store.readDefinition(capped)).currentRevision).toBe(2);
+                expect(await h.store.readRevision(capped, 3)).toBeNull();
+                // The YAML limit: the next revision would pass it.
+                h.store.revisionLimits = { maxRevisions: 1_000, maxYamlBytes: Buffer.byteLength(PIPELINE) + Buffer.byteLength(second) + 10 };
+                const refusedBytes = await expectCode(updateWorkflowV2(h, capped, { operation: "replace_definition", yaml: PIPELINE, expectedRevision: 2 },
+                    { actor: ACTOR, operationId: "capped-4" }), "WORKFLOW_REVISION_LIMIT");
+                expect(refusedBytes.message).toMatch(/Nothing was saved: the draft keeps its revisions\./);
+                expect((await h.store.readDefinition(capped)).currentRevision).toBe(2);
+            } finally {
+                h.store.revisionLimits = WORKFLOW_V2_REVISION_LIMITS;
+            }
+            expect(WORKFLOW_V2_REVISION_LIMITS).toEqual({ maxRevisions: 1_000, maxYamlBytes: 64 * 1024 * 1024 });
             await expectCode(updateWorkflowV2(h, id, { operation: "publish", expectedRevision: 2, definitionHash: created.receipt.yamlSha256 },
                 { actor: ACTOR, operationId: "publish-wrong-hash" }), "DEFINITION_HASH_MISMATCH");
 

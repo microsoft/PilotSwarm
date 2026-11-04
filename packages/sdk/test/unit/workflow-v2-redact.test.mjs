@@ -4,7 +4,7 @@ import { redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecret
 import { sanitizeWorkflowErrorText, workflowAdapterFailure, workflowStoreFailure } from "../../dist/workflow/v2/failure.js";
 import { WorkflowStoreError } from "../../dist/workflow/v2/store.js";
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "../../dist/workflow/v2/agent-node-service.js";
-import { respondSessionRequestFromTool } from "../../dist/workflow/v2/request-service.js";
+import { respondSessionRequestFromTool, workflowRespondFailure } from "../../dist/workflow/v2/request-service.js";
 import { WorkflowSchemaSet } from "../../dist/workflow/v2/schema.js";
 
 // Adversarial review SF-6: one secret-safe projection of workflow error text, wherever it is persisted or shown.
@@ -219,7 +219,7 @@ test("R2-SF-4: complete_workflow_node's and respond_session_request's failures a
             { callerSessionId: "child", client: null, store: { completeAgentNode: async () => { throw error; } } });
         const response = await respondSessionRequestFromTool({ request_id: "r", response: {}, operation_id: "op" },
             { callerSessionId: "parent", store: { respondToRequest: async () => { throw error; } } });
-        for (const text of [completion, response, workflowCompletionFailure(error)]) {
+        for (const text of [completion, response, workflowCompletionFailure(error), workflowRespondFailure(error)]) {
             assert.ok(!text.includes(SENTINEL), text);
             const answer = JSON.parse(text);
             assert.equal(answer.ok, false);

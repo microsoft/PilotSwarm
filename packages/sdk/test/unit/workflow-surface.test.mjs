@@ -369,6 +369,12 @@ test("R2-SF-4: a spawn_workflow failure hides the error's secrets: v2 coded, v1 
     assert.deepEqual(Object.keys(parsed.error).sort(), ["code", "message"]);
     const v1 = spawnDeps({ createWorkflowSession: async () => { throw new Error(`catalog at postgres://svc:${CANARY}@db.invalid/x unavailable`); } });
     assert.equal(await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "s2" }, v1.deps), "[SYSTEM: spawn_workflow failed — catalog at <url> unavailable]");
+    // Re-check S-SF-F4: a v1 definition's own refusal is sanitized too; nothing is created.
+    const refused = spawnDeps();
+    const bad = await spawnWorkflowFromTool({ yaml: yaml().replace("type: script", `type: "postgres://svc:${CANARY}@db.invalid/x"`) }, { toolCallId: "s3" }, refused.deps);
+    assert.match(bad, /^\[SYSTEM: spawn_workflow refused — the workflow is not valid: .*Fix it and call spawn_workflow again\.\]$/);
+    assert.ok(!bad.includes(CANARY), bad);
+    assert.equal(refused.created.length, 0);
 });
 
 // ── Live view, cancellation commands, MCP and session tools ─────────

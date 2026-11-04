@@ -463,8 +463,11 @@ function sentinelView(sessionId) {
         ] },
         graph: { revision: 1, initial: "calc", states: [], inputsSchema: {
             type: "object", title: SENTINEL, description: SENTINEL, $comment: SENTINEL, required: ["token", "mode"],
+            // Re-check S-SF-F2: string annotations, and unknown and vendor keywords, are not shown either.
+            "x-vendor": { note: SENTINEL }, readme: SENTINEL, deprecated: SENTINEL,
             properties: {
-                token: { type: "string", default: SENTINEL, examples: [SENTINEL], minLength: 4 },
+                token: { type: "string", default: SENTINEL, examples: [SENTINEL], minLength: 4, format: SENTINEL, contentMediaType: SENTINEL,
+                    contentEncoding: SENTINEL, contentSchema: { const: SENTINEL }, "x-secret": SENTINEL },
                 mode: { enum: ["a", SENTINEL], const: SENTINEL },
                 list: { type: "array", items: { type: "string", default: SENTINEL }, maxItems: 3 },
                 pick: { anyOf: [{ const: SENTINEL }, { type: "integer", description: SENTINEL }] },
@@ -475,7 +478,7 @@ function sentinelView(sessionId) {
     };
 }
 
-test("R2-SF-2: a reader who cannot change the workflow gets its input schema without its literal values and its diagnostics without their details; the owner gets all", async () => {
+test("R2-SF-2 and S-SF-F2: a reader who cannot change the workflow gets only its input schema's shape and its diagnostics without their details; the owner gets all", async () => {
     const owner = { provider: "dev", subject: "alice" };
     const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
     runtime.start = async () => {};

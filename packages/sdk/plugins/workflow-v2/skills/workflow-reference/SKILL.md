@@ -267,6 +267,7 @@ execution_failed, message, details? }`.
 | `SEMVER_IMMUTABLE`, `DEFINITION_IMMUTABLE` | A published definition or its version does not change; use a new workflow child. |
 | `OPERATION_CONFLICT` | The `operation_id` was used for another request. |
 | `LIVE_RUN_EXISTS` | The workflow child already has its live run. |
+| `WORKFLOW_YAML_TOO_LARGE`, `WORKFLOW_REVISION_LIMIT` | The YAML is over 256 KiB, or the child holds 1,000 revisions or 64 MiB of YAML. Nothing was saved; use a new workflow child. |
 | `KV_REVISION_CONFLICT` | Read `kvRevision` again. |
 | `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
 | `RUN_STOP_UNSUPPORTED` | The run's controller does not stop gracefully; cancel it. |

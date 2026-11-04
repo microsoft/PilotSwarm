@@ -166,3 +166,20 @@ test("uniqueItems never compares more than 100 items that are not plain values, 
     assert.deepEqual(set.validate("Mixed", [1, "1", true, "true", null, "null"]), []);
     assert.equal(set.validate("Mixed", [{ x: 1 }, [1], { x: 1 }]).length, 1);
 });
+
+// Re-check S-SF-F1: plain items are proven by every schema that applies to an item: `items` and each of `prefixItems`.
+// A tuple of objects before plain items is not plain: it needs a small maxItems, and every item is compared by content.
+test("S-SF-F1: a tuple of objects before plain items is not plain; with maxItems its duplicate objects are found", () => {
+    const tuple = { type: "array", prefixItems: [{ type: "object" }, { type: "object" }], items: { type: "string" }, uniqueItems: true };
+    assert.equal(schemaCostRefusal({ Pair: tuple })?.path, "$defs.Pair.uniqueItems");
+    const set = new WorkflowSchemaSet({ Pair: { ...tuple, maxItems: 10 } });
+    const duplicate = set.validate("Pair", [{ a: 1, b: [2] }, { b: [2], a: 1 }, "x"]);
+    assert.equal(duplicate.length, 1, JSON.stringify(duplicate));
+    assert.ok(duplicate[0].message.startsWith("must NOT have duplicate items (items ## 1 and 0 are identical)"), duplicate[0].message);
+    assert.deepEqual(set.validate("Pair", [{ a: 1 }, { a: 2 }, "x", "y"]), []);
+    assert.equal(set.validate("Pair", [{ a: 1 }, { a: 2 }, "x", "x"]).length, 1, "the plain items are compared too");
+    // A tuple of plain values before plain items is plain: no maxItems needed.
+    assert.equal(schemaCostRefusal({ Row: { type: "array", prefixItems: [{ type: "string" }, { type: ["integer", "null"] }], items: { type: "boolean" }, uniqueItems: true } }), null);
+    // A tuple whose schema names no type is not proven plain.
+    assert.equal(schemaCostRefusal({ Row: { type: "array", prefixItems: [{}], items: { type: "string" }, uniqueItems: true } })?.path, "$defs.Row.uniqueItems");
+});

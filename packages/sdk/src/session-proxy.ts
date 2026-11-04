@@ -77,7 +77,7 @@ import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
-import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
+import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
 import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
@@ -2982,7 +2982,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             /** respond_session_request (request states, INACTIVE): the calling session is the host-stamped responder. */
             ...(workflowRequestTurn ? {
                 respondSessionRequest: async (args: Record<string, unknown>) => {
-                    const host = await workflowBridgeHost();
+                    // Re-check S-SF-F3: a host that cannot be made is the tool's coded answer, never the error's own text.
+                    let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
+                    try { host = await workflowBridgeHost(); } catch (error) { return workflowRespondFailure(error); }
                     return respondSessionRequestFromTool(args, {
                         callerSessionId: input.sessionId, store: host.store,
                         dispatcher: new WorkflowResponseWakeDispatcher(host.store, host.duroxideClient),

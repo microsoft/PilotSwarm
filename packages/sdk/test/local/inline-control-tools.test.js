@@ -1615,6 +1615,22 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
         expect(JSON.parse(results[0])).toMatchObject({ ok: false, error: { code: "WORKFLOW_ERROR" } });
     });
 
+    // Re-check S-SF-F3: a failed respond_session_request bridge is answered through the same sanitizer.
+    it("S-SF-F3: a failed respond_session_request is answered with no secret of the error", async () => {
+        const CANARY = "canary-sff3-9b2c";
+        const respond = { name: "respond_session_request", args: { request_id: "r-1", response: { ok: true }, operation_id: "op-1" } };
+        const h = stepChild([{ toolCalls: [respond], assistantContent: "Answered." }], { config: {} });
+        const results = [];
+        h.fakeSession.on("tool.execution_complete", payload => {
+            if (payload.data?.toolName === "respond_session_request") results.push(payload.data.result);
+        });
+        await h.run({ controlToolBridge: { resolveWaitForAgents: async ids => ids,
+            respondSessionRequest: async () => { throw new Error(`host postgres://svc:${CANARY}@db.invalid/x refused; token=${CANARY}`); } } });
+        expect(results).toHaveLength(1);
+        expect(results[0]).not.toContain(CANARY);
+        expect(JSON.parse(results[0])).toMatchObject({ ok: false, error: { code: "WORKFLOW_ERROR" } });
+    });
+
     it("a session that is not an agent state's own child, or a turn without the gate, gets none", async () => {
         const other = stepChild([{ assistantContent: "It seems fine." }], { config: {} });
         expect(reminded(await other.run())).toEqual([]);

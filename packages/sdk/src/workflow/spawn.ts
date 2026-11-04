@@ -78,7 +78,8 @@ export async function spawnWorkflowFromTool(
             validateWorkflowInputs(compiled, args.inputs ?? {});
             workflowName = compiled.name;
         } catch (error) {
-            return `[SYSTEM: spawn_workflow refused — the workflow is not valid: ${error instanceof Error ? error.message : String(error)} `
+            // Re-check S-SF-F4: the reason, sanitized as every workflow failure's is (no URL or secret value, one line, bounded).
+            return `[SYSTEM: spawn_workflow refused — the workflow is not valid: ${sanitizeWorkflowErrorText(error) || "no reason was given"} `
                 + "Fix it and call spawn_workflow again.]";
         }
         const workflowSessionId = workflowChildSessionId(deps.parentSessionId, args.key, call?.toolCallId);

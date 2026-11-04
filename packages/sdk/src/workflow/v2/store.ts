@@ -1659,7 +1659,15 @@ function storedResultText(result: Pick<NodeResultInput, "resultKind" | "valueTex
     return result.resultKind === "runtime_error" ? redactWorkflowErrorText(result.valueText, canonicalJson) : result.valueText;
 }
 
+/**
+ * The most revisions one workflow keeps, and the most YAML its revisions hold together (re-check S-SF-F5 of adversarial
+ * review R2-SF-5): a draft past either is refused (WORKFLOW_REVISION_LIMIT), and the workflow keeps its revisions.
+ */
+export const WORKFLOW_V2_REVISION_LIMITS = Object.freeze({ maxRevisions: 1_000, maxYamlBytes: 64 * 1024 * 1024 });
+
 export class WorkflowStore {
+    /** The revision limits this store applies (WORKFLOW_V2_REVISION_LIMITS); a test may lower them. */
+    revisionLimits: { maxRevisions: number; maxYamlBytes: number } = WORKFLOW_V2_REVISION_LIMITS;
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
@@ -2138,6 +2146,28 @@ export class WorkflowStore {
         });
     }
 
+    /**
+     * Re-check S-SF-F5: a workflow has room for one more revision of `yaml` only below its limits (revisionLimits): at most
+     * maxRevisions revisions, and at most maxYamlBytes of YAML in all of them. Otherwise WORKFLOW_REVISION_LIMIT: nothing is
+     * written, and the draft keeps its revisions. In the caller's transaction, under the definition's lock.
+     */
+    private async requireRevisionRoom(client: PoolClient, workflowSessionId: string, yaml: string): Promise<void> {
+        const { maxRevisions, maxYamlBytes } = this.revisionLimits;
+        const { rows } = await client.query(
+            `SELECT count(*)::bigint AS revisions, COALESCE(SUM(octet_length(yaml)), 0)::bigint AS bytes
+               FROM ${this.t.revisions} WHERE workflow_session_id = $1`, [workflowSessionId]);
+        const revisions = int(rows[0], "revisions");
+        const bytes = int(rows[0], "bytes");
+        const adding = Buffer.byteLength(yaml, "utf8");
+        if (revisions + 1 > maxRevisions || bytes + adding > maxYamlBytes) {
+            throw new WorkflowStoreError("WORKFLOW_REVISION_LIMIT",
+                `This workflow has ${revisions.toLocaleString("en-US")} revisions with ${bytes.toLocaleString("en-US")} bytes of YAML; a workflow keeps at most `
+                + `${maxRevisions.toLocaleString("en-US")} revisions and ${maxYamlBytes.toLocaleString("en-US")} bytes of YAML. Nothing was saved: `
+                + "the draft keeps its revisions. Start a new workflow to go on.",
+                { revisions, yamlBytes: bytes, maxRevisions, maxYamlBytes });
+        }
+    }
+
     private async insertRevision(client: PoolClient, workflowSessionId: string, revision: number, yaml: string, compiled: WorkflowCompileResult, actor: WorkflowActor): Promise<void> {
         await client.query(
             `INSERT INTO ${this.t.revisions}
@@ -2301,6 +2331,7 @@ export class WorkflowStore {
                 throw new WorkflowStoreError("SEMVER_IMMUTABLE", `This workflow child is version ${definition.semver}; a new version needs a new workflow child.`,
                     { semver: definition.semver });
             }
+            await this.requireRevisionRoom(client, input.workflowSessionId, input.yaml);
             const nextRevision = definition.currentRevision + 1;
             await this.insertRevision(client, input.workflowSessionId, nextRevision, input.yaml, input.compiled, input.actor);
             const { rows } = await client.query(
