@@ -17,6 +17,7 @@ import {
     normalizeMoa,
     UI_COMMANDS,
     workflowInputPolicyApplies,
+    workflowStepLogLines,
     WORKFLOW_SESSION_GLYPH,
     INSPECTOR_TABS,
     ARTIFACT_DOWNLOAD_HINT,
@@ -7455,9 +7456,14 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         viewState.activeHistory?.hasOlderEvents
         && Number(viewState.activeHistory?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP,
     );
-    const lines = React.useMemo(
+    const transcriptLines = React.useMemo(
         () => selectChatLines(selectorState, contentWidth, { tableMode: "sentinel" }),
         [selectorState, contentWidth],
+    );
+    // A workflow's step log says plainly that it is empty instead of showing the splash art (batch 5, g-06).
+    const lines = React.useMemo(
+        () => workflowLog ? workflowStepLogLines(transcriptLines, viewState.activeHistory) : transcriptLines,
+        [workflowLog, transcriptLines, viewState.activeHistory],
     );
     const spinnerFrame = useSpinnerFrame(viewState.activeSessionStatus === "running");
     const liveActivityLines = React.useMemo(

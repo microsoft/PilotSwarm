@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
-import { workflowV2NoticeLevel, workflowV2OpenCalls, workflowV2ShownNotices } from "../src/workflow-v2-view.js";
+import { workflowV2NoticeLevel, workflowV2OpenCalls, workflowV2ShownNotices, projectWorkflowV2 } from "../src/workflow-v2-view.js";
+import { workflowStepLogLines, WORKFLOW_STEP_LOG_EMPTY_TEXT, WORKFLOW_STEP_LOG_LOADING_TEXT } from "../src/workflow-sessions.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
 import { readModel, done } from "./workflow-v2-fixtures.mjs";
 
@@ -107,4 +108,38 @@ test("the counts and tint come from the notices and the test's calls", () => {
     assert.equal(workflowV2OpenCalls(null), 0);
     assert.equal(workflowV2OpenCalls({ coverage: { unanswered: ["a", "b"] }, interceptions: [] }), 2);
     assert.equal(workflowV2OpenCalls({ interceptions: [{ state: "awaiting_parent" }, { state: "responded" }, null] }), 1);
+});
+
+// Batch 5 (g-07): "No run yet" is said once, by the run's status in the header.
+test("with no run, 'No run yet' appears once: in the status, not in the notices or a run picker", () => {
+    const projected = projectWorkflowV2({ readModel: readModel({ noRun: true }) });
+    assert.deepEqual(projected.banners.filter(banner => banner.code === "no-run").map(banner => banner.text), ["No run yet."], "the terminal still lists it");
+    assert.deepEqual(workflowV2ShownNotices(projected.banners), []);
+    const html = main(mount({ readModel: readModel({ noRun: true }), noticesOpen: true }));
+    assert.equal(html.match(/No runs? yet/g)?.length, 1);
+    assert.match(html, /<span class="ps-workflow-status">No run yet<\/span>/);
+    assert.ok(!html.includes("aria-label=\"Workflow run\""), "no run picker until a run exists");
+    assert.equal(tool(html, "Notices"), null, "nothing else to say, so no Notices button");
+    // Other runs: the notice that names them stays.
+    const others = main(mount({ readModel: readModel({ noRun: true, runs: [{ runId: "old", mode: "test", status: "completed", revision: 1, outcome: "succeeded" }] }),
+        noticesOpen: true }));
+    assert.ok(others.includes("No live run is selected; 1 other run exists."));
+    assert.ok(others.includes("aria-label=\"Workflow run\""));
+});
+
+// Batch 5 (g-06): an empty step log says so in words, never with the splash art or "No messages yet."
+test("an empty step log says 'No step output yet.', while loading says so, and keeps a failed read's words", () => {
+    const splash = { kind: "markup", value: "P I L O T S W A R M", splashAlt: null };
+    const words = [{ text: WORKFLOW_STEP_LOG_EMPTY_TEXT, color: "gray" }];
+    assert.deepEqual(workflowStepLogLines([splash], { chat: [], loadState: "loaded" }), words);
+    assert.deepEqual(workflowStepLogLines([{ text: "No messages yet.", color: "gray" }], null), words);
+    assert.deepEqual(workflowStepLogLines([splash, [{ text: "", color: null }]], { chat: [] }), words);
+    assert.deepEqual(workflowStepLogLines([splash], { chat: [], loadState: "loading" }), [{ text: WORKFLOW_STEP_LOG_LOADING_TEXT, color: "gray" }]);
+    const failed = [{ text: "Could not load this conversation. Select the session again to retry.", color: "gray" }];
+    assert.equal(workflowStepLogLines(failed, { chat: [], loadState: "failed" }), failed);
+    // A warning the transcript shows without a message follows the words; a log with output is left as it is.
+    const warning = [{ text: "⚠ The session ended with an error.", color: "red" }];
+    assert.deepEqual(workflowStepLogLines([splash, warning], { chat: [] }), [...words, warning]);
+    const output = [[{ text: "Step 1: poll → changed", color: "green" }]];
+    assert.equal(workflowStepLogLines(output, { chat: [{ id: "m1" }] }), output);
 });

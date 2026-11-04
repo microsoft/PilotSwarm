@@ -99,8 +99,16 @@ test("a malformed run list is counted and left out; an unrecognized model gives 
 test("no runs, a legacy workflow and a model that is not v2 show no picker or an honest empty one", () => {
     const empty = workflowV2RunPickerModel({ workflowModel: readModel({ noRun: true }), ownModelLoaded: true });
     assert.deepEqual(empty.options.map(option => option.value), [""]);
+    // The model still says it (the terminal shows it); the portal shows no picker until a run exists, and says
+    // "No run yet" once, in the run's status (batch 5, g-07).
     assert.deepEqual(empty.notes.map(note => note.text), ["No runs yet."]);
-    assert.match(pane(seed({ view: { definition: def(), readModel: readModel({ noRun: true }), readModelRunId: null } }).controller), /No runs yet\./);
+    const none = pane(seed({ view: { definition: def(), readModel: readModel({ noRun: true }), readModelRunId: null } }).controller);
+    assert.ok(!none.includes("aria-label=\"Workflow run\"") && !none.includes("No runs yet."));
+    assert.equal(none.match(/No runs? yet/g)?.length, 1);
+    assert.match(none, /<span class="ps-workflow-status">No run yet<\/span>/);
+    // A run selected by its id is shown even before the run list has it.
+    assert.match(pane(seed({ view: { definition: def(), readModel: readModel({ noRun: true }), readModelRunId: null, selectedRunId: "run-x" } }).controller),
+        /<select aria-label="Workflow run"/);
     const legacy = pane(seed({ view: { definition: workflowDefinition(legacyStartedData) } }).controller);
     assert.ok(!legacy.includes("Workflow run"));
     assert.ok(legacy.includes("node · idle"), "the legacy graph is unchanged");

@@ -223,10 +223,12 @@ export function annotateWorkflowV2Edges(definition, layout) {
 
 /**
  * The notices the portal lists behind its Notices button (owner batch 5, g-03): the projection's banners about the
- * definition and the shown run, each with a level and its text. Pure.
+ * definition and the shown run, each with a level and its text. "No run yet" is left out: the run's status says it
+ * (g-07). Pure.
  */
 export function workflowV2ShownNotices(banners) {
-    return Array.isArray(banners) ? banners.filter(banner => isRecord(banner) && typeof banner.text === "string" && banner.text) : [];
+    return Array.isArray(banners)
+        ? banners.filter(banner => isRecord(banner) && typeof banner.text === "string" && banner.text && banner.code !== "no-run") : [];
 }
 
 /** The most serious level among notices, for the Notices button's tint: "error", "warning", "info", or null for none. */
@@ -490,9 +492,11 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
     }
     if (model.run !== null && model.run !== undefined && !run) {
         banners.push({ level: "warning", text: "This run's data has an unknown format, so it was not shown." });
+    } else if (!run && model.runs.length) {
+        banners.push({ level: "info", text: `No live run is selected; ${model.runs.length === 1 ? "1 other run exists" : `${model.runs.length} other runs exist`}.` });
     } else if (!run) {
-        banners.push({ level: "info", text: model.runs.length
-            ? `No live run is selected; ${model.runs.length === 1 ? "1 other run exists" : `${model.runs.length} other runs exist`}.` : "No run yet." });
+        // The portal says this once, in the run's status (batch 5, g-07); the terminal lists it among its notices.
+        banners.push({ level: "info", text: "No run yet.", code: "no-run" });
     }
     // A test run (design 05; INACTIVE outside controller 1.9.0's tests): its notice stays visible, with the revision it tested,
     // its virtual clock and what still waits for the parent's answer. Never shown as a production result.

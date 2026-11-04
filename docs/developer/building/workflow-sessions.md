@@ -43,7 +43,10 @@ sharing, and a transcript.
   run's **activity**, its **notices** and a test run's **calls** each open
   from their own button in the header (Notices and Test calls show how many
   there are), and close the same way. With the step log open, drag its
-  divider, use the divider's arrow keys, or double-click to reset its height.
+  divider, use the divider's arrow keys, or double-click to reset its height;
+  until the workflow writes to it, it says "No step output yet." Before the
+  first run, the header's status says "No run yet" and the run picker
+  appears once a run exists.
 - The **transcript** starts with a compact, expandable definition. Repeated
   healthy self-loop checks update one progress row with an increasing count,
   the last outcome and check time. Expand it for the most recent 40 checks

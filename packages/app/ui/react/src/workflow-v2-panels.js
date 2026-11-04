@@ -2,7 +2,7 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
-    workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2VisitEnding, workflowV2WholeValue,
+    workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2ShownNotices, workflowV2VisitEnding, workflowV2WholeValue,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -70,7 +70,8 @@ export function WorkflowV2NoGraph({ projection }) {
     const alert = projection.banners.some(banner => banner.level === "error");
     return h("div", { className: "ps-workflow-empty", role: alert ? "alert" : "status" },
         h("strong", null, projection.modelStatus === "invalid" ? "This workflow definition is invalid" : "No workflow graph to show"),
-        h(WorkflowV2Banners, { banners: projection.banners }),
+        // "No run yet" is said once, by the run's status in the header (batch 5, g-07).
+        h(WorkflowV2Banners, { banners: workflowV2ShownNotices(projection.banners) }),
         h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics }));
 }
 
@@ -416,10 +417,15 @@ export function selectWorkflowV2Run(controller, sessionId, runId) {
     return next;
 }
 
-/** A native select: keyboard, type-ahead and screen reader behaviour come with it. Every value is a React text child. */
+/**
+ * A native select: keyboard, type-ahead and screen reader behaviour come with it. Every value is a React text child.
+ * Until a run exists there is nothing to pick, and the run's status already says "No run yet", so the picker is not
+ * shown (batch 5, g-07); a run that is selected by its id stays shown, listed or not.
+ */
 export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error }) {
     const model = workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded, error });
     const noteId = `wf-run-note-${React.useId().replace(/:/g, "")}`;
+    if (model.runCount === 0 && model.selection === null && model.malformed === 0) return null;
     return h("div", { className: "ps-workflow-run-picker", style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, maxWidth: "100%", fontSize: "0.75rem" } },
         h("select", { "aria-label": "Workflow run", className: "ps-workflow-input", "aria-describedby": model.notes.length ? noteId : undefined, value: model.value,
             "data-selection": model.selection ?? "live", title: model.options.find(option => option.value === model.value)?.title,

@@ -261,3 +261,29 @@ export function describeWorkflowEvent(event) {
         }
     }
 }
+
+/** The words an empty workflow step log shows, and while it loads (owner batch 5, g-06). */
+export const WORKFLOW_STEP_LOG_EMPTY_TEXT = "No step output yet.";
+export const WORKFLOW_STEP_LOG_LOADING_TEXT = "Loading the step log…";
+
+const stepLogLineText = line => Array.isArray(line)
+    ? line.map(run => (typeof run?.text === "string" ? run.text : "")).join("")
+    : typeof line?.text === "string" ? line.text : "";
+
+/**
+ * A workflow's step log as the portal shows it (owner batch 5, g-06): the transcript's lines as they are once the
+ * workflow has written any; until then plain words, never the session's splash art (the splash is the transcript's
+ * "markup" line) and never "No messages yet." `history` is the session's loaded history ({ chat, loadState }). A
+ * failed read keeps the transcript's own words for it, and any other line the transcript shows without a message
+ * (a warning about the session) follows the words. Pure.
+ */
+export function workflowStepLogLines(lines, history) {
+    const chat = Array.isArray(history?.chat) ? history.chat : [];
+    const list = Array.isArray(lines) ? lines : [];
+    if (chat.length) return list;
+    if (history?.loadState === "loading") return [{ text: WORKFLOW_STEP_LOG_LOADING_TEXT, color: "gray" }];
+    if (history?.loadState === "failed") return list;
+    const kept = list.filter(line => line?.kind !== "markup" && stepLogLineText(line) !== "No messages yet.");
+    const content = kept.some(line => (line && !Array.isArray(line) && typeof line.kind === "string") || stepLogLineText(line).trim());
+    return [{ text: WORKFLOW_STEP_LOG_EMPTY_TEXT, color: "gray" }, ...(content ? kept : [])];
+}

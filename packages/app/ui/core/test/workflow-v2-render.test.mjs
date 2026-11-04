@@ -71,7 +71,9 @@ test("an invalid draft shows its diagnostics as text, and a draft with a graph s
     const draft = main(mount({ view: { readModel: readModel({ noRun: true, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null } }),
         noticesOpen: true } }));
     assert.ok(draft.includes("Draft revision 1 · not published."));
-    assert.ok(draft.includes("No run yet."));
+    // Batch 5 (g-07): "No run yet" is said once, by the run's status; the notices do not repeat it.
+    assert.equal(draft.match(/No runs? yet/g)?.length, 1);
+    assert.match(draft, /<span class="ps-workflow-status">No run yet<\/span>/);
     assert.ok(node(mount({ view: { readModel: invalid } })).includes("This workflow definition is invalid"));
 });
 

@@ -1046,6 +1046,33 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     });
 }
 
+// Batch 5 (g-06, g-07): with no run, "No run yet" is said once (the status; no run picker, no notice repeating it), and
+// the empty step log says "No step output yet." instead of the splash art.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "said once" (from packages/app/web, after build).
+const NO_RUN_MODEL = { ...V2_READ_MODEL, runs: [], run: null };
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`with no run 'No run yet' is said once, and an empty step log says so in words, at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeV2(page, { events: [], readModel: () => NO_RUN_MODEL, onCommand: (route, command) => accept(route, command) });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+        await expect(main.locator(".ps-workflow-status")).toHaveText("No run yet");
+        await expect(main.getByRole("combobox", { name: "Workflow run" })).toHaveCount(0);
+        await expect(main.getByRole("button", { name: "Notices", exact: true })).toHaveCount(0);
+        await main.getByRole("button", { name: "Step log", exact: true }).click();
+        const log = main.locator(".ps-workflow-log");
+        await expect(log).toContainText("No step output yet.");
+        await expect(log).not.toContainText("No messages yet.");
+        await expect(log.locator(".is-splash-desktop, .is-splash-mobile")).toHaveCount(0);
+        await expect(main.getByText(/No runs? yet/)).toHaveCount(1);
+        await shot(page, `no-run-${viewport.width}`);
+        expect(errors).toEqual([]);
+    });
+}
+
 // ------------------------------------------------------------------------------------------------------------
 // of-07 — one theme-consistent style for the workflow screen's edit boxes: the variables form's Name and Value boxes
 // have the theme's background, text colour and shared corner radius; the JSON Value box is monospace; a value that
