@@ -133,6 +133,7 @@ uses API `2026-10-01-preview`. Its rules, each found by a failed deploy:
 | `administratorLogin` can be sent once; later PUTs send only the password (a reset) | `administratorLogin cannot be specified because an administrator is already configured` |
 | PUT the settings group before the cluster, not in parallel: a PUT to a group that a pool uses keeps the cluster `Updating` for about a minute | cluster PUT fails with `ClusterNotReady` |
 | Read the host name from `clusters/{c}/endpoints/{c}` (role ReadWrite). New clusters use `{c}.rw.{id}.{region}.horizondb.azure.com` | the old API's `fullyQualifiedDomainName` does not resolve for new clusters |
+| One pool request may change only one property group (`nodeCount` + `highAvailability`, or `parameterGroup`). Pools of clusters migrated from the old API can show no `highAvailability` and no group, so a full pool PUT changes two groups. The deploy module PUTs the pool only to create it | `The request changes multiple Pool property groups ... Submit a separate request for each property group` |
 | Settings groups can be updated (PUT/PATCH); connected pools pick up the change | (API 2026-01-20-preview rejected updates with `ParameterGroupUpdateNotSupported`) |
 
 **Attach timing.** A pool PATCH takes about two minutes. During that time the

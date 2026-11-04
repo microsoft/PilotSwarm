@@ -10,6 +10,9 @@
 // - The administrator login can be set only once.
 // - A PUT to a settings group that a pool uses keeps the cluster busy for
 //   about a minute, so the cluster PUT waits for the group PUT.
+// - One pool request may change only one property group (for example
+//   nodeCount with highAvailability, or parameterGroup). So this module PUTs
+//   the pool only to create it; the script attaches the group by itself.
 targetScope = 'resourceGroup'
 
 param location string
@@ -28,7 +31,7 @@ param vCores int = 4
 @maxValue(16)
 param nodeCount int = 1
 param parameterGroupName string
-@description('True when the pool does not exist yet. A new pool starts on the built-in settings group, and only a new pool sends the administrator login.')
+@description('True when the pool does not exist yet. Only then is the pool PUT (on the built-in settings group) and the administrator login sent.')
 param poolCreate bool = true
 @description('Optional connection capacity override. Zero leaves the service default; CI supplies its tested parallel-run capacity.')
 @minValue(0)
@@ -64,7 +67,10 @@ resource cluster 'Microsoft.HorizonDb/clusters@2026-10-01-preview' = {
   dependsOn: [parameterGroup]
 }
 
-resource pool 'Microsoft.HorizonDb/clusters/pools@2026-10-01-preview' = {
+// Clusters that HorizonDB migrated to the pool API can have a pool with no
+// highAvailability value and no settings group. A PUT that sets both fails, so
+// an existing pool is never PUT here: compute changes need their own request.
+resource newPool 'Microsoft.HorizonDb/clusters/pools@2026-10-01-preview' = if (poolCreate) {
   parent: cluster
   name: poolName
   properties: {
@@ -77,10 +83,15 @@ resource pool 'Microsoft.HorizonDb/clusters/pools@2026-10-01-preview' = {
     nodeCount: nodeCount
     highAvailability: { mode: nodeCount > 1 ? 'AnyZone' : 'Disabled' }
     parameterGroup: {
-      parameterGroupResourceId: poolCreate ? builtInParameterGroupId : parameterGroup.id
+      parameterGroupResourceId: builtInParameterGroupId
       applyMethod: 'Immediate'
     }
   }
+}
+
+resource pool 'Microsoft.HorizonDb/clusters/pools@2026-10-01-preview' existing = {
+  parent: cluster
+  name: poolName
 }
 
 // Later deploys send the password alone; the service treats that as a reset
@@ -92,7 +103,7 @@ resource passwordAuthentication 'Microsoft.HorizonDb/clusters/authentications@20
     state: 'Enabled'
     administratorLoginPassword: administratorLoginPassword
   }, poolCreate ? { administratorLogin: administratorLogin } : {})
-  dependsOn: [pool]
+  dependsOn: [newPool]
 }
 
 resource aksFirewall 'Microsoft.HorizonDb/clusters/pools/firewallRules@2026-10-01-preview' = if (!empty(aksOutboundIp)) {
@@ -103,6 +114,7 @@ resource aksFirewall 'Microsoft.HorizonDb/clusters/pools/firewallRules@2026-10-0
     startIpAddress: aksOutboundIp
     endIpAddress: aksOutboundIp
   }
+  dependsOn: [newPool]
 }
 
 // New clusters answer only on the endpoint's host name (<cluster>.rw.<id>...).
