@@ -1910,3 +1910,65 @@ test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen a
     await shot(page, "f02-chat-full-screen-back");
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// Batch 6 (f-04): compact review panels. Publish review's property rows are a two-column grid without row dividers,
+// with one short note and its buttons in one row; a JSON box is as tall as its text, from 2 to 8 rows, and scrolls
+// inside past that. Accessible names and data-field values are unchanged.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "f-04:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const PUBLISH_MODEL = {
+    ...V2_READ_MODEL,
+    definition: { state: "draft", semver: "1.0.0", currentRevision: 1, publishedRevision: null, publishedDefinitionHash: null },
+    personCommands: { operations: ["replace_definition", "publish", "publish_and_start"], viewer: { allowed: true },
+        draft: { revision: 1, definitionHash: "hash-1", yaml: DRAFT_YAML_1 } },
+};
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`f-04: Publish review is compact, and a JSON box is as tall as its text, at ${viewport.width}px`, async ({ page }, testInfo) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const { commands } = await routeV2(page, { readModel: () => PUBLISH_MODEL, onCommand: (route, command) => accept(route, command) });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        await page.locator(".ps-workflow-main").getByRole("button", { name: "Publish…", exact: true }).click();
+        const review = page.getByRole("region", { name: "Publish review", exact: true }).filter({ visible: true });
+        await expect(review).toBeVisible();
+
+        // Property rows: two columns, no dividers.
+        const rows = review.locator(".ps-workflow-property");
+        expect(await rows.count()).toBeGreaterThan(1);
+        for (const style of await rows.evaluateAll(elements => elements.map(element => {
+            const css = getComputedStyle(element);
+            return { display: css.display, columns: css.gridTemplateColumns.trim().split(/\s+/).length, top: css.borderTopWidth, bottom: css.borderBottomWidth };
+        }))) {
+            expect(style).toEqual({ display: "grid", columns: 2, top: "0px", bottom: "0px" });
+        }
+        // One short note; the buttons in one row.
+        await expect(review.locator(".ps-workflow-side-note")).toHaveCount(1);
+        expect(((await review.locator(".ps-workflow-side-note").textContent()) || "").length).toBeLessThan(120);
+        const tops = await review.locator(".ps-workflow-panel-actions button").evaluateAll(buttons => buttons.map(button => Math.round(button.getBoundingClientRect().top)));
+        expect(tops.length).toBeGreaterThan(1);
+        expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(2);
+        const height = (await review.boundingBox()).height;
+        testInfo.annotations.push({ type: "publish-review-height", description: `${Math.round(height)}px at ${viewport.width}px` });
+
+        // Names and fields as before.
+        const inputs = review.getByRole("textbox", { name: "Inputs (JSON object)", exact: true });
+        await expect(inputs).toHaveAttribute("data-field", "inputs");
+        await expect(review.getByRole("textbox", { name: "Initial variables (JSON object, optional)", exact: true })).toHaveAttribute("data-field", "vars");
+        await expect(review.locator('[data-operation="publish"]')).toBeVisible();
+
+        // A JSON box: "{}" 2 rows, 5 lines 5 rows, 20 lines 8 rows with an inner scrollbar.
+        await expect(inputs).toHaveValue("{}");
+        await expect(inputs).toHaveAttribute("rows", "2");
+        await inputs.fill(["{", "  \"a\": 1,", "  \"b\": 2,", "  \"c\": 3", "}"].join("\n"));
+        await expect(inputs).toHaveAttribute("rows", "5");
+        const twenty = ["{", ...Array.from({ length: 18 }, (_, i) => `  "k${i}": ${i}${i < 17 ? "," : ""}`), "}"].join("\n");
+        await inputs.fill(twenty);
+        await expect(inputs).toHaveAttribute("rows", "8");
+        expect(await inputs.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+        await shot(page, `f04-publish-review-${viewport.width}`);
+        expect(commands).toEqual([]);
+        expect(errors).toEqual([]);
+    });
+}
