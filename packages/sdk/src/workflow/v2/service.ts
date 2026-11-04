@@ -15,6 +15,7 @@ import {
     WORKFLOW_V2_CONTROLLER_VERSION,
     WORKFLOW_V2_MAX_CORRELATION_BYTES,
     WORKFLOW_V2_NOTIFY_NAME,
+    endWorkflowV2RunAgents,
     WORKFLOW_V2_NOTIFY_VERSION,
     WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
     WORKFLOW_V2_STOP_CONTROLLER_VERSIONS,
@@ -423,6 +424,25 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
 }
 
 /**
+ * Finish a run that a recover ended (or an earlier recover ended), whose controller can do nothing more (adversarial
+ * review RT-3): end the children of its decided agent states whose end is still owed, for every run mode (a real-agent
+ * test run's included), and make sure its parent's notification was started. Neither waits for the other: the
+ * notification is started even when a child could not be ended yet, and then the recover fails, so a later recover
+ * ends the children still owed (each end is recorded once, with a stable command id).
+ */
+async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow): Promise<void> {
+    if (ACTIVE_RUN_STATUSES.includes(run.status)) return;
+    let unended: unknown = null;
+    try {
+        await endWorkflowV2RunAgents(host.store, host.duroxideClient, run.runId);
+    } catch (error) {
+        unended = error;
+    }
+    await notifyRecoveredRun(host, run);
+    if (unended !== null) throw unended;
+}
+
+/**
  * Start the controller of a run whose recover receipt says it was
  * dispatched, while its controller has not begun it. The
  * receipt was stored first, so a repeat of the request reaches this again
@@ -491,7 +511,7 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
         const current = await host.store.readRun(runId);
         if (current) {
             if (receipt.action === "dispatched") await dispatchRecoveredRun(host, current);
-            await notifyRecoveredRun(host, current);
+            await finishRecoveredRun(host, current);
         }
         return { receipt, replayed: true };
     };
@@ -557,15 +577,15 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
             return recordedMeanwhile(error);
         }
         if (ended.ended) {
-            await notifyRecoveredRun(host, ended.run);
+            await finishRecoveredRun(host, ended.run);
             return { receipt: ending, replayed: false };
         }
         receipt = { runId, action: "none", status: ended.run.status, controller };
     }
     const stored = await host.store.recordOperationReceipt(workflowSessionId, request.operationId, "recover", requestSha256, recoverReceiptJson(receipt));
     if (stored.replayed) return replay(stored.receipt);
-    // A run an earlier recover ended: make sure its notification was started.
-    await notifyRecoveredRun(host, run);
+    // A run an earlier recover ended: make sure its agent children were ended and its notification was started.
+    await finishRecoveredRun(host, await host.store.readRun(runId) ?? run);
     return { receipt, replayed: false };
 }
 

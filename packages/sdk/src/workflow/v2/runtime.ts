@@ -2252,6 +2252,73 @@ function unsupportedController(version: string) {
     };
 }
 
+/** What ending an agent state's child needs of a duroxide client: an activity's, or a host's (recovery; RT-3). */
+export interface WorkflowV2AgentEndClient {
+    getStatus(instanceId: string): Promise<{ status: string }>;
+    enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
+}
+
+/**
+ * End the child of a decided agent state (controller 1.9.0; IR 8): done
+ * after the agent's own typed completion, cancel after anything else (its
+ * deadline, a cancel, a stop, a deletion or the run's end). The first end
+ * recorded stands (store.recordAgentEnd), and the command is sent to the
+ * child's session queue at least once, with a stable id, while its
+ * session orchestration exists and runs; a child not created yet is
+ * ended by its spawn when it finds the state decided. A cancel ends the
+ * child's own descendants too (its graceful shutdown cascades). Used by the
+ * controller's activities and by recovery (RT-3).
+ */
+export async function endWorkflowV2AgentChild(store: WorkflowStore, client: WorkflowV2AgentEndClient, nodeExecutionId: string,
+    options: { afterSpawn?: boolean } = {}): Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
+    const node = await store.readNodeExecution(nodeExecutionId);
+    if (!node || node.nodeType !== "agent" || node.state !== "completed") return null;
+    const { invocation } = await store.recordAgentEnd(nodeExecutionId, node.winner === "agent" ? "done" : "cancel");
+    const end = invocation.endRequested ?? (node.winner === "agent" ? "done" : "cancel");
+    // A spawn that created the child after an end found no session sends the end again (afterSpawn).
+    if (invocation.endSentAt !== null && options.afterSpawn !== true) return { end, sent: false };
+    const sessionInstance = `session-${invocation.childSessionId}`;
+    const status = (await client.getStatus(sessionInstance)).status;
+    const sent = status !== "NotFound" && !TERMINAL_ORCHESTRATION_STATUSES.includes(status);
+    if (sent) {
+        await client.enqueueEvent(sessionInstance, "messages", JSON.stringify({
+            type: "cmd", cmd: end, id: `workflow-agent-end:${nodeExecutionId}`,
+            args: { reason: end === "done" ? "The workflow state this session ran was completed." : `The workflow state this session ran ended (${node.outcome}).` },
+        }));
+    }
+    const { marked } = await store.markAgentEndSent(nodeExecutionId, status);
+    if (marked) {
+        await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_ended", data: {
+            runId: invocation.runId, nodeExecutionId, stateId: node.nodeId, childSessionId: invocation.childSessionId, end, outcome: node.outcome,
+            sent, childStatus: status,
+        } }]);
+    }
+    return { end, sent };
+}
+
+/**
+ * End the children of every decided agent state of a run whose end command
+ * is still owed (endWorkflowV2AgentChild). A child that fails is recorded
+ * (workflow.agent_end_failed) and the others are still ended; then the
+ * call fails, so its activity (or the next recover) tries the owed ones again.
+ */
+export async function endWorkflowV2RunAgents(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string): Promise<void> {
+    const failed: string[] = [];
+    for (const invocation of await store.listAgentInvocations(runId)) {
+        if (invocation.endSentAt !== null) continue;
+        try {
+            await endWorkflowV2AgentChild(store, client, invocation.nodeExecutionId);
+        } catch (error) {
+            failed.push(invocation.nodeExecutionId);
+            await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
+                runId, nodeExecutionId: invocation.nodeExecutionId, childSessionId: invocation.childSessionId,
+                error: jsonbSafeText(workflowErrorMessage(error), 1_000),
+            } }]);
+        }
+    }
+    if (failed.length > 0) throw new Error(`The children of agent states ${failed.join(", ")} were not ended yet.`);
+}
+
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {
     const { store } = deps;
     // Request states (design workflow-messaging-request.md 8; INACTIVE): only a test, or the test-only milestone worker, sets workflowRequests.
@@ -2327,54 +2394,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * ended by its spawn when it finds the state decided. A cancel ends the
      * child's own descendants too (its graceful shutdown cascades).
      */
-    const endAgentChild = async (client: NonNullable<ReturnType<ActivityContext["getClient"]>>, nodeExecutionId: string, options: { afterSpawn?: boolean } = {})
-        : Promise<{ end: "done" | "cancel"; sent: boolean } | null> => {
-        const node = await store.readNodeExecution(nodeExecutionId);
-        if (!node || node.nodeType !== "agent" || node.state !== "completed") return null;
-        const { invocation } = await store.recordAgentEnd(nodeExecutionId, node.winner === "agent" ? "done" : "cancel");
-        const end = invocation.endRequested ?? (node.winner === "agent" ? "done" : "cancel");
-        // A spawn that created the child after an end found no session sends the end again (afterSpawn).
-        if (invocation.endSentAt !== null && options.afterSpawn !== true) return { end, sent: false };
-        const sessionInstance = `session-${invocation.childSessionId}`;
-        const status = (await client.getStatus(sessionInstance)).status;
-        const sent = status !== "NotFound" && !TERMINAL_ORCHESTRATION_STATUSES.includes(status);
-        if (sent) {
-            await client.enqueueEvent(sessionInstance, "messages", JSON.stringify({
-                type: "cmd", cmd: end, id: `workflow-agent-end:${nodeExecutionId}`,
-                args: { reason: end === "done" ? "The workflow state this session ran was completed." : `The workflow state this session ran ended (${node.outcome}).` },
-            }));
-        }
-        const { marked } = await store.markAgentEndSent(nodeExecutionId, status);
-        if (marked) {
-            await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_ended", data: {
-                runId: invocation.runId, nodeExecutionId, stateId: node.nodeId, childSessionId: invocation.childSessionId, end, outcome: node.outcome,
-                sent, childStatus: status,
-            } }]);
-        }
-        return { end, sent };
-    };
-    /**
-     * End the children of every decided agent state of a run whose end command
-     * is still owed (endAgentChild). A child that fails is recorded
-     * (workflow.agent_end_failed) and the others are still ended; then the
-     * call fails, so its activity tries the owed ones again.
-     */
-    const endRunAgents = async (client: NonNullable<ReturnType<ActivityContext["getClient"]>>, runId: string): Promise<void> => {
-        const failed: string[] = [];
-        for (const invocation of await store.listAgentInvocations(runId)) {
-            if (invocation.endSentAt !== null) continue;
-            try {
-                await endAgentChild(client, invocation.nodeExecutionId);
-            } catch (error) {
-                failed.push(invocation.nodeExecutionId);
-                await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
-                    runId, nodeExecutionId: invocation.nodeExecutionId, childSessionId: invocation.childSessionId,
-                    error: jsonbSafeText(workflowErrorMessage(error), 1_000),
-                } }]);
-            }
-        }
-        if (failed.length > 0) throw new Error(`The children of agent states ${failed.join(", ")} were not ended yet.`);
-    };
+    const endAgentChild = (client: WorkflowV2AgentEndClient, nodeExecutionId: string, options: { afterSpawn?: boolean } = {}) =>
+        endWorkflowV2AgentChild(store, client, nodeExecutionId, options);
+    const endRunAgents = (client: WorkflowV2AgentEndClient, runId: string): Promise<void> => endWorkflowV2RunAgents(store, client, runId);
     /** The bindings of a state: its run's inputs, its incoming value, its pinned KV, the runtime error, and a branch's own `branch`. */
     const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue, branch: BranchBinding | null = null): BindingScope => ({
         inputs: run.inputs, input: incoming, kv: isJsonObject(kv) ? kv : {}, runtime: { error: runtimeErrorValue },
