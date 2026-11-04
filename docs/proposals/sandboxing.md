@@ -36,14 +36,15 @@ These are separate concerns, not four features that must ship together.
 Preserve PilotSwarm's session lifecycle, orchestration and recovery model while
 moving agent execution away from the trusted worker. Support independently
 attached repositories/workspaces and an explicitly supported model/tool profile.
-Start with one session per isolated environment; sharing and the treatment of
-child sessions need an explicit allocation policy.
+Start with **one isolated environment per logical session, including each
+delegated subagent**. A child can inherit its parent's target authorization
+without sharing its executor or native home.
 
-**Proposed state strategy:** the runtime uses native session files inside its
-execution environment. PilotSwarm captures/restores the declared session state
-and retains archive-backed commit and recovery authority. Repositories remain
-independently attached. This is the proposed shared-core integration mode, not
-an already qualified remote profile.
+The runtime uses **native session files inside the execution environment**.
+PilotSwarm captures/restores the required state and retains archive-backed
+commit and recovery authority. Remove remote worker-backed SessionFs rather
+than keep two remote state modes. Ordinary local/native filesystem behavior
+remains unchanged.
 
 ```text
 Current:   worker [SDK client + agent runtime]
@@ -51,6 +52,11 @@ Proposed:  worker [SDK client] -> isolated environment [agent runtime]
 ```
 
 The worker retains trusted composition, platform callbacks and backend access.
+The common PilotSwarm host inside the environment handles native state
+import/export. The deployment provider manages the environment and connection,
+not a separate checkpoint format. The worker validates the returned state and
+decides what commits.
+
 The isolated environment is not enrolled as a trusted worker. Its files, events
 and requests are untrusted inputs; authenticating a connection does not authorize
 every operation that arrives over it.
@@ -60,23 +66,6 @@ It does not replace authorization for shared history, artifacts, facts, graphs
 or storage. A parallel threat model and privacy review must cover those services.
 Cloud-specific identity, provisioning and network behavior belong in provider
 implementations, not the public core.
-
-## Proposed convergence direction
-
-Build toward one common compute core and separately managed provider lifecycles,
-not two parallel remote-execution frameworks.
-
-The [compute-provider draft](https://github.com/microsoft/PilotSwarm/pull/244)
-provides a proposed surface for targets, host connection, workspace paths,
-rollout and model/MCP brokerage. The
-[isolated-runtime proposal](https://github.com/microsoft/PilotSwarm/pull/253)
-records complementary ownership, state and completion requirements. Reuse
-mechanisms that satisfy those requirements; do not preserve an interface merely
-because a prototype already uses it.
-
-This document combines those contributions into a proposed direction. It does
-not declare either implementation ready, supersede the existing proposals or
-assign implementation ownership without agreement.
 
 ## Dynamic environments require lifecycle management
 
@@ -103,6 +92,11 @@ is not automatically required. The important distinction is between releasing a
 caller's interest, retaining an idle environment, and proving an executor retired.
 A best-effort release hint must not be used as termination proof. Cleanup and
 reconciliation must not depend solely on that hint arriving.
+
+Retaining the environment does not require keeping the runtime process alive.
+The environment, common host/state service and runtime writer scope have
+different lifetimes: stopping writers for capture must not also remove the
+service needed to export the state.
 
 ## Resources do not all share one checkpoint
 
@@ -135,40 +129,38 @@ controller must be stopped or fenced. Stale callbacks, state publication and
 accounting writes must be refused. Already admitted effects must be accounted
 for; a handshake or routing tag alone is not a replacement barrier.
 
-Unknown outcomes need an observable reconciliation path. The required outcome
-does not mandate a particular binding API, deleting every environment after each
-turn, or one specific lease implementation.
+Authority must remain valid through admitted asynchronous work and archive
+publication, not just at a check before they start. Unknown outcomes need an
+observable reconciliation path, not an unsafe retry or an unexplained permanent
+hold. This does not mandate deleting every environment after each turn.
 
-### Proposed native-session-file profile
+### Native session files and recovery
 
-For the first isolated profile, this draft proposes real session files beside
-the runtime rather than requiring worker-backed SessionFs for all runtime state.
-The intent is to preserve normal filesystem behavior, including native database
-access where the supported runtime uses it.
+Restore accepted state before starting/resuming the runtime against its native
+home. Capture the complete state required by the supported workload, including
+required databases outside a per-session directory. Do not assume every
+runtime-global file is disposable or copy an entire credential-bearing home.
 
-The trusted side captures/restores the complete declared per-session state and
-publishes the accepted result through PilotSwarm's existing archive/CAS lifecycle.
-Validate returned files and preserve the worker's authority over commit metadata.
-Do not fold independently attached repo/build storage into the conversation
-archive merely because the runtime can access it.
+Capture requires a **verified checkpoint barrier**: required state has been
+persisted and relevant writers cannot change it inconsistently while it is
+captured. A qualified writer hold, supported database backup or controlled
+runtime restart may establish that boundary. Neither mandatory warm-process
+continuity nor an unconditional restart after every turn is required.
 
-Capture needs a defined consistency boundary: verified writer shutdown, a
-supported database backup operation or another qualified mechanism. A warm live
-copy is not automatically an atomic database checkpoint. Establish the locations
-of all required files/databases; capturing a per-session tree does not imply
-capturing every runtime-global database. SQLite/sidecar fidelity still needs
-qualification rather than inference from filenames.
+SDK idle/disconnect, signal delivery and a warm live copy are not that guarantee.
+Preserve normal lifecycle-hook semantics. SQLite/sidecar fidelity needs actual
+backup/restore qualification, not inference from filenames.
 
-Native session files do not mean provider-owned VM snapshots or process-memory
-recovery. PilotSwarm remains authoritative. This can be a declared mode of the
-common compute framework; it need not reject its targets, connection, workspace
-or brokerage mechanisms, or mandate the same storage mode for every provider.
+The trusted side validates captured state and publishes it through PilotSwarm's
+archive/CAS lifecycle. Native session files do not mean provider-owned VM snapshots
+or process-memory recovery. Repositories remain independently attached.
 
 ### Committed outcome and completion recovery
 
 The winning committed state, result and original completion/accounting identity
-must agree. Recovery after state commit must not rerun committed model/tool work
-or duplicate completion effects merely to discover the outcome.
+must agree. Commit the accepted state/result before finalizing completion.
+Recovery after that commit must not rerun committed model/tool work or duplicate
+completion effects merely to discover the outcome.
 
 A saved result and validated, idempotent completion record are one approach.
 An equivalent mechanism is acceptable. The state commit and an external effect
@@ -180,7 +172,8 @@ arbitrary external tools.
 Revalidate target and resource authority at the relevant admission points.
 An explicitly remote session must not silently run locally when a provider,
 catalog capability, connection or profile is unavailable. Rollout and rollback
-must preserve that rule across mixed worker versions.
+must preserve that rule across mixed worker versions and retain local/legacy
+compatibility without inventing recovery metadata.
 
 Model authentication and runtime attachment are separate concerns. Deliberately
 select worker brokerage, a qualified platform-managed identity or appropriately
@@ -191,54 +184,48 @@ proof that its backing grant is current.
 Package MCP services may run inside the environment; privileged deployment
 services remain behind trusted authorization. A server-connection ticket is not
 automatically permission for every tool or operation on that server. Define where
-those operation restrictions are enforced.
+those operation restrictions are enforced. The execution/control path must also
+be protected; a handshake authenticates but does not encrypt.
 
-## Delivery sequence and the first code change
+## Converge existing work rather than add another framework
 
-### First: harden the existing compute-provider contract
+The compute-provider draft
+([microsoft/PilotSwarm#244](https://github.com/microsoft/PilotSwarm/pull/244))
+provides a proposed common surface for targets, host connection, workspace paths,
+rollout and model/MCP brokerage. The isolated-runtime proposal
+([microsoft/PilotSwarm#253](https://github.com/microsoft/PilotSwarm/pull/253))
+records complementary ownership, state and completion requirements.
 
-The proposed first code PR is deliberately bounded to four reviewed cases in
-three areas, with regressions against the actual implementation:
+Build one implementation from those contributions. Keep the broader compute
+framework, move reusable native-state and recovery mechanisms into its common
+host/lifecycle, and remove remote SessionFs-specific plumbing. The prototype
+already supplies implementation and useful regression scenarios; adapt them
+rather than restart from abstract requirements or preserve both interfaces.
 
-- **Placement:** persist default target selection and refuse explicit remote
-  placement when its target authority cannot be read. Genuinely unselected local
-  sessions remain supported.
-- **Model configuration:** refresh effective provider configuration and backing
-  credential resolvers after selection changes or rotation. Stable stand-ins
-  must not retain an obsolete account, project or configuration.
-- **State exclusion:** close mutation admission and drain already-admitted
-  SessionFs writes before saving/restoring. Hold the barrier for the complete
-  operation and reopen safely.
+**One core PR** should deliver that coherent provider-neutral path, with logical
+commits for review. The completed placement/model/state-exclusion corrections are
+a checkpoint within that work, not the finished native integration or a reason
+to merge an intermediate state mode independently.
 
-This is a proposed correctness PR, not code included with this document. It
-adds no cloud provider, new persistence backend, process-continuity feature or
-sharing policy. It does not complete the broader worker-failure fencing or
-committed-completion work.
-
-Those fixes repair the reviewed draft's existing paths. The proposed native
-session-file integration is a separate change, not an expansion of that first PR.
-
-### Then: reconcile the required recovery behavior
-
-Carry the execution-ownership, state-fidelity and committed-completion outcomes
-above into the common path. Choose an explicitly supported state/model/tool
-profile. Distinguish newly introduced defects, inherited behavior and deliberate
-feature limits rather than treating every difference as a reason to preserve
-the prototype unchanged.
-
-### Then: integrate and qualify the first dynamic provider
-
-Add durable allocation/reconciliation, host bootstrap, protected connectivity,
-identity, real workspace access and cleanup behind the common boundary.
+**A separate deployment-owned PR** supplies the cloud-specific provider,
+allocation/reconciliation, identity, host bootstrap, protected connectivity,
+actual repo access and provider qualification. It consumes public PilotSwarm SDK
+contracts and the common host, without private SDK imports or a core fork.
 
 The first delivery should demonstrate a configured repo-backed session:
 attach resources, run native operations in the isolated environment, change an
 attachment, save the turn, recover after safe executor replacement, and clean
 up. State which platform features and authentication profiles this qualifies.
 
+Controlled prototype observations and the local correctness checkpoint do not
+qualify the new common path by themselves. Native barrier/hook fidelity, actual
+database/ownership/completion behavior, external-provider consumption and the
+final integrated version still need evidence. Core acceptance does not establish
+a real provider's physical isolation, identity, network or retirement guarantees.
+
 Agree a named integration lead and review responsibilities before treating a
-handoff as complete. Adoption decisions and implementation ownership remain
-subject to joint review.
+handoff as complete. This proposal does not silently supersede either existing
+PR or assign ownership without agreement.
 
 ## Later capabilities, not prerequisites
 
@@ -255,15 +242,13 @@ Rolling an entire environment back cannot also promise that processes created
 after that checkpoint keep running. These capabilities should be justified and
 qualified independently.
 
-## Decisions for the next design revision
+## Review focus
 
-1. Is allocation per logical session or per parent/child session tree, and what is
-   the initial supported scope?
-2. Do we agree on the proposed native-session-file mode, which files/databases
-   must it preserve, and which model/tool profile does the first delivery qualify?
-3. Where are dynamic allocation records, authority and orphan reconciliation
-   implemented, and what proves safe replacement?
-4. How are repository files actually made available inside the environment, and
-   which content/retry semantics remain unchanged?
-5. Who integrates and reviews the common-core and provider changes, and what is
-   the acceptance plan for the first workload?
+Review the proposed boundary and first workflow: one compute core, native
+session-state recovery, independently attached resources and deployment-owned
+lifecycle. Confirm that the public provider contract can express those
+responsibilities and that failure/recovery behavior is explicit.
+
+Implementation details and the full qualification matrix belong with the code
+and implementation plan. They should support this design, not obscure its
+purpose or imply that an unqualified mechanism already provides the guarantee.
