@@ -1,0 +1,208 @@
+# Sandboxing: execution, state, resources and lifecycle
+
+**Draft for discussion.** This proposes a first target and a convergence path,
+not an already agreed architecture or a claim of provider qualification.
+Merging this document changes no runtime behavior, database schema or deployment.
+
+## Proposed framing
+
+**Sandboxing is the management of an isolated execution environment and its
+resources, not just remote placement of the Copilot runtime.** PilotSwarm remains
+authoritative for logical sessions, queued work, committed agent state,
+completion/accounting, policy and current execution authority. Providers supply
+execution environments, storage/attachment mechanics and explicitly qualified
+lifecycle capabilities.
+
+Separate four concerns:
+
+1. **Isolation and execution:** the worker and embedded SDK stay outside; the
+   runtime, native tools and deliberately attached resources execute inside an
+   appropriate boundary.
+2. **Agent-state recovery:** archive-backed restore remains the baseline. A
+   provider snapshot can accelerate restoration only when it represents the
+   exact PilotSwarm-accepted checkpoint. Provider-native durable byte custody is
+   a distinct, stronger optional mode.
+3. **Workspace and build-state persistence:** repositories, scratch roots, build
+   outputs and caches have explicit attachment and persistence contracts,
+   independent of the runtime checkpoint.
+4. **Process continuity:** retaining a live executor/job across controller changes
+   or supported suspension is a separately qualified capability, not a
+   consequence of saving agent-state files.
+
+These are separate concerns, not four features that must ship together.
+
+## Proposed first target
+
+Preserve PilotSwarm's session lifecycle, orchestration and recovery model while
+moving agent execution away from the trusted worker. Support independently
+attached repositories/workspaces and an explicitly supported model/tool profile.
+Start with one session per isolated environment; sharing and the treatment of
+child sessions need an explicit allocation policy.
+
+```text
+Current:   worker [SDK client + agent runtime]
+Proposed:  worker [SDK client] -> isolated environment [agent runtime]
+```
+
+The worker retains trusted composition, platform callbacks and backend access.
+The isolated environment is not enrolled as a trusted worker. Its files, events
+and requests are untrusted inputs; authenticating a connection does not authorize
+every operation that arrives over it.
+
+The benefit is an execution boundary between agent-generated code and the worker.
+It does not replace authorization for shared history, artifacts, facts, graphs
+or storage. A parallel threat model and privacy review must cover those services.
+Cloud-specific identity, provisioning and network behavior belong in provider
+implementations, not the public core.
+
+## Dynamic environments require lifecycle management
+
+A long-lived machine can already exist when a worker needs it. A dynamic
+environment may need to be created, prepared, reused, retired and deleted.
+A compute connection alone does not manage that lifecycle.
+
+```text
+Queued work
+  -> acquire or create the intended environment
+  -> prepare accepted agent state and attach authorized resources
+  -> connect and run the turn
+  -> commit the accepted state and completion
+  -> retain for reuse or retire safely
+```
+
+The trusted integration must retain enough durable allocation and ownership
+information to reconcile a worker disappearing. It must handle lost provisioning
+responses, abandoned resources, cleanup failures, quotas and expiry. A timeout is
+not proof that creation failed or execution stopped.
+
+The provider's `bind` operation can allocate dynamically; a separate microservice
+is not automatically required. The important distinction is between releasing a
+caller's interest, retaining an idle environment, and proving an executor retired.
+A best-effort release hint must not be used as termination proof. Cleanup and
+reconciliation must not depend solely on that hint arriving.
+
+## Resources do not all share one checkpoint
+
+- **Agent session state:** preserve the files and databases required by the
+  supported runtime profile and the accepted turn result.
+- **Repositories and other attached roots:** retain their own storage,
+  authorization and recovery policies. A selected folder or attachment revision
+  is not an immutable version of its contents.
+- **Build outputs, caches and installed tools:** state which are disposable,
+  independently persistent or local to the environment.
+- **Live processes:** identify who owns them and what happens on cancellation,
+  worker loss, idle retirement and environment replacement.
+
+PilotSwarm already has workspace selection and attachment behavior. Extending it
+to remote execution requires real access to the selected files inside the
+environment, correct runtime paths and lifecycle integration. Translating a
+worker-local path does not mount or synchronize the corresponding filesystem.
+
+Preserve the distinction between conversation recovery and workspace recovery.
+An external workspace may retain partial edits from a failed attempt. Restoring
+agent state does not silently roll those files back. A profile that promises
+coordinated content rollback needs a separate workspace-version contract.
+
+## Required behavior in the common implementation
+
+### Safe execution ownership
+
+Before a replacement turn is admitted, conflicting execution from the previous
+controller must be stopped or fenced. Stale callbacks, state publication and
+accounting writes must be refused. Already admitted effects must be accounted
+for; a handshake or routing tag alone is not a replacement barrier.
+
+Unknown outcomes need an observable reconciliation path. The required outcome
+does not mandate a particular binding API, deleting every environment after each
+turn, or one specific lease implementation.
+
+### Declared state fidelity
+
+The selected filesystem/persistence path must preserve the state the supported
+workload needs. This includes database state where those tools are offered.
+Unsupported operations must be explicit, not silently omitted.
+
+Worker-backed file operations and whole-tree capture are different mechanisms.
+Neither should be chosen solely to preserve an existing interface. Qualify its
+actual behavior, including the capture boundary, native-tool visibility and any
+SQLite or sidecar requirements. Copying files named like a database is not a
+database-consistency proof.
+
+### Committed outcome and completion recovery
+
+The winning committed state, result and original completion/accounting identity
+must agree. Recovery after state commit must not rerun committed model/tool work
+or duplicate completion effects merely to discover the outcome.
+
+A saved result and validated, idempotent completion record are one approach.
+An equivalent mechanism is acceptable. The state commit and an external effect
+are not automatically one transaction, and no exactly-once claim is made for
+arbitrary external tools.
+
+### Explicit authority and compatibility
+
+Revalidate target and resource authority at the relevant admission points.
+An explicitly remote session must not silently run locally when a provider,
+catalog capability, connection or profile is unavailable. Rollout and rollback
+must preserve that rule across mixed worker versions.
+
+Model authentication and runtime attachment are separate concerns. Deliberately
+select worker brokerage, a qualified platform-managed identity or appropriately
+scoped runtime credentials. Effective model configuration and authority must
+follow the current selection on create, resume and rebind. A placeholder is not
+proof that its backing grant is current.
+
+Package MCP services may run inside the environment; privileged deployment
+services remain behind trusted authorization. A server-connection ticket is not
+automatically permission for every tool or operation on that server. Define where
+those operation restrictions are enforced.
+
+## Converge existing work rather than add another framework
+
+The [compute-provider draft](https://github.com/microsoft/PilotSwarm/pull/244)
+provides a proposed common surface for targets, host connection, workspace paths,
+rollout and model/MCP brokerage. The
+[isolated-runtime proposal](https://github.com/microsoft/PilotSwarm/pull/253)
+records complementary ownership, state and completion requirements.
+
+Propose one common implementation, carrying forward the required behavior and
+useful qualification scenarios rather than preserving both sets of interfaces.
+The compute-provider draft is a starting point for that reconciliation, not an
+assertion that it already satisfies every requirement above.
+
+The first delivery should demonstrate a configured repo-backed session:
+attach resources, run native operations in the isolated environment, change an
+attachment, save the turn, recover after safe executor replacement, and clean
+up. State which platform features and authentication profiles this qualifies.
+
+Agree a named integration lead and review responsibilities before treating a
+handoff as complete. Adoption decisions and implementation ownership remain
+subject to joint review.
+
+## Later capabilities, not prerequisites
+
+- Snapshot-assisted restoration can be an exact-state optimization with archive
+  fallback. Keeping that fallback current still requires archive publication.
+- Provider-native checkpoint custody can remove routine archive movement only
+  with qualified immutable references, durability, retention and reconciliation.
+- Retained-executor reconnect can preserve an environment while it survives;
+  process-memory suspension and execution-host-loss recovery are stronger claims.
+- Shared user/team environments need separate visibility, authority and lifecycle
+  policies.
+
+Rolling an entire environment back cannot also promise that processes created
+after that checkpoint keep running. These capabilities should be justified and
+qualified independently.
+
+## Decisions for the next design revision
+
+1. Is allocation per logical session or per parent/child session tree, and what is
+   the initial supported scope?
+2. Which state, model and tool profile does the first delivery preserve, and
+   which limitations are explicitly accepted?
+3. Where are dynamic allocation records, authority and orphan reconciliation
+   implemented, and what proves safe replacement?
+4. How are repository files actually made available inside the environment, and
+   which content/retry semantics remain unchanged?
+5. How do the common-core and provider changes converge into one reviewed
+   implementation and qualification plan?
