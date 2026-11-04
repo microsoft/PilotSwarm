@@ -265,6 +265,7 @@ states:
       properties:
         code: { type: string }
         user: { type: string }
+        note: { type: string, pattern: "^a*a*b$" }
       patternProperties:
         "^x-": { type: string }
         "^c-": { type: string, maxLength: 4 }
@@ -319,4 +320,24 @@ test("E2bm-R1: a key over 256 characters is not matched against a schema's patte
     assert.match(problemOf(PATTERNED(`{ "${"a".repeat(256)}": "x" }`)), /additional properties/);
     // A 257-character key is not.
     assert.equal(compileWorkflowV2(PATTERNED(`{ user: "\${inputs.user}", "${"a".repeat(257)}": "x" }`)).valid, true);
+});
+
+// The same for a long string value (E2bm-R1, strings): the compiler validates a fixed string against a schema's pattern
+// only up to 4,096 characters. A longer one, beside a binding or in a fixed input, is left to the run's own check.
+test("E2bm-R1: a string over 4,096 characters is not matched against a pattern at compile time; the run checks it", { timeout: 20_000 }, () => {
+    const hostile = "a".repeat(100_000);
+    for (const input of [`{ user: "\${inputs.user}", note: "${hostile}" }`, `{ note: "${hostile}" }`]) {
+        const started = performance.now();
+        const compiled = compileWorkflowV2(PATTERNED(input));
+        const ms = performance.now() - started;
+        // If it were checked here, the pattern (it does not end in "b") would refuse it.
+        assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics).slice(0, 400));
+        assert.ok(ms < 3_000, `compiled in ${Math.round(ms)} ms`);
+    }
+    // A short string is still checked here, beside a binding and in a fixed input.
+    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", note: "aaa" }`)), /\/note must match pattern/);
+    assert.match(problemOf(PATTERNED(`{ note: "aaa" }`)), /\/note must match pattern/);
+    // 4,096 characters is still checked; 4,097 is not.
+    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", note: "${"a".repeat(4_096)}" }`)), /\/note must match pattern/);
+    assert.equal(compileWorkflowV2(PATTERNED(`{ user: "\${inputs.user}", note: "${"a".repeat(4_097)}" }`)).valid, true);
 });

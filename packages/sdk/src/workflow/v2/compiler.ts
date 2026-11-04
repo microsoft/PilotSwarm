@@ -1493,13 +1493,20 @@ function holdsBinding(value: JsonValue): boolean {
  * matched here: its member, and any fixed part that holds such a key, are left to the run's own check.
  */
 const COMPILE_TIME_KEY_MAX_LENGTH = 256;
+/** The longest string value the compiler validates (a `pattern` is matched against it); a longer one is left to the run. */
+const COMPILE_TIME_STRING_MAX_LENGTH = 4_096;
 
-/** Whether a value has an object key longer than COMPILE_TIME_KEY_MAX_LENGTH anywhere (E2bm-R1). */
-function holdsLongKey(value: JsonValue): boolean {
+/**
+ * Whether a value has an object key longer than COMPILE_TIME_KEY_MAX_LENGTH, or a string longer than
+ * COMPILE_TIME_STRING_MAX_LENGTH, anywhere (E2bm-R1): the compiler does not validate such a value; the run does.
+ */
+function holdsLongKeyOrString(value: JsonValue): boolean {
     const stack: JsonValue[] = [value];
     while (stack.length > 0) {
         const next = stack.pop() as JsonValue;
-        if (Array.isArray(next)) {
+        if (typeof next === "string") {
+            if (next.length > COMPILE_TIME_STRING_MAX_LENGTH) return true;
+        } else if (Array.isArray(next)) {
             for (const item of next) stack.push(item);
         } else if (isJsonObject(next)) {
             for (const [key, item] of Object.entries(next)) {
@@ -1552,8 +1559,8 @@ function fixedParts(value: JsonValue, schema: JsonValue | undefined, defs: Recor
     parts: FixedPart[], problems: string[], depth = 0): void {
     if (depth > 32 || schema === undefined) return;
     if (!holdsBinding(value)) {
-        // The run's validator matches every key against the schema's patterns: a part with a very long key is left to the run.
-        if (!holdsLongKey(value)) parts.push({ pointer, value, schema });
+        // The run's validator matches keys and strings against the schema's patterns: a part with a very long one is left to the run.
+        if (!holdsLongKeyOrString(value)) parts.push({ pointer, value, schema });
         return;
     }
     const target = schemaTarget(defs, schema);
@@ -1625,8 +1632,8 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
             }
             continue;
         }
-        // E2bm-R1: an input with a very long key is not matched against the schema's patterns here; the run checks it.
-        if (holdsLongKey(node.input)) continue;
+        // E2bm-R1: an input with a very long key or string is not matched against the schema's patterns here; the run checks it.
+        if (holdsLongKeyOrString(node.input)) continue;
         validator ??= new WorkflowSchemaSet(defs);
         const problems = validator.validate(schemaName, node.input);
         if (problems.length) {
