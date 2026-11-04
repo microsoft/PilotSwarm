@@ -279,3 +279,30 @@ export function workflowStepParent(state, session) {
     const parent = state?.sessions?.byId?.[parentId] ?? null;
     return parent?.sessionKind === "workflow" ? { sessionId: parentId, title: detailText(parent.title) } : null;
 }
+
+/** The view of a workflow the portal has not read anything for yet: one object, so selections of it compare equal. */
+export const EMPTY_WORKFLOW_VIEW = Object.freeze({});
+
+/**
+ * Everything the workflow screen shows for the active session, read from one state in one selector (adversarial review
+ * UI-1): the session's id and its row, history, canvas, workflow view and saved step places. Each part is derived from
+ * the same id, so a render never pairs one session's id with another's view (separate selectors, each closing over the
+ * id of the last render, did: a newly selected workflow's YAML editor could start with the previous one's YAML). Pure.
+ */
+export function selectWorkflowViewSnapshot(state) {
+    const sessionId = state?.sessions?.activeSessionId ?? null;
+    return {
+        sessionId,
+        session: sessionId ? state.sessions.byId?.[sessionId] : undefined,
+        history: sessionId ? state.history?.bySessionId?.get?.(sessionId) : undefined,
+        canvas: sessionId ? state.canvas?.bySessionId?.[sessionId] : undefined,
+        view: (sessionId ? state.ui?.workflowViews?.[sessionId] : null) || EMPTY_WORKFLOW_VIEW,
+        places: (sessionId ? state.ui?.workflowLayouts?.[`session:${sessionId}`]?.steps : null) ?? null,
+    };
+}
+
+/** Whether two snapshots (selectWorkflowViewSnapshot) hold the same parts. */
+export function workflowViewSnapshotEqual(a, b) {
+    return a === b || (Boolean(a) && Boolean(b) && a.sessionId === b.sessionId && a.session === b.session && a.history === b.history
+        && a.canvas === b.canvas && a.view === b.view && a.places === b.places);
+}

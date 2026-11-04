@@ -769,16 +769,19 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, ve
  * (`draftEdit`, given back as `savedEdit`) and shown again when the editor comes back; nothing is kept once the edit is
  * saved or discarded. Whether there is one (`draftDirty`) tells the step-input editor not to save over it.
  */
-export function WorkflowV2DraftEditor({ controller, sessionId, model, id, savedEdit = null, notice = null, tools = null }) {
-    const kept = savedEdit && typeof savedEdit.text === "string" && savedEdit.base && Number.isSafeInteger(savedEdit.base.revision)
-        && typeof savedEdit.base.yaml === "string" ? savedEdit : null;
-    const [base, setBase] = React.useState(() => kept ? kept.base : model ? { revision: model.revision, yaml: model.yaml } : null);
+export function WorkflowV2DraftEditor({ controller, sessionId, model: givenModel, id, savedEdit = null, notice = null, tools = null }) {
+    // UI-1: the buffer belongs to one workflow session. A model read for another session is not taken (the editor waits for
+    // its own), a kept edit of another session is not restored, and an edit of another session is never saved here.
+    const model = givenModel && givenModel.sessionId === sessionId ? givenModel : null;
+    const kept = savedEdit && savedEdit.sessionId === sessionId && typeof savedEdit.text === "string" && savedEdit.base
+        && savedEdit.base.sessionId === sessionId && Number.isSafeInteger(savedEdit.base.revision) && typeof savedEdit.base.yaml === "string" ? savedEdit : null;
+    const [base, setBase] = React.useState(() => kept ? kept.base : model ? { sessionId, revision: model.revision, yaml: model.yaml } : null);
     const [textValue, setTextValue] = React.useState(() => kept ? kept.text : model?.yaml ?? "");
     const latest = React.useRef({ base, textValue });
     latest.current = { base, textValue };
     React.useEffect(() => () => {
         const { base: was, textValue: text } = latest.current;
-        const edit = was && text !== was.yaml ? { base: was, text } : null;
+        const edit = was && was.sessionId === sessionId && text !== was.yaml ? { sessionId, base: was, text } : null;
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftEdit: edit, draftDirty: Boolean(edit) } });
     }, [controller, sessionId]);
     const dirty = Boolean(base && textValue !== base.yaml);
@@ -788,18 +791,26 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id, savedE
         told.current = dirty;
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftDirty: dirty } });
     }, [controller, sessionId, dirty]);
+    // The first model of this session, when the editor came up before it was read.
+    React.useEffect(() => {
+        if (model && !base) {
+            setBase({ sessionId, revision: model.revision, yaml: model.yaml });
+            setTextValue(model.yaml);
+        }
+    }, [model, base, sessionId]);
     // A new revision read while nothing was edited (or one that is exactly this edit, once saved) is taken as it is.
     React.useEffect(() => {
         if (!model || !base || model.revision === base.revision) return;
         if (textValue === base.yaml || textValue === model.yaml) {
-            setBase({ revision: model.revision, yaml: model.yaml });
+            setBase({ sessionId, revision: model.revision, yaml: model.yaml });
             setTextValue(model.yaml);
         }
     }, [model?.revision, model?.yaml]);
-    if (!model || !base) return null;
+    if (!model || !base || base.sessionId !== sessionId) return null;
     const edit = workflowV2DraftEdit(base, textValue, model);
     const save = () => {
-        if (!edit.canSave) return;
+        // Only this session's own edit, on this session's own model (UI-1).
+        if (!edit.canSave || base.sessionId !== sessionId || model.sessionId !== sessionId) return;
         controller.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: base.revision, yaml: textValue });
     };
     return h("section", { id, className: "ps-workflow-draft-editor", "aria-label": "Draft editor", "data-revision": base.revision },
@@ -817,9 +828,9 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id, savedE
     edit.conflict ? h("div", { role: "alert", "data-conflict": "true", style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, color: TONES.warning } },
         h("span", { style: { flex: "1 1 20em" } }, edit.reason),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "load",
-            onClick: () => { setBase({ revision: model.revision, yaml: model.yaml }); setTextValue(model.yaml); } }, `Load revision ${model.revision}`),
+            onClick: () => { setBase({ sessionId, revision: model.revision, yaml: model.yaml }); setTextValue(model.yaml); } }, `Load revision ${model.revision}`),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "keep",
-            onClick: () => setBase({ revision: model.revision, yaml: model.yaml }) }, `Keep my edits on revision ${model.revision}`)) : null,
+            onClick: () => setBase({ sessionId, revision: model.revision, yaml: model.yaml }) }, `Keep my edits on revision ${model.revision}`)) : null,
     h(WorkflowV2YamlBox, { value: textValue, onChange: setTextValue,
         // The saved revision's errors, on their lines, while the edit is of that revision (owner decision q5).
         marks: !edit.conflict && model.current ? workflowV2DraftMarks(model.diagnostics) : { lines: [], unplaced: 0 }, changed: edit.changed }));

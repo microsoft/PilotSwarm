@@ -1,6 +1,6 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
-import { workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
+import { selectWorkflowViewSnapshot, workflowNodeViews, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import { projectWorkflowV2, workflowV2Activity, workflowV2NoticeLevel, workflowV2OpenCalls, workflowV2ShownNotices } from "../../core/src/workflow-v2-view.js";
 import {
     workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
@@ -16,7 +16,6 @@ import { WorkflowGraph } from "./workflow-graph.js";
 
 const h = React.createElement;
 const EMPTY_EVENTS = [];
-const EMPTY_VIEW = {};
 
 /**
  * Batch 6 (r-3): what the side pane shows instead of Step details, one at a time (the view's `sidePanel`), and its
@@ -29,11 +28,8 @@ export const WORKFLOW_SIDE_PANEL_TITLES = Object.freeze({
 });
 
 function useWorkflowView(controller) {
-    const sessionId = useControllerSelector(controller, state => state.sessions.activeSessionId);
-    const session = useControllerSelector(controller, state => state.sessions.byId[sessionId]);
-    const history = useControllerSelector(controller, state => state.history.bySessionId.get(sessionId));
-    const canvas = useControllerSelector(controller, state => state.canvas.bySessionId[sessionId]);
-    const view = useControllerSelector(controller, state => state.ui.workflowViews?.[sessionId]) || EMPTY_VIEW;
+    // UI-1: one selector for every part, all derived from the same state's active session.
+    const { sessionId, session, history, canvas, view, places } = useControllerSelector(controller, selectWorkflowViewSnapshot, workflowViewSnapshotEqual);
     const events = history?.events || EMPTY_EVENTS;
     const live = canvas?.dataPayload;
     const selectedRunId = view.selectedRunId ?? null;
@@ -89,8 +85,11 @@ function useWorkflowView(controller) {
     // The definition is the workflow's, whichever run is selected: the last read model of any selection says it.
     const publication = React.useMemo(() => v2 ? workflowV2DefinitionControls(readModel ?? workflowModel, runCommand) : null,
         [v2, readModel, workflowModel, runCommand]);
-    const draftEditor = React.useMemo(() => v2 ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null,
-        [v2, readModel, workflowModel, runCommand]);
+    // The draft editor's model names the session it was read for (UI-1), so the YAML editor never takes another's.
+    const draftEditor = React.useMemo(() => {
+        const editor = v2 ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null;
+        return editor ? { ...editor, sessionId } : null;
+    }, [v2, readModel, workflowModel, runCommand, sessionId]);
     const testControls = React.useMemo(() => v2 ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null,
         [v2, readModel, workflowModel, runCommand]);
     // The shown test run's answers and clock: only the selection's own read model says which run that is.
@@ -110,7 +109,7 @@ function useWorkflowView(controller) {
     const mainTab = v2 && view.mainTab === "yaml" ? "yaml" : "graph";
     // The answer to a save from the YAML tab shows in that tab; every other command's answer shows in the side pane.
     const noticeInYaml = Boolean(runNotice?.operation === "replace_definition" && mainTab === "yaml" && sidePanel !== "draft");
-    return { sessionId, session, view, nodes, selected, select, openSide, showSide, live, status, v2, definition, readError,
+    return { sessionId, session, view, places, nodes, selected, select, openSide, showSide, live, status, v2, definition, readError,
         workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, draftEditor, testControls, testResponder,
         runNotice, events, definitionModel, activity, notices, test, sidePanel, mainTab, noticeInYaml };
 }
@@ -143,7 +142,7 @@ const MAIN_TABS = [["graph", "Graph"], ["yaml", "YAML"]];
  * mounted while the YAML is shown, so it comes back at the same zoom and place.
  */
 export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = false }) {
-    const { sessionId, session, view, nodes, selected, select, openSide, showSide, status, v2, definition, readError, workflowModel, selectedRunId,
+    const { sessionId, session, view, places, nodes, selected, select, openSide, showSide, status, v2, definition, readError, workflowModel, selectedRunId,
         ownModelLoaded, runControls, variables, publication, draftEditor, testControls, runNotice, definitionModel, activity, notices, test,
         sidePanel, mainTab, noticeInYaml } = useWorkflowView(controller);
     const tabsId = `wf-tabs-${React.useId().replace(/:/g, "")}`;
@@ -189,7 +188,6 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
     // each drag. A workflow is keyed by its session's id: it is the workflow's for good, through every revision, and known
     // before the read model (whose workflowId arrives later and would move the boxes after the first fit).
     const layoutKey = `session:${sessionId}`;
-    const places = useControllerSelector(controller, state => state.ui.workflowLayouts?.[layoutKey]?.steps ?? null);
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: layoutKey, steps, at: Date.now() }),
         [controller, layoutKey]);
     // f-06: the graph's view (x, y, zoom) is remembered for this workflow, so tabs, panels and sessions give it back exactly.
