@@ -1478,8 +1478,10 @@ export function workflowViewExecutionStep(selection, delta) {
 function historyLines(node) {
     if (node.shape === "v2") {
         const rows = compactWorkflowV2Executions(Array.isArray(node.executions) ? node.executions : []);
+        // A branch step's visit says its branch and, with more than one, its parallel visit (adversarial review R2-UI-5).
+        const where = execution => (execution?.id && node.where?.[execution.id] ? `${node.where[execution.id].label} · ` : "");
         const lines = rows.slice(0, HISTORY_ROW_LIMIT).map(({ execution, count, from, to }) =>
-            `  ${count > 1 ? `visits ${from}–${to} (×${count})` : `visit ${execution.ordinal ?? "—"}`} · ${resultWord(execution)} · ${execution.outcome || "—"}`);
+            `  ${where(execution)}${count > 1 ? `visits ${from}–${to} (×${count})` : `visit ${execution.ordinal ?? "—"}`} · ${resultWord(execution)} · ${execution.outcome || "—"}`);
         if (rows.length > HISTORY_ROW_LIMIT) lines.push(`  … ${rows.length - HISTORY_ROW_LIMIT} more rows in the loaded history`);
         return { title: "History (newest first; unchanged repeats combined):", lines };
     }

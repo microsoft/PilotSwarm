@@ -4,7 +4,7 @@ import {
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
     workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2ShownNotices, workflowV2VisitEnding, workflowV2WholeValue,
     describeWorkflowV2Execution, workflowV2BranchChoice, workflowV2BranchList, workflowV2BranchNumber, workflowV2BranchSteps, workflowV2ForEachText,
-    workflowV2RevisionErrorsText, workflowV2JoinWords,
+    workflowV2RevisionErrorsText, workflowV2JoinWords, workflowV2VisitScope,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -445,10 +445,15 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             // Asking the parent agent about this visit (owner decision q16).
             onAskParent && current?.id ? h(AskParent, { key: current.id, onAskParent, executionId: current.id }) : null);
     }
+    // A branch step's Output and History follow the branch its details show (adversarial review R2-UI-5).
+    const branchChoice = workflowV2BranchChoice(selected.branches, branchIndex);
+    const placeOf = execution => (execution?.id ? selected.where?.[execution.id] ?? null : null);
     if (tab === "output") {
-        const shown = workflowV2ShownExecution(selected, runId, selection);
+        const shown = workflowV2ShownExecution(selected, runId, selection, branchChoice);
         const result = shown.execution ? workflowV2ExecutionResult(shown.execution) : null;
-        const visit = shown.execution && Number.isSafeInteger(shown.execution.ordinal) ? `visit ${shown.execution.ordinal}` : "this visit";
+        const place = placeOf(shown.execution);
+        const visit = `${shown.execution && Number.isSafeInteger(shown.execution.ordinal) ? `visit ${shown.execution.ordinal}` : "this visit"}${place ? ` in ${place.label}` : ""}`;
+        const branchWords = Number.isSafeInteger(shown.branchIndex) ? `branch ${workflowV2BranchNumber(shown.branchIndex)}` : null;
         // The run's own output belongs to its end, shown with the latest result only.
         const terminalValue = !shown.chosen && selected.type === "terminal" ? (runError ?? runOutput) : null;
         // That execution's whole value (mock M10), read for exactly this run and execution, never another's in its place.
@@ -461,11 +466,14 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                 ? h("p", { "data-execution": shown.executionId }, shown.missing
                     ? `The visit chosen in History (${shown.executionId}) is not in the loaded history of this run.`
                     : `Result of ${visit}, chosen in History.`)
-                : h("p", null, "Latest result in the loaded history for this step."),
+                : h("p", { "data-branch": shown.branchIndex ?? undefined }, branchWords
+                    ? `Latest result of ${branchWords} in the loaded history for this step (the branch chosen in Details).`
+                    : "Latest result in the loaded history for this step."),
             shown.chosen && onSelectExecution ? h("button", { type: "button", className: "ps-mini-button", "data-action": "latest-result",
                 onClick: () => onSelectExecution(null) }, "Show the latest result") : null,
             shown.chosen && shown.missing ? h("pre", null, "Its result is not shown, and no other visit's result is shown in its place.") : null,
-            !shown.chosen && !result && terminalValue === null ? h("pre", null, "This step has no result in the loaded history.") : null,
+            !shown.chosen && !result && terminalValue === null ? h("pre", null, branchWords
+                ? `This step has no result in ${branchWords} in the loaded history yet.` : "This step has no result in the loaded history.") : null,
             result?.kind === "pending" ? h("pre", null, "This visit has not ended; it has no result yet.") : null,
             result?.kind === "error"
                 ? h(Value, { value: result.value ?? result.code ?? (result.effectStatus ? `Action ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error",
@@ -479,25 +487,34 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             whole ? h(WholeValue, { whole }) : null,
             terminalValue !== null ? h(Value, { value: terminalValue, label: runError !== null && runError !== undefined ? "Run error" : "Run output" }) : null);
     }
-    const rows = compactWorkflowV2Executions(selected.executions);
-    const shown = workflowV2ShownExecution(selected, runId, selection);
+    // A branch step lists the visits of the branch its details show; every loaded visit, of all branches, is below (R2-UI-5).
+    const branchScope = branchChoice ? workflowV2VisitScope(branchChoice.execution) : null;
+    const visits = branchScope ? selected.executions.filter(execution => workflowV2VisitScope(execution) === branchScope) : selected.executions;
+    const rows = compactWorkflowV2Executions(visits);
+    const shown = workflowV2ShownExecution(selected, runId, selection, branchChoice);
+    const branched = Boolean(selected.where);
     // A row of one execution chooses exactly that execution's result; a row of combined repeats lists them one by one below.
     const choose = onSelectExecution ? (execution => h("button", { type: "button", className: "ps-mini-button", "data-action": "show-result",
         "data-execution": execution.id, "aria-pressed": shown.chosen && shown.executionId === execution.id,
         onClick: () => { onSelectExecution(execution.id); onTab?.("output"); } }, "Result")) : null;
     const table = items => h("table", null,
-        h("thead", null, h("tr", null, [...["Visit", "Result", "Outcome"], ...(choose ? [""] : [])].map((label, i) => h("th", { key: i }, label)))),
-        h("tbody", null, items.map(({ execution, count, from, to }, i) => h("tr", { key: execution.id || i },
+        h("thead", null, h("tr", null, [...(branched ? ["Branch"] : []), ...["Visit", "Result", "Outcome"], ...(choose ? [""] : [])]
+            .map((label, i) => h("th", { key: i }, label)))),
+        h("tbody", null, items.map(({ execution, count, from, to }, i) => h("tr", { key: execution.id || i, "data-branch": placeOf(execution)?.index ?? undefined },
+            branched ? h("td", null, placeOf(execution)?.label.replace(/^branch /, "") ?? "—") : null,
             h("td", null, count > 1 ? `${from}–${to} (×${count})` : String(execution.ordinal ?? "—")),
             h("td", null, resultLabel(execution)),
             h("td", null, execution.outcome || "—"),
             choose ? h("td", null, count === 1 && typeof execution.id === "string" ? choose(execution) : null) : null))));
+    const all = selected.executions;
     return h(React.Fragment, null,
-        h("p", null, "Most recent visits in the loaded history. Unchanged repeats are combined."),
+        h("p", null, branchChoice
+            ? `Most recent visits of branch ${workflowV2BranchNumber(branchChoice.index)} (the branch chosen in Details) in the loaded history. Unchanged repeats are combined.`
+            : "Most recent visits in the loaded history. Unchanged repeats are combined."),
         rows.length ? table(rows) : h("p", null, "No visits in the loaded history."),
-        selected.executions.length > rows.length ? h("details", null,
-            h("summary", null, `Every loaded visit (${selected.executions.length})`),
-            table(selected.executions.map(execution => ({ execution, count: 1, from: execution.ordinal, to: execution.ordinal })))) : null,
+        all.length > rows.length ? h("details", null,
+            h("summary", null, branchChoice ? `Every loaded visit, all branches (${all.length})` : `Every loaded visit (${all.length})`),
+            table(all.map(execution => ({ execution, count: 1, from: execution.ordinal, to: execution.ordinal })))) : null,
         h(OlderHistory, { history, onLoadOlder }));
 }
 

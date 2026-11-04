@@ -855,6 +855,24 @@ function visitStatus(node, execution, run) {
 }
 
 /**
+ * Where each visit of a branch step was (adversarial review R2-UI-5), by its execution id: its branch (`index`, and its
+ * `number` as people read it), its parallel step's visit (`parallelVisit`, that visit's number, when known) and a `label`
+ * ("branch 2", or "branch 2 · parallel visit 1" when the step has visits in more than one parallel visit). Pure.
+ */
+export function workflowV2VisitPlaces(executions, parallelOrdinals = null) {
+    const list = (Array.isArray(executions) ? executions : []).filter(item => typeof item?.id === "string" && isRecord(item.branch)
+        && typeof item.branch.parallelNodeExecutionId === "string" && Number.isSafeInteger(item.branch.index));
+    const visits = new Set(list.map(item => item.branch.parallelNodeExecutionId));
+    return Object.fromEntries(list.map(item => {
+        const ordinal = parallelOrdinals instanceof Map ? parallelOrdinals.get(item.branch.parallelNodeExecutionId) : undefined;
+        const parallelVisit = Number.isSafeInteger(ordinal) ? ordinal : null;
+        const number = workflowV2BranchNumber(item.branch.index);
+        return [item.id, { index: item.branch.index, number, parallelExecutionId: item.branch.parallelNodeExecutionId, parallelVisit,
+            label: `branch ${number}${visits.size > 1 ? ` · parallel visit ${parallelVisit ?? "not loaded"}` : ""}` }];
+    }));
+}
+
+/**
  * The scope a visit's number counts in (adversarial review R2-UI-4): one branch of one parallel visit
  * ("<parallel visit>#<index>", as the runtime names the scope), else the scope the read model or event names, else the
  * root. Visits of a step in different branches, or in another visit of its parallel step, are never compared by number.
@@ -943,6 +961,7 @@ function nodeView(node, executions, context) {
     if (node.type === "parallel") view.joinBar = workflowV2JoinView(view, context);
     if (typeof node.parallel === "string") {
         view.branches = workflowV2BranchChoices(list, context.parallelVisits?.get(node.parallel) ?? null, { node, run: context.run });
+        view.where = workflowV2VisitPlaces(list, context.parallelOrdinals?.get(node.parallel) ?? null);
     }
     return view;
 }
@@ -1041,6 +1060,10 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
         const visit = shownVisit(executions.filter(item => item.stateId === node.id).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0)));
         return [node.id, visit.pending ?? visit.latestDone];
     }));
+    // Each parallel step's visits by their number, so a branch step's visit says which of them it was in (R2-UI-5).
+    context.parallelOrdinals = new Map(context.states.filter(node => node?.type === "parallel").map(node => [node.id,
+        new Map(executions.filter(item => item.stateId === node.id && typeof item.id === "string" && Number.isSafeInteger(item.ordinal))
+            .map(item => [item.id, item.ordinal]))]));
     const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
     return {
         shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
@@ -1074,7 +1097,9 @@ export function workflowV2RevisionErrorsText(revision, errors) {
 export function compactWorkflowV2Executions(executions) {
     const rows = [];
     for (const execution of executions) {
-        const key = JSON.stringify([execution.status, execution.outcome, execution.resultKind, execution.outputPreview ?? null, execution.errorPreview ?? null]);
+        // Only visits of one scope are combined: never two branches', or two parallel visits' (adversarial review R2-UI-5).
+        const key = JSON.stringify([workflowV2VisitScope(execution), execution.status, execution.outcome, execution.resultKind,
+            execution.outputPreview ?? null, execution.errorPreview ?? null]);
         const last = rows.at(-1);
         if (last && last.key === key && execution.status === "completed") {
             last.count++;
@@ -1094,14 +1119,17 @@ export function compactWorkflowV2Executions(executions) {
  * is not among the state's loaded executions is `missing`, and the latest result is never shown in its place. `index`
  * is its place in `node.executions` (newest first), -1 when there is none. Pure.
  */
-export function workflowV2ShownExecution(node, runId, selection) {
+export function workflowV2ShownExecution(node, runId, selection, branch = null) {
     const executions = Array.isArray(node?.executions) ? node.executions : [];
     const chosen = isRecord(selection) && typeof selection.executionId === "string" && selection.executionId !== ""
         && selection.stateId === node?.id && (selection.runId ?? null) === (runId ?? null);
     if (!chosen) {
-        const execution = isRecord(node?.result) ? node.result : null;
+        // A branch step with a branch chosen in its details (or its default branch): that branch's latest ended visit,
+        // never another branch's in its place (adversarial review R2-UI-5).
+        const ofBranch = isRecord(branch) && Number.isSafeInteger(branch.index);
+        const execution = ofBranch ? (isRecord(branch.ended) ? branch.ended : null) : isRecord(node?.result) ? node.result : null;
         return { chosen: false, missing: false, execution, executionId: execution?.id ?? null,
-            index: execution ? executions.findIndex(item => item?.id === execution.id) : -1 };
+            index: execution ? executions.findIndex(item => item?.id === execution.id) : -1, ...(ofBranch ? { branchIndex: branch.index } : {}) };
     }
     const index = executions.findIndex(item => item?.id === selection.executionId);
     return { chosen: true, missing: index < 0, execution: index < 0 ? null : executions[index], executionId: selection.executionId, index };
@@ -1449,7 +1477,8 @@ export function workflowV2BranchChoices(executions, parallelVisit, { node = null
     const choices = [...byBranch].sort((a, b) => a[0] - b[0]).map(([index, execution]) => {
         const done = doneByBranch.get(index) ?? null;
         return {
-            index, execution,
+            // `ended`: the branch's latest ended visit of the step, the result its Output shows (R2-UI-5).
+            index, execution, ended: done,
             label: `Branch ${workflowV2BranchNumber(index)} · ${execution.status === "pending" ? "running" : execution.outcome ? `ended '${execution.outcome}'` : "ended"}`,
             ...(isRecord(node) && isRecord(run) ? {
                 status: visitStatus(node, execution, run),
