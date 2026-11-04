@@ -1623,7 +1623,7 @@ export class WorkflowStore {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
         requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
         intakeExposures: string; agentInvocations: string; agentCompletions: string; testInterceptions: string;
-        sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
+        sessions: string; sessionOwners: string; users: string; sessionEvents: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
     constructor(private readonly pool: Pool, readonly schema: string) {
@@ -1637,7 +1637,7 @@ export class WorkflowStore {
             intakeInvocations: `${s}.workflow_intake_invocations`, intakeExposures: `${s}.workflow_intake_exposures`,
             agentInvocations: `${s}.workflow_agent_invocations`, agentCompletions: `${s}.workflow_agent_completions`,
             testInterceptions: `${s}.workflow_test_interceptions`,
-            sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
+            sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`, sessionEvents: `${s}.session_events`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
         };
@@ -2709,6 +2709,19 @@ export class WorkflowStore {
             `SELECT session_kind, parent_session_id, deleted_at FROM ${this.t.sessions} WHERE session_id = $1`, [sessionId]);
         if (!rows[0]) return null;
         return { sessionKind: strOrNull(rows[0], "session_kind"), parentSessionId: strOrNull(rows[0], "parent_session_id"), deleted: rows[0].deleted_at !== null };
+    }
+
+    /**
+     * Whether a run's end was told to its parent, or recorded as not told (workflow.parent_notified or
+     * workflow.parent_notification_skipped for the run): until then the run owes its parent that notice (adversarial
+     * review RT-4). Every event of the workflow session is looked at, not only its first page.
+     */
+    async runNoticeRecorded(workflowSessionId: string, runId: string): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT 1 FROM ${this.t.sessionEvents}
+              WHERE session_id = $1 AND event_type IN ('workflow.parent_notified', 'workflow.parent_notification_skipped') AND data->>'runId' = $2
+              LIMIT 1`, [workflowSessionId, runId]);
+        return rows.length > 0;
     }
 
     /** Record transcript events outside a transition (notifications, cleanup requests). */

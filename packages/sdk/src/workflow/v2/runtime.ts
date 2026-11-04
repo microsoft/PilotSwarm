@@ -2011,6 +2011,22 @@ function cancelledBeforeBegin(run: WorkflowRunRow): boolean {
     return run.status === "cancelled" && isJsonObject(error) && isJsonObject(error.details) && error.details.beforeBegin === true;
 }
 
+/**
+ * The session whose command ended a run (RT-4): the requester its cancel records, or the agent session its stop
+ * records; null for any other end (its own terminal, a failure, a deadline, a recover).
+ */
+export function workflowV2RunEndRequester(run: Pick<WorkflowRunRow, "status" | "terminalError">): string | null {
+    const error = run.terminalError;
+    const details = isJsonObject(error) && isJsonObject(error.details) ? error.details : null;
+    if (!details) return null;
+    if (run.status === "cancelled") return typeof details.requestedBy === "string" ? details.requestedBy : null;
+    if (run.status === "stopped") {
+        const actor = isJsonObject(details.actor) ? details.actor : null;
+        return actor && actor.kind === "agent" && typeof actor.sessionId === "string" ? actor.sessionId : null;
+    }
+    return null;
+}
+
 /** The session recorded (or attributed) as the requester of the cancel that ended a run before it began, or null. */
 function cancelRequester(run: WorkflowRunRow): string | null {
     const error = run.terminalError;
@@ -3221,11 +3237,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const requestedBy = input.requestedBy === undefined ? null : textOrNull(input.requestedBy, "requestedBy");
         const definition = await store.readDefinition(run.workflowSessionId);
         if (!definition?.parentSessionId || run.mode !== "live") return null;
-        // The command's requester; for a run a cancel ended before it began, the requester its end records.
-        const endedBy = requestedBy ?? (cancelledBeforeBegin(run) ? cancelRequester(run) : null);
+        // The command's requester; else the requester the run's end records (a cancel, before it began or not, or a stop),
+        // so a notifier a recover started does not tell the parent of its own command either (RT-4).
+        const endedBy = requestedBy ?? (cancelledBeforeBegin(run) ? cancelRequester(run) : workflowV2RunEndRequester(run));
         if (endedBy && endedBy === definition.parentSessionId) return null;
-        const prior = await deps.catalog.getSessionEvents(run.workflowSessionId, 0, 50, ["workflow.parent_notified", "workflow.parent_notification_skipped"]);
-        if (prior.some(event => isJsonObject(event.data) && event.data.runId === run.runId)) return null;
+        // Told or recorded already, at any time in the workflow's history (RT-4: not only its first 50 notices).
+        if (await store.runNoticeRecorded(run.workflowSessionId, run.runId)) return null;
         const skipped = async (reason: string): Promise<null> => {
             await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notification_skipped", data: { runId: run.runId, reason } }]);
             return null;

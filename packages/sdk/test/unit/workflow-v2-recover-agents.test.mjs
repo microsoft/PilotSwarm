@@ -19,6 +19,7 @@ function fakeHost({ mode = "live", parent = "parent-1", childFails = false } = {
         finishRun: async () => { current = ended; return { ended: true, run: ended }; },
         recordOperationReceipt: async (_wf, operationId, _kind, _sha, value) => { log.receipts.push(operationId); return { receipt: value, replayed: false }; },
         readDefinition: async () => ({ parentSessionId: parent }),
+        runNoticeRecorded: async () => false,
         listAgentInvocations: async () => [{ ...invocation }],
         readNodeExecution: async () => ({ nodeExecutionId: "nx-1", nodeType: "agent", state: "completed", winner: "controller", outcome: "cancelled", nodeId: "review" }),
         recordAgentEnd: async () => ({ invocation: { ...invocation } }),
@@ -28,6 +29,7 @@ function fakeHost({ mode = "live", parent = "parent-1", childFails = false } = {
     const duroxideClient = {
         getStatus: async (instance) => {
             if (instance === "ctl-1") return { status: "Failed" };
+            if (instance.startsWith("wfn-")) return { status: "NotFound" };
             if (childFails) throw new Error("the child's status could not be read");
             return { status: "Running" };
         },

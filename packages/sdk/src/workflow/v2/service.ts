@@ -16,6 +16,7 @@ import {
     WORKFLOW_V2_MAX_CORRELATION_BYTES,
     WORKFLOW_V2_NOTIFY_NAME,
     endWorkflowV2RunAgents,
+    workflowV2RunEndRequester,
     WORKFLOW_V2_NOTIFY_VERSION,
     WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
     WORKFLOW_V2_STOP_CONTROLLER_VERSIONS,
@@ -408,19 +409,30 @@ function parseRecoverReceipt(value: JsonValue): WorkflowV2RecoverReceipt {
 }
 
 /**
- * Deliver the terminal notification of a run that a recover ended: its
- * controller had already ended, so nothing else reports it. The notifier
- * orchestration runs the controller's notification activity (at least once,
- * stable client message id); starting it again for the same run is ignored
- * by duroxide, so a repeated recover only makes sure it was started.
+ * Deliver the run-end notice a terminal live run still owes its parent (adversarial review RT-4): a run whose end was
+ * neither told to its parent nor recorded as not told (store.runNoticeRecorded), whose workflow has a parent, and whose
+ * end was not the parent's own command (workflowV2RunEndRequester). That holds for a run a recover ended, and for any
+ * other terminal run whose controller ended before telling the parent or whose notifier ran out of attempts. The
+ * notifier orchestration runs the notification activity (at least once, stable client message id, skip semantics as
+ * ever); it is started unless it is running. A notifier instance that already ended is not started again (duroxide
+ * would ignore it): a recover starts one of its own, named for its operation id, so a repeat of that recover starts the
+ * same one. The stored run is not changed.
  */
-async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow): Promise<void> {
-    if (run.mode !== "live" || run.status !== "failed" || !isJsonObject(run.terminalError) || run.terminalError.code !== "controller_ended") return;
+async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow, operationId: string): Promise<void> {
+    if (run.mode !== "live" || ACTIVE_RUN_STATUSES.includes(run.status)) return;
     const definition = await host.store.readDefinition(run.workflowSessionId);
     // With notifications off the notifier records that the parent was not told (batch 7, n-2).
     if (!definition?.parentSessionId) return;
-    await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
-        { runId: run.runId }, runNotifyVersion(run));
+    if (workflowV2RunEndRequester(run) === definition.parentSessionId) return;
+    if (await host.store.runNoticeRecorded(run.workflowSessionId, run.runId)) return;
+    // A controller still running reports its run's end itself.
+    const controller = await host.duroxideClient.getStatus(run.controllerInstanceId);
+    if (controller.status !== "NotFound" && !ENDED_ORCHESTRATION_STATUSES.includes(controller.status)) return;
+    const base = workflowNotifyInstanceId(run.runId);
+    const notifier = await host.duroxideClient.getStatus(base);
+    if (!ENDED_ORCHESTRATION_STATUSES.includes(notifier.status) && notifier.status !== "NotFound") return;
+    const instanceId = notifier.status === "NotFound" ? base : `${base}-recover-${jsonSha256({ operationId }).slice(0, 16)}`;
+    await host.duroxideClient.startOrchestrationVersioned(instanceId, WORKFLOW_V2_NOTIFY_NAME, { runId: run.runId }, runNotifyVersion(run));
 }
 
 /**
@@ -430,7 +442,7 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
  * notification is started even when a child could not be ended yet, and then the recover fails, so a later recover
  * ends the children still owed (each end is recorded once, with a stable command id).
  */
-async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow): Promise<void> {
+async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow, operationId: string): Promise<void> {
     if (ACTIVE_RUN_STATUSES.includes(run.status)) return;
     let unended: unknown = null;
     try {
@@ -438,7 +450,7 @@ async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
     } catch (error) {
         unended = error;
     }
-    await notifyRecoveredRun(host, run);
+    await notifyRecoveredRun(host, run, operationId);
     if (unended !== null) throw unended;
 }
 
@@ -511,7 +523,7 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
         const current = await host.store.readRun(runId);
         if (current) {
             if (receipt.action === "dispatched") await dispatchRecoveredRun(host, current);
-            await finishRecoveredRun(host, current);
+            await finishRecoveredRun(host, current, request.operationId);
         }
         return { receipt, replayed: true };
     };
@@ -577,7 +589,7 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
             return recordedMeanwhile(error);
         }
         if (ended.ended) {
-            await finishRecoveredRun(host, ended.run);
+            await finishRecoveredRun(host, ended.run, request.operationId);
             return { receipt: ending, replayed: false };
         }
         receipt = { runId, action: "none", status: ended.run.status, controller };
@@ -585,7 +597,7 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
     const stored = await host.store.recordOperationReceipt(workflowSessionId, request.operationId, "recover", requestSha256, recoverReceiptJson(receipt));
     if (stored.replayed) return replay(stored.receipt);
     // A run an earlier recover ended: make sure its agent children were ended and its notification was started.
-    await finishRecoveredRun(host, await host.store.readRun(runId) ?? run);
+    await finishRecoveredRun(host, await host.store.readRun(runId) ?? run, request.operationId);
     return { receipt, replayed: false };
 }
 
