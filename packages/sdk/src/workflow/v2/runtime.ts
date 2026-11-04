@@ -2439,11 +2439,13 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
 
 /**
  * How long the run-end notice waits for the run's deliveries to the parent still in flight, how often it looks, and how
- * recent a delivery attempt must be to be waited for (adversarial review WFO-1).
+ * recent a delivery attempt must be to be waited for (adversarial review WFO-1). The wait keeps the notifier inside its
+ * activity's 30-second attempt budget (WORKFLOW_V2_STORE_RETRY), and each look has its own statement timeout.
  */
-export const WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS = 20_000;
+export const WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS = 15_000;
 const WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS = 200;
 const WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS = 60;
+const WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS = 2_000;
 
 /** The owed agent invocations read at a time when a run's children are ended (RT-5). */
 export const WORKFLOW_V2_OWED_AGENT_PAGE = 200;
@@ -3320,6 +3322,16 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * are off" (the workflow's notify_parent is false) or "parent is gone"
      * (its authority to be told is no longer there). A run the parent
      * itself ended, and a workflow without a parent, record nothing.
+     *
+     * One attempt at a time per run (WFO-4): the read, the attempt marker,
+     * the enqueue and the record run under the run's notice lock. An attempt
+     * that finds the lock held returns at once without recording: the
+     * holder records, and a holder that crashed released the lock with its
+     * connection, so the run still owes its notice and recover finishes it.
+     * The marker (workflow.parent_notifying) says an attempt may have queued
+     * the notice. A later attempt that finds a known refusal records the skip
+     * with earlierAttempt: true, never parent_notified (D-R1); one that may
+     * tell the parent queues it again with the same client message id.
      */
     /**
      * Why a failed run failed (s-4), bounded: the state it failed at, the runtime error's code and message (the failing
@@ -3344,7 +3356,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         };
     };
 
-    register("notifyParent", async (_ctx, rawInput) => {
+    register("notifyParent", async (actx, rawInput) => {
         const input = record(rawInput, "notify input");
         const run = await runOf(text(input.runId, "runId"));
         const requestedBy = input.requestedBy === undefined ? null : textOrNull(input.requestedBy, "requestedBy");
@@ -3354,58 +3366,73 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // so a notifier a recover started does not tell the parent of its own command either (RT-4).
         const endedBy = requestedBy ?? (cancelledBeforeBegin(run) ? cancelRequester(run) : workflowV2RunEndRequester(run));
         if (endedBy && endedBy === definition.parentSessionId) return null;
+        const parentSessionId = definition.parentSessionId;
+        const notifyParent = definition.notifyParent;
         // Told or recorded already, at any time in the workflow's history (RT-4: not only its first 50 notices).
         if (await store.runNoticeRecorded(run.workflowSessionId, run.runId)) return null;
-        // WFO-4: an earlier attempt may have queued the notice (it records workflow.parent_notifying just before the
-        // enqueue) and stopped before recording it. A skip is then never recorded: the parent may have been told, so the
-        // run is recorded as told by that attempt.
-        const attempted = await store.runNoticeAttempted(run.workflowSessionId, run.runId);
-        const told = async (data: { [key: string]: JsonValue } = {}): Promise<null> => {
-            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notified",
-                data: { runId: run.runId, parentSessionId: definition.parentSessionId, ...data } }]);
-            return null;
-        };
-        const skipped = async (reason: string): Promise<null> => {
-            if (attempted) return told({ byEarlierAttempt: true });
-            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notification_skipped", data: { runId: run.runId, reason } }]);
-            return null;
-        };
-        if (!definition.notifyParent) return await skipped("notifications are off");
-        if (!await deps.authorizeParentNotification(run.workflowSessionId, definition.parentSessionId)) return await skipped("parent is gone");
-        // WFO-1: a send's message or a request to the parent whose delivery attempt began before the run ended may still
-        // be queued after this. The run's end is told after it, so the parent never reads them after the end. The wait is
-        // bounded (an attempt that takes longer, or began long ago, is not waited for), and it is in this activity: no
-        // orchestration changes.
-        const waitUntil = Date.now() + (deps.noticeDeliveryWaitMs ?? WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS);
-        while (await store.runDeliveriesInFlight(run.runId, definition.parentSessionId, WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS) > 0
-            && Date.now() < waitUntil) {
-            await new Promise(resolve => setTimeout(resolve, WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS));
+        // WFO-1: a send's message or a request to the parent whose delivery attempt began before the run ended (or that
+        // was failed after it began: its enqueue may still be running) may still be queued after this. The run's end is
+        // told after it, so the parent never reads them after the end. The wait is bounded (an attempt that takes longer,
+        // or began long ago, is not waited for), each look has a statement timeout, and it is in this activity, before
+        // the run's notice lock: no orchestration changes.
+        if (notifyParent) {
+            const waitUntil = Date.now() + (deps.noticeDeliveryWaitMs ?? WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS);
+            for (;;) {
+                const left = waitUntil - Date.now();
+                if (left <= 0) break;
+                const inFlight = await store.runDeliveriesInFlight(run.runId, parentSessionId, WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS,
+                    Math.max(1, Math.min(left, WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS)));
+                if (inFlight === 0) break;
+                await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS, waitUntil - Date.now()))));
+            }
         }
-        const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
-        // A failed run says why (batch 7, s-4): the failing state, the runtime error's code and message, and its first problems.
-        const failure = run.status === "failed" ? await runFailureOf(run) : null;
-        const data = {
-            sessionId: run.workflowSessionId, runId: run.runId,
-            name: label?.name ? jsonbSafeText(label.name, 200) : null, version: label?.semver ?? null,
-            status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId,
-            output: run.terminalOutput === null ? null : previewJson(run.terminalOutput, 1_000),
-            error: run.terminalError === null ? null : previewJson(run.terminalError, 1_000),
-            ...(failure ? { failure } : {}),
-        };
-        const json = JSON.stringify(data).replace(/[<>[\]]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-        const clientMessageId = `workflow:${run.workflowSessionId}:${run.runId}:terminal`;
-        // WFO-4: the attempt is recorded before the enqueue (once), so a retry after a crash never records a skip.
-        if (!attempted) {
-            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notifying",
-                data: { runId: run.runId, parentSessionId: definition.parentSessionId, clientMessageId } }]);
-        }
-        const delivery = (await deps.notifyParent(definition.parentSessionId, workflowV2ParentNotification({ sessionId: run.workflowSessionId, runId: run.runId,
-            name: data.name, version: data.version, status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId, failure }, json),
-            workflowRuntimeSender("ended"), clientMessageId)) as { delivered?: boolean } | undefined;
-        // WFO-3: the parent's session had ended before the notice was queued: it was not told (unless an earlier attempt
-        // may have told it, WFO-4).
-        if (delivery?.delivered === false) return await skipped("parent is gone");
-        return await told();
+        const held = await store.withRunNoticeLock(run.runId, async (): Promise<null> => {
+            // Read again under the lock: an attempt that held it before may have recorded the notice.
+            if (await store.runNoticeRecorded(run.workflowSessionId, run.runId)) return null;
+            // WFO-4: an earlier attempt may have queued the notice (it records workflow.parent_notifying just before the
+            // enqueue) and stopped before recording it.
+            const attempted = await store.runNoticeAttempted(run.workflowSessionId, run.runId);
+            const told = async (): Promise<null> => {
+                await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notified",
+                    data: { runId: run.runId, parentSessionId } }]);
+                return null;
+            };
+            // D-R1: a known refusal now is recorded as a skip, never as told; after an earlier attempt it says that the
+            // attempt may have told the parent.
+            const skipped = async (reason: string): Promise<null> => {
+                await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notification_skipped",
+                    data: { runId: run.runId, reason, ...(attempted ? { earlierAttempt: true } : {}) } }]);
+                return null;
+            };
+            if (!notifyParent) return await skipped("notifications are off");
+            if (!await deps.authorizeParentNotification(run.workflowSessionId, parentSessionId)) return await skipped("parent is gone");
+            const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
+            // A failed run says why (batch 7, s-4): the failing state, the runtime error's code and message, and its first problems.
+            const failure = run.status === "failed" ? await runFailureOf(run) : null;
+            const data = {
+                sessionId: run.workflowSessionId, runId: run.runId,
+                name: label?.name ? jsonbSafeText(label.name, 200) : null, version: label?.semver ?? null,
+                status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId,
+                output: run.terminalOutput === null ? null : previewJson(run.terminalOutput, 1_000),
+                error: run.terminalError === null ? null : previewJson(run.terminalError, 1_000),
+                ...(failure ? { failure } : {}),
+            };
+            const json = JSON.stringify(data).replace(/[<>[\]]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+            const clientMessageId = `workflow:${run.workflowSessionId}:${run.runId}:terminal`;
+            // WFO-4: the attempt is recorded before the enqueue (once), so a retry after a crash knows it may have been told.
+            if (!attempted) {
+                await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notifying",
+                    data: { runId: run.runId, parentSessionId, clientMessageId } }]);
+            }
+            const delivery = (await deps.notifyParent(parentSessionId, workflowV2ParentNotification({ sessionId: run.workflowSessionId, runId: run.runId,
+                name: data.name, version: data.version, status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId, failure }, json),
+                workflowRuntimeSender("ended"), clientMessageId)) as { delivered?: boolean } | undefined;
+            // WFO-3: the parent's session had ended before the notice was queued: this attempt did not tell it.
+            if (delivery?.delivered === false) return await skipped("parent is gone");
+            return await told();
+        });
+        if (!held.locked) actx.traceWarn?.(`[workflow-v2] run=${run.runId} another attempt is telling the parent; it records the notice`);
+        return null;
     });
 
     /**

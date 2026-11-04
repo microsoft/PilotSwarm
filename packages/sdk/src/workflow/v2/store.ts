@@ -2744,19 +2744,60 @@ export class WorkflowStore {
     }
 
     /**
-     * How many of a run's sends and requests to `recipientSessionId` (an agent session) have a delivery attempt that
-     * began (counted under the session locks) and is not recorded yet, begun within the last `withinSeconds`
-     * (adversarial review WFO-1): such an attempt may still queue its message after the run ended, since a run's end
-     * leaves a message to an agent session pending (decidePendingSendsIn). An older attempt, or one whose retry finds the
-     * state decided (it fails the message), is not counted.
+     * How many of a run's sends and requests to `recipientSessionId` (an agent session) may still queue their message,
+     * with a delivery attempt begun (counted under the session locks) within the last `withinSeconds` (adversarial
+     * review WFO-1 and its verification): one that is not recorded yet (a run's end leaves a message to an agent session
+     * pending, decidePendingSendsIn), and one failed at or after its last attempt began (its enqueue may still be
+     * running). A delivered one, an older attempt, and one failed before its last attempt began are not counted.
+     * `timeoutMs` is the statement's timeout on the server.
      */
-    async runDeliveriesInFlight(runId: string, recipientSessionId: string, withinSeconds: number): Promise<number> {
-        const { rows } = await this.pool.query(
-            `SELECT count(*)::int AS n FROM ${this.t.outbox}
-              WHERE run_id = $1 AND recipient_session_id = $2 AND state = 'pending' AND attempts > 0
-                AND COALESCE(recipient_kind, 'agent') = 'agent'
-                AND last_attempt_at > clock_timestamp() - make_interval(secs => $3)`, [runId, recipientSessionId, withinSeconds]);
-        return Number(rows[0]?.n ?? 0);
+    async runDeliveriesInFlight(runId: string, recipientSessionId: string, withinSeconds: number, timeoutMs = 5_000): Promise<number> {
+        const timeout = Math.max(1, Math.min(60_000, Math.floor(timeoutMs)));
+        return await this.transaction(async client => {
+            await client.query(`SET LOCAL statement_timeout = ${timeout}`);
+            const { rows } = await client.query(
+                `SELECT count(*)::int AS n FROM ${this.t.outbox}
+                  WHERE run_id = $1 AND recipient_session_id = $2 AND attempts > 0
+                    AND COALESCE(recipient_kind, 'agent') = 'agent'
+                    AND last_attempt_at > clock_timestamp() - make_interval(secs => $3)
+                    AND (state = 'pending' OR (state = 'failed' AND decided_at >= last_attempt_at))`, [runId, recipientSessionId, withinSeconds]);
+            return Number(rows[0]?.n ?? 0);
+        });
+    }
+
+    /**
+     * Run `work` while this attempt holds the run's notice lock (adversarial review WFO-4 and its verification): a
+     * session-level advisory lock on the schema and the run id, held on a connection of its own for the whole of
+     * `work`. Another attempt that holds it makes this return `{ locked: false }` at once, without running `work`. A
+     * process that dies while it holds the lock loses its connection, and the lock with it. A connection that cannot
+     * unlock is closed, not returned to the pool, so the lock never outlives `work`.
+     */
+    async withRunNoticeLock<T>(runId: string, work: () => Promise<T>): Promise<{ locked: true; value: T } | { locked: false }> {
+        const key = `${this.schema}:workflow-run-notice:${runId}`;
+        const client = await this.pool.connect();
+        let broken: Error | undefined;
+        try {
+            let locked: boolean;
+            try {
+                const { rows } = await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked", [key]);
+                locked = rows[0]?.locked === true;
+            } catch (error) {
+                broken = error instanceof Error ? error : new Error(String(error));
+                throw error;
+            }
+            if (!locked) return { locked: false };
+            try {
+                return { locked: true, value: await work() };
+            } finally {
+                try {
+                    await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+                } catch (error) {
+                    broken = error instanceof Error ? error : new Error(String(error));
+                }
+            }
+        } finally {
+            client.release(broken);
+        }
     }
 
     /** Record transcript events outside a transition (notifications, cleanup requests). */

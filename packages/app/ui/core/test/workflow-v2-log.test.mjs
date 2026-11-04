@@ -209,6 +209,12 @@ test("missing or malformed control payloads still read sensibly and never throw"
     assert.equal(bare("workflow.cancel_requested"), "⏹ Asked 0 running actions to stop. They may take a moment to end.");
     assert.equal(bare("workflow.parent_notified"), "✉ The parent session was told that the run ended.");
     assert.equal(bare("workflow.parent_notification_skipped"), "✉ The parent session was not told that the run ended.");
+    // D-R1: a skip after an earlier attempt that may have queued the notice says so; the reason stays.
+    assert.equal(formatWorkflowEventText(event("workflow.parent_notification_skipped", { runId: "r", reason: "parent is gone", earlierAttempt: true })),
+        "✉ The parent session was not told that the run ended: `parent is gone`. An earlier attempt may have told the parent.");
+    assert.equal(formatWorkflowEventText(event("workflow.parent_notification_skipped", { earlierAttempt: true })),
+        "✉ The parent session was not told that the run ended. An earlier attempt may have told the parent.");
+    assert.ok(!formatWorkflowEventText(event("workflow.parent_notification_skipped", { reason: "parent is gone", earlierAttempt: "yes" })).includes("earlier attempt"));
     for (const data of [null, "text", 7, [], [1, 2], { actor: 5, set: "a", deleted: { a: 1 }, effects: "x", claimedBy: 3, reason: ["r"], kvRevision: "4" }]) {
         for (const type of WORKFLOW_CONTROL_EVENT_TYPES) {
             assert.doesNotThrow(() => describeWorkflowEvent({ eventType: type, data }), `${type} ${JSON.stringify(data)}`);

@@ -296,12 +296,20 @@ When a version 2 live run ends and its parent is not told, the workflow records
 are off` or `parent is gone`); Run activity and the terminal show it ("The
 parent agent was not told: notifications are off."). A run the parent ended
 itself records nothing. A parent whose session has ended is not sent the
-notice (`parent is gone`). Each attempt records `workflow.parent_notifying`
-just before it queues the notice, so a retry after a crash never records a
-skip for a parent that may have been told: it records `workflow.parent_notified`
-with `byEarlierAttempt: true`. The notice waits (at most 20 seconds) for a
-send's message or a request to the parent whose delivery began before the run
-ended, so the parent reads them before the run's end.
+notice (`parent is gone`). One attempt at a time tells the parent of a run's
+end: it holds the run's notice lock (a PostgreSQL advisory lock) while it
+reads, records `workflow.parent_notifying` just before it queues the notice,
+queues it and records the result. Another attempt that finds the lock held
+records nothing; if the holder dies, the run still owes its notice and
+`recover` finishes it. A retry after an attempt that may have queued the
+notice queues it again with the same client message id when the parent may be
+told; when it finds a known refusal it records the skip with
+`earlierAttempt: true`, and Run activity adds "An earlier attempt may have
+told the parent." The notice waits (at most 15 seconds) for a send's message
+or a request to the parent whose delivery began before the run ended, or was
+failed after its delivery began, so the parent reads them before the run's
+end. A delivery slower than that, or begun more than a minute earlier, can
+still reach the parent after the notice.
 Workflow names and outputs arrive as escaped JSON explicitly marked untrusted,
 not as executable instructions.
 

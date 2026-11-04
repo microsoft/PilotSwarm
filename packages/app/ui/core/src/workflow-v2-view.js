@@ -1170,6 +1170,8 @@ const names = value => {
     return keys.length > 5 ? `${keys.slice(0, 5).join(", ")} and ${keys.length - 5} more` : keys.join(", ");
 };
 const because = value => (text(value) ? `: ${clipped(value)}` : "");
+/** A skipped run-end notice after an attempt that may have queued it (D-R1). */
+const EARLIER_ATTEMPT = " An earlier attempt may have told the parent.";
 
 /**
  * "; 1 step was still running when the time to finish ended, so it was cancelled" for a stop whose time to finish
@@ -1276,9 +1278,13 @@ const WORKFLOW_EVENT_TEXT = {
     },
     "workflow.parent_notification_skipped": {
         // Batch 7 (n-2): a live run's end the parent agent was not told of, and why ("notifications are off", "parent is gone").
-        short: data => ({ text: `The parent agent was not told${because(data.reason)}.`, level: "warning" }),
-        long: data => ({ text: `✉ The parent session was not told that the run ended${filled(data.reason) ? `: ${span(data.reason, 200)}` : "."}`,
-            summary: "parent not told", color: "yellow" }),
+        // After an earlier attempt that may have queued the notice (D-R1, earlierAttempt), it says so.
+        short: data => ({ text: `The parent agent was not told${because(data.reason)}.${data.earlierAttempt === true ? EARLIER_ATTEMPT : ""}`, level: "warning" }),
+        long: data => {
+            const reason = filled(data.reason) ? `: ${span(data.reason, 200)}` : "";
+            const earlier = data.earlierAttempt === true ? `${reason ? "." : ""}${EARLIER_ATTEMPT}` : "";
+            return { text: `✉ The parent session was not told that the run ended${reason || "."}${earlier}`, summary: "parent not told", color: "yellow" };
+        },
     },
     "workflow.state_started": { short: data => ({ text: `${StepOf(data)} started${Number.isSafeInteger(data.ordinal) ? ` (visit ${data.ordinal})` : ""}` }) },
     "workflow.state_completed": { short: data => ({ text: `${StepOf(data)} ended${text(data.outcome) ? ` '${data.outcome}'` : ""}` }) },

@@ -88,6 +88,13 @@ test("one sentence table: each event says the same thing on every screen that sh
     assert.equal(workflowEventText(7, {}, "short"), null);
 });
 
+test("D-R1: the activity line of a skipped run-end notice says when an earlier attempt may have told the parent", () => {
+    const skip = data => workflowV2Activity([{ seq: 1, eventType: "workflow.parent_notification_skipped", createdAt: "2026-11-04T08:00:00Z", data: { runId: "r", ...data } }])[0];
+    assert.equal(skip({ reason: "parent is gone", earlierAttempt: true }).what, "The parent agent was not told: parent is gone. An earlier attempt may have told the parent.");
+    assert.equal(skip({ reason: "notifications are off" }).what, "The parent agent was not told: notifications are off.");
+    assert.equal(skip({ reason: "parent is gone", earlierAttempt: true }).level, "warning");
+});
+
 test("a run that ended says why: completed, failed, cancelled with its reason and who asked, deleted, stopped", () => {
     assert.equal(workflowV2RunEnding({ runId: RUN, status: "running" }, EVENTS), null);
     const envelope = JSON.stringify({ code: "cancelled", message: "No longer needed", details: { command: "cancel", requestedBy: "parent-1234567890" } });
