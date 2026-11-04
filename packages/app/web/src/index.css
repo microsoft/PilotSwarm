@@ -4643,6 +4643,27 @@ body.is-resizing-pane-y iframe {
   outline: 2px solid var(--ps-accent);
   outline-offset: 1px;
 }
+/* Batch 5 (g-03): a count on a tool's icon (Notices, Test calls), tinted by the most serious item it counts. */
+.ps-mini-button.ps-workflow-tool-button { position: relative; overflow: visible; }
+.ps-workflow-tool-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ps-muted);
+  color: var(--ps-surface);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+.ps-workflow-tool-badge[data-level="warning"] { background: var(--ps-warning); }
+.ps-workflow-tool-badge[data-level="error"] { background: var(--ps-danger); }
+.ps-workflow-notices, .ps-workflow-test-calls { border-bottom: 1px solid var(--ps-border); }
 
 /* of-07: one theme-consistent style for every edit box on the workflow screen (JSON boxes, names, notes, selects, the
    clock's seconds and the YAML box), in the modal inputs' colours and focus ring. JSON and YAML are monospace; a JSON
@@ -4702,15 +4723,12 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
   caret-color: var(--ps-foreground);
   outline: none;
 }
-/* F-06: the graph (150px), the divider (12px) and the step log (100px) never get less than 262px together. */
-.ps-workflow-split { flex: 1 1 262px; min-height: 262px; display: grid; }
+/* F-06: with the step log open, the graph (150px), the divider (12px) and the step log (100px) never get less than 262px
+   together; alone (batch 5, g-03) the graph keeps 150px. */
+.ps-workflow-split { flex: 1 1 150px; min-height: 150px; display: grid; }
+.ps-workflow-split.is-log-open { flex-basis: 262px; min-height: 262px; }
 .ps-workflow-graph-region, .ps-workflow-log { min-width: 0; min-height: 0; }
 .ps-workflow-graph-region { position: relative; }
-.ps-workflow-graph-view { height: 100%; min-height: 0; display: flex; flex-direction: column; }
-.ps-workflow-graph-view > .ps-workflow-graph { flex: 1; min-height: 0; }
-/* F-06: many notices about the definition never push the graph out of its own region: they take at most 40% of it
-   and scroll inside it. */
-.ps-workflow-graph-view > .ps-workflow-banners { flex: 0 1 auto; min-height: 0; max-height: 40%; overflow-y: auto; }
 
 /* Batch 5 (g-02): the graph, drawn by React Flow (.ps-workflow-flow) once it has loaded and as a plain picture of the
    same layout (.ps-workflow-graph-static) until then. Steps are HTML cards, edges SVG curves with a label box. */

@@ -99,6 +99,13 @@ test("a workflow session is marked in the list, shows its execution log and has 
     await expect(workflowRow.getByRole("img", { name: "Workflow" })).toBeVisible();
     await expect(page.locator(".ps-session-row-content", { hasText: "Release triage agent" }).first().locator(".ps-workflow-glyph")).toHaveCount(0);
 
+    // Batch 5 (g-03): the pane opens with the graph only; the Step log button opens the execution log below it.
+    const main = page.locator(".ps-workflow-main");
+    await expect(main.locator(".ps-workflow-log")).toHaveCount(0);
+    const logButton = main.getByRole("button", { name: "Step log", exact: true });
+    await expect(logButton).toHaveAttribute("aria-expanded", "false");
+    await logButton.click();
+    await expect(logButton).toHaveAttribute("aria-expanded", "true");
     const chat = page.locator(".ps-chat-panel");
     await chat.locator(".ps-system-notice-summary", { hasText: "Workflow: nightly-report" }).click();
     await expect(chat).toContainText("Workflow nightly-report 1.0.0 started: 5 steps, first step collect");
@@ -186,6 +193,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             socket.onMessage(raw => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
         } });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        // Batch 5 (g-03): the step log opens from its button.
+        const openLog = () => page.locator(".ps-workflow-main").getByRole("button", { name: "Step log", exact: true }).click();
+        await openLog();
         const summary = page.locator(".ps-workflow-progress");
         await expect(summary).toHaveCount(1);
         await expect(summary.locator("summary")).toContainText("Waiting for changes");
@@ -219,6 +229,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(summary).toHaveCount(1);
         workflowState.status = "completed";
         await page.reload();
+        await openLog();
         await expect(page.locator(".ps-workflow-progress")).toHaveCount(1);
         await expect(page.locator(".ps-workflow-progress summary")).toContainText("29 checks");
         await shot(page, `poll-summary-${viewport.width}`);
@@ -361,6 +372,8 @@ test("mobile Zen has no workflow composer bar, accurate resize bounds and reacha
     await routeApi(page, { workflowEvents: QUALITY_EVENTS,
         workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    // Batch 5 (g-03): the step log opens from its button; its header carries the way into mobile Zen, and Zen keeps it open.
+    await page.locator(".ps-workflow-main").getByRole("button", { name: "Step log", exact: true }).click();
     await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
     const zen = page.locator(".ps-mobile-zen");
     // flow-09: no static "Workflow session" bar, and no empty footer in its place.
@@ -498,6 +511,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = page.locator(".ps-workflow-main");
         await expect(main.locator(".ps-workflow-graph")).toBeVisible();
+        // Batch 5 (g-03): closed by default; the Step log button opens it below the graph with its divider.
+        await expect(main.locator(".ps-workflow-log")).toHaveCount(0);
+        await expect(main.getByRole("separator", { name: "Resize the step log" })).toHaveCount(0);
+        await main.getByRole("button", { name: "Step log", exact: true }).click();
         await expect(main.locator(".ps-workflow-log .ps-chat-panel")).toBeVisible();
         const divider = main.getByRole("separator", { name: "Resize the step log" });
         const before = await main.locator(".ps-workflow-log").boundingBox();
@@ -962,6 +979,9 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = page.locator(".ps-workflow-main");
     const clock = main.getByRole("group", { name: "Virtual clock", exact: true });
+    // Batch 5 (g-03): the clock is with the test run's calls, behind the Test calls button.
+    await expect(clock).toHaveCount(0);
+    await main.getByRole("button", { name: "Test calls", exact: true }).click();
     await expect(clock).toBeVisible();
     await expect(clock).toContainText("Script clocks are real.");
     // No run controls are offered: the model offers only test_advance (negative control for B1's group).
@@ -990,6 +1010,41 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
     expect(commands[1].operation_id).not.toBe(commands[0].operation_id);
     expect(errors).toEqual([]);
 });
+
+// Batch 5 (g-03): the pane opens with its header and the graph only; the step log, the notices and a test run's calls
+// each open and close from their own icon button (aria-expanded), Notices with its count tinted by its most serious
+// notice. Without an ended run there is no Run activity button.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "graph only" (from packages/app/web, after build).
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`the workflow pane opens with the graph only, and each panel opens from its own button, at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeV2(page, { events: V2_TEST_EVENTS, readModel: () => V2_TEST_MODEL, onCommand: (route, command) => accept(route, command) });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+        for (const selector of [".ps-workflow-log", ".ps-workflow-banners", ".ps-workflow-test-calls", ".ps-workflow-run-activity"]) {
+            await expect(main.locator(selector)).toHaveCount(0);
+        }
+        await shot(page, `graph-only-${viewport.width}`);
+        for (const [name, selector] of [["Step log", ".ps-workflow-log"], ["Notices", ".ps-workflow-banners"], ["Test calls", ".ps-workflow-test-calls"]]) {
+            const button = main.getByRole("button", { name, exact: true });
+            await expect(button).toHaveAttribute("aria-expanded", "false");
+            await button.click();
+            await expect(button).toHaveAttribute("aria-expanded", "true");
+            await expect(main.locator(selector)).toBeVisible();
+            await button.click();
+            await expect(button).toHaveAttribute("aria-expanded", "false");
+            await expect(main.locator(selector)).toHaveCount(0);
+        }
+        const badge = main.getByRole("button", { name: "Notices", exact: true }).locator(".ps-workflow-tool-badge");
+        await expect(badge).toHaveText(/^[1-9]\d*$/);
+        await expect(badge).toHaveAttribute("data-level", "warning");
+        await expect(main.getByRole("button", { name: "Run activity", exact: true })).toHaveCount(0);
+        expect(errors).toEqual([]);
+    });
+}
 
 // ------------------------------------------------------------------------------------------------------------
 // of-07 — one theme-consistent style for the workflow screen's edit boxes: the variables form's Name and Value boxes
@@ -1235,6 +1290,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         const { commands } = await routeV2(page, { readModel: () => PANELS_MODEL, onCommand: (route, command) => accept(route, command) });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = page.locator(".ps-workflow-main");
+        // Batch 5 (g-03): the step log is closed by default; this case opens it with the two panels.
+        await main.getByRole("button", { name: "Step log", exact: true }).click();
         await main.getByRole("button", { name: "Edit draft", exact: true }).click();
         await main.getByRole("button", { name: "Publish…", exact: true }).click();
         await expect(main.getByRole("region", { name: "Draft editor", exact: true })).toBeAttached();

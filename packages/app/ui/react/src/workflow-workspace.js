@@ -1,7 +1,7 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { workflowLogBounds, workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
-import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
+import { projectWorkflowV2, workflowV2Activity, workflowV2NoticeLevel, workflowV2OpenCalls, workflowV2ShownNotices } from "../../core/src/workflow-v2-view.js";
 import {
     workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
     workflowV2TestControls, workflowV2TestResponder,
@@ -111,6 +111,21 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
     const draftOpen = Boolean(draftEditor && view.draftOpen);
     const testId = `wf-test-${React.useId().replace(/:/g, "")}`;
     const testOpen = Boolean(testControls && view.testOpen);
+    // Batch 5 (g-03): the pane shows the header and the graph; the step log, the run's activity, the notices and a test
+    // run's calls each open from their own button, closed until then and remembered for this workflow like the others.
+    const logId = `wf-log-${React.useId().replace(/:/g, "")}`;
+    const logOpen = Boolean(view.logOpen);
+    const activityId = `wf-activity-${React.useId().replace(/:/g, "")}`;
+    const activity = v2?.bound && v2.runId && (v2.ending || workflowV2Activity(events, { runId: v2.runId }).length) ? v2.runId : null;
+    const activityOpen = Boolean(activity && view.activityOpen);
+    const noticesId = `wf-notices-${React.useId().replace(/:/g, "")}`;
+    const notices = workflowV2ShownNotices(v2?.banners);
+    const noticesOpen = Boolean(notices.length && view.noticesOpen);
+    const callsId = `wf-calls-${React.useId().replace(/:/g, "")}`;
+    const test = v2?.readModel?.run?.test ?? null;
+    const openCalls = workflowV2OpenCalls(test);
+    const callsOpen = Boolean(test && view.testCallsOpen);
+    const toggle = (flag, open) => () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { [flag]: !open } });
     const splitRef = React.useRef(null);
     const dragRef = React.useRef(false);
     const [splitHeight, setSplitHeight] = React.useState(500);
@@ -151,17 +166,30 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
                 React.createElement(WorkflowV2DraftToggle, { controller, sessionId, model: draftEditor, open: draftOpen, controls: draftId }),
                 React.createElement(WorkflowV2DefinitionToggle, { controller, sessionId, model: publication, open: publicationOpen, controls: publicationId }),
                 React.createElement(WorkflowV2TestToggle, { controller, sessionId, model: testControls, open: testOpen, controls: testId }),
+                React.createElement(WorkflowToolButton, { label: "Step log", glyph: "log", "aria-expanded": logOpen, "aria-controls": logOpen ? logId : undefined,
+                    onClick: toggle("logOpen", logOpen) }),
+                activity ? React.createElement(WorkflowToolButton, { label: "Run activity", glyph: "activity", "aria-expanded": activityOpen,
+                    "aria-controls": activityOpen ? activityId : undefined, onClick: toggle("activityOpen", activityOpen) }) : null,
+                notices.length ? React.createElement(WorkflowToolButton, { label: "Notices", glyph: "notices", "aria-expanded": noticesOpen,
+                    "aria-controls": noticesOpen ? noticesId : undefined, badge: notices.length, badgeLevel: workflowV2NoticeLevel(notices),
+                    title: `${notices.length} ${notices.length === 1 ? "notice" : "notices"} about this workflow and its run.`,
+                    onClick: toggle("noticesOpen", noticesOpen) }) : null,
+                test ? React.createElement(WorkflowToolButton, { label: "Test calls", glyph: "calls", "aria-expanded": callsOpen,
+                    "aria-controls": callsOpen ? callsId : undefined, badge: openCalls || null, badgeLevel: openCalls ? "warning" : null,
+                    title: openCalls ? `${openCalls} ${openCalls === 1 ? "call waits" : "calls wait"} for an answer.` : "The test run's calls and its virtual clock.",
+                    onClick: toggle("testCallsOpen", callsOpen) }) : null,
                 React.createElement(WorkflowToolButton, { label: "Step details", glyph: "details", disabled: !selected,
                     onClick: () => selectNode(selected.id, { open: true }) }))),
+        // Replies to the person's own action stay where they are seen at once.
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }),
-        // F-06: every panel a person opens (and the run's activity and test calls) sits in one area above the graph that
-        // scrolls on its own and gives up height before the graph and the step log do: they keep at least 262px (graph
-        // 150, divider 12, log 100), so the log's divider stays on screen. The two notices above stay outside it, so a
-        // refusal is seen wherever that area is scrolled.
+        // F-06: every panel a person opens sits in one area above the graph that scrolls on its own and gives up height
+        // before the graph and the step log do: they keep at least 262px (graph 150, divider 12, log 100), so the log's
+        // divider stays on screen. The two notices above stay outside it, so a refusal is seen wherever that area is scrolled.
         React.createElement("div", { className: "ps-workflow-panels" },
         // Why the shown run ended, and who did what in it (owner decision q14; mocks M09, M14).
-        v2?.bound && v2.runId ? React.createElement(WorkflowV2RunActivity, { ending: v2.ending, events, runId: v2.runId }) : null,
+        activityOpen ? React.createElement("div", { id: activityId }, React.createElement(WorkflowV2RunActivity, { ending: v2.ending, events, runId: activity })) : null,
+        noticesOpen ? React.createElement("div", { id: noticesId, className: "ps-workflow-notices" }, React.createElement(WorkflowV2Banners, { banners: notices })) : null,
         draftOpen ? React.createElement(WorkflowV2DraftEditor, { controller, sessionId, model: draftEditor, id: draftId, revisionReads: view.definitionRevisions ?? null,
             // The agent steps whose inputs the step-input editor changes (owner decision q6), and what it has read.
             agentSteps: (definition?.states || []).filter(state => state?.type === "agent").map(state => state.id),
@@ -169,26 +197,26 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
         publicationOpen ? React.createElement(WorkflowV2DefinitionPanel, { controller, sessionId, model: publication, id: publicationId, versionsNow: view.agentVersions ?? null }) : null,
         testOpen ? React.createElement(WorkflowV2TestPanel, { controller, sessionId, model: testControls, id: testId }) : null,
         variablesOpen ? React.createElement(WorkflowV2Variables, { controller, sessionId, model: variables, id: variablesId }) : null,
-        v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test, controller, sessionId,
-            responder: testResponder, answering: view.answeringInterceptionId ?? null, history: v2.readModel.run.history ?? null,
-            onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }), parentSessionId: session?.parentSessionId ?? null }) : null,
-        testResponder?.advance ? React.createElement(WorkflowV2TestClock, { controller, sessionId, responder: testResponder }) : null,
-        testResponder?.respond && view.answeringInterceptionId
-            ? React.createElement(WorkflowV2TestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId,
-                parentSessionId: session?.parentSessionId ?? null }) : null),
-        React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
-            style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
+        // A test run's held calls, its virtual clock and the answer form for the call being answered.
+        callsOpen ? React.createElement("div", { id: callsId, className: "ps-workflow-test-calls" },
+            React.createElement(WorkflowV2TestInterceptions, { test, controller, sessionId,
+                responder: testResponder, answering: view.answeringInterceptionId ?? null, history: v2.readModel.run.history ?? null,
+                onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }), parentSessionId: session?.parentSessionId ?? null }),
+            testResponder?.advance ? React.createElement(WorkflowV2TestClock, { controller, sessionId, responder: testResponder }) : null,
+            testResponder?.respond && view.answeringInterceptionId
+                ? React.createElement(WorkflowV2TestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId,
+                    parentSessionId: session?.parentSessionId ?? null }) : null) : null),
+        React.createElement("div", { ref: splitRef, className: `ps-workflow-split${logOpen ? " is-log-open" : ""}`,
+            style: { gridTemplateRows: logOpen ? `minmax(150px, 1fr) 12px ${height}px` : "minmax(150px, 1fr)" } },
             React.createElement("div", { className: "ps-workflow-graph-region" },
                 definition
-                    ? React.createElement("div", { className: "ps-workflow-graph-view" },
-                        React.createElement(WorkflowV2Banners, { banners: v2?.banners }),
-                        React.createElement(WorkflowGraph, { definition, nodes, selected, select: selectNode }))
+                    ? React.createElement(WorkflowGraph, { definition, nodes, selected, select: selectNode })
                     : v2 ? React.createElement(WorkflowV2NoGraph, { projection: v2 })
                     : React.createElement("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                         view.error || "Loading workflow graph…",
                         view.error ? React.createElement("button", { type: "button", className: "ps-mini-button",
                             onClick: () => controller.ensureWorkflowDefinition(sessionId, { retry: true }) }, "Retry") : null)),
-            React.createElement("div", {
+            logOpen ? React.createElement("div", {
                 className: "ps-workflow-log-resizer", role: "separator", tabIndex: 0,
                 "aria-label": "Resize the step log", "aria-orientation": "horizontal",
                 "aria-valuemin": min, "aria-valuemax": max,
@@ -209,8 +237,8 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
                         event.preventDefault(); resizeLog(height + (event.key === "ArrowUp" ? 24 : -24));
                     }
                 },
-            }, React.createElement("span", { "aria-hidden": true })),
-            React.createElement("div", { className: "ps-workflow-log" }, log)));
+            }, React.createElement("span", { "aria-hidden": true })) : null,
+            logOpen ? React.createElement("div", { id: logId, className: "ps-workflow-log" }, log) : null));
 }
 
 export function WorkflowNodePane({ controller }) {

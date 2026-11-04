@@ -68,7 +68,8 @@ test("an invalid draft shows its diagnostics as text, and a draft with a graph s
     assert.ok(html.includes("This workflow definition is invalid"));
     assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; is not a state"));
     assert.ok(!html.includes("<script>alert"));
-    const draft = main(mount({ view: { readModel: readModel({ noRun: true, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null } }) } }));
+    const draft = main(mount({ view: { readModel: readModel({ noRun: true, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null } }),
+        noticesOpen: true } }));
     assert.ok(draft.includes("Draft revision 1 · not published."));
     assert.ok(draft.includes("No run yet."));
     assert.ok(node(mount({ view: { readModel: invalid } })).includes("This workflow definition is invalid"));
@@ -131,7 +132,7 @@ test("a v2 definition is not redrawn once the read model says there is no graph"
 });
 
 test("an unverified run status is shown with its notice", () => {
-    const html = main(mount({ view: { readModel: readModel({ nodeExecutions: [row("poll", 1, "pending")] }), readModelAfterSeq: 1 },
+    const html = main(mount({ view: { readModel: readModel({ nodeExecutions: [row("poll", 1, "pending")] }), readModelAfterSeq: 1, noticesOpen: true },
         events: [{ eventType: "workflow.paused", seq: 4, data: { runId: "run-1" } }] }));
     assert.ok(html.includes("Status not certain · its data says running, latest event says paused"));
     assert.ok(html.includes("Refresh to read it again."));

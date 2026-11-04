@@ -221,6 +221,30 @@ export function annotateWorkflowV2Edges(definition, layout) {
     return layout;
 }
 
+/**
+ * The notices the portal lists behind its Notices button (owner batch 5, g-03): the projection's banners about the
+ * definition and the shown run, each with a level and its text. Pure.
+ */
+export function workflowV2ShownNotices(banners) {
+    return Array.isArray(banners) ? banners.filter(banner => isRecord(banner) && typeof banner.text === "string" && banner.text) : [];
+}
+
+/** The most serious level among notices, for the Notices button's tint: "error", "warning", "info", or null for none. */
+export function workflowV2NoticeLevel(notices) {
+    const levels = new Set((Array.isArray(notices) ? notices : []).map(notice => notice?.level));
+    return levels.has("error") ? "error" : levels.has("warning") ? "warning" : levels.size ? "info" : null;
+}
+
+/**
+ * How many of a test run's held calls wait for an answer (the Test calls button's count): its coverage's unanswered calls
+ * when the read says them, otherwise the listed calls that wait for the parent. 0 without a test. Pure.
+ */
+export function workflowV2OpenCalls(test) {
+    if (!isRecord(test)) return 0;
+    if (Array.isArray(test.coverage?.unanswered)) return test.coverage.unanswered.length;
+    return Array.isArray(test.interceptions) ? test.interceptions.filter(item => isRecord(item) && item.state === "awaiting_parent").length : 0;
+}
+
 const isTruncated = value => typeof value === "string" && value.endsWith("…");
 
 /** A preview string as text to display. JSON is indented only when the whole value arrived. Never HTML. */

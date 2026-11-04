@@ -180,12 +180,18 @@ function mount(view) {
     const store = createStore(appReducer, createInitialState({ mode: "api" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
-    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, ...view } });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, testCallsOpen: true, ...view } });
     return new PilotSwarmUiController({ store, transport: {} });
 }
 const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
 
 test("a waiting interception has an Answer button that opens its form; the clock advances; neither shows where it is not allowed", () => {
+    // Batch 5 (g-03): the calls, the clock and the form are behind the Test calls button, open here (mount); closed, none shows.
+    const closed = main(mount({ readModel: testModel(), testCallsOpen: false }));
+    assert.match(closed, /aria-label="Test calls"[^>]*aria-expanded="false"/);
+    // Its count is the calls that wait for an answer (one here), and its title says so.
+    assert.match(closed, /aria-label="Test calls" data-title="1 call waits for an answer\."[^>]*><span class="ps-workflow-tool-glyph"[^>]*>.*?<\/span><span class="ps-workflow-tool-badge" data-level="warning" aria-hidden="true">1<\/span>/);
+    assert.ok(!closed.includes("Calls (2)") && !closed.includes("data-action=\"answer\"") && !closed.includes("aria-label=\"Virtual clock\""));
     const html = main(mount({ readModel: testModel() }));
     assert.ok(html.includes("Calls (2)") && !html.includes("Held call"));
     assert.equal([...html.matchAll(/data-action="answer"/g)].length, 1, "only the waiting interception can be answered");
@@ -284,7 +290,7 @@ test("q12: a held call that waits offers 'Ask the parent agent', and the answer 
         const store = createStore(appReducer, createInitialState({ mode: "api" }));
         store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch", parentSessionId: "parent-1" }] });
         store.dispatch({ type: "sessions/selected", sessionId: "wf" });
-        store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, ...view } });
+        store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: RUN, readModelRunId: RUN, testCallsOpen: true, ...view } });
         return main(new PilotSwarmUiController({ store, transport: {} }));
     };
     const html = withParent({ readModel: testModel() });

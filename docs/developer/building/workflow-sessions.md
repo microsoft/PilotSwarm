@@ -39,8 +39,11 @@ sharing, and a transcript.
   as a separate layer; return to Main to see the graph and log again. The
   worker's original canvas artifact remains available without changing
   running workflows.
-- The **execution log** sits below the graph. Drag its divider, use the
-  divider's arrow keys, or double-click to reset its height.
+- The pane shows the workflow's header and its graph. The **step log**, the
+  run's **activity**, its **notices** and a test run's **calls** each open
+  from their own button in the header (Notices and Test calls show how many
+  there are), and close the same way. With the step log open, drag its
+  divider, use the divider's arrow keys, or double-click to reset its height.
 - The **transcript** starts with a compact, expandable definition. Repeated
   healthy self-loop checks update one progress row with an increasing count,
   the last outcome and check time. Expand it for the most recent 40 checks

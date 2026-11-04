@@ -32,6 +32,13 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
     hand: () => glyph(h("path", { d: "M7.5 12.5V7a1.5 1.5 0 0 1 3 0v4.5" }), h("path", { d: "M10.5 11V5a1.5 1.5 0 0 1 3 0v6" }),
         h("path", { d: "M13.5 11V6.5a1.5 1.5 0 0 1 3 0V12" }),
         h("path", { d: "M16.5 10.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1a6 6 0 0 1-4.7-2.3l-2.6-3.4a1.6 1.6 0 0 1 2.5-2l1.8 1.9" })),
+    // The pane's panels (batch 5, g-03).
+    log: () => glyph(h("rect", { x: "3", y: "4", width: "18", height: "16", rx: "2" }), h("path", { d: "M7 9h10" }), h("path", { d: "M7 13h10" }),
+        h("path", { d: "M7 17h6" })),
+    activity: () => glyph(h("path", { d: "M3 12h4l3-7 4 14 3-7h4" })),
+    notices: () => glyph(h("path", { d: "M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" }), h("path", { d: "M10 20.5a2 2 0 0 0 4 0" })),
+    calls: () => glyph(h("path", { d: "M5 4h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-5 4v-4H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" }),
+        h("path", { d: "M12 7.5v4" }), h("path", { d: "M12 13.5v.5" })),
 });
 
 /**
@@ -40,9 +47,10 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
  * it as before. A tooltip with the label (and `title`, the reason or explanation the button used to carry, when there is
  * one) shows on mouse hover and on keyboard focus, and Escape or leaving hides it. The tooltip is portaled to <body>, as
  * the top bar's is, so a clipping pane cannot hide it. The wrapper takes the hover, so a disabled button still explains
- * why. `data-title` keeps that explanation readable to tests. On touch, the button only acts (no tooltip).
+ * why. `data-title` keeps that explanation readable to tests. On touch, the button only acts (no tooltip). `badge` (a
+ * count) shows on the icon, tinted by `badgeLevel`; the count is said in `title` too, for screen readers.
  */
-export function WorkflowToolButton({ label, glyph: glyphName, title = null, danger = false, disabled = false, onClick, ...rest }) {
+export function WorkflowToolButton({ label, glyph: glyphName, title = null, danger = false, disabled = false, badge = null, badgeLevel = null, onClick, ...rest }) {
     const [tip, setTip] = React.useState(null);
     const buttonRef = React.useRef(null);
     const timerRef = React.useRef(null);
@@ -81,7 +89,10 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
         onClick, onFocus: event => { if (focusVisible(event.currentTarget)) show(); }, onBlur: hide,
         onKeyDown: event => { if (event.key === "Escape" && tip) { event.stopPropagation(); hide(); } },
         ...rest },
-    h("span", { className: "ps-workflow-tool-glyph", "aria-hidden": "true" }, icon())),
+    h("span", { className: "ps-workflow-tool-glyph", "aria-hidden": "true" }, icon()),
+    Number.isSafeInteger(badge) && badge > 0
+        ? h("span", { className: "ps-workflow-tool-badge", "data-level": badgeLevel ?? undefined, "aria-hidden": "true" }, badge > 99 ? "99+" : String(badge))
+        : null),
     explain ? h("span", { id: describedId, className: "ps-sr-only" }, explain) : null,
     tooltip);
 }
