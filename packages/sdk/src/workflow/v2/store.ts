@@ -8,6 +8,7 @@ import {
     utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue,
 } from "./json.js";
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
+import { redactWorkflowErrorValue, redactWorkflowEventData } from "./redact.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -408,7 +409,7 @@ function runFrom(row: Row): WorkflowRunRow {
         inputs: parseStoredJson(str(row, "inputs"), "inputs"), controllerInstanceId: str(row, "controller_instance_id"),
         status, testAgentMode,
         terminalNodeId: strOrNull(row, "terminal_node_id"), terminalOutcome: strOrNull(row, "terminal_outcome"),
-        terminalOutput: jsonOrNull(row, "terminal_output"), terminalError: jsonOrNull(row, "terminal_error"),
+        terminalOutput: jsonOrNull(row, "terminal_output"), terminalError: redactWorkflowErrorValue(jsonOrNull(row, "terminal_error")),
         createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"), finishedAt: dateOrNull(row, "finished_at"),
         kv: parseStoredJson(str(row, "kv"), "kv"), kvRevision: int(row, "kv_revision"), pausedFrom: pausedFromOf(row),
         controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row), virtualNow: dateOrNull(row, "virtual_now"),
@@ -447,7 +448,8 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         nodeId: str(row, "node_id"), ordinal: int(row, "ordinal"), nodeType: str(row, "node_type"),
         predecessorId: strOrNull(row, "predecessor_id"), arrivalRoute: strOrNull(row, "arrival_route"),
         input: parseStoredJson(str(row, "input"), "input"), inputSha256: str(row, "input_sha256"), state,
-        outcome: strOrNull(row, "outcome"), resultKind, output: jsonOrNull(row, "output"), error: jsonOrNull(row, "error"),
+        // SF-6: a stored error is read with its secrets hidden, so no reader (the read model, a notification) shows them.
+        outcome: strOrNull(row, "outcome"), resultKind, output: jsonOrNull(row, "output"), error: redactWorkflowErrorValue(jsonOrNull(row, "error")),
         hasOutput: row.output !== null && row.output !== undefined,
         winner: strOrNull(row, "winner"), effectAttempts: int(row, "effect_attempts"), kvRevision: intOrNull(row, "kv_revision"),
         deadlineAt: dateOrNull(row, "deadline_at"),
@@ -983,7 +985,7 @@ function outboxFrom(row: Row): WorkflowOutboxMessage {
         state, attempts: int(row, "attempts"), createdAt: str(row, "created_at_iso"),
         lastAttemptAt: strOrNull(row, "last_attempt_at_iso"), decidedAt: strOrNull(row, "decided_at_iso"),
         receipt: receipt === null ? null : parseSendReceipt(parseStoredJson(receipt, "receipt")),
-        error: jsonOrNull(row, "error"),
+        error: redactWorkflowErrorValue(jsonOrNull(row, "error")),
     };
 }
 
@@ -1951,7 +1953,8 @@ export class WorkflowStore {
 
     private async project(client: PoolClient, projection: SessionProjection | undefined): Promise<void> {
         if (!projection) return;
-        const events = (projection.events ?? []).map(event => ({ eventType: event.eventType, data: jsonbSafeValue(event.data) }));
+        // SF-6: the secrets in an event's error fields are hidden before it is stored.
+        const events = (projection.events ?? []).map(event => ({ eventType: event.eventType, data: jsonbSafeValue(redactWorkflowEventData(event.data)) }));
         if (events.length > 0) {
             await client.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [projection.sessionId, JSON.stringify(events), null]);
         }
@@ -2711,7 +2714,8 @@ export class WorkflowStore {
     /** Record transcript events outside a transition (notifications, cleanup requests). */
     async recordSessionEvents(sessionId: string, events: SessionEventRecord[]): Promise<void> {
         if (events.length === 0) return;
-        const safe = events.map(event => ({ eventType: event.eventType, data: jsonbSafeValue(event.data) }));
+        // SF-6: the secrets in an event's error fields are hidden before it is stored.
+        const safe = events.map(event => ({ eventType: event.eventType, data: jsonbSafeValue(redactWorkflowEventData(event.data)) }));
         await this.pool.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [sessionId, JSON.stringify(safe), null]);
     }
 
