@@ -1482,6 +1482,49 @@ function warnJsonText(value: JsonValue, schema: JsonValue | undefined, defs: Rec
     }
 }
 
+/** Whether a value holds a binding anywhere (bindingRootsOf; an unparsable binding counts as one). */
+function holdsBinding(value: JsonValue): boolean {
+    try { return bindingRootsOf(value).size > 0; } catch { return true; }
+}
+
+/** The JSON Schema type names a fixed value has (an integer is a number too). */
+function jsonTypesOf(value: JsonValue): string[] {
+    if (value === null) return ["null"];
+    if (Array.isArray(value)) return ["array"];
+    if (typeof value === "number") return Number.isInteger(value) ? ["integer", "number"] : ["number"];
+    return [typeof value];
+}
+
+/**
+ * The first fixed part of a partly bound input that cannot match its schema (adversarial review SF-8), as
+ * "<pointer> <problem>", or null: an object written out (not bound) that lacks a required property, and a part with no
+ * binding whose type, enum or const the schema rules out. Only what the schema states plainly is checked (type,
+ * required, properties, enum, const); a part that holds a binding is left to the run.
+ */
+function fixedPartProblem(value: JsonValue, schema: JsonValue | undefined, defs: Record<string, JsonValue>, pointer: string, depth = 0): string | null {
+    if (depth > 32) return null;
+    const target = schemaTarget(defs, schema);
+    if (!isJsonObject(target)) return null;
+    const at = pointer || "/";
+    if (!holdsBinding(value)) {
+        const types: JsonValue[] = Array.isArray(target.type) ? target.type : typeof target.type === "string" ? [target.type] : [];
+        if (types.length > 0 && !jsonTypesOf(value).some(type => types.includes(type))) return `${at} must be ${types.join(" or ")}`;
+        if (Array.isArray(target.enum) && !target.enum.some(item => canonicalJson(item) === canonicalJson(value))) return `${at} must be one of its enum values`;
+        if (Object.hasOwn(target, "const") && canonicalJson(target.const as JsonValue) !== canonicalJson(value)) return `${at} must be its const value`;
+        return null;
+    }
+    if (!isJsonObject(value) || Array.isArray(value)) return null;
+    const required = Array.isArray(target.required) ? target.required.filter((key): key is string => typeof key === "string") : [];
+    for (const key of required) if (!Object.hasOwn(value, key)) return `${at} must have required property '${key}'`;
+    const properties = isJsonObject(target.properties) ? target.properties : {};
+    for (const [key, item] of Object.entries(value)) {
+        if (!Object.hasOwn(properties, key)) continue;
+        const problem = fixedPartProblem(item, properties[key], defs, `${pointer}/${key}`, depth + 1);
+        if (problem !== null) return problem;
+    }
+    return null;
+}
+
 /**
  * Batch 7 (s-1): a state's input that has no binding anywhere is fixed, so it is checked against the schema the run
  * checks it against, with the run's own validator (WorkflowSchemaSet): a send's or request's contract, and a script's or
@@ -1502,7 +1545,15 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
         warnJsonText(node.input, defs[schemaName], defs, path, diagnostics);
         let bound: boolean;
         try { bound = bindingRootsOf(node.input).size > 0; } catch { continue; }
-        if (bound) continue;
+        if (bound) {
+            // SF-8: the fixed parts of a partly bound input are checked too, where the schema says what they must be.
+            const problem = fixedPartProblem(node.input, defs[schemaName], defs, "");
+            if (problem !== null) {
+                diagnostics.error("WORKFLOW_STATE_INPUT_INVALID", path, `a fixed part of this input is sent as written, and it does not match ${target.what}: `
+                    + `${problem}.`);
+            }
+            continue;
+        }
         validator ??= new WorkflowSchemaSet(defs);
         const problems = validator.validate(schemaName, node.input);
         if (problems.length) {

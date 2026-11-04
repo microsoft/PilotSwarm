@@ -107,7 +107,7 @@ test("a fixed map that does not match its contract names the first problems", ()
 });
 
 test("a bound input is not checked against its contract", () => {
-    for (const input of [`"\${inputs.fact}"`, `{ other: "\${inputs.fact}" }`, `{ fact: "\${inputs.fact}", details: "\${inputs.details}" }`]) {
+    for (const input of [`"\${inputs.fact}"`, `{ fact: "\${inputs.fact}", other: "\${inputs.other}" }`, `{ fact: "\${inputs.fact}", details: "\${inputs.details}" }`]) {
         const compiled = compileWorkflowV2(SENDER(input));
         assert.equal(codes(compiled, "WORKFLOW_STATE_INPUT_INVALID").length, 0, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
         assert.equal(compiled.valid, true, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
@@ -117,7 +117,9 @@ test("a bound input is not checked against its contract", () => {
 test("JSON text inside a bound input still warns where the schema ($ref, properties, items) wants an object or an array", () => {
     const compiled = compileWorkflowV2(SENDER(
         `{ fact: "\${inputs.fact}", details: '{"note": "y"}', tags: ['{"name": "a"}', { name: "b" }], loose: '{"a": 1}', list: '["a"]' }`));
-    assert.equal(compiled.valid, true, JSON.stringify(compiled.diagnostics));
+    // SF-8: the fixed parts are checked too: details is written as text where an object is required.
+    assert.equal(compiled.valid, false);
+    assert.match(codes(compiled, "WORKFLOW_STATE_INPUT_INVALID")[0]?.message ?? "", /a fixed part of this input .* \/details must be object/);
     const warnings = codes(compiled, "WORKFLOW_INPUT_JSON_TEXT");
     assert.deepEqual(warnings.map(item => item.path).sort(),
         ["states.tell.input.details", "states.tell.input.list", "states.tell.input.loose", "states.tell.input.tags[0]"]);
@@ -160,6 +162,23 @@ test("a script's fixed input is checked against its inputSchema", () => {
     assert.equal(codes(good, "WORKFLOW_STATE_INPUT_INVALID").length, 0);
 
     const bound = compileWorkflowV2(SCRIPT(`{ n: "\${inputs.n}", options: '{"fast": true}' }`));
-    assert.equal(bound.valid, true, JSON.stringify(bound.diagnostics));
     assert.deepEqual(codes(bound, "WORKFLOW_INPUT_JSON_TEXT").map(item => item.path), ["states.calc.input.options"]);
+    // SF-8: its fixed options are text where an object is required.
+    assert.equal(bound.valid, false);
+    const boundOk = compileWorkflowV2(SCRIPT(`{ n: "\${inputs.n}", options: { fast: true } }`));
+    assert.equal(boundOk.valid, true, JSON.stringify(boundOk.diagnostics));
+});
+
+// Adversarial review SF-8: one binding no longer disables the check of the input's fixed parts.
+test("SF-8: a partly bound input's fixed parts are checked: wrong type, missing required property, enum", () => {
+    const wrongType = compileWorkflowV2(SCRIPT(`{ n: "x", options: "\${inputs.options}" }`));
+    assert.equal(wrongType.valid, false);
+    assert.match(codes(wrongType, "WORKFLOW_STATE_INPUT_INVALID")[0].message, /\/n must be integer/);
+    const missing = compileWorkflowV2(SENDER(`{ other: "\${inputs.fact}" }`));
+    assert.equal(missing.valid, false);
+    assert.match(codes(missing, "WORKFLOW_STATE_INPUT_INVALID")[0].message, /must have required property 'fact'/);
+    const fine = compileWorkflowV2(SCRIPT(`{ n: 3, options: "\${inputs.options}" }`));
+    assert.equal(fine.valid, true, JSON.stringify(fine.diagnostics));
+    const allBound = compileWorkflowV2(SCRIPT(`"\${inputs.whole}"`));
+    assert.equal(allBound.valid, true, JSON.stringify(allBound.diagnostics));
 });
