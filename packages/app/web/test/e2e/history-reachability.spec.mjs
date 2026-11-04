@@ -130,8 +130,18 @@ for (const gesture of ["wheel", "touch"]) test(`a delayed backward page advances
     const resumedAnchorOffset = (await anchor.boundingBox()).y - (await viewport.boundingBox()).y;
 
     const savedTop = await viewport.evaluate((node) => node.scrollTop);
-    await page.locator(`.ps-session-list-button[data-session-id="11111111-2222-3333-4444-555555555551"]`).click();
-    await page.locator(`.ps-session-list-button[data-session-id="${sessionId}"]`).click();
+    // On a phone the list slides over the chat from the toolbar's list button,
+    // and picking a row closes it again.
+    const pick = async (id) => {
+        if (gesture === "touch") {
+            await page.getByRole("button", { name: "Sessions", exact: true }).click();
+            await expect(page.locator(".ps-mobile-session-slideover.is-open")).toBeVisible();
+        }
+        await page.locator(`.ps-session-list-button[data-session-id="${id}"]`).click();
+        if (gesture === "touch") await expect(page.locator(".ps-mobile-session-slideover.is-open")).toHaveCount(0);
+    };
+    await pick("11111111-2222-3333-4444-555555555551");
+    await pick(sessionId);
     await expect(page.getByText("VISIBLE_ANCHOR_702").first()).toBeAttached();
     await expect.poll(() => viewport.evaluate((node) => node.scrollTop)).toBeCloseTo(savedTop, 0);
     const anchorAfterRoundTrip = await page.getByText("VISIBLE_ANCHOR_702").first().boundingBox();
