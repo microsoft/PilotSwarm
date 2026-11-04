@@ -289,13 +289,16 @@ describe("workflow v2 agent states: the store", () => {
             const both = await Promise.all([record(2), record(2)]);
             expect(both.map(item => item.n)).toEqual([2, 2]);
             expect(both.filter(item => item.repeat)).toHaveLength(1);
-            // A sub-agent of the child at work: no reminder until it is done.
+            // A sub-agent of the child at work: no reminder until it is done, also for a turn already recorded (review D5).
             await h.catalog.createSession(childSessionId, { parentSessionId: run.workflowSessionId });
             const sub = randomUUID();
             await h.catalog.createSession(sub, { parentSessionId: childSessionId });
             await h.catalog.updateSession(sub, { state: "running" });
             expect(await record(3)).toEqual({ recorded: false, reason: "sub_agents" });
+            expect(await record(1)).toEqual({ recorded: false, reason: "sub_agents" });
+            expect(await record(2)).toEqual({ recorded: false, reason: "sub_agents" });
             await h.catalog.updateSession(sub, { state: "idle" });
+            expect(await record(1)).toEqual({ recorded: true, n: 1, max: 3, stateId: "review", nodeExecutionId, repeat: true });
             expect(await record(3)).toMatchObject({ recorded: true, n: 3, repeat: false });
             // A fourth stall: spent, across turns.
             expect(await record(4)).toEqual({ recorded: false, reason: "spent" });

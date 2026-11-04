@@ -47,6 +47,11 @@ export interface TurnControlBinding {
     attach(port: TurnControlSessionPort): void;
     /** The reason of a Stop that arrived before the initial send, if any. ManagedSession then does not send. */
     heldStop(): string | null;
+    /**
+     * Whether controls wait while the send gate is not open (a steer that arrived after the run settled): pending work
+     * of the turn. ManagedSession then sends no workflow step reminder (owner decision Q2).
+     */
+    hasHeldControls?(): boolean;
     /** ManagedSession opened the send gate after the initial send; held controls may now be applied. */
     gateOpened(): void;
     /** ManagedSession's run ended. */
@@ -132,6 +137,10 @@ export class LiveTurnControl implements TurnControlBinding {
 
     heldStop(): string | null {
         return this.queue.find((c) => c.kind === "stop")?.text ?? null;
+    }
+
+    hasHeldControls(): boolean {
+        return !this.retired && this.queue.length > 0;
     }
 
     gateOpened(): void {

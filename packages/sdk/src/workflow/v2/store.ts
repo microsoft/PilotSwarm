@@ -5416,8 +5416,10 @@ export class WorkflowStore {
      * that reading before its deadline, no completion bound expired), the child must have no sub-agent at work (a child
      * session row pending, running, waiting or asking), and fewer than `max` reminders may be recorded for the step. The
      * reminder is recorded (workflow.agent_reminded on the workflow session) in the same transaction, before the child is
-     * reminded, so the count is durable. The same turn records once: an attempt of it that runs again (an activity
-     * retry) reminds again under its recorded number, and counts nothing more. Every refusal records nothing.
+     * reminded, so the count is durable; it is the decision to remind, which a Stop may still keep from being sent. The
+     * same turn records once: an attempt of it that runs again (an activity retry) reminds again under its recorded
+     * number, and counts nothing more, after the same checks (a closed step or a sub-agent at work refuses it too).
+     * Every refusal records nothing.
      */
     async recordAgentReminder(input: { childSessionId: string; turn: number; max?: number }): Promise<WorkflowAgentReminderRecord> {
         if (!storableId(input.childSessionId) || !Number.isSafeInteger(input.turn) || input.turn < 0) return { recorded: false, reason: "not_a_step" };
@@ -5450,12 +5452,13 @@ export class WorkflowStore {
             const reminders = recorded.map(row => (row.data && typeof row.data === "object" ? row.data as Record<string, unknown> : {}))
                 .map(data => ({ n: Number(data.n), turn: Number(data.turn) }))
                 .filter(item => Number.isSafeInteger(item.n));
-            const same = reminders.find(item => item.turn === input.turn);
-            if (same) return { recorded: true, n: same.n, max, stateId: node.nodeId, nodeExecutionId, repeat: true } as const;
+            // A sub-agent at work refuses a repeat of a recorded turn too (review D5): its number is kept for accounting only.
             const busy = await client.query(
                 `SELECT 1 FROM ${this.t.sessions} WHERE parent_session_id = $1 AND deleted_at IS NULL
                     AND state IN ('pending', 'running', 'waiting', 'input_required') LIMIT 1`, [input.childSessionId]);
             if (busy.rows.length > 0) return { recorded: false, reason: "sub_agents" } as const;
+            const same = reminders.find(item => item.turn === input.turn);
+            if (same) return { recorded: true, n: same.n, max, stateId: node.nodeId, nodeExecutionId, repeat: true } as const;
             if (reminders.length >= max) return { recorded: false, reason: "spent" } as const;
             const n = reminders.reduce((highest, item) => Math.max(highest, item.n), 0) + 1;
             await client.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [workflowSessionId, JSON.stringify([{

@@ -1787,6 +1787,56 @@ export class ManagedSession {
         }
     }
 
+    /**
+     * Owner decision Q2 (review D2): ask the step reminder's gate (TurnOptions.stepReminder), raced with the run's guards
+     * (a guard's rejection propagates: the run's own timeout or watchdog handling ends the turn) and with its
+     * interruption (a Stop, an abort or a forced settle). The reminder to send, or null: when the gate refuses or fails
+     * (traced; the turn stands), or the run was interrupted first. A late answer of the gate is ignored.
+     */
+    private async awaitStepReminderGate(gate: NonNullable<TurnOptions["stepReminder"]>, input: { scheduleCancelled: boolean },
+        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number } | null> {
+        const interrupt = this.runInterrupt;
+        let wake: (reason: string) => void = () => {};
+        const interrupted = new Promise<string>((resolve) => { wake = resolve; });
+        if (interrupt) {
+            interrupt.wake = wake;
+            if (interrupt.reason !== null) wake(interrupt.reason);
+        }
+        let check: Promise<Awaited<ReturnType<typeof gate.check>>>;
+        try {
+            check = Promise.resolve(gate.check(input));
+        } catch (err) {
+            check = Promise.reject(err);
+        }
+        try {
+            const raced = await Promise.race([
+                check.then(
+                    (verdict) => ({ kind: "decided" as const, verdict }),
+                    (error: unknown) => ({ kind: "failed" as const, error }),
+                ),
+                interrupted.then((reason) => ({ kind: "interrupted" as const, reason })),
+                ...guards.map((guard) => guard.then(() => ({ kind: "guard" as const }))),
+            ]);
+            if (raced.kind === "interrupted" || raced.kind === "guard") {
+                trace?.(`[runTurn] session=${this.sessionId} no step reminder: the turn ended while its gate was asked`);
+                return null;
+            }
+            if (raced.kind === "failed") {
+                const error = raced.error as { message?: unknown } | null | undefined;
+                trace?.(`[runTurn] session=${this.sessionId} the step reminder's check failed; no reminder: `
+                    + `${typeof error?.message === "string" ? error.message : String(raced.error)}`);
+                return null;
+            }
+            if (!raced.verdict.remind) {
+                trace?.(`[runTurn] session=${this.sessionId} no step reminder: ${raced.verdict.reason}`);
+                return null;
+            }
+            return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max };
+        } finally {
+            if (interrupt && interrupt.wake === wake) interrupt.wake = null;
+        }
+    }
+
     private async _runTurnInner(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         const turnState: TurnState = {
             pendingActions: [],
@@ -4128,15 +4178,18 @@ export class ManagedSession {
         // as an unhandled rejection before the finally-block clears its timer.
         const guards: Promise<void>[] = [timeoutPromise, inactivityPromise]
             .filter((p): p is Promise<void> => p !== null);
-        for (const guard of guards) guard.catch(() => {});
+        // Q2 (review D2): whether a guard expired, for the step reminder's checks after the run settled.
+        let guardExpired = false as boolean;
+        for (const guard of guards) guard.catch(() => { guardExpired = true; });
 
         // A corrective model run inside this turn (the tool-call-as-text and
         // required-tool guards). It runs like the first run: turn control holds
         // controls until the corrective prompt is sent, then applies steers and
         // Stop live, and the run settles through the same handlers. A Stop,
         // applied or still held, means no corrective prompt is sent. Returns
-        // false when the turn stops instead.
-        const runCorrection = async (message: Record<string, unknown>): Promise<boolean> => {
+        // false when the turn stops instead. `beforeSend` runs once the corrective prompt is certain to be sent, just
+        // before it is.
+        const runCorrection = async (message: Record<string, unknown>, beforeSend?: () => void): Promise<boolean> => {
             const heldStop = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
             if (heldStop !== null && !this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
             if (this.stopRequest) return false;
@@ -4145,6 +4198,7 @@ export class ManagedSession {
             // still corrects. Every other turn is unchanged.
             const intake = opts?.intakeAdmission;
             if (intake && (this.runInterrupt?.reason != null || intake.eligible?.() === false)) return false;
+            beforeSend?.();
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
             await this.copilotSession.send(message as any);
@@ -4257,43 +4311,50 @@ export class ManagedSession {
             // dropped. If a control tool already scheduled a turn boundary, we
             // still return an error rather than accepting a transcript that
             // implied another unexecuted tool side effect.
+            // The check runs after the first run and again after the step reminder's run (Q2, review D4), with one
+            // budget of corrections for the whole turn.
             let textToolCallCorrections = 0;
-            while (
-                textToolCallCorrections < MAX_TEXT_TOOL_CALL_CORRECTIONS &&
-                !hasTerminalTurnBoundary(turnState) &&
-                textEmittedToolCallRef.current
-            ) {
-                const offendingTool = textEmittedToolCallRef.current.toolName;
-                const rawContent = textEmittedToolCallRef.current.rawContent;
-                textEmittedToolCallRef.current = null;
-                textToolCallCorrections++;
-                const diagnostic: CapturedEvent = {
-                    eventType: "runtime.tool_call_as_text",
-                    data: { toolName: offendingTool, rawContent, attempt: textToolCallCorrections, sessionId: this.sessionId },
-                };
-                collectedEvents.push(diagnostic);
-                if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+            const settleTextToolCalls = async (): Promise<TurnResult | null> => {
+                while (
+                    textToolCallCorrections < MAX_TEXT_TOOL_CALL_CORRECTIONS &&
+                    !hasTerminalTurnBoundary(turnState) &&
+                    textEmittedToolCallRef.current
+                ) {
+                    const offendingTool = textEmittedToolCallRef.current.toolName;
+                    const rawContent = textEmittedToolCallRef.current.rawContent;
+                    textEmittedToolCallRef.current = null;
+                    textToolCallCorrections++;
+                    const diagnostic: CapturedEvent = {
+                        eventType: "runtime.tool_call_as_text",
+                        data: { toolName: offendingTool, rawContent, attempt: textToolCallCorrections, sessionId: this.sessionId },
+                    };
+                    collectedEvents.push(diagnostic);
+                    if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
 
-                finalContent = undefined;
-                if (!(await runCorrection({ prompt: buildTextEmittedToolCallCorrection(offendingTool) }))) break;
-            }
+                    finalContent = undefined;
+                    if (!(await runCorrection({ prompt: buildTextEmittedToolCallCorrection(offendingTool) }))) break;
+                }
 
-            if (textEmittedToolCallRef.current) {
-                const diagnostic: CapturedEvent = {
-                    eventType: "runtime.tool_call_as_text",
-                    data: { toolName: textEmittedToolCallRef.current.toolName, rawContent: textEmittedToolCallRef.current.rawContent, final: true, sessionId: this.sessionId },
-                };
-                collectedEvents.push(diagnostic);
-                if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
-                const message = buildTextEmittedToolCallCorrection(textEmittedToolCallRef.current.toolName);
-                const accepted = acceptedWorkspaceChanges(turnState);
-                return {
-                    type: "error",
-                    message,
-                    events: collectedEvents,
-                    ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
-                } as any;
-            }
+                if (textEmittedToolCallRef.current) {
+                    const diagnostic: CapturedEvent = {
+                        eventType: "runtime.tool_call_as_text",
+                        data: { toolName: textEmittedToolCallRef.current.toolName, rawContent: textEmittedToolCallRef.current.rawContent, final: true, sessionId: this.sessionId },
+                    };
+                    collectedEvents.push(diagnostic);
+                    if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                    const message = buildTextEmittedToolCallCorrection(textEmittedToolCallRef.current.toolName);
+                    const accepted = acceptedWorkspaceChanges(turnState);
+                    return {
+                        type: "error",
+                        message,
+                        events: collectedEvents,
+                        ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
+                    } as any;
+                }
+                return null;
+            };
+            const textToolCallFailure = await settleTextToolCalls();
+            if (textToolCallFailure) return textToolCallFailure;
 
             let requiredToolCorrections = 0;
             while (
@@ -4336,40 +4397,51 @@ export class ManagedSession {
             }
 
             // Owner decision Q2 (workflow/v2/agent-reminder.ts): a workflow agent state's own child whose turn would end
-            // with nothing pending is reminded to finish its step once, in this turn, after the corrections above: only
-            // when no control tool ended the turn, the turn queued no schedule set, did not call complete_workflow_node,
-            // asked no other session (or its parent, in its answer) a question, saw no error, and no Stop or steer is in
-            // flight. The activity's gate checks the step and records the reminder first. The turn then ends as it ends,
-            // whatever the model does.
+            // with nothing pending is reminded to finish its step once, in this turn, after the corrections above. Only
+            // after a natural, quiet end of the run: no control tool ended the turn, the turn queued no schedule set, did
+            // not call complete_workflow_node, asked no other session (or its parent, in its answer) a question, and had
+            // no error (review D3); no Stop, interrupt or expired guard, and no steer in flight, unconfirmed or held. The
+            // session.idle that ended the run closed the steer gate; runCorrection opens it again for the reminder, as
+            // for the other corrections (review D1). The activity's gate checks the step and records the reminder first,
+            // raced with the turn's guards and its Stop (review D2). The reminder's own answer gets the same tool-call
+            // check as the first run's (review D4). The turn then ends as it ends, whatever the model does.
             const scheduleEffect = turnScheduleEffect(turnState.queuedActions);
-            if (opts?.stepReminder
+            const stepReminder = opts?.stepReminder;
+            if (stepReminder
                 && this.config.workflowAgentChild === true
                 && turnState.pendingActions.length === 0
                 && scheduleEffect !== "set"
                 && deferredSessionError === null
+                && quietedEmptyAnswer === null
+                && !collectedEvents.some(event => event.eventType === "session.error")
                 && !hasInvokedTool(collectedEvents, COMPLETE_WORKFLOW_NODE_TOOL)
                 && !turnAskedForAnswer(collectedEvents)
                 && !answerAsksParent(finalContent)
+                && !guardExpired
                 && !this.stopRequest
                 && this.runInterrupt?.reason == null
-                && !(this.steer && (this.steer.gate === "closed" || this.steer.inFlight > 0 || this.steer.unconfirmed.size > 0))) {
-                let reminder = null as { stateId: string; n: number; max: number } | null;
-                try {
-                    const verdict = await opts.stepReminder.check({ scheduleCancelled: scheduleEffect === "cancel" });
-                    if (verdict.remind) reminder = { stateId: verdict.stateId, n: verdict.n, max: verdict.max };
-                    else opts.trace?.(`[runTurn] session=${this.sessionId} no step reminder: ${verdict.reason}`);
-                } catch (err: any) {
-                    opts.trace?.(`[runTurn] session=${this.sessionId} the step reminder's check failed; no reminder: ${err?.message ?? String(err)}`);
-                }
-                if (reminder) {
-                    const diagnostic: CapturedEvent = {
-                        eventType: "runtime.workflow_step_reminded",
-                        data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
-                    };
-                    collectedEvents.push(diagnostic);
-                    if (opts.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
-                    finalContent = undefined;
-                    await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId) });
+                && (opts?.turnControl?.heldStop() ?? null) === null
+                && opts?.turnControl?.hasHeldControls?.() !== true
+                && !(this.steer && (this.steer.inFlight > 0 || this.steer.unconfirmed.size > 0))) {
+                const reminder = await this.awaitStepReminderGate(stepReminder, { scheduleCancelled: scheduleEffect === "cancel" }, guards, opts?.trace);
+                // Immediately before the send: a guard that expired ends the turn by its own handling; a Stop or an
+                // interrupt sends nothing (runCorrection checks a held Stop).
+                if (reminder && guardExpired) await Promise.race(guards);
+                if (reminder && !this.stopRequest && this.runInterrupt?.reason == null) {
+                    // The runtime event says the reminder was sent: it is recorded only when the prompt goes out.
+                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId) }, () => {
+                        const diagnostic: CapturedEvent = {
+                            eventType: "runtime.workflow_step_reminded",
+                            data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
+                        };
+                        collectedEvents.push(diagnostic);
+                        if (opts?.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                        finalContent = undefined;
+                    });
+                    if (sent) {
+                        const reminderFailure = await settleTextToolCalls();
+                        if (reminderFailure) return reminderFailure;
+                    }
                 }
             }
             turnRanToEnd = true;

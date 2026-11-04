@@ -7,12 +7,15 @@ import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
  *
  * The reminder is a corrective run inside the same turn (ManagedSession, as the required-tool correction is): after the
  * turn's own run settles, with nothing pending, the activity's gate (TurnOptions.stepReminder, store.recordAgentReminder)
- * checks the step and records the reminder, and the model gets this text once. Nothing is queued: a reminder never
- * reaches the child after its turn, so it can never arrive after its step was decided.
+ * checks the step and records the reminder (raced with the turn's guards and its Stop), and the model gets this text
+ * once, with the same tool-call check as its first answer. Nothing is queued: a reminder never reaches the child after
+ * its turn. The store's record is the decision to remind; the child's runtime event is recorded only when the reminder
+ * is sent.
  *
  * "Nothing pending", as the turn sees it:
- * - the turn would end "completed": no control tool scheduled a turn end (wait, cron, cron_at, a question,
- *   wait_for_agents, a sub-agent call), no error, no Stop, no steer in flight;
+ * - the turn would end "completed" after a natural, quiet end of its run: no control tool scheduled a turn end (wait,
+ *   cron, cron_at, a question, wait_for_agents, a sub-agent call), no error, no Stop, interrupt or expired guard, and
+ *   no steer in flight, unconfirmed or held;
  * - complete_workflow_node was not called in the turn;
  * - the turn did not ask another session a question (send_session_message with expects_response: true) (a1), and its
  *   answer is not a question to its parent ("QUESTION FOR PARENT:", which the orchestration turns into a wait);
