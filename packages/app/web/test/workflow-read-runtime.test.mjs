@@ -149,7 +149,7 @@ test("with the ownership switch off, other session:read operations are still onl
  * session; wf1 is a version 2 workflow with a live run and run R; any other session is an agent session. The adapter has
  * no options unless `config` is given (the test-only workflowCommands option, INACTIVE).
  */
-async function routeHarness({ config } = {}) {
+async function routeHarness({ config, enforce = true, shared = [] } = {}) {
     const owner = { provider: "dev", subject: "alice" };
     const adapterCalls = [];
     // The stand-in rows have every field of the store's current rows: these runs have no stop, virtual clock or scenario,
@@ -197,10 +197,10 @@ async function routeHarness({ config } = {}) {
     if (config) mgmt.config = config;
     const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
     runtime.start = async () => {};
-    runtime.authz = { ...runtime.authz, enforce: true };
+    runtime.authz = { ...runtime.authz, enforce };
     runtime.transport = {
         getSessionAccess: async (sessionId, viewer) => (sessionId === "missing" ? null : {
-            rootSessionId: sessionId, isSystem: false, visibility: "private", owner: { ...owner, displayName: "Alice" },
+            rootSessionId: sessionId, isSystem: false, visibility: shared.includes(sessionId) ? "shared_read" : "private", owner: { ...owner, displayName: "Alice" },
             viewerIsOwner: viewer.provider === owner.provider && viewer.subject === owner.subject, viewerShareAccess: null,
         }),
         recordAuthzAudit: async () => {},
@@ -208,7 +208,8 @@ async function routeHarness({ config } = {}) {
     };
     const requireAuth = (req, _res, next) => {
         const subject = String(req.headers["x-test-user"] || "alice");
-        req.auth = { principal: { provider: "dev", subject }, authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] } };
+        const role = String(req.headers["x-test-role"] || "user");
+        req.auth = { principal: { provider: "dev", subject }, authorization: { allowed: true, role, reason: "test", matchedGroups: [] } };
         next();
     };
     const app = express();
@@ -218,8 +219,8 @@ async function routeHarness({ config } = {}) {
     await new Promise((resolve) => server.listen(0, resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
     const base = `${origin}/api/v1`;
-    const get = async (path, subject = "alice") => {
-        const response = await fetch(`${base}${path}`, { headers: { "x-test-user": subject } });
+    const get = async (path, subject = "alice", role = "user") => {
+        const response = await fetch(`${base}${path}`, { headers: { "x-test-user": subject, "x-test-role": role } });
         return { status: response.status, body: await response.json() };
     };
     return { runtime, adapterCalls, get, origin, close: () => new Promise((resolve) => server.close(resolve)) };
@@ -399,5 +400,49 @@ test("a section's next page and one execution's value are read through the same 
         }
     } finally {
         await h.close();
+    }
+});
+
+// Owed M-01 (verification of SF-1): with the ownership switch off, the authenticated HTTP route and the web-backed client
+// (the one a web-mode MCP server's read_workflow uses) refuse every selector of a workflow the caller cannot read, with
+// the same not-found and no read; its owner, an admin and a reader it is shared with keep their access.
+test("M-01: with the ownership switch off, every read selector of a hidden workflow is not found over HTTP and the web client, with no read", async () => {
+    const h = await routeHarness({ enforce: false });
+    try {
+        assert.equal(h.runtime.authz.enforce, false);
+        const json = (value) => encodeURIComponent(JSON.stringify(value));
+        const queries = ["", "?runId=R", `?cursor=${json({ v: 1, workflowId: "wf1", runId: "R", section: "inbox", order: "newest_first", after: { seq: "3" } })}`,
+            "?executionId=nx-1", "?kvRevision=1", "?kvRevision=1&kvKey=secret", `?agentVersions=${json(true)}`, `?definitionRevision=${json(1)}`,
+            `?stepInput=${json({ state: "review" })}`];
+        for (const query of queries) {
+            const hidden = await h.get(`/sessions/wf1/workflow${query}`, "bob");
+            assert.deepEqual([hidden.status, hidden.body.error?.code, hidden.body.error?.message], [404, "NOT_FOUND", "Session not found."], query);
+        }
+        // The web-backed client a web-mode MCP server uses: the same refusal, whatever the selector.
+        const bob = new WebPilotSwarmManagementClient({ api: new ApiClient({ apiUrl: h.origin,
+            fetchImpl: (url, init = {}) => fetch(url, { ...init, headers: { ...init.headers, "x-test-user": "bob" } }) }) });
+        for (const options of [{}, { runId: "R" }, { executionId: "nx-1" }, { kvRevision: 1, kvKey: "secret" }, { definitionRevision: 1 }]) {
+            await assert.rejects(bob.readWorkflow("wf1", options), (error) => error.status === 404 && error.code === "NOT_FOUND", JSON.stringify(options));
+        }
+        assert.deepEqual(h.adapterCalls, [], "nothing was read for a caller who cannot see the workflow");
+
+        // Positive controls: the owner and an admin read it.
+        const own = await h.get("/sessions/wf1/workflow", "alice");
+        assert.equal(own.status, 200);
+        assert.equal(own.body.result.run.runId, "run-live");
+        const admin = await h.get("/sessions/wf1/workflow", "ada", "admin");
+        assert.equal(admin.status, 200);
+        assert.deepEqual(h.adapterCalls.map(([sessionId]) => sessionId), ["wf1", "wf1"]);
+    } finally {
+        await h.close();
+    }
+    // A reader it is shared with reads it, the switch off as well.
+    const sharedHarness = await routeHarness({ enforce: false, shared: ["wf1"] });
+    try {
+        const read = await sharedHarness.get("/sessions/wf1/workflow", "bob");
+        assert.equal(read.status, 200);
+        assert.equal(read.body.result.run.runId, "run-live");
+    } finally {
+        await sharedHarness.close();
     }
 });
