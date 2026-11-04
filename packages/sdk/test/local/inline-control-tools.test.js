@@ -1531,7 +1531,8 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
     });
 
     it.each([
-        ["wait", { name: "wait", args: { seconds: 30, reason: "build running" } }, "wait"],
+        // Longer than the session's wait threshold (30 s), which ManagedSession waits out inside the turn.
+        ["wait", { name: "wait", args: { seconds: 120, reason: "build running" } }, "wait"],
         ["ask_user", { name: "ask_user", args: { question: "May I merge?" } }, "input_required"],
         ["wait_for_agents", { name: "wait_for_agents", args: { agent_ids: ["helper-1"] } }, "wait_for_agents"],
         ["cron", { name: "cron", args: { seconds: 60, reason: "check the build" } }, "completed"],
@@ -1734,7 +1735,8 @@ describe("Q2: the step reminder inside an agent state's child turn", () => {
     });
 
     it("what the reminder's run does ends the turn as it would any run: a wait, or a cron with its answer", async () => {
-        const waited = stepChild([{ assistantContent: "It seems fine." }, { toolCalls: [{ name: "wait", args: { seconds: 30, reason: "build running" } }],
+        // A wait longer than the session's wait threshold (30 s) ends the turn; a shorter one is waited out inside it.
+        const waited = stepChild([{ assistantContent: "It seems fine." }, { toolCalls: [{ name: "wait", args: { seconds: 120, reason: "build running" } }],
             assistantContent: "Waiting for the build." }]);
         const result = await waited.run();
         expect(result.type).toBe("wait");
