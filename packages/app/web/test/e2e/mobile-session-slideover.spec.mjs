@@ -100,8 +100,24 @@ test("from diagnostics, the list button returns to the chat and opens the list",
     await expect(page.locator(".ps-mobile-workspace")).toHaveCount(0);
     await listButton(page).click();
     await expect(slide(page)).toHaveClass(/is-open/);
-    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await page.getByRole("button", { name: "Hide the session list", exact: true }).click();
     await expect(slide(page)).not.toHaveClass(/is-open/);
+    await expect(page.locator(".ps-mobile-workspace")).toHaveCount(1);
+});
+
+test("the diagnostics button walks chat, inspector, activity and back to the chat", async ({ page }) => {
+    await openPhone(page);
+    const diagnostics = page.getByRole("button", { name: /^Diagnostics — / }).first();
+    await expect(page.getByRole("button", { name: "Chat", exact: true })).toHaveCount(0);
+    await expect(page.locator(".ps-mobile-workspace")).toHaveCount(1);
+    await diagnostics.click();
+    await expect(page.locator(".ps-mobile-workspace")).toHaveCount(0);
+    await expect(diagnostics).toHaveAttribute("aria-label", /inspector \(tap for activity\)/);
+    await diagnostics.click();
+    await expect(diagnostics).toHaveAttribute("aria-label", /activity \(tap to return to the chat\)/);
+    await diagnostics.click();
+    await expect(page.locator(".ps-mobile-workspace")).toHaveCount(1);
+    await expect(diagnostics).toHaveAttribute("aria-label", "Diagnostics — inspector and activity");
 });
 
 test("desktop is unchanged: no list button, the list stays in its column", async ({ page }) => {

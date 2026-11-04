@@ -36,8 +36,9 @@ test("no cluster labels, no admin console, no workspace/expand buttons", async (
     // What the phone DOES keep.
     expect(t.names.some((n) => /New session/i.test(n))).toBe(true);
     expect(t.names.some((n) => /Budget/i.test(n)), "budget reflows to a phone and stays").toBe(true);
-    // The session list button leads the row; Chat is the way back to Main.
+    // The session list button leads the row. There is no Chat button: the
+    // chat is where the other surfaces return to.
     expect(t.names[0], "the session list button is leftmost").toBe("Sessions");
-    expect(t.names.includes("Chat"), "Main").toBe(true);
+    expect(t.names.includes("Chat"), "no Chat button").toBe(false);
     expect(t.names.includes("Filter sessions"), "the filter moved into the list's header").toBe(false);
 });

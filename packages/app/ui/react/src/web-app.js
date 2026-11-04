@@ -10829,23 +10829,22 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         // to be word tabs pinned to the bottom of the screen, and folding them
         // up here hands that whole strip back to the chat pane. Main is the
         // chat; the session list is the slide-over behind the leftmost button.
-        // Two tabs, not three: the row was out of space, and Inspector +
-        // Activity are one idea on the desktop already (Diagnostics, the
-        // bug). The bug button opens the inspector; tapping it again while
-        // inside diagnostics flips inspector <-> activity; the main button is
-        // always the way back.
+        // There is no Chat button: the chat is where every other surface
+        // returns to. Inspector + Activity are one idea on the desktop already
+        // (Diagnostics, the bug), so one button walks chat -> inspector ->
+        // activity -> chat. The list button and the canvas toggle also lead
+        // back to the chat.
         const onDiagnostics = mobilePane === "inspector" || mobilePane === "activity";
-        const nextDiagnosticsPane = mobilePane === "inspector" ? "activity" : "inspector";
+        const nextDiagnosticsPane = mobilePane === "inspector" ? "activity" : (mobilePane === "activity" ? "workspace" : "inspector");
         const paneDefs = [
-            { id: "workspace", icon: MainLayoutGlyph, label: "Chat", focus: "chat" },
             {
                 id: nextDiagnosticsPane,
                 icon: DiagnosticsGlyph,
                 active: onDiagnostics,
                 label: onDiagnostics
-                    ? (mobilePane === "inspector" ? "Diagnostics — inspector (tap for activity)" : "Diagnostics — activity (tap for inspector)")
+                    ? (mobilePane === "inspector" ? "Diagnostics — inspector (tap for activity)" : "Diagnostics — activity (tap to return to the chat)")
                     : "Diagnostics — inspector and activity",
-                focus: nextDiagnosticsPane,
+                focus: nextDiagnosticsPane === "workspace" ? "chat" : nextDiagnosticsPane,
             },
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
@@ -10854,7 +10853,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
                 React.createElement("div", { className: "ps-toolbar-row-actions is-panes" },
                     ...buttonDefs.filter(def => def.key === "moa").map(renderButton),
                     paneDefs.map((def) => React.createElement(IconButton, {
-                        key: def.id === "workspace" ? "workspace" : "diagnostics",
+                        key: "diagnostics",
                         icon: React.createElement(def.icon),
                         label: def.label,
                         active: def.active ?? (mobilePane === def.id && !mobileSessionsOpen),
@@ -16958,9 +16957,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         React.createElement(MotdOverlay, { controller, mobile }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
-        // The phone's toolbar carries its NAVIGATION (the three view modes,
-        // plus the Main layout cycle), so it renders on every pane — hiding it
-        // anywhere would trap the user with no way back.
+        // The phone's toolbar carries its NAVIGATION (the session list, the
+        // diagnostics cycle and the canvas), so it renders on every pane —
+        // hiding it anywhere would trap the user with no way back.
         React.createElement(Toolbar, {
             controller, moa, viewNavigation,
             mobile,
