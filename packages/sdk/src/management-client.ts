@@ -101,6 +101,8 @@ import {
     TurnControlUnavailableError,
 } from "./turn-control-contract.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
+import { MotdError, type MotdCreateInput, type MotdViewer } from "./motd-store.js";
+import { MOTD_OPERATION_SPECS, runMotdStoreOperation, type MotdArgs, type MotdOperationSpec } from "./motd-tools.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type {
@@ -5398,6 +5400,18 @@ export class PilotSwarmManagementClient {
         if (!this._catalog?.features) throw new FeatureFlagError("FEATURE_UNAVAILABLE", "Feature settings are unavailable", 503);
         return this._catalog.features;
     }
+    private _motdOperation(method: MotdOperationSpec["method"], viewer: MotdViewer, args: MotdArgs = {}) {
+        this._ensureStarted();
+        if (!this._catalog?.motds) throw new MotdError("MOTD_UNAVAILABLE", "Messages are unavailable", 503);
+        const spec = MOTD_OPERATION_SPECS.find(candidate => candidate.method === method)!;
+        return runMotdStoreOperation(this._catalog.motds, spec, viewer, args);
+    }
+    async getCurrentMotd(viewer: MotdViewer) { return this._motdOperation("getCurrentMotd", viewer); }
+    async dismissMotd(viewer: MotdViewer, motdId: string) { return this._motdOperation("dismissMotd", viewer, { motdId }); }
+    async getMotdImage(viewer: MotdViewer, motdId: string, mobile = false) { return this._motdOperation("getMotdImage", viewer, { motdId, mobile }); }
+    async listMotds(viewer: MotdViewer, limit?: number, before?: string) { return this._motdOperation("listMotds", viewer, { limit, before }); }
+    async createMotd(viewer: MotdViewer, input: MotdCreateInput) { return this._motdOperation("createMotd", viewer, input); }
+    async deleteMotd(viewer: MotdViewer, motdId: string) { return this._motdOperation("deleteMotd", viewer, { motdId }); }
     async listFeatureFlags(viewer: FeatureViewer): Promise<FeatureView> { return this._requireFeatures().read(viewer, "cluster"); }
     async getClusterFeatureFlags(viewer: FeatureViewer): Promise<FeatureView> { return this._requireFeatures().read(viewer, "cluster"); }
     async getMyFeatureFlags(viewer: FeatureViewer): Promise<FeatureView> { return this._requireFeatures().read(viewer, "user"); }

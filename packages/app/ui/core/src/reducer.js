@@ -1,6 +1,7 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
 import { normalizeWorkflowLayouts, workflowLayoutsWith } from "./workflow-layouts.js";
+import { normalizeThemeSound } from "./theme-sound.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
@@ -8,6 +9,7 @@ import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
 import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
+import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
@@ -27,6 +29,7 @@ import {
     SESSION_VIEW_LAYOUT_KEYS,
     defaultSessionView,
     normalizeStoredSessionViews,
+    normalizeChatReading,
 } from "./state.js";
 
 /**
@@ -50,6 +53,20 @@ function clearFeatureIdentity(features) {
 
 function featurePrincipalKey(principal) {
     return JSON.stringify([principal?.provider, principal?.subject]);
+}
+
+function motdForIdentity(state, auth = state.auth, profile = state.admin.profile) {
+    const previous = motdPrincipal(state);
+    const next = motdPrincipal({ auth, admin: { profile } });
+    if (featurePrincipalKey(previous) !== featurePrincipalKey(next))
+        return createMotdState((state.motd?.generation || 0) + 1, state.motd?.portalEnabled);
+    const admin = (a, p) => a?.authorization?.role
+        ? ["admin", "anonymous"].includes(a.authorization.role) && p?.isAdmin !== false : p?.isAdmin === true;
+    if (admin(state.auth, state.admin.profile) !== admin(auth, profile))
+        return { ...state.motd, generation: (state.motd?.generation || 0) + 1, preview: null, reading: false,
+            images: Object.fromEntries(Object.entries(state.motd.images).map(([id, pictures]) =>
+                [id, { ...pictures, attempted: {}, failures: {} }])) };
+    return state.motd;
 }
 
 /** A provider name, or null. Names are cluster-unique and never blank. */
@@ -978,7 +995,9 @@ function baseReducer(state, action) {
                 ...state,
                 admin: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
                     || state.auth?.authorization?.role !== action.authorization?.role
-                    ? { ...state.admin, features: clearFeatureIdentity(state.admin.features) } : state.admin,
+                    ? { ...state.admin, features: clearFeatureIdentity(state.admin.features), motds: createMotdAdminState(),
+                        ...(!action.principal && state.auth?.principal ? { profile: null } : {}) } : state.admin,
+                motd: motdForIdentity(state, { principal: action.principal, authorization: action.authorization }),
                 auth: {
                     principal: action.principal ?? null,
                     authorization: action.authorization ?? null,
@@ -1021,6 +1040,30 @@ function baseReducer(state, action) {
             return { ...state, ui: { ...state.ui, workflowLayouts: next } };
         }
 
+        case "ui/themeSound": {
+            // device "mobile" edits the phone's own setting; anything else the desktop's.
+            const key = action.device === "mobile" ? "themeSoundMobile" : "themeSound";
+            const next = normalizeThemeSound(action.themeSound);
+            if (!next) return state;
+            const current = state.ui[key];
+            if (current && current.on === next.on && current.volume === next.volume) return state;
+            return { ...state, ui: { ...state.ui, [key]: next } };
+        }
+
+        case "ui/chatReading": {
+            const next = normalizeChatReading(action.reading);
+            if (!next) return state;
+            const current = state.ui.chatReading;
+            if (current
+                && current.on === next.on
+                && current.width === next.width
+                && current.align === next.align
+                && current.pad === next.pad) {
+                return state;
+            }
+            return { ...state, ui: { ...state.ui, chatReading: next } };
+        }
+
         case "ui/agentPickerUsage": {
             const usage = action.usage && typeof action.usage === "object" && !Array.isArray(action.usage)
                 ? action.usage
@@ -1049,6 +1092,15 @@ function baseReducer(state, action) {
             // say "rich" fall through to the transcript below.
             const hasTouchScale = Object.prototype.hasOwnProperty.call(settings, "touchScale")
                 && typeof settings.touchScale === "boolean";
+            const nextChatReading = Object.prototype.hasOwnProperty.call(settings, "chatReading")
+                ? normalizeChatReading(settings.chatReading)
+                : null;
+            const nextThemeSound = Object.prototype.hasOwnProperty.call(settings, "themeSound")
+                ? normalizeThemeSound(settings.themeSound)
+                : null;
+            const nextThemeSoundMobile = Object.prototype.hasOwnProperty.call(settings, "themeSoundMobile")
+                ? normalizeThemeSound(settings.themeSoundMobile)
+                : null;
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
             const hasWorkflowLayouts = Object.prototype.hasOwnProperty.call(settings, "workflowLayouts")
@@ -1153,6 +1205,9 @@ function baseReducer(state, action) {
                     moaLoaded: true,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
+                    chatReading: nextChatReading || selection.ui.chatReading,
+                    themeSound: nextThemeSound || selection.ui.themeSound,
+                    themeSoundMobile: nextThemeSoundMobile || selection.ui.themeSoundMobile,
                     sessionDetailCollapsed: hasSessionDetailCollapsed
                         ? settings.sessionDetailCollapsed
                         : selection.ui.sessionDetailCollapsed,
@@ -2601,6 +2656,7 @@ function baseReducer(state, action) {
         case "admin/profile/loaded": {
             return {
                 ...state,
+                motd: motdForIdentity(state, state.auth, action.profile),
                 admin: {
                     ...state.admin,
                     loading: false,
@@ -2609,6 +2665,9 @@ function baseReducer(state, action) {
                     features: featurePrincipalKey(state.admin.profile) !== featurePrincipalKey(action.profile)
                         || Boolean(state.admin.profile?.isAdmin) !== Boolean(action.profile?.isAdmin)
                         ? clearFeatureIdentity(state.admin.features) : state.admin.features,
+                    motds: featurePrincipalKey(state.admin.profile) !== featurePrincipalKey(action.profile)
+                        || Boolean(state.admin.profile?.isAdmin) !== Boolean(action.profile?.isAdmin)
+                        ? createMotdAdminState() : state.admin.motds,
                     ghcpKey: {
                         ...state.admin.ghcpKey,
                         // A successful load doesn't clobber an in-progress
@@ -3060,9 +3119,20 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["providers", "packages", "workers", "features", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "workers", "features", "appearance", "motd", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            if (section === "motd" && !canReadMotd(state)) return state;
             return { ...state, admin: { ...state.admin, section } };
         }
+        case "motd/patch":
+            return { ...state, motd: { ...state.motd, ...action.patch } };
+        case "motd/dismiss": {
+            const id = action.motdId;
+            return { ...state, motd: { ...state.motd, current: state.motd.current?.motdId === id ? null : state.motd.current,
+                dismissed: [...new Set([...state.motd.dismissed, id])],
+                pendingDismissals: [...new Set([...state.motd.pendingDismissals, id])] } };
+        }
+        case "admin/motds":
+            return { ...state, admin: { ...state.admin, motds: { ...state.admin.motds, ...action.patch } } };
         case "admin/features":
             return { ...state, admin: { ...state.admin, features: { ...state.admin.features, ...action.patch } } };
         case "admin/workers/attempt": {
@@ -3088,6 +3158,22 @@ function baseReducer(state, action) {
         }
         case "admin/workers/loadFailed": {
             return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: false, error: action.error || "Failed to load workers" } } };
+        }
+        case "admin/packages/query": {
+            const allowed = new Set(["all", "package", "agent", "author", "contributor"]);
+            const current = state.admin.packages.queryField || "all";
+            const field = action.field == null ? current : (allowed.has(action.field) ? action.field : current);
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    packages: {
+                        ...state.admin.packages,
+                        query: String(action.query ?? ""),
+                        queryField: field,
+                    },
+                },
+            };
         }
         case "admin/packages/loading": {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: true, error: null } } };

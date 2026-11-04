@@ -62,7 +62,7 @@ function RadioChoices({ legend, name, value, options, disabled, onChange }) {
             onChange: () => onChange(option.value) }), h("span", null, option.label)))));
 }
 
-function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workersError, isAdmin, userName }) {
+function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workersError, isAdmin, userName, mobile = false }) {
     const id = React.useId();
     const draft = controller.getFeatureDraft?.(flag.featureKey);
     const dirty = draft !== undefined;
@@ -92,6 +92,34 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
         else if (locked) preview = `${futureTarget} future preference will ${choice === "inherit" ? "follow the cluster setting" : `be ${onOff(choice === "true")}`}. ${onOff(storedEnabled)} still applies while the cluster requires it.`;
         else preview = `${onOff(choice === "inherit" ? storedEnabled : choice === "true")} for ${target}. ${choice === "inherit" ? "Following the cluster setting." : "Using the personal choice."}`;
     }
+    if (mobile) return h("section", { className: "ps-feature-flag", "aria-labelledby": `${id}-title` },
+        h("label", { className: "ps-mobile-setting-row" },
+            h("span", null, h("strong", { id: `${id}-title` }, flag.displayName), h("small", null, flag.description)),
+            h("input", { type: "checkbox", role: "switch",
+                checked: mode === "cluster" ? Boolean(clusterDraft.enabled) : choice === "inherit" ? Boolean(storedEnabled) : choice === "true",
+                disabled: !isAdmin || editDisabled,
+                onChange: event => {
+                    const checked = event.target.checked;
+                    if (mode === "cluster") return controller.setFeatureDraft(flag.featureKey, { ...clusterDraft, enabled: checked });
+                    // A switch has no "follow the cluster" position. Toggling back to
+                    // the saved state drops the draft instead of saving a personal
+                    // override that only looks the same.
+                    const backToSaved = savedChoice === "inherit" ? checked === Boolean(storedEnabled) : String(checked) === savedChoice;
+                    if (backToSaved) return controller.discardFeatureDraft(flag.featureKey);
+                    return controller.setFeatureDraft(flag.featureKey, { enabled: checked });
+                } })),
+        h("p", { className: "ps-feature-explanation" }, `${savedValue}. ${reason}${!isAdmin ? " Read only on a phone." : ""}`),
+        flag.reason === "requires_native_tasks" ? h("p", { role: "status" }, "Base Agent V2 requires Native Copilot tasks. Its preference is saved.") : null,
+        knownBlocked ? h("p", { role: "status" }, "The saved setting is On, but no reporting worker is configured for native tasks.") : null,
+        dirty ? h("p", { role: "status" }, preview) : null,
+        conflict ? h("p", { role: "status" }, "Settings changed since this edit began. Refresh and review before saving.") : null,
+        isAdmin ? h("div", { className: "ps-feature-actions" },
+            h("button", { type: "button", className: "ps-mini-button", disabled: editDisabled || !dirty || conflict,
+                onClick: () => controller.saveFeatureDraft(flag.featureKey) }, saving && dirty ? "Saving…" : "Save changes"),
+            h("button", { type: "button", className: "ps-mini-button", disabled: busy || !dirty,
+                onClick: () => controller.discardFeatureDraft(flag.featureKey) }, "Discard changes"),
+            conflict ? h("button", { type: "button", className: "ps-mini-button", disabled: busy || conflictNeedsRefresh,
+                onClick: () => controller.reviewFeatureDraft(flag.featureKey) }, "Review latest settings") : null) : null);
     return h("section", { className: "ps-feature-flag", "data-feature-key": flag.featureKey, "aria-labelledby": `${id}-title` },
         h("div", { className: "ps-feature-flag-heading" }, h("h3", { id: `${id}-title` }, flag.displayName),
             dirty ? h("span", { className: "ps-feature-unsaved" }, "Unsaved changes") : null),
@@ -148,7 +176,7 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
                 h("p", { className: "ps-feature-explanation" }, "Preview stages removal of the cluster override. Save changes to use the code-defined defaults; personal choices are kept.")) : null));
 }
 
-export function FeatureFlagsPanel({ controller, features = {}, isAdmin, workers = [], workersError = null }) {
+export function FeatureFlagsPanel({ controller, features = {}, isAdmin, workers = [], workersError = null, mobile = false }) {
     const mode = features.mode || "mine";
     const [userQuery, setUserQuery] = React.useState(features.userQuery || "");
     const user = features.users?.find(entry => entry.userId === features.userId);
@@ -183,6 +211,6 @@ export function FeatureFlagsPanel({ controller, features = {}, isAdmin, workers 
         features.notice ? h("p", { role: "status" }, features.notice) : null,
         features.loading ? h("p", { role: "status" }, "Loading feature settings…") : null,
         (mode === "mine" || isAdmin ? features.data?.flags || [] : []).map(flag => h(FeatureFlagRow, { key: `${mode}:${features.userId}:${flag.featureKey}`,
-            flag, mode, busy, saving: features.saving, controller, workers, workersError, isAdmin, userName })),
+            flag, mode, busy, saving: features.saving, controller, workers, workersError, isAdmin, userName, mobile })),
         !features.loading && features.data?.flags?.length === 0 ? h("p", null, "No feature definitions are published.") : null);
 }

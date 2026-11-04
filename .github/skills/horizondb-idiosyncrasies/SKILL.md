@@ -19,7 +19,7 @@ vanilla Postgres. This skill captures the verified facts and the workarounds.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `self-signed certificate in certificate chain` | pg v8 treats `sslmode=require` as `verify-full` | append `uselibpqcompat=true` to the connection string |
-| `extension "X" is not allow-listed for "azure_pg_admin" users` | empty/insufficient `azure.extensions` on the parameter group | add X to `azure.extensions` on a custom parameter group, attach to cluster |
+| `extension "X" is not allow-listed for "azure_pg_admin" users` | empty/insufficient `azure.extensions` on the parameter group | add X to `azure.extensions` on a custom parameter group, attach it to the cluster's pool |
 | `access to library "age" is not allowed` | `age` is in `shared_preload_libraries`; explicit `LOAD 'age'` is forbidden | tolerate that error — the library is already preloaded |
 | `syntax error at or near "WHERE"` from `cypher_parser.c` | AGE doesn't support `any(x IN list WHERE pred)` | use `size([x IN list WHERE pred]) > 0` |
 | `schema "..." already exists` creating an AGE graph | graph name collides with an existing schema (`create_graph` makes a schema) | give the graph a name distinct from every other schema |
@@ -107,19 +107,11 @@ The **default parameter group** (`default_pg17`) ships with `azure.extensions`
 
 ### Enabling extensions
 
-**Parameter groups are immutable.** Updating an existing group is rejected with
-`ParameterGroupUpdateNotSupported`, including changes to `max_connections`.
-Create a new group under a distinct name with the complete desired parameters,
-then attach it to the existing cluster with `applyImmediately: true` and wait
-for `InSync`. Retrying provisioning should reuse the revisioned group rather
-than PUT an update. CI uses a deterministic settings-revision suffix. In the
-Microsoft repository, perform these mutations through GitHub Actions.
-
-
 You **cannot** set `azure.extensions` per-session. You must create a custom
-**parameter group**, set the allow-list (and `shared_preload_libraries` for
-preload-required extensions), and attach it to the cluster. Attaching triggers a
-**cluster restart** (~2 min downtime) when `shared_preload_libraries` changes.
+**parameter group** (settings group), set the allow-list (and
+`shared_preload_libraries` for preload-required extensions), and attach it to
+the cluster's **pool**. Attaching restarts the server once (about 10 s down)
+when `shared_preload_libraries` changes.
 
 **Preload requirements:** `age` and `pg_durable` must be in
 `shared_preload_libraries`. `vector` and `pg_textsearch` only need to be in
@@ -127,22 +119,56 @@ preload-required extensions), and attach it to the cluster. Attaching triggers a
 in `shared_preload_libraries` (HorizonDB's allowed preload set is fixed and does
 not include it), yet works without preloading.
 
+#### API 2026-10-01-preview: pools own compute and the settings group
+
+The deploy module (`deploy/providers/azure/services/horizondb/bicep/main.bicep`
+plus `ensureHorizonDbParameterGroup` in `deploy/scripts/lib/horizondb.mjs`)
+uses API `2026-10-01-preview`. Its rules, each found by a failed deploy:
+
+| Rule | What happens otherwise |
+| --- | --- |
+| Compute (`computeModel`, `nodeCount`) and `parameterGroup` live on `clusters/{c}/pools/{pool}`, not on the cluster | the cluster PUT ignores them |
+| A new pool accepts only the built-in group `/subscriptions/{s}/providers/Microsoft.HorizonDb/locations/{region}/parameterGroups/default_pg17`; attach the custom group with a pool PATCH afterwards | pool create is rejected |
+| `clusters/{c}/authentications/passwordMethod` needs an existing pool | `Pool 'DefaultPool' was not found` |
+| `administratorLogin` can be sent once; later PUTs send only the password (a reset) | `administratorLogin cannot be specified because an administrator is already configured` |
+| PUT the settings group before the cluster, not in parallel: a PUT to a group that a pool uses keeps the cluster `Updating` for about a minute | cluster PUT fails with `ClusterNotReady` |
+| Read the host name from `clusters/{c}/endpoints/{c}` (role ReadWrite). New clusters use `{c}.rw.{id}.{region}.horizondb.azure.com` | the old API's `fullyQualifiedDomainName` does not resolve for new clusters |
+| Settings groups can be updated (PUT/PATCH); connected pools pick up the change | (API 2026-01-20-preview rejected updates with `ParameterGroupUpdateNotSupported`) |
+
+**Attach timing.** A pool PATCH takes about two minutes. During that time the
+pool GET still shows the **previous** group as `Succeeded` / `InSync`; the
+server restarts about a minute in, and the GET shows the new group only when
+the operation ends. Send **one** PATCH, then wait until the GET shows the new
+group with `syncStatus: InSync` (or follow the `Azure-AsyncOperation` URL).
+
+**The first PATCH soon after a pool is created can be dropped:** it ends
+`Succeeded`, no restart happens, and the pool stays on the built-in group.
+Seen twice, each time within a minute of the pool's create and login writes.
+A second PATCH then attached normally. `ensureHorizonDbParameterGroup`
+resends the PATCH when the GET still shows another group four minutes later
+(at most three PATCHes).
+
+`syncStatus` values: `Applying`, `InSync`, `PendingReboot` (static settings
+wait for `POST .../pools/{pool}/restart`), `FailedToApply`. With
+`applyMethod: Immediate` the service applied `shared_preload_libraries`
+without a manual restart in testing; the deploy still handles `PendingReboot`.
+
 #### Via ARM (az rest)
 
 ```bash
-SUB=<subscription-id>; RG=<resource-group>; API=2026-01-20-preview
-CLUSTER=<cluster-name>; PG=<cluster>-ext
+SUB=<subscription-id>; RG=<resource-group>; API=2026-10-01-preview
+CLUSTER=<cluster-name>; PG=<cluster>-ext; REGION=<region>
 
-# 1. Create the parameter group (sparse list merges into ~426 defaults).
-#    NOTE: top-level "location" is REQUIRED or you get LocationRequired.
+# 1. Create or update the settings group. Only the listed values are stored
+#    as overrides (valueSource UserOverride); the rest are service defaults.
 cat > /tmp/pg-body.json <<EOF
 {
-  "location": "<region>",
+  "location": "$REGION",
   "properties": {
     "description": "Enable AI/graph extensions",
-    "pgVersion": "17",
+    "postgreSqlVersion": "17",
     "parameters": [
-      { "name": "azure.extensions",          "value": "age,azure_ai,pg_durable,pg_textsearch,vector" },
+      { "name": "azure.extensions",          "value": "age,azure_ai,pg_diskann,pg_durable,pg_textsearch,vector" },
       { "name": "shared_preload_libraries",  "value": "age,pg_durable,pg_textsearch" }
     ]
   }
@@ -152,30 +178,24 @@ az rest --method put \
   --url "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.HorizonDb/parameterGroups/$PG?api-version=$API" \
   --headers "Content-Type=application/json" --body @/tmp/pg-body.json
 
-# 2. Poll until properties.provisioningState == "Succeeded".
-
-# 3. Attach to the cluster (triggers restart). PATCH only the parameterGroup ref.
-cat > /tmp/cluster-patch.json <<EOF
-{ "properties": { "parameterGroup": {
-  "id": "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.HorizonDb/parameterGroups/$PG" } } }
-EOF
+# 2. Attach it to the pool (one restart). Then poll the pool GET until it
+#    shows this group with syncStatus InSync (about two minutes).
 az rest --method patch \
-  --url "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.HorizonDb/clusters/$CLUSTER?api-version=$API" \
-  --headers "Content-Type=application/json" --body @/tmp/cluster-patch.json
-
-# 4. Poll the cluster: properties.state goes Updating -> Succeeded.
-#    (provisioningState may be empty in steady state; key off `state`.)
+  --url "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.HorizonDb/clusters/$CLUSTER/pools/DefaultPool?api-version=$API" \
+  --headers "Content-Type=application/json" \
+  --body "{\"properties\":{\"parameterGroup\":{\"parameterGroupResourceId\":\"/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.HorizonDb/parameterGroups/$PG\",\"applyMethod\":\"Immediate\"}}}"
 ```
 
 Notes:
 - The platform **re-injects its own system preload libs** (`azure`,
   `orion_storage`, `pg_availability`, `pg_qs`, `pgms_stats`,
-  `pgms_wait_sampling`) on top of yours — you only list the extras.
-- The default group `default_pg17` is **not** an ARM resource (GET returns
-  ResourceNotFound). Discover existing user groups with:
-  `az graph query -q "resources | where type =~ 'microsoft.horizondb/parametergroups'"`.
-- A good template to clone from is any working group that already enables these
-  (e.g. a `fts-age-pgts` style group in the same subscription).
+  `pgms_wait_sampling`, and on newer builds `pgaadauth`, `horizondb_ext`) on
+  top of yours — you only list the extras.
+- List the built-in groups with
+  `GET /subscriptions/{s}/providers/Microsoft.HorizonDb/locations/{region}/parameterGroups?api-version=2026-10-01-preview`.
+- Extension versions depend on the server build. Clusters created at different
+  times can run different builds (for example `age` 1.7.0 on one and 1.8.0 on
+  a newer one); check `pg_available_extensions` on the cluster you test.
 
 ### Verify after restart
 
@@ -559,18 +579,19 @@ so the `embedding vector(dim)` column and HNSW index exist.
 ## 6. Networking / firewall
 
 - HorizonDB firewall rules live under
-  `clusters/{cluster}/pools/{pool}/firewallRules`, but the **pool name is not
-  enumerable** via ARM/CLI (no list/read; GET on the collection returns
-  MethodNotAllowed). The practical path is the **portal Networking blade** on the
-  cluster to add your client IP, or open a broad range temporarily.
+  `clusters/{cluster}/pools/{pool}/firewallRules`. With API
+  `2026-10-01-preview`, `GET clusters/{cluster}/pools` lists the pools (the
+  default one is `DefaultPool`) and the firewall rule collection can be listed.
+  Add one rule per client IPv4; never open a broad range.
 - Connections still require the TLS handling from §1 once the firewall is open.
 
 ## 7. Working checklist for a fresh cluster
 
-1. Open firewall to your IP (portal Networking blade).
+1. Add a firewall rule for your IP on the pool (§6).
 2. Connect with `?sslmode=require&uselibpqcompat=true`; confirm `select version()`.
-3. Create + attach a parameter group with `azure.extensions` and
-   `shared_preload_libraries` for the extensions you need; wait for the restart.
+3. Create a settings group with `azure.extensions` and
+   `shared_preload_libraries` for the extensions you need, attach it to the
+   pool, and wait until the pool GET shows it as `InSync` (§2).
 4. `CREATE EXTENSION` for `vector`, `age`, `pg_durable`, `pg_textsearch` as needed.
 5. For AGE: tolerant `LOAD 'age'`, set `search_path`, distinct graph vs schema
    names, avoid `any(... WHERE ...)`.

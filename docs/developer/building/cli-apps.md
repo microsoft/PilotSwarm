@@ -234,6 +234,11 @@ npx pilotswarm auth status --api-url https://portal.example.com
 npx pilotswarm auth logout --api-url https://portal.example.com
 ```
 
+Deployments that use the `dev` auth provider need no browser sign-in: set
+`PILOTSWARM_DEV_USER` to a persona from the deployment's roster, for example
+`alice`. `auth login` and `auth status` reject personas outside the roster.
+`auth logout` does not change the persona; unset `PILOTSWARM_DEV_USER` instead.
+
 For operators and internal use, the direct store-connected variant still works:
 
 ```bash

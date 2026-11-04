@@ -180,6 +180,23 @@ export interface ModelProviderConfig {
      * API. A model's own `wireApi` wins over this one.
      */
     wireApi?: "completions" | "responses";
+    /**
+     * Extra HTTP headers sent on every model request to this provider, for an
+     * endpoint that needs a fixed header besides the credential (an
+     * integration id, an API-gateway routing header).
+     *
+     * Values are plain strings, sent exactly as written. An `env:` reference
+     * is refused, and so is a credential header (`Authorization`, `api-key`,
+     * `x-api-key`). The headers go wherever an instance of the type points,
+     * and a personal instance may point at a `baseUrl` its owner chose, so
+     * nothing secret may be put here. The credential comes from `apiKey`, the
+     * instance, or workload identity.
+     *
+     * Every shared and personal instance of the type sends the same headers;
+     * an instance cannot add or change them. Not allowed on `github`
+     * providers: the native Copilot transport takes no provider config.
+     */
+    headers?: Record<string, string>;
     /** Available models. Can be plain strings (legacy) or ModelEntry objects with descriptions. */
     models: (string | ModelEntry)[];
 }
@@ -256,6 +273,8 @@ export interface ResolvedProvider {
         wireApi?: "completions" | "responses";
         apiKey?: string;
         azure?: { apiVersion?: string };
+        /** A copy of the type's `headers` — see ModelProviderConfig.headers. */
+        headers?: Record<string, string>;
     };
 }
 
@@ -309,6 +328,74 @@ function validateModelWireApi(provider: ModelProviderConfig, qualified: string, 
     }
 }
 
+// ─── Request headers ─────────────────────────────────────────────
+
+/** RFC 9110 field-name characters. */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * Header names a provider's `headers` may not set. The first four carry a
+ * credential, which has its own field; the rest belong to the HTTP client.
+ */
+const RESERVED_HEADERS = new Set([
+    "authorization", "proxy-authorization", "api-key", "x-api-key",
+    "host", "content-length", "content-type", "transfer-encoding", "connection",
+]);
+
+/**
+ * Check a provider's `headers` once, when the registry is built. A bad entry
+ * fails the load by provider id instead of failing a request later.
+ */
+function validateProviderHeaders(provider: ModelProviderConfig): void {
+    const headers: unknown = provider.headers;
+    if (headers === undefined) return;
+    const label = `provider ${JSON.stringify(provider.id)}`;
+    if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+        throw new Error(`Invalid headers on ${label}: expected an object of header names to string values.`);
+    }
+    if (provider.type === "github") {
+        throw new Error(
+            `Invalid headers on ${label}: github providers use the native Copilot transport, which sends no provider headers.`,
+        );
+    }
+    const seen = new Set<string>();
+    for (const [name, value] of Object.entries(headers)) {
+        const lower = name.toLowerCase();
+        if (!HEADER_NAME.test(name)) {
+            throw new Error(`Invalid headers on ${label}: ${JSON.stringify(name)} is not a valid header name.`);
+        }
+        if (RESERVED_HEADERS.has(lower)) {
+            throw new Error(
+                `Invalid headers on ${label}: ${JSON.stringify(name)} may not be set here. ` +
+                `A credential comes from apiKey, the provider instance or workload identity.`,
+            );
+        }
+        if (seen.has(lower)) {
+            throw new Error(`Invalid headers on ${label}: ${JSON.stringify(name)} appears twice (header names ignore case).`);
+        }
+        seen.add(lower);
+        if (typeof value !== "string" || /[\r\n\0]/.test(value)) {
+            throw new Error(`Invalid headers on ${label}: the value of ${JSON.stringify(name)} must be a single-line string.`);
+        }
+        if (value.trim().toLowerCase().startsWith("env:")) {
+            throw new Error(
+                `Invalid headers on ${label}: the value of ${JSON.stringify(name)} is an env: reference. ` +
+                `Header values are sent as written and may not hold a secret.`,
+            );
+        }
+    }
+}
+
+/**
+ * The headers to put on a provider's SDK config: a copy, so a caller that
+ * edits its config cannot change the registry. Undefined when there are none,
+ * so the caller leaves the key out.
+ */
+export function providerHeaders(provider: Pick<ModelProviderConfig, "headers">): Record<string, string> | undefined {
+    if (!provider.headers || Object.keys(provider.headers).length === 0) return undefined;
+    return { ...provider.headers };
+}
+
 // ─── Registry ────────────────────────────────────────────────────
 
 /**
@@ -329,6 +416,10 @@ export class ModelProviderRegistry {
     constructor(config: ModelProvidersFile, opts: { keepUncredentialed?: boolean } = {}) {
         const configuredDefaultModel = config.defaultModel;
         this._defaultModel = configuredDefaultModel;
+
+        // Checked before the credential filter below, so a bad entry fails
+        // the load whether or not its key happens to be set.
+        for (const p of config.providers) validateProviderHeaders(p);
 
         // Filter to providers whose credentials are actually available.
         // GitHub providers are kept even without an env token because a
@@ -490,6 +581,7 @@ export class ModelProviderRegistry {
         const sdkProviderType = toSdkProviderType(provider.type);
         const usesWorkloadIdentity = providerTypeUsesWorkloadIdentity(provider.type);
         const wireApi = effectiveWireApi(provider, desc);
+        const headers = providerHeaders(provider);
 
         return {
             providerId: provider.id,
@@ -508,6 +600,7 @@ export class ModelProviderRegistry {
                 ...(provider.type === "azure" && {
                     azure: { apiVersion: provider.apiVersion || "2024-10-21" },
                 }),
+                ...(headers ? { headers } : {}),
             },
         };
     }

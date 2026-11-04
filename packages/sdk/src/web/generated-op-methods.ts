@@ -18,6 +18,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "completeSession",
     "completeSessionGroup",
     "copyArtifact",
+    "createMotd",
     "createMyProvider",
     "createProvider",
     "createSession",
@@ -30,10 +31,12 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "deleteGraphEdge",
     "deleteGraphNamespace",
     "deleteGraphNode",
+    "deleteMotd",
     "deleteMyProvider",
     "deleteProvider",
     "deleteSession",
     "deleteSessionGroup",
+    "dismissMotd",
     "downloadArtifact",
     "exportExecutionHistory",
     "factsCapabilities",
@@ -46,6 +49,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getCanvasShareLink",
     "getChildOutcome",
     "getClusterFeatureFlags",
+    "getCurrentMotd",
     "getCurrentUserProfile",
     "getDefaultModel",
     "getDefaults",
@@ -63,6 +67,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getLogConfig",
     "getModelDefaults",
     "getModelsByProvider",
+    "getMotdImage",
     "getMyFeatureFlags",
     "getOrchestrationStats",
     "getProviderStatus",
@@ -113,6 +118,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listGraphNamespaces",
     "listKnownUsers",
     "listModels",
+    "listMotds",
     "listPausedSessions",
     "listProviders",
     "listSessionGroups",
@@ -299,6 +305,23 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Create a message. Start defaults to server creation; omit endsAt to keep it until replaced or deleted. [admin]
+     * @remarks `POST /management/motd` — access: `fleet:admin`
+     */
+    createMotd(params: {
+        startsAt?: any;
+        endsAt?: any;
+        fromAt?: any;
+        toAt?: any;
+        bodyMd?: any;
+        mobileBodyMd?: any;
+        image?: any;
+        mobileImage?: any;
+        imagePlacement?: any;
+        requestId?: any;
+    }): Promise<any>;
+
+    /**
      * Create a provider of your own, on your own credentials. Nobody else sees it.
      * @remarks `POST /me/providers` — access: `authed`
      */
@@ -427,6 +450,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Delete a message and its pictures, without an audit record. [admin]
+     * @remarks `DELETE /management/motd/:motdId` — access: `fleet:admin`
+     */
+    deleteMotd(params: {
+        motdId: string;
+    }): Promise<any>;
+
+    /**
      * Remove one of your own providers. Returns how many sessions are now waiting on the name.
      * @remarks `DELETE /me/providers/:name` — access: `authed`
      */
@@ -456,6 +487,14 @@ export interface ManagementOps {
      */
     deleteSessionGroup(params: {
         groupId: string;
+    }): Promise<any>;
+
+    /**
+     * Dismiss a message for myself permanently.
+     * @remarks `POST /management/motd/:motdId/dismiss` — access: `authed`
+     */
+    dismissMotd(params: {
+        motdId: string;
     }): Promise<any>;
 
     /**
@@ -564,6 +603,12 @@ export interface ManagementOps {
      * @remarks `GET /management/features/cluster` — access: `authed`
      */
     getClusterFeatureFlags(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Read the current message, excluding my dismissals.
+     * @remarks `GET /management/motd/current` — access: `authed`
+     */
+    getCurrentMotd(params?: Record<string, never>): Promise<any>;
 
     /**
      * Profile of the authenticated principal.
@@ -693,6 +738,15 @@ export interface ManagementOps {
      * @remarks `GET /models/by-provider` — access: `authed`
      */
     getModelsByProvider(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Read a message picture as base64. Mobile falls back to the main picture.
+     * @remarks `GET /management/motd/:motdId/image` — access: `authed`
+     */
+    getMotdImage(params: {
+        motdId: string;
+        mobile?: boolean;
+    }): Promise<any>;
 
     /**
      * Read my feature preferences and effective values.
@@ -1108,6 +1162,15 @@ export interface ManagementOps {
      * @remarks `GET /models` — access: `authed`
      */
     listModels(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Read message history and overlap status. Creator identity and dismissal counts are admin-only.
+     * @remarks `GET /management/motd` — access: `authed`
+     */
+    listMotds(params: {
+        limit?: number;
+        before?: string;
+    }): Promise<any>;
 
     /**
      * Sessions waiting on a limit, allowance, hold, or a provider name that no longer resolves. Admins fleet-wide, everyone else their own.
@@ -1850,6 +1913,7 @@ export function createManagementOps(
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
+        createMotd: (params: Record<string, unknown> = {}) => callOp("createMotd", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
@@ -1862,10 +1926,12 @@ export function createManagementOps(
         deleteGraphEdge: (params: Record<string, unknown> = {}) => callOp("deleteGraphEdge", params),
         deleteGraphNamespace: (params: Record<string, unknown> = {}) => callOp("deleteGraphNamespace", params),
         deleteGraphNode: (params: Record<string, unknown> = {}) => callOp("deleteGraphNode", params),
+        deleteMotd: (params: Record<string, unknown> = {}) => callOp("deleteMotd", params),
         deleteMyProvider: (params: Record<string, unknown> = {}) => callOp("deleteMyProvider", params),
         deleteProvider: (params: Record<string, unknown> = {}) => callOp("deleteProvider", params),
         deleteSession: (params: Record<string, unknown> = {}) => callOp("deleteSession", params),
         deleteSessionGroup: (params: Record<string, unknown> = {}) => callOp("deleteSessionGroup", params),
+        dismissMotd: (params: Record<string, unknown> = {}) => callOp("dismissMotd", params),
         downloadArtifact: (params: Record<string, unknown> = {}) => callOp("downloadArtifact", params),
         exportExecutionHistory: (params: Record<string, unknown> = {}) => callOp("exportExecutionHistory", params),
         factsCapabilities: (params: Record<string, unknown> = {}) => callOp("factsCapabilities", params),
@@ -1878,6 +1944,7 @@ export function createManagementOps(
         getCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("getCanvasShareLink", params),
         getChildOutcome: (params: Record<string, unknown> = {}) => callOp("getChildOutcome", params),
         getClusterFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getClusterFeatureFlags", params),
+        getCurrentMotd: (params: Record<string, unknown> = {}) => callOp("getCurrentMotd", params),
         getCurrentUserProfile: (params: Record<string, unknown> = {}) => callOp("getCurrentUserProfile", params),
         getDefaultModel: (params: Record<string, unknown> = {}) => callOp("getDefaultModel", params),
         getDefaults: (params: Record<string, unknown> = {}) => callOp("getDefaults", params),
@@ -1895,6 +1962,7 @@ export function createManagementOps(
         getLogConfig: (params: Record<string, unknown> = {}) => callOp("getLogConfig", params),
         getModelDefaults: (params: Record<string, unknown> = {}) => callOp("getModelDefaults", params),
         getModelsByProvider: (params: Record<string, unknown> = {}) => callOp("getModelsByProvider", params),
+        getMotdImage: (params: Record<string, unknown> = {}) => callOp("getMotdImage", params),
         getMyFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getMyFeatureFlags", params),
         getOrchestrationStats: (params: Record<string, unknown> = {}) => callOp("getOrchestrationStats", params),
         getProviderStatus: (params: Record<string, unknown> = {}) => callOp("getProviderStatus", params),
@@ -1945,6 +2013,7 @@ export function createManagementOps(
         listGraphNamespaces: (params: Record<string, unknown> = {}) => callOp("listGraphNamespaces", params),
         listKnownUsers: (params: Record<string, unknown> = {}) => callOp("listKnownUsers", params),
         listModels: (params: Record<string, unknown> = {}) => callOp("listModels", params),
+        listMotds: (params: Record<string, unknown> = {}) => callOp("listMotds", params),
         listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),
         listProviders: (params: Record<string, unknown> = {}) => callOp("listProviders", params),
         listSessionGroups: (params: Record<string, unknown> = {}) => callOp("listSessionGroups", params),
