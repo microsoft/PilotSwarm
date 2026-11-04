@@ -33,10 +33,16 @@ sharing, and a transcript.
   so switching tabs, panels or sessions and back shows it exactly as you left
   it. Use **Zoom in**, **Zoom out** and **Fit to screen** at its bottom left. With **Move the
   graph** (the hand, on by default) drag the background to move the graph,
-  and pinch or scroll to zoom; a drag that starts on a step never moves it.
-  Turn the hand off to keep the graph still while you scroll the page. A
-  run's progress never moves the view; a new definition or revision is fitted
-  once.
+  and pinch or scroll to zoom. Turn the hand off to keep the graph still while
+  you scroll the page. A run's progress never moves the view; a new definition
+  or revision is fitted once.
+- Drag a step's box to move it, with the hand on or off; a click still
+  selects the step, and a drag does not. The edges that touch a moved box
+  follow it as smooth curves. Where you put the boxes is kept for you, per
+  workflow, in your portal profile, and saved when you drop a box; it is kept
+  through new revisions (a new step takes its automatic place). **Reset
+  layout**, beside the graph's controls once a box has moved, puts every box
+  back. **Fit to screen** fits the boxes where they are.
   Select a node to inspect its outcome, tools, output and recent history in
   the right-hand side pane (**Step details**). Drag the divider between the
   workflow and that pane to resize it, use the divider's arrow keys, or

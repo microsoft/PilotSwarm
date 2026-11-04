@@ -1,5 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
+import { normalizeWorkflowLayouts, workflowLayoutsWith } from "./workflow-layouts.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
@@ -1012,6 +1013,14 @@ function baseReducer(state, action) {
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
+        // Batch 6 (f-03): where the person moved one workflow's step boxes (`steps`: { stepId: [x, y] }), or null to
+        // forget them (Reset layout). Kept in the profile settings (workflowLayouts), bounded by workflowLayoutsWith.
+        case "ui/workflowLayout": {
+            const next = workflowLayoutsWith(state.ui.workflowLayouts, action.key, action.steps ?? null, Number(action.at) || 0);
+            if (next === state.ui.workflowLayouts) return state;
+            return { ...state, ui: { ...state.ui, workflowLayouts: next } };
+        }
+
         case "ui/agentPickerUsage": {
             const usage = action.usage && typeof action.usage === "object" && !Array.isArray(action.usage)
                 ? action.usage
@@ -1042,6 +1051,9 @@ function baseReducer(state, action) {
                 && typeof settings.touchScale === "boolean";
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
+            const hasWorkflowLayouts = Object.prototype.hasOwnProperty.call(settings, "workflowLayouts")
+                && settings.workflowLayouts && typeof settings.workflowLayouts === "object"
+                && !Array.isArray(settings.workflowLayouts);
             const hasAgentPickerUsage = Object.prototype.hasOwnProperty.call(settings, "agentPickerUsage")
                 && settings.agentPickerUsage && typeof settings.agentPickerUsage === "object"
                 && !Array.isArray(settings.agentPickerUsage);
@@ -1147,6 +1159,9 @@ function baseReducer(state, action) {
                     agentPickerUsage: hasAgentPickerUsage
                         ? settings.agentPickerUsage
                         : selection.ui.agentPickerUsage,
+                    workflowLayouts: hasWorkflowLayouts
+                        ? normalizeWorkflowLayouts(settings.workflowLayouts)
+                        : selection.ui.workflowLayouts,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
                         ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: nextDesktopPanes.sideTab === "workspace" ? "workspace" : "canvas" }

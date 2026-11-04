@@ -86,9 +86,11 @@ function loadFlow() {
  * workflow's session) and the graph, so another workflow or a new definition or revision starts a new view while a run's
  * progress keeps the person's zoom and position. Batch 6 (f-06): `viewport` is the view remembered for this workflow
  * ({ key, x, y, zoom }); it is used only for the graph it was taken of (its `key`), and `onViewport` is given each new one
- * with that key.
+ * with that key. Batch 6 (f-03): `places` are where the person moved the step boxes ({ stepId: [x, y] }) and
+ * `onPlaces` is told the new places at the end of each drag (null after Reset layout); the plain picture keeps the
+ * automatic layout.
  */
-export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null }) {
+export function WorkflowGraph({ definition, nodes, selected, select, scope = null, viewport = null, onViewport = null, places = null, onPlaces = null }) {
     const key = workflowGraphKey(definition);
     // The key holds everything of the definition the layout reads.
     const layout = React.useMemo(() => layoutWorkflowGraphTB(definition), [key]);
@@ -102,6 +104,6 @@ export function WorkflowGraph({ definition, nodes, selected, select, scope = nul
         return () => { live = false; };
     }, [Flow]);
     return h("div", { className: "ps-workflow-graph", role: "group", "aria-label": "Workflow graph", "data-renderer": Flow ? "flow" : "static" },
-        Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report })
+        Flow ? h(Flow, { key: `${scope ?? ""}\u0000${key}`, layout, nodes, selected, select, viewport: remembered, onViewport: report, places, onPlaces })
             : h(WorkflowGraphStatic, { layout, nodes, selected, select }));
 }

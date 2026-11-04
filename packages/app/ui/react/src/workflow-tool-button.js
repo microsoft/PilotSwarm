@@ -43,6 +43,8 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
     tools: () => glyph(h("path", { d: "M4 7h9" }), h("path", { d: "M17 7h3" }), h("circle", { cx: "15", cy: "7", r: "2" }),
         h("path", { d: "M4 17h3" }), h("path", { d: "M11 17h9" }), h("circle", { cx: "9", cy: "17", r: "2" })),
     close: () => glyph(h("path", { d: "M6 6l12 12" }), h("path", { d: "M18 6L6 18" })),
+    // Reset layout: every step box back in its automatic place (batch 6, f-03).
+    reset: () => glyph(h("path", { d: "M4 12a8 8 0 1 0 2.3-5.7" }), h("path", { d: "M4 4v4h4" })),
 });
 
 /**

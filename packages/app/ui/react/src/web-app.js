@@ -1,4 +1,5 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
+import { normalizeWorkflowLayouts } from "../../core/src/workflow-layouts.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -410,6 +411,10 @@ function normalizeProfileSettings(settings) {
     if (hasOwn(candidate, "sessionViews")) {
         normalized.sessionViews = normalizeStoredSessionViews(candidate.sessionViews);
     }
+    // Where the person moved each workflow's step boxes (batch 6, f-03), bounded: see workflow-layouts.js.
+    if (hasOwn(candidate, "workflowLayouts")) {
+        normalized.workflowLayouts = normalizeWorkflowLayouts(candidate.workflowLayouts);
+    }
     // Phones and desktops keep SEPARATE view preferences: rich prose reads well
     // on a wide transcript and poorly in a 390px column, so a single shared
     // value would have each device overwriting the other's choice.
@@ -532,6 +537,11 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         // per-session views through its saves untouched (the reducer never
         // records on a phone), so a phone save cannot erase them.
         sessionViews: state.sessionViews,
+        // The step boxes the person moved (f-03), once there is anything: from
+        // both device classes, as the places are the person's, not the screen's.
+        ...(state.workflowLayouts && typeof state.workflowLayouts === "object"
+            ? { workflowLayouts: state.workflowLayouts }
+            : {}),
         // setCurrentUserProfileSettings REPLACES the settings object, so the
         // other device class's slot has to be written back verbatim or saving
         // from a desktop would wipe the phone's preference (and vice versa).
@@ -665,6 +675,10 @@ function materializeProfileSettings(remoteSettings, defaults) {
             : {}),
         ...(hasOwn(normalizedRemote, "agentPickerUsage")
             ? { agentPickerUsage: normalizedRemote.agentPickerUsage }
+            : {}),
+        // Same rule: an absent key leaves the places this tab has.
+        ...(hasOwn(normalizedRemote, "workflowLayouts")
+            ? { workflowLayouts: normalizedRemote.workflowLayouts }
             : {}),
     });
 }
@@ -16002,6 +16016,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         canvasPrefs: rootState.canvas?.prefs,
         activeSessionIsGroup: Boolean(rootState.sessions.activeSessionId && rootState.sessions.byId[rootState.sessions.activeSessionId]?.isGroup),
         activeSessionIsWorkflow: activeSessionIsWorkflow(rootState),
+        // Live reference, saved with the profile (batch 6, f-03).
+        workflowLayouts: rootState.ui.workflowLayouts,
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
         portalSessionColumnAdjust: rootState.ui.layout?.portalSessionColumnAdjust ?? 0,

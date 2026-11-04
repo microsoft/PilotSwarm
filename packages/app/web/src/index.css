@@ -4888,6 +4888,8 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 }
 .ps-workflow-flow .react-flow__attribution a { color: var(--ps-muted); }
 .ps-workflow-flow .react-flow__node { cursor: default; }
+/* Batch 6 (f-03): a step box is dragged by its card; while it moves it shows it is held. */
+.ps-workflow-flow .react-flow__node.dragging .ps-workflow-node { cursor: grabbing; box-shadow: 0 6px 18px color-mix(in srgb, var(--ps-foreground) 18%, transparent); }
 /* The invisible handles React Flow measures for where edges meet a step (batch 5 T8): never seen, never hit. */
 .ps-workflow-flow .react-flow__handle.ps-workflow-handle { opacity: 0; pointer-events: none; }
 /* The hand is off: the graph stays still, and a finger on it scrolls the page. */

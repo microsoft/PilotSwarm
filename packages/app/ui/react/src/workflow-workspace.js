@@ -185,6 +185,13 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
         setTab(MAIN_TABS[next][0]);
         if (typeof document !== "undefined") document.getElementById(`${tabsId}-${MAIN_TABS[next][0]}`)?.focus();
     };
+    // f-03: where this person moved the step boxes, per workflow, kept in their profile settings and saved once at the end of
+    // each drag. A workflow is keyed by its session's id: it is the workflow's for good, through every revision, and known
+    // before the read model (whose workflowId arrives later and would move the boxes after the first fit).
+    const layoutKey = `session:${sessionId}`;
+    const places = useControllerSelector(controller, state => state.ui.workflowLayouts?.[layoutKey]?.steps ?? null);
+    const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: layoutKey, steps, at: Date.now() }),
+        [controller, layoutKey]);
     // f-06: the graph's view (x, y, zoom) is remembered for this workflow, so tabs, panels and sessions give it back exactly.
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }),
         [controller, sessionId]);
@@ -221,7 +228,8 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
         h("div", { id: `${tabsId}-graph-panel`, className: "ps-workflow-graph-region", hidden: mainTab !== "graph" || undefined,
             ...(v2 ? { role: "tabpanel", "aria-labelledby": `${tabsId}-graph` } : {}) },
             definition
-                ? h(WorkflowGraph, { definition, nodes, selected, select: selectNode, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView })
+                ? h(WorkflowGraph, { definition, nodes, selected, select: selectNode, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
+                    places, onPlaces })
                 : v2 ? h(WorkflowV2NoGraph, { projection: v2 })
                 : h("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                     view.error || "Loading workflow graph…",
