@@ -191,6 +191,8 @@ async function routeHarness({ config } = {}) {
             adapterCalls.push([sessionId, options]);
             return PilotSwarmManagementClient.prototype.readWorkflow.call(this, sessionId, options);
         },
+        // The real method's body (batch 7, n-3: readWorkflow wraps it to classify a store that cannot be reached).
+        _readWorkflow(...args) { return PilotSwarmManagementClient.prototype._readWorkflow.apply(this, args); },
     };
     if (config) mgmt.config = config;
     const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });

@@ -46,6 +46,8 @@ async function bootstrapHarness({ config, getter = true } = {}) {
         config: config ?? {},
         getWorkflowCapabilities() { return PilotSwarmManagementClient.prototype.getWorkflowCapabilities.call(this); },
         updateWorkflow(...args) { return PilotSwarmManagementClient.prototype.updateWorkflow.apply(this, args); },
+        // The real method's body (batch 7, n-3: updateWorkflow wraps it to classify a store that cannot be reached).
+        _updateWorkflow(...args) { return PilotSwarmManagementClient.prototype._updateWorkflow.apply(this, args); },
     };
     const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
     runtime.start = async () => {};
