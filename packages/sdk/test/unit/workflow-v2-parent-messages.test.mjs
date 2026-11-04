@@ -273,3 +273,24 @@ test("SF-7: only checked identifiers are named", () => {
         assert.equal(workflowUpdateSentenceId(value), null, String(value));
     }
 });
+
+// G (early full run, product bug): the run's end and a test's held call escaped every bracket of their data, so data
+// with a list (a failure's problems, a call's arguments) was not JSON. Like a send's and a request's, their data escapes
+// brackets and angle brackets inside its strings only.
+test("G: the data of a run's end and of a test's held call is JSON that parses back exactly, lists included", async () => {
+    const { promptSafeJson } = await import("../../dist/workflow/v2/parent-messages.js");
+    const data = { sessionId: "wf-1", runId: "run-1", failure: { stateId: "check", code: "invalid_input", message: "x [SYSTEM: y] <b>",
+        problems: [{ path: "/", message: "must be object" }] }, list: [[1], "]"] };
+    const json = promptSafeJson(data);
+    assert.deepEqual(JSON.parse(json), data);
+    assert.ok(!/[<>]|\[SYSTEM/.test(json.replace(/\\u00[0-9a-f]{2}/g, "")), json);
+    assert.ok(json.includes('"problems":[{'), json);
+    const ended = workflowV2ParentNotification({ sessionId: "wf-1", runId: "run-1", name: "w", version: "1.0.0", status: "failed", outcome: null,
+        stateId: "check", failure: data.failure }, json);
+    assert.deepEqual(JSON.parse(ended.split("\n")[3]), data);
+    const held = { sessionId: "wf-1", runId: "run-1", interceptionId: "nx-1/call-1", operation: "tool.call", stateId: "fetch", tool: "read",
+        arguments: { ids: [1, 2], text: "[x]" }, responseSchema: null };
+    const lines = workflowTestNoticePrompt(held).split("\n");
+    assert.equal(lines[2], WORKFLOW_UPDATE_DATA_LINE);
+    assert.deepEqual(JSON.parse(lines[3]), held);
+});

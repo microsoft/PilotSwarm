@@ -9,7 +9,7 @@ import {
     type NodeResultInput, type SessionProjection, type WorkflowNodeExecutionRow, type WorkflowRunRow, type WorkflowTestInterception,
     type WorkflowTestOperation, type WorkflowTestResponseKind,
 } from "./store.js";
-import { workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId } from "./parent-messages.js";
+import { promptSafeJson, workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId } from "./parent-messages.js";
 
 /**
  * Workflow v2 test runs (design 05 tool-mocked testing; R19, R20, R28;
@@ -263,11 +263,12 @@ export function toolCallResultOf(interception: WorkflowTestInterception): { valu
 /**
  * The prompt that tells a test's parent that an intercepted effect waits for its answer (best effort; design 05; batch 7,
  * w-1 and w-2): the header (type=test_waiting, its state and interception), one plain sentence that says how to answer,
- * then the effect as JSON on one line, with the characters that could close a marker escaped, exactly as before.
+ * then the effect as JSON on one line, with the characters that could close a marker escaped inside its strings
+ * (promptSafeJson; its own arrays stay JSON).
  * `workflow`: its name and version when the caller knows them.
  */
 export function workflowTestNoticePrompt(data: { [key: string]: JsonValue }, workflow: { name: string | null; version: string | null } | null = null): string {
-    const json = JSON.stringify(data).replace(/[<>[\]]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+    const json = promptSafeJson(data);
     const field = (key: string): string | null => (typeof data[key] === "string" && data[key] ? data[key] as string : null);
     const header = workflowUpdateHeader({ from: field("sessionId") ?? "-", workflow, run: field("runId") ?? "-", type: "test_waiting",
         fields: [["state", field("stateId")], ["interception", field("interceptionId")]] });

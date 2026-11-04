@@ -45,7 +45,11 @@ import { schemaSetFor, type SchemaProblem } from "./schema.js";
 import { intakeEnvelopeSha256, type IntakeEnvelope } from "./intake.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
 import { RESPOND_SESSION_REQUEST_TOOL } from "./request-service.js";
-import { workflowRuntimeSender, workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId } from "./parent-messages.js";
+import {
+    promptSafeJson, workflowRuntimeSender, workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId,
+} from "./parent-messages.js";
+
+export { promptSafeJson };
 import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
 import {
     matchTestFixture, storedTestFixtures, testResultFor, toolCallResultOf, WORKFLOW_V2_TEST_POLL_MS, workflowTestAnsweredProjection,
@@ -1827,8 +1831,8 @@ export interface WorkflowRunEndSummary {
 /**
  * The message a workflow's parent agent gets when a live run ends (notifyParent; batch 7, w-1 and w-2): the header
  * (type=ended, its status, outcome and state), one plain sentence that says what happened (a failed run: the step, the
- * error and its first problem) and asks for a short report to the person, then the run's JSON (`json`, its brackets
- * escaped by the caller, exactly as before). Told only that output arrived, with nothing to do, a model may end its turn
+ * error and its first problem) and asks for a short report to the person, then the run's JSON (`json`, made by the
+ * caller with promptSafeJson). Told only that output arrived, with nothing to do, a model may end its turn
  * with no answer at all (seen on the preview, 792c61e3 and d72dfadf); the earlier alarm wording around the JSON drew a
  * refusal (2026-11-04: "I'm sorry, but I cannot assist with that request."), so the sentence is a plain status report.
  */
@@ -2207,39 +2211,6 @@ function sendDeliveredRecord(message: WorkflowOutboxMessage, executed: WorkflowN
             update: { touch: true },
         }),
     };
-}
-
-/**
- * JSON text of a value in which no string token (key or value) holds a raw
- * '<', '>', '[' or ']': each is written as its \u00XX escape, which JSON.parse
- * reads back as the same character. Everything else is exactly what
- * JSON.stringify writes: structural brackets (arrays) stay, and NUL and lone
- * surrogates stay escaped. So the text parses to the same value, and text
- * inside it cannot look like a system line ("[SYSTEM: ...]") or markup.
- */
-export function promptSafeJson(value: JsonValue): string {
-    const text = JSON.stringify(value);
-    let out = "";
-    let inString = false;
-    for (let index = 0; index < text.length; index += 1) {
-        const char = text[index];
-        if (!inString) {
-            if (char === "\"") inString = true;
-            out += char;
-        } else if (char === "\\") {
-            // An escape sequence is copied whole: its next character is never a quote that ends the string.
-            out += char + text[index + 1];
-            index += 1;
-        } else if (char === "\"") {
-            inString = false;
-            out += char;
-        } else if (char === "<" || char === ">" || char === "[" || char === "]") {
-            out += `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
-        } else {
-            out += char;
-        }
-    }
-    return out;
 }
 
 /**
@@ -3437,15 +3408,18 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
             // A failed run says why (batch 7, s-4): the failing state, the runtime error's code and message, and its first problems.
             const failure = run.status === "failed" ? await runFailureOf(run) : null;
-            const data = {
-                sessionId: run.workflowSessionId, runId: run.runId,
-                name: label?.name ? jsonbSafeText(label.name, 200) : null, version: label?.semver ?? null,
+            const name = label?.name ? jsonbSafeText(label.name, 200) : null;
+            const version = label?.semver ?? null;
+            const data: { [key: string]: JsonValue } = {
+                sessionId: run.workflowSessionId, runId: run.runId, name, version,
                 status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId,
                 output: run.terminalOutput === null ? null : previewJson(run.terminalOutput, 1_000),
                 error: run.terminalError === null ? null : previewJson(run.terminalError, 1_000),
-                ...(failure ? { failure } : {}),
             };
-            const json = JSON.stringify(data).replace(/[<>[\]]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+            if (failure) data.failure = failure;
+            // Its brackets and angle brackets are escaped inside its strings only: its own arrays stay JSON (G: a failure's
+            // problems are a list).
+            const json = promptSafeJson(data);
             const clientMessageId = `workflow:${run.workflowSessionId}:${run.runId}:terminal`;
             // WFO-4: the attempt is recorded before the enqueue (once), so a retry after a crash knows it may have been told.
             if (!attempted) {
@@ -3453,7 +3427,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     data: { runId: run.runId, parentSessionId, clientMessageId } }]);
             }
             const delivery = (await deps.notifyParent(parentSessionId, workflowV2ParentNotification({ sessionId: run.workflowSessionId, runId: run.runId,
-                name: data.name, version: data.version, status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId, failure }, json),
+                name, version, status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId, failure }, json),
                 workflowRuntimeSender("ended"), clientMessageId)) as { delivered?: boolean } | undefined;
             // WFO-3: the parent's session had ended before the notice was queued: this attempt did not tell it.
             if (delivery?.delivered === false) return await skipped("parent is gone");
