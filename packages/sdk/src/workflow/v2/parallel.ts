@@ -144,16 +144,35 @@ export interface ParallelBranchState extends ParallelBranchEnd {
 }
 
 /**
+ * The last state of one branch, from its own states (`states`, every node
+ * execution of its scope): the one no other state of the scope names as its
+ * predecessor (review J1-R1). A branch admits its states one after another,
+ * each naming the one before it (its first names the parallel state), so
+ * exactly one is last; admission times are not used, because two states
+ * admitted in the same millisecond would read as one instant. A scope that
+ * does not form one chain (corrupt) falls back to the latest admitted of
+ * its ends, then the greatest id.
+ */
+export function branchLastState(states: readonly WorkflowNodeExecutionRow[]): WorkflowNodeExecutionRow {
+    const named = new Set(states.flatMap(row => typeof row.predecessorId === "string" ? [row.predecessorId] : []));
+    const ends = states.filter(row => !named.has(row.nodeExecutionId));
+    if (ends.length === 1) return ends[0];
+    return (ends.length > 0 ? ends : states).slice().sort((a, b) => a.enteredAt.getTime() - b.enteredAt.getTime()
+        || (a.nodeExecutionId < b.nodeExecutionId ? -1 : a.nodeExecutionId > b.nodeExecutionId ? 1 : 0)).at(-1)!;
+}
+
+/**
  * How each branch of a parallel state stands, from the store's rows of its
  * branch scopes (`rows`, every node execution of them) and the pinned
  * definition's routes; the store's one count for the join and the time
  * limit (formal finding H1: admitted or not). A branch with no state has not
  * started (`notStarted`: its controller will not start it). One whose state
- * a branch cancellation decided was cancelled, with why. One whose last
- * state is its terminal ended there, when decided; a terminal admitted but
- * not yet decided stands as the state before it left it. One whose last
- * state still runs is running. One whose last state's result takes no route
- * ended by that error. One whose last state's result takes a route is
+ * a branch cancellation decided was cancelled, with why. Its last state is
+ * the end of its predecessor chain (branchLastState). One whose last state
+ * is its terminal ended there, when decided; a terminal admitted but not yet
+ * decided stands as the state before it (its predecessor) left it. One whose
+ * last state still runs is running. One whose last state's result takes no
+ * route ended by that error. One whose last state's result takes a route is
  * finished: a success when that route leads to a terminal with outcome
  * succeeded, a failure when it leads to another terminal, neither while it
  * leads to a state that may still run.
@@ -167,8 +186,7 @@ export function parallelBranchStates(ir: WorkflowIR, parallelNodeExecutionId: st
     }
     const commitOf = (row: WorkflowNodeExecutionRow | undefined): ParallelCommit | null => (row === undefined ? null : committed.get(row.nodeExecutionId) ?? null);
     return branchScopeIds(parallelNodeExecutionId, total).map((scopeId, index): ParallelBranchState => {
-        const states = (byScope.get(scopeId) ?? []).slice()
-            .sort((a, b) => a.enteredAt.getTime() - b.enteredAt.getTime() || (a.nodeExecutionId < b.nodeExecutionId ? -1 : a.nodeExecutionId > b.nodeExecutionId ? 1 : 0));
+        const states = byScope.get(scopeId) ?? [];
         if (states.length === 0) {
             return { index, ended: "not_started", nodeExecutionId: null, success: false, confirmed: false, failure: false, done: notStarted.has(index), commit: null };
         }
@@ -177,10 +195,10 @@ export function parallelBranchStates(ir: WorkflowIR, parallelNodeExecutionId: st
             return { index, ended: "cancelled", nodeExecutionId: cut.nodeExecutionId, row: cut, cancelledBy: branchCancelReasonOf(cut.winner),
                 success: false, confirmed: false, failure: true, done: true, commit: commitOf(cut) };
         }
-        const last = states[states.length - 1];
+        const last = branchLastState(states);
         const node = ir.nodes[last.nodeId];
         if (node?.type === "terminal") {
-            const before = states.length > 1 ? states[states.length - 2] : undefined;
+            const before = states.find(row => row.nodeExecutionId === last.predecessorId);
             const commit = commitOf(before) ?? commitOf(last);
             if (last.state === "completed") {
                 const success = last.resultKind === "business" && last.outcome === "succeeded";

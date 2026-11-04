@@ -179,7 +179,9 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   success saved after the time limit. A report too large to store drops
   every `output` and `error` and adds `truncated: true`.
 - With `timeoutSeconds`: a success counts only when it was saved at or
-  before the time limit. When the time limit passes with k such successes,
+  before the time limit. In a live run, a branch step whose own deadline
+  equals the time limit ends just after it, so it does not count; in a test
+  run, at the same virtual instant, it counts. When the time limit passes with k such successes,
   the state still joins. With fewer, it ends with the runtime error
   `timed_out`, whose `details` is the same report with `timedOut: true`;
   if k could already no longer happen then, it is `blocked` with

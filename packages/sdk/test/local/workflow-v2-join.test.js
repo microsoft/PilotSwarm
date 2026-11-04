@@ -34,6 +34,14 @@
  *   joined with A), with and without a join due first; the controller: a
  *   join due while paused, blocked at the time limit, and H1 and a late
  *   success across a worker restart.
+ * - J1c: a branch's last state is the end of its predecessor chain (review
+ *   J1-R1: equal milliseconds and reversed ids, pure and in the store); the
+ *   read model names a branch state's predecessor and when it ended; with
+ *   fewer worker slots than branches, the first committed success wins and
+ *   a loser committed before the cancel stays succeeded. The runtimes here
+ *   set their worker slots (WORKER_SLOTS); duroxide's default is 2. The
+ *   loser agent whose end fails (review J1-R2) is in
+ *   workflow-v2-agent-node.test.js.
  *
  * Branch scripts run as real script processes; the race cases rely on timing
  * margins of at least a second between the branches that win and those that
@@ -51,7 +59,7 @@ import {
 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import {
-    PARALLEL_TIMEOUT_MESSAGE, parallelBranchEnd, parallelBranchStates, parallelSuccesses, parallelVerdict,
+    branchLastState, PARALLEL_TIMEOUT_MESSAGE, parallelBranchEnd, parallelBranchStates, parallelSuccesses, parallelVerdict,
 } from "../../src/workflow/v2/parallel.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowV2View, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
@@ -237,10 +245,14 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
     const P = "nx-00ab";
     const ir = compileWorkflowV2(yamlOf(joinDoc({ items: [{ ms: 0 }, { ms: 0 }, { ms: 0 }], join: { first: 2 }, timeoutSeconds: 60 })), PARALLEL).ir;
     let clock = 0;
-    /** A stored node execution of branch `index`: completed (with `outcome`, `resultKind`, `winner`) or pending. */
+    /**
+     * A stored node execution of branch `index`: completed (with `outcome`, `resultKind`, `winner`) or pending; a terminal
+     * names its branch's wait as the state before it, every other state the parallel state.
+     */
     const row = (index, nodeId, fields = {}) => ({
         nodeExecutionId: `${nodeId}-${index}`, scopeId: branchScopeId(P, index), nodeId, state: "completed", outcome: null, resultKind: null,
-        output: { index }, error: null, winner: "controller", enteredAt: new Date(1_000 + (clock += 1)), completedAt: new Date(2_000 + clock), ...fields,
+        output: { index }, error: null, winner: "controller", predecessorId: nodeId === "done" ? `hold-${index}` : P,
+        enteredAt: new Date(1_000 + (clock += 1)), completedAt: new Date(2_000 + clock), ...fields,
     });
     const elapsed = (index, fields) => row(index, "hold", { outcome: "elapsed", resultKind: "business", ...fields });
     const done = index => row(index, "done", { outcome: "succeeded", resultKind: "business" });
@@ -273,6 +285,24 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
             "hold-1": { rank: 1, inTime: true } });
         expect(parallelVerdict({ join: { first: 1 }, failFast: false, total: 3, branches: h1, pastDeadline: true, timeLimit: false }))
             .toEqual({ kind: "join_due", winners: [1] });
+    });
+
+    it("J1-R1: a branch's last state is the end of its predecessor chain, never the latest admission time or the greatest id", () => {
+        // Its wait and its terminal were admitted in the same millisecond, and the terminal's id sorts first.
+        const same = new Date(5_000);
+        const wait = row(0, "hold", { nodeExecutionId: "z-hold-0", outcome: "elapsed", resultKind: "business", enteredAt: same });
+        const end = row(0, "done", { nodeExecutionId: "a-done-0", outcome: "succeeded", resultKind: "business", enteredAt: same, predecessorId: "z-hold-0" });
+        expect(branchLastState([wait, end]).nodeExecutionId).toBe("a-done-0");
+        expect(branchLastState([end, wait]).nodeExecutionId).toBe("a-done-0");
+        // The terminal also entered before its wait by the clock: the chain still decides.
+        expect(branchLastState([{ ...wait, enteredAt: new Date(6_000) }, end]).nodeExecutionId).toBe("a-done-0");
+        const [branch] = states([wait, end], { "z-hold-0": { rank: 1, inTime: true }, "a-done-0": { rank: 2, inTime: true } });
+        expect(branch).toMatchObject({ ended: "terminal", nodeExecutionId: "a-done-0", success: true, confirmed: true, commit: { rank: 1 } });
+        expect(parallelSuccesses(states([wait, end], { "z-hold-0": { rank: 1, inTime: true }, "a-done-0": { rank: 2, inTime: true } })).map(item => item.index))
+            .toEqual([0]);
+        // A scope that is not one chain (corrupt) falls back to the latest admitted end.
+        expect(branchLastState([row(1, "hold", { nodeExecutionId: "x", predecessorId: P, enteredAt: new Date(1) }),
+            row(1, "work", { nodeExecutionId: "y", predecessorId: P, enteredAt: new Date(2) })]).nodeExecutionId).toBe("y");
     });
 
     it("a success committed after the time limit does not count; a time-limit cancellation is no failure before it (Q1, Q3)", () => {
@@ -616,6 +646,29 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
         }
     });
 
+    it("J1-R1 in the store: a terminal admitted in the same instant as its wait is the branch's last state; the join joins it", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const items = [{ seconds: 600 }, { seconds: 600 }];
+            const run = await storedRun(h, joinDoc({ items, join: { first: 1 } }));
+            await enterFanOf(h, run, items, null);
+            const b = branchesOf(h, run);
+            await b.hold(0);
+            await b.hold(1);
+            await b.succeed(0);
+            await b.confirm(0);
+            // Both of branch 0's states now carry one admission instant, to the microsecond.
+            await h.q("UPDATE SCHEMA.workflow_node_executions SET entered_at = (SELECT entered_at FROM SCHEMA.workflow_node_executions WHERE node_execution_id = $1) "
+                + "WHERE node_execution_id = $2", [b.at(0, "hold"), b.at(0, "done")]);
+            const [hold, done] = await Promise.all([b.at(0, "hold"), b.at(0, "done")].map(id => h.store.readNodeExecution(id)));
+            expect(done.enteredAt.getTime()).toBe(hold.enteredAt.getTime());
+            expect(await b.join()).toMatchObject({ result: "won", node: { outcome: "joined", output: [{ index: 0, output: { index: 0 } }] },
+                cancelled: [b.at(1, "hold")] });
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("joins the first k in commit order, not in index or admission order (O3); the others are cancelled by the join", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
@@ -646,15 +699,24 @@ describe("workflow v2 parallel joins: the store's one count for the join and the
 
 // ─── Controller 1.9.0 on a native runtime ────────────────────
 
+/**
+ * Worker slots for these runtimes. A branch's script holds a worker slot for its whole run, and every controller step
+ * (collect, admit, the join, the cancellation of the others) needs one too. duroxide's default is 2 (core
+ * RuntimeOptions::default, which the JS binding starts from; its typings say 8), so with more scripts than slots the
+ * branches run in waves and the controller waits behind them (DEV of 206c4198). 16 runs the widest case here (4
+ * scripts) at once with room for the controller; one case runs with 2 on purpose.
+ */
+const WORKER_SLOTS = 16;
+
 /** A worker-equivalent registration with workflowRequests and the request tag declared. */
-async function harness(env, { wakeBackstopMs = 500 } = {}) {
+async function harness(env, { wakeBackstopMs = 500, workerConcurrency = WORKER_SLOTS } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
     const runtime = new Runtime(provider, {
-        dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
+        dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
     });
     registerWorkflowV2({
         registerActivity: (name, fn) => runtime.registerActivity(name, fn),
@@ -763,6 +825,37 @@ describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive,
         }
     });
 
+    it("with fewer worker slots than branches: the first success the store committed wins; a loser committed before the cancel stays succeeded, not a winner", { timeout: TIMEOUT }, async () => {
+        // 2 slots for 3 scripts: they run in waves, and the controller's steps wait behind them (as in production with the
+        // default PILOTSWARM_WORKER_CONCURRENCY of 2). The rule that still holds is the store's commit order.
+        const h = await harness(getEnv(), { workerConcurrency: 2 });
+        try {
+            const items = [{ ms: 300 }, { ms: 2_000 }, { ms: 2_500 }];
+            const { runId, fan, at } = await started(h, joinDoc({ items, join: { first: 1 } }));
+            const run = await ended(h, runId, 90_000);
+            expect(run).toMatchObject({ status: "completed", terminalNodeId: "finished" });
+            const works = await Promise.all([0, 1, 2].map(index => h.store.readNodeExecution(at(index, "work"))));
+            const successes = works.map((row, index) => ({ row, index })).filter(item => item.row?.outcome === "ok")
+                .sort((a, b) => a.row.completedAt.getTime() - b.row.completedAt.getTime() || a.index - b.index);
+            expect(successes.length).toBeGreaterThanOrEqual(1);
+            const [first, ...later] = successes;
+            expect(run.terminalOutput).toEqual([{ index: first.index, output: { index: first.index, ...items[first.index] } }]);
+            expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "joined", output: run.terminalOutput });
+            // A loser that committed its success before the join's decision keeps it, and is not a winner.
+            for (const { row, index } of later) {
+                expect(row, `branch ${index}`).toMatchObject({ state: "completed", outcome: "ok", resultKind: "business", winner: "effect" });
+                expect(row.completedAt.getTime()).toBeGreaterThanOrEqual(first.row.completedAt.getTime());
+            }
+            // Every other loser's work was cancelled for the join.
+            for (const [index, row] of works.entries()) {
+                if (row?.outcome !== "ok") expect(row, `branch ${index}`).toMatchObject({ state: "completed", outcome: "cancelled", winner: "join" });
+            }
+            expect(await h.store.hasPendingNodes(runId)).toBe(false);
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("k that can no longer happen: failFast cancels the rest at once; without it they run to their end, then the join blocks", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -855,8 +948,16 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
             const view = await readWorkflowV2View(h.store, workflowSessionId);
             expect(view.graph.states.find(state => state.id === "fan")).toMatchObject({ join: "all_required", timeoutSeconds: 2 });
             expect(view.run.nodeExecutions.find(node => node.nodeExecutionId === fan)).toMatchObject({
-                outcome: "timed_out", resultKind: "runtime_error", deadline: fanRow.deadlineAt.toISOString(), branches: 3 });
+                outcome: "timed_out", resultKind: "runtime_error", deadline: fanRow.deadlineAt.toISOString(), branches: 3,
+                completedAt: fanRow.completedAt.toISOString() });
             expect(view.run.nodeExecutions.find(node => node.nodeExecutionId === cut.nodeExecutionId)).toMatchObject({ winner: "join_timeout" });
+            // J1c: a branch state names the state before it and says when it ended; a root state other than a parallel one
+            // has neither.
+            expect(view.run.nodeExecutions.find(node => node.nodeExecutionId === at(0, "done"))).toMatchObject({
+                predecessorId: at(0, "work"), completedAt: (await h.store.readNodeExecution(at(0, "done"))).completedAt.toISOString() });
+            expect(view.run.nodeExecutions.find(node => node.nodeExecutionId === at(0, "work"))).toMatchObject({ predecessorId: fan });
+            const lateRow = view.run.nodeExecutions.find(node => node.stateId === "late");
+            expect([lateRow?.completedAt, lateRow?.predecessorId]).toEqual([undefined, undefined]);
         } finally {
             await h.stop();
         }
@@ -961,7 +1062,7 @@ async function restartBaseOf(env) {
 
 async function restartRuntimeOn(base) {
     const runtime = new Runtime(base.provider, {
-        dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
+        dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency: WORKER_SLOTS, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
         workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000,
     });
     registerWorkflowV2({

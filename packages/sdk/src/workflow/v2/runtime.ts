@@ -4193,9 +4193,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * winner join_timeout: the store cancelled their work when it decided the
      * time limit, so this only finds them). Then the effect of every such
      * script is asked to stop, and the child of every such agent state is
-     * ended (a child that cannot be ended now is ended when the run ends).
-     * The list comes from the store on every execution, so a retry still
-     * sends the requests.
+     * ended. Every one is tried; when one could not be stopped or ended (it is
+     * recorded, workflow.agent_end_failed for a child), the activity fails
+     * after the others, so its durable retry reads the list again and tries
+     * the ones still owed (review J1-R2; as endWorkflowV2RunAgents does at a
+     * run's end): the controller drops the branches only once their work is
+     * stopped, and a loser's child never runs on until the run ends. The list
+     * comes from the store on every execution, and a child already ended is
+     * not ended again.
      */
     runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.cancelBranches, async (actx, rawInput) => {
         const input = record(rawInput, "cancel branches input");
@@ -4221,18 +4226,25 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             }),
         });
         const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
+        const owed: string[] = [];
         for (const item of cancelled) {
             if (item.nodeType === "script") {
                 const instanceId = workflowEffectInstanceId(item.nodeExecutionId);
-                const status = await client.getStatus(instanceId);
-                if (status.status === "Running" || status.status === "Suspended") {
-                    await client.cancelInstance(instanceId, branchCancelError(item.reason).message);
-                    requested.push({ nodeExecutionId: item.nodeExecutionId, instanceId, status: status.status });
+                try {
+                    const status = await client.getStatus(instanceId);
+                    if (status.status === "Running" || status.status === "Suspended") {
+                        await client.cancelInstance(instanceId, branchCancelError(item.reason).message);
+                        requested.push({ nodeExecutionId: item.nodeExecutionId, instanceId, status: status.status });
+                    }
+                } catch (error) {
+                    owed.push(item.nodeExecutionId);
+                    actx.traceWarn(`[workflow-v2] run=${run.runId} the effect of ${item.nodeExecutionId} was not asked to stop yet: ${workflowErrorMessage(error)}`);
                 }
             } else if (item.nodeType === "agent") {
                 try {
                     await endAgentChild(client, item.nodeExecutionId);
                 } catch (error) {
+                    owed.push(item.nodeExecutionId);
                     await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
                         runId: run.runId, nodeExecutionId: item.nodeExecutionId, error: jsonbSafeText(workflowErrorMessage(error), 1_000),
                     } }]);
@@ -4242,6 +4254,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (requested.length) {
             await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested,
                 ...(reason === "failFast" ? { failFast: true } : { branchesCancelled: reason }) } }]);
+        }
+        if (owed.length > 0) {
+            throw new Error(`The cancelled branch states ${owed.slice(0, 20).join(", ")}${owed.length > 20 ? ` and ${owed.length - 20} more` : ""} `
+                + "were not stopped or ended yet; this is tried again.");
         }
         return { cancelled: cancelled.length };
     });

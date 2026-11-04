@@ -1214,9 +1214,12 @@ function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap
     return {
         nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
         outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
-        // A parallel branch's state (IR 8, INACTIVE): its branch's parallel state execution and index.
-        ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
+        // A parallel branch's state (IR 8, INACTIVE): its branch's parallel state execution and index, and the state before
+        // it in its branch (its last state is the one no other names; owner decision join-k-of-n, review J1-R1).
+        ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId), predecessorId: node.predecessorId } : {}),
         ...(node.nodeType === "parallel" && Array.isArray(node.input) ? { branches: node.input.length } : {}),
+        // When a parallel state or a branch state ended (IR 9, J1c): a success counts only when stored by the time limit.
+        ...((node.nodeType === "parallel" || node.scopeId !== ROOT_SCOPE) && node.completedAt !== null ? { completedAt: node.completedAt.toISOString() } : {}),
         ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
         ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
         ...(agent !== undefined ? { agent: agentViewOf(agent) } : {}),

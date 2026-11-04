@@ -136,6 +136,8 @@ spends model tokens, and its results vary as a model's do.
   request or an agent state `timed_out`, and a parallel state's time limit.
   A result that won first stands. At one instant, a parallel state's branches
   come first: a branch success at its time limit counts toward its join.
+  A live run differs: there, a branch step whose own deadline equals the
+  time limit ends just after it, so its success does not count.
 - Real time never ends a test run's deadline.
 - `send_workflow_input` with the test run's `run_id` gives its receives typed
   input. A message before the virtual deadline wins; after it, the receive
