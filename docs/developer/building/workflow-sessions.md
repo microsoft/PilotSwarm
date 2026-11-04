@@ -19,7 +19,14 @@ is created.
 
 A workflow session is a sibling of an agent session: it has a row in the
 session list (a connected-steps icon in the portal, `◇` in the terminal), an owner,
-sharing, and a transcript.
+sharing, and a transcript. In the portal, the session details under the list
+show a workflow's own rows instead of a chat's model, context, cron and agent:
+**Workflow** (name and version), **Revision** (number, draft or published),
+**Run** (the live run's status and outcome, or "No run yet"), **Started by**
+(the parent agent's session, a link, or "You") and **Steps**; a value the
+workflow screen has not read yet shows "—". Folded, the details line shows
+the run. An agent session that runs a workflow step shows **Step of** (the
+workflow, a link) instead of its cron.
 
 - The **live view** occupies the main pane instead of a chat conversation.
   The graph uses the immutable workflow definition and live execution state.

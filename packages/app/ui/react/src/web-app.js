@@ -1,5 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
 import { normalizeWorkflowLayouts } from "../../core/src/workflow-layouts.js";
+import { workflowSessionDetails, workflowStepParent } from "../../core/src/workflow-view.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -16,6 +17,7 @@ import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
     normalizeMoa,
+    ownerKeyForOwner,
     UI_COMMANDS,
     workflowInputPolicyApplies,
     workflowStepLogLines,
@@ -4765,6 +4767,9 @@ export function waitReasonLabel(session) {
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
+/** A store that never changes, for a detail box drawn without a controller. */
+const NO_DETAIL_CONTROLLER = Object.freeze({ getState: () => ({}), subscribe: () => () => {} });
+
 function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null, onOpenBudget = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
@@ -4780,6 +4785,34 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
             React.createElement("span", { className: "ps-session-detail-label" }, label),
             React.createElement("span", { className: "ps-session-detail-value", title: text }, text));
     };
+    // A row whose value is another session: its title, a link that selects it (one clamped line, like the others).
+    const sessionField = (label, target) => {
+        if (!target?.sessionId) return field(label, null);
+        const text = target.title || `session ${String(target.sessionId).slice(0, 8)}`;
+        return React.createElement("div", { className: "ps-session-detail-field", key: label },
+            React.createElement("span", { className: "ps-session-detail-label" }, label),
+            React.createElement("button", {
+                type: "button", className: "ps-session-detail-value ps-session-detail-link", title: `Open ${text}`,
+                onClick: () => { controller?.loadSession?.(target.sessionId)?.catch?.(() => {}); },
+            }, text));
+    };
+
+    // Batch 8 (d-1): a workflow session has no model, context, cron or agent of its own. Its rows say what it runs, from
+    // what the portal already holds (the session rows, and the workflow's view once its screen has read it: no fetch is
+    // made for this box). An agent session that runs one of its steps says which workflow, instead of its cron.
+    const store = controller || NO_DETAIL_CONTROLLER;
+    const workflowViews = useControllerSelector(store, state => state?.ui?.workflowViews ?? null);
+    const sessionsById = useControllerSelector(store, state => state?.sessions?.byId ?? null);
+    const viewerKey = useControllerSelector(store, state => ownerKeyForOwner(state?.auth?.principal));
+    const isWorkflow = session?.sessionKind === "workflow" && !session?.isGroup;
+    const lookup = { ui: { workflowViews }, sessions: { byId: sessionsById } };
+    const workflow = isWorkflow ? workflowSessionDetails(lookup, session) : null;
+    const stepOf = isWorkflow ? null : workflowStepParent(lookup, session);
+    // Started by a person (no parent agent): "You" for the viewer's own workflow, else its owner.
+    const startedBy = !workflow ? null : workflow.startedBy
+        ? sessionField("Started by", workflow.startedBy)
+        : field("Started by", viewerKey && viewerKey === ownerKeyForOwner(session?.owner) ? "You"
+            : session?.owner ? formatAdminPrincipalLabel(session.owner) : null);
 
     const usage = session?.contextUsage;
     const hasUsage = usage && Number.isFinite(usage.currentTokens) && Number.isFinite(usage.tokenLimit) && usage.tokenLimit > 0;
@@ -4875,10 +4908,13 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
     // Collapsed, the box is one line: the state you check constantly (how full
     // the context is, when it last moved, whether it is stuck) without the ten
     // rows you look up once. Expanding is a click, and the choice is a
-    // preference so it survives switching sessions and reloading.
+    // preference so it survives switching sessions and reloading. A workflow
+    // shows its run instead of a context percentage.
     if (collapsed) {
         const marks = [];
-        if (context) {
+        if (workflow) {
+            if (workflow.run) marks.push(React.createElement("span", { key: "run", className: "ps-session-detail-mark" }, workflow.run));
+        } else if (context) {
             marks.push(React.createElement("span", {
                 key: "context",
                 className: `ps-session-detail-mark${percent != null && percent >= 85 ? " is-hot" : percent != null && percent >= 70 ? " is-warm" : ""}`,
@@ -4932,15 +4968,25 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         field("Title", session?.title, "is-title"),
         field("ID", session?.sessionId, "is-id"),
         field("Owner", session?.owner ? formatAdminPrincipalLabel(session.owner) : null),
-        field("Model", model),
-        field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
-        field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
-        field("Agent", session?.agentId),
+        // A workflow: five rows of its own in place of Model, Context, Cron, Agent and Children, so the box keeps its
+        // ten rows and its height.
+        ...(workflow ? [
+            field("Workflow", workflow.workflow),
+            field("Revision", workflow.revision),
+            field("Run", workflow.run),
+            startedBy,
+            field("Steps", workflow.steps),
+        ] : [
+            field("Model", model),
+            field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
+            stepOf ? sessionField("Step of", stepOf) : field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
+            field("Agent", session?.agentId),
+        ]),
         // "when, and what it is doing" in one row. The status comes from the
         // shared derivation rather than the raw field — see
         // selectSessionStatusSummary for why raw made this flip idle/waiting.
         field("Updated", statusSummary ? `${statusSummary.relative} (${statusSummary.status})` : null),
-        field("Children", children),
+        workflow ? null : field("Children", children),
         field("Access", access),
         // Outside the fixed grid above: this one is a sentence, and the grid's
         // whole point is that every row is one clamped line.

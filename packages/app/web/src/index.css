@@ -2468,6 +2468,22 @@ body.is-resizing-pane-y iframe {
   font-variant-numeric: tabular-nums;
 }
 
+/* Batch 8 (d-1): a row whose value is another session ("Started by", "Step of") is a link that selects it, still one
+   clamped line in the row's own text size. */
+button.ps-session-detail-value.ps-session-detail-link {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ps-accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.ps-session-detail-value.ps-session-detail-link:hover { text-decoration: underline; }
+button.ps-session-detail-value.ps-session-detail-link:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 1px; }
+
 /* The id goes into kubectl and CLI commands, so it must stay copyable — but it
    cannot wrap, or a narrow pane would make this row two lines and the box
    would change height. Ellipsized and selectable: the DOM holds the full

@@ -224,3 +224,58 @@ export function workflowReadModelView(view = {}) {
         error: !legacy && attempted && typeof view.readModelError === "string" && view.readModelError ? view.readModelError : null,
     };
 }
+
+const detailText = value => (typeof value === "string" && value.trim() ? value.trim() : null);
+
+/**
+ * What the session details box shows for a workflow session (batch 8, d-1) instead of a chat's model, context, cron and
+ * agent rows: from what the portal already holds, the session row and, once the workflow screen has read them, the
+ * workflow's view (its last read model, else its definition). Nothing is fetched for it. Each value is a string, or null
+ * when it is not loaded (the box shows "—"):
+ * - `workflow`: its name and version (the read model's revision name and semver, else the definition's), else the title
+ *   without its "Workflow: " prefix;
+ * - `revision`: "N · draft" or "N · published" (the published revision of a published workflow);
+ * - `run`: the live run's status and outcome, "No run yet" before any run, "No live run yet" when only test runs exist;
+ * - `steps`: how many steps its graph has;
+ * - `startedBy`: { sessionId, title } of the parent session (title null when its row is not loaded), or null for a
+ *   workflow a person started.
+ * Pure.
+ */
+export function workflowSessionDetails(state, session) {
+    const sessionId = typeof session?.sessionId === "string" ? session.sessionId : null;
+    const view = sessionId ? state?.ui?.workflowViews?.[sessionId] ?? null : null;
+    const model = view ? workflowReadModelView(view).workflowModel : null;
+    const definition = view?.definition ?? null;
+    const name = detailText(model?.revision?.name) ?? detailText(definition?.name)
+        ?? detailText(String(session?.title ?? "").replace(/^Workflow:\s*/u, ""));
+    const version = detailText(model?.definition?.semver) ?? detailText(definition?.version);
+    const lifecycle = model?.definition?.state;
+    const number = lifecycle === "published" ? model.definition.publishedRevision : model?.definition?.currentRevision;
+    const revision = (lifecycle === "draft" || lifecycle === "published") && Number.isSafeInteger(number) ? `${number} · ${lifecycle}`
+        : lifecycle === "deleted" ? "deleted" : null;
+    const runs = Array.isArray(model?.runs) ? model.runs.filter(run => run && typeof run === "object") : null;
+    const live = runs ? runs.find(run => run.mode === "live") ?? null : null;
+    const run = live ? [detailText(live.status) ?? "unknown", detailText(live.outcome)].filter(Boolean).join(" · ")
+        : runs ? (runs.length ? "No live run yet" : "No run yet") : null;
+    const states = Array.isArray(model?.graph?.states) ? model.graph.states : Array.isArray(definition?.states) ? definition.states : null;
+    const parentId = typeof session?.parentSessionId === "string" && session.parentSessionId ? session.parentSessionId : null;
+    const parent = parentId ? state?.sessions?.byId?.[parentId] ?? null : null;
+    return {
+        workflow: name ? (version ? `${name} ${version}` : name) : null,
+        revision,
+        run,
+        steps: states ? String(states.length) : null,
+        startedBy: parentId ? { sessionId: parentId, title: detailText(parent?.title) } : null,
+    };
+}
+
+/**
+ * The workflow an agent session runs a step of (batch 8, d-1: a "Workflow step" session's details say "Step of"): its
+ * direct parent, when that is a workflow session, as { sessionId, title }; else null. Pure.
+ */
+export function workflowStepParent(state, session) {
+    const parentId = typeof session?.parentSessionId === "string" && session.parentSessionId ? session.parentSessionId : null;
+    if (!parentId || session?.sessionKind === "workflow" || session?.isGroup) return null;
+    const parent = state?.sessions?.byId?.[parentId] ?? null;
+    return parent?.sessionKind === "workflow" ? { sessionId: parentId, title: detailText(parent.title) } : null;
+}
