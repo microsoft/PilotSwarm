@@ -245,17 +245,12 @@ test("SF-8: valid fixed parts beside bindings compile; a part holding a binding 
     }
 });
 
-// Verification of SF-8 in E2 (E2-R3; test E2-T6) and the final verification of E2bm-R1: the compiler evaluates no
-// pattern. A fixed member of an object holding a binding takes its named property's schema (the run's validator, Ajv in
-// strict mode, refuses a schema whose property name one of its patternProperties names matches, so no pattern applies
-// to a named key). Any other member is left to the run when there are patternProperties (which apply needs them
-// evaluated), and takes additionalProperties when there are none. A fixed part or a fixed input whose schema has a
-// `pattern` or `patternProperties` anywhere below it is left to the run. A schema without patterns is still checked.
-const POLY = "^a*a*a*a*a*a*b$";
-const PATTERNED = (input, { patterns = true } = {}) => `
+// Verification of SF-8 in E2 (E2-R3; test E2-T6): a fixed member of an object holding a binding takes its named
+// property's schema, else additionalProperties. Workflow schemas have no patternProperties (owner decision Q1 (d)).
+const MEMBERS = input => `
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
-metadata: { name: patterned-script, version: "1.0.0" }
+metadata: { name: member-script, version: "1.0.0" }
 inputs: { schema: { type: object } }
 initial: calc
 states:
@@ -268,71 +263,46 @@ states:
       properties:
         user: { type: string }
         count: { type: integer }
-        note: ${patterns ? `{ type: string, pattern: "${POLY}" }` : "{ type: string, maxLength: 3 }"}
-${patterns ? `      patternProperties:
-        "${POLY}": { type: integer }
-        "^x-": { type: string }
-` : ""}      additionalProperties: false
+        note: { type: string, maxLength: 3 }
+      additionalProperties: false
     input: ${input}
     outcomes: [done]
     transition: { next: { done: finish, failure: refused } }
   finish: { type: terminal, outcome: succeeded }
   refused: { type: terminal, outcome: failed }
 `;
-const compiledIn = (yaml) => {
-    const started = performance.now();
-    const compiled = compileWorkflowV2(yaml);
-    return { compiled, ms: performance.now() - started };
-};
 
-test("E2-T6: a named member is checked against its property; a member a pattern would select is left to the run", () => {
-    for (const input of [`{ user: "\${inputs.user}", x-note: "ok" }`, `{ user: "\${inputs.user}", count: 3 }`]) {
-        const compiled = compileWorkflowV2(PATTERNED(input));
-        assert.equal(compiled.valid, true, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
-    }
-    // A named member, beside patternProperties, is checked here.
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", count: "three" }`)), /\/count must be integer/);
-    // Which pattern applies to x-note, or whether "other" matches none, needs a pattern evaluated: the run checks them.
-    for (const input of [`{ user: "\${inputs.user}", x-note: 5 }`, `{ user: "\${inputs.user}", other: "x" }`]) {
-        const compiled = compileWorkflowV2(PATTERNED(input));
-        assert.equal(compiled.valid, true, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
-    }
+test("E2-T6: a named member is checked against its property; a key that names nothing takes additionalProperties", () => {
+    assert.equal(compileWorkflowV2(MEMBERS(`{ user: "\${inputs.user}", count: 3 }`)).valid, true);
+    assert.match(problemOf(MEMBERS(`{ user: "\${inputs.user}", count: "three" }`)), /\/count must be integer/);
+    assert.match(problemOf(MEMBERS(`{ user: "\${inputs.user}", note: "abcd" }`)), /\/note must NOT have more than 3 characters/);
+    assert.ok(problemOf(MEMBERS(`{ user: "\${inputs.user}", other: "x" }`)).includes("/other"), "an unnamed key takes additionalProperties: false");
+    assert.match(problemOf(MEMBERS(`{ other: "x" }`)), /additional properties/);
 });
 
-test("E2-T6: without patterns, a member that names nothing takes additionalProperties, and a fixed input is checked whole", () => {
-    assert.ok(problemOf(PATTERNED(`{ user: "\${inputs.user}", other: "x" }`, { patterns: false })).includes("/other"),
-        "an unnamed key takes additionalProperties: false");
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", note: "abcd" }`, { patterns: false })), /\/note must NOT have more than 3 characters/);
-    assert.match(problemOf(PATTERNED(`{ count: "three" }`, { patterns: false })), /\/count must be integer/);
-    assert.match(problemOf(PATTERNED(`{ other: "x" }`, { patterns: false })), /additional properties/);
-});
-
-// Final verification of E2bm-R1: ^a*a*a*a*a*a*b$ passes the pattern check (its cost is a power of the input, not
-// exponential), and on a long run of "a" with no "b" its cost is a high power of the length: the length caps alone do
-// not bound it. The compiler evaluates no pattern, so each of these compiles fast and is left to the run. Nothing here
-// matches the pattern against a long input.
-test("E2bm-R1: a schema with a pattern is not evaluated at compile time, under the length caps too; the run checks it", { timeout: 20_000 }, () => {
-    const key = `${"a".repeat(255)}!`;
-    const text = "a".repeat(4_000);
-    for (const input of [
-        `{ user: "\${inputs.user}", "${key}": 1 }`,
-        `{ "${key}": 1 }`,
-        `{ user: "\${inputs.user}", note: "${text}" }`,
-        `{ note: "${text}" }`,
+// Owner decision Q1 (d): no workflow schema runs a regular expression, so the compiler checks a fixed input whole again,
+// long keys and strings included (the E2bm-R1 deferral existed only for patterns and is gone). Nothing here is slow.
+test("Q1 (d): long fixed keys and strings are checked at compile time, quickly", { timeout: 20_000 }, () => {
+    const long = "a".repeat(100_000);
+    for (const [input, expected] of [
+        [`{ user: "\${inputs.user}", note: "${long}" }`, /\/note must NOT have more than 3 characters/],
+        [`{ note: "${long}" }`, /\/note must NOT have more than 3 characters/],
+        [`{ user: "\${inputs.user}", "${long}": 1 }`, new RegExp(`/${long.slice(0, 40)}`)],
+        [`{ "${long}": 1 }`, /additional properties/],
     ]) {
-        const { compiled, ms } = compiledIn(PATTERNED(input));
-        // If it were checked here, additionalProperties (the key) or the pattern (the text: it does not end in "b") would refuse it.
-        assert.equal(compiled.valid, true, `${input.slice(0, 60)}: ${JSON.stringify(compiled.diagnostics).slice(0, 400)}`);
+        const started = performance.now();
+        const problem = problemOf(MEMBERS(input));
+        const ms = performance.now() - started;
+        assert.match(problem, expected);
         assert.ok(ms < 3_000, `compiled in ${Math.round(ms)} ms`);
     }
-    // A fixed input with a pattern-free schema is still refused at compile time when it is wrong, beside the same caps.
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", count: "${"a".repeat(255)}" }`)), /\/count must be integer/);
 });
 
-test("E2bm-R1: the length caps are kept: a key over 256 characters or a string over 4,096 is left to the run", () => {
-    // Pattern-free schema: up to the caps the fixed input is checked; past them it is left to the run.
-    assert.match(problemOf(PATTERNED(`{ "${"k".repeat(256)}": "x" }`, { patterns: false })), /additional properties/);
-    assert.equal(compileWorkflowV2(PATTERNED(`{ "${"k".repeat(257)}": "x" }`, { patterns: false })).valid, true);
-    assert.match(problemOf(PATTERNED(`{ user: "\${inputs.user}", note: "${"n".repeat(4_096)}" }`, { patterns: false })), /\/note must NOT have more than 3 characters/);
-    assert.equal(compileWorkflowV2(PATTERNED(`{ user: "\${inputs.user}", note: "${"n".repeat(4_097)}" }`, { patterns: false })).valid, true);
+test("Q1 (d): a state's inputSchema with a pattern is refused before any input is checked", () => {
+    const yaml = MEMBERS(`{ note: "abc" }`).replace("note: { type: string, maxLength: 3 }", "note: { type: string, pattern: \"^a*a*b$\" }");
+    const compiled = compileWorkflowV2(yaml);
+    assert.equal(compiled.valid, false);
+    assert.ok(compiled.diagnostics.some(item => item.code === "WORKFLOW_SCHEMA_INVALID" && item.path === "states.calc.inputSchema.properties.note.pattern"),
+        JSON.stringify(compiled.diagnostics));
+    assert.equal(codes(compiled, "WORKFLOW_STATE_INPUT_INVALID").length, 0);
 });

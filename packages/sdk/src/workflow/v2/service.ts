@@ -9,7 +9,7 @@ import {
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
 import { redactWorkflowSecrets } from "./redact.js";
-import { schemaSetFor } from "./schema.js";
+import { schemaSetFor, WorkflowSchemaError, type WorkflowSchemaSet } from "./schema.js";
 import {
     correlationTextOf,
     WORKFLOW_V2_CONTROLLER_NAME,
@@ -311,10 +311,22 @@ function requireStorableYaml(yaml: string): void {
     }
 }
 
-/** A run's inputs checked against its revision's inputs.schema (`ir` and its hash; nothing to check without a schema). */
+/**
+ * A run's inputs checked against its revision's inputs.schema (`ir` and its hash; nothing to check without a schema).
+ * A revision saved before workflow schemas refused `pattern` and `patternProperties` (owner decision Q1 (d)) does not
+ * start: its schemas are refused here as WORKFLOW_SCHEMA_INVALID, inputs schema or not.
+ */
 function validateRunInputs(ir: WorkflowIR | null, irSha256: string | null, inputs: JsonValue): void {
-    if (!ir || !irSha256 || !ir.inputsSchema) return;
-    const problems = schemaSetFor(irSha256, ir.schemaDefs).validate(ir.inputsSchema, inputs);
+    if (!ir || !irSha256) return;
+    let schemas: WorkflowSchemaSet;
+    try {
+        schemas = schemaSetFor(irSha256, ir.schemaDefs);
+    } catch (error) {
+        if (error instanceof WorkflowSchemaError) throw new WorkflowStoreError(error.code, error.message);
+        throw error;
+    }
+    if (!ir.inputsSchema) return;
+    const problems = schemas.validate(ir.inputsSchema, inputs);
     if (problems.length) {
         throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
             problems.map(problem => ({ path: problem.path, message: problem.message })));

@@ -275,7 +275,7 @@ schemas:
     required: [workId, head, authorSessionId, round]
     properties:
       workId: { type: string, minLength: 1 }
-      head: { type: string, pattern: "^[0-9a-f]{40}$" }
+      head: { type: string, minLength: 40, maxLength: 40 }
       authorSessionId: { type: string, minLength: 1 }
       round: { type: integer, minimum: 1, maximum: 3 }
   ReviewInputs:
@@ -297,7 +297,7 @@ schemas:
     additionalProperties: false
     required: [head]
     properties:
-      head: { type: string, pattern: "^[0-9a-f]{40}$" }
+      head: { type: string, minLength: 40, maxLength: 40 }
   ReviewedSet:
     type: array
     items: { $ref: "#/schemas/ReviewResult" }

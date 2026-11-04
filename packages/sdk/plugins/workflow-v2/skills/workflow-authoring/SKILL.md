@@ -136,6 +136,8 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 - Put JSON Schema 2020-12 documents under `schemas` and refer to them as
   `{ $ref: "#/schemas/Name" }`. Only local references work. `$id`,
   `$schema` and `$anchor` are refused.
+- `pattern` and `patternProperties` are refused too: use `enum` or `const`,
+  `minLength` and `maxLength`, or check the text in an agent step.
 - Make payloads strict: `additionalProperties: false` and `required`.
 - A message names a root contract: `contracts: { BuildEvent@1: { schema:
   { $ref: "#/schemas/BuildEvent" } } }`. A request's contract also declares
