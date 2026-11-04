@@ -335,7 +335,7 @@ you must also keep [`.github/skills/pilotswarm-tui/SKILL.md`](./skills/pilotswar
 A portal layout, chat, session-list or canvas change is not done until it has
 been tested in both modes of each setting it can meet: the reading column
 (Settings > Appearance) on **and** off, live (for example a canvas that pops up
-during a turn) **and** after a page reload, desktop **and** phone, Chromium
+during a turn) **and** after a page reload, before **and** after a Settings round trip, desktop **and** phone, Chromium
 **and** WebKit. Load [`.github/skills/portal-ux-testing/SKILL.md`](./skills/portal-ux-testing/SKILL.md)
 for the full matrix and how to seed each mode in a spec, and state the modes
 you covered when you report the change.

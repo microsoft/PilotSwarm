@@ -10,7 +10,7 @@ You are the PilotSwarm terminal UI specialist.
 ## Always Read First
 
 - [`.github/skills/pilotswarm-tui/SKILL.md`](../skills/pilotswarm-tui/SKILL.md)
-- [`.github/skills/portal-ux-testing/SKILL.md`](../skills/portal-ux-testing/SKILL.md) before calling a portal layout change done: test the reading column on and off, live and after reload, desktop and phone, Chromium and WebKit
+- [`.github/skills/portal-ux-testing/SKILL.md`](../skills/portal-ux-testing/SKILL.md) before calling a portal layout change done: test the reading column on and off, live and after reload, before and after a Settings round trip, desktop and phone, Chromium and WebKit
 - [docs/architecture/tui.md](../../docs/architecture/tui.md)
 - [packages/app/ui/core/src/controller.js](../../packages/app/ui/core/src/controller.js)
 - [packages/app/ui/core/src/selectors.js](../../packages/app/ui/core/src/selectors.js)
