@@ -1704,6 +1704,13 @@ async function routeV2Revisions(page, model, yaml = PUBLISHED_YAML) {
 }
 const workflowTabs = main => main.getByRole("tablist", { name: "Workflow view" });
 const openSession = (page, title) => page.locator(".ps-session-row-content", { hasText: title }).first().click();
+/**
+ * The chat the workflows belong to, opened by its id, not its title. routeApi lists it as "Release triage agent", but its
+ * own read (GET /sessions/<id>, which the portal makes for a workflow's parent on each list refresh, every 4 s) comes
+ * from the stub server, whose title for that id differs. After the first refresh the row shows that title, except for a
+ * few milliseconds after each list, so a title locator waited up to 22 s for that window (f-06).
+ */
+const openAgent = (page) => page.locator(`.ps-session-list-button[data-session-id="${AGENT_ID}"] .ps-session-row-content`).first().click();
 
 test("r-1: Graph | YAML switch by click and keys, keep the choice per workflow, and keep the graph's view", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -1742,7 +1749,7 @@ test("r-1: Graph | YAML switch by click and keys, keep the choice per workflow, 
     await expect(yamlTab).toBeFocused();
 
     // The choice is kept for this workflow: another session and back shows the YAML again.
-    await openSession(page, "Release triage agent");
+    await openAgent(page);
     await expect(main).toHaveCount(0);
     await openSession(page, "Workflow: watch-v2");
     await expect(workflowTabs(page.locator(".ps-workflow-main")).getByRole("tab", { name: "YAML", exact: true })).toHaveAttribute("aria-selected", "true");
@@ -1802,7 +1809,7 @@ test("r-2: a draft is edited in the YAML tab at full height, with one strip, Dra
     await workflowTabs(main).getByRole("tab", { name: "YAML", exact: true }).click();
     await expect(editor.getByRole("textbox", { name: "Workflow YAML", exact: true })).toHaveValue(DRAFT_YAML_2);
     await expect(editor.locator(".ps-workflow-yaml-strip").getByRole("status")).toHaveText("Unsaved changes");
-    await openSession(page, "Release triage agent");
+    await openAgent(page);
     await openSession(page, "Workflow: watch-v2");
     const again = page.locator(".ps-workflow-main").getByRole("region", { name: "Draft editor", exact: true });
     await expect(again.getByRole("textbox", { name: "Workflow YAML", exact: true })).toHaveValue(DRAFT_YAML_2);
@@ -2039,6 +2046,9 @@ async function expectFitted(graph) {
 }
 
 test("f-06: the graph is fitted once and keeps its view through the side pane, the window, tabs and sessions", async ({ page }) => {
+    // Twelve settled views (each waits out the zoom/fit animation and needs two equal reads): more than the default 30 s
+    // leaves on a slow runner.
+    test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -2091,7 +2101,7 @@ test("f-06: the graph is fitted once and keeps its view through the side pane, t
     sameView(await settledView(graph), chosen);
     await main.getByRole("button", { name: "Step log", exact: true }).click();
     sameView(await settledView(graph), chosen);
-    await openSession(page, "Release triage agent");
+    await openAgent(page);
     await openSession(page, "Workflow: watch-v2");
     await flowReady(graph);
     sameView(await settledView(graph), chosen);
