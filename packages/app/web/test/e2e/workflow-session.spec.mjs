@@ -1383,7 +1383,7 @@ test("v2 commands: a failed access check says it could not check, with Retry, an
 // B5 — draft edit whose save answer is lost: the edit is kept, the notice offers Retry, and Retry sends the SAME
 // replace_definition (same operation id, expected_revision and YAML); the replayed receipt and the new read model
 // (revision 2) settle the editor. Negative control: an unchanged draft cannot be saved (button disabled, reason title).
-// Source: workflow-v2-panels.js WorkflowV2DraftToggle ("Edit draft", aria-expanded) / WorkflowV2DraftEditor
+// Source: workflow-workspace.js the YAML tab (batch 6, r-2) / workflow-v2-panels.js WorkflowV2DraftEditor
 // (section aria-label "Draft editor" data-revision; textarea aria-label "Workflow YAML"; button
 // [data-operation=replace_definition] "Save draft"/"Saving…", title = reason; status "Unsaved changes");
 // workflow-v2-commands.js workflowV2DraftEditor (needs definition.state "draft", personCommands.draft
@@ -1414,10 +1414,11 @@ test("v2 commands: a draft save whose answer is lost keeps the edit and Retry se
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = page.locator(".ps-workflow-main");
-    const toggle = main.getByRole("button", { name: "Edit draft", exact: true });
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // Batch 6 (r-2): the draft is edited in the YAML tab (it was the "Edit draft" panel).
+    const yamlTab = main.getByRole("tablist", { name: "Workflow view" }).getByRole("tab", { name: "YAML", exact: true });
+    await expect(yamlTab).toHaveAttribute("aria-selected", "false");
+    await yamlTab.click();
+    await expect(yamlTab).toHaveAttribute("aria-selected", "true");
     const editor = main.getByRole("region", { name: "Draft editor", exact: true });
     await expect(editor).toHaveAttribute("data-revision", "1");
     const save = editor.locator('[data-operation="replace_definition"]');
@@ -1668,5 +1669,172 @@ test("f-03: a new revision keeps the places of the steps it still has; a removed
     const steps = placesSaved(profile).at(-1).workflowLayouts[LAYOUT_KEY].steps;
     expect(Object.keys(steps).sort()).toEqual(["done", "pause"]);
     expect(steps.pause).toEqual(pausePlace);
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// Batch 6 (r-1, r-2): Graph | YAML in the header. Graph by default; a click or ArrowLeft/ArrowRight/Home/End switch and
+// move focus; the choice is kept per workflow. The graph stays mounted while the YAML shows (same zoom and place after).
+// A draft is edited in the YAML tab at full height, with Save, Discard and Unsaved in one strip and Draft tools in the
+// side pane; an unsaved edit survives switching tabs and sessions. A published revision is shown read-only; a person
+// who may not change the workflow is told the YAML is for those who can.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "r-1" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const PUBLISHED_YAML = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: 1.0.0 }\n# published\n";
+/** routeApi for a v2 workflow whose read model is `model()`; a definitionRevision read answers that revision's YAML. */
+async function routeV2Revisions(page, model, yaml = PUBLISHED_YAML) {
+    const reads = [];
+    await routeApi(page, {
+        workflowEvents: V2_EVENTS,
+        workflowState: { title: "Workflow: watch-v2", status: "running" },
+        onReadWorkflow: (route) => {
+            const revision = new URL(route.request().url()).searchParams.get("definitionRevision");
+            reads.push(revision);
+            const result = revision ? { ...model(), definitionRevision: { revision: Number(revision), yaml, definitionHash: `hash-${revision}` } } : model();
+            return route.fulfill({ json: { ok: true, result } });
+        },
+    });
+    await page.route(`**${V2_COMMANDS_PATH}`, (route) => accept(route, route.request().postDataJSON().command));
+    return reads;
+}
+const workflowTabs = main => main.getByRole("tablist", { name: "Workflow view" });
+const openSession = (page, title) => page.locator(".ps-session-row-content", { hasText: title }).first().click();
+
+test("r-1: Graph | YAML switch by click and keys, keep the choice per workflow, and keep the graph's view", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2Revisions(page, () => V2_READ_MODEL);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    const tabs = workflowTabs(main);
+    const graphTab = tabs.getByRole("tab", { name: "Graph", exact: true });
+    const yamlTab = tabs.getByRole("tab", { name: "YAML", exact: true });
+    await expect(graphTab).toHaveAttribute("aria-selected", "true");
+    await expect(yamlTab).toHaveAttribute("aria-selected", "false");
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await graph.getByRole("button", { name: "Zoom in", exact: true }).click();
+    const zoomed = await settledView(graph);
+
+    await yamlTab.click();
+    await expect(yamlTab).toHaveAttribute("aria-selected", "true");
+    await expect(main.getByRole("tabpanel").filter({ visible: true })).toHaveCount(1);
+    await expect(graph).toBeHidden();
+    // Keys: ArrowLeft and ArrowRight go round, Home and End go to the ends; focus moves with the choice.
+    await yamlTab.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(graphTab).toHaveAttribute("aria-selected", "true");
+    await expect(graphTab).toBeFocused();
+    await page.keyboard.press("ArrowLeft");
+    await expect(yamlTab).toHaveAttribute("aria-selected", "true");
+    await expect(yamlTab).toBeFocused();
+    await page.keyboard.press("Home");
+    await expect(graphTab).toHaveAttribute("aria-selected", "true");
+    await expect(graphTab).toBeFocused();
+    await page.keyboard.press("End");
+    await expect(yamlTab).toHaveAttribute("aria-selected", "true");
+    await expect(yamlTab).toBeFocused();
+
+    // The choice is kept for this workflow: another session and back shows the YAML again.
+    await openSession(page, "Release triage agent");
+    await expect(main).toHaveCount(0);
+    await openSession(page, "Workflow: watch-v2");
+    await expect(workflowTabs(page.locator(".ps-workflow-main")).getByRole("tab", { name: "YAML", exact: true })).toHaveAttribute("aria-selected", "true");
+
+    // The graph stayed mounted: back on Graph, the zoom and place are as they were.
+    await workflowTabs(main).getByRole("tab", { name: "Graph", exact: true }).click();
+    await flowReady(graph);
+    const back = await settledView(graph);
+    expect(Math.abs(back.x - zoomed.x)).toBeLessThan(1);
+    expect(Math.abs(back.y - zoomed.y)).toBeLessThan(1);
+    expect(Math.abs(back.scale - zoomed.scale)).toBeLessThan(0.001);
+    expect(errors).toEqual([]);
+});
+
+test("r-2: a draft is edited in the YAML tab at full height, with one strip, Draft tools in the side pane, and an edit kept until saved", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let saved = false;
+    await routeV2(page, {
+        readModel: () => saved ? draftModel(2, DRAFT_YAML_2) : draftModel(1, DRAFT_YAML_1),
+        onCommand: (route, command) => { saved = true; return route.fulfill({ json: { ok: true, result: { revision: 2, valid: true, diagnostics: [] } } }); },
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    await workflowTabs(main).getByRole("tab", { name: "YAML", exact: true }).click();
+    const editor = main.getByRole("region", { name: "Draft editor", exact: true });
+    const yaml = editor.getByRole("textbox", { name: "Workflow YAML", exact: true });
+    await expect(yaml).toHaveValue(DRAFT_YAML_1);
+    await expect(yaml).not.toHaveAttribute("readonly", "");
+
+    // Save, Discard and Unsaved in one strip.
+    const strip = editor.locator(".ps-workflow-yaml-strip");
+    await expect(strip.locator('[data-operation="replace_definition"]')).toHaveText("Save draft");
+    await expect(strip.locator('[data-action="discard"]')).toHaveText("Discard edits");
+    await yaml.fill(DRAFT_YAML_2);
+    await expect(strip.getByRole("status")).toHaveText("Unsaved changes");
+
+    // The box fills the tab: it grows with the window and scrolls inside.
+    const short = (await yaml.boundingBox()).height;
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await expect.poll(async () => (await yaml.boundingBox()).height).toBeGreaterThan(short + 100);
+    const tab = main.locator(".ps-workflow-yaml-tab");
+    const tabBox = await tab.boundingBox();
+    expect((await yaml.boundingBox()).y + (await yaml.boundingBox()).height).toBeLessThanOrEqual(tabBox.y + tabBox.height + 1);
+    expect(await yaml.evaluate(element => getComputedStyle(element).overflowY)).not.toBe("visible");
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // Draft tools opens the side pane on Draft tools.
+    await strip.getByRole("button", { name: "Draft tools", exact: true }).click();
+    const side = page.locator(".ps-canvas-pane");
+    await expect(side.locator('[data-panel="draft"]')).toBeVisible();
+    await expect(side.locator('[data-panel="draft"] h2')).toHaveText("Draft tools");
+
+    // The unsaved edit survives Graph -> YAML and another session -> back.
+    await workflowTabs(main).getByRole("tab", { name: "Graph", exact: true }).click();
+    await workflowTabs(main).getByRole("tab", { name: "YAML", exact: true }).click();
+    await expect(editor.getByRole("textbox", { name: "Workflow YAML", exact: true })).toHaveValue(DRAFT_YAML_2);
+    await expect(editor.locator(".ps-workflow-yaml-strip").getByRole("status")).toHaveText("Unsaved changes");
+    await openSession(page, "Release triage agent");
+    await openSession(page, "Workflow: watch-v2");
+    const again = page.locator(".ps-workflow-main").getByRole("region", { name: "Draft editor", exact: true });
+    await expect(again.getByRole("textbox", { name: "Workflow YAML", exact: true })).toHaveValue(DRAFT_YAML_2);
+    await expect(again.locator(".ps-workflow-yaml-strip").getByRole("status")).toHaveText("Unsaved changes");
+
+    // Save clears it.
+    await again.locator('[data-operation="replace_definition"]').click();
+    await expect(again).toHaveAttribute("data-revision", "2");
+    await expect(again.locator(".ps-workflow-yaml-strip").getByRole("status")).toHaveCount(0);
+    await shot(page, "r2-yaml-tab-draft");
+    expect(errors).toEqual([]);
+});
+
+test("r-2: a published revision's YAML is read-only, and a person who may not change the workflow is told who sees it", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let allowed = true;
+    const reads = await routeV2Revisions(page, () => ({ ...V2_READ_MODEL,
+        personCommands: { operations: ["pause", "resume", "stop", "cancel"], viewer: allowed ? { allowed: true } : { allowed: false, reason: "Not yours." },
+            run: { runId: "run-1", stop: true } } }));
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    await workflowTabs(main).getByRole("tab", { name: "YAML", exact: true }).click();
+    const view = main.getByRole("region", { name: "Workflow YAML", exact: true });
+    await expect(view).toContainText("Published revision 1 is fixed. A new version needs a new workflow, made as a draft.");
+    const box = view.getByRole("textbox", { name: "Workflow YAML", exact: true });
+    await expect(box).toHaveValue(PUBLISHED_YAML);
+    await expect(box).toHaveAttribute("readonly", "");
+    expect(reads).toContain("1");
+    await expect(main.getByRole("region", { name: "Draft editor", exact: true })).toHaveCount(0);
+
+    allowed = false;
+    await page.reload();
+    await workflowTabs(page.locator(".ps-workflow-main")).getByRole("tab", { name: "YAML", exact: true }).click();
+    const denied = page.locator(".ps-workflow-main").getByRole("region", { name: "Workflow YAML", exact: true });
+    await expect(denied.getByRole("status")).toHaveText("The YAML is shown to people who can change this workflow.");
+    await expect(denied.getByRole("textbox")).toHaveCount(0);
     expect(errors).toEqual([]);
 });
