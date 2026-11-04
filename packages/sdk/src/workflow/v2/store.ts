@@ -4383,7 +4383,8 @@ export class WorkflowStore {
                     SET state = 'pending', lease_token = NULL, lease_until = NULL, last_error = $3,
                         next_attempt_at = clock_timestamp() + LEAST(60000, 1000 * power(2, GREATEST(attempts - 1, 0)))::integer * interval '1 millisecond'
                   WHERE exchange_id = $1 AND lease_token = $2 AND state = 'leased'`,
-                [exchangeId, leaseToken, jsonbSafeText(outcome.error, 1_000)]);
+                // E2bH-SF6-1: the enqueue's error is kept with its secrets hidden.
+                [exchangeId, leaseToken, jsonbSafeText(redactWorkflowSecrets(outcome.error), 1_000)]);
             return { settled: (rowCount ?? 0) > 0 };
         }
         const { rowCount } = await this.pool.query(

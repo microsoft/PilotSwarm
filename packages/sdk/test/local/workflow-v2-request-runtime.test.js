@@ -239,6 +239,31 @@ describe("workflow v2 request runtime: the store", () => {
             await h.stop();
         }
     });
+
+    it("E2bH-T4: an enqueue error with a credential is kept and reported without it, through its retry and its abandonment", { timeout: REQUEST_TIMEOUT }, async () => {
+        const h = await requestFixture(getEnv());
+        try {
+            const secret = "s3nt1nel-Secr3t";
+            const run = await h.workflow();
+            const id = await h.admit(run);
+            await h.respond(id, "op-1", { response: { approved: true } });
+            const [leased] = await h.store.leaseResponseWakes({ limit: 1, exchangeId: id });
+            expect(await h.store.settleResponseWake(id, leased.leaseToken,
+                { kind: "retry", error: `enqueue failed: postgres://app:${secret}@db/x Bearer ${secret} token=${secret}` })).toEqual({ settled: true });
+            const [row] = await h.q("SELECT last_error FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1", [id]);
+            expect(String(row.last_error)).not.toContain(secret);
+            expect(String(row.last_error)).toContain("postgres://<hidden>@db/x");
+            // Exhausted: the abandonment's event reports the kept error, without the credential.
+            await h.q(`UPDATE SCHEMA.workflow_response_wakes SET attempts = $2, next_attempt_at = clock_timestamp() - interval '1 second'
+                WHERE exchange_id = $1`, [id, WORKFLOW_V2_WAKE_MAX_ATTEMPTS]);
+            expect(await h.store.abandonResponseWakes(100)).toContain(id);
+            const [event] = (await h.catalog.getSessionEvents(run.workflowSessionId, 0, 1000)).filter(item => item.eventType === "workflow.response_wake_abandoned");
+            expect(typeof event.data.lastError).toBe("string");
+            expect(JSON.stringify(event.data)).not.toContain(secret);
+        } finally {
+            await h.stop();
+        }
+    });
 });
 
 // ─── Controller 1.9.0 on a native runtime ────────────────────

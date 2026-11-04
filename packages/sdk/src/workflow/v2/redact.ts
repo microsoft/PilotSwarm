@@ -100,7 +100,7 @@ export function redactWorkflowErrorText(text: string, canonical: (value: JsonVal
 }
 
 /** The fields of a workflow event that carry error text. */
-const ERROR_FIELDS: ReadonlySet<string> = new Set(["error", "cause", "message", "reason", "stderrTail", "errorText", "failure", "terminalError"]);
+const ERROR_FIELDS: ReadonlySet<string> = new Set(["error", "cause", "message", "reason", "stderrTail", "errorText", "failure", "terminalError", "lastError"]);
 
 /** A workflow event's data with the secrets in its error fields hidden, at any depth; every other field as it was. */
 export function redactWorkflowEventData<T extends JsonValue>(data: T): T {

@@ -161,3 +161,16 @@ test("E2-T3: modifier groups are groups; under i a letter matches its other case
 test("a negated escape and a character it excludes do not overlap", () => {
     assert.equal(unsafeSchemaPattern("^(\\D|1)+$"), null);
 });
+
+// Verification of E2b-high (E2bH-SF5-1; test E2bH-T1, compile-time only): a surrogate pair written as two \u escapes is
+// one character, the same as the character itself and as \u{...}.
+test("E2bH-T1: a surrogate pair escape is one character, the same atom as the character written as it is", () => {
+    for (const pattern of ["^(?:\\uD83D\\uDE00|\u{1F600}\u{1F600})+$", "^(?:\\u{1F600}|\u{1F600}\u{1F600})+$", "^(?:\\uD83D\\uDE00|\\u{1F600}x)+$",
+        "^([\\uD83D\\uDE00]|\u{1F600})+$"]) {
+        assert.match(unsafeSchemaPattern(pattern) ?? "", /alternatives that can start the same way/, pattern);
+    }
+    // Different characters, or a lone surrogate escape, stay apart.
+    for (const pattern of ["^(?:\\uD83D\\uDE00|\u{1F601})+$", "^(\\uD83D|a)+$", "^(?:\\uD83D\\uDE00\\uD83D\\uDE01)+$"]) {
+        assert.equal(unsafeSchemaPattern(pattern), null, pattern);
+    }
+});

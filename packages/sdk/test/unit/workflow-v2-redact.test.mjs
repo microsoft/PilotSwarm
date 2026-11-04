@@ -197,3 +197,9 @@ test("E2-T5: only the top-level error's own KV code keeps a `key`; nested detail
     assert.deepEqual(redactWorkflowEventData({ runId: "r", error: { code: "x", details: { code: "KV_LIMIT", key: SENTINEL } } }).error.details,
         { code: "KV_LIMIT", key: "<hidden>" });
 });
+
+test("E2bH-SF6-1: an event's lastError field is an error field: its secrets are hidden", () => {
+    const out = redactWorkflowEventData({ runId: "r", exchangeId: "x", attempts: 8, lastError: `enqueue failed: token=${SENTINEL}` });
+    assert.equal(out.lastError, "enqueue failed: token=<hidden>");
+    assert.equal(out.attempts, 8);
+});

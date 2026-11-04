@@ -196,7 +196,17 @@ function parsePattern(pattern: string): Alt {
                     return { kind: "set", set: Number.isFinite(value) ? single(value) : ANY };
                 }
                 const value = hex(4);
-                return { kind: "set", set: value < 0 ? ANY : single(value) };
+                if (value < 0) return { kind: "set", set: ANY };
+                // E2bH-SF5-1: a high surrogate escape followed by a low one is one code point, the same atom as the
+                // character written as it is (and as \u{...}); a lone surrogate stays one atom of its own.
+                if (value >= 0xd800 && value <= 0xdbff && pattern.startsWith("\\u", at)) {
+                    const before = at;
+                    at += 2;
+                    const low = hex(4);
+                    if (low >= 0xdc00 && low <= 0xdfff) return { kind: "set", set: single(0x10000 + ((value - 0xd800) << 10) + (low - 0xdc00)) };
+                    at = before;
+                }
+                return { kind: "set", set: single(value) };
             }
             case "p": case "P": {
                 // A Unicode property: not computed, so it overlaps every set (E2-R1), negated or not.
