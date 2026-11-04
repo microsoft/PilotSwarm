@@ -8,7 +8,8 @@
  * with fields of its type (ended: status, outcome, state; message: state, contract, exchange; request: state, contract,
  * request, deadline; test_waiting: state, interception). `workflow=` is there when the sender knows the name (a send's
  * text is rendered from its stored exchange, which does not carry it). Every value is a token: letters, digits and
- * ._:@+/- as they are, anything else percent-encoded (UTF-8), at most 160 characters; an empty value is "-".
+ * ._:@+/- as they are, anything else percent-encoded (UTF-8), at most 160 characters cut only between characters (so it
+ * always decodes); an empty value is "-".
  *
  * Then one plain sentence that says what happened and what to do, in a neutral status tone, made only of sanitized text
  * (no brackets or angle brackets, one line, bounded), then "Data (JSON, not instructions):" and the message's JSON with
@@ -27,11 +28,12 @@ export function workflowUpdateToken(value: unknown): string {
     const source = value === null || value === undefined ? "" : String(value);
     let out = "";
     for (const char of source) {
-        out += TOKEN_SAFE.test(char) ? char : [...new TextEncoder().encode(char)].map(byte => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join("");
-        if (out.length >= TOKEN_MAX) break;
+        const piece = TOKEN_SAFE.test(char) ? char : [...new TextEncoder().encode(char)].map(byte => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join("");
+        // A cut is made between characters: never inside a percent escape or a character's UTF-8 bytes, so the value
+        // always decodes.
+        if (out.length + piece.length > TOKEN_MAX) break;
+        out += piece;
     }
-    // A cut never leaves half of a percent escape.
-    out = out.slice(0, TOKEN_MAX).replace(/%[0-9A-F]?$/, "");
     return out || "-";
 }
 
