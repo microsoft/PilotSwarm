@@ -26,14 +26,19 @@ function jsonProblem(text, { name, object }) {
     try { JSON.parse(text); return null; } catch (error) { return `${name} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`; }
 }
 
+/** A JSON box starts at its text's height, at least 2 lines, and grows to 8; past that it scrolls inside (batch 6, f-04). */
+const JSON_BOX_MIN_ROWS = 2;
+const JSON_BOX_MAX_ROWS = 8;
+
 /**
  * A JSON edit box of the workflow screen (of-07): its label tied to it, the shared theme style in monospace, vertical
  * resize, and what is wrong with the JSON as text under it while it is invalid (its description, so screen readers read
- * it with the box). `object` asks for a JSON object; otherwise any JSON value.
+ * it with the box). `object` asks for a JSON object; otherwise any JSON value. Its height follows its text (f-04).
  */
-function JsonBox({ label, name, value, onChange, rows = 3, field, object = true, className = "" }) {
+function JsonBox({ label, name, value, onChange, field, object = true, className = "" }) {
     const id = `wf-json-${React.useId().replace(/:/g, "")}`;
     const problem = jsonProblem(value, { name, object });
+    const rows = Math.min(JSON_BOX_MAX_ROWS, Math.max(JSON_BOX_MIN_ROWS, String(value ?? "").split("\n").length));
     return h("div", { className: `ps-workflow-field${className ? ` ${className}` : ""}` },
         h("label", { htmlFor: id }, label),
         h("textarea", { id, className: "ps-workflow-input is-code", value, rows, spellCheck: false, "data-field": field,
@@ -518,7 +523,7 @@ export function WorkflowV2TestAnswer({ controller, sessionId, responder, interce
         h("legend", null, "Answer"), radio("success", "Success"), radio("error", "Error"), radio("cancel", "Cancel")),
     kind === "cancel" ? h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, "The call ends as cancelled; a cancel has no value.")
         : h(JsonBox, { label: kind === "error" ? "Error (JSON: { \"code\", \"message\", \"details\"? })" : "Value (JSON)",
-            name: kind === "error" ? "The error" : "The value", object: kind === "error", value: valueText, onChange: setValueText, rows: 4, field: "answer" }),
+            name: kind === "error" ? "The error" : "The value", object: kind === "error", value: valueText, onChange: setValueText, field: "answer" }),
     h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "test_respond", disabled: !responder.respond || responder.busy,
             title: responder.reason ?? (responder.busy ? "Another command for this workflow is being sent." : "Send this answer to the test run."),
@@ -622,8 +627,7 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
         if (removal.ok) send({ delete: removal.delete });
     };
     const cell = { padding: "2px 8px 2px 0", verticalAlign: "top", overflowWrap: "anywhere" };
-    return h("section", { id, className: "ps-workflow-variables", "aria-label": "Workflow variables", "data-run-id": model.runId,
-        style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
+    return h("section", { id, className: "ps-workflow-variables ps-workflow-side-form", "aria-label": "Workflow variables", "data-run-id": model.runId },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, model.revision === null ? "Variables" : `Variables · revision ${model.revision}`),
     h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, WORKFLOW_V2_VARIABLES_HELP_TEXT),
     model.note ? h("p", { role: "status", style: { margin: 0 } }, model.note) : null,
@@ -641,7 +645,7 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
             style: { display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6 } },
         h(TextBox, { label: "Name" },
             h("input", { type: "text", className: "ps-workflow-input", value: key, maxLength: 128, onChange: event => setKey(event.target.value), "data-field": "name" })),
-        h(JsonBox, { label: "Value (JSON)", name: "The value", object: false, value, onChange: setValue, rows: 2, field: "value", className: "is-grow" }),
+        h(JsonBox, { label: "Value (JSON)", name: "The value", object: false, value, onChange: setValue, field: "value", className: "is-grow" }),
         h("button", { type: "submit", className: "ps-mini-button", disabled: model.busy, "data-operation": "set" }, model.pending ? "Saving…" : "Set"),
         h("button", { type: "button", className: "ps-mini-button is-danger", disabled: model.busy, "data-operation": "remove", onClick: onRemove }, "Remove"),
         error ? h("span", { role: "alert", style: { flexBasis: "100%", color: TONES.error } }, error) : null)
@@ -703,21 +707,20 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, ve
     const shownRevision = draft ? model.revision : model.publishedRevision;
     const shownHash = draft ? model.definitionHash : model.publishedDefinitionHash;
     const row = (label, value, extra = {}) => h("div", { className: "ps-workflow-property", key: label, ...extra }, h("span", null, label), h("strong", null, value));
-    return h("section", { id, className: "ps-workflow-definition", "aria-label": draft ? "Publish review" : "Start the live run",
-        "data-definition-state": model.state,
-        style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
+    return h("section", { id, className: "ps-workflow-definition ps-workflow-side-form", "aria-label": draft ? "Publish review" : "Start the live run",
+        "data-definition-state": model.state },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, draft ? "Publish review" : "Start the live run"),
     h(DefinitionSummary, { model, revisionLabel: draft ? "revision" : "published revision", revision: shownRevision, hash: shownHash,
         validity: draft ? (model.valid ? "valid" : `${model.errors || "unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be published`) : null }),
     row("Live effects", runs ? "Only when its live run starts" : "None until a live run starts"),
     // What publication pins for each named agent, and the tests of exactly this revision (information: no test is required).
     workflowV2PublicationEvidenceRows(model, versionsNow).map(([label, value], index) => row(label, value, { key: `evidence-${index}`, "data-evidence": label.trim() })),
-    h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, draft
-        ? "Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. Publication starts no run, approves no repository write and grants no tool."
-        : "Starting runs the published revision with real effects. A workflow has one live run."),
-    runs ? h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, rows: 3, field: "inputs" }) : null,
-    runs ? h(JsonBox, { label: "Initial variables (JSON object, optional)", name: "Initial variables", value: vars, onChange: setVars, rows: 2, field: "vars" }) : null,
-    h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+    h("p", { className: "ps-workflow-side-note" }, draft
+        ? "Publishing freezes this exact revision; it starts no run and grants no tool."
+        : "Starting runs the published revision with real effects; a workflow has one live run."),
+    runs ? h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, field: "inputs" }) : null,
+    runs ? h(JsonBox, { label: "Initial variables (JSON object, optional)", name: "Initial variables", value: vars, onChange: setVars, field: "vars" }) : null,
+    h("div", { className: "ps-workflow-panel-actions" },
         model.controls.map(control => h("button", { key: control.operation, type: "button", className: "ps-mini-button",
             "data-operation": control.operation, disabled: !control.enabled, title: control.title,
             onClick: () => { send(control.operation); } }, control.label)),
@@ -1086,8 +1089,7 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
     };
     const radio = (value, label) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 } },
         h("input", { type: "radio", name: modeName, value, checked: agentMode === value, onChange: () => setAgentMode(value), "data-agent-mode": value }), label);
-    return h("section", { id, className: "ps-workflow-test-review", "aria-label": "Test review", "data-revision": model.revision ?? undefined,
-        style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
+    return h("section", { id, className: "ps-workflow-test-review ps-workflow-side-form", "aria-label": "Test review", "data-revision": model.revision ?? undefined },
     h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, "Test review"),
     h("p", { role: "note", style: { margin: 0, color: TONES.warning } }, WORKFLOW_V2_TEST_NOTICE_TEXT),
     h(DefinitionSummary, { model, revisionLabel: model.state === "draft" ? "draft revision" : "revision", revision: model.revision, hash: model.definitionHash,
@@ -1098,11 +1100,11 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
         radio("real", "Real agents (spend model tokens)")),
     agentMode === "real" ? h("p", { role: "note", "data-notice": "real-agents", style: { margin: 0, color: TONES.warning } },
         WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT) : null,
-    h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, rows: 3, field: "inputs" }),
-    h(JsonBox, { label: "Initial variables (JSON object, optional)", name: "Initial variables", value: vars, onChange: setVars, rows: 2, field: "vars" }),
+    h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, field: "inputs" }),
+    h(JsonBox, { label: "Initial variables (JSON object, optional)", name: "Initial variables", value: vars, onChange: setVars, field: "vars" }),
     h(TextBox, { label: "Scenario name (optional)" },
         h("input", { type: "text", className: "ps-workflow-input", value: scenario, maxLength: 128, onChange: event => setScenario(event.target.value), "data-field": "scenario" })),
-    h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+    h("div", { className: "ps-workflow-panel-actions" },
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "test", disabled: !model.control.enabled, title: model.control.title,
             onClick: () => { start(); } }, model.control.label),
         h("button", { type: "button", className: "ps-mini-button",
