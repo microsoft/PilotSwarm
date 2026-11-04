@@ -91,3 +91,38 @@ test("a session that remembers a wider canvas than fits still leaves the list al
         }
     }
 });
+
+// Opening Settings swaps the workspace out and back in. The width measurements
+// used to stay bound to the old, removed grid; the list then fell back to an
+// estimate that counted each session's canvas, and changed width on every
+// switch until a reload. Settings is where the reading column is turned on or
+// off, so that is how it showed up.
+for (const reading of [false, true]) test(`after Settings opens and closes, the list still holds its width (reading column ${reading ? "on" : "off"})`, async ({ page }) => {
+    const settings = { chatReading: { on: reading, width: 1100, align: "left", pad: 20 }, sessionViews: {
+        [`11111110-2222-3333-4444-555555555550`]: { desktop: { at: 1, canvasOpen: false, layout: {} } },
+        [`11111111-2222-3333-4444-555555555551`]: { desktop: { at: 1, canvasOpen: true, layout: { canvasPaneAdjust: 137 } } },
+        [`11111112-2222-3333-4444-555555555552`]: { desktop: { at: 1, canvasOpen: true, layout: { canvasPaneAdjust: -114 } } },
+    } };
+    await page.route("**/api/v1/me/profile", (route) => route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: settings } } }));
+    await page.route("**/api/v1/me/profile/settings", (route) => route.fulfill({ json: { ok: true, result: { profileSettings: settings } } }));
+    await page.setViewportSize({ width: 1512, height: 900 });
+    await page.goto(base);
+    const rows = page.locator(".ps-session-list-button");
+    await rows.first().waitFor();
+    await rows.nth(0).click();
+    await page.waitForTimeout(300);
+    const plain = await geometry(page);
+
+    await page.locator('button[aria-label="Settings"]').click();
+    await expect(page.locator(".ps-workspace-grid")).toHaveCount(0);
+    await page.locator('button[aria-label="Close settings"]').click();
+    await expect(page.locator(".ps-workspace-grid")).toHaveCount(1);
+
+    for (const index of [1, 0, 2, 1, 0]) {
+        await rows.nth(index).click();
+        await page.waitForTimeout(400);
+        const now = await geometry(page);
+        expect(Math.abs(now.listRight - plain.listRight), `session ${index}`).toBeLessThanOrEqual(1);
+        if (index > 0) expect(now.canvas, `session ${index} shows its canvas`).toBeGreaterThan(0);
+    }
+});

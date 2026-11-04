@@ -1122,10 +1122,16 @@ function applyDocumentTheme(themeId) {
 
 function useMeasuredViewport(ref, suspended = false) {
     const [viewport, setViewport] = React.useState({ width: 0, height: 0 });
+    // The measured element can be replaced: the Admin Console swaps the whole
+    // workspace out and back in. Follow ref.current, or the observer stays on
+    // the removed node and these numbers go stale until a reload.
+    const [element, setElement] = React.useState(null);
+    React.useLayoutEffect(() => {
+        if (ref.current !== element) setElement(ref.current);
+    });
 
     React.useLayoutEffect(() => {
         if (suspended) return undefined;
-        const element = ref.current;
         if (!element) return undefined;
 
         const update = () => {
@@ -1143,7 +1149,7 @@ function useMeasuredViewport(ref, suspended = false) {
             observer.disconnect();
             window.removeEventListener("resize", update);
         };
-    }, [ref, suspended]);
+    }, [element, suspended]);
 
     return viewport;
 }
