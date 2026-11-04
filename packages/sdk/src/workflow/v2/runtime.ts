@@ -2346,7 +2346,10 @@ export async function endWorkflowV2AgentChild(store: WorkflowStore, client: Work
         }));
     }
     const { marked } = await store.markAgentEndSent(nodeExecutionId, status);
-    if (marked) {
+    // WFO-2: an end first marked sent when the child did not exist yet, sent now that a spawn attempt created it.
+    const remarked = !marked && options.afterSpawn === true && invocation.endChildStatus === "NotFound"
+        && (await store.remarkAgentEndSent(nodeExecutionId, status)).remarked;
+    if (marked || remarked) {
         await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_ended", data: {
             runId: invocation.runId, nodeExecutionId, stateId: node.nodeId, childSessionId: invocation.childSessionId, end, outcome: node.outcome,
             sent, childStatus: status,
@@ -2369,9 +2372,12 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
     for (;;) {
         const page: WorkflowAgentInvocation[] = await store.listOwedAgentInvocations(runId, after, WORKFLOW_V2_OWED_AGENT_PAGE);
         for (const invocation of page) {
-            if (invocation.endSentAt !== null) continue;
+            // WFO-2: an end marked sent when the child did not exist yet, after a spawn attempt began, is sent again: the
+            // attempt may have created the child since (its record failed, so nothing else ends it).
+            const recheck = invocation.endSentAt !== null && invocation.endChildStatus === "NotFound" && invocation.spawnAttempts > 0;
+            if (invocation.endSentAt !== null && !recheck) continue;
             try {
-                await endWorkflowV2AgentChild(store, client, invocation.nodeExecutionId);
+                await endWorkflowV2AgentChild(store, client, invocation.nodeExecutionId, recheck ? { afterSpawn: true } : {});
             } catch (error) {
                 failed.push(invocation.nodeExecutionId);
                 await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
@@ -3769,7 +3775,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /** Every attempt to create an agent state's child failed: the state fails unavailable with the last cause (winner controller). */
-    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.agentSpawnFailed, async (_ctx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.agentSpawnFailed, async (actx, rawInput) => {
         const input = parseEffectInput(rawInput);
         const cause = textOrNull(record(rawInput, "agent spawn failure").cause, "cause") ?? "unknown";
         const executed = await store.readNodeExecution(input.nodeExecutionId);
@@ -3788,6 +3794,21 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             } }],
             update: { touch: true },
         });
+        // WFO-2: an attempt may have created the child before every attempt to record it failed, and the state may have
+        // been decided before that (its end then found no session): end the child now, whatever an earlier end recorded.
+        const invocation = await store.readAgentInvocation(input.nodeExecutionId);
+        const client = actx.getClient();
+        if (invocation && invocation.spawnAttempts > 0 && client) {
+            try {
+                await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
+            } catch (error) {
+                // A later run-end cleanup (endRunAgents) sends it again.
+                await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
+                    runId: run.runId, nodeExecutionId: input.nodeExecutionId, childSessionId: invocation.childSessionId,
+                    error: jsonbSafeText(workflowErrorMessage(error), 1_000),
+                } }]).catch(() => undefined);
+            }
+        }
         return null;
     });
 

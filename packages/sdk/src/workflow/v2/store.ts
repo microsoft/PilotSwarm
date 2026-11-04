@@ -5312,14 +5312,17 @@ export class WorkflowStore {
     }
 
     /**
-     * One page of a run's agent invocations whose end command is still owed (end_sent_at IS NULL), in node execution id
-     * order after `afterNodeExecutionId` (adversarial review RT-5: a run's cleanup read only its first 200 invocations,
-     * ended or not, so a later child was never ended). Keyed by id, so a page never repeats or skips one.
+     * One page of a run's agent invocations whose end command is still owed (end_sent_at IS NULL), or was marked sent
+     * when the child did not exist yet after a spawn attempt began (end_child_status NotFound, spawn_attempts above 0:
+     * the attempt may have created it since; adversarial review WFO-2), in node execution id order after
+     * `afterNodeExecutionId` (RT-5: a run's cleanup read only its first 200 invocations, ended or not, so a later child
+     * was never ended). Keyed by id, so a page never repeats or skips one.
      */
     async listOwedAgentInvocations(runId: string, afterNodeExecutionId: string | null, limit = 200): Promise<WorkflowAgentInvocation[]> {
         const { rows } = await this.pool.query(
             `SELECT * FROM ${this.t.agentInvocations}
-              WHERE run_id = $1 AND end_sent_at IS NULL AND ($2::text IS NULL OR node_execution_id > $2)
+              WHERE run_id = $1 AND (end_sent_at IS NULL OR (end_child_status = 'NotFound' AND spawn_attempts > 0))
+                AND ($2::text IS NULL OR node_execution_id > $2)
               ORDER BY node_execution_id LIMIT $3`, [runId, afterNodeExecutionId, limit]);
         return rows.map(agentInvocationFrom);
     }
@@ -5391,6 +5394,20 @@ export class WorkflowStore {
     }
 
     /** Record that an agent state's end command was handed to its child's queue, or was not needed (the child's status), once. */
+    /**
+     * An end that was marked sent while the child did not exist (end_child_status NotFound), sent again once a spawn
+     * attempt created it (adversarial review WFO-2): the child's status is recorded, so the invocation is owed no more.
+     * Only from NotFound to another status; `remarked` false otherwise.
+     */
+    async remarkAgentEndSent(nodeExecutionId: string, childStatus: string): Promise<{ remarked: boolean }> {
+        if (childStatus === "NotFound") return { remarked: false };
+        const { rows } = await this.pool.query(
+            `UPDATE ${this.t.agentInvocations} SET end_sent_at = clock_timestamp(), end_child_status = $2
+              WHERE node_execution_id = $1 AND end_sent_at IS NOT NULL AND end_child_status = 'NotFound' RETURNING node_execution_id`,
+            [nodeExecutionId, jsonbSafeText(childStatus, 100)]);
+        return { remarked: rows.length > 0 };
+    }
+
     async markAgentEndSent(nodeExecutionId: string, childStatus: string): Promise<{ marked: boolean; invocation: WorkflowAgentInvocation }> {
         const { rows } = await this.pool.query(
             `UPDATE ${this.t.agentInvocations} SET end_sent_at = clock_timestamp(), end_child_status = $2
