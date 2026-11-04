@@ -26,12 +26,14 @@ sharing, and a transcript.
   It reads top to bottom: each step sits below the step that leads to it,
   sibling branches sit side by side, and the edge that closes a loop curves
   back up beside the loop's steps. Edges are curves that never pass through
-  an unrelated step. The graph opens fitted to its area. Use **Zoom in**,
+  an unrelated step. The graph opens fitted to its area, and stays fitted
+  when the area changes size until you move or zoom it. Use **Zoom in**,
   **Zoom out** and **Fit to screen** at its bottom left. With **Move the
   graph** (the hand, on by default) drag the background to move the graph,
-  and pinch or scroll to zoom; turn it off to keep the graph still while you
-  scroll the page. A run's progress never moves the view; a new definition or
-  revision fits it again.
+  and pinch or scroll to zoom; a drag that starts on a step never moves it.
+  Turn the hand off to keep the graph still while you scroll the page. A
+  run's progress never moves the view; a new definition or revision fits it
+  again.
   Select a node to inspect its outcome, tools, output and recent history in
   the right-hand canvas pane. Drag the divider between the workflow and that
   pane to resize it, use the divider's arrow keys, or double-click it to reset

@@ -256,6 +256,44 @@ const QUALITY_EVENTS = [
     { eventType: "workflow.failed", data: { stateId: "failed", steps: 2, outcome: "failed" } },
 ].map((event, index) => ({ ...event, sessionId: WORKFLOW_ID, seq: index + 1, createdAt: new Date().toISOString() }));
 
+// Batch 5 T8: React Flow draws the graph. These read what it shows: the view's translation and scale, the edges it draws
+// (a path with a real `d`), and the view once it has settled (two reads in a row agree).
+const viewOf = graph => graph.locator(".react-flow__viewport").evaluate((element) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+    return { x: matrix.e, y: matrix.f, scale: matrix.a };
+});
+const drawnEdges = graph => graph.locator(".react-flow__edges .ps-workflow-edge-path")
+    .evaluateAll(paths => paths.filter(path => (path.getAttribute("d") || "").trim().length > 1).length);
+/** The unique step-to-step routes of a definition's states (what the graph draws as edges). */
+const edgeCount = states => {
+    const ids = new Set(states.map(state => state.id));
+    return new Set(states.flatMap(state => Object.values(state.next || {}).filter(target => ids.has(target)).map(target => `${state.id}->${target}`))).size;
+};
+async function flowReady(graph) {
+    await expect(graph).toHaveAttribute("data-renderer", "flow");
+    await expect.poll(() => graph.locator(".react-flow__node")
+        .evaluateAll(nodes => nodes.length > 0 && nodes.every(node => getComputedStyle(node).visibility === "visible"))).toBe(true);
+}
+/** Every edge is drawn, and stays drawn while React Flow measures the steps (it used to drop them once measured). */
+async function expectEdgesDrawn(graph, count) {
+    await expect.poll(() => drawnEdges(graph)).toBe(count);
+    for (let i = 0; i < 5; i += 1) {
+        await graph.page().waitForTimeout(150);
+        expect(await drawnEdges(graph)).toBe(count);
+    }
+}
+async function settledView(graph) {
+    let last = await viewOf(graph);
+    await expect.poll(async () => {
+        const now = await viewOf(graph);
+        const same = Math.abs(now.x - last.x) < 0.5 && Math.abs(now.y - last.y) < 0.5 && Math.abs(now.scale - last.scale) < 0.0005;
+        last = now;
+        return same;
+    }, { intervals: [150, 150, 250, 250, 500] }).toBe(true);
+    return last;
+}
+const QUALITY_EDGES = edgeCount(QUALITY_EVENTS[0].data.states);
+
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     test(`the quality gate is a real branching graph, top to bottom, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
@@ -264,11 +302,13 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = page.locator(".ps-workflow-main");
         const graph = main.getByRole("group", { name: "Workflow graph" });
-        // Batch 5 (g-02): React Flow draws it once loaded.
-        await expect(graph).toHaveAttribute("data-renderer", "flow");
+        // Batch 5 (g-02): React Flow draws it once loaded, every edge included (T8: edges vanished once steps were measured).
+        await flowReady(graph);
         await expect(graph.locator(".ps-workflow-node")).toHaveCount(5);
         await expect(graph.locator(".ps-workflow-edge")).toHaveCount(5);
+        await expectEdgesDrawn(graph, QUALITY_EDGES);
         await expect(graph.locator('[data-from="failed"], [data-from="approved"], [data-from="blocked"]')).toHaveCount(0);
+        await settledView(graph);
         // Top to bottom (g-01): each step's box is below the box of the step that leads to it; the three ends share a row.
         const box = id => graph.locator(`[data-node-id="${id}"]`).boundingBox();
         const collect = await box("collect_metrics"), evaluate = await box("evaluate_quality");
@@ -312,14 +352,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = page.locator(".ps-workflow-main");
         const graph = main.getByRole("group", { name: "Workflow graph" });
-        await expect(graph).toHaveAttribute("data-renderer", "flow");
-        const viewportOf = () => graph.locator(".react-flow__viewport").evaluate((element) => {
-            const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
-            return { x: matrix.e, y: matrix.f, scale: matrix.a };
-        });
+        await flowReady(graph);
+        const viewportOf = () => viewOf(graph);
         const controls = graph.getByRole("group", { name: "Graph view", exact: true });
         await expect(controls.getByRole("button")).toHaveCount(4);
-        const fitted = await viewportOf();
+        // The fitted view, once the first fit has settled (T8: it was read before the fit had happened).
+        const fitted = await settledView(graph);
         await controls.getByRole("button", { name: "Zoom in", exact: true }).click();
         await expect.poll(async () => (await viewportOf()).scale).toBeGreaterThan(fitted.scale * 1.05);
         await controls.getByRole("button", { name: "Zoom out", exact: true }).click();
@@ -363,6 +401,78 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await hand.hover();
         await expect(page.locator(".ps-icon-tooltip")).toHaveText(/^Move the graph — The graph stays still/);
         await shot(page, `graph-controls-${viewport.width}`);
+        expect(errors).toEqual([]);
+    });
+
+    // Batch 5 T8: with the hand on, every edge stays drawn once React Flow has measured the steps and after a step is
+    // selected, and a step answers a click (1440: its details open) or a tap (390: the first tap selects, the second
+    // opens; flow-04). Selector: -g "stay drawn" (from packages/app/web, after build).
+    test(`edges stay drawn and a step answers a click or tap with the hand on, at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeApi(page, { workflowEvents: QUALITY_EVENTS,
+            workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        const graph = main.getByRole("group", { name: "Workflow graph" });
+        await flowReady(graph);
+        await expectEdgesDrawn(graph, QUALITY_EDGES);
+        await expect(graph.getByRole("button", { name: "Move the graph", exact: true })).toHaveAttribute("aria-pressed", "true");
+        const step = graph.getByRole("button", { name: "Inspect collect_metrics", exact: true });
+        const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
+        await step.click();
+        await expect(step).toHaveAttribute("aria-pressed", "true");
+        if (viewport.width < 920) {
+            await expect(details).toHaveCount(0);
+            await expectEdgesDrawn(graph, QUALITY_EDGES);
+            await step.click();
+        } else {
+            await expectEdgesDrawn(graph, QUALITY_EDGES);
+        }
+        await expect(details.locator("h2")).toHaveText("collect_metrics");
+        await shot(page, `graph-edges-after-select-${viewport.width}`);
+        expect(errors).toEqual([]);
+    });
+
+    // Batch 5 T8: a drag that starts on a step never moves the graph, with the hand on; the background still does.
+    // Selector: -g "starts on a step" (from packages/app/web, after build).
+    test(`a drag that starts on a step does not move the graph, at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeApi(page, { workflowEvents: QUALITY_EVENTS,
+            workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        const graph = main.getByRole("group", { name: "Workflow graph" });
+        await flowReady(graph);
+        await settledView(graph);
+        // Zoomed in by the person first, so the view no longer follows the graph area's size: only a drag could move it.
+        await graph.getByRole("button", { name: "Zoom in", exact: true }).click();
+        const before = await settledView(graph);
+        const box = await graph.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).boundingBox();
+        const x = box.x + box.width / 2, y = box.y + box.height / 2;
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        await page.mouse.move(x + 40, y + 30, { steps: 4 });
+        await page.mouse.move(x + 80, y + 60, { steps: 4 });
+        const during = await viewOf(graph);
+        await page.mouse.up();
+        const after = await settledView(graph);
+        for (const view of [during, after]) {
+            expect(Math.abs(view.x - before.x)).toBeLessThan(1);
+            expect(Math.abs(view.y - before.y)).toBeLessThan(1);
+            expect(Math.abs(view.scale - before.scale)).toBeLessThan(0.001);
+        }
+        // Control: the same drag from the background does move it.
+        const area = await graph.boundingBox();
+        await page.mouse.move(area.x + 10, area.y + 10);
+        await page.mouse.down();
+        await page.mouse.move(area.x + 50, area.y + 40, { steps: 4 });
+        await page.mouse.move(area.x + 90, area.y + 70, { steps: 4 });
+        await page.mouse.up();
+        await expect.poll(async () => (await viewOf(graph)).x - after.x).toBeGreaterThan(40);
         expect(errors).toEqual([]);
     });
 }
@@ -469,11 +579,16 @@ test("the main workflow graph follows live ticks and selection drives canvas nod
     await expect(graphView.locator(".ps-workflow-node.is-running")).toHaveCount(1);
     await expect(graphView.locator(".ps-workflow-node.is-running")).toContainText("summarize");
     await expect(graphView.locator(".ps-workflow-node.is-running")).toContainText("×2");
+    // Batch 5 T8: every edge is drawn once React Flow has measured the steps, after a step is selected and after a tick.
+    await flowReady(graphView);
+    const liveEdges = edgeCount(log[0].data.states);
+    await expectEdgesDrawn(graphView, liveEdges);
     await graphView.getByRole("button", { name: "Inspect summarize", exact: true }).click();
     const details = page.getByRole("region", { name: "Session canvas" }).locator(".ps-workflow-node-details");
     await expect(details.locator("h2")).toHaveText("summarize");
     await expect(details).toContainText("again → summarize");
     await expect(page.locator(".ps-canvas-pane iframe")).toHaveCount(0);
+    await expectEdgesDrawn(graphView, liveEdges);
     await shot(page, "6-live-workflow-main-running");
 
     // A live tick: the run finishes.
@@ -494,6 +609,7 @@ test("the main workflow graph follows live ticks and selection drives canvas nod
     await expect(main.locator(".ps-workflow-status")).toHaveText("completed");
     await expect(graphView.locator(".ps-workflow-node.is-done")).toHaveCount(4);
     await expect(graphView.locator(".ps-workflow-node.is-running")).toHaveCount(0);
+    await expectEdgesDrawn(graphView, liveEdges);
     await expect(details.locator("h2")).toHaveText("summarize");
     await graphView.getByRole("button", { name: "Inspect published", exact: true }).click();
     await expect(details.locator("h2")).toHaveText("published");
@@ -1011,9 +1127,10 @@ test("v2 commands: the virtual clock refuses an invalid advance locally and send
     expect(errors).toEqual([]);
 });
 
-// Batch 5 (g-03): the pane opens with its header and the graph only; the step log, the notices and a test run's calls
-// each open and close from their own icon button (aria-expanded), Notices with its count tinted by its most serious
-// notice. Without an ended run there is no Run activity button.
+// Batch 5 (g-03): the pane opens with its header and the graph only; the step log, the run's activity, the notices and a
+// test run's calls each open and close from their own icon button (aria-expanded), Notices with its count tinted by its
+// most serious notice. The test run here has started, so it has activity ("Test run started"; T8: the run's activity is
+// shown whenever the run has any, as before batch 5, not only once it ended).
 // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "graph only" (from packages/app/web, after build).
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     test(`the workflow pane opens with the graph only, and each panel opens from its own button, at ${viewport.width}px`, async ({ page }) => {
@@ -1028,12 +1145,14 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             await expect(main.locator(selector)).toHaveCount(0);
         }
         await shot(page, `graph-only-${viewport.width}`);
-        for (const [name, selector] of [["Step log", ".ps-workflow-log"], ["Notices", ".ps-workflow-banners"], ["Test calls", ".ps-workflow-test-calls"]]) {
+        for (const [name, selector] of [["Step log", ".ps-workflow-log"], ["Run activity", ".ps-workflow-run-activity"], ["Notices", ".ps-workflow-banners"],
+            ["Test calls", ".ps-workflow-test-calls"]]) {
             const button = main.getByRole("button", { name, exact: true });
             await expect(button).toHaveAttribute("aria-expanded", "false");
             await button.click();
             await expect(button).toHaveAttribute("aria-expanded", "true");
             await expect(main.locator(selector)).toBeVisible();
+            if (name === "Run activity") await expect(main.locator(selector)).toContainText("Activity of this run (1)");
             await button.click();
             await expect(button).toHaveAttribute("aria-expanded", "false");
             await expect(main.locator(selector)).toHaveCount(0);
@@ -1041,7 +1160,6 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         const badge = main.getByRole("button", { name: "Notices", exact: true }).locator(".ps-workflow-tool-badge");
         await expect(badge).toHaveText(/^[1-9]\d*$/);
         await expect(badge).toHaveAttribute("data-level", "warning");
-        await expect(main.getByRole("button", { name: "Run activity", exact: true })).toHaveCount(0);
         expect(errors).toEqual([]);
     });
 }

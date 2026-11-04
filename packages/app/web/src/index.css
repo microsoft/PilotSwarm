@@ -4786,6 +4786,8 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 }
 .ps-workflow-flow .react-flow__attribution a { color: var(--ps-muted); }
 .ps-workflow-flow .react-flow__node { cursor: default; }
+/* The invisible handles React Flow measures for where edges meet a step (batch 5 T8): never seen, never hit. */
+.ps-workflow-flow .react-flow__handle.ps-workflow-handle { opacity: 0; pointer-events: none; }
 /* The hand is off: the graph stays still, and a finger on it scrolls the page. */
 .ps-workflow-flow.is-still .react-flow__pane { touch-action: pan-x pan-y; cursor: default; }
 .ps-workflow-graph-controls {
