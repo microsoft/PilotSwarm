@@ -1,6 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
 import { normalizeWorkflowLayouts } from "../../core/src/workflow-layouts.js";
-import { workflowSessionDetails, workflowStepLogHistory, workflowStepLogRunId, workflowStepParent } from "../../core/src/workflow-view.js";
+import { workflowSessionDetails, workflowStepLogHistory, workflowStepLogScope, workflowStepParent } from "../../core/src/workflow-view.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -7456,8 +7456,12 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
-            // A workflow's step log shows the selected run's entries (UI-8).
-            logRunId: workflowLog && activeSessionId ? workflowStepLogRunId(state.ui.workflowViews?.[activeSessionId]) : null,
+            // A workflow's step log shows the selected run's entries (UI-8), from the selection's own read (R2-UI-3): its
+            // kind, run and error as plain values, so the shallow comparison sees a change.
+            ...(() => {
+                const scope = workflowLog && activeSessionId ? workflowStepLogScope(state.ui.workflowViews?.[activeSessionId]) : { kind: "all" };
+                return { logScope: scope.kind, logRunId: scope.kind === "run" ? scope.runId : null, logError: scope.kind === "failed" ? scope.error : null };
+            })(),
             // A shared empty array, not a literal: a fresh [] per call failed
             // the shallow-equal check on every dispatch and re-rendered the
             // whole pane, transcript included, on every keystroke.
@@ -7485,8 +7489,10 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         };
     }, shallowEqualObject);
     const logHistory = React.useMemo(
-        () => (workflowLog ? workflowStepLogHistory(viewState.activeHistory, viewState.logRunId) : viewState.activeHistory),
-        [workflowLog, viewState.activeHistory, viewState.logRunId],
+        () => (workflowLog
+            ? workflowStepLogHistory(viewState.activeHistory, { kind: viewState.logScope, runId: viewState.logRunId, error: viewState.logError })
+            : viewState.activeHistory),
+        [workflowLog, viewState.activeHistory, viewState.logScope, viewState.logRunId, viewState.logError],
     );
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,

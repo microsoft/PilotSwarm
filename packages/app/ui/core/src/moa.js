@@ -93,3 +93,21 @@ export function workflowDraftHandoff({ sessionId, buffer = null, saved = null })
     if (saved && saved.sessionId === sessionId) return { draftEdit: saved, draftDirty: true };
     return null;
 }
+
+/**
+ * The workflow view a Master of Agents panel's side request opens in the workspace (adversarial review UI-2 and R2-UI-2):
+ * the requested side panel and step, the panel's run and its main tab, and the edit workflowDraftHandoff hands over
+ * (`draft`). The run and the tab are always given, so nothing the workspace showed before is kept by accident: a panel
+ * that never chose a run shows the live run there (selectedRunId null), whatever run the workspace last showed; a panel
+ * without a tab of its own shows the graph. Pure.
+ */
+export function workflowSideHandoffView({ request = null, childView = null, draft = null } = {}) {
+    const view = childView && typeof childView === "object" ? childView : {};
+    return {
+        sidePanel: request?.panel ?? null,
+        ...(request?.nodeId ? { selectedNodeId: request.nodeId } : {}),
+        selectedRunId: typeof view.selectedRunId === "string" && view.selectedRunId ? view.selectedRunId : null,
+        mainTab: view.mainTab === "yaml" ? "yaml" : "graph",
+        ...(draft ?? {}),
+    };
+}

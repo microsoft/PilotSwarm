@@ -323,24 +323,60 @@ export function workflowViewSnapshotEqual(a, b) {
 }
 
 /**
- * The run a workflow's step log shows (adversarial review UI-8): the run the person chose, else the run the workflow's
- * last read model shows (its live run); null for a workflow with no runs read (a version 1 workflow's log is not
- * filtered). Pure.
+ * Which entries a workflow's step log shows (adversarial reviews UI-8 and R2-UI-3), from the same selection-bound read
+ * the graph uses (workflowReadModelView), never a read of another selection:
+ * - `run`: the run the person chose, else the live run the read of that selection names (`runId`);
+ * - `loading`: the live run was chosen and its read has not come back (a read of another run may still be held);
+ * - `none`: the read came back, and there is no live run (a draft with only test runs);
+ * - `failed`: the read failed (`error`);
+ * - `all`: a version 1 workflow, or nothing known yet about its runs (its log is not filtered).
+ * In `loading`, `none` and `failed` the log shows only the session's own notices, never any run's entries. Pure.
  */
+export function workflowStepLogScope(view) {
+    if (!view || typeof view !== "object") return { kind: "all" };
+    if (view.definition != null && view.definition.shape !== "v2") return { kind: "all" };
+    if (typeof view.selectedRunId === "string" && view.selectedRunId) return { kind: "run", runId: view.selectedRunId };
+    const v2 = view.readModel != null || view.readModelAttempt != null || Object.hasOwn(view, "selectedRunId");
+    if (!v2) return { kind: "all" };
+    const read = workflowReadModelView(view);
+    if (read.readModel) {
+        const runId = read.readModel.run?.runId;
+        return typeof runId === "string" && runId ? { kind: "run", runId } : { kind: "none" };
+    }
+    if (read.error) return { kind: "failed", error: read.error };
+    return { kind: "loading" };
+}
+
+/** The run a workflow's step log shows (workflowStepLogScope), or null when it shows no one run. Pure. */
 export function workflowStepLogRunId(view) {
-    if (!view || typeof view !== "object") return null;
-    if (typeof view.selectedRunId === "string" && view.selectedRunId) return view.selectedRunId;
-    const model = workflowReadModelView(view).workflowModel;
-    const runId = model?.run?.runId;
-    return typeof runId === "string" && runId ? runId : null;
+    const scope = workflowStepLogScope(view);
+    return scope.kind === "run" ? scope.runId : null;
+}
+
+/** The line a step log shows in place of a run's entries, for a scope that has none (R2-UI-3). */
+export function workflowStepLogNotice(scope) {
+    if (scope?.kind === "loading") return "Loading the live run's log…";
+    if (scope?.kind === "none") return "No live run yet. Choose a test run to see its log.";
+    if (scope?.kind === "failed") return `The live run could not be read, so its log is not shown: ${scope.error}`;
+    return null;
 }
 
 /**
- * A workflow session's history for its step log (UI-8): only the entries of `runId`, and every entry that names no run
- * (the session's own notices). The same history object when nothing is left out, or no run is chosen. Pure.
+ * A workflow session's history for its step log (UI-8, R2-UI-3), for `scope` (workflowStepLogScope; a run id, or null
+ * for every entry, as before): a run's entries and every entry that names no run (the session's own notices); for a
+ * scope with no run, only those notices and a line that says why (workflowStepLogNotice). The same history object when
+ * nothing is left out or added. Pure.
  */
-export function workflowStepLogHistory(history, runId) {
-    if (!runId || !history || !Array.isArray(history.chat)) return history;
-    const chat = history.chat.filter(item => !item?.workflowRunId || item.workflowRunId === runId);
+export function workflowStepLogHistory(history, scope) {
+    const resolved = typeof scope === "string" ? (scope ? { kind: "run", runId: scope } : { kind: "all" })
+        : scope && typeof scope === "object" ? scope : { kind: "all" };
+    if (resolved.kind === "all" || !history || !Array.isArray(history.chat)) return history;
+    const runId = resolved.kind === "run" ? resolved.runId : null;
+    const chat = history.chat.filter(item => !item?.workflowRunId || (runId !== null && item.workflowRunId === runId));
+    const notice = workflowStepLogNotice(resolved);
+    if (notice) {
+        chat.push({ id: `workflow-step-log:${resolved.kind}`, role: "system", text: notice, time: "", workflowStepLogNotice: resolved.kind });
+        return { ...history, chat };
+    }
     return chat.length === history.chat.length ? history : { ...history, chat };
 }

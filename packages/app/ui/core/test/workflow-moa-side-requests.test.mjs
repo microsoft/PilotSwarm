@@ -8,7 +8,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { workflowDraftHandoff } from "../src/moa.js";
+import { workflowDraftHandoff, workflowSideHandoffView } from "../src/moa.js";
+import { appReducer, createInitialState, createStore } from "../src/index.js";
 import { fileURLToPath } from "node:url";
 
 const read = rel => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
@@ -27,9 +28,9 @@ test("a Master of Agents panel opens the workflow in the workspace on that panel
     assert.match(moa, /onWorkflowOpenSide=\{onWorkflowSide \? request => onWorkflowSide\(ready, request\) : null\}/);
     assert.match(moa, /onWorkflowSide=\{\(child, request\) => openWorkflowSide\(node, child, request\)\}/);
     const body = moa.slice(moa.indexOf("const openWorkflowSide = "), moa.indexOf("const zoom = (node, artifact = null) => {"));
-    for (const part of ["zoom(node);", "sidePanel: request?.panel ?? null", "selectedNodeId: request.nodeId", "selectedRunId: childView.selectedRunId",
-        "mainTab: childView.mainTab", "workflowDraftHandoff({ sessionId, buffer: child?.workflowDraftBuffers?.get(sessionId) ?? null, saved: childView.draftEdit ?? null })",
-        "...(draft ?? {})", "type: \"ui/sidePaneTab\", tab: \"canvas\"",
+    for (const part of ["zoom(node);", "view: workflowSideHandoffView({ request, childView, draft })",
+        "workflowDraftHandoff({ sessionId, buffer: child?.workflowDraftBuffers?.get(sessionId) ?? null, saved: childView.draftEdit ?? null })",
+        "type: \"ui/sidePaneTab\", tab: \"canvas\"",
         "type: \"canvas/flip\", sessionId, slot: 1"]) {
         assert.ok(body.includes(part), part);
     }
@@ -76,4 +77,23 @@ test("E2-T9: a clean panel buffer hands over nothing, so the workspace keeps its
     // A changed panel buffer: handed over, unsaved.
     const changed = { sessionId: "wf-1", base, text: "a: panel\n" };
     assert.deepEqual([open(changed).draftEdit, open(changed).draftDirty], [changed, true]);
+});
+
+// Adversarial review R2-UI-2: the workspace last showed a test run of the workflow; a dashboard panel that never chose a
+// run (the live run) opens its step details there. The workspace must show the live run, not keep its test run.
+test("R2-UI-2: a panel on the live run opens the live run in a workspace that showed a test run; a chosen run is kept", () => {
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { selectedRunId: "test-run-7", mainTab: "yaml", sidePanel: "calls" } });
+    assert.equal(store.getState().ui.workflowViews.wf.selectedRunId, "test-run-7");
+    const draft = { draftEdit: { sessionId: "wf", text: "a: 2\n" }, draftDirty: true };
+    const handed = workflowSideHandoffView({ request: { sessionId: "wf", panel: "details", nodeId: "review" }, childView: {}, draft });
+    assert.deepEqual(handed, { sidePanel: "details", selectedNodeId: "review", selectedRunId: null, mainTab: "graph", ...draft });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: handed });
+    const view = store.getState().ui.workflowViews.wf;
+    assert.deepEqual([view.selectedRunId, view.mainTab, view.sidePanel, view.selectedNodeId], [null, "graph", "details", "review"]);
+    // A panel that chose a run, and the YAML tab, hands them over; a step log request names no step.
+    assert.deepEqual(workflowSideHandoffView({ request: { panel: "log" }, childView: { selectedRunId: "run-3", mainTab: "yaml" } }),
+        { sidePanel: "log", selectedRunId: "run-3", mainTab: "yaml" });
+    assert.deepEqual(workflowSideHandoffView({}), { sidePanel: null, selectedRunId: null, mainTab: "graph" });
 });
