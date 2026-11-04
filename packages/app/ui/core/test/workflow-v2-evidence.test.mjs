@@ -86,7 +86,8 @@ test("the question to the parent agent names the run, step, visit and branch, ho
     const done0 = { id: "nx-done-b0", stateId: "branch_done", ordinal: 2, status: "completed", outcome: "succeeded", resultKind: "business",
         outputPreview: "{\"ok\":true}", ...branch(0) };
     assert.equal(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "branch_done", execution: done0, kind: "findings" }), [
-        "About workflow (session wf): in run run-1, step 'branch_done' (visit 2) in branch 0: here is what it found. It ended 'succeeded'. Its result: {\"ok\":true}",
+        // The branch as people read it, with the index read_workflow uses (owner batch 7, H3).
+        "About workflow (session wf): in run run-1, step 'branch_done' (visit 2) in branch 1 (index 0): here is what it found. It ended 'succeeded'. Its result: {\"ok\":true}",
         "If you agree, pass these findings to whoever needs them (for example the author of the change), or act on them.",
     ].join("\n"));
     assert.match(workflowV2StepQuestion({ workflowSessionId: "wf", runId: RUN, stateId: "work", execution: { id: "p", ordinal: 3, status: "pending" }, kind: "rework" }),
@@ -117,7 +118,7 @@ test("the controller sends the question to the parent's chat as an ordinary mess
     assert.ok(text.includes("\nMy note: branch 1 crashed\nIf you agree, arrange the rework"), text);
     // A visit chosen by id, an unknown kind, a step with no visit, a workflow without a parent.
     assert.equal((await h.controller.askParentAboutStep("wf", { stateId: "work", executionId: "nx-work-b1", kind: "findings" })).ok, true);
-    assert.ok(h.sent[1][1].includes("step 'work' (visit 1) in branch 1: here is what it found. A runtime error (crashed). exit code 1"), h.sent[1][1]);
+    assert.ok(h.sent[1][1].includes("step 'work' (visit 1) in branch 2 (index 1): here is what it found. A runtime error (crashed). exit code 1"), h.sent[1][1]);
     assert.deepEqual(await h.controller.askParentAboutStep("wf", { stateId: "fan", kind: "other" }),
         { ok: false, reason: "Choose what to ask: findings, rework or approval." });
     assert.deepEqual(await h.controller.askParentAboutStep("wf", { stateId: "done", kind: "findings" }),

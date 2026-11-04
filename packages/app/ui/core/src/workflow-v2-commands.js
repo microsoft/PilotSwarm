@@ -1,5 +1,7 @@
 import { shortRunId as shortId, shortSessionId as shortSession } from "./formatting.js";
-import { workflowV2AgentBinding, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2Clipped, workflowV2RunRows, workflowV2VisitEnding } from "./workflow-v2-view.js";
+import {
+    workflowV2AgentBinding, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2BranchNumber, workflowV2Clipped, workflowV2RunRows, workflowV2VisitEnding,
+} from "./workflow-v2-view.js";
 
 /**
  * Workflow v2: a person's workflow commands in the workflow view (design 04
@@ -1137,13 +1139,15 @@ export const WORKFLOW_V2_ASK_PARENT_KINDS = Object.freeze({
  * The message that asks the workflow's parent agent about one visit of a step (owner decision q16; mocks M22 "Send
  * findings", M23 "Request scoped rework", M24 "Ask parent for approval"): which run, step, visit and branch, how it
  * ended and its result, what the person asks (`kind`: findings, rework or approval) and their note, written by
- * workflowV2AskParentMessage. Null for an unknown kind. Pure.
+ * workflowV2AskParentMessage. The branch is named as people read it, with the index read_workflow uses ("branch 1
+ * (index 0)"; owner batch 7, H3). Null for an unknown kind. Pure.
  */
 export function workflowV2StepQuestion({ workflowName = null, workflowSessionId, runId, stateId, execution = null, kind, note = "" } = {}) {
     const asked = WORKFLOW_V2_ASK_PARENT_KINDS[kind];
     if (!asked) return null;
     const visit = Number.isSafeInteger(execution?.ordinal) ? ` (visit ${execution.ordinal})` : "";
-    const branch = isRecord(execution?.branch) && Number.isSafeInteger(execution.branch.index) ? ` in branch ${execution.branch.index}` : "";
+    const branch = isRecord(execution?.branch) && Number.isSafeInteger(execution.branch.index)
+        ? ` in branch ${workflowV2BranchNumber(execution.branch.index)} (index ${execution.branch.index})` : "";
     const ending = workflowV2VisitEnding(execution);
     const result = typeof execution?.outputPreview === "string" && execution.outputPreview && execution.outputPreview !== "null"
         ? ` Its result: ${workflowV2Clipped(execution.outputPreview, 1_000)}` : "";
