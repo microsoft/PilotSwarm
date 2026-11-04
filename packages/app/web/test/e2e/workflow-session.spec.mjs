@@ -269,6 +269,12 @@ const viewOf = graph => graph.locator(".react-flow__viewport").evaluate((element
 });
 const drawnEdges = graph => graph.locator(".react-flow__edges .ps-workflow-edge-path")
     .evaluateAll(paths => paths.filter(path => (path.getAttribute("d") || "").trim().length > 1).length);
+/** How many Step details boxes are on screen: laid out, not hidden, and inside the window. */
+const detailsOnScreen = page => page.locator(".ps-workflow-node-details").evaluateAll(boxes => boxes.filter(box => {
+    const rect = box.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && getComputedStyle(box).visibility !== "hidden"
+        && rect.right > 0 && rect.left < window.innerWidth && rect.bottom > 0 && rect.top < window.innerHeight;
+}).length);
 /** The unique step-to-step routes of a definition's states (what the graph draws as edges). */
 const edgeCount = states => {
     const ids = new Set(states.map(state => state.id));
@@ -287,9 +293,15 @@ async function expectEdgesDrawn(graph, count) {
         expect(await drawnEdges(graph)).toBe(count);
     }
 }
+/**
+ * The view once it stops moving. Zoom and Fit animate (up to 200 ms) from the next frame, so a read right after the
+ * click still shows the old view: wait the animation out first, then poll until two reads 150 ms apart agree.
+ */
 async function settledView(graph) {
+    await graph.page().waitForTimeout(350);
     let last = await viewOf(graph);
     await expect.poll(async () => {
+        await graph.page().waitForTimeout(150);
         const now = await viewOf(graph);
         const same = Math.abs(now.x - last.x) < 0.5 && Math.abs(now.y - last.y) < 0.5 && Math.abs(now.scale - last.scale) < 0.0005;
         last = now;
@@ -678,7 +690,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             // On a phone a tap only selects the step and keeps the workflow on screen (flow-04), even for collect, the step
             // the view selects by default; a second tap on it opens its details.
             await expect(main.locator(".ps-workflow-graph")).toBeVisible();
-            await expect(page.locator(".ps-workflow-node-details").filter({ visible: true })).toHaveCount(0);
+            // The phone's hidden details layer is moved off screen by a transform (0.8.9: it keeps its state), so it is
+            // still "visible" to a locator: what counts is that no step details are on screen.
+            await expect.poll(() => detailsOnScreen(page)).toBe(0);
             await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
         }
         const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
@@ -806,7 +820,9 @@ test("of-03: the Step details pane resizes by drag, keys and double-click at 144
 });
 
 test("of-03: with Diagnostics open on a narrow window the seam beside Step details moves itself, and Diagnostics keeps its width", async ({ page }) => {
-    await page.setViewportSize({ width: 1100, height: 800 });
+    // The session list keeps its width beside an open column (0.8.9), so 1440px is already too narrow for both opening
+    // widths: Diagnostics opens at about 190px. (At 1100px it is squeezed to 0px, the documented squeeze below the snap.)
+    await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await routeApi(page);
@@ -837,7 +853,8 @@ test("of-03: with Diagnostics open on a narrow window the seam beside Step detai
 });
 
 test("of-03: Diagnostics squeezed by a narrower window gets its width back first when the seam beside Step details moves", async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
+    // Wide enough for both opening widths beside the session list, which keeps its width (0.8.9).
+    await page.setViewportSize({ width: 1700, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await routeApi(page);
@@ -1592,11 +1609,16 @@ test("f-03: a moved step is saved once in the profile, comes back after a reload
     expect(Math.abs(reloaded.y - place[1])).toBeLessThan(1);
     await expect(controls.getByRole("button", { name: "Reset layout", exact: true })).toBeVisible();
 
-    // Fit to screen fits the boxes where they are: a box moved far right stays inside the fitted view.
-    await dragStep(page, graph, "done", 700, 0);
+    // Fit to screen fits the boxes where they are: a box moved past the right edge comes back inside the fitted view.
+    // The pointer stops just inside the graph's right edge (a drag released outside the window is not one a person can
+    // make), so the moved box's right half is past that edge.
+    const area = await graph.boundingBox();
+    const start = await graph.getByRole("button", { name: "Inspect done", exact: true }).boundingBox();
+    await dragStep(page, graph, "done", Math.floor(area.x + area.width - 2 - (start.x + start.width / 2)), 0);
+    const outside = await graph.getByRole("button", { name: "Inspect done", exact: true }).boundingBox();
+    expect(outside.x + outside.width).toBeGreaterThan(area.x + area.width);
     await controls.getByRole("button", { name: "Fit to screen", exact: true }).click();
     await settledView(graph);
-    const area = await graph.boundingBox();
     for (const id of ["poll", "pause", "done", "failed"]) {
         const box = await graph.getByRole("button", { name: `Inspect ${id}`, exact: true }).boundingBox();
         expect(box.x).toBeGreaterThanOrEqual(area.x - 1);
@@ -1907,10 +1929,12 @@ test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen a
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await expect(page.locator(".ps-workflow-main")).toBeVisible();
     await expect(sessionRows.filter({ hasText: "Workflow: branching-workflow-test" }).first()).toBeVisible();
-    // Escape is not taken by zen in a workflow: it goes to the sessions.
+    // Escape is not taken by zen in a workflow: it goes to the sessions (the list is the focused pane; 0.8.9 moves DOM
+    // focus to the row only when the focused pane changes), and the chat's zen is still on when it is opened again.
     await page.locator(".ps-workflow-main").click({ position: { x: 5, y: 5 } });
     await page.keyboard.press("Escape");
-    await expect.poll(() => page.evaluate(() => Boolean(document.activeElement?.closest("[class*='ps-session']")))).toBe(true);
+    await expect.poll(() => page.evaluate(() => Boolean(document.activeElement?.closest("[class*='ps-session']")
+        || document.querySelector(".ps-session-pane.is-focused")))).toBe(true);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await expect(side.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
     await side.getByRole("button", { name: "Leave zen mode", exact: true }).click();
@@ -1930,7 +1954,7 @@ test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen a
 
 // ------------------------------------------------------------------------------------------------------------
 // Batch 6 (f-04): compact review panels. Publish review's property rows are a two-column grid without row dividers,
-// with one short note and its buttons in one row; a JSON box is as tall as its text, from 2 to 8 rows, and scrolls
+// with one short note and its buttons in one row (two on a phone); a JSON box is as tall as its text, from 2 to 8 rows, and scrolls
 // inside past that. Accessible names and data-field values are unchanged.
 // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "f-04:" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
@@ -1960,12 +1984,13 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         }))) {
             expect(style).toEqual({ display: "grid", columns: 2, top: "0px", bottom: "0px" });
         }
-        // One short note; the buttons in one row.
+        // One short note; the buttons in one row (a phone's touch-size buttons, 0.8.9, may take a second row).
         await expect(review.locator(".ps-workflow-side-note")).toHaveCount(1);
         expect(((await review.locator(".ps-workflow-side-note").textContent()) || "").length).toBeLessThan(120);
         const tops = await review.locator(".ps-workflow-panel-actions button").evaluateAll(buttons => buttons.map(button => Math.round(button.getBoundingClientRect().top)));
         expect(tops.length).toBeGreaterThan(1);
-        expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(2);
+        const buttonRows = [...tops].sort((a, b) => a - b).filter((top, i, sorted) => i === 0 || top - sorted[i - 1] > 2).length;
+        expect(buttonRows).toBeLessThanOrEqual(viewport.width < 920 ? 2 : 1);
         const height = (await review.boundingBox()).height;
         testInfo.annotations.push({ type: "publish-review-height", description: `${Math.round(height)}px at ${viewport.width}px` });
 
@@ -2159,14 +2184,23 @@ test("d-1: a workflow's session details say what it runs, link its parent, and f
     expect(errors).toEqual([]);
 });
 
+const TEST_OWNER = { provider: "none", subject: "test", email: "test@example.com", displayName: "Test User" };
+/** The stub's bootstrap names no signed-in person; this one does, so "You" can be decided. */
+async function routeViewer(page, principal) {
+    await page.route("**/api/v1/bootstrap", route => route.fulfill({ json: { ok: true, result: {
+        auth: { principal, authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] } },
+    } } }));
+}
+const personStarted = (page) => routeApi(page, {
+    workflowEvents: V2_EVENTS,
+    workflowState: { title: "Workflow: watch-v2", status: "running", parentSessionId: null, owner: TEST_OWNER },
+    onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: { ...V2_READ_MODEL, runs: [], run: null } } }),
+});
+
 test("d-1: a workflow a person started says 'You' as its starter, for its owner", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await routeApi(page, {
-        workflowEvents: V2_EVENTS,
-        workflowState: { title: "Workflow: watch-v2", status: "running", parentSessionId: null,
-            owner: { provider: "none", subject: "test", email: "test@example.com", displayName: "Test User" } },
-        onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: { ...V2_READ_MODEL, runs: [], run: null } } }),
-    });
+    await personStarted(page);
+    await routeViewer(page, TEST_OWNER);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await openDetails(page);
     await expect(detailValue(page, "Started by")).toHaveText("You");
@@ -2174,6 +2208,15 @@ test("d-1: a workflow a person started says 'You' as its starter, for its owner"
     await page.locator(".ps-session-detail-collapse").click();
     await expect(page.locator(".ps-session-detail-box.is-collapsed .ps-session-detail-marks")).toContainText("No run yet");
     await page.locator(".ps-session-detail-summary").click();
+});
+
+// A viewer who is not the owner (here the stub's bootstrap, which names no one) sees the owner's name, not "You".
+test("d-1: a workflow a person started names its owner as its starter, for a viewer who is not its owner", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await personStarted(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await openDetails(page);
+    await expect(detailValue(page, "Started by")).toHaveText("Test User <test@example.com>");
 });
 
 // ------------------------------------------------------------------------------------------------------------
