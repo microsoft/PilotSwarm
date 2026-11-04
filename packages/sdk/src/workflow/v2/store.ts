@@ -2260,6 +2260,8 @@ export class WorkflowStore {
         start: RunAdmission | null;
         /** The published revision's agent pins as canonical JSON (migration 0099); null or absent when there are none. */
         agentPinsText?: string | null;
+        /** With start: whether the parent is told when the live run ends (batch 7, n-1); absent leaves it as it is. */
+        notifyParent?: boolean;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         const kind = input.start ? "publish_and_start" : "publish";
         return this.transaction(async client => {
@@ -2294,10 +2296,21 @@ export class WorkflowStore {
             );
             const published = definitionFrom(rows[0]);
             const run = input.start ? await this.insertRun(client, published, revision, input.start, input.operationId) : null;
+            if (run) await this.setNotifyParent(client, published, input.notifyParent);
             const receipt = this.receiptFor(kind, published, revision, run);
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
             return { receipt, replayed: false };
         });
+    }
+
+    /**
+     * Set whether the parent is told when the workflow's live run ends (definitions.notify_parent; batch 7, n-1), in the
+     * transaction that admits that run, so the run's end reads what its start said. Nothing when it is absent or unchanged.
+     */
+    private async setNotifyParent(client: PoolClient, definition: WorkflowDefinitionRow, notifyParent: boolean | undefined): Promise<void> {
+        if (typeof notifyParent !== "boolean" || definition.notifyParent === notifyParent) return;
+        await client.query(`UPDATE ${this.t.definitions} SET notify_parent = $2, updated_at = now() WHERE workflow_session_id = $1`,
+            [definition.workflowSessionId, notifyParent]);
     }
 
     /** Admit the live run of a published definition. */
@@ -2307,6 +2320,8 @@ export class WorkflowStore {
         operationId: string;
         requestSha256: string;
         start: RunAdmission;
+        /** Whether the parent is told when this live run ends (batch 7, n-1); absent leaves it as it is. */
+        notifyParent?: boolean;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         return this.transaction(async client => {
             await this.requireLiveSession(client, input.workflowSessionId);
@@ -2323,6 +2338,7 @@ export class WorkflowStore {
             }
             const revision = await this.readRevisionRow(client, input.workflowSessionId, definition.publishedRevision);
             const run = await this.insertRun(client, definition, revision, input.start, input.operationId);
+            await this.setNotifyParent(client, definition, input.notifyParent);
             const receipt = this.receiptFor("start", definition, revision, run);
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "start", input.requestSha256, receipt);
             return { receipt, replayed: false };

@@ -80,6 +80,7 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         + "operation: replace_definition (yaml + expected_revision; drafts only, same metadata.version); "
         + "publish (expected_revision + definition_hash of the exact revision you reviewed; starts nothing); "
         + "publish_and_start (the publish fields + inputs, optional vars); start (definition_hash + inputs, optional vars; one live run per workflow); "
+        + "starting a live run (publish_and_start, start) tells you its result when it ends unless notify_on_completion is false; "
         + "set_vars (set: {key: JSON value} and/or delete: [keys], with expected_kv_revision from read_workflow: one atomic change to the run's "
         + "variables; null is a value, deleting is explicit; a step that starts later reads them as context.kv, ${kv.key} or ${kv[\"any key\"]}, "
         + "a running step keeps the values it started with); pause (no new step starts; work already started finishes and keeps its result); "
@@ -101,6 +102,11 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
             definition_hash: { type: "string", description: "publish/start: the yamlSha256 of the reviewed revision." },
             inputs: { type: "object", description: "publish_and_start/start: static run inputs checked against inputs.schema." },
             vars: { type: "object", description: "publish_and_start/start: the run's initial variables (any keys, JSON values)." },
+            notify_on_completion: {
+                type: "boolean",
+                description: "publish_and_start/start: tell you the live run's result when it ends. Default true: starting a live run turns this "
+                    + "workflow's notification on, even if spawn_workflow had it off; false keeps it off.",
+            },
             set: { type: "object", description: "set_vars: keys to set, with their JSON values." },
             delete: { type: "array", items: { type: "string" }, description: "set_vars: keys to delete." },
             expected_kv_revision: { type: "integer", description: "set_vars: the run's kvRevision you read." },
@@ -346,6 +352,20 @@ function deleteKeysArg(args: Record<string, unknown>): string[] {
     return value.map(String);
 }
 
+/**
+ * Whether a live start tells the parent the run's result (batch 7, n-1): notify_on_completion, true unless it is false.
+ * Given with any other operation it is refused, as vars is.
+ */
+function notifyOnCompletionArg(args: Record<string, unknown>, operation: unknown): boolean {
+    const value = args.notify_on_completion;
+    if (value === undefined || value === null) return true;
+    if (typeof value !== "boolean") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "notify_on_completion must be true or false.");
+    if (operation !== "publish_and_start" && operation !== "start") {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "notify_on_completion applies to publish_and_start and start only.");
+    }
+    return value;
+}
+
 /** Parse update_workflow arguments into a typed command. */
 export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: { milestone?: boolean } = {})
     : { workflowSessionId: string; operationId: string; command: WorkflowV2Command } {
@@ -357,13 +377,14 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: 
     if (vars !== null && operation !== "publish_and_start" && operation !== "start") {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "vars applies to publish_and_start and start only; use set_vars on a run.");
     }
+    const notifyParent = notifyOnCompletionArg(args, operation);
     if (operation === "replace_definition") command = { operation, yaml: requiredString(args, "yaml"), expectedRevision: revisionArg(args) };
     else if (operation === "publish") command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash") };
     else if (operation === "publish_and_start") {
         command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
-            ...(vars !== null ? { vars } : {}) };
+            ...(vars !== null ? { vars } : {}), notifyParent };
     } else if (operation === "start") {
-        command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args), ...(vars !== null ? { vars } : {}) };
+        command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args), ...(vars !== null ? { vars } : {}), notifyParent };
     } else {
         // A host that takes the milestone operations names them too, as its tool description does.
         const { definition, run, agent, milestone } = UPDATE_WORKFLOW_OPERATIONS;
@@ -978,6 +999,8 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
         definition: {
             state: definition.state, semver: definition.semver, currentRevision: definition.currentRevision,
             publishedRevision: definition.publishedRevision, publishedDefinitionHash: definition.publishedYamlSha256,
+            // Whether the parent agent is told when the live run ends (batch 7, n-1): spawn_workflow sets it, a live start sets it again.
+            notifyOnCompletion: definition.notifyParent,
             // What publication pinned each named agent state to (migration 0099; R18, R28); only a definition with any shows it.
             ...(definition.publishedAgentPins !== null ? { publishedAgentPins: definition.publishedAgentPins } : {}),
         },

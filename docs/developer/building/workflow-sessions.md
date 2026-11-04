@@ -274,7 +274,12 @@ safety limit, not a recommended watcher lifetime. Store a large delta as an
 artifact and return its reference; the parent message contains a short preview.
 
 Completion notification is on by default. `notify_on_completion: false`
-disables it; a parent-requested stop does not send a redundant wake-up.
+disables it; a parent-requested stop does not send a redundant wake-up. For a
+version 2 workflow, starting its live run (`update_workflow start` or
+`publish_and_start`, by the agent or by a person) turns the notification on
+again, even for a draft spawned with it off, unless that start passes
+`notify_on_completion: false`; `read_workflow` shows the current setting as
+`definition.notifyOnCompletion`.
 Delivery is a separate activity with up to three attempts over 40 seconds.
 A durable child receipt prevents later re-delivery after success. If a worker
 dies between enqueue and receipt, the parent's normal `clientMessageIds`

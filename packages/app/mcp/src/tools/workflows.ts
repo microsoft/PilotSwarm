@@ -74,8 +74,10 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
                 "Send one command to a version 2 workflow session, as a person. command is the update_workflow agent tool's command: "
                 + "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel; stop, test, test_respond "
                 + "and test_advance when the workers run controller 1.9.0), operation_id (repeat it to retry the same command) and the "
-                + "operation's arguments (expected_revision, definition_hash, yaml, inputs, vars, set, delete, expected_kv_revision, run_id, "
-                + "reason, grace_seconds, agent_mode, fixtures, scenario, interception_id, response, seconds). Answers the command's receipt. "
+                + "operation's arguments (expected_revision, definition_hash, yaml, inputs, vars, notify_on_completion, set, delete, "
+                + "expected_kv_revision, run_id, reason, grace_seconds, agent_mode, fixtures, scenario, interception_id, response, seconds). "
+                + "A live start (publish_and_start, start) tells the workflow's parent agent the result when the run ends unless "
+                + "notify_on_completion is false. Answers the command's receipt. "
                 + "A workflow started under another workflow's agent step takes only pause, stop and cancel; read a workflow with read_workflow "
                 + "first.",
             inputSchema: {

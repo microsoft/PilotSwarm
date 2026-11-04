@@ -699,8 +699,17 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
 export type WorkflowV2Command =
     | { operation: "replace_definition"; yaml: string; expectedRevision: number }
     | { operation: "publish"; expectedRevision: number; definitionHash: string }
-    | { operation: "publish_and_start"; expectedRevision: number; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue } }
-    | { operation: "start"; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue } };
+    | { operation: "publish_and_start"; expectedRevision: number; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue }; notifyParent?: boolean }
+    | { operation: "start"; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue }; notifyParent?: boolean };
+
+/**
+ * Whether a live start tells the parent the run's result (batch 7, n-1): unless the start says false, a live start turns
+ * the workflow's parent notification on (a draft spawned with it off included). Part of the request's digest only when
+ * false, so a start without it keeps the digest earlier builds recorded for it.
+ */
+function notifyDigestPart(notifyParent: boolean | undefined): { notifyParent?: false } {
+    return notifyParent === false ? { notifyParent: false } : {};
+}
 
 /** Apply one typed definition-lifecycle command with idempotency by operation id. */
 export async function updateWorkflowV2(
@@ -743,8 +752,9 @@ export async function updateWorkflowV2(
             operationId: context.operationId,
             requestSha256: jsonSha256({ kind: command.operation, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
                 ...(startInputs ? { inputs: canonicalJson(startInputs.value) } : {}),
-                ...(command.operation === "publish_and_start" ? varsDigestPart(command.vars) : {}) }),
+                ...(command.operation === "publish_and_start" ? { ...varsDigestPart(command.vars), ...notifyDigestPart(command.notifyParent) } : {}) }),
             start: startInputs ? liveAdmission(host, workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null) : null,
+            ...(command.operation === "publish_and_start" ? { notifyParent: command.notifyParent !== false } : {}),
             ...(agentPinsText !== null ? { agentPinsText } : {}),
         });
     } else {
@@ -756,8 +766,10 @@ export async function updateWorkflowV2(
         }
         stored = await host.store.startLive({
             workflowSessionId, definitionHash: command.definitionHash, operationId: context.operationId,
-            requestSha256: jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs), ...varsDigestPart(command.vars) }),
+            requestSha256: jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs), ...varsDigestPart(command.vars),
+                ...notifyDigestPart(command.notifyParent) }),
             start: liveAdmission(host, workflowSessionId, command.inputs, command.vars ?? null),
+            notifyParent: command.notifyParent !== false,
         });
     }
     if (stored.receipt.run) await dispatchWorkflowV2Run(host, stored.receipt);
