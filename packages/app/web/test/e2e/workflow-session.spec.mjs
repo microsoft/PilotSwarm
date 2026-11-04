@@ -2230,3 +2230,30 @@ test("n-2: Run activity says the parent agent was not told when notifications ar
     await expect(activity).toContainText("The parent agent was not told: notifications are off.");
     expect(errors).toEqual([]);
 });
+
+// Batch 6 (f-03): a moved step's own loop is drawn as a curve out beside it (its right edge), not the automatic route.
+// Selector: -g "own loop" (from packages/app/web, after build).
+test("f-03: a moved step's own loop curves beside it", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const loopEvents = [{ sessionId: WORKFLOW_ID, seq: 1, eventType: "workflow.started", createdAt: new Date().toISOString(), data: {
+        name: "query-watch", version: "1", initial: "poll_query", states: [
+            { id: "poll_query", type: "script", runtime: "node", next: { unchanged: "poll_query", changed: "end" } },
+            { id: "end", type: "terminal", outcome: "succeeded" },
+        ] } }];
+    await routeApi(page, { workflowEvents: loopEvents, workflowState: { title: "Workflow: query-watch", status: "running" } });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const graph = page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await settledView(graph);
+    const automatic = await edgePath(graph, "poll_query", "poll_query");
+    await dragStep(page, graph, "poll_query", 120, 0);
+    await expect.poll(() => edgePath(graph, "poll_query", "poll_query")).not.toBe(automatic);
+    const node = await flowNodeAt(graph, "poll_query");
+    const numbers = ((await edgePath(graph, "poll_query", "poll_query")).match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    // M start C control1 control2 end: both control points lie right of the box; it starts at its bottom and ends at its top.
+    expect(numbers).toHaveLength(8);
+    expect(numbers[2]).toBeGreaterThan(node.x + node.width);
+    expect(numbers[4]).toBeGreaterThan(node.x + node.width);
+    expect(Math.abs(numbers[1] - (node.y + node.height))).toBeLessThan(12);
+    expect(Math.abs(numbers[7] - node.y)).toBeLessThan(12);
+});
