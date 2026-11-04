@@ -1300,6 +1300,15 @@ export function registerActivities(
         ...(clientConfig?.aadDbUser != null && { aadDbUser: clientConfig.aadDbUser }),
         ...(clientConfig?.modelProvidersPath != null && { modelProvidersPath: clientConfig.modelProvidersPath }),
     });
+    // Batch 7 (n-5): those clients borrow this worker's own duroxide provider, session catalog and fact store
+    // (PilotSwarmClient._startOnShared) instead of opening three pools of their own per call or per turn, which is how one
+    // status turn opened 13 or more extra connections at once (2026-11-04). Their queries share the worker's bounded
+    // pools; stopping them leaves those open. A worker without all three (tests, SQLite) starts them as before.
+    const sharedClientStorage = provider && catalog && factStore ? { provider, catalog, factStore } : null;
+    const startInternalClient = async (client: PilotSwarmClient): Promise<void> => {
+        if (sharedClientStorage) await client._startOnShared(sharedClientStorage);
+        else await client.start();
+    };
 
     /**
      * Session workspaces: the attach and path check behind a change, on this
@@ -2494,7 +2503,7 @@ export function registerActivities(
                 // V2 test environment switch sets; INACTIVE) they start at 1.0.83, as a person's new chat does, so an agent
                 // can delegate writing request, agent and parallel states. Elsewhere they start at the latest version.
                 if (testOptions?.workflowRequests === true) startedClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
-                await startedClient.start();
+                await startInternalClient(startedClient);
                 inlineSdkClient = startedClient;
                 return startedClient;
             })();
@@ -3407,7 +3416,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
                     const sdkClient = new PilotSwarmClient(internalClientConfig());
                     try {
-                        await sdkClient.start();
+                        await startInternalClient(sdkClient);
                         await (sdkClient as any).duroxideClient.enqueueEvent(
                             `session-${input.sessionId}`,
                             "messages",
@@ -3437,7 +3446,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (!storeUrl) return "[SYSTEM: regenerate_context failed: no storeUrl is configured.]";
                     const sdkClient = new PilotSwarmClient(internalClientConfig());
                     try {
-                        await sdkClient.start();
+                        await startInternalClient(sdkClient);
                         await (sdkClient as any).duroxideClient.enqueueEvent(
                             `session-${input.sessionId}`,
                             "messages",
@@ -5953,7 +5962,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         if (testOptions?.workflowRequests === true && !input.isSystem) sdkClient._startSessionsAt(DURABLE_SESSION_INTAKE_VERSION);
         try {
             const clientStartAt = Date.now();
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             trace(`sdkClient.start done (${Date.now() - clientStartAt}ms)`);
 
             if (isDeterministicSystemChild && catalog) {
@@ -6130,7 +6139,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const info = await (sdkClient as any)._getSessionInfo(input.sessionId);
             if (info?.status === "failed") {
                 throw new Error(
@@ -6192,7 +6201,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const orchestrationId = `session-${input.sessionId}`;
             await (sdkClient as any).duroxideClient.enqueueEvent(
                 orchestrationId,
@@ -6217,7 +6226,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const info = await sdkClient._getSessionInfo(input.sessionId, includeResultSource ? { includeResultSource: true } : undefined);
             return JSON.stringify({
                 sessionId: info.sessionId,
@@ -6264,7 +6273,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const sessions = (await sdkClient.listSessions()).filter((session) => matchesSessionOwnerFilters(session, input));
             return JSON.stringify(sessions.map(s => ({
                 sessionId: s.sessionId,
@@ -6295,7 +6304,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const sessions = await sdkClient.listSessions();
             const directChildren = sessions.filter(s => s.parentSessionId === input.parentSessionId);
             const enriched = await Promise.all(directChildren.map(async (child) => {
@@ -6388,7 +6397,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const orchestrationId = `session-${input.sessionId}`;
             // Cancel the orchestration via duroxide
             await (sdkClient as any).duroxideClient.cancelInstance(
@@ -6426,7 +6435,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             // This does both: CMS soft-delete + duroxide cancel
             await sdkClient.deleteSession(input.sessionId);
             activityCtx.traceInfo(`[deleteSession] deleted session-${input.sessionId}`);
@@ -6610,7 +6619,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     const enqueueDistillerCmd = async (distillerSessionId: string, cmd: "done" | "cancel", idPrefix: string) => {
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             await (sdkClient as any).duroxideClient.enqueueEvent(
                 `session-${distillerSessionId}`,
                 "messages",
@@ -6680,7 +6689,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const seed = await buildSeed();
                 const reseedClient = new PilotSwarmClient(internalClientConfig());
                 try {
-                    await reseedClient.start();
+                    await startInternalClient(reseedClient);
                     await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
                     // Stamped like the normal seed path below: a distiller
                     // seed is machinery, and an unstamped user-role prompt is
@@ -6721,7 +6730,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const owner = await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), rootId).catch(() => null);
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
-            await sdkClient.start();
+            await startInternalClient(sdkClient);
             const session = await sdkClient.createSession({
                 sessionId: distillerSessionId,
                 parentSessionId: rootId,

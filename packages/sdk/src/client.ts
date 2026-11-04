@@ -163,6 +163,8 @@ export class PilotSwarmClient {
     private activeWaitControllers = new Set<AbortController>();
     private activeWaitPromises = new Set<Promise<unknown>>();
     private started = false;
+    /** True when the store, catalog and fact store are a worker's own, lent by _startOnShared: stop() leaves them open. */
+    private borrowedStorage = false;
     /** Tracks agentId bound to each session (for policy and title prefixing). */
     private sessionAgentIds = new Map<string, string>();
     /** Effective session policy (set via config from worker). */
@@ -841,17 +843,36 @@ export class PilotSwarmClient {
         });
     }
 
+    /**
+     * @internal Start this client on a worker's own duroxide provider, session catalog and fact store instead of opening
+     * its own (batch 7, n-5). A worker's activities and turns make a client per call or per turn; each start() opened a
+     * duroxide pool, a catalog pool and a facts pool of its own (and ran the catalog's and facts' initialization), so one
+     * status turn (two read_workflow calls, list_sessions, and the parent's listChildSessions) opened 13 or more extra
+     * connections at once. Started this way it opens none, its queries share the worker's bounded pools, and stop()
+     * leaves them open. The worker initialized them already.
+     */
+    async _startOnShared(shared: { provider: any; catalog: SessionCatalog; factStore: FactStore }): Promise<void> {
+        if (this.started) return;
+        this.duroxideClient = new Client(shared.provider);
+        this._catalog = shared.catalog;
+        this._factStore = shared.factStore;
+        this._modelProviderTypes = loadModelProviderTypes(this.config.modelProvidersPath);
+        this.borrowedStorage = true;
+        this.started = true;
+    }
+
     async stop(): Promise<void> {
         for (const controller of [...this.activeWaitControllers]) {
             controller.abort(createAbortError("PilotSwarmClient stopped"));
         }
         await Promise.allSettled([...this.activeWaitPromises]);
 
-        if (this._factStore) {
+        // A worker's own storage (_startOnShared) is the worker's to close.
+        if (this._factStore && !this.borrowedStorage) {
             try { await this._factStore.close(); } catch {}
-            this._factStore = null;
         }
-        if (this._catalog) {
+        this._factStore = null;
+        if (this._catalog && !this.borrowedStorage) {
             try { await this._catalog.close(); } catch {}
         }
         this.duroxideClient = null;
