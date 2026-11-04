@@ -682,11 +682,17 @@ function parseElapse(value: unknown): Array<{ nodeExecutionId: string; remaining
     });
 }
 
-/** Controller 1.9.0's collect result: the stored results, and the run's accepted stop (its deadline), read after them. */
-function parseCollectedWithStop(value: unknown): { collected: CollectedResult[]; stopping: { deadlineMs: number } | null; expired: boolean } {
+/**
+ * Controller 1.9.0's collect result: the stored results, and, read after them, the run's accepted stop (its deadline),
+ * whether it is past its deadline, and whether it is paused (adversarial review R2-RT-1; a result recorded before that
+ * field existed says not paused, as its controller then read it).
+ */
+function parseCollectedWithStop(value: unknown): { collected: CollectedResult[]; stopping: { deadlineMs: number } | null; expired: boolean; paused: boolean } {
     const result = record(value, "collect result");
     expect(result.expired === undefined || result.expired === true, "collect expiry is invalid");
-    return { collected: parseCollected(result.collected), stopping: parseStopping(result.stopping, "collect stopping"), expired: result.expired === true };
+    expect(result.paused === undefined || result.paused === true, "collect pause is invalid");
+    return { collected: parseCollected(result.collected), stopping: parseStopping(result.stopping, "collect stopping"), expired: result.expired === true,
+        paused: result.paused === true };
 }
 
 /**
@@ -1190,6 +1196,19 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
  * deadline by the store's clock, the stop activity ends the run stopped,
  * cancelling what is still pending then, and the parent is told as for any
  * end. The stop is read from the store again after a continue-as-new.
+ *
+ * Pause (adversarial reviews RT-6 and R2-RT-1): once an admission is
+ * refused "paused", or a collection reports the run paused (read after its
+ * results; this is how a run whose every cursor waits on work finds it),
+ * this controller admits nothing and routes no result until the resume: no
+ * branch ends, no failFast cancellation, join or run end follows from a
+ * result. Deadlines still decide (the run's, each pending state's, and a
+ * parallel state's own time limit, whose decision cuts its branches), an
+ * agent state's child is ended once its state is decided and its end is
+ * tried again until recorded, and commands still apply. Its node limit ends
+ * the run only where it would admit, so not while paused. A stop goes
+ * before a pause. A pause committed after a collection's read takes effect
+ * at the next admission or collection.
  */
 function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): Generator<ScheduledTask, ControllerResult | null, unknown> {
     const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
@@ -1367,6 +1386,99 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         const first = nodeExecutionId === null && cursor.arrivalRoute === BRANCH_ROUTE && cursor.predecessorId === parallel.nodeExecutionId;
         yield* endBranch(cursor, first ? "not_started" : "cancelled", nodeExecutionId, false);
     };
+    /**
+     * One pass of the paused collector (1a; as 1.8.0, nothing is admitted and no result is routed until the resume). The
+     * deadlines keep running (adversarial review RT-6 and its verification): the run's (D03), and each pending state's own.
+     * A pending state past its deadline is elapsed now (the store's clock decides); IR 9, a parallel state whose time limit
+     * passed is asked for its join (askTimedJoins). An agent state decided while paused (its typed completion, or its
+     * deadline) is collected now and its child is ended now; its result is routed after the resume, as any other. Until its
+     * child's end is recorded the state is collected again at each wake (at most a backstop period apart), so a failed end
+     * is tried again while paused. The paused timer wakes at the nearest deadline. A refused admission finds the pause
+     * (`seen` null: the pass collects the agent states), or, review R2-RT-1, a collection does, also when every cursor waits
+     * on work and no admission is tried: `seen` is what it collected, which this pass takes instead of collecting again.
+     * Returns the controller's result when the run ended (or its controller continued as new), else null.
+     */
+    const pausedPass = function* (seen: CollectedResult[] | null): Generator<ScheduledTask, { result: ControllerResult | null } | null, unknown> {
+        publishStatus(ctx, input, plan, state, "waiting");
+        let pausedTimerMs = plan.wakeBackstopMs;
+        const realAgent = (nodeId: string): boolean => plan.nodes[nodeId]?.type === "agent" && (plan.test !== true || plan.realAgents === true);
+        if (seen !== null) {
+            // A state the collection found decided has no deadline left to decide; an agent state's is cleared below, once
+            // its child's end is recorded.
+            for (const result of seen) {
+                const owner = state.cursors.find(cursor => cursor.pending === result.nodeExecutionId);
+                if (owner !== undefined && !realAgent(owner.nodeId)) owner.deadlineMs = null;
+            }
+        }
+        const pendingAgents = state.cursors.flatMap(cursor => cursor.pending !== null && realAgent(cursor.nodeId) && !pausedEnded.has(cursor.pending)
+            ? [cursor.pending] : []);
+        if (pendingAgents.length > 0) {
+            let decided: CollectedResult[];
+            if (seen !== null) decided = seen.filter(result => pendingAgents.includes(result.nodeExecutionId));
+            else {
+                // A stop is seen by the next admission or collection; only the results and the run's own deadline matter here.
+                const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingAgents }));
+                if (collection.expired) {
+                    const expired = yield* expireRun();
+                    return expired !== null ? { result: expired } : null;
+                }
+                decided = collection.collected;
+            }
+            for (const result of decided) {
+                try {
+                    yield* storeTagged(ctx, R.endAgent, { runId: input.runId, nodeExecutionId: result.nodeExecutionId });
+                } catch (error) {
+                    ctx.traceWarn(`[workflow-v2] run=${input.runId} the child of ${result.nodeExecutionId} was not ended yet: ${workflowErrorMessage(error)}`);
+                    continue;
+                }
+                pausedEnded.add(result.nodeExecutionId);
+                // Its end is recorded: its deadline has nothing left to decide.
+                const owner = state.cursors.find(cursor => cursor.pending === result.nodeExecutionId);
+                if (owner !== undefined) owner.deadlineMs = null;
+            }
+        }
+        const nodeDeadlines = state.cursors.flatMap(cursor => cursor.pending !== null && cursor.deadlineMs !== null
+            ? [{ nodeExecutionId: cursor.pending, deadlineMs: cursor.deadlineMs }] : []);
+        if (runDeadlineMs !== null || nodeDeadlines.length > 0) {
+            const current = parseNow(yield ctx.utcNow());
+            if (runDeadlineMs !== null && current >= runDeadlineMs) {
+                const expired = yield* expireRun();
+                return expired !== null ? { result: expired } : null;
+            }
+            const due = nodeDeadlines.filter(wait => wait.deadlineMs <= current).map(wait => wait.nodeExecutionId);
+            if (due.length > 0) {
+                const notDue = parseElapse(yield* storeTagged(ctx, R.elapse, { runId: input.runId, nodeExecutionIds: due }));
+                const reported = notDue.length > 0 ? parseNow(yield ctx.utcNow()) : current;
+                for (const nodeExecutionId of due) {
+                    const owner = state.cursors.find(cursor => cursor.pending === nodeExecutionId);
+                    expect(owner !== undefined, `elapsed ${nodeExecutionId} is not pending`);
+                    const later = notDue.find(wait => wait.nodeExecutionId === nodeExecutionId);
+                    if (later) {
+                        owner.deadlineMs = reported + later.remainingMs;
+                        continue;
+                    }
+                    // Decided by its deadline: its result waits for the resume. An agent state's child is ended by the
+                    // collection above, at once (the loop goes on), and again at each wake until its end is recorded.
+                    owner.deadlineMs = null;
+                }
+                // IR 9 (Q2): a parallel state whose time limit passed is asked for its join now: its branches are cut at
+                // once when the time limit decided it, and its join may be due; its route waits for the resume.
+                yield* askTimedJoins(due, notDue);
+                return null;
+            }
+            if (runDeadlineMs !== null) pausedTimerMs = Math.min(pausedTimerMs, runDeadlineMs - current);
+            for (const wait of nodeDeadlines) pausedTimerMs = Math.min(pausedTimerMs, wait.deadlineMs - current);
+            pausedTimerMs = Math.max(1, pausedTimerMs);
+        }
+        const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(pausedTimerMs)));
+        if (raced.index === 0) {
+            const command = parseWorkflowCommand(raced.value);
+            if (command) return { result: yield* applyCommand(ctx, input, command, REQUEST_PROFILE) };
+        }
+        idleWaits += 1;
+        if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return { result: yield* continueAsNew() };
+        return null;
+    };
 
     for (;;) {
         // 0. Commands first, as 1.8.0.
@@ -1385,6 +1497,16 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             const node: ControllerPlan["nodes"][string] | undefined = plan.nodes[cursor.nodeId];
             expect(node !== undefined, `plan has no state ${cursor.nodeId}`);
             if (state.steps >= plan.maxNodeExecutions) {
+                // Review R2-RT-1: the limit ends the run where it would admit, so a run read now as past its deadline,
+                // stopping or paused is not ended by it here (an admission's order); a paused one at its limit ends after the resume.
+                const seen = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: [] }));
+                if (seen.expired) {
+                    const expired = yield* expireRun();
+                    if (expired !== null) return expired;
+                    break;
+                }
+                if (seen.stopping !== null) { stopping = seen.stopping; break; }
+                if (seen.paused) { paused = true; break; }
                 return yield* finishRun(ctx, input.runId, { failure: {
                     nodeId: cursor.nodeId, nodeExecutionId: null, code: "limit_exceeded",
                     message: `The run reached its limit of ${plan.maxNodeExecutions} node executions.`,
@@ -1522,81 +1644,10 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
         if (rerouted) continue;
 
-        // 1a. Paused, as 1.8.0: nothing is admitted and no result is routed until the resume. The deadlines keep running
-        // (adversarial review RT-6 and its verification): the run's (D03), and each pending state's own. A pending state
-        // past its deadline is elapsed now (the store's clock decides). An agent state decided while paused (its typed
-        // completion, or its deadline) is collected now and its child is ended now; its result is routed after the
-        // resume, as any other. Until its child's end is recorded the state is collected again at each wake (at most a
-        // backstop period apart), so a failed end is tried again while paused. The paused timer wakes at the nearest
-        // deadline.
+        // 1a. Paused, found by a refused admission: the paused collector (pausedPass) collects its agent states.
         if (paused) {
-            publishStatus(ctx, input, plan, state, "waiting");
-            let pausedTimerMs = plan.wakeBackstopMs;
-            const realAgent = (nodeId: string): boolean => plan.nodes[nodeId]?.type === "agent" && (plan.test !== true || plan.realAgents === true);
-            const pendingAgents = state.cursors.flatMap(cursor => cursor.pending !== null && realAgent(cursor.nodeId) && !pausedEnded.has(cursor.pending)
-                ? [cursor.pending] : []);
-            if (pendingAgents.length > 0) {
-                // A stop is seen by the next admission; only the results and the run's own deadline matter here.
-                const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingAgents }));
-                if (collection.expired) {
-                    const expired = yield* expireRun();
-                    if (expired !== null) return expired;
-                    continue;
-                }
-                for (const result of collection.collected) {
-                    try {
-                        yield* storeTagged(ctx, R.endAgent, { runId: input.runId, nodeExecutionId: result.nodeExecutionId });
-                    } catch (error) {
-                        ctx.traceWarn(`[workflow-v2] run=${input.runId} the child of ${result.nodeExecutionId} was not ended yet: ${workflowErrorMessage(error)}`);
-                        continue;
-                    }
-                    pausedEnded.add(result.nodeExecutionId);
-                    // Its end is recorded: its deadline has nothing left to decide.
-                    const owner = state.cursors.find(cursor => cursor.pending === result.nodeExecutionId);
-                    if (owner !== undefined) owner.deadlineMs = null;
-                }
-            }
-            const nodeDeadlines = state.cursors.flatMap(cursor => cursor.pending !== null && cursor.deadlineMs !== null
-                ? [{ nodeExecutionId: cursor.pending, deadlineMs: cursor.deadlineMs }] : []);
-            if (runDeadlineMs !== null || nodeDeadlines.length > 0) {
-                const current = parseNow(yield ctx.utcNow());
-                if (runDeadlineMs !== null && current >= runDeadlineMs) {
-                    const expired = yield* expireRun();
-                    if (expired !== null) return expired;
-                    continue;
-                }
-                const due = nodeDeadlines.filter(wait => wait.deadlineMs <= current).map(wait => wait.nodeExecutionId);
-                if (due.length > 0) {
-                    const notDue = parseElapse(yield* storeTagged(ctx, R.elapse, { runId: input.runId, nodeExecutionIds: due }));
-                    const reported = notDue.length > 0 ? parseNow(yield ctx.utcNow()) : current;
-                    for (const nodeExecutionId of due) {
-                        const owner = state.cursors.find(cursor => cursor.pending === nodeExecutionId);
-                        expect(owner !== undefined, `elapsed ${nodeExecutionId} is not pending`);
-                        const later = notDue.find(wait => wait.nodeExecutionId === nodeExecutionId);
-                        if (later) {
-                            owner.deadlineMs = reported + later.remainingMs;
-                            continue;
-                        }
-                        // Decided by its deadline: its result waits for the resume. An agent state's child is ended by the
-                        // collection above, at once (this pass continues), and again at each wake until its end is recorded.
-                        owner.deadlineMs = null;
-                    }
-                    // IR 9 (Q2): a parallel state whose time limit passed is asked for its join now: its branches are cut at
-                    // once when the time limit decided it, and its join may be due; its route waits for the resume.
-                    yield* askTimedJoins(due, notDue);
-                    continue;
-                }
-                if (runDeadlineMs !== null) pausedTimerMs = Math.min(pausedTimerMs, runDeadlineMs - current);
-                for (const wait of nodeDeadlines) pausedTimerMs = Math.min(pausedTimerMs, wait.deadlineMs - current);
-                pausedTimerMs = Math.max(1, pausedTimerMs);
-            }
-            const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(pausedTimerMs)));
-            if (raced.index === 0) {
-                const command = parseWorkflowCommand(raced.value);
-                if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
-            }
-            idleWaits += 1;
-            if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
+            const passed = yield* pausedPass(null);
+            if (passed !== null) return passed.result;
             continue;
         }
 
@@ -1641,10 +1692,17 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
         const collected = collection.collected;
         if (stopping === null) stopping = collection.stopping;
+        // Review R2-RT-1: a paused run, read with these results (after them), routes none of them, whether or not an
+        // admission found the pause (when every cursor waits on work, none is tried): no branch ends, no failFast cancels,
+        // no join is asked, no run ends, until the resume. Its deadlines still decide (above, and on the paused collector's
+        // timer), and a parallel state its time limit decided still has its branches cut (below). A stopping run's results
+        // settle instead (2a): a stop goes before a pause, as at an admission.
+        const pausedNow = stopping === null && collection.paused;
         // An agent state's child is ended once its state is decided (done after its typed completion, cancel after
         // anything else), before the result goes anywhere.
-        // A child that could not be ended now is ended when the run ends (afterEnd); its result is routed either way.
-        for (const result of collected) {
+        // A child that could not be ended now is ended when the run ends (afterEnd); its result is routed either way. While
+        // paused, the paused collector ends it, and tries a failed end again until it is recorded.
+        for (const result of pausedNow ? [] : collected) {
             const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
             // A test run's mocked agents have no child to end; a real-agent test run's children are ended as a live run's are.
             if (owner !== undefined && plan.nodes[owner.nodeId]?.type === "agent" && (plan.test !== true || plan.realAgents === true)) {
@@ -1665,6 +1723,11 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             if (parallel === undefined) continue;
             yield* cutBranches(parallel, result.outcome === PARALLEL_JOINED ? "join" : "timeout");
             state.parallels = parallels().filter(item => item !== parallel);
+        }
+        if (pausedNow) {
+            const passed = yield* pausedPass(collected);
+            if (passed !== null) return passed.result;
+            continue;
         }
         if (stopping !== null) {
             // 2a. Stopping: a result settles its cursor, which goes nowhere (its result is stored and kept). When no work is
@@ -3313,8 +3376,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const run = await runOf(runId);
         // And whether the run is past its deadline (migration 0104), by its own clock: only a run with one says so.
         const expired = ACTIVE_RUN_STATUSES.includes(run.status) && await store.isRunExpired(run);
+        // And whether it is paused (adversarial review R2-RT-1): its controller then routes none of these results, even when
+        // every cursor waits on work and no admission would find the pause.
         return { collected, stopping: ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null ? { deadlineMs: run.stop.deadlineAt.getTime() } : null,
-            ...(expired ? { expired: true } : {}) };
+            ...(expired ? { expired: true } : {}), ...(run.status === "paused" ? { paused: true } : {}) };
     });
 
     register("finish", async (_ctx, rawInput, requests) => {

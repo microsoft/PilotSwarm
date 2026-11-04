@@ -20,7 +20,10 @@
  *   the child; while the run is paused (verification of RT-6), an agent state
  *   decided by its completion or its deadline has its child ended at once, a
  *   failed end is tried again while paused, and nothing is routed or
- *   admitted until the resume; an agent state in a parallel branch that the
+ *   admitted until the resume, also when every cursor waits on work (review
+ *   R2-RT-1: an error with no route, a failFast branch failure of IR 8 and
+ *   IR 9, the first decided agent's failed end, and the node limit end
+ *   nothing before the resume); an agent state in a parallel branch that the
  *   parallel state's own time limit cancels (IR 9) has its child ended; the
  *   child of a loser branch whose end fails is ended once the end works,
  *   while the run still runs (review J1-R2).
@@ -878,9 +881,9 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
 });
 
 /**
- * Two branches, each one agent state (verification of RT-6, M-12): agent states while the run is paused. A branch's
- * result routed before the pause takes effect puts the controller on its paused path (its next state is refused); the
- * other branch's agent state is then decided while the run is paused.
+ * Two branches, each one agent state (verification of RT-6, M-12): agent states while the run is paused. Every cursor
+ * waits on an agent state, so the controller finds the pause at its next collection (review R2-RT-1), which routes
+ * nothing; each agent state is then decided while the run is paused.
  */
 const PAUSED_AGENTS_YAML = ({ timeoutSeconds = 3600 } = {}) => `
 apiVersion: pilotswarm.dev/v2-draft
@@ -937,8 +940,8 @@ describe("workflow v2 agent states while the run is paused (verification of RT-6
             const { workflowSessionId, runId } = await started(h, PAUSED_AGENTS_YAML());
             const [first, second] = await bothChildren(h);
             await pauseRun(h, workflowSessionId);
-            // The first branch's result is routed and its child is told done (as before the pause took effect); its next
-            // state is refused, so the controller is on its paused path once the child has the command.
+            // The first branch's agent completes while the run is paused: the collection finds the pause (review R2-RT-1),
+            // so its child is told done and its result waits for the resume.
             expect(await completeAs(h, first.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }))
                 .toMatchObject({ ok: true, outcome: "accepted" });
             expect(await lifecycleCommand(h, first.childSessionId)).toMatchObject({ cmd: "done" });
@@ -1007,6 +1010,206 @@ describe("workflow v2 agent states while the run is paused (verification of RT-6
 
             await resumeRun(h, workflowSessionId);
             expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: ["a", "b"] });
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
+/** One agent state that routes only `accepted` (review R2-RT-1): an error it reports has no route, and no catch-all takes it. */
+const ONE_ROUTE_YAML = ({ limits = "" } = {}) => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: one-route, version: "1.0.0" }
+${limits}initialInput: { head: "abc" }
+initial: review
+schemas:
+  ReviewResult: { type: object, required: [verdict], properties: { verdict: { type: string } }, additionalProperties: false }
+states:
+  review:
+    type: agent
+    invoke: { prompt: "${TASK}" }
+    outputSchema: { $ref: "#/schemas/ReviewResult" }
+    outcomes: [accepted]
+    timeoutSeconds: 3600
+    transition: { next: { accepted: done } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+`;
+
+/** Two agent branches with failFast (review R2-RT-1); `join` is an IR 9 join line. A branch whose agent reports an error ends by it. */
+const FAIL_FAST_AGENTS_YAML = ({ join = "" } = {}) => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: fail-fast-reviewers, version: "1.0.0" }
+initialInput: { items: [a, b] }
+initial: fan
+schemas:
+  ReviewResult: { type: object, required: [verdict], properties: { verdict: { type: string } }, additionalProperties: false }
+states:
+  fan:
+    type: parallel
+    forEach: "\${input.items}"
+    concurrency: 2
+    failFast: true
+${join}    body:
+      initial: review
+      states:
+        review:
+          type: agent
+          invoke: { prompt: "${TASK}" }
+          outputSchema: { $ref: "#/schemas/ReviewResult" }
+          outcomes: [accepted]
+          timeoutSeconds: 3600
+          transition: { next: { accepted: done } }
+        done: { type: terminal, outcome: succeeded, output: "\${branch.item}" }
+    transition: { next: { joined: finished, blocked: stuck, failure: failed } }
+  finished: { type: terminal, outcome: succeeded, output: "\${input}" }
+  stuck: { type: terminal, outcome: blocked, output: "\${input}" }
+  failed: { type: terminal, outcome: failed }
+`;
+
+/** The one child of a run started after `already` spawns, spawned and recorded. */
+async function oneChild(h, already = 0) {
+    const spawn = await until(async () => (h.spawns.length > already ? h.spawns[already] : null), "the agent state's child");
+    await until(async () => (await h.store.readAgentInvocation(spawn.nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
+    return spawn;
+}
+
+const commandsOf = async (h, childSessionId) => (await childMessages(h, childSessionId)).filter(message => message?.type === "cmd");
+
+/**
+ * Adversarial review R2-RT-1: a pause found while every cursor waits on work (no admission is tried, so none is refused).
+ * The collection reads the pause after its results and routes none of them: nothing ends a branch, cancels a sibling
+ * (failFast, IR 8 and IR 9), asks a join or ends the run before the resume, and a decided agent state's child is still
+ * ended, its failed end tried again. The node limit ends a run only where it would admit, so not while paused.
+ */
+describe("workflow v2 while the run is paused with every cursor waiting (review R2-RT-1; controller 1.9.0, test-only)", () => {
+    it("an agent's error with no route ends nothing while paused; the run fails with it after the resume", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, ONE_ROUTE_YAML());
+            const spawn = await oneChild(h);
+            await pauseRun(h, workflowSessionId);
+            expect(await completeAs(h, spawn.childSessionId, { error: { code: "needs_input", message: "Which base?" }, operation_id: "ask-1" }))
+                .toMatchObject({ ok: true, kind: "error", outcome: "needs_input" });
+            // Its child is told done while paused; the run does not end.
+            expect(await lifecycleCommand(h, spawn.childSessionId)).toMatchObject({ cmd: "done", id: `workflow-agent-end:${spawn.nodeExecutionId}` });
+            await pause(1_500);
+            expect(await h.store.readRun(runId)).toMatchObject({ status: "paused", terminalError: null });
+            expect((await h.store.listNodeExecutions(runId)).map(node => node.nodeId)).toEqual(["review"]);
+
+            await resumeRun(h, workflowSessionId);
+            expect(await ended(h, runId)).toMatchObject({ status: "failed", terminalError: { code: "needs_input" } });
+            expect(await commandsOf(h, spawn.childSessionId)).toHaveLength(1);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("a failFast branch's failure cancels no sibling while paused (IR 8, and an IR 9 join of the first 2); after the resume it does", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            let already = 0;
+            for (const [label, join] of [["IR 8", ""], ["IR 9", "    join: { first: 2 }\n"]]) {
+                const { workflowSessionId, runId } = await started(h, FAIL_FAST_AGENTS_YAML({ join }));
+                const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
+                const review = index => nodeExecutionIdFor(runId, branchScopeId(fan, index), "review", 1);
+                const spawns = await bothChildren(h, already);
+                already += 2;
+                const failing = spawns.find(spawn => spawn.nodeExecutionId === review(0));
+                const sibling = spawns.find(spawn => spawn.nodeExecutionId === review(1));
+                expect(failing && sibling, `${label}: one child per branch`).toBeTruthy();
+                await pauseRun(h, workflowSessionId);
+                expect(await completeAs(h, failing.childSessionId, { error: { code: "needs_input", message: "Which base?" }, operation_id: `fail-${label}` }))
+                    .toMatchObject({ ok: true, kind: "error" });
+                expect(await lifecycleCommand(h, failing.childSessionId), label).toMatchObject({ cmd: "done" });
+                // The sibling works on: its state is pending, its child got no command, the parallel state waits.
+                await pause(1_500);
+                expect(await h.store.readNodeExecution(sibling.nodeExecutionId), label).toMatchObject({ state: "pending" });
+                expect(await commandsOf(h, sibling.childSessionId), label).toEqual([]);
+                expect(await h.store.readNodeExecution(fan), label).toMatchObject({ state: "pending" });
+                await nothingAdmitted(h, runId);
+
+                await resumeRun(h, workflowSessionId);
+                expect(await ended(h, runId), label).toMatchObject({ status: "completed", terminalNodeId: "stuck" });
+                expect(await h.store.readNodeExecution(fan), label).toMatchObject({ outcome: "blocked" });
+                expect(await h.store.readNodeExecution(sibling.nodeExecutionId), label).toMatchObject({ outcome: "cancelled", winner: "fail_fast" });
+                expect(await lifecycleCommand(h, sibling.childSessionId), label).toMatchObject({ cmd: "cancel" });
+            }
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("the first decided agent's failed child end is tried again while paused, and its result is routed only after the resume", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, PAUSED_AGENTS_YAML());
+            const [first, second] = await bothChildren(h);
+            const recordAgentEnd = h.store.recordAgentEnd.bind(h.store);
+            const blocked = { on: true, attempts: 0 };
+            h.store.recordAgentEnd = async (nodeExecutionId, end) => {
+                if (nodeExecutionId === first.nodeExecutionId && blocked.on) {
+                    blocked.attempts += 1;
+                    throw new Error("The store is not available (test).");
+                }
+                return await recordAgentEnd(nodeExecutionId, end);
+            };
+            await pauseRun(h, workflowSessionId);
+            expect(await completeAs(h, first.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }))
+                .toMatchObject({ ok: true });
+            // One activity's attempts (one and four retries) are spent, and the paused collector tries again at a later wake.
+            await until(async () => blocked.attempts >= 6 || null, "the end to be tried again while paused", 90_000);
+            expect(await commandsOf(h, first.childSessionId)).toEqual([]);
+            await nothingAdmitted(h, runId);
+
+            blocked.on = false;
+            expect(await lifecycleCommand(h, first.childSessionId)).toMatchObject({ cmd: "done", id: `workflow-agent-end:${first.nodeExecutionId}` });
+            await nothingAdmitted(h, runId);
+            expect(await commandsOf(h, second.childSessionId)).toEqual([]);
+
+            await resumeRun(h, workflowSessionId);
+            await until(async () => (await h.store.listNodeExecutions(runId)).some(node => node.nodeId === "done"), "the first branch's terminal after the resume");
+            expect(await completeAs(h, second.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-2" }))
+                .toMatchObject({ ok: true });
+            expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: ["a", "b"] });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("the node limit does not end a run paused just after a collection read it running; it ends it after the resume", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, ONE_ROUTE_YAML({ limits: "limits: { maxNodeExecutions: 1 }\n" }));
+            const spawn = await oneChild(h);
+            // The run is paused right after the collection that finds the agent state decided read the run (still running).
+            const readCompletedNodes = h.store.readCompletedNodes.bind(h.store);
+            const isRunExpired = h.store.isRunExpired.bind(h.store);
+            const race = { decided: false, paused: false };
+            h.store.readCompletedNodes = async (id, ids) => {
+                const rows = await readCompletedNodes(id, ids);
+                if (id === runId && rows.some(row => row.nodeExecutionId === spawn.nodeExecutionId)) race.decided = true;
+                return rows;
+            };
+            h.store.isRunExpired = async run => {
+                if (run.runId === runId && race.decided && !race.paused) {
+                    race.paused = true;
+                    await pauseRun(h, workflowSessionId);
+                }
+                return await isRunExpired(run);
+            };
+            expect(await completeAs(h, spawn.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }))
+                .toMatchObject({ ok: true });
+            await until(async () => race.paused || null, "the pause after the collection's read");
+            // The result was routed (the collection read the run running); the terminal's admission meets the limit, which
+            // reads the run paused first: the run waits.
+            await pause(1_500);
+            expect(await h.store.readRun(runId)).toMatchObject({ status: "paused", terminalError: null });
+            expect((await h.store.listNodeExecutions(runId)).map(node => node.nodeId)).toEqual(["review"]);
+
+            await resumeRun(h, workflowSessionId);
+            expect(await ended(h, runId)).toMatchObject({ status: "failed", terminalError: { code: "limit_exceeded" } });
         } finally {
             await h.stop();
         }

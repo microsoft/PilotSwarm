@@ -540,9 +540,10 @@ describe("workflow v2 parallel states: controller 1.9.0 (inactive, test-only reg
 
 /**
  * Adversarial review RT-6: a paused run still keeps its pending states' deadlines. Two branches: the first takes a
- * 1-second wait, the second a 4-second wait. The run is paused while both wait. The first wait elapses and its next
- * state is refused (the controller is now on its paused path); the second wait must still elapse at its deadline while
- * the run is paused, and nothing after it is admitted until the resume.
+ * 1-second wait, the second a 4-second wait. The run is paused while both wait. The first wait elapses and the
+ * collection that finds it finds the pause (review R2-RT-1: the controller is now on its paused path, and routes
+ * nothing); the second wait must still elapse at its deadline while the run is paused, and nothing after it is admitted
+ * until the resume.
  */
 function pausedDeadlines() {
     return {
