@@ -1183,10 +1183,23 @@ function chargeSample(budget, chars) {
     if (budget.used > SAMPLE_MAX_CHARS) throw SAMPLE_OVER_BUDGET;
 }
 
-/** The JSON length of a value a schema gives as it is (an example, a default, an enum value, a const), within the budget. */
-function chargedValue(budget, value) {
+/** Whether a value holds a string longer than SAMPLE_MAX_STRING, at any depth (looked at only within the budget). */
+function holdsLongString(value, depth = 0) {
+    if (typeof value === "string") return value.length > SAMPLE_MAX_STRING;
+    if (depth > SAMPLE_MAX_DEPTH || !value || typeof value !== "object") return false;
+    return Object.entries(value).some(([key, item]) => key.length > SAMPLE_MAX_STRING || holdsLongString(item, depth + 1));
+}
+
+/**
+ * A value a schema gives as it is (an example, a default, an enum value, a const), charged at its JSON length; undefined
+ * when it holds a string longer than SAMPLE_MAX_STRING or is longer than the whole budget (UI-3 verification): the
+ * sample then takes the next source, and in the end its type.
+ */
+function givenValue(budget, value) {
+    if (holdsLongString(value)) return undefined;
     const text = JSON.stringify(value);
-    chargeSample(budget, text === undefined ? 4 : text.length);
+    if (text === undefined || text.length > SAMPLE_MAX_CHARS) return undefined;
+    chargeSample(budget, text.length);
     return value;
 }
 
@@ -1209,10 +1222,16 @@ function sampleOf(schema, name, depth, budget) {
     if (depth > SAMPLE_MAX_DEPTH) return null;
     if (schema === true || schema === undefined) return undefined;
     if (!isRecord(schema)) return undefined;
-    if (Array.isArray(schema.examples) && schema.examples.length) return chargedValue(budget, schema.examples[0]);
-    if (Object.hasOwn(schema, "default")) return chargedValue(budget, schema.default);
-    if (Array.isArray(schema.enum) && schema.enum.length) return chargedValue(budget, schema.enum[0]);
-    if (Object.hasOwn(schema, "const")) return chargedValue(budget, schema.const);
+    const sources = [
+        Array.isArray(schema.examples) && schema.examples.length ? [schema.examples[0]] : [],
+        Object.hasOwn(schema, "default") ? [schema.default] : [],
+        Array.isArray(schema.enum) && schema.enum.length ? [schema.enum[0]] : [],
+        Object.hasOwn(schema, "const") ? [schema.const] : [],
+    ].flat();
+    for (const source of sources) {
+        const given = givenValue(budget, source);
+        if (given !== undefined) return given;
+    }
     for (const key of ["oneOf", "anyOf"]) {
         if (Array.isArray(schema[key]) && schema[key].length) {
             const value = sampleOf(schema[key].find(item => !(isRecord(item) && item.type === "null")) ?? schema[key][0], name, depth + 1, budget);
@@ -1224,7 +1243,8 @@ function sampleOf(schema, name, depth, budget) {
         if (parts.length && parts.every(isRecord)) return Object.assign({}, ...parts);
         if (parts.length) return parts[0];
     }
-    const words = sampleWords(name);
+    // A long name gives no longer a text than this (UI-3 verification).
+    const words = sampleWords(name).slice(0, 60).trim();
     switch (sampleType(schema)) {
         case "string": {
             const format = typeof schema.format === "string" ? schema.format : "";
@@ -1267,9 +1287,13 @@ function sampleOf(schema, name, depth, budget) {
             const out = {};
             for (const key of [...names, ...[...required].filter(key => !Object.hasOwn(properties, key))]) {
                 if (!required.has(key) && !all) continue;
-                chargeSample(budget, key.length + 4);
+                // The key as JSON writes it (escapes included), its colon and its separator.
+                chargeSample(budget, JSON.stringify(key).length + 2);
                 const value = sampleOf(properties[key], key, depth + 1, budget);
-                out[key] = value === undefined ? `example ${sampleWords(key) || "value"}` : value;
+                if (value !== undefined) { out[key] = value; continue; }
+                const fallback = `example ${sampleWords(key).slice(0, 60).trim() || "value"}`;
+                chargeSample(budget, JSON.stringify(fallback).length);
+                out[key] = fallback;
             }
             return out;
         }
@@ -1294,7 +1318,9 @@ export function workflowV2SampleInputs(schema) {
         if (error === SAMPLE_OVER_BUDGET) return null;
         throw error;
     }
-    return isRecord(value) ? value : null;
+    if (!isRecord(value)) return null;
+    // UI-3 verification: the text the Inputs box would show (JSON, two-space indent) is within the budget, exactly.
+    return JSON.stringify(value, null, 2).length > SAMPLE_MAX_CHARS ? null : value;
 }
 
 /** The text of a JSON box that a sample may fill: empty, or an empty object as written ("{}" with any spacing). */

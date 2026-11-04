@@ -55,7 +55,8 @@ test("UI-3: a huge minLength, a huge default or many large copies give no sample
     const started = process.hrtime.bigint();
     assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", minLength: 9007199254740991 } } }), null);
     assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", minLength: 1001 } } }), null);
-    assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", default: "y".repeat(20_000) } } }), null);
+    // A default longer than a sample's string may be is not used: the sample takes the type instead (UI-3 verification).
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", default: "y".repeat(20_000) } } }), { text: "example text" });
     const big = { type: "string", default: "z".repeat(3_000) };
     let nested = big;
     for (let i = 0; i < 6; i += 1) nested = { type: "array", minItems: 3, items: nested };
@@ -69,4 +70,38 @@ test("UI-3: within the budget a sample is made as before", () => {
     assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", minLength: 1000 } } }).text.length, 1000);
     assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { tags: { type: "array", minItems: 2, items: { type: "string", enum: ["a"] } } } }),
         { tags: ["a", "a"] });
+});
+
+// Verification of UI-3 (M-15): the exact text the Inputs box shows is within the budget; given values are capped.
+test("UI-3: the sample's text (JSON, two-space indent) is never longer than 16,384 characters", () => {
+    // A long undeclared required name: its value does not repeat the whole name, and the text stays within the budget.
+    const longName = "k".repeat(9_000);
+    const named = workflowV2SampleInputs({ type: "object", required: [longName] });
+    assert.ok(named !== null);
+    assert.ok(named[longName].length <= 70);
+    assert.ok(JSON.stringify(named, null, 2).length <= 16_384);
+    assert.equal(workflowV2SampleInputs({ type: "object", required: ["a".repeat(9_000), "b".repeat(9_000)] }), null);
+    const many = { type: "object", required: Array.from({ length: 400 }, (_, i) => `field${i}`) };
+    const sample = workflowV2SampleInputs(many);
+    assert.ok(sample === null || JSON.stringify(sample, null, 2).length <= 16_384);
+    for (let fields = 1; fields <= 600; fields += 37) {
+        const schema = { type: "object", required: Array.from({ length: fields }, (_, i) => `name${i}`) };
+        const made = workflowV2SampleInputs(schema);
+        if (made !== null) assert.ok(JSON.stringify(made, null, 2).length <= 16_384, `${fields} fields`);
+    }
+});
+
+test("UI-3: keys that JSON escapes are charged as written", () => {
+    const quoted = "\"".repeat(600);
+    const schema = { type: "object", required: Array.from({ length: 20 }, (_, i) => `${quoted}${i}`) };
+    const made = workflowV2SampleInputs(schema);
+    assert.ok(made === null || JSON.stringify(made, null, 2).length <= 16_384);
+});
+
+test("UI-3: an example, default, enum value or const with a string over 1,000 characters is skipped for the next source", () => {
+    const long = "z".repeat(1_001);
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { a: { type: "string", examples: [long], default: "short" } } }), { a: "short" });
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { a: { type: "string", enum: [long] } } }), { a: "example a" });
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { a: { const: { nested: long }, type: "object" } } }), { a: {} });
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { a: { type: "string", examples: ["z".repeat(1_000)] } } }), { a: "z".repeat(1_000) });
 });
