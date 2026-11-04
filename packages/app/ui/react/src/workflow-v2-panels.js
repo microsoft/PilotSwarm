@@ -907,9 +907,27 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
     React.useEffect(() => { controller.loadWorkflowStepInput?.(sessionId, chosen)?.catch?.(() => {}); }, [controller, sessionId, chosen, draftRevision]);
     const mine = loaded && loaded.state === chosen ? loaded : null;
     const value = mine?.phase === "loaded" ? mine.value : null;
-    React.useEffect(() => { setRows(workflowV2StepInputRows(value)); setError(null); }, [value]);
+    // UI-4: the person's changed fields are kept when the same step's inputs are read again (a newer draft revision);
+    // the newer reading waits until they choose to load it. Another step, or no change, takes the reading at once.
+    const [dirty, setDirty] = React.useState(false);
+    const [waiting, setWaiting] = React.useState(null);
+    const appliedStep = React.useRef(chosen);
+    React.useEffect(() => {
+        if (dirty && value && appliedStep.current === chosen) { setWaiting(value); return; }
+        appliedStep.current = chosen;
+        setRows(workflowV2StepInputRows(value));
+        setError(null);
+        setDirty(false);
+        setWaiting(null);
+    }, [value]);
+    const loadWaiting = () => {
+        setRows(workflowV2StepInputRows(waiting));
+        setDirty(false);
+        setWaiting(null);
+        controller.forgetWorkflowStepInputPreview?.(sessionId);
+    };
     // Any change to the fields drops the prepared change (and one still being prepared): it no longer says what is shown.
-    const changeRows = update => { setRows(update); controller.forgetWorkflowStepInputPreview?.(sessionId); };
+    const changeRows = update => { setRows(update); setDirty(true); controller.forgetWorkflowStepInputPreview?.(sessionId); };
     const setRow = (index, patch) => changeRows(current => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
     const request = workflowV2StepInputRequest(rows);
     // A prepared change is shown, and saved, only while it was prepared from exactly these fields.
@@ -937,6 +955,9 @@ export function WorkflowV2StepInputEditor({ controller, sessionId, steps, loaded
         h("select", { className: "ps-workflow-input", value: chosen, "data-field": "step", onChange: event => setState(event.target.value) },
             steps.map(step => h("option", { key: step, value: step }, step)))),
     mine?.phase === "loading" ? h("p", { role: "status", style: { margin: 0 } }, "Reading the step's inputs…") : null,
+    waiting ? h("p", { role: "status", "data-step-input-waiting": "true", style: { margin: 0, color: TONES.warning } },
+        "The draft changed since you began; your field changes are kept. ",
+        h("button", { type: "button", className: "ps-mini-button", onClick: loadWaiting }, "Load the new inputs")) : null,
     mine?.phase === "failed" ? h("p", { role: "alert", style: { margin: 0, color: TONES.error } }, `The step's inputs could not be read: ${mine.error}`) : null,
     value?.inputShape === "expression" ? h("p", { style: { margin: 0, color: TONES.warning } },
         `This step's input is written as one value (${value.inputText}). Choosing fields below replaces it.`) : null,

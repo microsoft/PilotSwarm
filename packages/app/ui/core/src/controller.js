@@ -6683,7 +6683,11 @@ export class PilotSwarmUiController {
         const current = this.getState();
         if (!sessionId || current.sessions.byId[sessionId]?.sessionKind !== "workflow" || typeof this.transport?.readWorkflow !== "function") return null;
         if (typeof state !== "string" || !state) return null;
+        // UI-4: each load has a generation; only the latest load of the session writes, so an earlier answer arriving
+        // late (for the same step, or from an older revision) never replaces a newer one.
+        const load = this._nextWorkflowStepInputLoad(sessionId);
         const write = entry => {
+            if (this.workflowStepInputLoads.get(sessionId) !== load) return entry;
             if (this.getState().ui.workflowViews?.[sessionId]?.stepInput?.state !== state && entry.phase !== "loading") return entry;
             this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInput: entry } });
             return entry;
@@ -6697,6 +6701,14 @@ export class PilotSwarmUiController {
         } catch (error) {
             return write({ state, phase: "failed", value: null, error: error?.message || String(error) });
         }
+    }
+
+    /** Workflow v2 (UI-4): start a new load of a session's step inputs, or none; an answer for an earlier load is dropped. */
+    _nextWorkflowStepInputLoad(sessionId) {
+        if (!this.workflowStepInputLoads) this.workflowStepInputLoads = new Map();
+        const load = (this.workflowStepInputLoads.get(sessionId) ?? 0) + 1;
+        this.workflowStepInputLoads.set(sessionId, load);
+        return load;
     }
 
     /**
@@ -6778,6 +6790,8 @@ export class PilotSwarmUiController {
     closeWorkflowStepInput(sessionId) {
         if (!sessionId || this.getState().sessions.byId[sessionId]?.sessionKind !== "workflow") return;
         this._nextWorkflowStepInputPreparation(sessionId);
+        // A load still on its way is dropped too (UI-4).
+        this._nextWorkflowStepInputLoad(sessionId);
         this.dispatch({ type: "ui/workflowView", sessionId, view: { stepInput: null, stepInputPreview: null } });
     }
 

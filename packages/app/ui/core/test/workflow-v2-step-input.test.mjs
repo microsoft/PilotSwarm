@@ -291,3 +291,33 @@ test("the draft tools offer step inputs only for a workflow with agent steps", (
     assert.ok(element(withAgent, "option", { value: "review", selected: "" }), "the step picker shows review chosen");
     assert.ok(!mount(modelOf(undefined)).includes("aria-label=\"Step inputs\""), "no agent step, no step inputs");
 });
+
+// Adversarial review UI-4: out-of-order reads of the same step never replace a newer one.
+test("UI-4: an earlier read of a step's inputs that answers last is dropped; closing drops a read on its way", async () => {
+    const h = seeded();
+    const pending = [];
+    h.controller.transport.readWorkflow = (sessionId, options) => new Promise(resolve => {
+        pending.push(value => resolve({ workflowId: sessionId, stepInput: { ...STEP_INPUT, state: options.stepInput.state, ...value } }));
+    });
+    const first = h.controller.loadWorkflowStepInput(SID, "review");
+    const second = h.controller.loadWorkflowStepInput(SID, "review");
+    pending[1]({ revision: 3 });
+    await second;
+    assert.equal(h.view().stepInput.value.revision, 3);
+    pending[0]({ revision: 2 });
+    await first;
+    assert.equal(h.view().stepInput.value.revision, 3, "the earlier read answered last and was dropped");
+
+    const third = h.controller.loadWorkflowStepInput(SID, "review");
+    h.controller.closeWorkflowStepInput(SID);
+    pending[2]({ revision: 4 });
+    await third;
+    assert.equal(h.view().stepInput, null, "closed: the read on its way was dropped");
+});
+
+test("UI-4: the editor keeps the person's changed fields when the same step is read again, until they load the new reading", () => {
+    const source = String(WorkflowV2StepInputEditor);
+    assert.match(source, /if \(dirty && value && appliedStep\.current === chosen\) \{ setWaiting\(value\); return; \}/);
+    assert.match(source, /Load the new inputs/);
+    assert.match(source, /const changeRows = update => \{ setRows\(update\); setDirty\(true\);/);
+});
