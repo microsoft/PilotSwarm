@@ -826,7 +826,11 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model: givenModel
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", disabled: !edit.canSave,
             title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save draft"),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "discard", disabled: !edit.changed,
-            onClick: () => setTextValue(base.yaml) }, "Discard edits"),
+            // VR-6: a discarded edit is dropped from the view too, so nothing brings it back.
+            onClick: () => {
+                setTextValue(base.yaml);
+                controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftEdit: null, draftDirty: false } });
+            } }, "Discard edits"),
         edit.changed && !edit.conflict ? h("span", { role: "status", className: "ps-workflow-yaml-unsaved" }, "Unsaved changes") : null,
         tools ? h("span", { className: "ps-workflow-yaml-strip-tools" }, tools) : null),
     h("p", { className: "ps-workflow-yaml-note" },

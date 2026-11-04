@@ -2,7 +2,7 @@ import React from "react";
 import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
-import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
+import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows, workflowDraftHandoff } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
 import { paneLayout, boxStyle, emptySessionPanes, MOA_PANE_GAP_PX } from "./pane-layout.js";
@@ -703,16 +703,15 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
     const openWorkflowSide = (node, child, request) => {
         const sessionId = request?.sessionId ?? node.sessionId;
         const childView = child?.getState().ui.workflowViews?.[sessionId] ?? {};
-        const buffer = child?.workflowDraftBuffers?.get(sessionId);
-        const draftEdit = buffer && buffer.sessionId === sessionId && buffer.text !== buffer.base?.yaml ? buffer
-            : childView.draftEdit?.sessionId === sessionId ? childView.draftEdit : null;
+        // VR-6: the panel's live editor buffer, when mounted, is authoritative; the saved edit only when none is.
+        const draft = workflowDraftHandoff({ sessionId, buffer: child?.workflowDraftBuffers?.get(sessionId) ?? null, saved: childView.draftEdit ?? null });
         zoom(node);
         controller.dispatch({ type: "ui/workflowView", sessionId, view: {
             sidePanel: request?.panel ?? null,
             ...(request?.nodeId ? { selectedNodeId: request.nodeId } : {}),
             ...(childView.selectedRunId !== undefined ? { selectedRunId: childView.selectedRunId } : {}),
             ...(childView.mainTab ? { mainTab: childView.mainTab } : {}),
-            ...(draftEdit ? { draftEdit, draftDirty: true } : {}),
+            ...(draft ?? {}),
         } });
         controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
         controller.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
