@@ -1006,7 +1006,9 @@ function shouldRenderSystemMessageAsActivity(event) {
     // request/reply protocol prompts are the exception because they are the
     // durable user-visible communication channel between sessions.
     if (event?.eventType !== "system.message") return false;
-    return !isSessionMessageText(messageTextFromEvent(event));
+    // A workflow's message (batch 7, w-4) is shown in the chat too, as its "Workflow · <type>" card.
+    const text = messageTextFromEvent(event);
+    return !isSessionMessageText(text) && !parseWorkflowUpdateText(text);
 }
 
 function buildEmbeddedSystemNoticeActivityItems(event, role) {
