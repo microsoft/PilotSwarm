@@ -4566,14 +4566,20 @@ export class ManagedSession {
      * the tasks of one stopped turn. The upper bound keeps a slow task list,
      * or a cancel still running after its caller gave up, off the tasks of a
      * later turn. A task without a readable `startedAt` is kept: nothing is
-     * killed on missing data.
+     * killed on missing data. A list of windows takes the tasks started in
+     * any of them (the tool calls of one workflow script state, E1b).
      */
-    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin }: { rounds?: number; pauseMs?: number; startedWithin?: { since: number; until: number } } = {}): Promise<number> {
+    async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin }: {
+        rounds?: number; pauseMs?: number;
+        startedWithin?: { since: number; until: number } | ReadonlyArray<{ since: number; until: number }>;
+    } = {}): Promise<number> {
+        const windows: ReadonlyArray<{ since: number; until: number }> | null = startedWithin === undefined ? null
+            : "since" in startedWithin ? [startedWithin] : startedWithin;
         const startedInScope = (task: { startedAt?: unknown }) => {
-            if (!startedWithin) return true;
+            if (!windows) return true;
             const at = typeof task.startedAt === "string" ? Date.parse(task.startedAt)
                 : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
-            return Number.isFinite(at) && at >= startedWithin.since && at <= startedWithin.until;
+            return Number.isFinite(at) && windows.some(window => at >= window.since && at <= window.until);
         };
         const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task) && startedInScope(task);
         let cancelled = 0;

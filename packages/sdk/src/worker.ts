@@ -714,6 +714,8 @@ export class PilotSwarmWorker {
     async start(): Promise<void> {
         if (this._started) return;
         this._stopRequested = false;
+        // Workflow tools are available again after a stop of this worker (E1-R4).
+        this.sessionManager.startWorkflowTools();
 
         const trace = this.config.traceWriter ?? (() => {});
         const store = this.config.store;

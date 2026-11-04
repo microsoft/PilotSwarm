@@ -744,10 +744,46 @@ export function buildByokModelCapabilities(
     };
 }
 
-/** A workflow session's native tool session while one script state holds it (RT-2). */
+/** A workflow session's shared native tool session, once set up (RT-2). */
 interface WorkflowToolSessionReady {
     managed: ManagedSession;
     workerNodeId: string;
+}
+
+/** The script states of one workflow session that share its native tool session (RT-2, E1b). */
+interface WorkflowToolShare {
+    /** The tools and authority the share was set up for; an executor for other ones is refused while it lives. */
+    bindingKey: string;
+    /** Open executors and openings in progress; the last one to close tears the share down. */
+    owners: number;
+    /** The end of the share's last tool call: calls run one at a time on the shared session. */
+    tail: Promise<void>;
+    ready: Promise<WorkflowToolSessionReady>;
+}
+
+/** How long a share's setup, or an executor's tool catalog check, may take (E1-R2). */
+const WORKFLOW_TOOL_SETUP_DEADLINE_MS = 60_000;
+
+function workflowToolBindingKey(binding: WorkflowToolBinding): string {
+    return JSON.stringify([binding.parentSessionId, binding.policy, binding.boundAgentFingerprint, binding.tools.map(tool => tool.name).sort(),
+        [...(binding.excludedTools ?? [])].sort()]);
+}
+
+/** Run `call` after the share's previous tool call has ended, whatever its result. */
+function workflowToolShareSerially<T>(share: WorkflowToolShare, call: () => Promise<T>): Promise<T> {
+    const result = share.tail.then(call, call);
+    share.tail = result.then(() => undefined, () => undefined);
+    return result;
+}
+
+/** `work`, or `onLate` (and a rejection) when it is not done within `ms`; `onLate` then gets the late result, if any. */
+function withinDeadline<T>(work: Promise<T>, what: string, ms: number, onLate: (late: Promise<T>) => void): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { onLate(work); reject(new Error(`${what} did not finish within ${ms} ms`)); }, ms);
+        (timer as { unref?: () => void }).unref?.();
+    });
+    return Promise.race([work, deadline]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
 /** `promise`, or a rejection as soon as `signal` aborts (the waiting script ended). */
@@ -865,13 +901,20 @@ export class SessionManager {
     /** Every open workflow tool executor (each script state's own; RT-2), for shutdown. */
     private workflowExecutors = new Set<WorkflowToolExecutor>();
     /**
-     * Per workflow session, the end of its line of script states waiting for its native tool session (RT-2, VR-1..3):
-     * one script state holds the session at a time, from its first tool call until its executor closed and the session
-     * was torn down; the next one then sets up its own.
+     * Per workflow session, the native tool session its open executors share (RT-2, E1b): reserved before its
+     * asynchronous setup, counted by owner, its tool calls run one at a time, and torn down only when the last owner
+     * closes. A new share waits for the previous one's teardown.
      */
-    private workflowToolLeases = new Map<string, Promise<void>>();
-    /** Set by shutdown: no script state takes the tool session after it. */
+    private workflowToolShares = new Map<string, WorkflowToolShare>();
+    private workflowToolTeardowns = new Map<string, Promise<void>>();
+    /**
+     * A generation fence (E1-R4): shutdown closes workflow tools and starts a new generation; a start opens them again,
+     * to openings of the new generation only.
+     */
     private workflowToolsClosing = false;
+    private workflowToolGeneration = 0;
+    private workflowToolSetupDeadlineMs = WORKFLOW_TOOL_SETUP_DEADLINE_MS;
+    /** Per workflow session, a cleanup that may have left native work or folders behind: its tools wait for recovery. */
     private workflowExecutorFailures = new Map<string, Error>();
     /** Only application-supplied tools; resolved registry/platform handlers are never cached as inputs. */
     private sessionApplicationTools = new Map<string, Tool<any>[]>();
@@ -3523,10 +3566,16 @@ export class SessionManager {
         return [...this.sessions.keys()];
     }
 
+    /** A worker start (E1-R4): workflow tools are available again, to openings made from now on. */
+    startWorkflowTools(): void {
+        this.workflowToolsClosing = false;
+    }
+
     /** Final worker cleanup, after the durable runtime has drained. */
     async shutdown(): Promise<void> {
-        // A script state waiting for the tool session, or setting it up, takes nothing after this (VR, M-08).
+        // An opening of this generation, waiting or setting up, takes nothing after this (M-08, E1-R4).
         this.workflowToolsClosing = true;
+        this.workflowToolGeneration += 1;
         const cleanup = await Promise.allSettled([...this.workflowExecutors]
             .map(executor => withWorkspaceDeadline(executor.close(), "workflow cleanup")));
         for (const result of cleanup) {
@@ -3534,6 +3583,7 @@ export class SessionManager {
                 console.warn(`[SessionManager] Workflow cleanup failed; stopping its Copilot client: ${normalizeError(result.reason).message}`);
             }
         }
+        this.workflowToolShares.clear();
         this.unsubscribeFeatureFlags?.();
         this.unsubscribeFeatureFlags = null;
         // CopilotClient.stop owns session detachment. Detaching each session
@@ -3666,76 +3716,148 @@ export class SessionManager {
     }
 
     /**
-     * A workflow script state's tool executor (adversarial review RT-2 and its verification, VR-1..3). The native tool
-     * session of a workflow is exclusive: one script state holds it at a time, from its first tool call until its
-     * executor closed and the session was torn down (its background work stopped, disconnected, its folders released).
-     * Another script state of the same workflow (a parallel branch) waits in line for it, then sets up its own; it is
-     * never refused because one is open. Why exclusive, not shared: the native session belongs to the workflow's
-     * session id (its lock, configuration, workspace hold and background tasks), so a second native handle per state is
-     * not available, and a shared one lets a closed owner's queued calls and background work outlive it.
-     * - The place in line is taken before anything is awaited.
-     * - `signal`: the waiting script ended; its opening stops waiting and takes nothing.
-     * - After the wait, a teardown that failed blocks the opening ("requires recovery"), as do authority checks and a
-     *   worker shutting down; the line moves on either way.
-     * - The holder's own calls are its executor's (one at a time, authority checked before each, aborted on close).
+     * A workflow script state's tool executor (adversarial review RT-2 and its verifications, VR-1..3 and E1b). Each
+     * state (each parallel branch included) gets its own executor; the executors of one workflow session share one
+     * native tool session, because the native session belongs to the workflow's session id (its lock, configuration,
+     * workspace hold and background tasks). Their tool calls run one at a time, so parallel branches stay live: a
+     * branch that waits for a sibling's tool call is not blocked for the sibling's whole script.
+     * - The share is reserved before anything is awaited; a new share waits for the previous one's teardown, and a
+     *   teardown that failed blocks it (VR-2).
+     * - Setup and the executor's tool catalog check have a deadline (E1-R2); one that is late may leave native state
+     *   behind, so it blocks the workflow's tools until recovery and is torn down if it ever finishes.
+     * - `signal`: the script ended; an opening stops waiting, takes nothing, and an executor made too late is never
+     *   handed out (E1-R3). The same holds when the worker is shutting down, or for an opening of an earlier worker
+     *   generation (E1-R4).
+     * - A call is checked when its turn comes: its executor open, its script running, its authority current (VR-1).
+     * - An executor's close aborts the native session only while its own call runs, waits for that call, then stops
+     *   the background work its own calls started (their time windows) while others still hold the share (VR-3); the
+     *   last close tears the whole session down. A cancel that leaves work running blocks the workflow's tools.
      */
     async openWorkflowToolExecutor(sessionId: string, binding: WorkflowToolBinding, step: number, options: { signal?: AbortSignal } = {})
         : Promise<WorkflowToolExecutor> {
+        const generation = this.workflowToolGeneration;
+        /** What blocks every owner of the workflow's tools: a cleanup that needs recovery, or a worker shutting down. */
+        const refuseIfShut = () => {
+            const failure = this.workflowExecutorFailures.get(sessionId);
+            if (failure) throw new Error(`Workflow executor requires recovery: ${failure.message}`);
+            if (this.workflowToolsClosing || this.workflowToolGeneration !== generation) {
+                throw new Error("The worker is shutting down; workflow tools are unavailable.");
+            }
+        };
         const refuseIfBlocked = () => {
-            const cleanupFailure = this.workflowExecutorFailures.get(sessionId);
-            if (cleanupFailure) throw new Error(`Workflow executor requires recovery: ${cleanupFailure.message}`);
-            if (this.workflowToolsClosing) throw new Error("The worker is shutting down; workflow tools are unavailable.");
+            refuseIfShut();
+            if (options.signal?.aborted) throw new Error("The script ended before its workflow tools were available.");
         };
         refuseIfBlocked();
-        const previous = this.workflowToolLeases.get(sessionId) ?? Promise.resolve();
-        let free!: () => void;
-        const held = new Promise<void>(resolve => { free = resolve; });
-        const line = previous.then(() => held);
-        this.workflowToolLeases.set(sessionId, line);
-        void line.then(() => { if (this.workflowToolLeases.get(sessionId) === line) this.workflowToolLeases.delete(sessionId); });
-        let freed = false;
-        const releaseLease = () => { if (!freed) { freed = true; free(); } };
+        const bindingKey = workflowToolBindingKey(binding);
+        let share = this.workflowToolShares.get(sessionId);
+        if (share && share.bindingKey !== bindingKey) throw new Error("A workflow tool executor with other tools is already active.");
+        if (!share) {
+            const previous = this.workflowToolTeardowns.get(sessionId) ?? Promise.resolve();
+            const created: WorkflowToolShare = { bindingKey, owners: 0, tail: Promise.resolve(), ready: null as unknown as Promise<WorkflowToolSessionReady> };
+            created.ready = (async () => {
+                await previous.catch(() => undefined);
+                // VR-2: the previous share's teardown may have failed while this one waited for it.
+                refuseIfShut();
+                return await this.setUpWorkflowToolShare(sessionId, binding, step);
+            })();
+            created.ready.catch(() => undefined);
+            this.workflowToolShares.set(sessionId, created);
+            share = created;
+        }
+        // Reserved before anything is awaited, so no other owner's close can tear the share down under this one.
+        share.owners += 1;
+        const owned = share;
         let ready: WorkflowToolSessionReady;
         try {
-            await untilAborted(previous, options.signal);
-            // VR-2: the previous holder's teardown may have failed while this one waited.
+            await this.authorizeWorkflowTools(sessionId, binding);
+            ready = await untilAborted(owned.ready, options.signal);
             refuseIfBlocked();
-            ready = await this.setUpWorkflowToolSession(sessionId, binding, step);
         } catch (error) {
-            releaseLease();
+            // Its reservation is released now; a teardown this starts goes on without it (a later share waits for it).
+            void this.releaseWorkflowToolShare(sessionId, owned).catch(() => undefined);
             throw error;
         }
+        // This owner's tool calls, each in its turn on the share, and the time window of each (VR-3: calls never overlap,
+        // so the background work a call started is the work started in its window).
+        const windows: Array<{ since: number; until: number }> = [];
+        const serially = <T>(run: () => Promise<T>): Promise<T> => workflowToolShareSerially(owned, async () => {
+            const since = Date.now();
+            try { return await run(); }
+            finally { windows.push({ since, until: Date.now() }); }
+        });
+        let released = false;
         let executor: WorkflowToolExecutor | undefined;
-        let disposed = false;
-        const dispose = async () => {
-            if (disposed) return;
-            disposed = true;
+        const dispose = async ({ settled }: { settled: boolean } = { settled: true }) => {
+            if (released) return;
+            released = true;
             if (executor) this.workflowExecutors.delete(executor);
             try {
-                await this.tearDownWorkflowToolSession(sessionId, ready.managed, ready.workerNodeId);
+                // Its own call did not end after its abort: the shared session may still be running it.
+                if (!settled) this.workflowExecutorFailures.set(sessionId, new Error("A workflow tool call did not end after it was aborted."));
+                // While others hold the share, stop only the background work this owner's calls started (VR-3).
+                if (owned.owners > 1 && windows.length > 0) {
+                    try {
+                        await withWorkspaceDeadline(ready.managed.cancelBackgroundTasks({ startedWithin: windows }), "workflow task cancel");
+                    } catch (error) {
+                        const failure = normalizeError(error);
+                        this.workflowExecutorFailures.set(sessionId, failure);
+                        throw failure;
+                    }
+                }
             } finally {
-                releaseLease();
+                await this.releaseWorkflowToolShare(sessionId, owned);
             }
         };
         try {
-            // Set up while the worker began to shut down, or the script ended meanwhile: nothing is handed out.
-            refuseIfBlocked();
-            if (options.signal?.aborted) throw new Error("The script ended before its workflow tools were available.");
-            executor = await createWorkflowToolExecutor({
+            executor = await withinDeadline(createWorkflowToolExecutor({
                 session: ready.managed.getWorkflowToolSession(), grants: binding.tools,
                 excludedTools: binding.excludedTools,
-                authorize: () => this.authorizeWorkflowTools(sessionId, binding), dispose,
+                // Each call in its turn: nothing that blocks the workflow's tools, and the authority it was granted.
+                authorize: async () => { refuseIfShut(); await this.authorizeWorkflowTools(sessionId, binding); }, dispose, serially,
+                ...(options.signal ? { signal: options.signal } : {}),
                 invocationPrefix: `${sessionId}/${step}/${randomUUID()}`,
+            }), "workflow tool catalog check", this.workflowToolSetupDeadlineMs, () => {
+                this.workflowExecutorFailures.set(sessionId, new Error("A workflow tool catalog check did not finish in time."));
             });
-            this.workflowExecutors.add(executor);
-            return executor;
+            // E1-R3: made after the script ended or the worker began to shut down: it is never handed out.
+            refuseIfBlocked();
         } catch (error) {
             await dispose().catch(() => undefined);
             throw error;
         }
+        this.workflowExecutors.add(executor);
+        return executor;
     }
 
-    /** The native tool session of one script state: authority, attached workspace, managed session and its tools. */
+    /** The native tool session of a workflow's share, set up within its deadline (E1-R2). */
+    private setUpWorkflowToolShare(sessionId: string, binding: WorkflowToolBinding, step: number): Promise<WorkflowToolSessionReady> {
+        return withinDeadline(this.setUpWorkflowToolSession(sessionId, binding, step), "workflow tool setup", this.workflowToolSetupDeadlineMs, late => {
+            // A late setup may leave a native session or a folder hold behind: the workflow's tools wait for recovery,
+            // and the session is torn down if it ever finishes.
+            this.workflowExecutorFailures.set(sessionId, new Error("A workflow tool setup did not finish in time."));
+            void late.then(ready => this.tearDownWorkflowToolSession(sessionId, ready.managed, ready.workerNodeId)).catch(() => undefined);
+        });
+    }
+
+    /** One owner of a share closes; the last one tears the native session down, and a later share waits for that. */
+    private async releaseWorkflowToolShare(sessionId: string, share: WorkflowToolShare): Promise<void> {
+        share.owners -= 1;
+        if (share.owners > 0) return;
+        if (this.workflowToolShares.get(sessionId) === share) this.workflowToolShares.delete(sessionId);
+        const teardown = (async () => {
+            const ready = await share.ready.catch(() => null);
+            if (ready) await this.tearDownWorkflowToolSession(sessionId, ready.managed, ready.workerNodeId);
+        })();
+        this.workflowToolTeardowns.set(sessionId, teardown);
+        try {
+            await teardown;
+        } finally {
+            if (this.workflowToolTeardowns.get(sessionId) === teardown) this.workflowToolTeardowns.delete(sessionId);
+        }
+    }
+
+    /** The native tool session of a workflow: authority, attached workspace, managed session and its tools. */
     private async setUpWorkflowToolSession(sessionId: string, binding: WorkflowToolBinding, step: number): Promise<WorkflowToolSessionReady> {
         await this.authorizeWorkflowTools(sessionId, binding);
         const config: ManagedSessionConfig = structuredClone(binding.config);
@@ -3774,7 +3896,10 @@ export class SessionManager {
         }
     }
 
-    /** Stop the native session's background work, disconnect it, then release its folders (as one executor's close did). */
+    /**
+     * Stop the native session's background work, disconnect it, then release its folders. Any failure, including a
+     * folder release that fails or is late (VR-2), blocks the workflow's tools until recovery: work or folders may remain.
+     */
     private async tearDownWorkflowToolSession(sessionId: string, managed: ManagedSession | undefined, workerNodeId: string): Promise<void> {
         const errors: unknown[] = [];
         if (managed) {
@@ -3790,8 +3915,19 @@ export class SessionManager {
             throw error;
         }
         this._forgetWarmSession(sessionId);
-        const released = await this.releaseWorkspace(sessionId, { reason: "workflow_state_finished", workerNodeId });
-        if (released.detail && released.released) throw new Error(released.detail);
+        let released: { released: boolean; detail?: string };
+        try {
+            released = await withWorkspaceDeadline(this.releaseWorkspace(sessionId, { reason: "workflow_state_finished", workerNodeId }), "workflow folder release");
+        } catch (error) {
+            const failure = normalizeError(error);
+            this.workflowExecutorFailures.set(sessionId, failure);
+            throw failure;
+        }
+        if (released.detail && released.released) {
+            const failure = new Error(released.detail);
+            this.workflowExecutorFailures.set(sessionId, failure);
+            throw failure;
+        }
     }
 
     async resolveScriptTools(sessionId: string): Promise<Map<string, (args: Record<string, unknown>) => Promise<unknown>>> {

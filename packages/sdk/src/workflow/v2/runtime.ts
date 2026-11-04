@@ -188,6 +188,15 @@ export const WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION = 50;
 export const WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS = 30_000;
 /** Default interval of a running script's check that its node is still undecided. */
 export const WORKFLOW_V2_DEFAULT_LIVENESS_MS = 1_000;
+/** How long an ended script waits for its tool executor's opening before it moves on (E1-R2). */
+export const WORKFLOW_V2_OPENING_WAIT_MS = 10_000;
+
+/** `promise`'s value, or null when it fails or is not settled within `ms`. */
+function settledWithin<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), ms); });
+    return Promise.race([promise.catch(() => null), late]).finally(() => { if (timer) clearTimeout(timer); });
+}
 /** A command read before an admission waits at most this long when the queue is empty (the session orchestration's idiom). */
 export const WORKFLOW_V2_COMMAND_POLL_MS = 10;
 /**
@@ -3472,7 +3481,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // entry decision and the process start are one step (store.enterScript).
         const binding = await deps.resolveToolBinding(run.workflowSessionId);
         // The script's tool executor, opened at its first tool call (once, whatever calls race to it), and the means to stop
-        // an opening still waiting for the workflow's tool session when the script ends (RT-2, VR-1..3).
+        // an opening, or a call waiting for its turn on the workflow's shared tool session, when the script ends (RT-2,
+        // VR-1..3, E1b).
         const tools: { executor: WorkflowToolExecutor | null; opening: Promise<WorkflowToolExecutor> | null; stop: AbortController } = {
             executor: null, opening: null, stop: new AbortController() };
         // A test run's tool calls are intercepted (migration 0102; design 05): no live tool runs. Each call is recorded by
@@ -3521,9 +3531,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const callTool = async (call: ScriptToolCall): Promise<unknown> => {
             if (!binding) throw new Error("This workflow has no delegated tool grant; scripts in it cannot call tools.");
             if (testFixtures !== null) return interceptedToolCall(binding, call, testFixtures);
+            if (scriptDone || tools.stop.signal.aborted) throw new Error("The script ended before its tool call ran.");
             tools.opening ??= deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal, { signal: tools.stop.signal });
             const executor = await tools.opening;
-            if (scriptDone) throw new Error("The script ended before its tool call ran.");
+            if (scriptDone || tools.stop.signal.aborted) throw new Error("The script ended before its tool call ran.");
             tools.executor = executor;
             return executor.call(call.name, call.arguments);
         };
@@ -3570,9 +3581,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         } finally {
             scriptDone = true;
             clearInterval(liveness);
-            // An opening still on its way stops waiting; one that got the session anyway is closed, so it never holds it.
+            // An opening still on its way stops waiting; one that got the session anyway is closed, so it never holds it. The
+            // wait for an opening is bounded (E1-R2): one that is later still sees the stop and hands nothing out (E1-R3).
             tools.stop.abort();
-            const opened = tools.executor ?? (tools.opening ? await tools.opening.catch(() => null) : null);
+            const opened = tools.executor ?? (tools.opening ? await settledWithin(tools.opening, WORKFLOW_V2_OPENING_WAIT_MS) : null);
             if (opened) await opened.close();
         }
         // Not started: the node was decided, or its run or session ended, before entry.
