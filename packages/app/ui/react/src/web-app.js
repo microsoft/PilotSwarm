@@ -815,6 +815,12 @@ const PORTAL_COLUMN_KEY_STEP_PX = 24;
  * Null for a column that is not on screen, and for Diagnostics while it is squeezed below the snap width (a window
  * narrowed under a wide canvas leaves it at 0px): its stored width is kept, so it gets that width back first as the
  * canvas narrows, instead of the squeeze being remembered.
+ *
+ * How far the block may still grow is what the grid's cap on it leaves (the workspace minus the resizer track and the
+ * reserve beside it: the session list, its 32px and chat's floor, data-right-reserve), and never more than chat can
+ * give. Chat alone was not enough: the session list keeps its width (0.8.9), so with the cap reached chat is still a
+ * few pixels over its floor, and each drag or key grew the canvas by them while the block could not grow: Diagnostics
+ * paid, down to 0px with its toggle still on (of-03).
  */
 function measureRightBlock(handle) {
     const grid = handle?.closest?.(".ps-workspace-grid");
@@ -825,12 +831,21 @@ function measureRightBlock(handle) {
     const canvas = box(host?.querySelector(":scope > .ps-canvas-layer:not(.is-hidden):not(.is-maximized)"));
     const diagnostics = box(host?.querySelector(":scope > .ps-workspace-column:not(.is-artifact)"));
     const chat = box(grid.querySelector(":scope > .ps-workspace-main-grid > .ps-workspace-pane-slot:last-child"));
+    const chatRoom = chat === null ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(chat - PORTAL_MIN_CHAT_COLUMN_PX));
+    let capRoom = Number.POSITIVE_INFINITY;
+    const reserve = Number(grid.getAttribute("data-right-reserve"));
+    if (grid.hasAttribute("data-right-reserve") && Number.isFinite(reserve) && typeof window !== "undefined") {
+        const css = window.getComputedStyle(grid);
+        const content = grid.clientWidth - (parseFloat(css.paddingLeft) || 0) - (parseFloat(css.paddingRight) || 0);
+        const track = parseFloat(String(css.gridTemplateColumns || "").trim().split(/\s+/)[1]);
+        capRoom = Math.max(0, Math.floor(content - (Number.isFinite(track) ? track : 16) - reserve - hostWidth));
+    }
     return {
         // A canvas wider than its host is cut off by the grid: only the part on screen counts.
         canvasAdjust: canvas === null ? null : Math.round(Math.min(canvas, hostWidth)) - PORTAL_CANVAS_COL_DEFAULT_PX,
         diagnosticsAdjust: diagnostics === null || diagnostics < PORTAL_COLUMN_SNAP_CLOSED_PX
             ? null : Math.round(diagnostics) - PORTAL_DIAG_COL_DEFAULT_PX,
-        chatSpare: chat === null ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(chat - PORTAL_MIN_CHAT_COLUMN_PX)),
+        chatSpare: Math.min(chatRoom, capRoom),
     };
 }
 
@@ -17044,6 +17059,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const desktopWorkspace = React.createElement("div", {
         ref: workspaceGridRef,
         className: `ps-workspace-grid${rightSideActive ? "" : " is-right-hidden"}`,
+        // What the right block's cap keeps beside it (the grid template below), for the seams' room (measureRightBlock).
+        "data-right-reserve": rightSideActive && !zenActive && !artifactPaneActive ? String(sessionColumnReservePx) : undefined,
         style: {
             // With both optional columns off there is no right side and no
             // resizer for one: chat takes the whole width. Leaving a 0fr track
