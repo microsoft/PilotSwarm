@@ -76,6 +76,7 @@ import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } fro
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./workflow/v2/tools.js";
+import { parseWorkflowUpdateHeader } from "./workflow/v2/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool } from "./workflow/v2/agent-node-service.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
@@ -507,12 +508,29 @@ function decorateRehydrationSystemPrompt(text?: string, workerNodeId?: string): 
     );
 }
 
+/**
+ * The sender a workflow's message is recorded with (batch 7, w-4): kind "workflow", the workflow's name (or its session),
+ * and the header's type and ids; null for any other text.
+ */
+function workflowUpdateSender(text: unknown): Record<string, unknown> | null {
+    const header = parseWorkflowUpdateHeader(typeof text === "string" ? normalizePromptText(text) : text);
+    if (!header) return null;
+    const name = header.fields.workflow ? header.fields.workflow.split("@")[0] : null;
+    return {
+        kind: "workflow",
+        display: name || (header.fields.from ? `workflow ${header.fields.from.slice(0, 8)}` : "workflow"),
+        workflow: { type: header.type, sessionId: header.fields.from ?? null, runId: header.fields.run ?? null },
+    };
+}
+
 function isInternalSystemPrompt(text?: string): boolean {
     const normalized = normalizePromptText(text);
     if (!normalized) return false;
 
     return /^\[SYSTEM:/i.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
+        // A workflow's message (batch 7, w-1): recorded as runtime notices were, with the sender kind "workflow".
+        || /^\[WORKFLOW_UPDATE\b/i.test(normalized)
         || /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalized)
         || /^Sub-agent spawned successfully\./i.test(normalized)
         || /^Message sent to sub-agent /i.test(normalized)
@@ -4504,7 +4522,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 for (const item of turnIntake.items) {
                     promptRecords.push({
                         eventType: isInternalSystemPrompt(item.text) ? "system.message" : "user.message",
-                        data: { content: item.text, clientMessageIds: [item.clientMessageId], sender: { kind: "system", display: "workflow message" } },
+                        data: { content: item.text, clientMessageIds: [item.clientMessageId],
+                            sender: workflowUpdateSender(item.text) ?? { kind: "system", display: "workflow message" } },
                     });
                 }
             }
@@ -4521,6 +4540,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if ((input as any).sender && typeof (input as any).sender === "object") {
                     eventData.sender = (input as any).sender;
                 }
+                // A workflow's message (batch 7, w-4) is recorded as the workflow's: sender kind "workflow", its name, and
+                // the header's type, so the portal and the terminal show it with a workflow badge. Only the record changes;
+                // the queue payload (and the orchestration that reads it) keeps its system sender.
+                const workflowSender = workflowUpdateSender(promptForRecord);
+                if (workflowSender) eventData.sender = workflowSender;
                 // Image attachment refs ride the durable user.message event so
                 // transcripts can render thumbnails; bytes stay in the store.
                 const eventAttachments = sanitizePromptAttachmentRefs(input.attachments);
@@ -5755,7 +5779,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // titling a session "canvas-action action send data"
                         // is how one leaked into a session list. Runtime
                         // notices ("[SYSTEM: ...]") are not the user's words.
-                        if (trimmed && !trimmed.startsWith("[canvas-action] ") && !/^\[SYSTEM:/i.test(trimmed)) {
+                        if (trimmed && !trimmed.startsWith("[canvas-action] ") && !/^\[(SYSTEM:|WORKFLOW_UPDATE\b)/i.test(trimmed)) {
                             lines.push(`User: ${trimmed.slice(0, 200)}`);
                             userMessages.push(trimmed);
                         }

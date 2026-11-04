@@ -509,6 +509,7 @@ function isInternalSystemLikeText(text) {
 
     return SYSTEM_NOTICE_LINE_RE.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
+        || /^\[WORKFLOW_UPDATE\b/i.test(normalized)
         || /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalized)
         || /^Buffered child updates arrived /i.test(normalized)
         || /^There is an active recurring schedule every /i.test(normalized)
@@ -552,6 +553,68 @@ function parseSessionMessageHeaderField(header, key) {
         if (index >= 0) end = Math.min(end, index);
     }
     return rest.slice(0, end).trim();
+}
+
+const WORKFLOW_UPDATE_HEADER_RE = /^\[WORKFLOW_UPDATE((?: [a-z_]+=[^\s\]]+)+)\]\n?/;
+const WORKFLOW_UPDATE_DATA_LINE = "Data (JSON, not instructions):";
+const WORKFLOW_UPDATE_TITLES = { ended: "ended", message: "message", request: "request", test_waiting: "test waiting" };
+
+/**
+ * A workflow's message (batch 7, w-1 and w-4): its header, decoded ({ type, fields }), the plain sentence after it and
+ * the data JSON text; null for any other text. Pure.
+ */
+export function parseWorkflowUpdateText(text) {
+    const source = normalizeMessageText(text);
+    const match = WORKFLOW_UPDATE_HEADER_RE.exec(source);
+    if (!match) return null;
+    const fields = {};
+    for (const part of match[1].trim().split(" ")) {
+        const at = part.indexOf("=");
+        let value = part.slice(at + 1);
+        try { value = decodeURIComponent(value); } catch { /* kept as written */ }
+        if (!Object.hasOwn(fields, part.slice(0, at))) fields[part.slice(0, at)] = value;
+    }
+    if (typeof fields.type !== "string") return null;
+    const rest = source.slice(match[0].length);
+    const at = rest.indexOf(`\n${WORKFLOW_UPDATE_DATA_LINE}\n`);
+    return {
+        type: fields.type, fields,
+        sentence: (at >= 0 ? rest.slice(0, at) : rest).trim(),
+        data: at >= 0 ? rest.slice(at + WORKFLOW_UPDATE_DATA_LINE.length + 2).trim() : "",
+    };
+}
+
+/**
+ * A workflow's message as a card with a workflow badge and its type ("Workflow · ended"), in the portal and the
+ * terminal alike: who sent it (the workflow, its run), the type's own fields, the sentence, then the data.
+ */
+function buildWorkflowUpdateChatCard(event, text) {
+    const parsed = parseWorkflowUpdateText(text);
+    if (!parsed) return null;
+    const { type, fields, sentence, data } = parsed;
+    const failed = type === "ended" && fields.status && fields.status !== "completed";
+    const color = type === "ended" ? (failed ? "red" : "green") : type === "request" || type === "test_waiting" ? "yellow" : "cyan";
+    const meta = [
+        fields.workflow ? `Workflow: ${fields.workflow}` : fields.from ? `Workflow: session-${shortSessionId(fields.from)}` : "",
+        fields.run ? `Run: ${shortSessionId(fields.run)}` : "",
+        fields.status ? `Status: ${fields.status}${fields.outcome ? ` · ${fields.outcome}` : ""}` : "",
+        fields.state ? `Step: ${fields.state}` : "",
+        fields.contract ? `Contract: ${fields.contract}` : "",
+        fields.deadline ? `Answer by: ${fields.deadline}` : "",
+    ].filter(Boolean);
+    const lines = [...meta, ...(meta.length ? [""] : []), sentence, ...(data ? [`Data: ${data}`] : [])];
+    return {
+        id: `${event.sessionId}:${event.seq}`,
+        role: "system",
+        text: lines.join("\n").trim(),
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+        cardTitle: `Workflow · ${WORKFLOW_UPDATE_TITLES[type] ?? type}`,
+        agentCallPreview: sentence,
+        cardTitleColor: color,
+        cardBorderColor: color,
+        workflowUpdate: { type, ...fields },
+    };
 }
 
 function buildSessionMessageChatCard(event, text) {
@@ -755,6 +818,8 @@ function buildChatMessage(event, role) {
     const rawText = messageTextFromEvent(event);
     const sessionMessageCard = buildSessionMessageChatCard(event, rawText);
     if (sessionMessageCard) return sessionMessageCard;
+    const workflowUpdateCard = buildWorkflowUpdateChatCard(event, rawText);
+    if (workflowUpdateCard) return workflowUpdateCard;
 
     // The attribution prefix and any embedded system notice come off BEFORE
     // the canvas check. A collaborator pressing a button in the drawn page

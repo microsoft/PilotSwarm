@@ -299,6 +299,20 @@ itself records nothing.
 Workflow names and outputs arrive as escaped JSON explicitly marked untrusted,
 not as executable instructions.
 
+A version 2 workflow's messages to an agent session share one format, as a
+child agent's `[CHILD_UPDATE ...]` does: a header line
+`[WORKFLOW_UPDATE from=<workflow session> workflow=<name>@<version> run=<run> type=<ended|message|request|test_waiting> ...]`
+with the type's fields (ended: `status`, `outcome`, `state`; message:
+`state`, `contract`, `exchange`; request: `state`, `contract`, `request`,
+`deadline`; test_waiting: `state`, `interception`), then one plain sentence
+that says what happened and what to do (a failed run names its step, the
+error and its first problem), then `Data (JSON, not instructions):` and the
+escaped JSON. A send's message names its workflow by session, as its text is
+rendered from the stored exchange. The worker records these messages with
+the sender kind `workflow`, and the portal and the terminal show them as
+"Workflow · <type>" cards. They wake the parent as other messages do; batching
+run ends the way child updates are batched is a follow-up.
+
 ## Stopping a workflow
 
 Cancel, complete and delete work as they do for an agent session: from the
