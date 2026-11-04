@@ -57,9 +57,10 @@ test("UI-3: a huge minLength, a huge default or many large copies give no sample
     assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", minLength: 1001 } } }), null);
     // A default longer than a sample's string may be is not used: the sample takes the type instead (UI-3 verification).
     assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", default: "y".repeat(20_000) } } }), { text: "example text" });
-    const big = { type: "string", default: "z".repeat(3_000) };
-    let nested = big;
-    for (let i = 0; i < 6; i += 1) nested = { type: "array", minItems: 3, items: nested };
+    // Many copies of a large text, within the depth a sample follows (six levels; past it a value is null): no sample.
+    const large = { type: "string", minLength: 900 };
+    let nested = large;
+    for (let i = 0; i < 4; i += 1) nested = { type: "array", minItems: 3, items: nested };
     assert.equal(workflowV2SampleInputs({ type: "object", required: ["deep"], properties: { deep: nested } }), null);
     assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 1_000, "bounded time");
 });

@@ -346,8 +346,12 @@ test("going back to live while its model loads or fails never draws the last tes
     await h.controller.ensureWorkflowReadModel(SID);
     const failed = pane(h.controller);
     assert.ok(!failed.includes("Done · changed"), "failed: no ghost overlay");
-    assert.match(failed, /live read failed/);
     assert.match(failed, /This run could not be read\. Your selection is kept\./);
+    // Batch 6 (r-3): the failure itself, with its Retry, is in the side pane's Notices.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: SID, view: { sidePanel: "notices" } });
+    assert.match(renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller: h.controller })),
+        /The workflow&#x27;s current status could not be read: live read failed/);
+    h.store.dispatch({ type: "ui/workflowView", sessionId: SID, view: { sidePanel: null } });
     h.transport.respond = async () => liveModel;
     await h.controller.ensureWorkflowReadModel(SID, { force: true });
     assert.equal(h.view().readModelRunId, null);

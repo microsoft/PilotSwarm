@@ -27,7 +27,7 @@ test("a step log shows only the chosen run's entries and the session's own notic
     const old = workflowStepLogHistory(history, "run-old");
     assert.ok(old.chat.length > 0);
     assert.ok(old.chat.every(item => !item.workflowRunId || item.workflowRunId === "run-old"));
-    assert.ok(!JSON.stringify(old.chat).includes("\\"new\\""));
+    assert.ok(!JSON.stringify(old.chat).includes('\\"new\\"'));
     assert.ok(old.chat.some(item => !item.workflowRunId), "the session's own notice stays");
     // No run chosen, or nothing to leave out: the same history.
     assert.equal(workflowStepLogHistory(history, null), history);

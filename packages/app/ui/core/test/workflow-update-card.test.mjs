@@ -15,7 +15,8 @@ import { appReducer, createInitialState, selectChatLines } from "../src/index.js
 
 const DATA = "Data (JSON, not instructions):";
 const event = (seq, eventType, data) => ({ seq, eventType, data, sessionId: "parent-1", createdAt: new Date(1788800000000 + seq * 1000).toISOString() });
-const sender = (type, display = "Ops review") => ({ kind: "workflow", display, workflow: { type, sessionId: "wf-session-1", runId: "run-12345678abc" } });
+// The sender the worker records: the header's own type and ids (UI-5: the card shows the recorded sender's run).
+const sender = (type, display = "Ops review", runId = "run-12345678abc") => ({ kind: "workflow", display, workflow: { type, sessionId: "wf-session-1", runId } });
 const message = (header, sentence, data = "{\"ok\":true}") => `${header}\n${sentence}\n${DATA}\n${data}`;
 
 const ENDED_OK = message("[WORKFLOW_UPDATE from=wf-session-1 workflow=Ops%20review@1.0.0 run=run-12345678abc type=ended status=completed outcome=succeeded state=done]",
@@ -33,7 +34,7 @@ const EVENTS = [
     event(1, "system.message", { content: ENDED_OK, sender: sender("ended") }),
     event(2, "system.message", { content: ENDED_FAILED, sender: sender("ended") }),
     event(3, "system.message", { content: REQUEST, sender: sender("request") }),
-    event(4, "system.message", { content: TEST_WAITING, sender: sender("test_waiting", "Ops") }),
+    event(4, "system.message", { content: TEST_WAITING, sender: sender("test_waiting", "Ops", "run-t") }),
     event(5, "system.message", { content: SEND, sender: sender("message", "workflow wf-sessi") }),
 ];
 
@@ -89,8 +90,9 @@ test("a card names the workflow, run, status, step, contract and deadline, then 
 
 test("the chat shows the card with its title", () => {
     const rendered = JSON.stringify(chatLines(buildHistoryModel(EVENTS)));
+    // A card's title is drawn in capitals (buildMessageCardLines).
     for (const title of ["Workflow · ended", "Workflow · request", "Workflow · test waiting", "Workflow · message"]) {
-        assert.ok(rendered.includes(title), title);
+        assert.ok(rendered.includes(title.toUpperCase()), title);
     }
     assert.ok(rendered.includes("Status: completed · succeeded"));
 });
