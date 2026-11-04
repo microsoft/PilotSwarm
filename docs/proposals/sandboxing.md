@@ -10,32 +10,31 @@ compute framework, trust boundaries, lifecycle and recovery contracts in more
 detail. They describe the same proposal; the earlier PRs are background, not
 three competing designs reviewers must reconcile.
 
-## Proposed framing
+## What we want to achieve
 
-**Sandboxing is the management of an isolated execution environment and its
-resources, not just remote placement of the Copilot runtime.** PilotSwarm remains
-authoritative for logical sessions, queued work, committed agent state,
-completion/accounting, policy and current execution authority. Providers supply
-execution environments, storage/attachment mechanics and explicitly qualified
-lifecycle capabilities.
+**The goal is to give PilotSwarm agents isolated, task-appropriate environments
+with the compute, tools, repositories and storage they need.** The agent's Copilot
+runtime and native tools execute inside the environment, driven remotely through
+the SDK by the trusted PilotSwarm worker. Session progress and results should
+remain durable and recoverable across failures and environment replacement.
+PilotSwarm coordinates the work, enforces access and execution policy, and
+preserves committed session state and outcomes. Pluggable providers supply and
+manage the execution environments and their attached resources throughout their
+lifecycle.
 
-Separate four concerns:
+The design covers four related areas:
 
-1. **Isolation and execution:** the worker and embedded SDK stay outside; the
-   runtime, native tools and deliberately attached resources execute inside an
-   appropriate boundary.
-2. **Agent-state recovery:** archive-backed restore remains the baseline. A
-   provider snapshot can accelerate restoration only when it represents the
-   exact PilotSwarm-accepted checkpoint. Provider-native durable byte custody is
-   a distinct, stronger optional mode.
-3. **Workspace and build-state persistence:** repositories, scratch roots, build
-   outputs and caches have explicit attachment and persistence contracts,
-   independent of the runtime checkpoint.
-4. **Process continuity:** retaining a live executor/job across controller changes
-   or supported suspension is a separately qualified capability, not a
-   consequence of saving agent-state files.
+1. **Execution isolation:** give agents appropriate execution environments with
+   clear resource and access boundaries.
+2. **Session durability and recovery:** preserve committed progress and results so
+   sessions can recover safely after failures or environment replacement.
+3. **Workspace and build-state persistence:** make repositories, storage, build
+   outputs and caches available with clear ownership and persistence guarantees.
+4. **Process continuity:** define whether running commands and background jobs
+   continue, stop or restart as sessions and environments change.
 
-These are separate concerns, not four features that must ship together.
+Each area has its own lifecycle and recovery guarantees, which should be explicit
+for every supported configuration.
 
 ## Proposed first target
 
