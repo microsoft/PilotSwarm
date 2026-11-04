@@ -44,7 +44,7 @@ export interface WorkflowActivityDeps {
     /** Remove a deleted workflow session: CMS soft delete and its session facts. */
     deleteSession?: (sessionId: string) => Promise<void>;
     /** Deliver a system prompt to the parent session's message queue. */
-    notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string) => Promise<void>;
+    notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string) => Promise<unknown>;
     /** Recheck the actual parent/child lineage and current ownership at delivery time. */
     authorizeParentNotification?: (sessionId: string, parentSessionId: string) => Promise<boolean>;
     runnerOptions?: ScriptRunnerOptions;

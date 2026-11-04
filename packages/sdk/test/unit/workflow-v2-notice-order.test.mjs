@@ -10,7 +10,7 @@ const PARENT = "parent-1";
 const RUN = { runId: "run-1", workflowSessionId: "wf-1", mode: "live", status: "completed", revision: 1, terminalOutcome: "succeeded",
     terminalNodeId: "done", terminalOutput: null, terminalError: null };
 
-function harness({ inFlight = () => 0, waitMs } = {}) {
+function harness({ inFlight = () => 0, waitMs, delivered } = {}) {
     const activities = new Map();
     const log = [];
     const store = {
@@ -29,7 +29,10 @@ function harness({ inFlight = () => 0, waitMs } = {}) {
         store, catalog: {}, enabled: () => true,
         resolveToolBinding: async () => null, openToolExecutor: async () => { throw new Error("no tools"); },
         authorizeParentNotification: async () => true,
-        notifyParent: async (parent, _prompt, _sender, clientMessageId) => { log.push(["notify", parent, clientMessageId]); },
+        notifyParent: async (parent, _prompt, _sender, clientMessageId) => {
+            log.push(["notify", parent, clientMessageId]);
+            return delivered === undefined ? undefined : { delivered };
+        },
         deleteSession: async () => {},
         ...(waitMs !== undefined ? { noticeDeliveryWaitMs: waitMs } : {}),
     });
@@ -61,4 +64,19 @@ test("nothing in flight: one check, then the notice", async () => {
     await h.notify();
     assert.deepEqual(h.log.filter(entry => entry[0] === "inFlight").length, 1);
     assert.deepEqual(h.log.filter(entry => entry[0] === "notify"), [["notify", PARENT, "workflow:wf-1:run-1:terminal"]]);
+});
+
+// Adversarial review WFO-3 (TLC parent.notified-lost): a parent whose session ended before the notice was queued was not
+// told: the skip is recorded, not parent_notified.
+test("WFO-3: a parent whose session had ended is recorded as not told", async () => {
+    const gone = harness({ delivered: false });
+    await gone.notify();
+    const events = gone.log.filter(entry => entry[0] === "event").map(entry => entry[1]);
+    assert.ok(events.includes("workflow.parent_notification_skipped"));
+    assert.ok(!events.includes("workflow.parent_notified"));
+    for (const delivered of [true, undefined]) {
+        const told = harness({ delivered });
+        await told.notify();
+        assert.ok(told.log.some(entry => entry[0] === "event" && entry[1] === "workflow.parent_notified"), String(delivered));
+    }
 });

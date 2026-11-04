@@ -1893,7 +1893,12 @@ export interface WorkflowV2RuntimeDeps {
     resolveToolBinding: (sessionId: string) => Promise<WorkflowToolBinding | null>;
     openToolExecutor: (sessionId: string, binding: WorkflowToolBinding, step: number) => Promise<WorkflowToolExecutor>;
     authorizeParentNotification: (sessionId: string, parentSessionId: string) => Promise<boolean>;
-    notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string) => Promise<void>;
+    /**
+     * Queue a message for the parent session. `{ delivered: false }` says the parent's session had already ended, so
+     * nothing was queued (adversarial review WFO-3); anything else is a delivery.
+     */
+    notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string)
+        => Promise<void | { delivered: boolean }>;
     /** How long the run-end notice waits for the run's deliveries to the parent still in flight (WFO-1); a test sets it. */
     noticeDeliveryWaitMs?: number;
     deleteSession: (sessionId: string) => Promise<void>;
@@ -3341,9 +3346,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             ...(failure ? { failure } : {}),
         };
         const json = JSON.stringify(data).replace(/[<>[\]]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-        await deps.notifyParent(definition.parentSessionId, workflowV2ParentNotification({ sessionId: run.workflowSessionId, runId: run.runId,
+        const delivery = await deps.notifyParent(definition.parentSessionId, workflowV2ParentNotification({ sessionId: run.workflowSessionId, runId: run.runId,
             name: data.name, version: data.version, status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId, failure }, json),
             workflowRuntimeSender("ended"), `workflow:${run.workflowSessionId}:${run.runId}:terminal`);
+        // WFO-3: the parent's session had ended before the notice was queued: it was not told.
+        if (delivery && delivery.delivered === false) return await skipped("parent is gone");
         await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.parent_notified", data: { runId: run.runId, parentSessionId: definition.parentSessionId } }]);
         return null;
     });

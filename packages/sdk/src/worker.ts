@@ -1042,12 +1042,19 @@ export class PilotSwarmWorker {
             return Boolean(childOwner && parentOwner && childOwner.provider === parentOwner.provider
                 && childOwner.subject === parentOwner.subject);
         };
-        const notifyWorkflowParent = async (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string) => {
+        // A parent whose session orchestration has ended reads no queued message: none is queued, and the caller is told
+        // (adversarial review WFO-3: the catalog row alone said the parent was there).
+        const notifyWorkflowParent = async (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string)
+            : Promise<{ delivered: boolean }> => {
+            const instanceId = `session-${parentSessionId}`;
+            const status = (await workflowClient.getStatus(instanceId)).status;
+            if (status === "NotFound" || ["Completed", "Failed", "Terminated"].includes(status)) return { delivered: false };
             await workflowClient.enqueueEvent(
-                `session-${parentSessionId}`,
+                instanceId,
                 "messages",
                 JSON.stringify({ prompt, sender, ...(clientMessageId ? { clientMessageIds: [clientMessageId] } : {}) }),
             );
+            return { delivered: true };
         };
         registerWorkflowActivities(this.runtime, {
             catalog: this._catalog,
