@@ -508,39 +508,34 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     });
 }
 
-test("mobile Zen has no workflow composer bar, accurate resize bounds and reachable node details", async ({ page }) => {
+// Batch 6 (f-02): a workflow has no mobile zen. Its step log (in the details layer) has no "Enter mobile zen", the details
+// layer has no maximize toggle, and there is no composer bar; a step's details are reachable from the graph.
+test("mobile: a workflow has no zen entry, no maximize toggle and no composer bar, and node details are reachable", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
     await routeApi(page, { workflowEvents: QUALITY_EVENTS,
         workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
-    // Batch 5 (g-03): the step log opens from its button; its header carries the way into mobile Zen, and Zen keeps it open.
-    await page.locator(".ps-workflow-main").getByRole("button", { name: "Step log", exact: true }).click();
-    await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
-    const zen = page.locator(".ps-mobile-zen");
-    // flow-09: no static "Workflow session" bar, and no empty footer in its place.
-    await expect(zen.locator(".ps-composer-readonly")).toHaveCount(0);
-    await expect(zen.locator(".ps-mobile-zen-composer")).toBeHidden();
-    const divider = zen.getByRole("separator", { name: "Resize the step log" });
-    const log = zen.locator(".ps-workflow-log");
-    const initialHeight = (await log.boundingBox()).height;
-    const max = Number(await divider.getAttribute("aria-valuemax"));
-    expect(Number(await divider.getAttribute("aria-valuenow"))).toBeLessThanOrEqual(max);
-    expect(Number(await divider.getAttribute("aria-valuenow"))).toBeCloseTo(initialHeight, 0);
-    const box = await divider.boundingBox();
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 30, { steps: 5 });
-    await page.mouse.up();
-    await expect.poll(async () => (await log.boundingBox()).height).toBeLessThan(initialHeight - 8);
-    await divider.dblclick();
-    await expect.poll(async () => Math.abs((await log.boundingBox()).height - initialHeight)).toBeLessThan(2);
-    await shot(page, "quality-mobile-zen-single-footer");
-    await zen.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).click();
-    await expect(zen).toHaveCount(0);
+    const main = page.locator(".ps-workflow-main");
+    await main.getByRole("button", { name: "Step log", exact: true }).click();
+    const log = page.locator('.ps-workflow-side-panel[data-panel="log"]').filter({ visible: true });
+    await expect(log.locator(".ps-workflow-log")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Enter mobile zen", exact: true })).toHaveCount(0);
+    await expect(page.locator(".ps-mobile-zen")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Maximize canvas", exact: true })).toHaveCount(0);
+    await expect(page.locator(".ps-composer-readonly")).toHaveCount(0);
+    await shot(page, "quality-mobile-no-zen");
+    await log.getByRole("button", { name: "Back to Step details", exact: true }).click();
     const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
+    await expect(details).toBeVisible();
+    await page.getByRole("button", { name: /^Sessions — / }).click();
+    await main.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).click();
+    await main.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).click();
     await expect(details.locator("h2")).toHaveText("evaluate_quality");
     await details.getByRole("tab", { name: "Output", exact: true }).click();
     await expect(details).toContainText("ReferenceError: input is not defined");
+    expect(errors).toEqual([]);
 });
 
 // ── The live canvas ────────────────────────────────────────────────
@@ -1853,5 +1848,65 @@ test("r-3: the step log fills the side pane, a step on the graph shows Step deta
     const detailsBox = await side.locator(".ps-workflow-node-details").boundingBox();
     expect(noticeBox.y + noticeBox.height).toBeLessThanOrEqual(detailsBox.y + 1);
     await shot(page, "r3-side-pane-notice");
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// Batch 6 (f-02): a workflow has neither zen nor full screen. Its side pane header has neither button (a chat's has
+// both); zen or full screen turned on from a chat reads as off while a workflow is shown (normal layout: the session
+// list and the workflow pane, no maximized canvas) and comes back as it was left on the chat; Escape in a workflow
+// with stored zen on is not swallowed by zen.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "f-02:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen and full screen come back as they were left", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page, { workflowEvents: QUALITY_EVENTS, workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
+    await routeProfile(page);
+    const side = page.getByRole("region", { name: "Session canvas" });
+    const zenButton = side.getByRole("button", { name: /^(Zen mode|Leave zen mode)$/ });
+    const fullScreenButton = side.getByRole("button", { name: "Full screen canvas", exact: true });
+    const sessionRows = page.locator(".ps-session-row-content");
+
+    // The chat: its side pane has Zen and Full screen.
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await page.getByRole("button", { name: "Show canvas", exact: true }).click();
+    await expect(zenButton).toBeVisible();
+    await expect(fullScreenButton).toBeVisible();
+
+    // The workflow: neither.
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await page.locator(".ps-workflow-main").getByRole("button", { name: "Step log", exact: true }).click();
+    await expect(side).toBeVisible();
+    await expect(zenButton).toHaveCount(0);
+    await expect(fullScreenButton).toHaveCount(0);
+
+    // Zen on from the chat, then the workflow: normal layout; back on the chat, zen is on again.
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await zenButton.click();
+    await expect(side.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
+    await expect(sessionRows.first()).toBeHidden();
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await expect(page.locator(".ps-workflow-main")).toBeVisible();
+    await expect(sessionRows.filter({ hasText: "Workflow: branching-workflow-test" }).first()).toBeVisible();
+    // Escape is not taken by zen in a workflow: it goes to the sessions.
+    await page.locator(".ps-workflow-main").click({ position: { x: 5, y: 5 } });
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.evaluate(() => Boolean(document.activeElement?.closest("[class*='ps-session']")))).toBe(true);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await expect(side.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
+    await side.getByRole("button", { name: "Leave zen mode", exact: true }).click();
+
+    // Full screen from the chat, then the workflow: not maximized; back on the chat, full screen again.
+    await fullScreenButton.click();
+    await expect(page.getByRole("button", { name: "Restore canvas", exact: true }).first()).toBeVisible();
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await expect(page.locator(".ps-workflow-main")).toBeVisible();
+    await expect(sessionRows.filter({ hasText: "Workflow: branching-workflow-test" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Restore canvas", exact: true })).toHaveCount(0);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await expect(page.getByRole("button", { name: "Restore canvas", exact: true }).first()).toBeVisible();
+    await shot(page, "f02-chat-full-screen-back");
     expect(errors).toEqual([]);
 });
