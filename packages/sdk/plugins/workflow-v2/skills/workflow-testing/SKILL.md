@@ -163,7 +163,8 @@ The test operation's receipt stays; `read_workflow` then answers
   outcome, each deadline (advance past it), a decline, `needs_input`, a tool
   error.
 - For a parallel state: one branch that does not succeed, `failFast`, and an
-  empty list.
+  empty list. With `{ first: k }`: k successes, and too few. With
+  `timeoutSeconds`: advance the clock past it while branches still run.
 - A failing test is evidence. Do not test again until it passes. Fix the
   definition (a new revision), then test the new revision.
 

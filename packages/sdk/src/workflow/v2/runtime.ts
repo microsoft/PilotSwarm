@@ -42,6 +42,9 @@ import {
     type JsonValue,
 } from "./json.js";
 import { schemaSetFor, type SchemaProblem } from "./schema.js";
+import {
+    branchCancelError, branchScopeId, branchSucceeded, parallelNeeded, parallelReportText, parseBranchScope, type BranchCancelReason, type ParallelBranchEnd,
+} from "./parallel.js";
 import { intakeEnvelopeSha256, type IntakeEnvelope } from "./intake.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
 import { RESPOND_SESSION_REQUEST_TOOL } from "./request-service.js";
@@ -218,16 +221,8 @@ export const ROOT_SCOPE = "root";
 /** The arrival route of a parallel branch's first state (not a valid route label): its item, from the parallel state's manifest. */
 export const BRANCH_ROUTE = "@branch";
 
-/** The scope of branch `index` of the parallel state's node execution `parallelNodeExecutionId`. */
-export function branchScopeId(parallelNodeExecutionId: string, index: number): string {
-    return `${parallelNodeExecutionId}#${index}`;
-}
-
-/** A branch scope's parallel node execution and index; null for the root scope (or any other text). */
-export function parseBranchScope(scopeId: string): { parallelNodeExecutionId: string; index: number } | null {
-    const match = /^(nx-[0-9a-f]+)#(0|[1-9]\d{0,5})$/.exec(scopeId);
-    return match ? { parallelNodeExecutionId: match[1], index: Number(match[2]) } : null;
-}
+// A branch's scope (parallel.ts), as every caller of this module has read it.
+export { branchScopeId, parseBranchScope };
 
 /** A branch's `branch` binding (its manifest item and index) and the parallel state's node execution it belongs to. */
 interface BranchBinding {
@@ -415,8 +410,10 @@ export interface ControllerParallel {
     total: number;
     nextIndex: number;
     results: Array<{ index: number; nodeExecutionId: string | null; via: "terminal" | "error" | "cancelled" | "not_started" }>;
-    /** failFast cancelled the remaining branches. */
+    /** The remaining branches were cancelled (failFast, or IR 9: the join had its successes, or the state's own time limit passed). */
     cancelled: boolean;
+    /** IR 9, a join of the first k only: the branches that succeeded, by index, in the order they ended (absent for every other join). */
+    wins?: number[];
 }
 
 export interface ControllerInput {
@@ -441,8 +438,11 @@ export interface ControllerPlan {
         type: "script" | "wait" | "messaging" | "agent" | "parallel" | "terminal";
         mode?: "receive" | "send" | "request";
         next: Record<string, string>;
-        /** A parallel state's body initial, concurrency and failure policy (1.9.0 plans only). */
-        parallel?: { initial: string; concurrency: number; failFast: boolean };
+        /**
+         * A parallel state's body initial, concurrency and failure policy (1.9.0 plans only), and IR 9: `first`, the k of a
+         * join of the first k successes (absent for a join of every branch, so a plan of IR 8 reads as it was written).
+         */
+        parallel?: { initial: string; concurrency: number; failFast: boolean; first?: number };
     }>;
     /**
      * A test run (1.9.0 plans only; migration 0102): its agent, send and request states are intercepted (no child, delivery
@@ -533,6 +533,8 @@ function parseControllerState(value: unknown): ControllerState {
         const item = record(raw, `parallel ${index}`);
         const count = (value: unknown, what: string) => { expect(typeof value === "number" && Number.isSafeInteger(value) && value >= 0, `parallel ${index} ${what} is invalid`); return value as number; };
         expect(Array.isArray(item.results) && typeof item.cancelled === "boolean", `parallel ${index} is invalid`);
+        expect(item.wins === undefined || (Array.isArray(item.wins) && item.wins.every(win => typeof win === "number" && Number.isSafeInteger(win) && win >= 0)),
+            `parallel ${index} wins are invalid`);
         return {
             nodeExecutionId: text(item.nodeExecutionId, "nodeExecutionId"), nodeId: text(item.nodeId, "nodeId"),
             total: count(item.total, "total"), nextIndex: count(item.nextIndex, "nextIndex"),
@@ -544,6 +546,7 @@ function parseControllerState(value: unknown): ControllerState {
                     via: result.via as ControllerParallel["results"][number]["via"] };
             }),
             cancelled: item.cancelled as boolean,
+            ...(item.wins !== undefined ? { wins: [...item.wins as number[]] } : {}),
         };
     });
     return {
@@ -585,9 +588,12 @@ function parsePlan(value: unknown, requests = false): ControllerPlan {
         if (item.type === "parallel") {
             const parallel = record(item.parallel, `plan node ${id} parallel`);
             expect(typeof parallel.concurrency === "number" && Number.isSafeInteger(parallel.concurrency) && parallel.concurrency >= 1
-                && typeof parallel.failFast === "boolean", `plan node ${id} parallel is invalid`);
+                && typeof parallel.failFast === "boolean"
+                && (parallel.first === undefined || (typeof parallel.first === "number" && Number.isSafeInteger(parallel.first) && parallel.first >= 1)),
+            `plan node ${id} parallel is invalid`);
             parsed[id] = { type: "parallel", next: routes,
-                parallel: { initial: text(parallel.initial, "parallel initial"), concurrency: parallel.concurrency, failFast: parallel.failFast } };
+                parallel: { initial: text(parallel.initial, "parallel initial"), concurrency: parallel.concurrency, failFast: parallel.failFast,
+                    ...(typeof parallel.first === "number" ? { first: parallel.first } : {}) } };
             continue;
         }
         parsed[id] = item.type === "messaging"
@@ -642,13 +648,14 @@ function parseStopping(value: unknown, what: string): { deadlineMs: number } | n
  * activities report one).
  */
 function parseEnter(value: unknown): { admitted: true; nodeExecutionId: string; state: "pending" | "completed"; deadlineMs: number | null; branches: number | null }
-    | { admitted: false; status: WorkflowRunStatus; outcome: string | null; stopping: { deadlineMs: number } | null; expired: boolean } {
+    | { admitted: false; status: WorkflowRunStatus; outcome: string | null; stopping: { deadlineMs: number } | null; expired: boolean; cut: boolean } {
     const entered = record(value, "enter result");
     if (entered.admitted === false) {
         expect(isRunStatus(entered.status), "enter status is invalid");
         expect(entered.expired === undefined || entered.expired === true, "enter expiry is invalid");
+        expect(entered.cut === undefined || entered.cut === true, "enter cut is invalid");
         return { admitted: false, status: entered.status, outcome: textOrNull(entered.outcome, "outcome"), stopping: parseStopping(entered.stopping, "enter stopping"),
-            expired: entered.expired === true };
+            expired: entered.expired === true, cut: entered.cut === true };
     }
     expect(entered.admitted === true, "enter result is invalid");
     expect(entered.state === "pending" || entered.state === "completed", "enter state is invalid");
@@ -1230,18 +1237,45 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             room -= 1;
         }
     };
-    /** Join `parallel` once every branch ended: the join decides its node (joined or blocked) for its cursor to collect. */
+    /**
+     * Join `parallel` once every branch ended: the join decides its node (joined or blocked) for its cursor to collect.
+     * Its own time limit (IR 9) then has nothing left to decide.
+     */
     const joinIfDone = function* (parallel: ControllerParallel): Generator<ScheduledTask, void, unknown> {
         if (parallel.results.length < parallel.total) return;
         yield* persistentlyTagged(ctx, R.join, { runId: input.runId, parallelNodeExecutionId: parallel.nodeExecutionId, results: parallel.results });
         state.parallels = parallels().filter(item => item !== parallel);
+        const own = state.cursors.find(item => item.pending === parallel.nodeExecutionId);
+        if (own !== undefined && own.deadlineMs !== null) own.deadlineMs = null;
     };
-    /** Node executions whose branches a failFast cancellation dropped in this pass (their results go nowhere). */
+    /** Node executions whose branches a cancellation dropped in this pass (their results go nowhere). */
     const dropped = new Set<string>();
+    /**
+     * Cancel the branches of `parallel` that still run (their pending work is decided cancelled for `reason`; failFast
+     * when absent, as an IR 8 plan's history records it) and record the queued ones not started: their cursors are
+     * dropped, and their results go nowhere.
+     */
+    const cutBranches = function* (parallel: ControllerParallel, reason?: Exclude<BranchCancelReason, "failFast">): Generator<ScheduledTask, void, unknown> {
+        parallel.cancelled = true;
+        const others = branchesOf(parallel);
+        if (others.length > 0) {
+            yield* persistentlyTagged(ctx, R.cancelBranches, { runId: input.runId, scopeIds: others.map(item => item.scopeId), ...(reason ? { reason } : {}) });
+        }
+        for (const other of others) {
+            parallel.results.push({ index: parseBranchScope(other.scopeId)!.index, nodeExecutionId: other.pending, via: "cancelled" });
+            if (other.pending !== null) dropped.add(other.pending);
+        }
+        state.cursors = state.cursors.filter(item => !others.includes(item));
+        for (let index = parallel.nextIndex; index < parallel.total; index += 1) parallel.results.push({ index, nodeExecutionId: null, via: "not_started" });
+        parallel.nextIndex = parallel.total;
+    };
     /**
      * A branch ended (at its terminal, by an error no route takes, or by a
      * cancellation): record how, drop its cursor, cancel the others when it did
      * not succeed under failFast, start the next ones, and join when all ended.
+     * IR 9, a join of the first k: the k-th success cancels the branches still
+     * running and joins at once; once k successes can no longer happen,
+     * failFast cancels the others at once, and without it they run to their end.
      */
     const endBranch = function* (cursor: ControllerCursor, via: "terminal" | "error", nodeExecutionId: string, succeeded: boolean)
         : Generator<ScheduledTask, void, unknown> {
@@ -1251,17 +1285,15 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         state.cursors = state.cursors.filter(item => item !== cursor);
         parallel.results.push({ index: scope.index, nodeExecutionId, via });
         const spec = plan.nodes[parallel.nodeId]?.parallel;
-        if (!succeeded && spec?.failFast === true && !parallel.cancelled) {
-            parallel.cancelled = true;
-            const others = branchesOf(parallel);
-            if (others.length > 0) yield* persistentlyTagged(ctx, R.cancelBranches, { runId: input.runId, scopeIds: others.map(item => item.scopeId) });
-            for (const other of others) {
-                parallel.results.push({ index: parseBranchScope(other.scopeId)!.index, nodeExecutionId: other.pending, via: "cancelled" });
-                if (other.pending !== null) dropped.add(other.pending);
-            }
-            state.cursors = state.cursors.filter(item => !others.includes(item));
-            for (let index = parallel.nextIndex; index < parallel.total; index += 1) parallel.results.push({ index, nodeExecutionId: null, via: "not_started" });
-            parallel.nextIndex = parallel.total;
+        if (spec?.first !== undefined) {
+            const wins = parallel.wins ??= [];
+            if (succeeded) wins.push(scope.index);
+            const enough = wins.length >= spec.first;
+            const impossible = parallel.results.length - wins.length > parallel.total - spec.first;
+            if (!parallel.cancelled && (enough || (impossible && spec.failFast))) yield* cutBranches(parallel, enough ? "join" : undefined);
+            else startBranches(parallel);
+        } else if (!succeeded && spec?.failFast === true && !parallel.cancelled) {
+            yield* cutBranches(parallel);
         } else startBranches(parallel);
         yield* joinIfDone(parallel);
     };
@@ -1296,6 +1328,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }));
             if (!entered.admitted) {
+                // IR 9: a branch whose parallel state was already decided (its own time limit, by the store's clock or a test
+                // run's) admits nothing more; the parallel state's result, collected below, cuts its branches.
+                if (entered.cut) continue;
                 // A run past its deadline admits nothing (stopping, paused or not): the store ends it, or reports the time left.
                 if (entered.expired) {
                     const expired = yield* expireRun();
@@ -1363,15 +1398,19 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 continue;
             }
             // A parallel state (IR 8) waits for its join: its branches run as cursors of their own, at most its concurrency at
-            // a time; each starts at the body's initial state with its manifest item.
+            // a time; each starts at the body's initial state with its manifest item. IR 9: its own time limit is a deadline on
+            // this controller's timers, as a wait's (the store's clock decides it); a join of the first k that has fewer than k
+            // items starts no branch and is blocked at once.
             if (node.type === "parallel") {
-                cursor.deadlineMs = null;
+                cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
                 if (entered.state === "pending" && !parallels().some(item => item.nodeExecutionId === entered.nodeExecutionId)) {
                     expect(entered.branches !== null, `parallel ${entered.nodeExecutionId} reported no branches`);
+                    const first = node.parallel?.first;
                     const parallel: ControllerParallel = { nodeExecutionId: entered.nodeExecutionId, nodeId: cursor.nodeId, total: entered.branches,
-                        nextIndex: 0, results: [], cancelled: false };
+                        nextIndex: 0, results: [], cancelled: false, ...(first !== undefined ? { wins: [] } : {}) };
                     parallels().push(parallel);
-                    startBranches(parallel);
+                    if (first !== undefined && first > parallel.total) yield* cutBranches(parallel);
+                    else startBranches(parallel);
                     yield* joinIfDone(parallel);
                     rerouted = true;
                 }
@@ -1531,12 +1570,23 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 }
             }
         }
+        // IR 9: a parallel state decided while its branches still run (its own time limit, by the store's clock or a test
+        // run's) has its branches cut now: their pending work is cancelled with their effects and children, and no result of
+        // theirs is routed. Only a state with its own time limit is ever decided so; a join removes its parallel first.
+        dropped.clear();
+        for (const result of collected) {
+            const parallel = (state.parallels ?? []).find(item => item.nodeExecutionId === result.nodeExecutionId);
+            if (parallel === undefined) continue;
+            yield* cutBranches(parallel, result.outcome === "timed_out" ? "timeout" : "join");
+            state.parallels = parallels().filter(item => item !== parallel);
+        }
         if (stopping !== null) {
             // 2a. Stopping: a result settles its cursor, which goes nowhere (its result is stored and kept). When no work is
             // pending, or at the stop's deadline, the stop activity asks the store to end the run (its clock decides the
             // deadline, and it cancels what is still pending then); before that it reports the time left.
             for (const result of collected) {
                 const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
+                if (owner === undefined && dropped.has(result.nodeExecutionId)) continue;
                 expect(owner !== undefined, `collected ${result.nodeExecutionId} is not pending`);
                 owner.pending = null;
                 owner.deadlineMs = null;
@@ -1559,10 +1609,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 stopping = { deadlineMs: read + finished.remainingMs };
             }
         } else if (collected.length > 0) {
-            dropped.clear();
             for (const result of collected) {
                 const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
-                // A branch a failFast cancellation dropped in this pass: its result goes nowhere (the join reports it).
+                // A branch a cancellation dropped in this pass: its result goes nowhere (the join, or the time limit's report, says so).
                 if (owner === undefined && dropped.has(result.nodeExecutionId)) continue;
                 expect(owner !== undefined, `collected ${result.nodeExecutionId} is not pending`);
                 const next = plan.nodes[owner.nodeId].next;
@@ -2279,8 +2328,10 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
         };
     }
     if (node.type === "parallel") {
+        // IR 9: its join of the first k ({ first: k }) and its own time limit, only when it has them (an IR 8 state reads as before).
         return {
             id: node.id, type: "parallel", forEach: workflowV2ForEachView(node.forEach), concurrency: node.concurrency, join: node.join, failFast: node.failFast,
+            ...(node.timeoutSeconds !== undefined ? { timeoutSeconds: node.timeoutSeconds } : {}),
             body: { initial: node.body.initial, states: node.body.states }, outcomes: [PARALLEL_JOINED, PARALLEL_BLOCKED], next: node.next,
         };
     }
@@ -2777,7 +2828,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 nodes[node.id] = { type: node.type, mode: node.mode, next: node.next };
             } else if (node.type === "parallel") {
                 nodes[node.id] = { type: "parallel", next: node.next,
-                    parallel: { initial: node.body.initial, concurrency: node.concurrency, failFast: node.failFast } };
+                    parallel: { initial: node.body.initial, concurrency: node.concurrency, failFast: node.failFast,
+                        ...(typeof node.join === "object" ? { first: node.join.first } : {}) } };
             } else nodes[node.id] = { type: node.type, next: node.type === "terminal" ? {} : node.next };
         }
         const plan: ControllerPlan = {
@@ -2882,6 +2934,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                             const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                             if (problems.length) immediate = runtimeError("invalid_input", `The manifest does not match ${node.inputSchema}.`, problemsJson(problems));
                         }
+                    }
+                    // IR 9: its own time limit is read once, here, as a wait's seconds; the store counts them from its own clock
+                    // (a test run's from its virtual clock) when it accepts the admission.
+                    if (!immediate && node.timeoutSeconds !== undefined) {
+                        const seconds = waitSeconds(node.timeoutSeconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch),
+                            `states.${nodeId}.timeoutSeconds`);
+                        if (typeof seconds === "number") waitFor = seconds;
+                        else immediate = seconds;
                     }
                 }
                 // A wait's seconds are read once, here; the store counts them
@@ -3043,6 +3103,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     ...(node.type === "parallel" ? { branches: manifestSize(result.node) } : {}) };
             }
             if (result.reason === "inactive") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
+            // IR 9: the branch's parallel state was already decided (its own time limit); nothing more of the branch is admitted.
+            if (result.reason === "cut") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome, cut: true };
             if (result.reason === "expired") return expiredRefusal(result.run, requests);
             if (result.reason === "stopping") return stoppingRefusal(result.run, requests);
             // kv_changed: a set_vars committed after this evaluation read the run.
@@ -3459,10 +3521,25 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         for (const nodeExecutionId of ids) {
             const executed = await store.readNodeExecution(nodeExecutionId);
             if (!executed || executed.runId !== runId
-                || (executed.nodeType !== "wait" && executed.nodeType !== "messaging" && !(requests && executed.nodeType === "agent"))) {
+                || (executed.nodeType !== "wait" && executed.nodeType !== "messaging" && !(requests && (executed.nodeType === "agent" || executed.nodeType === "parallel")))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a wait state or a receive state of run ${runId}.`);
             }
             if (executed.state !== "pending") continue;
+            // IR 9: a parallel state's own time limit (controller 1.9.0): timed_out, decided only here or by a test run's clock
+            // (store.elapseParallelNode), with its running branches' work cancelled in the same transaction. The controller cuts
+            // its branches (their effects and children) when it collects the result.
+            if (executed.nodeType === "parallel") {
+                const elapsed = await store.elapseParallelNode(nodeExecutionId, decided => ({
+                    sessionId: run.workflowSessionId,
+                    events: [{ eventType: "workflow.state_failed", data: {
+                        runId, nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal, outcome: "timed_out", resultKind: "runtime_error",
+                        branches: decided.total, succeeded: decided.succeeded, error: jsonbSafeText(decided.valueText, 2_000),
+                    } }],
+                    update: { touch: true },
+                }));
+                if (elapsed.result === "not_due") notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
+                continue;
+            }
             // An agent state's outer deadline (controller 1.9.0): timed_out, decided only here (store.elapseAgentNode; durable
             // expiry). Its child is ended when the controller collects the result (endAgent).
             if (executed.nodeType === "agent") {
@@ -4000,15 +4077,22 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * Cancel the other branches of a parallel state whose failFast policy met
      * a branch that did not succeed (controller 1.9.0; IR 8;
      * store.cancelBranchScopes): their pending states are decided cancelled
-     * (winner fail_fast). Then the effect of every such script is asked to
-     * stop, and the child of every such agent state is ended (a child that
-     * cannot be ended now is ended when the run ends). The list comes from
-     * the store on every execution, so a retry still sends the requests.
+     * (winner fail_fast). IR 9: the same for the branches still running when
+     * a join of the first k had its successes (`reason` join; winner join),
+     * and for those the state's own time limit cancelled (`reason` timeout;
+     * winner join_timeout: the store cancelled their work when it decided the
+     * time limit, so this only finds them). Then the effect of every such
+     * script is asked to stop, and the child of every such agent state is
+     * ended (a child that cannot be ended now is ended when the run ends).
+     * The list comes from the store on every execution, so a retry still
+     * sends the requests.
      */
     runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.cancelBranches, async (actx, rawInput) => {
         const input = record(rawInput, "cancel branches input");
         const run = await runOf(text(input.runId, "runId"));
         expect(Array.isArray(input.scopeIds), "scopeIds is not a list");
+        expect(input.reason === undefined || input.reason === "join" || input.reason === "timeout", "reason is invalid");
+        const reason: BranchCancelReason = input.reason === "join" || input.reason === "timeout" ? input.reason : "failFast";
         const scopeIds = input.scopeIds.map((id, index) => text(id, `scopeIds[${index}]`));
         for (const scopeId of scopeIds) {
             if (parseBranchScope(scopeId) === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${scopeId} is not a branch scope.`);
@@ -4016,12 +4100,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const client = actx.getClient();
         if (!client) throw new Error("Workflow branch cancellation needs the durable client.");
         const { cancelled } = await store.cancelBranchScopes({
-            runId: run.runId, scopeIds,
+            runId: run.runId, scopeIds, reason,
             projection: decided => ({
                 sessionId: run.workflowSessionId,
                 events: [{ eventType: "workflow.branches_cancelled", data: {
                     runId: run.runId, scopeIds: scopeIds.slice(0, WORKFLOW_V2_PARALLEL_MAX_ITEMS), cancelledCount: decided.length,
-                    cancelled: decided.slice(0, WORKFLOW_V2_PARALLEL_MAX_ITEMS),
+                    cancelled: decided.slice(0, WORKFLOW_V2_PARALLEL_MAX_ITEMS), ...(reason !== "failFast" ? { reason } : {}),
                 } }],
                 update: { touch: true },
             }),
@@ -4032,7 +4116,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 const instanceId = workflowEffectInstanceId(item.nodeExecutionId);
                 const status = await client.getStatus(instanceId);
                 if (status.status === "Running" || status.status === "Suspended") {
-                    await client.cancelInstance(instanceId, "Another branch of its parallel state did not succeed, and its failFast policy cancelled this branch.");
+                    await client.cancelInstance(instanceId, branchCancelError(item.reason).message);
                     requested.push({ nodeExecutionId: item.nodeExecutionId, instanceId, status: status.status });
                 }
             } else if (item.nodeType === "agent") {
@@ -4046,7 +4130,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             }
         }
         if (requested.length) {
-            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested, failFast: true } }]);
+            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested,
+                ...(reason === "failFast" ? { failFast: true } : { branchesCancelled: reason }) } }]);
         }
         return { cancelled: cancelled.length };
     });
@@ -4057,13 +4142,18 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * Joined when every branch ended at a terminal with outcome succeeded:
      * the output is their outputs in manifest order, checked against the
      * state's outputSchema (a mismatch, or an output too large to store, is
-     * invalid_output). Blocked otherwise: the output lists every branch in
-     * manifest order with how it ended (terminal; error: a result its routes
-     * do not take; cancelled; not_started), the node execution that ended
-     * it, its outcome and its output or error (dropped, with truncated true,
-     * when the list would not fit). The controller names the node execution
-     * that ended each branch, and each one is read from the store. A retry,
-     * or a run end that decided the state first, finds the node decided.
+     * invalid_output). IR 9, a join of the first k: joined when k branches
+     * succeeded; the output is `[{ index, output }]` of the first k in the
+     * order they ended (the order the controller lists them in, which its
+     * history fixes), checked the same way. Blocked otherwise: the output
+     * lists every branch in manifest order with how it ended (terminal;
+     * error: a result its routes do not take; cancelled; not_started), the
+     * node execution that ended it, its outcome and its output or error
+     * (dropped, with truncated true, when the list would not fit), and the
+     * successes needed (parallelReportText). The controller names the node
+     * execution that ended each branch, and each one is read from the store.
+     * A retry, a run end or the state's own time limit that decided the state
+     * first, finds the node decided.
      */
     runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.join, async (_actx, rawInput) => {
         const input = record(rawInput, "join input");
@@ -4103,10 +4193,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             }
             return { index, ended: item.via, nodeExecutionId: item.nodeExecutionId, row };
         });
-        const succeeded = branches.filter(item => item.ended === "terminal" && item.row?.resultKind === "business" && item.row.outcome === "succeeded").length;
+        const endings: ParallelBranchEnd[] = branches.map(item => ({ index: item.index, ended: item.ended as ParallelBranchEnd["ended"],
+            nodeExecutionId: item.nodeExecutionId, row: item.row }));
+        const succeeded = endings.filter(branchSucceeded).length;
+        const needed = parallelNeeded(node.join, total);
+        // A join of the first k: the successes in the order the controller listed the branches' ends (the order of `ends`).
+        const winners = typeof node.join === "object"
+            ? [...ends.keys()].map(index => endings[index]).filter(branchSucceeded).slice(0, needed)
+            : [];
         let result: NodeResultInput;
-        if (succeeded === total) {
-            const output: JsonValue = branches.map(item => item.row?.output ?? null);
+        if (typeof node.join === "object" ? winners.length >= needed : succeeded === total) {
+            const output: JsonValue = typeof node.join === "object"
+                ? winners.map(item => ({ index: item.index, output: item.row?.output ?? null }))
+                : branches.map(item => item.row?.output ?? null);
             const problems = node.outputSchema ? schemaSetFor(run.irSha256, ir.schemaDefs).validate(node.outputSchema, output) : [];
             if (problems.length > 0) {
                 result = { ...runtimeError("invalid_output", `The joined output does not match ${node.outputSchema}.`, problemsJson(problems)), winner: "controller" };
@@ -4119,21 +4218,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 }
             }
         } else {
-            const report = (full: boolean): JsonValue => ({
-                joined: false, total, succeeded, failFast: node.failFast,
-                branches: branches.map(item => ({
-                    index: item.index, ended: item.ended, nodeExecutionId: item.nodeExecutionId,
-                    outcome: item.row?.outcome ?? null, resultKind: item.row?.resultKind ?? null,
-                    ...(full && item.row !== undefined ? (item.row.resultKind === "business" ? { output: item.row.output } : { error: item.row.error }) : {}),
-                })),
-                ...(full ? {} : { truncated: true }),
-            });
-            let valueText: string;
-            try { valueText = boundedCanonicalJson(report(true), "The blocked join's report"); }
-            catch (error) {
-                if (!(error instanceof WorkflowJsonError)) throw error;
-                valueText = boundedCanonicalJson(report(false), "The blocked join's report");
-            }
+            const valueText = parallelReportText({ total, needed, failFast: node.failFast, timedOut: false, branches: endings }, "The blocked join's report");
             result = { outcome: PARALLEL_BLOCKED, resultKind: "business", valueText, winner: "controller" };
         }
         const stored = await store.completeNode(parallelNodeExecutionId, result, {

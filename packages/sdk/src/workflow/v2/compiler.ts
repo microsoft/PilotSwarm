@@ -42,6 +42,11 @@ export const WORKFLOW_V2_KIND = "Workflow";
  *   INACTIVE: only controller 1.9.0 runs them). A parallel state's body
  *   states are in `nodes` with the others, named by its `body.states`. A
  *   reader takes it only when asked to, as version 7.
+ * - 9: version 8 plus a parallel state's join of the first k successes
+ *   (`join: { first: k }`) and its own time limit (`timeoutSeconds`)
+ *   (WORKFLOW_V2_JOIN_IR_VERSION), written only for a workflow with a
+ *   parallel state that uses one of them, so every other IR stays as it was.
+ *   A reader takes it only when asked to, as version 8.
  */
 export const WORKFLOW_V2_IR_VERSION = 3;
 export const WORKFLOW_V2_WAIT_IR_VERSION = 4;
@@ -49,8 +54,9 @@ export const WORKFLOW_V2_MESSAGING_IR_VERSION = 5;
 export const WORKFLOW_V2_SEND_IR_VERSION = 6;
 export const WORKFLOW_V2_REQUEST_IR_VERSION = 7;
 export const WORKFLOW_V2_AGENT_IR_VERSION = 8;
-/** The newest IR version controller 1.9.0's activities read (request and agent states; INACTIVE). */
-export const WORKFLOW_V2_MILESTONE_IR_VERSION = WORKFLOW_V2_AGENT_IR_VERSION;
+export const WORKFLOW_V2_JOIN_IR_VERSION = 9;
+/** The newest IR version controller 1.9.0's activities read (request, agent and parallel states, and joins of the first k; INACTIVE). */
+export const WORKFLOW_V2_MILESTONE_IR_VERSION = WORKFLOW_V2_JOIN_IR_VERSION;
 /** The newest IR version a worker reads unless asked for more: request states are not run yet. */
 export const WORKFLOW_V2_RUNNABLE_IR_VERSION = 6;
 /** A wait state's seconds: an integer in this range, literal or bound. */
@@ -281,12 +287,19 @@ export interface WorkflowIRAgent {
  * WORKFLOW_V2_PARALLEL_MAX_ITEMS items) runs one branch per item through
  * its body, at most `concurrency` at a time. A branch starts at the body's
  * initial state with its item as input (`branch.item` and `branch.index` in
- * its bindings) and ends at a body terminal. The join is all_required: when
- * every branch ended, the state's outcome is `joined` (every branch ended
- * succeeded; its output is their outputs in manifest order) or `blocked`
- * (its output lists every branch's outcome and output). With `failFast`, the
- * first branch that does not succeed cancels the others, and the state is
- * blocked.
+ * its bindings) and ends at a body terminal. The join `all_required` (k is
+ * the item count n): when every branch ended, the state's outcome is
+ * `joined` (every branch ended succeeded; its output is their outputs in
+ * manifest order) or `blocked` (its output lists every branch's outcome and
+ * output). IR 9: the join `{ first: k }` is joined as soon as k branches
+ * succeeded (its output is `[{ index, output }]` of those k, in the order
+ * they finished); the branches still running are cancelled and the queued
+ * ones not started. Either join is blocked once k successes cannot happen:
+ * with `failFast` the other branches are cancelled at once, without it they
+ * run to their end first. IR 9: an optional `timeoutSeconds`, from the
+ * state's entry, races the join: if it passes first, the state ends with the
+ * runtime error timed_out (its details report every branch, finished ones
+ * with their output or error) and its running branches are cancelled.
  */
 export interface WorkflowIRParallel {
     id: string;
@@ -295,8 +308,11 @@ export interface WorkflowIRParallel {
     /** A JSON template (a binding or a literal array) that gives the manifest. */
     forEach: JsonValue;
     concurrency: number;
-    join: "all_required";
+    /** Every branch must succeed (k = n), or IR 9: joined at the first k successes. */
+    join: "all_required" | { first: number };
     failFast: boolean;
+    /** IR 9: the state's own time limit, seconds from its entry (an integer, or one binding read at entry); absent without one. */
+    timeoutSeconds?: number | string;
     /** The manifest's schema (the whole array). */
     inputSchema: string | null;
     /** The schema of the joined output (the array of branch outputs). */
@@ -321,7 +337,7 @@ export interface WorkflowIR {
      * 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3, 4 with wait states, 5 with
      * receive states, 6 with send states, 7 with request states or contract responses, or 8 with agent or parallel states is written now.
      */
-    irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+    irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
     apiVersion: typeof WORKFLOW_V2_API_VERSION;
     name: string;
     version: string;
@@ -945,7 +961,7 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
     const templates: Array<[string, JsonValue]> = [];
     const add = (field: string, value: JsonValue | undefined): void => { if (value !== undefined && value !== null) templates.push([field, value]); };
     if (node.type === "terminal") { if (node.hasOutput) add("output", node.output); return templates; }
-    if (node.type === "parallel") { add("forEach", node.forEach); return templates; }
+    if (node.type === "parallel") { add("forEach", node.forEach); add("timeoutSeconds", node.timeoutSeconds); return templates; }
     if (node.hasInput) add("input", node.input);
     if (node.type === "wait") add("seconds", node.seconds);
     if (node.type === "agent") add("timeoutSeconds", node.timeoutSeconds);
@@ -964,17 +980,22 @@ function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
  * A parallel state (IR 8; enabled only with enableParallel): `forEach` (a
  * binding, or a literal array) gives its manifest when the state is entered;
  * `concurrency` (1 to WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY, default 1) bounds
- * the active branches; `join` is all_required (the only join of this
- * release; D10); `failFast` (default false) cancels the other branches when
- * one does not succeed. `body` is a graph of its own (`initial`, `states`):
- * its routes stay in it, it holds no parallel state, and its terminals end a
- * branch (succeeded is accepted; any other outcome blocks the join). Its
- * outcomes are joined and blocked; both need routes.
+ * the active branches; `join` is `all` (the default; `all_required` is the
+ * same) or, IR 9, `{ first: k }` (k from 1 to WORKFLOW_V2_PARALLEL_MAX_ITEMS,
+ * and at most the items of a literal list); `failFast` (default false)
+ * cancels the other branches once the join can no longer be had. IR 9:
+ * `timeoutSeconds` (as a wait's seconds) is the state's own time limit; it
+ * needs a `timed_out` route, which is refused without it. `body` is a graph
+ * of its own (`initial`, `states`): its routes stay in it, it holds no
+ * parallel state, and its terminals end a branch (succeeded is accepted; any
+ * other outcome does not count toward the join). Its outcomes are joined
+ * and blocked; both need routes.
  */
 function compileParallel(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean,
     diagnostics: Diagnostics, compileBody: (bodyIds: ReadonlySet<string>, states: Array<[string, unknown]>) => void): WorkflowIRParallel | null {
     const path = `states.${id}`;
-    checkKeys(raw, ["type", "description", "forEach", "concurrency", "join", "failFast", "inputSchema", "outputSchema", "body", "transition"], path, diagnostics);
+    checkKeys(raw, ["type", "description", "forEach", "concurrency", "join", "failFast", "timeoutSeconds", "inputSchema", "outputSchema", "body", "transition"],
+        path, diagnostics);
     let forEach: JsonValue = null;
     if (raw.forEach === undefined) diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.forEach`, "a parallel state needs forEach: one ${...} binding, or a list.");
     else {
@@ -992,9 +1013,22 @@ function compileParallel(id: string, raw: Record<string, unknown>, nodeIds: Read
             diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.concurrency`, `concurrency must be an integer from 1 to ${WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY}.`);
         } else concurrency = raw.concurrency;
     }
-    if (raw.join !== undefined && raw.join !== "all_required") {
-        diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.join`, "join must be all_required: every branch must succeed (no quorum or any join in this release).");
+    let join: WorkflowIRParallel["join"] = "all_required";
+    if (raw.join !== undefined && raw.join !== "all" && raw.join !== "all_required") {
+        const first = isJsonObject(raw.join) && Object.keys(raw.join).length === 1 ? raw.join.first : undefined;
+        if (typeof first !== "number" || !Number.isInteger(first) || first < 1 || first > WORKFLOW_V2_PARALLEL_MAX_ITEMS) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.join`, `join must be all (every branch must succeed) or { first: k }, `
+                + `joined at the first k successes, with k an integer from 1 to ${WORKFLOW_V2_PARALLEL_MAX_ITEMS}.`);
+        } else {
+            join = { first };
+            // A literal list has a known number of items: k above it can never be reached.
+            if (Array.isArray(raw.forEach) && first > raw.forEach.length) {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.join.first`, `join.first is ${first}, but forEach lists ${raw.forEach.length} `
+                    + `item${raw.forEach.length === 1 ? "" : "s"}: ${first} successes can never happen.`);
+            }
+        }
     }
+    const timeoutSeconds = raw.timeoutSeconds === undefined ? undefined : secondsField(raw.timeoutSeconds, `${path}.timeoutSeconds`, diagnostics, "timeoutSeconds");
     let failFast = false;
     if (raw.failFast !== undefined) {
         if (typeof raw.failFast !== "boolean") diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.failFast`, "failFast must be true or false.");
@@ -1013,6 +1047,14 @@ function compileParallel(id: string, raw: Record<string, unknown>, nodeIds: Read
         for (const outcome of [PARALLEL_JOINED, PARALLEL_BLOCKED]) {
             if (!Object.hasOwn(next, outcome)) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `a parallel state needs a '${outcome}' route.`);
         }
+        // Its own time limit ends it with timed_out, which has its own route; without a time limit it never times out.
+        if (raw.timeoutSeconds !== undefined && !Object.hasOwn(next, "timed_out")) {
+            diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, "a parallel state with timeoutSeconds needs a 'timed_out' route.");
+        }
+        if (raw.timeoutSeconds === undefined && Object.hasOwn(next, "timed_out")) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.timed_out`,
+                "a parallel state times out only at its own timeoutSeconds; without one, its 'timed_out' route is never taken.");
+        }
     }
     warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
     let body: WorkflowIRParallel["body"] | null = null;
@@ -1029,10 +1071,10 @@ function compileParallel(id: string, raw: Record<string, unknown>, nodeIds: Read
         compileBody(bodyIds, entries);
         body = { initial: raw.body.initial, states: [...bodyIds] };
     }
-    if (body === null || raw.forEach === undefined) return null;
+    if (body === null || raw.forEach === undefined || timeoutSeconds === null) return null;
     return {
         id, type: "parallel", description: optionalText(raw.description, `${path}.description`, diagnostics),
-        forEach, concurrency, join: "all_required", failFast, inputSchema, outputSchema, body, next,
+        forEach, concurrency, join, failFast, ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}), inputSchema, outputSchema, body, next,
     };
 }
 
@@ -1393,7 +1435,9 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
         }
     }
     const responds = Object.values(contracts).some(contract => contract.response !== undefined);
-    const irVersion: WorkflowIR["irVersion"] = Object.values(nodes).some(node => node.type === "agent" || node.type === "parallel") || runDeadline !== null
+    const joins = Object.values(nodes).some(node => node.type === "parallel" && (node.join !== "all_required" || node.timeoutSeconds !== undefined));
+    const irVersion: WorkflowIR["irVersion"] = joins ? WORKFLOW_V2_JOIN_IR_VERSION
+        : Object.values(nodes).some(node => node.type === "agent" || node.type === "parallel") || runDeadline !== null
         ? WORKFLOW_V2_AGENT_IR_VERSION
         : requested.size > 0 || responds ? WORKFLOW_V2_REQUEST_IR_VERSION
             : sent.size > 0 ? WORKFLOW_V2_SEND_IR_VERSION
@@ -1654,9 +1698,10 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
     need(isJsonObject(value), "stored IR is not an object");
     need(value.irVersion === 1 || value.irVersion === 2 || value.irVersion === 3 || value.irVersion === 4 || value.irVersion === 5
         || value.irVersion === 6 || (value.irVersion === 7 && maxIrVersion >= WORKFLOW_V2_REQUEST_IR_VERSION)
-        || (value.irVersion === 8 && maxIrVersion >= WORKFLOW_V2_AGENT_IR_VERSION),
+        || (value.irVersion === 8 && maxIrVersion >= WORKFLOW_V2_AGENT_IR_VERSION)
+        || (value.irVersion === 9 && maxIrVersion >= WORKFLOW_V2_JOIN_IR_VERSION),
         `stored IR version ${String(value.irVersion)} is not supported by this worker`);
-    const irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 = value.irVersion;
+    const irVersion: WorkflowIR["irVersion"] = value.irVersion;
     // A field a version introduced must be stated (null when absent) from that version on.
     const rootOutputSchema = irVersion === 1 && !Object.hasOwn(value, "outputSchema") ? null : value.outputSchema;
     const catchAll = irVersion < 3 && !Object.hasOwn(value, "catchAll") ? null : value.catchAll;
@@ -1782,14 +1827,24 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
             };
         } else if (node.type === "parallel") {
             const body = node.body;
+            // IR 9: a join of the first k successes, and the state's own time limit (absent without one).
+            const first = isJsonObject(node.join) && Object.keys(node.join).length === 1 ? node.join.first : undefined;
+            const joinValid = node.join === "all_required" || (irVersion >= WORKFLOW_V2_JOIN_IR_VERSION && typeof first === "number" && Number.isSafeInteger(first)
+                && first >= 1 && first <= WORKFLOW_V2_PARALLEL_MAX_ITEMS);
+            const timeout = node.timeoutSeconds;
+            const timeoutValid = timeout === undefined || (irVersion >= WORKFLOW_V2_JOIN_IR_VERSION && (typeof timeout === "string"
+                || (typeof timeout === "number" && Number.isSafeInteger(timeout) && timeout >= 1 && timeout <= WAIT_MAX_SECONDS)));
             need(irVersion >= WORKFLOW_V2_AGENT_IR_VERSION && Object.hasOwn(node, "forEach") && typeof node.concurrency === "number"
-                && Number.isInteger(node.concurrency) && node.concurrency >= 1 && node.concurrency <= WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY && node.join === "all_required" && typeof node.failFast === "boolean"
+                && Number.isInteger(node.concurrency) && node.concurrency >= 1 && node.concurrency <= WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY && joinValid
+                && timeoutValid && typeof node.failFast === "boolean"
                 && nullableString(node.inputSchema) && nullableString(node.outputSchema)
                 && isJsonObject(body) && typeof body.initial === "string" && stringArray(body.states) && body.states.includes(body.initial)
                 && stringMap(node.next), `stored IR parallel state ${id} is invalid`);
             nodes[id] = {
-                id, type: "parallel", description: node.description, forEach: node.forEach, concurrency: node.concurrency, join: "all_required",
-                failFast: node.failFast, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
+                id, type: "parallel", description: node.description, forEach: node.forEach, concurrency: node.concurrency,
+                join: typeof first === "number" ? { first } : "all_required",
+                failFast: node.failFast, ...(timeout !== undefined ? { timeoutSeconds: timeout as number | string } : {}),
+                inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 body: { initial: body.initial, states: [...body.states] }, next: node.next,
             };
         } else if (node.type === "terminal") {

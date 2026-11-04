@@ -215,7 +215,8 @@ describe("workflow v2 parallel states: compiler and IR 8", () => {
         for (const [label, change, code, path] of [
             ["concurrency 0", (_, fan) => { fan.concurrency = 0; }, "WORKFLOW_FIELD_INVALID", "states.fan.concurrency"],
             ["concurrency above the limit", (_, fan) => { fan.concurrency = WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY + 1; }, "WORKFLOW_FIELD_INVALID", "states.fan.concurrency"],
-            ["another join", (_, fan) => { fan.join = "any"; }, "WORKFLOW_FEATURE_UNSUPPORTED", "states.fan.join"],
+            // IR 9: `all` and `{ first: k }` are the joins; any other is refused (workflow-v2-join.test.js has every form).
+            ["another join", (_, fan) => { fan.join = "any"; }, "WORKFLOW_FIELD_INVALID", "states.fan.join"],
             ["a forEach that is no binding or list", (_, fan) => { fan.forEach = "items"; }, "WORKFLOW_FIELD_INVALID", "states.fan.forEach"],
             ["a literal manifest over the limit", (_, fan) => { fan.forEach = Array.from({ length: WORKFLOW_V2_PARALLEL_MAX_ITEMS + 1 }, (_, n) => ({ n })); },
                 "WORKFLOW_FIELD_INVALID", "states.fan.forEach"],
@@ -303,7 +304,7 @@ describe("workflow v2 parallel states: the store", () => {
 
             // A failFast cancellation decides the pending work of the named branches once; a retry lists the same.
             const projection = cancelled => ({ sessionId: workflowSessionId, events: [{ eventType: "workflow.branches_cancelled", data: { runId, cancelled } }] });
-            const once = { active: true, cancelled: [{ nodeExecutionId: holds[1], nodeType: "wait" }] };
+            const once = { active: true, cancelled: [{ nodeExecutionId: holds[1], nodeType: "wait", reason: "failFast" }] };
             expect(await h.store.cancelBranchScopes({ runId, scopeIds: [scopes[1]], projection })).toEqual(once);
             expect(await h.store.readNodeExecution(holds[1])).toMatchObject({
                 state: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "fail_fast", error: { code: "cancelled" },
@@ -443,7 +444,8 @@ describe("workflow v2 parallel states: controller 1.9.0 (inactive, test-only reg
             const run = await ended(h, runId);
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "stuck" });
             expect(run.terminalOutput).toEqual({
-                joined: false, total: 3, succeeded: 1, failFast: false,
+                // Every branch was needed (join all), and the state's own time limit did not end it (IR 9 report fields).
+                joined: false, timedOut: false, total: 3, needed: 3, succeeded: 1, failFast: false,
                 branches: [
                     { index: 0, ended: "terminal", nodeExecutionId: at(0, "done"), outcome: "succeeded", resultKind: "business", output: { doubled: 2, index: 0 } },
                     { index: 1, ended: "terminal", nodeExecutionId: at(1, "refused"), outcome: "blocked", resultKind: "business",
@@ -467,7 +469,7 @@ describe("workflow v2 parallel states: controller 1.9.0 (inactive, test-only reg
             const run = await ended(h, runId);
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "stuck" });
             expect(run.terminalOutput).toEqual({
-                joined: false, total: 3, succeeded: 0, failFast: true,
+                joined: false, timedOut: false, total: 3, needed: 3, succeeded: 0, failFast: true,
                 branches: [
                     { index: 0, ended: "cancelled", nodeExecutionId: at(0, "hold"), outcome: "cancelled", resultKind: "runtime_error",
                         error: expect.objectContaining({ code: "cancelled" }) },

@@ -138,9 +138,11 @@ export const SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC = {
         + "timed_out, not timeout); agent (invoke: {prompt: <task>} or {agent: {name, package?, version?}}; timeoutSeconds; optional input, "
         + "inputSchema, outputSchema, outcomes): an ordinary child agent session that finishes the state only with complete_workflow_node, "
         + "routing one of its outcomes, needs_input, execution_failed or timed_out; and parallel (forEach: one binding or a list of at most 64 "
-        + "items; concurrency 1-16, default 1; join: all_required; failFast; body: {initial, states}): one branch per item through its body, "
-        + "whose states read ${branch.item} and ${branch.index}, routing 'joined' with the branch outputs in order or 'blocked' with every "
-        + "branch's result.",
+        + "items; concurrency 1-16, default 1; join: all (or all_required; every branch) or {first: k} (joined at the first k successes); "
+        + "failFast; optional timeoutSeconds, which needs a timed_out route; body: {initial, states}): one branch per item through its body, "
+        + "whose states read ${branch.item} and ${branch.index}, routing 'joined' with the branch outputs in order (with {first: k}, "
+        + "[{index, output}] of the first k, in the order they finished, the others cancelled), 'blocked' with every branch's result once k "
+        + "successes can no longer happen, or timed_out when its time limit passes first.",
     parameters: SPAWN_WORKFLOW_TOOL_SPEC.parameters,
 } as const;
 

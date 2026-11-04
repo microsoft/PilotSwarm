@@ -20,7 +20,8 @@
  *   the child; while the run is paused (verification of RT-6), an agent state
  *   decided by its completion or its deadline has its child ended at once, a
  *   failed end is tried again while paused, and nothing is routed or
- *   admitted until the resume.
+ *   admitted until the resume; an agent state in a parallel branch that the
+ *   parallel state's own time limit cancels (IR 9) has its child ended.
  *
  * The child session is a test double (an orchestration that records the
  * messages its queue gets); the test completes the state through the real
@@ -93,6 +94,40 @@ ${extra}    transition: { next: { accepted: done, changes_required: rework, need
 `;
 
 const errorsOf = result => result.diagnostics.filter(item => item.severity === "error");
+
+/** A parallel state (IR 9) over one head whose branch is an agent state, with a 3-second time limit of its own. */
+const PARALLEL_AGENT_YAML = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: reviewers, version: "1.0.0" }
+initialInput: { heads: [{ head: "abc" }] }
+initial: fan
+schemas:
+  ReviewInput: { type: object, required: [head], properties: { head: { type: string } }, additionalProperties: false }
+  ReviewResult: { type: object, required: [verdict], properties: { verdict: { type: string } }, additionalProperties: false }
+states:
+  fan:
+    type: parallel
+    forEach: "\${input.heads}"
+    timeoutSeconds: 3
+    body:
+      initial: review
+      states:
+        review:
+          type: agent
+          invoke: { prompt: "${TASK}" }
+          inputSchema: { $ref: "#/schemas/ReviewInput" }
+          outputSchema: { $ref: "#/schemas/ReviewResult" }
+          timeoutSeconds: 3600
+          transition: { next: { accepted: done, failure: refused } }
+        done: { type: terminal, outcome: succeeded, output: "\${input}" }
+        refused: { type: terminal, outcome: blocked }
+    transition: { next: { joined: finished, blocked: stuck, timed_out: late, failure: failed } }
+  finished: { type: terminal, outcome: succeeded, output: "\${input}" }
+  stuck: { type: terminal, outcome: blocked, output: "\${input}" }
+  late: { type: terminal, outcome: blocked, output: "\${input}" }
+  failed: { type: terminal, outcome: failed }
+`;
 
 describe("workflow v2 agent states: compiler and IR 8", () => {
     it("compiles an agent state to IR 8 only when agents are enabled, and reads IR 8 only when asked to", () => {
@@ -684,6 +719,32 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
                 .toMatchObject({ ok: true, kind: "error", outcome: "needs_input" });
             expect(await ended(h, asking.runId)).toMatchObject({ terminalOutcome: "blocked", terminalNodeId: "ask" });
             expect(await lifecycleCommand(h, second.childSessionId)).toMatchObject({ cmd: "done" });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    // Owner decision join-k-of-n (IR 9): a parallel state's own time limit cancels its running branches; an agent state's child
+    // in one of them is ended as a timed-out agent state's is.
+    it("ends the child of an agent state in a branch that the parallel state's time limit cancels; a late completion finds the state closed", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, PARALLEL_AGENT_YAML);
+            const [spawn] = await until(async () => (h.spawns.length > 0 ? h.spawns : null), "the branch's agent child");
+            await until(async () => (await h.store.readAgentInvocation(spawn.nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
+            const run = await ended(h, runId);
+            expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "late" });
+            const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
+            expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "timed_out", resultKind: "runtime_error" });
+            expect(await h.store.readNodeExecution(spawn.nodeExecutionId)).toMatchObject({
+                state: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "join_timeout" });
+            expect(await lifecycleCommand(h, spawn.childSessionId)).toMatchObject({ cmd: "cancel", requestedBy: workflowSessionId });
+            const view = await readWorkflowV2View(h.store, workflowSessionId);
+            expect(view.run.nodeExecutions.find(node => node.nodeExecutionId === spawn.nodeExecutionId))
+                .toMatchObject({ winner: "join_timeout", agent: { childSessionId: spawn.childSessionId, end: "cancel" } });
+            expect(await completeAs(h, spawn.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "late-1" }))
+                .toMatchObject({ ok: false, error: { code: "NODE_CLOSED" } });
+            expect(h.spawns).toHaveLength(1);
         } finally {
             await h.stop();
         }

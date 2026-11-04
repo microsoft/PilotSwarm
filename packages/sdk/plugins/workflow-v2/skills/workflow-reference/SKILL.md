@@ -156,17 +156,25 @@ the interface's digest with the package revision.
 |---|---|
 | `forEach` | Required. One binding that gives a list, or a list; at most 64 items. |
 | `concurrency` | 1 to 16; default 1. |
-| `join` | Optional; only `all_required`. |
-| `failFast` | Optional boolean; default false. |
+| `join` | Optional: `all` (default; `all_required` is the same) or `{ first: k }`, k from 1 to 64 and at most the items of a literal list. |
+| `failFast` | Optional boolean; default false. Cancels the other branches once the join can no longer succeed. |
+| `timeoutSeconds` | Optional: the state's own time limit, 1 to 86400 or one binding. Needs a `timed_out` route. |
 | `inputSchema` | Optional: checks the whole list. |
-| `outputSchema` | Optional: checks the joined list. |
+| `outputSchema` | Optional: checks the joined output. |
 | `body` | Required: `{ initial, states }`. No parallel state inside. |
 
-Outcomes: `joined` (output: the branch outputs in list order) and `blocked`
-(output: `{ joined: false, total, succeeded, failFast, branches: [{ index,
-ended, nodeExecutionId, outcome, resultKind, output or error }] }`, where
-`ended` is `terminal`, `error`, `cancelled` or `not_started`). Routes for
-both are required.
+Outcomes: `joined` and `blocked`. Routes for both are required.
+
+- `joined` with `all`: the branch outputs in list order. With `{ first: k }`:
+  `[{ index, output }]` of the first k successes, in the order they finished;
+  the other branches are cancelled or not started.
+- `blocked`: k successes can no longer happen (with `{ first: k }` and fewer
+  than k items, at once). Output: `{ joined: false, timedOut: false, total,
+  needed, succeeded, failFast, branches: [{ index, ended, nodeExecutionId,
+  outcome, resultKind, output or error }] }`, where `ended` is `terminal`,
+  `error`, `cancelled` or `not_started`.
+- With `timeoutSeconds`: the runtime error `timed_out` when the time limit
+  passes first. Its `details` is the same report with `timedOut: true`.
 
 ### terminal
 
@@ -187,7 +195,7 @@ both are required.
 ## Not supported: do not write
 
 `transition.function`, `transition.delaySeconds` (version 1 only; use a wait
-state), join states, quorum or any-of joins, a parallel state in a body, `inputSchema` or `outputSchema` on a receive,
+state), join states, a parallel state in a body, `inputSchema` or `outputSchema` on a receive,
 `parentNotification`, the request field `request`
 and the route `timeout`, and text around a binding.
 

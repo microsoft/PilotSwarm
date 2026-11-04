@@ -62,7 +62,8 @@ test("on a 1.9.0 turn the descriptions and parameters add the milestone operatio
     assert.deepEqual(read.required, READ_WORKFLOW_TOOL_SPEC.parameters.required);
     const spawn = SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.description;
     assert.ok(!spawn.includes("not supported yet"));
-    for (const phrase of ["mode: request", "respond_session_request", "invoke:", "complete_workflow_node", "forEach:", "all_required", "${branch.item}"]) {
+    for (const phrase of ["mode: request", "respond_session_request", "invoke:", "complete_workflow_node", "forEach:", "all_required", "${branch.item}",
+        "{first: k}", "timeoutSeconds, which needs a timed_out route"]) {
         assert.ok(spawn.includes(phrase), phrase);
     }
     assert.equal(SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.parameters, SPAWN_WORKFLOW_TOOL_SPEC.parameters);

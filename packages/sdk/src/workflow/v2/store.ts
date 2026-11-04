@@ -15,6 +15,10 @@ import {
     intakeClientMessageId, intakeEnvelopeSha256, intakeExchangeId, intakeId, intakeItemBytes, intakeItemFitsAlone, intakeObject, intakeSha256,
     intakeTextWithinCap, IntakeShapeError, parseIntakeEnvelope, type IntakeEnvelope, type IntakeProcessingOutcome,
 } from "./intake.js";
+import {
+    BRANCH_CANCEL_WINNERS, BRANCH_CANCEL_WINNER_VALUES, branchCancelError, branchCancelReasonOf, branchScopeIds, branchSucceeded, parallelTimeoutResult,
+    parseBranchScope, timedOutBranches, type BranchCancelReason,
+} from "./parallel.js";
 
 /**
  * PostgreSQL persistence for workflow v2 (tables from migrations 0089 and 0091 to 0100).
@@ -3104,7 +3108,7 @@ export class WorkflowStore {
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
-        | { admitted: false; reason: "inactive" | "kv_changed" | "stopping" | "expired"; run: WorkflowRunRow }> {
+        | { admitted: false; reason: "inactive" | "kv_changed" | "stopping" | "expired" | "cut"; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
         return this.transaction(async client => {
             const workflowSessionId = await this.workflowOfRun(client, input.runId);
@@ -3134,6 +3138,13 @@ export class WorkflowStore {
             if (live && ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return { admitted: false as const, reason: "stopping" as const, run };
             if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, reason: "inactive" as const, run };
             if (run.kvRevision !== input.kvRevision) return { admitted: false as const, reason: "kv_changed" as const, run };
+            // IR 9: a branch of a parallel state already decided (its own time limit; the run lock orders this with that
+            // decision) admits nothing more: its controller cuts the branch when it collects the parallel state's result.
+            const branchScope = parseBranchScope(input.scopeId);
+            if (branchScope !== null) {
+                const { rows: parents } = await client.query(`SELECT state FROM ${this.t.nodes} WHERE node_execution_id = $1`, [branchScope.parallelNodeExecutionId]);
+                if (parents[0] && str(parents[0], "state") === "completed") return { admitted: false as const, reason: "cut" as const, run };
+            }
             let immediate = input.immediate;
             let receive = input.receive ?? null;
             let send = input.send ?? null;
@@ -3192,10 +3203,11 @@ export class WorkflowStore {
                 }
             }
             // A wait admitted pending has a whole number of seconds; a receive may
-            // race a wait (then it has them too); an intercepted agent or request has its deadline's; nothing else has any.
+            // race a wait (then it has them too); an intercepted agent or request has its deadline's; a parallel state may
+            // have its own time limit (IR 9); nothing else has any.
             const waits = input.nodeType === "wait" && immediate === null;
             const deadlined = intercept !== null && intercept.operation !== "send";
-            const mayWait = waits || receive !== null || deadlined;
+            const mayWait = waits || receive !== null || deadlined || (input.nodeType === "parallel" && immediate === null);
             if (((waits || deadlined) && input.waitSeconds === null) || (!mayWait && input.waitSeconds !== null)
                 || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
@@ -6094,15 +6106,20 @@ export class WorkflowStore {
      * transaction under the session and run locks, every node execution of
      * these branch scopes still pending is decided cancelled (winner
      * `fail_fast`), and a message one of their send states sent to a workflow
-     * and still pending is decided with it (decidePendingSendsIn). A result
-     * that won its node's compare-and-swap first stands. Returns every node
-     * execution of these scopes that a failFast cancellation decided, this
-     * call's and an earlier attempt's, so a retry still asks their effects to
-     * stop. A run that has ended, or whose session was deleted, changes
-     * nothing here: its end decided what was pending.
+     * and still pending is decided with it (decidePendingSendsIn). IR 9: with
+     * `reason` join, the branches still running when a join of the first k
+     * had its successes (winner `join`); with `reason` timeout, those the
+     * state's own time limit cut (winner `join_timeout`; elapseParallelNode
+     * already decided their work). A result that won its node's
+     * compare-and-swap first stands. Returns every node execution of these
+     * scopes that any of these cancellations decided, this call's and an
+     * earlier one's, with why, so a retry still asks their effects to stop.
+     * A run that has ended, or whose session was deleted, changes nothing
+     * here: its end decided what was pending.
      */
-    async cancelBranchScopes(input: { runId: string; scopeIds: string[]; projection?: (cancelled: string[]) => SessionProjection })
-        : Promise<{ active: boolean; cancelled: Array<{ nodeExecutionId: string; nodeType: string }> }> {
+    async cancelBranchScopes(input: { runId: string; scopeIds: string[]; reason?: BranchCancelReason; projection?: (cancelled: string[]) => SessionProjection })
+        : Promise<{ active: boolean; cancelled: Array<{ nodeExecutionId: string; nodeType: string; reason: BranchCancelReason }> }> {
+        const reason = input.reason ?? "failFast";
         return this.transaction(async client => {
             const workflowSessionId = await this.workflowOfRun(client, input.runId);
             const live = await this.lockLiveSession(client, workflowSessionId);
@@ -6112,11 +6129,10 @@ export class WorkflowStore {
                 const { rows: decided } = await client.query(
                     `UPDATE ${this.t.nodes}
                         SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $3, output = NULL,
-                            winner = 'fail_fast', completed_at = clock_timestamp()
+                            winner = $4, completed_at = clock_timestamp()
                       WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND state = 'pending'
                       RETURNING node_execution_id`,
-                    [input.runId, input.scopeIds,
-                        canonicalJson({ code: "cancelled", message: "Another branch of this parallel state did not succeed, and its failFast policy cancelled this branch." })]);
+                    [input.runId, input.scopeIds, canonicalJson(branchCancelError(reason)), BRANCH_CANCEL_WINNERS[reason]]);
                 const now = decided.map(row => str(row, "node_execution_id")).sort();
                 if (now.length > 0) {
                     await this.decidePendingSendsIn(client, workflowSessionId, input.runId, now);
@@ -6124,11 +6140,96 @@ export class WorkflowStore {
                 }
             }
             const { rows } = await client.query(
-                `SELECT node_execution_id, node_type FROM ${this.t.nodes}
-                  WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND winner = 'fail_fast' ORDER BY node_execution_id`,
-                [input.runId, input.scopeIds]);
-            return { active, cancelled: rows.map(row => ({ nodeExecutionId: str(row, "node_execution_id"), nodeType: str(row, "node_type") })) };
+                `SELECT node_execution_id, node_type, winner FROM ${this.t.nodes}
+                  WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND winner = ANY($3::text[]) ORDER BY node_execution_id`,
+                [input.runId, input.scopeIds, BRANCH_CANCEL_WINNER_VALUES]);
+            return { active, cancelled: rows.map(row => ({ nodeExecutionId: str(row, "node_execution_id"), nodeType: str(row, "node_type"),
+                reason: branchCancelReasonOf(str(row, "winner")) })) };
         });
+    }
+
+    /**
+     * End a parallel state at its own time limit (IR 9; controller 1.9.0;
+     * owner decision join-k-of-n), as elapseWait does for a wait: in one
+     * transaction under the session and run locks (an admission's order, so
+     * no branch state is admitted between this decision and its
+     * cancellations), one reading of the store's clock decides. At or after
+     * the deadline, while the state is pending, the work its branches still
+     * have pending is decided cancelled (winner join_timeout; their messages
+     * to workflows with them), and the state is decided timed_out with its
+     * report of every branch (timeOutParallelIn). Before the deadline it
+     * changes nothing and reports the milliseconds left (at least 1). A join,
+     * a run end or a deletion that decided the state first is kept (decided).
+     * `projection` gives the state's own events from what was decided.
+     */
+    async elapseParallelNode(nodeExecutionId: string,
+        projection?: (decided: { valueText: string; total: number; succeeded: number }) => SessionProjection): Promise<
+        { result: "elapsed"; node: WorkflowNodeExecutionRow; cancelled: string[] } | { result: "decided"; node: WorkflowNodeExecutionRow }
+        | { result: "not_due"; remainingMs: number; node: WorkflowNodeExecutionRow }> {
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
+            const { rows: found } = await client.query(`SELECT run_id FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            if (!found[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
+            const run = await this.lockRun(client, str(found[0], "run_id"));
+            const { rows } = await client.query(
+                `SELECT *, deadline_at <= clock_timestamp() AS due,
+                        GREATEST(1, CEIL(EXTRACT(EPOCH FROM (deadline_at - clock_timestamp())) * 1000))::bigint AS remaining_ms
+                   FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            const node = nodeFrom(rows[0]);
+            if (node.nodeType !== "parallel") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a parallel state.`);
+            // The deletion that made the session not live also decided its pending work (migration 0090 trigger).
+            if (node.state === "completed" || !live) return { result: "decided" as const, node };
+            if (node.deadlineAt === null) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Parallel state ${nodeExecutionId} has no time limit.`);
+            }
+            if (rows[0].due !== true) return { result: "not_due" as const, remainingMs: int(rows[0], "remaining_ms"), node };
+            const decided = await this.timeOutParallelIn(client, run, node);
+            await this.project(client, projection?.({ valueText: decided.result.valueText, total: decided.total, succeeded: decided.succeeded }));
+            return { result: "elapsed" as const, node: decided.node, cancelled: decided.cancelled };
+        });
+    }
+
+    /**
+     * Decide a pending parallel state timed_out at its own time limit, in the
+     * caller's transaction (which holds the session and run locks): the
+     * pending work of its branches is cancelled first (winner join_timeout,
+     * with their pending messages to workflows), then every branch's end is
+     * read from the rows (timedOutBranches, with the pinned definition's
+     * routes) for its report, and the state is decided by compare-and-swap.
+     * A workflow.branches_cancelled event names what was cancelled.
+     */
+    private async timeOutParallelIn(client: PoolClient, run: WorkflowRunRow, node: WorkflowNodeExecutionRow)
+        : Promise<{ node: WorkflowNodeExecutionRow; cancelled: string[]; result: NodeResultInput; total: number; succeeded: number }> {
+        const total = Array.isArray(node.input) ? node.input.length : 0;
+        const scopeIds = branchScopeIds(node.nodeExecutionId, total);
+        const cut: Row[] = scopeIds.length === 0 ? [] : (await client.query(
+            `UPDATE ${this.t.nodes}
+                SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $3, output = NULL,
+                    winner = $4, completed_at = clock_timestamp()
+              WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND state = 'pending'
+              RETURNING node_execution_id`,
+            [run.runId, scopeIds, canonicalJson(branchCancelError("timeout")), BRANCH_CANCEL_WINNERS.timeout])).rows;
+        const cancelled = cut.map(row => str(row, "node_execution_id")).sort();
+        if (cancelled.length > 0) await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId, cancelled);
+        const branchRows: Row[] = scopeIds.length === 0 ? []
+            : (await client.query(`SELECT * FROM ${this.t.nodes} WHERE run_id = $1 AND scope_id = ANY($2::text[])`, [run.runId, scopeIds])).rows;
+        const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION });
+        const parallel = ir.nodes[node.nodeId];
+        if (parallel?.type !== "parallel") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.nodeId} of run ${run.runId} is not a parallel state.`);
+        const branches = timedOutBranches(ir, node.nodeExecutionId, total, branchRows.map(row => nodeFrom(row)), new Set(cancelled));
+        const result = parallelTimeoutResult(parallel, total, branches);
+        const { rows } = await client.query(
+            `UPDATE ${this.t.nodes}
+                SET state = 'completed', outcome = $2, result_kind = 'runtime_error', output = NULL, error = $3, winner = $4, completed_at = clock_timestamp()
+              WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
+            [node.nodeExecutionId, result.outcome, storedResultText(result), result.winner]);
+        if (!rows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Parallel state ${node.nodeExecutionId} was decided under its lock.`);
+        if (cancelled.length > 0) {
+            await this.project(client, { sessionId: run.workflowSessionId, events: [{ eventType: "workflow.branches_cancelled", data: {
+                runId: run.runId, scopeIds: scopeIds.slice(0, 64), cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 64), reason: "timeout",
+            } }], update: { touch: true } });
+        }
+        return { node: nodeFrom(rows[0]), cancelled, result, total, succeeded: branches.filter(branchSucceeded).length };
     }
 
     // ─── Test runs (migration 0102; design 05 tool-mocked testing; INACTIVE) ───
@@ -6396,7 +6497,9 @@ export class WorkflowStore {
      * transaction every pending state of the run whose deadline the new
      * virtual time reached is decided, in deadline order: a wait or a
      * receive's wait elapsed (with the value it was given), an intercepted
-     * request or agent timed_out; a result that won first (an injected
+     * request or agent timed_out, and (IR 9) a parallel state timed_out at
+     * its own time limit, with its branches' pending work cancelled and not
+     * decided again (timeOutParallelIn); a result that won first (an injected
      * message, a response, a cancel) stands. Only a test run, while it is
      * active, has a clock to advance.
      */
@@ -6443,8 +6546,17 @@ export class WorkflowStore {
                     AND deadline_at <= LEAST($2::timestamptz, COALESCE($3::timestamptz, $2::timestamptz))
                   ORDER BY deadline_at, node_execution_id FOR UPDATE`, [run.runId, nowText, run.deadlineAt === null ? null : run.deadlineAt.toISOString()]);
             const decided: WorkflowTestAdvanceReceipt["decided"] = [];
+            // IR 9: a parallel state's own time limit cancels its branches' pending work; what it cancelled is not due any more.
+            const cut = new Set<string>();
             for (const row of due) {
                 const node = nodeFrom(row);
+                if (cut.has(node.nodeExecutionId)) continue;
+                if (node.nodeType === "parallel") {
+                    const timedOut = await this.timeOutParallelIn(client, run, node);
+                    for (const nodeExecutionId of timedOut.cancelled) cut.add(nodeExecutionId);
+                    decided.push({ nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, outcome: "timed_out" });
+                    continue;
+                }
                 const waits = node.nodeType === "wait" || (node.nodeType === "messaging" && node.receive !== null);
                 if (!waits && node.nodeType !== "agent" && node.nodeType !== "messaging") {
                     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${node.nodeExecutionId} has a deadline but no timer.`);
