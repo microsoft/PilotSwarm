@@ -478,6 +478,10 @@ export function parseRunCommandArgs(args: Record<string, unknown>, options: { st
     const operationId = requiredString(args, "operation_id");
     const runId = optionalString(args, "run_id");
     const operation = args.operation;
+    // Batch 7 (n-1): whether the parent is told belongs to a live start; a run command that names it is refused, not ignored.
+    if (args.notify_on_completion !== undefined && args.notify_on_completion !== null) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "notify_on_completion applies to publish_and_start and start only.");
+    }
     if (operation === "set_vars") {
         const set: { [key: string]: JsonValue } = kvObjectArg(args, "set") ?? {};
         const keys = deleteKeysArg(args);
