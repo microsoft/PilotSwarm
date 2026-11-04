@@ -741,7 +741,19 @@ gives it (finding `f96d2bea` F2):
   path. The start of a begin activity whose controller ended fails unseen
   (`zBegin = "lost"`).
 
-A workflow that did not ask is never told. A3 (recover) does not repair a
+A workflow that did not ask is never told. Since batch 7 (n-2) it records
+that once: the notifier starts for every live run of a workflow with a
+parent, and with `notifyParent` false its delivery records
+`workflow.parent_notification_skipped` with the reason "notifications are
+off" and returns, as a delivery whose authority is gone does ("parent is
+gone"). The model still gates the notifier's start on `NotifyEnabled`. That
+gives the same notices (none for a workflow that did not ask, so
+`Inv_NoticeEnabled` holds), but with `NotifyEnabled = FALSE` the model does
+not explore a notifier start that fails for good (`NotifyFaults`), which the
+code can now meet on such a run: the cancel or recover request returns an
+error after its commit, or the begin activity fails and the controller takes
+its failure path, as for a workflow that asked. The model has not been
+re-run for this change. A3 (recover) does not repair a
 lost notice: a cancelled run is not active, so recover does not act on it
 (finding `be9aa9b3-notification-assumptions`).
 
@@ -753,7 +765,7 @@ lost notice: a cancelled run is not active, so recover does not act on it
 | `LegacyWriter` | migration | Who wrote a receipt that an earlier build stored without ending the run: `"none"`, `"parent"` (M1 holds), or `"other"` or `"system"` (M1 does not hold). |
 | `Cancellers` | environment | Who sends a cancel: `parent`, `other` (another agent session) and `system` (a non-agent actor; requester null). |
 | `LoseDispatch`, `Interrupts`, `ControllerDeath` | faults | The start after admission never reaches duroxide; a cancel request stops after its commit, and the begin activity runs again after its commit; the controller ends without ending its run, and a begin activity it scheduled may still commit and start the notifier afterwards (`ZombieBeginTx`, `ZombieBeginNotify`, not fair). |
-| `NotifyEnabled` | workflow | The workflow has a parent and asked to be told (`notifyParent`). |
+| `NotifyEnabled` | workflow | The workflow has a parent and asked to be told (`notifyParent`). Since batch 7 (n-2) the code starts the notifier for any workflow with a parent and `notifyParent` decides the delivery (a skip, "notifications are off", when false); the model still gates the start on it (see A6). |
 | `NotifyFaults` | fault | A notifier start, or a delivery that `notifyParent` attempts, fails for good: its retries run out. |
 | `AuthorityLoss` | environment | The parent's authority to be told is gone when a delivery is attempted: `notifyParent` records a skip and returns. A6 is `NotifyEnabled`, not `AuthorityLoss` and not `NotifyFaults`. |
 | `DropOrphans` | provider | duroxide-pg drops queue messages of an instance with no row and no history. |
@@ -764,7 +776,7 @@ lost notice: a cancelled run is not active, so recover does not act on it
 | `DispatchSend` / `DispatchLose` | `V` `dispatchWorkflowV2Run` 127 | Skips a run that is not active; the start may never reach duroxide. |
 | `Start` / `OrphanDrop` | duroxide 0.1.32; duroxide-pg 0.1.38 `provider.rs` 1132-1161, migrations 0025 and 0026 | A second start of an instance id is ignored; queue messages fetched for an instance with no row and no history are acknowledged, which deletes them. |
 | `BeginTx` | `S` `beginRun` 1669, 1677 (the earliest accepted cancel receipt), 1684 (requester attributed to the parent, M1) | Session and run locks, as the cancel's transaction takes. |
-| `BeginNotify` / `BeginRetry` | `R` 1330 (activity), 1293 (enabled and requester checks), 1350 (notifier start) | After the commit; the activity runs again until the start succeeds. A start that fails for good (`NotifyFaults`) fails the activity, and the controller takes its failure path (`CtlFallback`). |
+| `BeginNotify` / `BeginRetry` | `R` 1330 (activity), 1293 (parent and requester checks; since batch 7, n-2, not `notifyParent`), 1350 (notifier start) | After the commit; the activity runs again until the start succeeds. A start that fails for good (`NotifyFaults`) fails the activity, and the controller takes its failure path (`CtlFallback`). |
 | `ApplyCmd` / `RunFinish` | `R` 527, 532 (notify with the requester), 467 | The controller reports its run's end at least once. A delivery may record a skip and return (`AuthorityLoss`), or run out (`NotifyFaults`); then the controller takes its failure path. |
 | `CtlFallback` | `R` `workflowV2Controller` 495, `failRun` 490, `finishRun` 475; the finish activity 1563 returns a run that ended as it is | The run already ended (`Inv_FallbackAfterEnd`). `reportEnded` calls `notifyParent` once more, with no requester: the controller completes when that call returns, and fails when it runs out. |
 | `CancelTx` | `V` `controlWorkflowV2Run` 561, 586 (the requester: an agent's session, otherwise null); `S` `recordRunCancelRequest` 1446, `cancelBeforeBegin` 1478 | Session, definition and run locks; the receipt and the before-begin end in one transaction; a repeat ends a run that has not begun. |
