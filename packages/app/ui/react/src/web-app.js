@@ -16344,7 +16344,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.workflowLayouts]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
