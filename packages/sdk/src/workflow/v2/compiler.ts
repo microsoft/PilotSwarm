@@ -1376,6 +1376,8 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
         }
     }
     if (diagnostics.failed) return result(name, version, null);
+    checkFixedInputs(nodes, contracts, schemas.defs, diagnostics);
+    if (diagnostics.failed) return result(name, version, null);
     const received = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
     const sent = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "send" ? [node.contract] : []));
     const requested = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "request" ? [node.contract] : []));
@@ -1415,6 +1417,99 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
         throw error;
     }
     return result(name, version, ir);
+}
+
+/** The schema a value must match, with its references followed (normalized references are "#/$defs/<name>"). */
+function schemaTarget(defs: Record<string, JsonValue>, schema: JsonValue | undefined, depth = 0): JsonValue | undefined {
+    if (depth > 16 || !isJsonObject(schema) || typeof schema.$ref !== "string") return schema;
+    const ref = schema.$ref;
+    const name = ref.startsWith("#/$defs/") ? ref.slice("#/$defs/".length) : ref.startsWith("#/schemas/") ? ref.slice("#/schemas/".length) : null;
+    return name !== null && !name.includes("/") && Object.hasOwn(defs, name) ? schemaTarget(defs, defs[name], depth + 1) : undefined;
+}
+
+/** Whether a schema asks for an object or an array (by its type, or by keywords only those take). */
+function schemaWantsStructure(schema: JsonValue | undefined): "an object" | "an array" | null {
+    if (!isJsonObject(schema)) return null;
+    const types: JsonValue[] = Array.isArray(schema.type) ? schema.type : typeof schema.type === "string" ? [schema.type] : [];
+    if (types.includes("string")) return null;
+    if (types.includes("object") || (types.length === 0 && (isJsonObject(schema.properties) || Array.isArray(schema.required)))) return "an object";
+    if (types.includes("array") || (types.length === 0 && (schema.items !== undefined || Array.isArray(schema.prefixItems)))) return "an array";
+    return null;
+}
+
+/** Whether a text is a JSON object or array written as text. */
+function looksLikeJsonStructure(text: string): boolean {
+    const trimmed = text.trim();
+    if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return false;
+    try {
+        const parsed: unknown = JSON.parse(trimmed);
+        return parsed !== null && typeof parsed === "object";
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Batch 7 (s-2): a warning for each text in a state's input that is a JSON object or array written as a string where its
+ * schema asks for an object or an array (the 2026-11-04 send: input: '{"fact": "..."}' for a contract that takes
+ * { fact }). Bound inputs are walked too, as far as their schema is known; a binding is not text.
+ */
+function warnJsonText(value: JsonValue, schema: JsonValue | undefined, defs: Record<string, JsonValue>, path: string, diagnostics: Diagnostics, depth = 0): void {
+    if (depth > 32) return;
+    const target = schemaTarget(defs, schema);
+    if (typeof value === "string") {
+        const wanted = schemaWantsStructure(target);
+        if (wanted && looksLikeJsonStructure(value)) {
+            diagnostics.warning("WORKFLOW_INPUT_JSON_TEXT", path,
+                `This is a text string that looks like JSON. Write it as a YAML value (no quotes) so it is ${wanted}.`);
+        }
+        return;
+    }
+    if (!isJsonObject(target)) return;
+    if (Array.isArray(value)) {
+        value.forEach((item, index) => {
+            const itemSchema = Array.isArray(target.prefixItems) && index < target.prefixItems.length ? target.prefixItems[index] : target.items;
+            warnJsonText(item, itemSchema as JsonValue | undefined, defs, `${path}[${index}]`, diagnostics, depth + 1);
+        });
+        return;
+    }
+    if (isJsonObject(value)) {
+        const properties = isJsonObject(target.properties) ? target.properties : {};
+        for (const [key, item] of Object.entries(value)) {
+            const itemSchema = Object.hasOwn(properties, key) ? properties[key] : isJsonObject(target.additionalProperties) ? target.additionalProperties : undefined;
+            warnJsonText(item, itemSchema, defs, `${path}.${key}`, diagnostics, depth + 1);
+        }
+    }
+}
+
+/**
+ * Batch 7 (s-1): a state's input that has no binding anywhere is fixed, so it is checked against the schema the run
+ * checks it against, with the run's own validator (WorkflowSchemaSet): a send's or request's contract, and a script's or
+ * agent's inputSchema. A mismatch is a definition error (the run would fail invalid_input), naming the first problems.
+ * Every such input, bound or not, is also checked for JSON written as text (s-2, a warning).
+ */
+function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Record<string, { schema: string }>, defs: Record<string, JsonValue>,
+    diagnostics: Diagnostics): void {
+    let validator: WorkflowSchemaSet | null = null;
+    for (const node of Object.values(nodes)) {
+        if (!("hasInput" in node) || !node.hasInput) continue;
+        const target = node.type === "messaging" && (node.mode === "send" || node.mode === "request")
+            ? { schema: contracts[node.contract]?.schema ?? null, what: `contract '${node.contract}'` }
+            : (node.type === "script" || node.type === "agent") && node.inputSchema ? { schema: node.inputSchema, what: "its inputSchema" } : null;
+        const schemaName = target?.schema ?? null;
+        if (!target || !schemaName || !Object.hasOwn(defs, schemaName)) continue;
+        const path = `states.${node.id}.input`;
+        warnJsonText(node.input, defs[schemaName], defs, path, diagnostics);
+        let bound: boolean;
+        try { bound = bindingRootsOf(node.input).size > 0; } catch { continue; }
+        if (bound) continue;
+        validator ??= new WorkflowSchemaSet(defs);
+        const problems = validator.validate(schemaName, node.input);
+        if (problems.length) {
+            diagnostics.error("WORKFLOW_STATE_INPUT_INVALID", path, `this input has no binding, so it is sent as written, and it does not match ${target.what}: `
+                + `${problems.slice(0, 3).map(problem => `${problem.path} ${problem.message}`).join("; ")}.`);
+        }
+    }
 }
 
 /** Extract metadata.version without full compilation (for the one-semver rule on invalid drafts). */
