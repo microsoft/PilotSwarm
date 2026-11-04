@@ -183,6 +183,22 @@ describe("workflow v2: telling the parent when a live run ends", () => {
         }
     });
 
+    it("WFO-1: the store counts a run's deliveries to a session still in flight (none here, the query runs)", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const parent = await parentOf(h);
+            const id = randomUUID();
+            const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parent.parentId, yaml: QUICK, actor: ACTOR,
+                operationId: "create", start: { inputs: {} } });
+            const { runId } = created.receipt.run;
+            await finished(h, runId);
+            expect(await h.store.runDeliveriesInFlight(runId, parent.parentId, 60)).toBe(0);
+            expect(await h.store.runDeliveriesInFlight("no-such-run", parent.parentId, 60)).toBe(0);
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("n-2: a parent that may no longer be told: one skip, 'parent is gone'; a workflow without a parent records nothing", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv(), { authorize: false });
         try {

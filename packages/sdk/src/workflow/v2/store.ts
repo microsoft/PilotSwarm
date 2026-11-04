@@ -2724,6 +2724,22 @@ export class WorkflowStore {
         return rows.length > 0;
     }
 
+    /**
+     * How many of a run's sends and requests to `recipientSessionId` (an agent session) have a delivery attempt that
+     * began (counted under the session locks) and is not recorded yet, begun within the last `withinSeconds`
+     * (adversarial review WFO-1): such an attempt may still queue its message after the run ended, since a run's end
+     * leaves a message to an agent session pending (decidePendingSendsIn). An older attempt, or one whose retry finds the
+     * state decided (it fails the message), is not counted.
+     */
+    async runDeliveriesInFlight(runId: string, recipientSessionId: string, withinSeconds: number): Promise<number> {
+        const { rows } = await this.pool.query(
+            `SELECT count(*)::int AS n FROM ${this.t.outbox}
+              WHERE run_id = $1 AND recipient_session_id = $2 AND state = 'pending' AND attempts > 0
+                AND COALESCE(recipient_kind, 'agent') = 'agent'
+                AND last_attempt_at > clock_timestamp() - make_interval(secs => $3)`, [runId, recipientSessionId, withinSeconds]);
+        return Number(rows[0]?.n ?? 0);
+    }
+
     /** Record transcript events outside a transition (notifications, cleanup requests). */
     async recordSessionEvents(sessionId: string, events: SessionEventRecord[]): Promise<void> {
         if (events.length === 0) return;

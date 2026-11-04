@@ -1894,6 +1894,8 @@ export interface WorkflowV2RuntimeDeps {
     openToolExecutor: (sessionId: string, binding: WorkflowToolBinding, step: number) => Promise<WorkflowToolExecutor>;
     authorizeParentNotification: (sessionId: string, parentSessionId: string) => Promise<boolean>;
     notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string) => Promise<void>;
+    /** How long the run-end notice waits for the run's deliveries to the parent still in flight (WFO-1); a test sets it. */
+    noticeDeliveryWaitMs?: number;
     deleteSession: (sessionId: string) => Promise<void>;
     /** The agent sessions' message queues a send state delivers to; default: sessionQueueTransport on the activity's durable client. */
     sessionQueue?: WorkflowSessionQueue;
@@ -2386,6 +2388,14 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
         throw new Error(`The children of agent states ${shown}${failed.length > 20 ? ` and ${failed.length - 20} more` : ""} were not ended yet.`);
     }
 }
+
+/**
+ * How long the run-end notice waits for the run's deliveries to the parent still in flight, how often it looks, and how
+ * recent a delivery attempt must be to be waited for (adversarial review WFO-1).
+ */
+export const WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS = 20_000;
+const WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS = 200;
+const WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS = 60;
 
 /** The owed agent invocations read at a time when a run's children are ended (RT-5). */
 export const WORKFLOW_V2_OWED_AGENT_PAGE = 200;
@@ -3304,6 +3314,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         };
         if (!definition.notifyParent) return await skipped("notifications are off");
         if (!await deps.authorizeParentNotification(run.workflowSessionId, definition.parentSessionId)) return await skipped("parent is gone");
+        // WFO-1: a send's message or a request to the parent whose delivery attempt began before the run ended may still
+        // be queued after this. The run's end is told after it, so the parent never reads them after the end. The wait is
+        // bounded (an attempt that takes longer, or began long ago, is not waited for), and it is in this activity: no
+        // orchestration changes.
+        const waitUntil = Date.now() + (deps.noticeDeliveryWaitMs ?? WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS);
+        while (await store.runDeliveriesInFlight(run.runId, definition.parentSessionId, WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS) > 0
+            && Date.now() < waitUntil) {
+            await new Promise(resolve => setTimeout(resolve, WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS));
+        }
         const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
         // A failed run says why (batch 7, s-4): the failing state, the runtime error's code and message, and its first problems.
         const failure = run.status === "failed" ? await runFailureOf(run) : null;
