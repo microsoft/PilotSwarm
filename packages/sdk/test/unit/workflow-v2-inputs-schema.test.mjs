@@ -125,3 +125,20 @@ states:
         type: "object", required: ["build"], properties: { build: { type: "object", properties: { id: { type: "integer" } } } },
     });
 });
+
+test("SF-4: references that branch (each schema refers twice to the next) stop at a budget, quickly, and show no schema", () => {
+    const defs = { inputs: { $ref: "#/$defs/A1" } };
+    for (let i = 1; i <= 25; i += 1) {
+        defs[`A${i}`] = i === 25 ? { type: "string" }
+            : { type: "object", properties: { left: { $ref: `#/$defs/A${i + 1}` }, right: { $ref: `#/$defs/A${i + 1}` } } };
+    }
+    const started = process.hrtime.bigint();
+    assert.equal(workflowV2ResolvedInputsSchema(ir(defs)), null);
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 2_000, "bounded time");
+    // A long chain that does not branch still resolves.
+    const chain = { inputs: { $ref: "#/$defs/C1" } };
+    for (let i = 1; i <= 15; i += 1) chain[`C${i}`] = i === 15 ? { type: "integer" } : { type: "object", properties: { next: { $ref: `#/$defs/C${i + 1}` } } };
+    let level = workflowV2ResolvedInputsSchema(ir(chain));
+    for (let i = 1; i < 15; i += 1) level = level.properties.next;
+    assert.deepEqual(level, { type: "integer" });
+});

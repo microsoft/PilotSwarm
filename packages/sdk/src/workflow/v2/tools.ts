@@ -993,7 +993,12 @@ const INPUTS_SCHEMA_VIEW_MAX_BYTES = 32 * 1024;
 export function workflowV2ResolvedInputsSchema(ir: { inputsSchema: string | null; schemaDefs?: Record<string, JsonValue> }): JsonValue | null {
     const defs = ir.schemaDefs ?? {};
     if (!ir.inputsSchema || !Object.hasOwn(defs, ir.inputsSchema)) return null;
+    // SF-4: a budget of values made while resolving, so a small definition whose references branch (each schema
+    // referring twice to the next) cannot make an exponential copy before the size check: past it, no schema is shown.
+    let made = 0;
     const resolve = (value: JsonValue, resolving: readonly string[], depth: number): JsonValue => {
+        made += 1;
+        if (made > INPUTS_SCHEMA_VIEW_MAX_VALUES) throw INPUTS_SCHEMA_OVER_BUDGET;
         if (depth > 64) return {};
         if (Array.isArray(value)) return value.map(item => resolve(item, resolving, depth + 1));
         if (!isJsonObject(value)) return value;
@@ -1006,9 +1011,19 @@ export function workflowV2ResolvedInputsSchema(ir: { inputsSchema: string | null
         if (!isJsonObject(target)) return Object.keys(rest).length ? rest : target;
         return { ...target, ...rest };
     };
-    const resolved = resolve(defs[ir.inputsSchema], [ir.inputsSchema], 0);
+    let resolved: JsonValue;
+    try {
+        resolved = resolve(defs[ir.inputsSchema], [ir.inputsSchema], 0);
+    } catch (error) {
+        if (error === INPUTS_SCHEMA_OVER_BUDGET) return null;
+        throw error;
+    }
     return utf8ByteLength(canonicalJson(resolved)) > INPUTS_SCHEMA_VIEW_MAX_BYTES ? null : resolved;
 }
+
+/** The most values one resolution may make (SF-4); a schema of 32 KiB has far fewer. */
+const INPUTS_SCHEMA_VIEW_MAX_VALUES = 20_000;
+const INPUTS_SCHEMA_OVER_BUDGET = new Error("The resolved input schema is too large to show.");
 
 async function readOverview(store: WorkflowStore, workflowSessionId: string, options: WorkflowV2ReadOptions): Promise<{ [key: string]: JsonValue }> {
     const definition = await store.readDefinition(workflowSessionId);
