@@ -39,6 +39,102 @@ export class WorkflowSchemaError extends Error {
     }
 }
 
+/** The longest pattern a schema may have (SF-5). */
+export const SCHEMA_PATTERN_MAX_LENGTH = 512;
+
+/**
+ * Why a schema's regular expression (a `pattern`, or a `patternProperties` name) could take exponential time on a
+ * small input, or null when it cannot in the ways checked (adversarial review SF-5; no regex engine is added): it is
+ * longer than SCHEMA_PATTERN_MAX_LENGTH; a repeated group holds a repeat of its own (star height above 1, `(a+)+`); or
+ * a repeated group has alternatives that can start the same way (`(a|ab)*`, or alternatives that start with a class,
+ * an escape, a dot or nothing). A group repeated at most once (`?`, `{0,1}`) is not a repeat. Pure.
+ */
+export function unsafeSchemaPattern(pattern: string): string | null {
+    if (pattern.length > SCHEMA_PATTERN_MAX_LENGTH) return `a pattern may have at most ${SCHEMA_PATTERN_MAX_LENGTH} characters`;
+    interface Group { repeats: boolean; alternatives: Array<string | null>; first: string | null; started: boolean }
+    const open = (): Group => ({ repeats: false, alternatives: [], first: null, started: false });
+    const stack: Group[] = [open()];
+    // The length of a repeating quantifier at `at` (*, +, {n,}, {n,m} with m above 1; with its lazy or possessive mark),
+    // 0 for none, and -length for one that does not repeat (?, {0,1}, {1}).
+    const quantifier = (at: number): number => {
+        const c = pattern[at];
+        const tail = (end: number) => (pattern[end] === "?" || pattern[end] === "+" ? end + 1 : end) - at;
+        if (c === "*" || c === "+") return tail(at + 1);
+        if (c === "?") return -tail(at + 1);
+        if (c === "{") {
+            const match = /^\{(\d+)(,(\d*))?\}/.exec(pattern.slice(at));
+            if (!match) return 0;
+            const max = match[2] === undefined ? Number(match[1]) : match[3] === "" ? Infinity : Number(match[3]);
+            return max > 1 ? tail(at + match[0].length) : -tail(at + match[0].length);
+        }
+        return 0;
+    };
+    const atom = (kind: string) => {
+        const group = stack[stack.length - 1];
+        if (!group.started) { group.first = kind; group.started = true; }
+    };
+    let at = 0;
+    while (at < pattern.length) {
+        const c = pattern[at];
+        const group = stack[stack.length - 1];
+        if (c === "\\") {
+            atom("\\");
+            at += 2;
+        } else if (c === "[") {
+            let end = at + 1;
+            if (pattern[end] === "^") end += 1;
+            if (pattern[end] === "]") end += 1;
+            while (end < pattern.length && pattern[end] !== "]") end += pattern[end] === "\\" ? 2 : 1;
+            atom("[");
+            at = end + 1;
+        } else if (c === "(") {
+            const prefix = /^\((\?(:|=|!|<=|<!|<[A-Za-z_][A-Za-z0-9_]*>))?/.exec(pattern.slice(at))![0];
+            stack.push(open());
+            at += prefix.length;
+            continue;
+        } else if (c === ")") {
+            if (stack.length === 1) return "a pattern has an unmatched ')'";
+            const closed = stack.pop()!;
+            closed.alternatives.push(closed.started ? closed.first : null);
+            const q = quantifier(at + 1);
+            if (q > 0) {
+                if (closed.repeats) return "a repeated group holds a repeat of its own (such as (a+)+); write it without the nested repeat";
+                if (closed.alternatives.length > 1) {
+                    const firsts = closed.alternatives;
+                    const overlapping = firsts.some(first => first === null || first === "\\" || first === "[" || first === ".")
+                        || new Set(firsts).size !== firsts.length;
+                    if (overlapping) return "a repeated group has alternatives that can start the same way (such as (a|ab)*); make them start differently";
+                }
+            }
+            const parent = stack[stack.length - 1];
+            parent.repeats = parent.repeats || closed.repeats || q > 0;
+            atom(closed.started ? closed.first ?? "(" : "(");
+            at += 1 + Math.abs(q);
+            continue;
+        } else if (c === "|") {
+            group.alternatives.push(group.started ? group.first : null);
+            group.first = null;
+            group.started = false;
+            at += 1;
+            continue;
+        } else {
+            atom(c === "." ? "." : c);
+            at += 1;
+        }
+        // A quantifier on the atom just read.
+        const q = quantifier(at);
+        if (q > 0) stack[stack.length - 1].repeats = true;
+        at += Math.abs(q);
+    }
+    if (stack.length !== 1) return "a pattern has an unmatched '('";
+    return null;
+}
+
+function refuseUnsafePattern(pattern: string, at: string): void {
+    const reason = unsafeSchemaPattern(pattern);
+    if (reason !== null) throw new WorkflowSchemaError(`unsafe pattern: ${reason}`, at);
+}
+
 /**
  * Copy a schema, rewriting `#/schemas/` references to `#/$defs/` and
  * refusing non-local references and identity keywords.
@@ -66,8 +162,12 @@ export function normalizeSchema(schema: unknown, path: string): JsonValue {
             out.push([key, value.map((item, index) => normalizeSchema(item, `${at}[${index}]`))]);
         } else if (SUBSCHEMA_MAP_KEYWORDS.has(key)) {
             if (!isJsonObject(value)) throw new WorkflowSchemaError(`${key} must map names to schemas`, at);
+            if (key === "patternProperties") {
+                for (const name of Object.keys(value)) refuseUnsafePattern(name, `${at}.${name}`);
+            }
             out.push([key, Object.fromEntries(Object.entries(value).map(([name, item]) => [name, normalizeSchema(item, `${at}.${name}`)]))]);
         } else {
+            if (key === "pattern" && typeof value === "string") refuseUnsafePattern(value, at);
             out.push([key, value]);
         }
     }
