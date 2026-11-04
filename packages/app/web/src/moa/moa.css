@@ -314,3 +314,25 @@
 .ps-moa-stage > .ps-moa-divider::before { content: ""; position: absolute; inset: 0 -6px; }
 .ps-moa-stage > .ps-moa-divider[aria-orientation="horizontal"]::before { inset: -6px 0; }
 .ps-moa-stage > .ps-moa-divider:hover, .ps-moa-stage > .ps-moa-divider:focus-visible { background: var(--ps-selection-background); }
+
+/* The session picker (MoA panels, and the maximized chat's session selector
+   on a phone) uses the same list as the phone's session slide-over, on every
+   screen: rows two points larger and a little taller, and sub-agent chevrons.
+   Long titles end in an ellipsis rather than panning sideways (see
+   SessionPane). It fills the dialog rather than the phone pane's capped
+   strip. The dialog is portalled to <body>, so the MoA workspace's 44px phone
+   button rule never reached its + and ×; they are sized here. */
+.ps-moa-session-picker.is-phone-picker { max-height: none; }
+.ps-moa-session-picker.is-phone-picker .ps-session-list-button {
+  font-size: calc(var(--ps-font-size-dense) + 2px);
+  padding-block: 6px;
+}
+.ps-moa-session-picker.is-phone-picker > .ps-panel-header .ps-panel-actions button {
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 22px;
+}
+.ps-moa-session-picker.is-phone-picker > .ps-panel-header .ps-panel-actions button svg {
+  width: 22px;
+  height: 22px;
+}

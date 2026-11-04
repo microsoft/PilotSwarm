@@ -46,7 +46,7 @@ export async function main(operation) {
   const vmArgs = ['--subscription', c.subscription, '--resource-group', c.resourceGroup, '--name', c.name];
   // Fail closed on a mismatched private configuration: placement follows the
   // existing CI database, never a separate hard-coded region in source control.
-  const database = JSON.parse(az(['rest', '--method', 'get', '--url', `${base}/providers/Microsoft.HorizonDb/clusters/${db.cluster}?api-version=2026-01-20-preview`]));
+  const database = JSON.parse(az(['rest', '--method', 'get', '--url', `${base}/providers/Microsoft.HorizonDb/clusters/${db.cluster}?api-version=2026-10-01-preview`]));
   if (database.location.toLowerCase() !== c.location.toLowerCase()) throw new Error('Configured runner and actual CI database regions differ.');
   const existing = JSON.parse(az(['vm', 'list', '--subscription', c.subscription, '--resource-group', c.resourceGroup, '-o', 'json'])).find(vm => vm.name === c.name);
   if (existing && (existing.tags?.purpose !== 'pilotswarm-ci-runner' || existing.tags?.repository !== c.repository)) throw new Error('Existing VM is not owned by this CI runner configuration.');

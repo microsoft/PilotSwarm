@@ -798,7 +798,14 @@ function buildChatMessage(event, role) {
     const assistantPhase = chatRole === "assistant"
         ? String(event?.data?.phase || "").trim().toLowerCase()
         : "";
-    const isAssistantCommentary = assistantPhase === "commentary";
+    // OpenAI models label a message written between tool calls "commentary"
+    // and the answer "final_answer". Other models (Claude) send no phase: the
+    // same message is one that calls tools. Treat it as commentary too, so a
+    // mid-turn update (a question's options, a progress report) shows in full
+    // with every model, instead of in a bounded "Agent update" box.
+    const callsTools = chatRole === "assistant" && !assistantPhase
+        && Array.isArray(event?.data?.toolRequests) && event.data.toolRequests.length > 0;
+    const isAssistantCommentary = assistantPhase === "commentary" || callsTools;
     return {
         id: `${event.sessionId}:${event.seq}`,
         role: chatRole,
@@ -825,10 +832,14 @@ function buildChatMessage(event, role) {
 // A saved assistant.message is not necessarily the answer: a single runTurn
 // can contain many tool-loop utterances. Only its successful durable boundary
 // promotes the last eligible message. Use the same rule for replay and append.
+// A turn that ends to wait (a timer, a cron, a question to the user, waiting
+// for sub-agents) ended normally too: the model called the tool, then wrote
+// its answer. Only a failed, cancelled or stopped turn has no answer.
+const UNFINISHED_TURN_RESULTS = new Set(["error", "failure", "cancelled", "stopped"]);
 function settleAssistantResponses(chat, event) {
     const resultType = event?.data?.resultType || event?.data?.result;
     const successful = event?.eventType === "session.turn_completed"
-        && (!resultType || resultType === "completed");
+        && !UNFINISHED_TURN_RESULTS.has(resultType);
     let finalIndex = -1;
     for (let index = chat.length - 1; index >= 0; index -= 1) {
         if (chat[index]?.responsePending) {

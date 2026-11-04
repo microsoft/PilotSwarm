@@ -26,12 +26,15 @@ const widths = (page) => page.evaluate(() => {
         canvas: w(".ps-canvas-layer:not(.is-hidden)"),
         diagnostics: w(".ps-workspace-column-host .ps-workspace-column:not(.is-artifact)"),
         chat: w(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child"),
+        list: w(".ps-workspace-main-grid > .ps-workspace-pane-slot:first-child:not(:last-child)") ?? 0,
     };
 });
 
 test("dragging the chat seam widens the canvas, and the diagnostics column keeps its width", async ({ page }) => {
-    // 1600 wide: 640 + 1 + 320 is exactly the old 60% cap, the failing case.
-    await page.setViewportSize({ width: 1600, height: 900 });
+    // 1920 wide: room for chat to give. (At 1600, 640 + 1 + 320 was exactly
+    // the old 60% cap, and chat is now already near its floor there, because
+    // the session list keeps its width.)
+    await page.setViewportSize({ width: 1920, height: 900 });
     await page.goto(base);
     await page.locator(".ps-session-list-button").first().waitFor();
     // The workspace opens as sessions + chat; open the canvas column here.
@@ -66,9 +69,9 @@ test("dragging the chat seam widens the canvas, and the diagnostics column keeps
     const after = await widths(page);
     expect(after.canvas - before.canvas, "the canvas took the drag").toBeGreaterThan(100);
     expect(Math.abs(after.diagnostics - before.diagnostics), "diagnostics did not move").toBeLessThan(3);
-    // Chat gives up most of it; the sessions column (a share of the main
-    // grid) gives up the rest. What matters is that the right block grew.
-    expect(before.chat - after.chat, "chat gave up the pixels").toBeGreaterThan(60);
+    // Chat gives up the pixels; the session list never does.
+    expect(before.chat - after.chat, "chat gave up the pixels").toBeGreaterThan(100);
+    expect(Math.abs(after.list - before.list), "the session list kept its width").toBeLessThan(2);
 });
 
 test("the seam stops at chat's floor instead of inflating the stored width", async ({ page }) => {

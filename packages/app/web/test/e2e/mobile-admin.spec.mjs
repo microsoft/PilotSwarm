@@ -264,6 +264,14 @@ for (const themeId of ["hearth", "github-light"]) {
             await expect(page.locator(".ps-modal.is-theme-picker")).toBeVisible();
             await page.evaluate(() => history.back());
             await expect(page.locator(".ps-modal.is-theme-picker")).toHaveCount(0);
+            // The session filter lives here on a phone (the toolbar has no room
+            // for its funnel); Back closes it like any other overlay.
+            const filterRow = pane.getByRole("button", { name: "Filter sessions", exact: true });
+            await expect(filterRow).toContainText("Show sessions from");
+            await filterRow.click();
+            await expect(page.locator(".ps-modal")).toBeVisible();
+            await page.evaluate(() => history.back());
+            await expect(page.locator(".ps-modal")).toHaveCount(0);
             await expect(consoleRoot(page).locator("[data-level='1']")).toBeVisible();
             await page.reload();
             await openConsole(page);
@@ -353,6 +361,7 @@ test("phone canvas and console never cover each other", async ({ page }) => {
     try {
         const canvas = page.locator(".ps-mobile-canvas-layer");
         const entry = page.locator(".ps-toolbar.is-mobile").getByRole("button", { name: /Show canvas/ });
+        await page.getByRole("button", { name: "Sessions", exact: true }).click();
         await page.locator(".ps-session-list-button").first().click();
         await expect(page.locator(".ps-session-list-button.is-selected")).toHaveCount(1);
         await entry.click();

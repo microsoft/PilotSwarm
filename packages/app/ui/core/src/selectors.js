@@ -4331,6 +4331,21 @@ export function selectFileBrowserItems(state) {
     ));
 }
 
+/**
+ * Whether the desktop artifact reader is showing.
+ *
+ * The reader belongs to the session its artifact came from: opening one from
+ * a chat card switches to that session first. Switching to another session
+ * used to leave it open over the new session, titled with the old artifact
+ * and empty, because the preview resolves files of the ACTIVE session. It now
+ * steps aside while another session is active and comes back when you return.
+ */
+export function selectArtifactPaneShown(state) {
+    const id = state?.files?.selectedArtifactId || "";
+    const activeSessionId = state?.sessions?.activeSessionId || "";
+    return Boolean(state?.files?.paneOpen && id && activeSessionId && id.startsWith(`${activeSessionId}/`));
+}
+
 export function selectSelectedFileBrowserItem(state) {
     const items = selectFileBrowserItems(state);
     if (items.length === 0) return null;
