@@ -23,14 +23,14 @@ implementation is narrower than the design.
 `grace_seconds` 0 to 3600, default 60):
 
 1. The store accepts the stop once per operation id
-   (`WorkflowStore.requestRunStop`, migration 0096). One reading of the
+   (`WorkflowStore.requestRunStop`, migration 0100). One reading of the
    store's clock is the stop's time; the deadline is that reading plus the
    grace. A repeat returns the receipt; another stop of a stopping run is
    `RUN_ALREADY_STOPPING`.
 2. Only a run admitted for a controller that stops is accepted. Each run
    now records the controller version its admission chose
    (`workflow_runs.controller_version`). Runs admitted for 1.8.0, and runs
-   admitted before migration 0096, are refused with `RUN_STOP_UNSUPPORTED`;
+   admitted before migration 0100, are refused with `RUN_STOP_UNSUPPORTED`;
    cancel still applies to them.
 3. A stopping run admits no new node execution, paused or not
    (`enterNode` refuses `stopping`). Pause and resume refuse it
@@ -98,7 +98,7 @@ review:
   `forbidden`, `invalid_output`, `cancelled`) is decided by the workflow.
 - **Admission.** The input is checked against `inputSchema`. The deadline
   is the admission's store-clock reading plus `timeoutSeconds` (a literal or
-  one binding, checked on entry). The invocation record (migration 0097)
+  one binding, checked on entry). The invocation record (migration 0101)
   freezes the child's session id (a UUID derived from the node execution,
   so a retry names the same session and a later occurrence another), the
   controlling parent agent (the workflow's parent), the task, the outcomes
@@ -310,7 +310,7 @@ workflow is not tested; `test` refuses it with `TEST_NEEDS_DRAFT`, 409 for a per
 offered so a test run begun as a draft can finish), with its scripts running normally and every framework effect
 intercepted. It runs at controller 1.9.0 under its own controller instance
 (`wft-<run id>`), with its own KV, inbox and outbox, beside the live run,
-which it never changes. Any number of test runs may exist. Migration 0098
+which it never changes. Any number of test runs may exist. Migration 0102
 adds the run's virtual clock and fixtures and the interception records.
 
 `update_workflow` operations (taken only by a host that starts 1.9.0 runs;
@@ -391,7 +391,7 @@ default.
   in a live run. A worker without an agent host fails the state
   `unavailable`; nothing is answered for it.
 - **Pinned identity (R18).** The test pins its named agents when it is
-  admitted (migration 0101, `workflow_runs.test_agent_pins`): a test of the
+  admitted (migration 0105, `workflow_runs.test_agent_pins`): a test of the
   published revision takes the publication's pins; a test of a draft is
   pinned as its publication would be, so an agent the publication could
   not pin (unavailable, a system agent, another package or version)
@@ -465,7 +465,7 @@ The draft and publication lifecycle (spawn a draft, replace it at an
 expected revision under the one-semver rule, publish an exact revision and
 hash, start one live run) was already in place. This milestone adds what
 binds a publication and a test to the exact versions they used
-(migration 0099):
+(migration 0103):
 
 - **Agent pins.** On a host that resolves agents (`WorkflowV2Host.resolveAgent`:
   the hosts that run controller 1.9.0, below), publication resolves every
@@ -549,7 +549,7 @@ keeps its pin and everyone else keeps the active version. A person's
 publication pins package agents only (the management client does not see a
 worker's deployment agents). A real-agent test run of a draft
 revision is pinned when it is admitted, as its publication would be
-(migration 0101; see "Real agents" above). A package agent's workflow
+(migration 0105; see "Real agents" above). A package agent's workflow
 interface is matched and its digest pinned too ("Package workflow
 interfaces" below). Not covered: a publication gate on declared test
 scenarios (not in the YAML design).
@@ -1622,7 +1622,7 @@ limits: { maxNodeExecutions: 100, timeoutSeconds: 3600, onExceeded: expired }
   `WORKFLOW_FEATURE_UNSUPPORTED`, so no definition that a 1.8.0 run would
   not enforce is published. A definition without a deadline keeps its IR
   byte for byte.
-- **The deadline.** The begin transaction writes it once (migration 0100,
+- **The deadline.** The begin transaction writes it once (migration 0104,
   `workflow_runs.deadline_at`): the run's clock when it begins plus the
   seconds. A test run counts on its virtual clock. Pause does not stop it
   (D03).
@@ -1666,7 +1666,7 @@ it rely on:
   definition of IR 6 or earlier is published and started as before.
 - **A run keeps its controller version.** A run is started, recovered and
   reported at the controller version it recorded at admission (migration
-  0096; a run admitted earlier recorded none and is a 1.8.0 run), never at
+  0100; a run admitted earlier recorded none and is a 1.8.0 run), never at
   the acting host's version: a 1.9.0 host recovers a 1.8.0 run at 1.8.0, and
   a 1.8.0 host refuses to start or recover a 1.9.0 run
   (`CONTROLLER_UNAVAILABLE`) before it records anything. Its notifier is its

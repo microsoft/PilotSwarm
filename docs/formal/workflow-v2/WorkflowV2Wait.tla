@@ -305,7 +305,7 @@ ApplyCancel ==
     /\ wAt' = IF ~deleted /\ run \in Active /\ wState = "pending" THEN clk ELSE wAt
     /\ UNCHANGED <<clk, deleted, pauses, accAt, commitAt, dl, admVars, ctrlDl, elVars, crashes, zombie>>
 
-(* Soft delete and the deletion trigger (0087): the run ends and a pending  *)
+(* Soft delete and the deletion trigger (0091): the run ends and a pending  *)
 (* wait loses to the deletion, in one transaction.                          *)
 Delete ==
     /\ Deletes

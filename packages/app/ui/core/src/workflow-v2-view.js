@@ -151,8 +151,8 @@ const shortHash = workflowV2ShortHash;
  * M17 "Inspect package pin"): the workflow interface the state names (its
  * graph's `invoke.interface`, `<name>@<version>`), and its pin in `source`,
  * the shown run's pins (projectWorkflowV2): `{ by: "publication" | "test",
- * pins }` (migration 0099's publication pins, or a real-agent test run's,
- * migration 0101), or `{ by: "mocked" }` for a mocked test run, whose
+ * pins }` (migration 0103's publication pins, or a real-agent test run's,
+ * migration 0105), or `{ by: "mocked" }` for a mocked test run, whose
  * agents do not run. A pin is the package, version, exact revision and the
  * interface's digest publication matched. Null for any other state.
  */
@@ -547,7 +547,7 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
         ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, workflowBanners, run, overlay, runRevision, waitingReplies,
         lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision,
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
-        // What publication pinned each named agent state to (migration 0099; only a definition with any has them).
+        // What publication pinned each named agent state to (migration 0103; only a definition with any has them).
         publishedAgentPins: isRecord(lifecycle.publishedAgentPins) ? lifecycle.publishedAgentPins : null,
     };
 }

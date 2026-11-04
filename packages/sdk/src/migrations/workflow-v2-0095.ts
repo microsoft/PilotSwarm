@@ -1,49 +1,43 @@
 /**
- * Migration 0095 — workflow v2 durable recipient intake: the possible-exposure
- * record.
+ * Migration 0095 — workflow v2 messaging send states: the outbox.
  *
- * Nothing writes it yet (design docs/proposals/workflow-durable-intake.md;
- * exposure protocol revision 2; decision intake-exposure-r2-implementation):
- * only tests call the store's admission, as only tests register orchestration
- * 1.0.83 and its turn activities.
+ * - workflow_outbox: one row per send state's node execution, written in the
+ *   transaction that admits it, after the recipient was decided under the
+ *   session locks: the message's intent (recipient, contract, payload),
+ *   before any delivery. exchange_id is stable (the node execution's id), so
+ *   every delivery attempt of it carries the same identity. A delivery
+ *   counts its attempts and records its receipt (delivered) or its failure
+ *   (failed) once, from pending; it is never deleted.
  *
- * - workflow_intake_exposures: at most one row per invocation (key, and a
- *   foreign key to workflow_intake_invocations that does not cascade),
- *   inserted by the first admission that lets an attempt include the
- *   invocation's items in a model request: its recipient, that attempt's id
- *   as the orchestration recorded it, and the store's clock. It means the
- *   items were possibly seen; never that a request was sent, nor that it
- *   completed. The admission, every end and every unsent cancel read it under
- *   the invocation's advisory lock (store.ts lockIntakeInvocation), which
- *   serializes them; only an admission holding that lock inserts it, and only
- *   when none exists. A guard trigger raises on every UPDATE, a no-op one
- *   included, and on every DELETE.
- *
- * Purely additive: one table and its guard trigger. The tables, triggers and
- * guards of 0094 are unchanged, and no existing row is touched. It has no
- * down step.
+ * Additive: no existing row changes.
  */
-export function workflowV2IntakeExposuresMigration(schema: string): string {
+export function workflowV2OutboxMigration(schema: string): string {
     const s = `"${schema}"`;
     return `
--- 0095_workflow_v2_intake_exposures
+-- 0095_workflow_v2_outbox
 
-CREATE TABLE IF NOT EXISTS ${s}.workflow_intake_exposures (
-    invocation_id        TEXT PRIMARY KEY REFERENCES ${s}.workflow_intake_invocations (invocation_id),
+CREATE TABLE IF NOT EXISTS ${s}.workflow_outbox (
+    exchange_id          TEXT PRIMARY KEY,
+    node_execution_id    TEXT NOT NULL UNIQUE REFERENCES ${s}.workflow_node_executions (node_execution_id),
+    workflow_session_id  TEXT NOT NULL,
+    run_id               TEXT NOT NULL REFERENCES ${s}.workflow_runs (run_id),
+    mode                 TEXT NOT NULL,
     recipient_session_id TEXT NOT NULL,
-    attempt_id           TEXT NOT NULL,
-    exposed_at           TIMESTAMPTZ NOT NULL
+    contract             TEXT NOT NULL,
+    payload              TEXT NOT NULL,
+    payload_sha256       TEXT NOT NULL,
+    state                TEXT NOT NULL DEFAULT 'pending',
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    created_at           TIMESTAMPTZ NOT NULL,
+    last_attempt_at      TIMESTAMPTZ,
+    decided_at           TIMESTAMPTZ,
+    receipt              TEXT,
+    error                TEXT,
+    CONSTRAINT workflow_outbox_mode CHECK (mode IN ('send')),
+    CONSTRAINT workflow_outbox_state CHECK (state IN ('pending', 'delivered', 'failed')),
+    CONSTRAINT workflow_outbox_decided CHECK ((state = 'pending') = (decided_at IS NULL)),
+    CONSTRAINT workflow_outbox_receipt CHECK ((state = 'delivered') = (receipt IS NOT NULL))
 );
-
--- An exposure is inserted once and is never changed or deleted.
-CREATE OR REPLACE FUNCTION ${s}.workflow_v2_intake_exposure_guard() RETURNS TRIGGER AS $$
-BEGIN
-    RAISE EXCEPTION 'intake exposure %: an exposure is written once and is never changed or deleted', OLD.invocation_id;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS workflow_intake_exposures_guard ON ${s}.workflow_intake_exposures;
-CREATE TRIGGER workflow_intake_exposures_guard BEFORE UPDATE OR DELETE ON ${s}.workflow_intake_exposures
-    FOR EACH ROW EXECUTE FUNCTION ${s}.workflow_v2_intake_exposure_guard();
+CREATE INDEX IF NOT EXISTS workflow_outbox_by_run ON ${s}.workflow_outbox (run_id, created_at);
 `;
 }

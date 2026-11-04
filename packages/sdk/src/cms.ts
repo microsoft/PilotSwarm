@@ -1172,14 +1172,14 @@ export interface SessionCatalog {
      */
     getSessionCreationConfig?(sessionId: string): Promise<Record<string, unknown> | null>;
 
-    /** Workflow v2 persistence on the same database and schema (migration 0085). Optional for other stores. */
+    /** Workflow v2 persistence on the same database and schema (migration 0089). Optional for other stores. */
     workflowStore?(): import("./workflow/v2/store.js").WorkflowStore;
 
     /**
      * Create a workflow v2 session row only if no row with this id exists
      * (live, deleted, or being created concurrently). On `created: false`
      * nothing was changed. Kind, lineage, creation config and owner are
-     * written in the same transaction as the claim (migration 0085).
+     * written in the same transaction as the claim (migration 0089).
      */
     createWorkflowSessionV2?(sessionId: string, opts: {
         parentSessionId: string | null;

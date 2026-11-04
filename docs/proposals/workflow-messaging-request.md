@@ -120,7 +120,7 @@ contracts:
 
 ## 3. Records
 
-One migration (0093 in the foundation; design A's storage may take a later
+One migration (0097 in the foundation; design A's storage may take a later
 number):
 
 - `workflow_outbox.mode` admits `request`; existing `send` rows stay valid.
@@ -178,7 +178,7 @@ the first winner stays.
 | Responder observation (controller, 4.4) | Session locks as a response, then node | `unavailable` or `forbidden`, winner `controller` | none | none |
 | Delivery failure (`failDelivery`, `beginDelivery`'s refusals, the collection of an ended delivery orchestration) | As a send's (`store.ts` 2277, 2399) | `unavailable`, `forbidden` or `delivery_failed` | none | none (the delivery orchestration's wake and collection) |
 | The run's end (`finishRun`: cancel, recover, a failed or completed run, a later stop) | Requester's session lock, run, nodes (`store.ts` 2440) | `cancelled`, winner `cancel` or `controller` | none | none |
-| Deletion of the requesting workflow (trigger, `migrations/workflow-v2-0087.ts` 58) | The soft delete's own transaction | `cancelled`, winner `delete` | none | none |
+| Deletion of the requesting workflow (trigger, `migrations/workflow-v2-0091.ts` 58) | The soft delete's own transaction | `cancelled`, winner `delete` | none | none |
 | Admission refusal (`enterNode`) | At entry | an immediate result; the node is never pending | none | none |
 
 Because the status is derived, no producer writes a second status, and the
@@ -198,7 +198,7 @@ deletion trigger stays as it is.
   the rule refuses gets `REQUEST_NOT_FOUND`.
 - Deletion with the delivery child ended, with the request delivered but
   unanswered, and repeated deletion: the trigger acts on the first soft
-  delete only (`OLD.deleted_at IS NULL`, `migrations/workflow-v2-0087.ts`
+  delete only (`OLD.deleted_at IS NULL`, `migrations/workflow-v2-0091.ts`
   47); the status is `cancelled` at once, with no later attempt needed.
 - Cancel, recover or stop after a response: the node is already decided;
   `finishRun` ends only pending nodes; the response and its receipt stay.

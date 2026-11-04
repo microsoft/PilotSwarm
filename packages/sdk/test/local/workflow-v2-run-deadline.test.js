@@ -1,6 +1,6 @@
 /**
  * Workflow v2 run deadlines (design 02 run lifecycle, D03, and the canonical
- * `limits: { timeoutSeconds, onExceeded }`; migration 0100), INACTIVE: only
+ * `limits: { timeoutSeconds, onExceeded }`; migration 0104), INACTIVE: only
  * a host that starts runs at controller 1.9.0 compiles one, and only that
  * controller enforces it.
  *

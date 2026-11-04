@@ -81,7 +81,7 @@ Revision 2:
 
 | Fact | Source |
 |---|---|
-| The exchange id is the node execution id (`nx-` + 40 hex); the outbox stores it once in both columns. There is no second id. | `store.ts` 641-642, 1912 (outbox insert); migration 0091 |
+| The exchange id is the node execution id (`nx-` + 40 hex); the outbox stores it once in both columns. There is no second id. | `store.ts` 641-642, 1912 (outbox insert); migration 0095 |
 | A send attempt reads the recipient's status, counts the attempt (`beginDelivery`), then queues `{prompt, sender, clientMessageIds: [workflow:<wf>:<run>:send:<nx>]}`. A failure after the queue accepted it and before `recordDelivery` queues it again. | `runtime.ts` 850-859, 1917-1985 |
 | The deliver activity is one activity name; old and new workers that have the workflow store both run it. A session orchestration version does not select its code. | `runtime.ts` 1917; `worker.ts` 1039-1053 |
 | Public ingress: the field-by-field builders (`client.ts` 1059-1078, `management-client.ts` 4108-4120, `session-messages.ts` 172-176) and the generic `sendSessionEvent` (`POST /sessions/:sessionId/events`, `session:write`), which queues any JSON object on `messages` (`client.ts` 1630-1638; `api/src/protocol.js` 73). | as listed |
@@ -642,7 +642,7 @@ flag.
   capability tag (section 8), because an older worker would ignore the
   `intake` field.
 - **Possible exposure** (exposure protocol revision 2; decision
-  intake-exposure-r2-implementation; migration 0095). The installed native
+  intake-exposure-r2-implementation; migration 0099). The installed native
   runtime gives an activity no delivery count, so a crash after a request
   included the items and before its result was accepted would otherwise
   leave no durable trace. Before any request may include an invocation's

@@ -1,8 +1,8 @@
 // An agent state's workflow interface and its pin (design 03, 04, 09; R09, R18; mock M17 "Inspect package pin") in
 // the portal's node details and the TUI's workflow view, from the read model readWorkflowV2View returns: the interface
 // the state names (describeWorkflowV2State's invoke.interface) and the pin of the shown run. That is the publication's
-// (definition.publishedAgentPins, migration 0099) for the published revision, a real-agent test run's own
-// (run.test.agentPins, migration 0101) when it tested the graph's revision, and none for a mocked test run. A pin shows
+// (definition.publishedAgentPins, migration 0103) for the published revision, a real-agent test run's own
+// (run.test.agentPins, migration 0105) when it tested the graph's revision, and none for a mocked test run. A pin shows
 // the package, version, exact revision and the interface's digest, short. Malformed or older pins show what they hold.
 // Read-only: nothing is sent.
 //

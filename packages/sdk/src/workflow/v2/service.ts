@@ -87,7 +87,7 @@ export interface WorkflowV2Host {
      * owner sees by that name, among the agents of `packageName` when the
      * state names one, or null. When the host has it, publication pins every
      * named agent state of the published revision to what it returns
-     * (WorkflowStore publication, migration 0099) and refuses one it cannot
+     * (WorkflowStore publication, migration 0103) and refuses one it cannot
      * resolve (AGENT_UNAVAILABLE), also when the resolution itself fails.
      * The hosts that run controller 1.9.0 resolve with agent-resolver.ts: a
      * package agent at the registry's exact revision.
@@ -218,7 +218,7 @@ function controllerVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
 }
 
 /**
- * The controller version a run was admitted for (migration 0096; a run
+ * The controller version a run was admitted for (migration 0100; a run
  * admitted before it records none, and 1.8.0 was then the only version). A
  * run is started, recovered and reported only at its own version, never at
  * the version of the host that acts on it: design 02 never points a
@@ -318,7 +318,7 @@ function validateRunInputs(ir: WorkflowIR | null, irSha256: string | null, input
     }
 }
 
-/** A live run's admission, for the controller version this host starts runs at (stored with the run, migration 0096). */
+/** A live run's admission, for the controller version this host starts runs at (stored with the run, migration 0100). */
 function liveAdmission(host: Pick<WorkflowV2Host, "requests">, workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null): RunAdmission {
     return {
         runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
@@ -1098,7 +1098,7 @@ async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest
     return { receipt: stored.receipt, replayed: stored.replayed };
 }
 
-// ─── Test runs (migration 0098; design 05 tool-mocked testing; INACTIVE) ───
+// ─── Test runs (migration 0102; design 05 tool-mocked testing; INACTIVE) ───
 
 /** update_workflow operation test: a test run of the exact current revision (INACTIVE: only a host that starts 1.9.0 runs takes it). */
 export interface WorkflowV2TestCommand {
@@ -1108,7 +1108,7 @@ export interface WorkflowV2TestCommand {
     vars?: { [key: string]: JsonValue };
     agentMode: "mocked" | "real";
     fixtures: WorkflowTestFixture[];
-    /** The scenario the test run is for (migration 0099), kept with its results as evidence; null for none. */
+    /** The scenario the test run is for (migration 0103), kept with its results as evidence; null for none. */
     scenario?: string | null;
 }
 

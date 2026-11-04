@@ -9,7 +9,7 @@
  *   or a run deadline): CONTROLLER_UNAVAILABLE, and nothing is written. A
  *   host that starts 1.9.0 runs does both.
  * - A run is started and recovered at the controller version it recorded at
- *   admission (a run admitted before migration 0096 recorded none: 1.8.0),
+ *   admission (a run admitted before migration 0100 recorded none: 1.8.0),
  *   never at the acting host's version; a host that does not run that
  *   version refuses before anything is recorded. Its notifier is the one of
  *   that version.

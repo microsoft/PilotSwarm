@@ -24,7 +24,7 @@ CONSTANTS
     PausedBackstop,     \* the code: the paused wait races a timer; FALSE is a deliberate fault
     CountOnAdmitted,    \* the code: the ordinal counts only a stored admission; FALSE is a deliberate fault
     BeginMarksBegun,    \* the code: begin of a run paused before it began records paused_from running; FALSE is a deliberate fault
-    TriggerEndsPaused,  \* migration 0087: the deletion trigger ends a paused run too; FALSE is the 0086 trigger
+    TriggerEndsPaused,  \* migration 0091: the deletion trigger ends a paused run too; FALSE is the 0090 trigger
     LoseWake,           \* fault: a resume's wake is lost
     PauseBeforeBegin,   \* environment: a pause may come before the controller begins the run
     Cancels,            \* environment: the parent may cancel the run after it began
@@ -285,8 +285,8 @@ SetVars ==
     /\ kv' = kv + 1
     /\ UNCHANGED <<status, pausedFrom, deleted, nodeVars, ctlVars, envVars>>
 
-(* Soft delete and the deletion trigger: 0087 ends an admitted, running or  *)
-(* paused run with its pending nodes; 0086 ended only admitted and running. *)
+(* Soft delete and the deletion trigger: 0091 ends an admitted, running or  *)
+(* paused run with its pending nodes; 0090 ended only admitted and running. *)
 Delete ==
     /\ Deletes
     /\ ~deleted
@@ -330,7 +330,7 @@ Inv_OrdinalCountsAdmissions == \A s \in States : nOrd[s] \in {0, 1}
 (* A state is admitted after its predecessor completed.                    *)
 Inv_AdmissionOrder == \A s \in 2..Steps : nState[s] # "absent" => nState[s - 1] = "completed"
 
-(* paused <=> paused_from is set (the 0087 check constraint).              *)
+(* paused <=> paused_from is set (the 0091 check constraint).              *)
 Inv_PausedFrom == (status = "paused") <=> (pausedFrom # "none")
 
 (* Pause is not an end: the controller ends only with its run.             *)

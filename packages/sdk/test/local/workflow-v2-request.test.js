@@ -20,7 +20,7 @@
  * Nothing here runs a request: the controller, the tool and the delivery
  * are gated (design section 8.4).
  *
- * The store's request records and response transaction (migration 0093),
+ * The store's request records and response transaction (migration 0097),
  * called directly as no runtime calls them yet:
  * - a request state admitted pending writes its message intent (outbox, mode
  *   request) and its immutable request record with the node's deadline; a
@@ -533,7 +533,7 @@ async function requestHarness(env) {
     const binding = async (exchangeId, operationId) => (await q(
         "SELECT result_sha256, outcome, status, count FROM SCHEMA.workflow_request_operations WHERE exchange_id = $1 AND operation_id = $2",
         [exchangeId, operationId]))[0] ?? null;
-    /** Run one statement with migration 0093's guard trigger on `table` off: a committed fixture the store's own writes never make. */
+    /** Run one statement with migration 0097's guard trigger on `table` off: a committed fixture the store's own writes never make. */
     const withoutGuard = async (table, text, params = []) => {
         await q(`ALTER TABLE SCHEMA.${table} DISABLE TRIGGER ${table}_guard`);
         try { return await q(text, params); } finally { await q(`ALTER TABLE SCHEMA.${table} ENABLE TRIGGER ${table}_guard`); }

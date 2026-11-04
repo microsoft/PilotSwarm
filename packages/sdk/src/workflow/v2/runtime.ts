@@ -296,7 +296,7 @@ export function workflowEffectInstanceId(nodeExecutionId: string): string {
     return `wfx-${nodeExecutionId}`;
 }
 
-/** The controller instance of a test run (migration 0098; INACTIVE): one per test run, beside the workflow's live controller. */
+/** The controller instance of a test run (migration 0102; INACTIVE): one per test run, beside the workflow's live controller. */
 export function workflowTestControllerInstanceId(runId: string): string {
     return `wft-${runId}`;
 }
@@ -335,7 +335,7 @@ export function workflowAgentClientMessageId(workflowSessionId: string, runId: s
     return `workflow:${workflowSessionId}:${runId}:agent:${nodeExecutionId}`;
 }
 
-/** The package and version a publication pinned an agent state's named agent to (migration 0099); null when it pinned none. */
+/** The package and version a publication pinned an agent state's named agent to (migration 0103); null when it pinned none. */
 function agentPinOf(pins: JsonValue, stateId: string): { package: string | null; version: string | null; packageId: string | null; revision: string | null } | null {
     if (pins === null) return null;
     const pin = isJsonObject(pins) ? pins[stateId] : undefined;
@@ -431,7 +431,7 @@ export interface ControllerPlan {
         parallel?: { initial: string; concurrency: number; failFast: boolean };
     }>;
     /**
-     * A test run (1.9.0 plans only; migration 0098): its agent, send and request states are intercepted (no child, delivery
+     * A test run (1.9.0 plans only; migration 0102): its agent, send and request states are intercepted (no child, delivery
      * or request exchange starts), and its deadlines run on its virtual clock. Absent for a live run.
      */
     test?: true;
@@ -442,7 +442,7 @@ export interface ControllerPlan {
      */
     realAgents?: true;
     /**
-     * A live run's deadline (1.9.0 plans only; limits.timeoutSeconds, migration 0100), as the store wrote it when the run
+     * A live run's deadline (1.9.0 plans only; limits.timeoutSeconds, migration 0104), as the store wrote it when the run
      * began: the controller wakes then to have the run expired. A test run's deadline is on its virtual clock and has none
      * here: its collection and admissions report it.
      */
@@ -665,7 +665,7 @@ function parseCollectedWithStop(value: unknown): { collected: CollectedResult[];
 }
 
 /**
- * The expire activity's answer (controller 1.9.0; migration 0100): the run ended (`expired` when its deadline ended it,
+ * The expire activity's answer (controller 1.9.0; migration 0104): the run ended (`expired` when its deadline ended it,
  * false when another end came first), or the time its clock has left (at least 1 ms).
  */
 function parseExpire(value: unknown): { ended: true; expired: boolean; result: ControllerResult } | { ended: false; remainingMs: number } {
@@ -1144,7 +1144,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
  * continues as new at 1.9.0. A response decides the request's node in its
  * own transaction; its wake, or the backstop, makes this controller collect it.
  *
- * Graceful stop (design 02 run lifecycle, D03; migration 0096): once the
+ * Graceful stop (design 02 run lifecycle, D03; migration 0100): once the
  * run has an accepted stop (an admission refused "stopping", or a
  * collection that reports it), this controller admits nothing and routes
  * no result: the work it admitted settles (its results are stored and
@@ -1174,7 +1174,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     // The run's accepted stop, as the store last reported its deadline (not carried by continue-as-new: a stop is never
     // withdrawn, and the next execution reads it again at its first admission or collection).
     let stopping: { deadlineMs: number } | null = null;
-    // The run's deadline (limits.timeoutSeconds, migration 0100) on this controller's timers: a live run's, as the store wrote
+    // The run's deadline (limits.timeoutSeconds, migration 0104) on this controller's timers: a live run's, as the store wrote
     // it when the run began, moved later while the store's clock has not reached it. A test run's is on its virtual clock and
     // is not timed here: its admissions and collections report it.
     let runDeadlineMs: number | null = plan.deadlineMs ?? null;
@@ -1325,7 +1325,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             }
             if (node.type === "messaging") {
                 cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
-                // A test run intercepts a send's delivery and a request's exchange (migration 0098): its parent, or a fixture,
+                // A test run intercepts a send's delivery and a request's exchange (migration 0102): its parent, or a fixture,
                 // answers the interception, and a request's deadline runs on the run's virtual clock.
                 if (plan.test === true && node.mode !== "receive" && entered.state === "pending") {
                     yield* persistentlyTagged(ctx, R.intercept, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId });
@@ -1367,8 +1367,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
                 if (entered.state === "pending") {
                     expect(cursor.deadlineMs !== null, `agent state ${entered.nodeExecutionId} has no deadline`);
-                    // A test run's agent is mocked (migration 0098): no child is created; its parent, or a fixture, answers.
-                    // A real-agent test run's agent state gets its child as a live run's does (migration 0101).
+                    // A test run's agent is mocked (migration 0102): no child is created; its parent, or a fixture, answers.
+                    // A real-agent test run's agent state gets its child as a live run's does (migration 0105).
                     if (plan.test === true && plan.realAgents !== true) {
                         yield* persistentlyTagged(ctx, R.intercept, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId });
                         continue;
@@ -2306,7 +2306,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         return { admitted: false, status: run.status, outcome: null, stopping: { deadlineMs: run.stop.deadlineAt.getTime() } };
     };
-    /** The enter result of a run past its deadline (controller 1.9.0; migration 0100): no admission; its controller expires it. */
+    /** The enter result of a run past its deadline (controller 1.9.0; migration 0104): no admission; its controller expires it. */
     const expiredRefusal = (run: WorkflowRunRow, requests: boolean) => {
         if (!requests || run.deadlineAt === null) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} has a deadline, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
@@ -2642,12 +2642,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const plan: ControllerPlan = {
             name: ir.name, version: ir.version, initial: ir.initial, maxNodeExecutions: ir.limits.maxNodeExecutions,
             wakeBackstopMs: deps.wakeBackstopMs ?? WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS, catchAll: ir.catchAll, nodes,
-            // A test run (migration 0098) runs only on controller 1.9.0.
+            // A test run (migration 0102) runs only on controller 1.9.0.
             ...(run.mode === "test" ? (() => {
                 if (!requests) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is a test run, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
                 return { test: true as const, ...(run.testAgentMode === "real" ? { realAgents: true as const } : {}) };
             })() : {}),
-            // A live run's deadline (migration 0100), as its begin wrote it; a test run's is on its virtual clock.
+            // A live run's deadline (migration 0104), as its begin wrote it; a test run's is on its virtual clock.
             ...(run.deadlineAt !== null && run.mode === "live" ? (() => {
                 if (!requests) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} has a deadline, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
                 return { deadlineMs: run.deadlineAt.getTime() };
@@ -2776,10 +2776,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     else {
                         const definition = await store.readDefinition(current.workflowSessionId);
                         // A run of a published revision, live or test (design 05: a test pins as a live run would), binds a
-                        // named agent to what its publication pinned (migration 0099; T018, T070): a package republished since
+                        // named agent to what its publication pinned (migration 0103; T018, T070): a package republished since
                         // is never picked up silently. A pin with the exact package revision (R18) runs that revision after a
                         // republish; one without (a publication made before revisions were pinned) is refused once its version
-                        // is gone. A real-agent test run binds to what it pinned when it was admitted (migration 0101: its
+                        // is gone. A real-agent test run binds to what it pinned when it was admitted (migration 0105: its
                         // publication's pins, or a draft's as its publication would pin them), whatever is published since.
                         const pin = !("agent" in node.invoke) ? null
                             : current.mode === "test" && current.testAgentMode === "real" ? agentPinOf(current.testAgentPins, nodeId)
@@ -2821,7 +2821,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 inputText = canonicalJson(null);
             }
             if (immediate) immediate = { ...immediate, winner: "controller" };
-            // A test run intercepts what an agent, send or request state would do (migration 0098; design 05): an interception
+            // A test run intercepts what an agent, send or request state would do (migration 0102; design 05): an interception
             // record, with what the live effect would have used, replaces the child, the outbox message and the request record;
             // its deadline runs on the run's virtual clock, and its parent, or a fixture, answers it. Checked as live: the
             // input, the message against its contract, the deadline. In agent mode real an agent state is not intercepted: its
@@ -2993,7 +2993,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // Controller 1.9.0: also the run's accepted stop, read after the results, so a stop accepted before this read
         // reaches the controller with them (it routes none of them then). A stop is never withdrawn.
         const run = await runOf(runId);
-        // And whether the run is past its deadline (migration 0100), by its own clock: only a run with one says so.
+        // And whether the run is past its deadline (migration 0104), by its own clock: only a run with one says so.
         const expired = ACTIVE_RUN_STATUSES.includes(run.status) && await store.isRunExpired(run);
         return { collected, stopping: ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null ? { deadlineMs: run.stop.deadlineAt.getTime() } : null,
             ...(expired ? { expired: true } : {}) };
@@ -3146,7 +3146,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested } }]);
         }
         // Soft-deleting the session tombstones the definition in the same
-        // transaction (migration 0086 trigger), whichever path deletes it.
+        // transaction (migration 0090 trigger), whichever path deletes it.
         if (command === "delete") await deps.deleteSession(run.workflowSessionId);
         return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome };
     });
@@ -3298,7 +3298,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // entry decision and the process start are one step (store.enterScript).
         const binding = await deps.resolveToolBinding(run.workflowSessionId);
         const tools: { executor: WorkflowToolExecutor | null } = { executor: null };
-        // A test run's tool calls are intercepted (migration 0098; design 05): no live tool runs. Each call is recorded by
+        // A test run's tool calls are intercepted (migration 0102; design 05): no live tool runs. Each call is recorded by
         // its stable id (the script's n-th call) and answered by a fixture (its tool and the exact hash of its arguments) or
         // by the parent; the script waits for the answer, within its own timeout. The grant still decides which tools a
         // script may call, as live.
@@ -3907,7 +3907,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 
     /**
      * Surface a test run's intercepted agent, send or request (migration
-     * 0098; design 05): a fixture for it (its operation, its state and the
+     * 0102; design 05): a fixture for it (its operation, its state and the
      * exact hash of its input or message) answers it at once, checked as the
      * parent's answer is (testResultFor), and decides the state; a fixture
      * that is refused is recorded (workflow.test_fixture_refused) and the
@@ -3955,7 +3955,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 
     /**
      * End a run at its deadline (controller 1.9.0; limits.timeoutSeconds with
-     * onExceeded expired, migration 0100): by the run's own clock (a test
+     * onExceeded expired, migration 0104): by the run's own clock (a test
      * run's virtual clock, else the store's clock), store.expireRun ends it
      * failed with timed_out, paused or stopping or not, and cancels what is
      * still pending; before the deadline it reports the time left. Then the

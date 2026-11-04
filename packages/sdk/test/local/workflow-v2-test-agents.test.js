@@ -1,6 +1,6 @@
 /**
  * Workflow v2 real-agent test runs (design 05 agent mode real; R18 to R20,
- * D08, T112, T114; migration 0101), INACTIVE: only controller 1.9.0 runs
+ * D08, T112, T114; migration 0105), INACTIVE: only controller 1.9.0 runs
  * test runs, and only a host that starts 1.9.0 runs (the test-only option
  * workflowRequests and a host with `requests`) takes the test operations.
  *

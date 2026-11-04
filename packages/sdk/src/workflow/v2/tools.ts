@@ -1025,11 +1025,11 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     const selected = options.runId ? runs.find(run => run.runId === options.runId) : runs.find(run => run.mode === "live");
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
     const sections = selected ? await runSectionsOf(store, selected, limits) : null;
-    // A paused run has settled once no state it admitted is still running; so has a stopping run (migration 0096).
+    // A paused run has settled once no state it admitted is still running; so has a stopping run (migration 0100).
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     const stopping = selected?.stop && ACTIVE_RUN_STATUSES.includes(selected.status) ? selected.stop : null;
     const stopSettled = stopping !== null ? !await store.hasPendingNodes(selected!.runId) : null;
-    // A test run (migration 0098, INACTIVE): its notice, virtual clock, interceptions and coverage.
+    // A test run (migration 0102, INACTIVE): its notice, virtual clock, interceptions and coverage.
     const test = selected && sections && selected.mode === "test"
         ? await testViewOf(store, workflowSessionId, selected, definition.currentRevision, [...sections.executions.rows, ...sections.openExecutions], limits.interceptions)
         : null;
@@ -1040,7 +1040,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             publishedRevision: definition.publishedRevision, publishedDefinitionHash: definition.publishedYamlSha256,
             // Whether the parent agent is told when the live run ends (batch 7, n-1): spawn_workflow sets it, a live start sets it again.
             notifyOnCompletion: definition.notifyParent,
-            // What publication pinned each named agent state to (migration 0099; R18, R28); only a definition with any shows it.
+            // What publication pinned each named agent state to (migration 0103; R18, R28); only a definition with any shows it.
             ...(definition.publishedAgentPins !== null ? { publishedAgentPins: definition.publishedAgentPins } : {}),
         },
         revision: {
@@ -1062,7 +1062,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
                 ...(stopping !== null ? { settled: stopSettled } : {}),
             } } : {}),
             ...(test !== null ? { test: test.view } : {}),
-            // A run deadline (migration 0100; limits.timeoutSeconds, controller 1.9.0): only a run with one shows it (a test
+            // A run deadline (migration 0104; limits.timeoutSeconds, controller 1.9.0): only a run with one shows it (a test
             // run's is on its virtual clock).
             ...(selected.deadlineAt ? { deadline: selected.deadlineAt.toISOString() } : {}),
             terminalState: selected.terminalNodeId,
@@ -1334,7 +1334,7 @@ async function testViewOf(store: WorkflowStore, workflowSessionId: string, run: 
         view: {
             notice: WORKFLOW_V2_TEST_NOTICE,
             agentMode: run.testAgentMode,
-            // What a real-agent test pinned its named agents to when it was admitted (migration 0101; R18, R28).
+            // What a real-agent test pinned its named agents to when it was admitted (migration 0105; R18, R28).
             ...(run.testAgentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE, agentPins: run.testAgentPins } : {}),
             scenario: run.testScenario,
             testedRevision: run.revision,

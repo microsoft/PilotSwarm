@@ -1,6 +1,6 @@
 /**
  * Workflow v2 test runs (design 05 tool-mocked testing; R19, R20, R28;
- * migration 0098), INACTIVE: only controller 1.9.0 runs them, and only a
+ * migration 0102), INACTIVE: only controller 1.9.0 runs them, and only a
  * host that starts 1.9.0 runs (the test-only option workflowRequests and a
  * host with `requests`) takes update_workflow operations test,
  * test_respond and test_advance.

@@ -2,9 +2,9 @@
  * Workflow v2 data written by an earlier build stays usable after an upgrade,
  * on real PostgreSQL and the real durable runtime:
  *
- * - A schema migrated only up to 0085 (as an earlier build recorded it) gets
- *   the exclusive-creation function and the deletion trigger from 0086, and
- *   the open KV and pause columns from 0087, when the current catalog
+ * - A schema migrated only up to 0089 (as an earlier build recorded it) gets
+ *   the exclusive-creation function and the deletion trigger from 0090, and
+ *   the open KV and pause columns from 0091, when the current catalog
  *   initializes; its rows are kept (an earlier run gets an empty KV at
  *   revision 1) and the trigger acts on them.
  * - An immutable revision compiled to IR version 1 (no root outputSchema;
@@ -78,10 +78,10 @@ function versionOneIr(ir) {
 }
 
 describe("workflow v2 data from an earlier build", () => {
-    it("adds the 0086 creation function and deletion trigger to a schema recorded at 0085 and keeps its rows", { timeout: TIMEOUT }, async () => {
+    it("adds the 0090 creation function and deletion trigger to a schema recorded at 0089 and keeps its rows", { timeout: TIMEOUT }, async () => {
         const schema = `${TEST_SCHEMA_PREFIX}_wfv2_up_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
         schemas.push(schema);
-        await runMigrations(pool, schema, CMS_MIGRATIONS(schema).filter(m => m.version <= "0085"), CMS_LOCK_SEED);
+        await runMigrations(pool, schema, CMS_MIGRATIONS(schema).filter(m => m.version <= "0089"), CMS_LOCK_SEED);
         const q = (text, values) => pool.query(text.replaceAll("SCHEMA", `"${schema}"`), values);
         const has = async () => {
             const [fn, trigger] = await Promise.all([
@@ -114,34 +114,34 @@ describe("workflow v2 data from an earlier build", () => {
                  VALUES ($1, $2, 'root', 'step', 1, 'script', 'null', $3, 'pending')`,
             ["nx-earlier", runId, sha256Hex("null")]);
         const before = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-        expect(before.at(-1)).toBe("0085");
+        expect(before.at(-1)).toBe("0089");
 
         // The current build initializes the same schema.
         const catalog = await PgSessionCatalog.create(DATABASE_URL, schema);
         try {
             await catalog.initialize();
             const after = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-            expect(after).toEqual([...before, "0086", "0087", "0088", "0089", "0090", "0091", "0092", "0093", "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
+            expect(after).toEqual([...before, "0090", "0091", "0092", "0093", "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105"]);
             expect(await has()).toEqual({ fn: 1, trigger: 1 });
             const store = catalog.workflowStore();
             expect((await store.readDefinition(id)).state).toBe("published");
-            // 0087: the earlier run gets an empty open KV at revision 1 (kept as an immutable revision);
+            // 0091: the earlier run gets an empty open KV at revision 1 (kept as an immutable revision);
             // its earlier node execution pinned no revision.
             expect(await store.readRun(runId)).toMatchObject({ status: "running", kv: {}, kvRevision: 1, pausedFrom: null });
-            // 0096: an earlier run records no controller version and no stop, so it cannot be stopped gracefully.
+            // 0100: an earlier run records no controller version and no stop, so it cannot be stopped gracefully.
             expect(await store.readRun(runId)).toMatchObject({ controllerVersion: null, stop: null });
             expect(await store.readKv(runId, 1)).toEqual({});
             expect((await store.readNodeExecution("nx-earlier")).kvRevision).toBeNull();
-            // 0089: an earlier node execution accepts no typed input, and the inbox starts empty.
+            // 0093: an earlier node execution accepts no typed input, and the inbox starts empty.
             expect((await store.readNodeExecution("nx-earlier")).receive).toBeNull();
             expect((await q("SELECT count(*)::int AS n FROM SCHEMA.workflow_inbox")).rows[0].n).toBe(0);
-            // 0091, 0092: the outbox starts empty; an earlier node execution sends nothing.
+            // 0095, 0096: the outbox starts empty; an earlier node execution sends nothing.
             expect((await q("SELECT count(*)::int AS n FROM SCHEMA.workflow_outbox")).rows[0].n).toBe(0);
-            // 0093: the request tables start empty; an earlier node execution requests nothing.
+            // 0097: the request tables start empty; an earlier node execution requests nothing.
             for (const table of ["workflow_requests", "workflow_request_responses", "workflow_request_operations", "workflow_response_wakes"]) {
                 expect((await q(`SELECT count(*)::int AS n FROM SCHEMA.${table}`)).rows[0].n, table).toBe(0);
             }
-            // 0094, 0095: the intake tables and the exposure record start empty.
+            // 0098, 0099: the intake tables and the exposure record start empty.
             for (const table of ["workflow_intake", "workflow_intake_invocations", "workflow_intake_exposures"]) {
                 expect((await q(`SELECT count(*)::int AS n FROM SCHEMA.${table}`)).rows[0].n, table).toBe(0);
             }

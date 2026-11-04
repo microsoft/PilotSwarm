@@ -44,16 +44,16 @@ async function legacyRows(h, runId) {
 }
 
 describe("workflow v2 request migration: populated send compatibility", () => {
-    it("upgrades actual 0092 send rows without rewriting their payloads, receipts, times or legacy defaults", { timeout: REQUEST_TIMEOUT }, async () => {
+    it("upgrades actual 0096 send rows without rewriting their payloads, receipts, times or legacy defaults", { timeout: REQUEST_TIMEOUT }, async () => {
         const env = getEnv();
-        // useSuiteEnv owns this schema's teardown; unlike a current initialized catalog, this starts with genuine 0092 DDL.
+        // useSuiteEnv owns this schema's teardown; unlike a current initialized catalog, this starts with genuine 0096 DDL.
         const h = await openWorkflowStore(env, { initialize: false });
         try {
             const migrations = CMS_MIGRATIONS(env.cmsSchema);
-            await runMigrations(h.pool, env.cmsSchema, migrations.filter(migration => migration.version <= "0092"), CMS_LOCK_SEED);
+            await runMigrations(h.pool, env.cmsSchema, migrations.filter(migration => migration.version <= "0096"), CMS_LOCK_SEED);
             const versions = async () => (await h.q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).map(row => row.version);
             const beforeVersions = await versions();
-            expect(beforeVersions.at(-1)).toBe("0092");
+            expect(beforeVersions.at(-1)).toBe("0096");
             expect(await h.q("SELECT to_regclass($1) AS request_table", [`"${env.cmsSchema}".workflow_requests`])).toEqual([{ request_table: null }]);
             const modeConstraint = async () => (await h.q(`SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
                 WHERE conrelid = $1::regclass AND conname = 'workflow_outbox_mode'`, [`"${env.cmsSchema}".workflow_outbox`]))[0].definition;
@@ -90,7 +90,7 @@ describe("workflow v2 request migration: populated send compatibility", () => {
                         refused: refusals.refused } })).toMatchObject({ admitted: true, inserted: true });
                 exchangeIds.push(nodeExecutionId);
             }
-            // 0092 explicitly permits null columns on agent rows retained from 0091.
+            // 0096 explicitly permits null columns on agent rows retained from 0095.
             await h.q("UPDATE SCHEMA.workflow_outbox SET recipient_kind = NULL, correlation = NULL WHERE run_id = $1", [runId]);
             for (const exchangeId of exchangeIds) expect(await h.store.beginDelivery(exchangeId, refusals)).toMatchObject({ kind: "deliver" });
             const [pending, delivered, failed] = exchangeIds;
@@ -122,9 +122,9 @@ describe("workflow v2 request migration: populated send compatibility", () => {
             expect(await versions()).toEqual(beforeVersions);
             expect(await h.q("SELECT to_regclass($1) AS request_table", [`"${env.cmsSchema}".workflow_requests`])).toEqual([{ request_table: null }]);
 
-            // The real catalog initialization applies the registered 0093 transaction, not copied migration SQL.
+            // The real catalog initialization applies the registered 0097 transaction, not copied migration SQL.
             await h.catalog.initialize();
-            expect(await versions()).toEqual([...beforeVersions, "0093", "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
+            expect(await versions()).toEqual([...beforeVersions, "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105"]);
             expect(await modeConstraint()).toContain("request");
             expect(await legacyRows(h, runId)).toEqual(before);
             expect(await h.q("SELECT yaml, yaml_sha256, ir, ir_sha256 FROM SCHEMA.workflow_revisions WHERE workflow_session_id = $1",
@@ -165,7 +165,7 @@ describe("workflow v2 request migration: populated send compatibility", () => {
             expect(after[0]).toMatchObject({ payload: before[0].payload, payload_sha256: before[0].payload_sha256,
                 created: before[0].created, entered: before[0].entered, recipient_kind: null, correlation: null });
             await runMigrations(h.pool, env.cmsSchema, migrations, CMS_LOCK_SEED);
-            expect(await versions()).toEqual([...beforeVersions, "0093", "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
+            expect(await versions()).toEqual([...beforeVersions, "0097", "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105"]);
             expect(await legacyRows(h, runId)).toEqual(after);
         } finally { await h.stop(); }
     });

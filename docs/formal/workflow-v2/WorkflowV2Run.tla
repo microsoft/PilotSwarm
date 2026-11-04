@@ -4,7 +4,7 @@
 (* the controller orchestration (runtime.ts controlRun), one effect         *)
 (* orchestration per script node execution (runtime.ts workflowV2Effect),   *)
 (* the PostgreSQL store transitions (store.ts) and deletion of the          *)
-(* workflow session (cms_soft_delete_session plus the 0085 trigger).        *)
+(* workflow session (cms_soft_delete_session plus the 0089 trigger).        *)
 (* README.md maps every action to its code and transaction boundary.       *)
 (*                                                                          *)
 (* Graph: script state S routes "again" to S (at most MaxLoops times) and   *)
@@ -597,7 +597,7 @@ SendCancel ==
     /\ UNCHANGED <<storeVars, ctrlVars, effVars, deleteSent, notified, crashes>>
 
 (* Any deletion path soft-deletes the session row (cms_soft_delete_session).*)
-(* Hardened code: the 0085 trigger ends v2 work in that transaction.       *)
+(* Hardened code: the 0089 trigger ends v2 work in that transaction.       *)
 Delete ==
     /\ Deletes
     /\ ~deleteSent

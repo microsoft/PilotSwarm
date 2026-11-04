@@ -1,5 +1,5 @@
 /**
- * Workflow v2 durable recipient intake: migrations 0094 and 0095 and the store's claim,
+ * Workflow v2 durable recipient intake: migrations 0098 and 0099 and the store's claim,
  * bind and settle primitives (design docs/proposals/workflow-durable-intake.md,
  * revision 3 with amendment 2, sections 3, 4, 5.1, 5.2, 5.6 and 5.7), on real
  * PostgreSQL. The intake is inactive: no sender decides a durable mode and no
@@ -13,7 +13,7 @@
  *   count of a durable row, so beginDelivery's count fails on one and
  *   changes nothing; a row first counted with no mode stays legacy and is
  *   never promoted; an update that changes neither (a delivery's record)
- *   passes. Populated 0093 rows keep no mode and are counted as before.
+ *   passes. Populated 0097 rows keep no mode and are counted as before.
  * - The claim (5.2): every row of its table, with the sender's own render
  *   (the stored text is the prompt the sender queues, byte for byte), the
  *   lost reply in both modes, duplicates and conflicts counted on the row,
@@ -49,7 +49,7 @@
  *   Every check is a total boolean (INTAKE-S2-03, INTAKE-S2-04): a null
  *   column never lets a row take an outcome without a durable mode, a time
  *   without an outcome, or a final processing without the bind's bound.
- * - The possible-exposure record (migration 0095; exposure protocol
+ * - The possible-exposure record (migration 0099; exposure protocol
  *   revision 2, sections 3 and 6): the admission takes exactly the active
  *   batch, in member order, under the member claims, with each text's
  *   stored hash; the first one records its attempt; the same attempt again
@@ -62,8 +62,8 @@
  *   answers exposed, a replay after the end included, while an item
  *   cancelled before the exposure stays settled. Admission serializes with
  *   the end and the unsent cancel on the invocation's identity, in both
- *   orders (barrier-held). The record is never updated or deleted, and 0095
- *   upgrades a populated 0094 schema.
+ *   orders (barrier-held). The record is never updated or deleted, and 0099
+ *   upgrades a populated 0098 schema.
  *
  * Barrier-held races use a second store over a pool whose statements pass
  * through a hook (the store's own statements, held at COMMIT or followed by
@@ -361,7 +361,7 @@ async function intakeHarness(env, { migrate = null } = {}) {
     };
 }
 
-describe("workflow v2 durable intake: the outbox fence (migration 0094)", () => {
+describe("workflow v2 durable intake: the outbox fence (migration 0098)", () => {
     it("lets only the first counted attempt decide the mode, and counts a durable row only with a new token", { timeout: TIMEOUT }, async () => {
         const h = await intakeHarness(getEnv());
         try {
@@ -426,23 +426,23 @@ describe("workflow v2 durable intake: the outbox fence (migration 0094)", () => 
         } finally { await h.stop(); }
     });
 
-    it("upgrades populated 0093 outbox rows: they keep no mode, are counted as before and never verify", { timeout: TIMEOUT }, async () => {
+    it("upgrades populated 0097 outbox rows: they keep no mode, are counted as before and never verify", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        const h = await intakeHarness(env, { migrate: "0093" });
+        const h = await intakeHarness(env, { migrate: "0097" });
         try {
             const versions = async () => (await h.q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).map(row => row.version);
             const before = await versions();
-            expect(before.at(-1)).toBe("0093");
+            expect(before.at(-1)).toBe("0097");
             expect(await h.q("SELECT to_regclass($1) AS intake", [`"${env.cmsSchema}".workflow_intake`])).toEqual([{ intake: null }]);
             const run = await h.workflow();
-            const exchangeId = await h.send(run, { payload: { note: "before 0094" } });
+            const exchangeId = await h.send(run, { payload: { note: "before 0098" } });
             const refusals = { refused: { unavailable: h.refusal("unavailable"), forbidden: h.refusal("forbidden") }, ended: null,
                 delivered: { stateId: "tell", projection: () => ({ sessionId: run.workflowSessionId }) } };
             expect(await h.store.beginDelivery(exchangeId, refusals)).toMatchObject({ kind: "deliver", message: { attempts: 1 } });
             const message = await h.store.readOutboxMessage(exchangeId);
 
             await h.catalog.initialize();
-            expect(await versions()).toEqual([...before, "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
+            expect(await versions()).toEqual([...before, "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105"]);
             expect(await h.q(`SELECT intake_mode, attempt_token, intake_outcome, intake_outcome_at FROM SCHEMA.workflow_outbox WHERE exchange_id = $1`,
                 [exchangeId])).toEqual([{ intake_mode: null, attempt_token: null, intake_outcome: null, intake_outcome_at: null }]);
             expect(await h.store.readOutboxMessage(exchangeId)).toEqual(message);
@@ -456,7 +456,7 @@ describe("workflow v2 durable intake: the outbox fence (migration 0094)", () => 
                 WHERE exchange_id = $1`, [exchangeId])).rejects.toThrow(/first attempt/);
             // Applying the registered migrations again changes nothing.
             await runMigrations(h.pool, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema), CMS_LOCK_SEED);
-            expect(await versions()).toEqual([...before, "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
+            expect(await versions()).toEqual([...before, "0098", "0099", "0100", "0101", "0102", "0103", "0104", "0105"]);
         } finally { await h.stop(); }
     });
 });
@@ -1230,7 +1230,7 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
     });
 });
 
-describe("workflow v2 durable intake: the row guard (migration 0094)", () => {
+describe("workflow v2 durable intake: the row guard (migration 0098)", () => {
     it("keeps identity and text, moves state and processing forward once, and deletes nothing", { timeout: TIMEOUT }, async () => {
         const h = await intakeHarness(getEnv());
         try {
@@ -1286,7 +1286,7 @@ describe("workflow v2 durable intake: the row guard (migration 0094)", () => {
     });
 });
 
-describe("workflow v2 durable intake: the possible-exposure record and its fences (migration 0095, store)", () => {
+describe("workflow v2 durable intake: the possible-exposure record and its fences (migration 0099, store)", () => {
     /** Claimed held items of one run, by exchange id; `ref` and `sent` name one as a bind and as an admission do. */
     async function exposureItems(h, count) {
         const run = await h.workflow();
@@ -1540,15 +1540,15 @@ describe("workflow v2 durable intake: the possible-exposure record and its fence
         } finally { await h.stop(); }
     });
 
-    it("keeps the record written once (no update, a no-op one included, and no delete), and upgrades a populated 0094 schema", { timeout: TIMEOUT }, async () => {
+    it("keeps the record written once (no update, a no-op one included, and no delete), and upgrades a populated 0098 schema", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        const h = await intakeHarness(env, { migrate: "0094" });
+        const h = await intakeHarness(env, { migrate: "0098" });
         try {
             const versions = async () => (await h.q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).map(row => row.version);
             const before = await versions();
-            expect(before.at(-1)).toBe("0094");
+            expect(before.at(-1)).toBe("0098");
             expect(await h.q("SELECT to_regclass($1) AS exposures", [`"${env.cmsSchema}".workflow_intake_exposures`])).toEqual([{ exposures: null }]);
-            // Rows 0094 writes: a held claim bound to an invocation (the bind reads no exposure).
+            // Rows 0098 writes: a held claim bound to an invocation (the bind reads no exposure).
             const x = await exposureItems(h, 1);
             const [a] = x.ids;
             expect(await x.bind("inv-1", [a])).toMatchObject({ bound: true });
@@ -1556,7 +1556,7 @@ describe("workflow v2 durable intake: the possible-exposure record and its fence
             const invocations = await h.q("SELECT * FROM SCHEMA.workflow_intake_invocations ORDER BY invocation_id");
 
             await h.catalog.initialize();
-            expect(await versions()).toEqual([...before, "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
+            expect(await versions()).toEqual([...before, "0099", "0100", "0101", "0102", "0103", "0104", "0105"]);
             expect(await x.read(a)).toEqual(bound);
             expect(await h.q("SELECT * FROM SCHEMA.workflow_intake_invocations ORDER BY invocation_id")).toEqual(invocations);
             expect((await h.q("SELECT count(*)::int AS n FROM SCHEMA.workflow_intake_exposures"))[0].n).toBe(0);
@@ -1566,12 +1566,12 @@ describe("workflow v2 durable intake: the possible-exposure record and its fence
             await expect(h.q("UPDATE SCHEMA.workflow_intake_exposures SET attempt_id = attempt_id WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
             await expect(h.q("UPDATE SCHEMA.workflow_intake_exposures SET attempt_id = 'att-9' WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
             await expect(h.q("DELETE FROM SCHEMA.workflow_intake_exposures WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
-            // The 0094 guards are unchanged: an invocation is still never changed or deleted.
+            // The 0098 guards are unchanged: an invocation is still never changed or deleted.
             await expect(h.q("DELETE FROM SCHEMA.workflow_intake_invocations WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
             expect(await x.exposure("inv-1")).toEqual(record);
             // Applying the registered migrations again changes nothing.
             await runMigrations(h.pool, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema), CMS_LOCK_SEED);
-            expect(await versions()).toEqual([...before, "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
+            expect(await versions()).toEqual([...before, "0099", "0100", "0101", "0102", "0103", "0104", "0105"]);
             expect(await x.exposure("inv-1")).toEqual(record);
             expect(await x.read(a)).toEqual(bound);
         } finally { await h.stop(); }

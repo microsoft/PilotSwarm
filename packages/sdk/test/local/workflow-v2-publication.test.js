@@ -1,6 +1,6 @@
 /**
  * Workflow v2 publication pins (design 02 publication record, 03 package
- * agents; R18, R28; T011, T018, T070; migration 0099), INACTIVE: only a host
+ * agents; R18, R28; T011, T018, T070; migration 0103), INACTIVE: only a host
  * that starts runs at controller 1.9.0 compiles agent states and resolves
  * agents. Here a mutable test-double catalog stands in for the resolver
  * (the registry-backed one those hosts use is

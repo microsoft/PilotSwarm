@@ -1073,7 +1073,7 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
-        // Workflow v2: drafts, publication and durable runs (migration 0085).
+        // Workflow v2: drafts, publication and durable runs (migration 0089).
         if (this._catalog?.workflowStore) {
             registerWorkflowV2(this.runtime, {
                 store: this._catalog.workflowStore(),

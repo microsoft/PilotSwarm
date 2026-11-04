@@ -1,12 +1,12 @@
 /**
  * Workflow v2 graceful stop (design 02 run lifecycle and D03; migration
- * 0096), INACTIVE: only controller 1.9.0 stops a run, and only tests start
+ * 0100), INACTIVE: only controller 1.9.0 stops a run, and only tests start
  * runs there (the test-only option workflowRequests and a host with
  * `requests`).
  *
  * - The store: a stop is accepted once per operation id, with its deadline
  *   from one reading of the store's clock, only for a run admitted for a
- *   controller that stops (1.8.0 and runs admitted before 0096 are refused);
+ *   controller that stops (1.8.0 and runs admitted before 0100 are refused);
  *   a stopping run admits nothing, is neither paused nor resumed, and ends
  *   stopped once nothing is pending or at its deadline, when what is still
  *   pending is cancelled (winner stop).
@@ -99,7 +99,7 @@ async function stopFixture(env) {
     expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
     return Object.assign(h, {
         parent,
-        /** A published workflow and its admitted live run, for `controllerVersion` (undefined: none recorded, as before 0096). */
+        /** A published workflow and its admitted live run, for `controllerVersion` (undefined: none recorded, as before 0100). */
         async workflow(controllerVersion) {
             const workflowSessionId = randomUUID();
             const runId = randomUUID();
@@ -126,7 +126,7 @@ describe("workflow v2 graceful stop: the store", () => {
         const h = await stopFixture(getEnv());
         try {
             expect(WORKFLOW_V2_STOP_CONTROLLER_VERSIONS).toEqual([WORKFLOW_V2_REQUEST_CONTROLLER_VERSION]);
-            // A run admitted for 1.8.0, and one admitted before 0096 (no version recorded), cannot stop gracefully.
+            // A run admitted for 1.8.0, and one admitted before 0100 (no version recorded), cannot stop gracefully.
             for (const version of [WORKFLOW_V2_CONTROLLER_VERSION, undefined]) {
                 const legacy = await h.workflow(version);
                 expect((await h.store.readRun(legacy.runId)).controllerVersion).toBe(version ?? null);
