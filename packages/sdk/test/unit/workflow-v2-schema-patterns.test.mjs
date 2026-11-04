@@ -8,14 +8,16 @@ import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
 
 test("nested repeats and repeated overlapping alternatives are refused", () => {
     for (const pattern of ["^(a+)+$", "(a*)*", "((ab)*)+", "(.*a){10}", "(a|ab)*", "(a|a)+", "(\\w|\\d)+", "(x|.)*", "(|a)+", "(?:a+)+b",
-        "([a-z]+\\.)+[a-z]+", "(a{2,})*", "^v\\d+(\\.\\d+){0,2}$"]) {
+        "(a{2,})*", "(\\d+\\d)+", "([^x]+y)*", "(\\D|x)+"]) {
         assert.match(unsafeSchemaPattern(pattern) ?? "", /repeat|alternatives/, pattern);
     }
 });
 
 test("ordinary patterns are accepted", () => {
     for (const pattern of ["^[a-z0-9-]+$", "^\\d{4}-\\d{2}-\\d{2}$", "^(foo|bar)$", "^(foo|bar)+$", "^[A-Z]{2,3}$", "^(\\d+)?$", "(ab)*", "^a+b+c+$",
-        "^[^\\]]+$", "^\\(\\d+\\)$", "^(?:https?)://[^\\s]+$", "^(a{1})+$"]) {
+        "^[^\\]]+$", "^\\(\\d+\\)$", "^(?:https?)://[^\\s]+$", "^(a{1})+$",
+        // Separated repeats split a string in one way.
+        "([a-z]+\\.)+[a-z]+", "^v\\d+(\\.\\d+){0,2}$", "^((\\.\\d+)*;)+$"]) {
         assert.equal(unsafeSchemaPattern(pattern), null, pattern);
     }
 });
@@ -47,4 +49,41 @@ test("the compiler refuses an unsafe pattern or patternProperties name, and take
     assert.ok(keys.diagnostics.some(item => /unsafe pattern/.test(item.message)));
     const safe = compileWorkflowV2(docWith({ type: "object", properties: { name: { type: "string", pattern: "^[a-z][a-z0-9-]{0,62}$" } } }));
     assert.equal(safe.valid, true, JSON.stringify(safe.diagnostics));
+});
+
+// Verification of SF-5 and VR-4 (M-05).
+test("SF-5: an alternative nested in a repeated group is compared by all its first characters: ^((a|b)|aa)+$ is refused", () => {
+    for (const pattern of ["^((a|b)|aa)+$", "^((b|a)|aa)+$", "^(((x|a))|a[0-9])*$", "^(?:(?:a|b)|(?:c|a))+$"]) {
+        assert.match(unsafeSchemaPattern(pattern) ?? "", /alternatives that can start the same way/, pattern);
+    }
+});
+
+test("VR-4: fixed counts and disjoint alternatives are accepted, ordinary formats included", () => {
+    for (const pattern of ["^([0-9]{2}-){2}[0-9]{2}$", "^(\\d{1,3}\\.){3}\\d{1,3}$", "^((a|b)c)+$", "^([a-c]|[x-z])+$", "^(?:[A-Z][a-z]+ )+$",
+        "^([0-9a-f]{2}:){5}[0-9a-f]{2}$", "^(\\w{4}-){3}\\w{4}$", "^(ab|cd){1,40}$"]) {
+        assert.equal(unsafeSchemaPattern(pattern), null, pattern);
+    }
+});
+
+test("SF-5 known limit: repeats side by side are accepted (their cost grows as a power, not exponentially)", () => {
+    for (const pattern of ["^a*a*$", "^\\d+\\d+$"]) assert.equal(unsafeSchemaPattern(pattern), null, pattern);
+});
+
+test("escapes, classes and inline flags", () => {
+    // Escaped and class characters are characters, not syntax.
+    assert.equal(unsafeSchemaPattern("^(\\(|\\))+$"), null);
+    assert.equal(unsafeSchemaPattern("^([\\]a]|b)+$"), null);
+    assert.match(unsafeSchemaPattern("^([\\]a]|a)+$") ?? "", /alternatives/);
+    assert.equal(unsafeSchemaPattern("^(\\u0041|B)+$"), null);
+    assert.match(unsafeSchemaPattern("^(\\u0041|A)+$") ?? "", /alternatives/);
+    // A negated class can start like anything it does not exclude.
+    assert.match(unsafeSchemaPattern("^([^b]|a)+$") ?? "", /alternatives/);
+    assert.equal(unsafeSchemaPattern("^([^a]|a)+$"), null);
+    // Inline flags would change what a character matches: refused.
+    assert.match(unsafeSchemaPattern("^(?i:a)+$") ?? "", /inline flags/);
+    assert.match(unsafeSchemaPattern("^[a-z"), /unclosed class/);
+});
+
+test("a negated escape and a character it excludes do not overlap", () => {
+    assert.equal(unsafeSchemaPattern("^(\\D|1)+$"), null);
 });
