@@ -49,3 +49,24 @@ test("no schema, or one that is not an object, gives no sample; the box is fille
     assert.deepEqual(workflowV2TestControls(draft).inputsSchema, inputsSchema);
     assert.equal(workflowV2DefinitionControls({ ...draft, graph: { ...draft.graph, revision: 2 } }).inputsSchema, null, "another revision's schema is not used");
 });
+
+// Adversarial review UI-3: a sample has a budget; a schema that asks for more gets no sample, and nothing large is made.
+test("UI-3: a huge minLength, a huge default or many large copies give no sample; nothing large is allocated", () => {
+    const started = process.hrtime.bigint();
+    assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", minLength: 9007199254740991 } } }), null);
+    assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", minLength: 1001 } } }), null);
+    assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", default: "y".repeat(20_000) } } }), null);
+    const big = { type: "string", default: "z".repeat(3_000) };
+    let nested = big;
+    for (let i = 0; i < 6; i += 1) nested = { type: "array", minItems: 3, items: nested };
+    assert.equal(workflowV2SampleInputs({ type: "object", required: ["deep"], properties: { deep: nested } }), null);
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 1_000, "bounded time");
+});
+
+test("UI-3: within the budget a sample is made as before", () => {
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", minLength: 20 } } }),
+        { text: "example textxxxxxxxx" });
+    assert.equal(workflowV2SampleInputs({ type: "object", properties: { text: { type: "string", minLength: 1000 } } }).text.length, 1000);
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { tags: { type: "array", minItems: 2, items: { type: "string", enum: ["a"] } } } }),
+        { tags: ["a", "a"] });
+});

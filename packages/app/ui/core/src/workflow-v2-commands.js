@@ -1168,6 +1168,27 @@ export function workflowV2AnswerSourceText(disposition, fallback = "not known") 
 const SAMPLE_MAX_DEPTH = 6;
 /** An object's optional properties join its sample when it has at most this many properties in all. */
 const SAMPLE_FEW_PROPERTIES = 4;
+/**
+ * The budget of a sample (adversarial review UI-3): at most this many characters of JSON in all, and no string longer
+ * than SAMPLE_MAX_STRING. A schema that asks for more (a minLength of 2^53, many copies of a large default) gets no
+ * sample: the box stays "{}" and can be edited as ever. Nothing is allocated past the budget.
+ */
+const SAMPLE_MAX_CHARS = 16_384;
+const SAMPLE_MAX_STRING = 1_000;
+const SAMPLE_OVER_BUDGET = new Error("The sample is over its budget.");
+
+/** Count `chars` more characters of a sample against its budget; past it, give up the whole sample. */
+function chargeSample(budget, chars) {
+    budget.used += chars;
+    if (budget.used > SAMPLE_MAX_CHARS) throw SAMPLE_OVER_BUDGET;
+}
+
+/** The JSON length of a value a schema gives as it is (an example, a default, an enum value, a const), within the budget. */
+function chargedValue(budget, value) {
+    const text = JSON.stringify(value);
+    chargeSample(budget, text === undefined ? 4 : text.length);
+    return value;
+}
 
 /** "prUrl", "pr_url" or "pr-url" -> "pr url". */
 function sampleWords(name) {
@@ -1184,22 +1205,22 @@ function sampleType(schema) {
 }
 
 /** A sample of one value of `schema`, named `name` (its property name), or undefined when the schema says nothing usable. */
-function sampleOf(schema, name, depth) {
+function sampleOf(schema, name, depth, budget) {
     if (depth > SAMPLE_MAX_DEPTH) return null;
     if (schema === true || schema === undefined) return undefined;
     if (!isRecord(schema)) return undefined;
-    if (Array.isArray(schema.examples) && schema.examples.length) return schema.examples[0];
-    if (Object.hasOwn(schema, "default")) return schema.default;
-    if (Array.isArray(schema.enum) && schema.enum.length) return schema.enum[0];
-    if (Object.hasOwn(schema, "const")) return schema.const;
+    if (Array.isArray(schema.examples) && schema.examples.length) return chargedValue(budget, schema.examples[0]);
+    if (Object.hasOwn(schema, "default")) return chargedValue(budget, schema.default);
+    if (Array.isArray(schema.enum) && schema.enum.length) return chargedValue(budget, schema.enum[0]);
+    if (Object.hasOwn(schema, "const")) return chargedValue(budget, schema.const);
     for (const key of ["oneOf", "anyOf"]) {
         if (Array.isArray(schema[key]) && schema[key].length) {
-            const value = sampleOf(schema[key].find(item => !(isRecord(item) && item.type === "null")) ?? schema[key][0], name, depth + 1);
+            const value = sampleOf(schema[key].find(item => !(isRecord(item) && item.type === "null")) ?? schema[key][0], name, depth + 1, budget);
             if (value !== undefined) return value;
         }
     }
     if (Array.isArray(schema.allOf) && schema.allOf.length) {
-        const parts = schema.allOf.map(part => sampleOf(part, name, depth + 1)).filter(value => value !== undefined);
+        const parts = schema.allOf.map(part => sampleOf(part, name, depth + 1, budget)).filter(value => value !== undefined);
         if (parts.length && parts.every(isRecord)) return Object.assign({}, ...parts);
         if (parts.length) return parts[0];
     }
@@ -1214,7 +1235,10 @@ function sampleOf(schema, name, depth) {
                         : format === "uuid" ? "00000000-0000-4000-8000-000000000000"
                             : words ? `example ${words}` : "example";
             if (Number.isSafeInteger(schema.maxLength) && schema.maxLength >= 0 && value.length > schema.maxLength) value = value.slice(0, schema.maxLength);
+            // UI-3: checked before anything is allocated.
+            if (typeof schema.minLength === "number" && schema.minLength > SAMPLE_MAX_STRING) throw SAMPLE_OVER_BUDGET;
             if (Number.isSafeInteger(schema.minLength) && value.length < schema.minLength) value = value.padEnd(schema.minLength, "x");
+            chargeSample(budget, value.length + 2);
             return value;
         }
         case "integer":
@@ -1228,9 +1252,12 @@ function sampleOf(schema, name, depth) {
         case "boolean": return false;
         case "null": return null;
         case "array": {
-            const item = sampleOf(Array.isArray(schema.items) ? schema.items[0] : schema.items, name, depth + 1);
+            const item = sampleOf(Array.isArray(schema.items) ? schema.items[0] : schema.items, name, depth + 1, budget);
             const count = Number.isSafeInteger(schema.minItems) && schema.minItems > 1 ? Math.min(schema.minItems, 3) : 1;
-            return item === undefined ? [] : Array.from({ length: count }, () => item);
+            if (item === undefined) return [];
+            // The copies after the first count too (the item's own characters were counted once).
+            if (count > 1) chargeSample(budget, (JSON.stringify(item)?.length ?? 4) * (count - 1));
+            return Array.from({ length: count }, () => item);
         }
         case "object": {
             const properties = isRecord(schema.properties) ? schema.properties : {};
@@ -1240,7 +1267,8 @@ function sampleOf(schema, name, depth) {
             const out = {};
             for (const key of [...names, ...[...required].filter(key => !Object.hasOwn(properties, key))]) {
                 if (!required.has(key) && !all) continue;
-                const value = sampleOf(properties[key], key, depth + 1);
+                chargeSample(budget, key.length + 4);
+                const value = sampleOf(properties[key], key, depth + 1, budget);
                 out[key] = value === undefined ? `example ${sampleWords(key) || "value"}` : value;
             }
             return out;
@@ -1259,7 +1287,13 @@ function sampleOf(schema, name, depth) {
  */
 export function workflowV2SampleInputs(schema) {
     if (!isRecord(schema)) return null;
-    const value = sampleOf(schema, "", 0);
+    let value;
+    try {
+        value = sampleOf(schema, "", 0, { used: 0 });
+    } catch (error) {
+        if (error === SAMPLE_OVER_BUDGET) return null;
+        throw error;
+    }
     return isRecord(value) ? value : null;
 }
 
