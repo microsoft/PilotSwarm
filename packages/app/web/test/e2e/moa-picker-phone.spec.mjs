@@ -64,9 +64,10 @@ for (const [where, open] of Object.entries(pickers)) test(`${where}: the phone p
     await expect.poll(() => list.locator(".ps-session-list-button[data-session-id]").count()).not.toBe(before);
     await expect(page.locator(".ps-moa-picker-detail > div").first()).not.toHaveText(new RegExp(parentId.slice(0, 8)));
 
-    // Native scrolling, long rows pan sideways in their own track.
-    const shape = await list.evaluate(el => ({ x: getComputedStyle(el).overflowX, y: getComputedStyle(el).overflowY, track: Boolean(el.querySelector(".ps-session-list-track")) }));
-    expect(shape).toEqual({ x: "hidden", y: "auto", track: true });
+    // Native vertical scrolling. No sideways track in a picker: long titles
+    // end in an ellipsis, which keeps search fast on a large list.
+    const shape = await list.evaluate(el => ({ x: getComputedStyle(el).overflowX, y: getComputedStyle(el).overflowY, track: Boolean(el.querySelector(".ps-session-list-track")), wide: el.scrollWidth - el.clientWidth }));
+    expect(shape).toEqual({ x: "hidden", y: "auto", track: false, wide: 0 });
 
     // + and × are phone-sized.
     for (const name of ["Create New Session", "Close dialog"]) {
@@ -85,7 +86,7 @@ test("desktop: the MoA picker uses the same list", async ({ page }) => {
     await expect(picker).toBeVisible();
     await expect(picker).toHaveClass(/is-phone-picker/);
     await expect(picker.locator(".ps-session-row-disclosure").first()).toBeVisible();
-    await expect(picker.locator(".ps-session-list-track")).toHaveCount(1);
+    await expect(picker.locator(".ps-session-list-track")).toHaveCount(0);
     for (const name of ["Create New Session", "Close dialog"]) {
         const box = await picker.locator(".ps-panel-header").getByRole("button", { name, exact: true }).boundingBox();
         expect(box.width, name).toBeGreaterThanOrEqual(44);

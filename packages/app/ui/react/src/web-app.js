@@ -6245,10 +6245,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "${viewState.filterQuery}".`
                 : "No sessions yet.")
-            : (rowNodes => isMobilePane
+            : (rowNodes => isMobilePane && !selection
                 // On a phone, long rows pan sideways in a track of their own
                 // nested in the vertical list: two native scrollers, one axis
-                // each, so the system keeps every swipe on one axis.
+                // each, so the system keeps every swipe on one axis. Not in a
+                // picker: rows sized to their content make every keystroke of
+                // the picker's search lay out every row (2.3 s against 0.3 s
+                // for 1,500 sessions), and the picker's footer already shows
+                // the selected session's full title.
                 ? React.createElement("div", { className: "ps-session-list-track" },
                     React.createElement("div", { className: "ps-session-list-track-rows" }, rowNodes))
                 : rowNodes)(rows.map((row) => React.createElement(SessionListRow, {
