@@ -828,6 +828,12 @@ function isBenignPostCompletionQueryError(eventData: any): boolean {
         && String(eventData.message || "").includes("Cannot read properties of null (reading 'length')");
 }
 
+/** The Copilot CLI's error for a model answer with no content (F-C3): "No response was returned. Send your message again to retry." */
+function isEmptyAnswerQueryError(eventData: any): boolean {
+    if (!eventData || typeof eventData !== "object") return false;
+    return eventData.errorType === "query" && /^No response was returned\b/.test(String(eventData.message || ""));
+}
+
 /**
  * ManagedSession — wraps a CopilotSession and provides the interface
  * that the orchestration calls into (via SessionProxy).
@@ -1645,6 +1651,7 @@ export class ManagedSession {
             throw new Error("The steer gate is not open");
         }
         steer.inFlight += 1;
+        steer.sends += 1;
         let messageId: string;
         try {
             messageId = await this.copilotSession.send({ prompt: text, mode: "immediate" } as any);
@@ -3608,6 +3615,12 @@ export class ManagedSession {
         let lastPublishedReasoning = "";
         let lastReasoningPublishAt = 0;
         let deferredSessionError: CapturedEvent | null = null;
+        // F-C3 (opts.quietEmptyAnswer): the empty-answer error of a root session's system-only turn, held back until the
+        // turn is over. It is dropped only when the turn made no tool call, sent no steer and has no content; otherwise
+        // it is recorded as before.
+        // (Typed by an assertion: it is set in the event handler, so its type must not narrow to null here.)
+        let quietedEmptyAnswer = null as CapturedEvent | null;
+        let turnRanToEnd = false;
         const textEmittedToolCallRef: { current: { toolName: string; rawContent: string } | null } = { current: null };
 
         // Streaming progress + turn timing state.
@@ -3837,6 +3850,11 @@ export class ManagedSession {
                         trackLateToolCallPiece(eventType, rawEventData);
                     }
                     const captured: CapturedEvent = { eventType, data: eventData };
+                    if (eventType === "session.error" && opts?.quietEmptyAnswer === true && quietedEmptyAnswer === null
+                        && isEmptyAnswerQueryError(eventData)) {
+                        quietedEmptyAnswer = captured;
+                        return;
+                    }
                     if (eventType === "session.error" && isBenignPostCompletionQueryError(eventData)) {
                         deferredSessionError = captured;
                         return;
@@ -4310,6 +4328,7 @@ export class ManagedSession {
                     ...(accepted.length > 0 ? { queuedActions: accepted } : {}),
                 } as any;
             }
+            turnRanToEnd = true;
         } catch (err: any) {
             // Every error unwind ends the run, and the guards below abort it:
             // close the send gate before any abort (spike cell C5b).
@@ -4366,6 +4385,30 @@ export class ManagedSession {
             // Always clean up subscriptions
             for (const unsub of unsubscribers) unsub();
             reportLateToolCallPieces();
+            // F-C3: a turn that did not run to its end (a failure, a timeout) records the held error as before.
+            if (quietedEmptyAnswer !== null && !turnRanToEnd) {
+                const held: CapturedEvent = quietedEmptyAnswer;
+                quietedEmptyAnswer = null;
+                collectedEvents.push(held);
+                if (opts?.onEvent) { try { opts.onEvent(held); } catch {} }
+            }
+        }
+
+        // F-C3: the held empty-answer error is dropped only for a turn that ended with nothing: no content, no tool call
+        // and no tool action, no other error, no corrective prompt and no steer. Otherwise it is recorded as before.
+        if (quietedEmptyAnswer !== null) {
+            const nothingElse = !finalContent
+                && deferredSessionError === null
+                && turnState.pendingActions.length === 0
+                && !collectedEvents.some(e => e.eventType === "tool.execution_start" || e.eventType === "session.error"
+                    || e.eventType === "runtime.tool_call_as_text" || e.eventType === "runtime.required_tool_not_invoked")
+                && (this.steer?.sends ?? 0) === 0;
+            if (!nothingElse) {
+                const held: CapturedEvent = quietedEmptyAnswer;
+                quietedEmptyAnswer = null;
+                collectedEvents.push(held);
+                if (opts?.onEvent) { try { opts.onEvent(held); } catch {} }
+            }
         }
 
         // Check what ended the turn
@@ -4406,6 +4449,28 @@ export class ManagedSession {
             if (opts?.onEvent) {
                 try { opts.onEvent(deferredSessionError); } catch {}
             }
+        }
+
+        // F-C3: a root session's system-only turn (a child digest or a wake) that the model answered with nothing is a
+        // completed turn with no content: no error status, no retry, no chat warning. The activity list shows one line
+        // (session.empty_answer), and the worker trace says so.
+        if (quietedEmptyAnswer !== null) {
+            const cliMessage = String((quietedEmptyAnswer.data as any)?.message ?? "").slice(0, 200);
+            opts?.trace?.(`[runTurn] session=${this.sessionId} the model answered a system-only turn with nothing; `
+                + `the turn is completed without an answer (${cliMessage})`);
+            const note: CapturedEvent = {
+                eventType: "session.empty_answer",
+                data: { text: "The model answered a system-only turn with nothing; the turn ended without an answer.", cliMessage },
+            };
+            collectedEvents.push(note);
+            if (opts?.onEvent) { try { opts.onEvent(note); } catch {} }
+            return {
+                type: "completed",
+                content: "",
+                events: collectedEvents,
+                ...(turnState.cycleReport ? { cycleReport: turnState.cycleReport } : {}),
+                queuedActions: completedQueuedActions,
+            };
         }
 
         // Check if the SDK emitted a session.error — if so, treat as an error
@@ -4696,6 +4761,8 @@ class SteerTurnState {
     gate: "pending" | "open" | "closed" = "pending";
     /** The run that owns this state returned. */
     ended = false;
+    /** Steers handed to send() in this run (F-C3: a steered turn is never quieted). */
+    sends = 0;
     /** send() calls not yet resolved. */
     inFlight = 0;
     /** Sent steers whose user.message has not been seen: messageId → callback. */

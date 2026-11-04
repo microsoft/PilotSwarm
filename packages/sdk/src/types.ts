@@ -239,6 +239,13 @@ export interface TurnOptions {
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
     bootstrap?: boolean;
+    /**
+     * F-C3: the turn of a ROOT session whose prompt is only the runtime's own words (the internal system-only prompt of a
+     * child digest or a wake, with no person's words folded in). When the model answers it with nothing (the Copilot
+     * CLI's "No response was returned", errorType query) and the turn made no tool call and sent no steer, the turn is
+     * completed with empty content: no error, no retry, no chat warning. Set by the runTurn activity only.
+     */
+    quietEmptyAnswer?: boolean;
     /** Require a real execution event for this tool; correct once, then fail the turn if still absent. */
     requiredTool?: string;
     /** Internal: this turn was started by a recurring cron/cron_at timer fire. */

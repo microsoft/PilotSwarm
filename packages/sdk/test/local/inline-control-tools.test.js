@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
-import { collectContractViolations, isFailureToolCompletion } from "../../src/session-proxy.ts";
+import { collectContractViolations, isFailureToolCompletion, SYSTEM_ONLY_TURN_PROMPT } from "../../src/session-proxy.ts";
 import { WORKFLOW_ASK_USER_REFUSAL } from "../../src/workflow/v2/input-policy.ts";
 
 class FakeCopilotSession {
@@ -1274,6 +1274,72 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("error");
         expect(result.message).toContain("No response was returned");
         expect(result.events.some(event => event.eventType === "session.error")).toBe(true);
+    });
+
+    // F-C3: the runTurn activity sets quietEmptyAnswer only on a root session's system-only turn (a child digest, a wake;
+    // isQuietSystemOnlyTurn, test/local/empty-system-turn.test.js). Without it, the cases above stay errors.
+    describe("F-C3: a root session's system-only turn that the model answers with nothing (quietEmptyAnswer)", () => {
+        const EMPTY = { message: "No response was returned. Send your message again to retry.", errorType: "query" };
+        const quietTurn = async (fakeSession, config = {}) => {
+            const onEvent = vi.fn();
+            const trace = vi.fn();
+            const managed = new ManagedSession("quiet-system-turn", fakeSession, config);
+            const result = await managed.runTurn(SYSTEM_ONLY_TURN_PROMPT, { onEvent, trace, bootstrap: true, quietEmptyAnswer: true });
+            const recorded = onEvent.mock.calls.map(([event]) => event?.eventType);
+            return { result, recorded, trace };
+        };
+
+        it("is a completed turn with no content: no error, no chat warning, one activity line and a trace", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.assistantContent = null;
+            fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];
+            const { result, recorded, trace } = await quietTurn(fakeSession);
+            expect(result).toMatchObject({ type: "completed", content: "" });
+            expect(result.events.some(event => event.eventType === "session.error")).toBe(false);
+            expect(recorded).not.toContain("session.error");
+            expect(recorded).toContain("session.empty_answer");
+            expect(result.events.find(event => event.eventType === "session.empty_answer").data)
+                .toMatchObject({ cliMessage: EMPTY.message, text: expect.stringContaining("ended without an answer") });
+            expect(trace.mock.calls.some(([line]) => /answered a system-only turn with nothing/.test(line))).toBe(true);
+        });
+
+        it("any other error of the same turn is still an error, recorded as before", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.assistantContent = null;
+            fakeSession.scriptedEvents = [{ type: "session.error", data: { message: "Rate limit exceeded. Try again later.", errorType: "query" } }];
+            const { result, recorded } = await quietTurn(fakeSession);
+            expect(result.type).toBe("error");
+            expect(result.message).toContain("Rate limit exceeded");
+            expect(recorded).toContain("session.error");
+            expect(recorded).not.toContain("session.empty_answer");
+        });
+
+        it("a turn that made a tool call before the empty answer is still an error, its error recorded", async () => {
+            const handler = vi.fn(async () => "done");
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.scriptedToolCalls = [{ name: "regular_tool", args: { value: 1 } }];
+            fakeSession.assistantContent = null;
+            fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];
+            const { result, recorded } = await quietTurn(fakeSession, {
+                tools: [{ name: "regular_tool", description: "test tool", parameters: { type: "object", properties: {} }, handler }],
+            });
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect(result.type).toBe("error");
+            expect(result.message).toContain("No response was returned");
+            expect(result.events.some(event => event.eventType === "session.error")).toBe(true);
+            expect(recorded).toContain("session.error");
+            expect(recorded).not.toContain("session.empty_answer");
+        });
+
+        it("an answer with content keeps its content; the error is recorded as before", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.assistantContent = "Noted.";
+            fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];
+            const { result, recorded } = await quietTurn(fakeSession);
+            expect(result).toMatchObject({ type: "completed", content: "Noted." });
+            expect(recorded).toContain("session.error");
+            expect(recorded).not.toContain("session.empty_answer");
+        });
     });
 
     it("does not capture empty assistant messages at wait_for_agents boundaries", async () => {

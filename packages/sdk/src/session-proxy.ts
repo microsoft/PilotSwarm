@@ -529,6 +529,33 @@ export function workflowUpdateSender(text: unknown, stampedSender: unknown): Rec
 }
 
 /**
+ * The prompt every session orchestration version gives a system-only turn: a child digest or a wake whose instructions
+ * are all system context (INTERNAL_SYSTEM_TURN_PROMPT in each version's state.ts; the same text in all of them).
+ */
+export const SYSTEM_ONLY_TURN_PROMPT = "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.";
+
+/**
+ * F-C3: whether a turn carries only the runtime's own words: a ROOT session's system-only turn (SYSTEM_ONLY_TURN_PROMPT,
+ * a bootstrap turn) with no person's words folded in (held prompts, carried or open steers, workflow intake items), no
+ * attachments and no required tool. Its empty answer is completed quietly (TurnOptions.quietEmptyAnswer). A child
+ * session never is: its empty completion would be reported to its parent.
+ */
+export function isQuietSystemOnlyTurn(input: {
+    prompt?: string; bootstrap?: boolean; parentSessionId?: string; requiredTool?: string; systemContextInPrompt?: boolean;
+    stashedPrompts?: unknown; foldedText?: boolean; intake?: boolean; attachments?: number;
+}): boolean {
+    const bare = input.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "");
+    return !input.parentSessionId
+        && input.bootstrap === true
+        && bare.trim() === SYSTEM_ONLY_TURN_PROMPT
+        && !input.requiredTool
+        && !(Array.isArray(input.stashedPrompts) && input.stashedPrompts.length > 0)
+        && input.foldedText !== true
+        && input.intake !== true
+        && (input.attachments ?? 0) === 0;
+}
+
+/**
  * Whether a prompt is the runtime's own notice, recorded as a system.message. A workflow's message is one only when the
  * runtime queued it with its own sender (`sender`, the queued message's server-stamped sender; SF-2).
  */
@@ -4833,6 +4860,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
             }
 
+            // F-C3: a root session's system-only turn (a child digest, a wake) whose model answers nothing ends completed.
+            const quietEmptyAnswer = isQuietSystemOnlyTurn({
+                prompt: input.prompt, bootstrap: input.bootstrap, parentSessionId: input.parentSessionId, requiredTool: input.requiredTool,
+                systemContextInPrompt: input.config?.systemContextInPrompt === true, stashedPrompts: (input as any).stashedPrompts,
+                foldedText: Boolean(tc?.carriedText || tc?.foldedSteerText), intake: turnIntake !== null,
+                attachments: requestedAttachments.length,
+            });
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
                 // Workflow intake (runTurnV5, design 5.5; exposure protocol
                 // revision 2, section 4): the carried items come before
@@ -4871,6 +4905,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     liveTurn: liveTurnEnabled,
                     modelSummary,
                     bootstrap: input.bootstrap,
+                    ...(quietEmptyAnswer ? { quietEmptyAnswer: true } : {}),
                     requiredTool: input.requiredTool,
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,

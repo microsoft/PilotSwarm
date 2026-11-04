@@ -95,7 +95,9 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
             notify_on_completion: {
                 type: "boolean",
                 description: "Tell this session the result when the workflow ends. Default true. For a v2 draft, a later live start "
-                    + "(update_workflow start or publish_and_start) turns it on again unless that start passes notify_on_completion false.",
+                    + "(update_workflow start or publish_and_start) turns it on again unless that start passes notify_on_completion false. "
+                    + "If a parent session waits for your answer, pass false and check the run with read_workflow after each wait until it "
+                    + "ends: the end notice would start a new turn, and your parent would get your answer twice.",
             },
             key: {
                 type: "string",

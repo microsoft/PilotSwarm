@@ -271,6 +271,10 @@ graph:
 - Starting a live run (`start`, `publish_and_start`) turns the notification
   on, even after `spawn_workflow` with `notify_on_completion: false`; pass
   `notify_on_completion: false` to the start to keep it off.
+- If a parent session waits for your answer, start the run with
+  `notify_on_completion: false` and check it with `read_workflow` after each
+  `wait` until it ends, then answer once: with the notification on, the run's
+  end comes to you as a new turn, and your parent gets your answer twice.
 
 ## Example: wait for an event or poll
 
