@@ -6,7 +6,10 @@ import type { JsonValue } from "./json.js";
  * refusals and the REST and MCP errors of the workflow adapters, and so the parent's notification of a run's end.
  * Truncation is not redaction: this hides
  * - a URL's user and password (scheme://user:password@host -> scheme://<hidden>@host);
- * - a Bearer or Basic credential;
+ * - the value of an Authorization header or field, whole, after its scheme word (E2-R2): any characters, any length,
+ *   to the end of the line or the closing quote;
+ * - elsewhere, a Bearer token of 8 or more characters, or a Basic credential of 8 or more base64 characters, whatever
+ *   their mix (E2-R2; "a basic idea" is left alone, "basic validation" is not);
  * - the value of a password, token, secret, key, signature, credential, authorization or cookie, written key=value,
  *   key: value (a connection string, a query string, a header) or as a JSON field ("token": "...").
  * It never adds or removes anything else, so a message without secrets is unchanged. Pure.
@@ -16,22 +19,36 @@ import type { JsonValue } from "./json.js";
 const SECRET_NAME = "[A-Za-z0-9_]{0,40}(?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|private[_-]?key|account[_-]?key|"
     + "client[_-]?secret|authorization|signature|credentials?|cookie)[A-Za-z0-9_-]{0,40}|sig|key|pass";
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,30}:\/\/)[^\s/@'"<>]+@/gi;
-// Any letter case (SF-6 verification); a credential is 8 or more characters with a digit or a symbol, so prose such
-// as "basic validation" is left alone.
-const AUTH_SCHEME = /\b(Bearer|Basic)\s+(?=[A-Za-z0-9._~+/=-]{8})(?=[A-Za-z]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]+/gi;
+// An Authorization header or field written key: value or key=value (E2-R2; any letter case): the whole value.
+const AUTHORIZATION = /\b([A-Za-z0-9_-]{0,40}authorization[A-Za-z0-9_-]{0,40})(\s*[=:]\s*)("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|[^\r\n]*)/gi;
+// Outside one, any letter case (SF-6 verification): a token of 8 or more characters, whatever its mix (E2-R2).
+const BEARER = /\b(Bearer)\s+[^\s"'<>\\]{8,}/gi;
+const BASIC = /\b(Basic)\s+[A-Za-z0-9+/=_-]{8,}/gi;
 const JSON_FIELD = new RegExp(`"(${SECRET_NAME})"(\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`, "gi");
 const ESCAPED_JSON_FIELD = new RegExp(`\\\\"(${SECRET_NAME})\\\\"(\\s*:\\s*)\\\\"(?:[^"\\\\]|\\\\[^"])*\\\\"`, "gi");
-const KEY_VALUE = new RegExp(`\\b(${SECRET_NAME})(\\s*[=:]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;&'"<>)\\]}]+)`, "gi");
+// Not a value already hidden after its scheme word ("Authorization: Bearer <hidden>").
+const KEY_VALUE = new RegExp(`\\b(${SECRET_NAME})(\\s*[=:]\\s*)(?!["']?(?:[A-Za-z][A-Za-z0-9._-]{0,30}\\s+)?<hidden>)(?:"[^"]*"|'[^']*'|[^\\s,;&'"<>)\\]}]+)`, "gi");
+
+/** An Authorization value with everything after its scheme word hidden; an empty value is left as it is. */
+function hideAuthorization(match: string, name: string, separator: string, value: string): string {
+    const quote = value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.endsWith(value[0]) ? value[0] : "";
+    const inner = quote ? value.slice(1, -1) : value;
+    if (inner.trim() === "") return match;
+    const scheme = /^([A-Za-z][A-Za-z0-9._-]{0,30})\s+\S/.exec(inner);
+    return `${name}${separator}${quote}${scheme ? `${scheme[1]} ` : ""}<hidden>${quote}`;
+}
 
 /** `text` with its secrets hidden (see the module's comment). */
 export function redactWorkflowSecrets(text: string): string {
     if (typeof text !== "string" || text === "") return text;
     return text
         .replace(URL_USERINFO, "$1<hidden>@")
-        .replace(AUTH_SCHEME, "$1 <hidden>")
+        .replace(AUTHORIZATION, hideAuthorization)
+        .replace(BEARER, "$1 <hidden>")
+        .replace(BASIC, "$1 <hidden>")
         .replace(ESCAPED_JSON_FIELD, "\\\"$1\\\"$2\\\"<hidden>\\\"")
         .replace(JSON_FIELD, "\"$1\"$2\"<hidden>\"")
-        .replace(KEY_VALUE, (match, name: string, separator: string) => (match.endsWith("<hidden>") ? match : `${name}${separator}<hidden>`));
+        .replace(KEY_VALUE, (match, name: string, separator: string) => (/<hidden>["']?$/.test(match) ? match : `${name}${separator}<hidden>`));
 }
 
 const SECRET_NAME_EXACT = new RegExp(`^(?:${SECRET_NAME})$`, "i");
@@ -44,19 +61,24 @@ const KEY_SAFE_CODES: ReadonlySet<string> = new Set(["KV_LIMIT", "KV_KEY_NOT_FOU
 
 /**
  * An error value (text, or a JSON error with its code, message and details) with every secret hidden; null stays null.
- * A member named `key` is kept only in an error whose code says it names a workflow variable (`keepKey`, or the
- * envelope's own `code`).
+ * A member named for a secret is hidden whole when it holds text, a list or an object (E2 verification: a list of
+ * tokens too); a number or a flag stays. A member named `key` is kept only in an error whose code says it names a
+ * workflow variable: `keepKey`, or the code of the error itself, at the top (nested details cannot label themselves).
  */
 export function redactWorkflowErrorValue<T extends JsonValue | null | undefined>(value: T, options: { keepKey?: boolean } = {}): T {
-    if (typeof value === "string") return redactWorkflowSecrets(value) as T;
-    if (Array.isArray(value)) return value.map(item => redactWorkflowErrorValue(item, options)) as T;
+    const own = value !== null && typeof value === "object" && !Array.isArray(value) ? (value as { [key: string]: JsonValue }).code : undefined;
+    return redactValue(value, options.keepKey === true || (typeof own === "string" && KEY_SAFE_CODES.has(own))) as T;
+}
+
+function redactValue(value: JsonValue | null | undefined, keepKey: boolean): JsonValue | null | undefined {
+    if (typeof value === "string") return redactWorkflowSecrets(value);
+    if (Array.isArray(value)) return value.map(item => redactValue(item, keepKey) as JsonValue);
     if (value && typeof value === "object") {
-        const record = value as { [key: string]: JsonValue };
-        const keepKey = options.keepKey === true || (typeof record.code === "string" && KEY_SAFE_CODES.has(record.code));
         // Object.fromEntries defines each member as its own, so a JSON member named __proto__ stays one (VR-5).
-        return Object.fromEntries(Object.entries(record).map(([key, item]) => [key,
-            typeof item === "string" && SECRET_NAME_EXACT.test(key) && !(key === "key" && keepKey) ? "<hidden>"
-                : redactWorkflowErrorValue(item, { keepKey })])) as T;
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
+            (item !== null && typeof item === "object") || typeof item === "string"
+                ? (SECRET_NAME_EXACT.test(key) && !(key === "key" && keepKey) ? "<hidden>" : redactValue(item, keepKey))
+                : item]));
     }
     return value;
 }

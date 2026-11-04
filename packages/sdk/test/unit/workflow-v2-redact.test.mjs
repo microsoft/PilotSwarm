@@ -11,7 +11,7 @@ const SENTINEL = "s3nt1nel-Secr3t";
 test("a URL's user and password, a Bearer credential and key=value secrets are hidden; the rest is kept", () => {
     assert.equal(redactWorkflowSecrets(`connect to postgres://app:${SENTINEL}@db.example:5432/wf failed`),
         "connect to postgres://<hidden>@db.example:5432/wf failed");
-    assert.equal(redactWorkflowSecrets(`Authorization: Bearer ${SENTINEL}`), "Authorization: <hidden> <hidden>");
+    assert.equal(redactWorkflowSecrets(`Authorization: Bearer ${SENTINEL}`), "Authorization: Bearer <hidden>");
     assert.equal(redactWorkflowSecrets(`header was Bearer ${SENTINEL}.x`), "header was Bearer <hidden>");
     assert.equal(redactWorkflowSecrets(`Server=db;User Id=app;Password=${SENTINEL};Database=wf`), "Server=db;User Id=app;Password=<hidden>;Database=wf");
     assert.equal(redactWorkflowSecrets(`GET https://acct.blob.example/c/b?sv=2024&sig=${SENTINEL}&se=x`), "GET https://acct.blob.example/c/b?sv=2024&sig=<hidden>&se=x");
@@ -113,7 +113,7 @@ test("SF-6: a lowercase bearer or basic credential is hidden whole", () => {
         const redacted = redactWorkflowSecrets(text);
         assert.ok(!redacted.includes(SENTINEL), redacted);
     }
-    for (const prose of ["Basic validation failed for step one.", "the bearer of this message"]) assert.equal(redactWorkflowSecrets(prose), prose);
+    for (const prose of ["A basic idea.", "the bearer of this message"]) assert.equal(redactWorkflowSecrets(prose), prose);
 });
 
 test("SF-6: stored error text is redacted as JSON when it is JSON, and as text otherwise; unchanged text stays byte-identical", async () => {
@@ -142,4 +142,58 @@ test("SF-6: a refusal keeps a KV key in its details, and hides any other `key`",
     assert.deepEqual(kv.details, { key: "threshold" });
     const other = workflowStoreFailure(new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "bad", { key: SENTINEL }));
     assert.deepEqual(other.details, { key: "<hidden>" });
+});
+
+// Verification of SF-6 in E2 (E2-R2, the SF-6 residual; tests E2-T4, E2-T5).
+test("E2-T4: an Authorization header or field hides its whole value after the scheme word, any characters, any length", () => {
+    for (const [text, hidden] of [
+        [`Authorization: Basic abcdefghij`, "Authorization: Basic <hidden>"],
+        [`authorization: bearer abc`, "authorization: bearer <hidden>"],
+        [`Authorization=Basic Zm9v OmJhcg==`, "Authorization=Basic <hidden>"],
+        [`Proxy-Authorization: Negotiate ${SENTINEL} more`, "Proxy-Authorization: Negotiate <hidden>"],
+        [`authorization: ${SENTINEL}`, "authorization: <hidden>"],
+        [`authorization="Bearer ${SENTINEL} x"; next`, `authorization="Bearer <hidden>"; next`],
+        [`x_authorization_header: Digest username="u", response="${SENTINEL}"`, "x_authorization_header: Digest <hidden>"],
+        [`first line\nAuthorization: Bearer ab\nlast line`, "first line\nAuthorization: Bearer <hidden>\nlast line"],
+    ]) {
+        assert.equal(redactWorkflowSecrets(text), hidden, text);
+    }
+    // Hidden once: a second pass changes nothing.
+    const once = redactWorkflowSecrets(`Authorization: Bearer ${SENTINEL}`);
+    assert.equal(redactWorkflowSecrets(once), once);
+    // A JSON field named authorization is hidden whole.
+    assert.deepEqual(JSON.parse(redactWorkflowSecrets(JSON.stringify({ authorization: "Basic abc" }))), { authorization: "<hidden>" });
+});
+
+test("E2-T4: elsewhere a Bearer token or a Basic credential of 8 or more characters is hidden, whatever its mix; prose stays", () => {
+    for (const [text, hidden] of [
+        [`sent Bearer abcdefgh to it`, "sent Bearer <hidden> to it"],
+        [`sent BEARER ${SENTINEL}.x`, "sent BEARER <hidden>"],
+        [`with Basic dXNlcjpwYXNz`, "with Basic <hidden>"],
+        [`with basic abcdefghij then`, "with basic <hidden> then"],
+        [`header basic ${SENTINEL}`, "header basic <hidden>"],
+    ]) {
+        assert.equal(redactWorkflowSecrets(text), hidden, text);
+    }
+    for (const prose of ["A basic idea.", "the bearer of this message", "Bearer abc", "Basic plan"]) assert.equal(redactWorkflowSecrets(prose), prose);
+});
+
+test("E2-T5: a member named for a secret hides its whole value, a list or an object too; numbers stay", () => {
+    const value = { code: "execution_failed", message: "failed", details: {
+        tokens: [SENTINEL, "two"], credentials: { user: "u", pass: SENTINEL }, apiKey: { value: SENTINEL }, tokenLimit: 5, secretSet: true, sig: null,
+    } };
+    const out = redactWorkflowErrorValue(value);
+    assert.deepEqual(out.details, { tokens: "<hidden>", credentials: "<hidden>", apiKey: "<hidden>", tokenLimit: 5, secretSet: true, sig: null });
+    assert.ok(!JSON.stringify(out).includes(SENTINEL));
+});
+
+test("E2-T5: only the top-level error's own KV code keeps a `key`; nested details cannot label themselves", () => {
+    assert.deepEqual(redactWorkflowErrorValue({ code: "KV_LIMIT", message: "too long", details: { key: "threshold", nested: { key: "limit" } } }).details,
+        { key: "threshold", nested: { key: "limit" } });
+    const forged = redactWorkflowErrorValue({ code: "execution_failed", message: "x", details: { code: "KV_LIMIT", key: SENTINEL, inner: [{ code: "KV_CONFLICT", key: SENTINEL }] } });
+    assert.deepEqual(forged.details, { code: "KV_LIMIT", key: "<hidden>", inner: [{ code: "KV_CONFLICT", key: "<hidden>" }] });
+    // An event's error field is its own top level.
+    assert.deepEqual(redactWorkflowEventData({ runId: "r", error: { code: "KV_LIMIT", details: { key: "threshold" } } }).error.details, { key: "threshold" });
+    assert.deepEqual(redactWorkflowEventData({ runId: "r", error: { code: "x", details: { code: "KV_LIMIT", key: SENTINEL } } }).error.details,
+        { code: "KV_LIMIT", key: "<hidden>" });
 });

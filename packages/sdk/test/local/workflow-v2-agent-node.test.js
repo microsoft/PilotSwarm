@@ -267,6 +267,27 @@ describe("workflow v2 agent states: the store", () => {
         }
     });
 
+    it("E2-T5: an agent's reported error is stored with its secrets hidden, and a repeat of the same call is still recognized", { timeout: TIMEOUT }, async () => {
+        const h = await agentFixture(getEnv());
+        try {
+            const secret = "s3nt1nel-Secr3t";
+            const run = await h.workflow();
+            const { nodeExecutionId, childSessionId } = await h.admit(run);
+            const call = { error: { code: "needs_input", message: `Which base? token=${secret}`, details: { apiKey: secret, tokens: [secret], count: 2 } } };
+            expect(await h.complete(childSessionId, "op-e", call)).toMatchObject({ kind: "accepted", replayed: false });
+            const [raw] = await h.q("SELECT error FROM SCHEMA.workflow_node_executions WHERE node_execution_id = $1", [nodeExecutionId]);
+            expect(String(raw.error)).not.toContain(secret);
+            expect(JSON.parse(raw.error)).toEqual({ code: "needs_input", message: "Which base? token=<hidden>",
+                details: { apiKey: "<hidden>", tokens: "<hidden>", count: 2 } });
+            // The operation's hash is the hash of what the agent sent: the same call again is its repeat.
+            expect(await h.complete(childSessionId, "op-e", call)).toMatchObject({ kind: "accepted", replayed: true });
+            const events = await h.catalog.getSessionEvents(run.workflowSessionId, 0, 100, ["workflow.state_failed"]);
+            expect(JSON.stringify(events)).not.toContain(secret);
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("decides an agent state once by its child's typed completion: shape, contract, correction budget, repeats and conflicts", { timeout: TIMEOUT }, async () => {
         const h = await agentFixture(getEnv());
         try {

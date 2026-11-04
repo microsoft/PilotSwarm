@@ -2531,7 +2531,8 @@ export class WorkflowStore {
                 throw new WorkflowStoreError("RUN_ALREADY_STOPPING", `Run ${run.runId} is already stopping, until ${run.stop.deadlineAt.toISOString()}.`,
                     { deadlineAt: run.stop.deadlineAt.toISOString() });
             }
-            const request = canonicalJson({ operationId: input.operationId, reason: input.reason === null ? null : jsonbSafeText(input.reason, 500),
+            // SF-6 verification: the stop's reason is kept with its secrets hidden.
+            const request = canonicalJson({ operationId: input.operationId, reason: input.reason === null ? null : redactWorkflowSecrets(jsonbSafeText(input.reason, 500)),
                 actor: actorJson(input.actor), graceSeconds: input.graceSeconds });
             // One reading of the store's clock is the stop's time; its deadline counts the grace from it.
             const { rows } = await client.query(
@@ -2618,9 +2619,10 @@ export class WorkflowStore {
                 SET status = 'cancelled', terminal_node_id = NULL, terminal_outcome = NULL, terminal_output = NULL, terminal_error = $2,
                     paused_from = NULL, updated_at = now(), finished_at = now()
               WHERE run_id = $1 RETURNING *`,
-            [run.runId, canonicalJson({ code: "cancelled", message: jsonbSafeText(input.reason, 4_000), details: {
+            // SF-6 verification: the reason is a person's or an agent's text; its secrets are hidden before it is stored.
+            [run.runId, redactWorkflowErrorText(canonicalJson({ code: "cancelled", message: jsonbSafeText(input.reason, 4_000), details: {
                 command, requestedBy: input.requestedBy, ...marks,
-            } })]);
+            } }), canonicalJson)]);
         // No node execution exists before begin; one that did would lose to the cancel, as when the controller cancels.
         await client.query(
             `UPDATE ${this.t.nodes}
@@ -5740,16 +5742,18 @@ export class WorkflowStore {
                     state: { status: "completed" as const, outcome: "invalid_output", winner: "agent" } };
             }
 
-            // 5. The result decides the state.
+            // 5. The result decides the state. An agent's error is stored with its secrets hidden (SF-6 verification); the
+            // operation's hash stays the hash of what the agent sent, so its repeat is still recognized.
             const outcome = kind === "result" ? (value as { outcome: string }).outcome : (value as { code: string }).code;
             const resultKind: NodeResultKind = kind === "result" ? "business" : "runtime_error";
+            const storedText = storedResultText({ resultKind, valueText: resultText });
             const { rows: completed } = await client.query(
                 `UPDATE ${this.t.nodes}
                     SET state = 'completed', outcome = $2, result_kind = $3,
                         output = CASE WHEN $3 = 'business' THEN $4 END, error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
                         winner = 'agent', completed_at = $5::timestamptz
                   WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
-                [nodeExecutionId, outcome, resultKind, resultText, at]);
+                [nodeExecutionId, outcome, resultKind, storedText, at]);
             if (!completed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Agent state ${nodeExecutionId} changed under its lock.`);
             const receipt: WorkflowAgentCompletionReceipt = {
                 nodeExecutionId, workflowSessionId: run.workflowSessionId, runId: run.runId, stateId: node.nodeId, childSessionId: invocation.childSessionId,
@@ -5760,7 +5764,7 @@ export class WorkflowStore {
                 eventType: resultKind === "business" ? "workflow.state_completed" : "workflow.state_failed", data: {
                     runId: run.runId, nodeExecutionId, stateId: node.nodeId, step: node.ordinal, outcome, resultKind,
                     childSessionId: invocation.childSessionId, operationId,
-                    ...(resultKind === "business" ? { outputPreview: jsonbSafeText(resultText, 1_000) } : { error: jsonbSafeText(resultText, 2_000) }),
+                    ...(resultKind === "business" ? { outputPreview: jsonbSafeText(storedText, 1_000) } : { error: jsonbSafeText(storedText, 2_000) }),
                 } }] });
             return { kind: "accepted" as const, replayed: false, receipt, controllerInstanceId };
         });
@@ -5883,11 +5887,12 @@ export class WorkflowStore {
                         canonicalJson({ code: "cancelled", message: "The run stopped before this parallel state joined its branches." })]);
             }
             const stop = run.stop;
-            const errorText = canonicalJson({ code: "stopped", message: jsonbSafeText(stop.reason ?? "Stopped", 4_000), details: {
+            // SF-6 verification: the stop's reason is stored with its secrets hidden.
+            const errorText = redactWorkflowErrorText(canonicalJson({ code: "stopped", message: jsonbSafeText(stop.reason ?? "Stopped", 4_000), details: {
                 operationId: stop.operationId, actor: stop.actor, graceSeconds: stop.graceSeconds,
                 requestedAt: stop.requestedAt.toISOString(), deadlineAt: stop.deadlineAt.toISOString(),
                 graceExpired, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 100),
-            } });
+            } }), canonicalJson);
             const { rows } = await client.query(
                 `UPDATE ${this.t.runs}
                     SET status = 'stopped', terminal_node_id = NULL, terminal_outcome = NULL, terminal_output = NULL, terminal_error = $2,
