@@ -184,6 +184,9 @@ the branches.
 - `forEach` is one binding that gives a list, or a list (at most 64 items).
   It is read once, when the state starts. Later KV changes do not change it.
 - `concurrency` (1 to 16, default 1) is the most branches active at once.
+  Keep it below the worker's slots (`PILOTSWARM_WORKER_CONCURRENCY`): each
+  running script holds one, so with full slots a race's losers stop late and
+  may finish their side effects.
 - A branch starts at `body.initial` with its item as input. Body routes stay
   in the body. A body terminal with outcome `succeeded` is success; any other
   terminal outcome, or a result with no route, ends the branch without

@@ -187,6 +187,12 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   if k could already no longer happen then, it is `blocked` with
   `timedOut: true` instead.
 - `outputSchema` checks only the joined output, never a report.
+- Worker slots: each running script holds one of the worker's slots
+  (`PILOTSWARM_WORKER_CONCURRENCY`; the duroxide default is 2) for its whole
+  run, and the controller needs a free one too. Keep `concurrency` below the
+  slot count, with room to spare. With full slots, stopping a race's losers
+  waits for a free slot, so a losing script may finish its side effects.
+  Stopping a script is best-effort: it usually stops within about a second.
 
 ### terminal
 

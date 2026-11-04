@@ -398,7 +398,8 @@ export interface ControllerState {
     parallels?: ControllerParallel[];
     /**
      * Controller 1.9.0 (J1d): cut branches whose work's effect or child could not be stopped or ended yet, with why they
-     * were cut; tried again at most once per backstop period, paused or not, until none is owed (absent: none).
+     * were cut; tried again at most once per backstop period, paused or not, busy or idle, and at the first pass after
+     * continue-as-new (J1e), until none is owed (absent: none).
      */
     owedCuts?: ControllerOwedCut[];
 }
@@ -1261,7 +1262,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     // When the waiting requests' responders were last observed (once per backstop period; not carried by continue-as-new).
     let observedAtMs: number | null = null;
     // When the owed stops and ends of cut branches were last tried (J1d; once per backstop period; not carried by
-    // continue-as-new: the next execution tries them at its first chance).
+    // continue-as-new: the next execution tries them at its first pass, J1e).
     let owedTriedAtMs: number | null = null;
     // The run's accepted stop, as the store last reported its deadline (not carried by continue-as-new: a stop is never
     // withdrawn, and the next execution reads it again at its first admission or collection).
@@ -1347,7 +1348,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     /**
      * Try the owed stops and ends of cut branches again (J1d), at most once per backstop period, active, stopping or paused:
      * one store attempt per reason (its short retries), never more. What is still owed stays owed; a failure is traced, and
-     * the controller goes on (the store already decided their work; nothing of theirs is routed).
+     * the controller goes on (the store already decided their work; nothing of theirs is routed). Every pass of the loop
+     * asks (review J1d-R1, J1e), so a run that always has a ready result, or continues as new, still tries them; with
+     * nothing owed it yields nothing, so a history without owed cuts replays as recorded.
      */
     const retryOwedCuts = function* (): Generator<ScheduledTask, void, unknown> {
         if (owedCuts().length === 0) return;
@@ -1472,8 +1475,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
      */
     const pausedPass = function* (seen: CollectedResult[] | null): Generator<ScheduledTask, { result: ControllerResult | null } | null, unknown> {
         publishStatus(ctx, input, plan, state, "waiting");
-        // J1d: the owed stops and ends of cut branches are tried again while paused too.
-        yield* retryOwedCuts();
+        // J1d: the owed stops and ends of cut branches are tried again while paused too, at the top of each pass (J1e).
         let pausedTimerMs = plan.wakeBackstopMs;
         const realAgent = (nodeId: string): boolean => plan.nodes[nodeId]?.type === "agent" && (plan.test !== true || plan.realAgents === true);
         if (seen !== null) {
@@ -1560,6 +1562,10 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             const command = yield* takeQueuedCommand(ctx);
             if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
         }
+        // 0a. The owed stops and ends of cut branches (J1d), at most once per backstop period: every pass comes here (a pass
+        // with ready results, a reroute, a paused or stopping pass, an idle wait's wake), and the first pass of an execution
+        // after continue-as-new tries them at once (review J1d-R1, J1e).
+        yield* retryOwedCuts();
 
         // 1. Admit the next node of every cursor that is not waiting on work (none while the run is stopping). A branch's
         // end may add or drop cursors: this pass goes over the cursors it started with that are still there.
@@ -1891,9 +1897,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
 
         // 3. Nothing is ready: wait for a wake (a response's included), a lifecycle command or the nearest deadline (a
-        // stopping run's stop deadline included). The owed stops and ends of cut branches are tried again first (J1d); the
-        // wait is at most a backstop period, so they are tried that often.
-        yield* retryOwedCuts();
+        // stopping run's stop deadline included). The wait is at most a backstop period, so the next pass (0a) tries the
+        // owed stops and ends of cut branches about that often.
         publishStatus(ctx, input, plan, state, "running");
         const deadlines = waits().map(wait => wait.deadlineMs);
         if (stopping !== null) deadlines.push(stopping.deadlineMs);

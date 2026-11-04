@@ -379,17 +379,27 @@ short, when workflows run beside busy agents.
 Size the slots for parallel states too. Each branch that runs a script holds
 a slot until the script ends. The controller's own steps (collecting results,
 admitting the next step, deciding a join, cancelling the other branches) need
-a free slot as well. With fewer slots than running branches plus one, the
-branches run in waves and the controller waits behind them. The result does
-not change: a join of the first k still takes the first k successes that the
-store saved, and a time limit is still decided by the store's clock. But the
-decision comes later, and a branch that would have been cancelled can finish
-first (it keeps its result and is not a winner). Across a deployment's
-workers, give at least the `concurrency` of the widest parallel state that
-runs scripts plus one, and add the slots its agents use. If a cancelled
-branch's script or agent chat cannot be stopped at once, the controller goes
-on and tries again at most once per wake period; the run's end ends any agent
-chat still owed.
+a free slot as well. Keep a parallel state's `concurrency` below the worker's
+slot count: set `PILOTSWARM_WORKER_CONCURRENCY` above the widest parallel
+state's `concurrency` that runs scripts, plus some room for the controller and
+for the agents that run there (the duroxide default is 2). With fewer slots
+than running branches plus one, the branches run in waves and the controller
+waits behind them, so a race's stop of its losers waits for a free slot.
+
+Stopping a losing branch's script is best-effort. When the cancellation is
+saved, the script's own liveness check usually stops it within about a
+second. If both that check and the cancel request fail, the script can run
+until recovery or until its own timeout (300 seconds by default, at most
+3,600), and its side effects can happen. The result does not change: a join
+of the first k still takes the first k successes that the store saved, in
+the order it saved them, and a time limit is still decided by the store's
+clock. But scheduling can change what is saved before a deadline: with too
+few slots the decision comes later, and a branch that would have been
+cancelled can finish first (it keeps its result and is not a winner). If a
+cancelled branch's script or agent chat cannot be stopped at once, the
+controller goes on and tries again at most once per wake period, also while
+the run is busy with other steps and after it continues as new; the run's
+end ends any agent chat still owed.
 
 Isolation, in this version:
 

@@ -27,7 +27,8 @@
  *   parallel state's own time limit cancels (IR 9) has its child ended; the
  *   child of a loser branch whose end fails is owed: the run goes on at
  *   once, and the end is tried again, running or paused, until it works
- *   (reviews J1-R2 and J1C-1, J1d).
+ *   (reviews J1-R2 and J1C-1, J1d), also while the run always has a result
+ *   ready and across continue-as-new (review J1d-R1, J1e).
  *
  * The child session is a test double (an orchestration that records the
  * messages its queue gets); the test completes the state through the real
@@ -169,6 +170,22 @@ states:
   stuck: { type: terminal, outcome: blocked, output: "\${input}" }
   failed: { type: terminal, outcome: failed }
 `;
+
+/**
+ * The race of RACE_AGENT_YAML, but after the join the run stays busy (review J1d-R1): an empty parallel state joins at once
+ * and routes to itself, so each pass of its controller has a result ready and it never waits idle, until the node limit.
+ */
+const SPIN_AGENT_YAML = RACE_AGENT_YAML.replace("joined: hold", "joined: spin").replace(
+    "  hold: { type: wait, seconds: 600, transition: { next: { elapsed: finished } } }\n", `  spin:
+    type: parallel
+    forEach: []
+    body:
+      initial: idle
+      states:
+        idle: { type: wait, seconds: 1, transition: { next: { elapsed: over } } }
+        over: { type: terminal, outcome: succeeded }
+    transition: { next: { joined: spin, blocked: finished, failure: failed } }
+`);
 
 describe("workflow v2 agent states: compiler and IR 8", () => {
     it("compiles an agent state to IR 8 only when agents are enabled, and reads IR 8 only when asked to", () => {
@@ -847,6 +864,71 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
             expect(await lifecycleCommand(h, winner.childSessionId)).toMatchObject({ cmd: "done" });
             expect(events.filter(event => event.eventType === "workflow.branches_cancelled").map(event => event.data))
                 .toEqual([expect.objectContaining({ scopeIds: [branchScopeId(fan, 1)], cancelled: [loser.nodeExecutionId], reason: "join" })]);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    // Review J1d-R1 (J1e): a run that always has a result ready never waits idle, and each continue-as-new starts a new execution.
+    // The owed end is still tried on the way, at most once per backstop period in an execution and at once in a new one, so it is
+    // delivered while the run is still busy, not only at its end.
+    it("J1e: tries a loser's owed child end while the run stays busy past the join and continues as new, and ends it while the run still runs", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, SPIN_AGENT_YAML);
+            const spawns = await until(async () => (h.spawns.length >= 2 ? h.spawns : null), "both branches' agent children");
+            const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
+            const review = index => nodeExecutionIdFor(runId, branchScopeId(fan, index), "review", 1);
+            const winner = spawns.find(spawn => spawn.nodeExecutionId === review(0));
+            const loser = spawns.find(spawn => spawn.nodeExecutionId === review(1));
+            expect(winner && loser, "one child per branch").toBeTruthy();
+            for (const spawn of [winner, loser]) {
+                await until(async () => (await h.store.readAgentInvocation(spawn.nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
+            }
+            // The loser's end fails until the store answers again.
+            const recordAgentEnd = h.store.recordAgentEnd.bind(h.store);
+            const blocked = { on: true, attempts: 0 };
+            h.store.recordAgentEnd = async (nodeExecutionId, end) => {
+                if (nodeExecutionId === loser.nodeExecutionId && blocked.on) {
+                    blocked.attempts += 1;
+                    throw new Error("The store is not available (test).");
+                }
+                return await recordAgentEnd(nodeExecutionId, end);
+            };
+            const controller = workflowLiveControllerInstanceId(workflowSessionId);
+            const executionsBefore = (await h.client.listExecutions(controller)).length;
+            const spins = async () => (await h.store.listNodeExecutions(runId)).filter(node => node.nodeId === "spin").length;
+            const begun = Date.now();
+            expect(await completeAs(h, winner.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "win-1" }))
+                .toMatchObject({ ok: true });
+            await until(async () => (await h.store.readNodeExecution(fan))?.state === "completed", "the join");
+            expect(await h.store.readNodeExecution(loser.nodeExecutionId)).toMatchObject({ outcome: "cancelled", winner: "join" });
+            // Busy past the join: the run spins, its controller continued as new, several backstop periods (500 ms) passed, and
+            // the owed end was tried again after the cut's first try, all without an idle wait.
+            await until(async () => (await spins()) > 0 && (await h.client.listExecutions(controller)).length > executionsBefore
+                && Date.now() - begun >= 2_000 && blocked.attempts >= 3 || null, "the owed end to be tried again while the run is busy", 30_000);
+            const attempts = blocked.attempts;
+            const elapsed = Date.now() - begun;
+            const executions = (await h.client.listExecutions(controller)).length - executionsBefore + 1;
+            expect((await h.store.readRun(runId)).status).toBe("running");
+            expect((await childMessages(h, loser.childSessionId)).filter(message => message?.type === "cmd")).toEqual([]);
+            // Not at every pass: the cut's try, then at most one at the start of each execution and one per backstop period.
+            expect(attempts).toBeLessThanOrEqual(2 + executions + Math.ceil(elapsed / 500));
+            // The store answers again: a later try, while the run is still busy, ends the child.
+            blocked.on = false;
+            expect(await lifecycleCommand(h, loser.childSessionId)).toMatchObject({ cmd: "cancel", id: `workflow-agent-end:${loser.nodeExecutionId}` });
+            expect(await h.store.readAgentInvocation(loser.nodeExecutionId)).toMatchObject({ endRequested: "cancel", endSentAt: expect.any(Date) });
+            expect((await h.store.readRun(runId)).status).toBe("running");
+            const atEnd = await spins();
+            await until(async () => (await spins()) > atEnd || null, "the run to go on after the end");
+            // It stays controllable: a cancel ends it.
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "enough" },
+                { actor: ACTOR, operationId: "cancel-1" });
+            expect(await ended(h, runId)).toMatchObject({ status: "cancelled" });
+            const events = await h.catalog.getSessionEvents(workflowSessionId, 0, 5_000);
+            expect(events.filter(event => event.eventType === "workflow.agent_end_failed" && event.data.nodeExecutionId === loser.nodeExecutionId).length)
+                .toBeGreaterThanOrEqual(3);
+            expect(await lifecycleCommand(h, winner.childSessionId)).toMatchObject({ cmd: "done" });
         } finally {
             await h.stop();
         }
