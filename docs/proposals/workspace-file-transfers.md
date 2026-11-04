@@ -322,9 +322,9 @@ These are source observations, not live deployment verification.
 | State location | A private local-disk spool owned by one portal process, plus one in-process coordinator for lifecycle/admission. Increment 3 adds a durable CMS cleanup ledger for destination-side candidates independently of that spool. Neither is a cross-replica upload service. |
 | Database changes | None in increments 1 and 2. Increment 3 adds one focused CMS migration for a candidate cleanup ledger, accessed through stored procedures. Store no file bytes or part inventory in the ledger. |
 | Downloads | Increment 2 creates a bounded-memory immutable snapshot, then serves raw ranges from it. This avoids mixing versions while an agent changes the source and avoids rehashing a live 20 MiB file for every 512 KiB range. |
-| Restart | Incomplete transfers do not resume after restart. Old IDs return an explicit expired/unavailable outcome; interrupted publication is unknown until its outcome is established. Increment 3 makes candidate discovery survive spool loss without replaying publication. |
+| Restart | Incomplete transfers do not resume after restart. The portal lifecycle invalidates the prior process generation, returns expired/unavailable outcomes for old IDs, and owns startup/periodic cleanup of safely identified orphaned local spool entries. Interrupted publication is unknown until its outcome is established. Increment 3 makes destination-candidate discovery survive spool loss without replaying publication. |
 | Small writes | Keep legacy JSON writes. The new UI uses them only for payloads at most 64 KiB; larger uploads and saves use parts when supported. |
-| Unsupported deployments | Advertise transfer capability per folder. An unwritable local spool or unsupported target publication primitive fails explicitly. Do not claim support for independent portal processes sharing a transfer ID. |
+| Unsupported deployments | Advertise transfer capability per folder before upload, including separate create-only and replacement publication support. An unwritable local spool or unavailable create-only hard-link primitive fails explicitly; replacement uploads may remain available through same-filesystem rename. Revalidate the actual destination at start and publication; a folder-level probe is not a guarantee for every nested target. Do not claim support for independent portal processes sharing a transfer ID. |
 | Cloud dependencies | None. The implementation uses filesystem capabilities, not cloud names, hostnames, Kubernetes discovery, or cloud SDKs. |
 
 ### Local spool and destination staging
@@ -400,11 +400,18 @@ raw bytes or route them through `/api/rpc`. Both HTTP and node transports
 delegate through the public management API. The portal uses `PortalRuntime`,
 never imports file-operation internals.
 
-`listSessionWorkspaceFolders` gains per-folder transfer capability plus common
+`listSessionWorkspaceFolders` gains per-folder transfer capability, including
+separate create-only and replacement-publication support, plus common
 `partBytes` and legacy-small-write threshold metadata. Old clients ignore these
 additions. New clients talking to old servers retain the legacy path but explain
 its proxy-size limitation; a failed large transfer must not silently retry as
-one oversized JSON write.
+one oversized JSON write. A client must not start a create-only upload when the
+folder reports that exclusive hard-link publication is unavailable; it reports
+that unsupported capability clearly. A replacement upload may still start when
+same-filesystem rename is supported. The server independently checks capability
+for the requested operation and actual destination before accepting parts,
+then revalidates before publication. Folder metadata is advisory: nested mounts,
+permission changes, or target reassignment may invalidate a previous probe.
 
 ## Authorization and admission
 
@@ -427,6 +434,16 @@ lengths immediately. The raw route must bypass JSON parsing and use bounded
 backpressure-aware pipes to the child. Configure finite request/header/idle
 timeouts and stop the specific child on disconnect or deadline. Do not read
 mounted filesystem paths synchronously on the portal event loop.
+
+Excess concurrent upload data-plane calls are not queued. The portal returns
+`503 Service Unavailable` with `Retry-After` before admitting the body to
+application buffers or starting a child. This does not promise that the client
+or proxy has sent no bytes; reject without buffering the rejected payload.
+A client may retry the same part after that interval while the upload remains
+unexpired; the exact-replay contract determines whether an already accepted
+part is idempotent or conflicts. Do not automatically retry completion or an
+ambiguous timeout/publication result. The UI shows the busy state and allows a
+later user retry; it must not retry indefinitely.
 
 ## Durable destination-candidate cleanup (increment 3)
 
@@ -560,9 +577,12 @@ Completion follows the ledger protocol using deadline-bounded helpers:
    the entire candidate in one filesystem operation. For `ifMatch:null`,
    use a same-filesystem exclusive hard link from candidate to target; `EEXIST`
    is a conflict, and unlinking the candidate is subsequent cleanup. Verify this
-   primitive on supported targets and reject it explicitly where unavailable,
-   rather than using check-then-overwrite rename. Conditional/unconditional
-   replacement uses same-filesystem rename and retains existing API semantics.
+   primitive before accepting upload parts for the actual destination. When
+   it is unavailable, create-only uploads fail with an explicit unsupported-
+   capability error rather than using check-then-overwrite rename.
+   Conditional/unconditional replacement uses same-filesystem rename and may
+   remain available, retaining existing API semantics. Recheck at publication:
+   a successful capability probe does not prevent later filesystem failures.
 5. Persist the completion receipt and record the existing
    `session.workspace_files_changed` write event. Notify the pane only after a
    known successful commit, not for individual parts.
@@ -595,11 +615,22 @@ rollback. Expiry uses the same serialized lifecycle path. Never remove a
 candidate while a known live completing child may still publish it.
 
 On restart, invalidate the previous process generation rather than adopting its
-open transfers. Staged parts/snapshots are disposable; destination candidates
-are recovered through the durable ledger. A transfer that reached `publishing`
-requires explicit unknown-outcome reporting unless its receipt established the
-result. Confirm helper exit before candidate cleanup. A newer portal must not
-replay publication.
+open transfers. The portal lifecycle owns startup and periodic cleanup of
+orphaned local spool entries. Remove only entries established to belong to an
+inactive generation, after confirming helper exit and validating ownership,
+containment, and entry identity. A generation change, directory name, or age
+alone does not establish that cleanup is safe; retain and report uncertain
+entries. Do not scan or delete arbitrary temporary directories.
+
+Staged parts/snapshots are disposable; destination candidates are recovered
+through the durable ledger at startup and every 60 seconds. A user with an old
+ID sees an explicit expired/unavailable outcome, not a resumed transfer.
+A transfer that reached `publishing` requires explicit unknown-outcome
+reporting unless its receipt established the result. Confirm helper exit
+before candidate cleanup. A newer portal must not replay publication. Before
+increment 3, the portal performs safe local cleanup using retained local
+inventory but cannot guarantee discovery of a destination candidate when its
+local manifest was lost.
 The first spike must verify helper shutdown/orphan handling; if exit cannot be
 established, retain/quarantine the exact candidate and report cleanup failure
 rather than deleting a possibly active file. Merely renaming a directory or
@@ -616,6 +647,8 @@ cleanup rows rather than discarding that inventory.
 Proposed limits: 30 minutes idle expiry, two hours absolute lifetime, cleanup
 every 60 seconds and at startup, two active transfers per principal per root,
 eight per root in total, and two running data-plane calls per portal process.
+The data-plane limit is an admission limit: excess calls receive the defined
+`503` response and are never held in an in-memory queue.
 Uploads and download snapshots share the disk budget. Reserve at most twice
 the declared file size per upload (parts plus assembly), plus bounded metadata;
 reserve snapshot size for downloads. Admission/quota claims are serialized by
@@ -691,11 +724,11 @@ proxy and memory evidence must use real HTTP/filesystem paths, not page mocks.
 
 | ID | Coverage and exact assertion | Location |
 | --- | --- | --- |
-| G1 | One coordinator handles concurrent requests: immutable same-part acceptance, conflicting retry, one assembler and at most one publisher, abort/complete race, expiry without deleting active files, and restart invalidating old IDs. Verify child shutdown/orphan handling; an orphaned assembler has no publication path. Inject pauses at lifecycle boundaries; no arbitrary sleeps. | SDK local-coordinator and child-process fixtures. |
-| G2 | Local spool and destination on different filesystems still publish atomically through a destination-side candidate. Exclusive hard-link create cannot replace a concurrently created target; same-filesystem rename replaces complete content. Unsupported target primitives fail explicitly. Known failure/cancel removes candidates without touching target content. | SDK filesystem contract tests; validate publication on the configured workspace storage before rollout. |
+| G1 | One coordinator handles concurrent requests: immutable same-part acceptance, conflicting retry, one assembler and at most one publisher, abort/complete race, expiry without deleting active files, restart invalidating old IDs, and excess data-plane calls receiving `503` with `Retry-After` without queuing, buffering their payload, or starting a child. Verify child shutdown/orphan handling; an orphaned assembler has no publication path. Inject pauses at lifecycle boundaries; no arbitrary sleeps. | SDK local-coordinator and child-process fixtures. |
+| G2 | Local spool and destination on different filesystems still publish atomically through a destination-side candidate. Exclusive hard-link create cannot replace a concurrently created target; same-filesystem rename replaces complete content. Report separate create-only/replacement capability before upload; reject unsupported operations before accepting parts and revalidate at publication. Test hard-link-unavailable/rename-available targets and capability changes after probing, including nested destinations. Known failure/cancel removes candidates without touching target content. | SDK filesystem contract tests; validate publication on the configured workspace storage before rollout. |
 | G3 | Real HTTP proxy enforces 1,000,000-byte request bodies and, separately, 1,000,000-byte responses. Round-trip a deterministic incompressible **20,971,520-byte** binary; compare SHA-256. Record every body size; all new data requests/responses are at most 524,288 bytes. | Web integration test using the real router/runtime/management file path and bounded streaming proxy. |
 | G4 | The proxy fixture rejects a deliberately oversized control request and rejects the legacy base64 upload of the same file. New requests succeed with enforcement unchanged. This proves the fixture is actually enforcing the limit. | Same proxy test. |
-| G5 | Warm isolated portal plus all file-operation children: sample RSS and track live byte-buffer high-water marks for 1, 5, and 20 MiB files, at one and two active calls. Streaming copy/hash buffers are at most 64 KiB; live transfer buffers at most `6 * partBytes + 4 * 64 KiB` per call. Payload-attributable peak RSS growth from 5 to 20 MiB must be at most 8 MiB at fixed concurrency. Publish raw measurements; investigate noise/failure, do not silently loosen the gate. | Dedicated bounded memory harness invoked by an integration test. |
+| G5 | Sample aggregate portal-plus-child RSS and track live byte-buffer high-water marks for 1, 5, and 20 MiB transfers at one and two active calls. At each fixed concurrency, perform three predeclared measurements of the 20 MiB upload after warm-up; the median peak increase from the warmed pre-upload baseline must be at most 16 MiB. Retain the scaling gate: payload-attributable peak RSS growth from 5 to 20 MiB must be at most 8 MiB at fixed concurrency. Streaming copy/hash buffers are at most 64 KiB; live transfer buffers at most `6 * partBytes + 4 * 64 KiB` per call. Include new-file, replacement, and stale-conflict paths; increment 2 also measures snapshot creation/range transfer. Publish every measurement and define baseline/child-startup attribution in the harness; do not omit failed samples, rerun until green, or silently loosen either gate. | Dedicated bounded-memory harness required in normal CI integration-test discovery. |
 | P1 | Sizes 0, 1, `P-1`, `P`, `P+1`, `maxBytes`, and `maxBytes+1`; exact final-part length and integer validation. Oversized start creates no transfer. | SDK unit + API. |
 | P2 | Missing, short, oversized, out-of-order, duplicate-same, duplicate-different, invalid-index, and simultaneous same-index parts. Incomplete upload cannot complete. | SDK unit + API. |
 | P3 | Enforce actual streamed bytes with absent/lying Content-Length; disconnect mid-body, slow sender, wrong type, compressed body, and child timeout never accept a partial part or leak a lane. | Web real HTTP + child-process tests. |
@@ -705,7 +738,7 @@ proxy and memory evidence must use real HTTP/filesystem paths, not page mocks.
 | C3 | Kill after each persistence boundary, especially immediately before publication and after publication/before receipt. Known failure leaves the old target intact; uncertain commit is reported explicitly and not retried. | Multi-process fault injection. |
 | A1 | Owner allowed; non-owner admin, shared-write collaborator, wrong principal/session transfer ID, system session, deleted session, and ownership-switch-off cases preserve existing 403/404 policy. Test every raw and control route. | Extend `packages/app/web/test/workspace-runtime.test.mjs` and router tests. |
 | A2 | Traversal, absolute/NUL paths, aliases to spool or registered candidates, unopen folder, missing marker, read-only/.git/marker target, symlink replacement, and workspace reassignment are rejected without out-of-scope writes. | SDK unit + runtime. |
-| L1 | Abort and repeated abort; expiry with fake clock; restart without resumption; overlapping cleanup ticks serialize; crash during deletion; permission/mount failure is visible. Candidate identity replacement never deletes another file. No target deletion or recursive workspace scan. | SDK unit + lifecycle integration. |
+| L1 | Abort and repeated abort; expiry with fake clock; restart without resumption; overlapping cleanup ticks serialize; crash during deletion; permission/mount failure is visible. Startup/periodic local-spool cleanup removes only verified inactive, owned entries after helper exit; live/uncertain generations, symlinks, and replaced identities are retained/rejected safely. Candidate identity replacement never deletes another file. No target deletion or recursive workspace scan. | SDK unit + lifecycle integration. |
 | L2 | Root and principal quotas hold under concurrent starts/direct calls in one process; reservation bounds local spool plus destination-side assembly/snapshot disk use; failures release capacity. | SDK coordinator fixture. |
 | L3 | Registration failure creates no destination entries. Lose the local spool and hard-delete the session after candidate creation: the durable row still discovers its exact location. Kill after registration, directory creation, ownership initialization, identity acknowledgement, assembly, publication, and receipt persistence. Recover known-owned leftovers without a workspace scan; retain invalid markers/replaced identities as explicit errors. Unknown outcome is never changed to success by cleanup. | Catalog integration tests plus child-process fault injection; cover the new migration/procedures on configured CMS providers. |
 | D1 | Range boundaries, last byte, wrong etag, invalid/multiple/too-large/missing range, empty file, safe filenames, expired/foreign download handles, and source changes after snapshot creation. | SDK API + router. |
