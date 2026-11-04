@@ -106,6 +106,16 @@ test("a successfully completed streamed answer uses the normal Agent prefix with
     assert.doesNotMatch(JSON.stringify(lines), /Agent responded|streamingCaret/);
 });
 
+test("a phase-less message without tool calls still waits for the turn to become the answer", () => {
+    const events = [
+        evt(1, "assistant.message", { messageId: "m1", content: "Here is the answer." }),
+        evt(2, "session.turn_completed", { resultType: "completed" }),
+    ];
+    const line = selectChatLines(state(buildHistoryModel(events, {})), 100, { tableMode: "sentinel" })
+        .find(line => line.kind === "assistantPreview");
+    assert.equal(line?.final, true);
+});
+
 test("durable commentary renders as visible transcript messages on append and replay", () => {
     const events = [
         evt(1, "user.message", { content: "Check the report" }),
@@ -133,6 +143,71 @@ test("durable commentary renders as visible transcript messages on append and re
     assert.match(rendered, /Checking the report/);
     assert.match(rendered, /Preparing the summary/);
     assert.match(rendered, /The report is ready/);
+});
+
+// A turn that ends by waiting (ask_user, a timer, a cron, sub-agents) ends
+// normally: the model called the tool, then wrote its answer. That answer is
+// the turn's final message, not a bounded "Agent update".
+for (const resultType of ["input_required", "wait", "cron", "wait_for_agents", "spawn_agent"]) {
+    test(`a turn ending with ${resultType} shows its last message as the answer`, () => {
+        const events = [
+            evt(1, "user.message", { content: "Is the sub-agent the workflow session?" }),
+            evt(2, "assistant.message", { messageId: "m1", content: "Checking.",
+                toolRequests: [{ name: "wait", type: "function", arguments: {} }] }),
+            evt(3, "assistant.message", { messageId: "m2", content: "They are separate sessions." }),
+            evt(4, "session.turn_completed", { resultType }),
+        ];
+        let appended = buildHistoryModel([], {});
+        for (const event of events) appended = appendEventToHistory(appended, event);
+        const replay = buildHistoryModel(events, {});
+        assert.deepEqual(replay.chat, appended.chat);
+        const lines = selectChatLines(state(replay), 100, { tableMode: "sentinel" });
+        const previews = lines.filter(line => line.kind === "assistantPreview");
+        const answer = previews.find(line => /separate sessions/.test(line.body));
+        assert.equal(answer?.final, true, "the last message is the answer");
+        assert.equal(replay.chat.find(item => item.messageId === "m1")?.assistantCommentary, true,
+            "a message that called a tool is a visible mid-turn update");
+    });
+}
+
+for (const resultType of ["error", "cancelled"]) {
+    test(`a turn ending with ${resultType} has no answer`, () => {
+        const history = buildHistoryModel([
+            evt(1, "assistant.message", { messageId: "m1", content: "Partial work." }),
+            evt(2, "session.turn_completed", { resultType }),
+        ], {});
+        const line = selectChatLines(state(history), 100, { tableMode: "sentinel" })
+            .find(line => line.kind === "assistantPreview");
+        assert.equal(line.final, false);
+        assert.equal(line.text, "Agent update");
+    });
+}
+
+test("a mid-turn message without a phase (Claude) renders in full, like OpenAI commentary", () => {
+    const table = "Options:\n\n| Option | Cost |\n|---|---|\n| 1. Empty reply | 3-4 h |\n| 2. Drop duplicate | 1-1.5 days |";
+    const events = [
+        evt(1, "user.message", { content: "What next?" }),
+        evt(2, "assistant.message", { messageId: "m1", content: "Checking the steps.",
+            toolRequests: [{ name: "store_fact", type: "function", arguments: {} }] }),
+        evt(3, "assistant.message", { messageId: "m2", content: table,
+            toolRequests: [{ name: "ask_user", type: "function", arguments: { question: "Which option?" } }] }),
+        evt(4, "session.turn_completed", { resultType: "input_required" }),
+    ];
+    let appended = buildHistoryModel([], {});
+    for (const event of events) appended = appendEventToHistory(appended, event);
+    const replay = buildHistoryModel(events, {});
+    assert.deepEqual(replay.chat, appended.chat);
+    const asked = replay.chat.find(item => item.messageId === "m2");
+    assert.equal(asked?.assistantCommentary, true);
+    assert.equal(asked?.assistantPreview, undefined);
+    assert.equal(replay.chat.find(item => item.messageId === "m1")?.assistantCommentary, true);
+    const lines = selectChatLines(state(replay), 100, { tableMode: "sentinel" });
+    // No bounded box: both mid-turn messages are ordinary transcript text.
+    assert.equal(lines.filter(line => line.kind === "assistantPreview").length, 0);
+    const rendered = JSON.stringify(lines);
+    assert.match(rendered, /Checking the steps/);
+    assert.match(rendered, /Drop duplicate/);
+    assert.doesNotMatch(rendered, /Agent update/);
 });
 
 test("durable commentary replaces its live preview with a visible transcript message", () => {
