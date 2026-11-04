@@ -1,6 +1,6 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
-import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
+import { workflowLogBounds, workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
 import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
 import {
     workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
@@ -12,6 +12,7 @@ import {
     WorkflowV2RunActivity, WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2TestToggle, WorkflowV2Variables, WorkflowV2VariablesToggle,
 } from "./workflow-v2-panels.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
+import { WorkflowGraph } from "./workflow-graph.js";
 
 const EMPTY_EVENTS = [];
 const EMPTY_VIEW = {};
@@ -98,71 +99,6 @@ function Duration({ ms }) {
         : "Not recorded";
 }
 
-function WorkflowGraph({ definition, nodes, selected, select, banners }) {
-    const hostRef = React.useRef(null);
-    const [width, setWidth] = React.useState(640);
-    const [zoomMode, setZoomMode] = React.useState("fit");
-    const markerId = `wf-arrow-${React.useId().replace(/:/g, "")}`;
-    React.useEffect(() => {
-        const host = hostRef.current;
-        const resize = () => setWidth(Math.max(300, host.clientWidth - 16));
-        resize();
-        const observer = new ResizeObserver(resize);
-        observer.observe(host);
-        return () => observer.disconnect();
-    }, []);
-    const layout = React.useMemo(() => layoutWorkflowGraph(definition, width), [definition, width]);
-    const zoom = zoomMode === "fit" ? Math.min(1, width / layout.width) : 1;
-    return React.createElement("div", { className: "ps-workflow-graph-view" },
-        React.createElement(WorkflowV2Banners, { banners }),
-        React.createElement("div", { className: "ps-workflow-graph-tools" },
-            React.createElement("span", null, "Full graph · scroll to explore"),
-            React.createElement("button", { type: "button", className: "ps-mini-button", "aria-pressed": zoomMode === "fit",
-                onClick: () => setZoomMode("fit") }, "Fit"),
-            React.createElement("button", { type: "button", className: "ps-mini-button", "aria-pressed": zoomMode === "actual",
-                onClick: () => setZoomMode("actual") }, "100%")),
-        React.createElement("div", { ref: hostRef, className: "ps-workflow-graph-scroll", tabIndex: 0,
-            role: "region", "aria-label": "Scrollable workflow graph" },
-        React.createElement("svg", {
-            className: "ps-workflow-graph", viewBox: `0 0 ${layout.width} ${layout.height}`,
-            width: layout.width * zoom, height: layout.height * zoom, role: "group", "aria-label": "Workflow graph",
-        },
-        React.createElement("defs", null,
-            React.createElement("marker", { id: markerId, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto" },
-                React.createElement("path", { d: "M0 0L10 5L0 10z", fill: "currentColor" }))),
-        layout.edges.map(edge => React.createElement("g", { key: `${edge.from}:${edge.to}`, className: "ps-workflow-edge",
-            "data-from": edge.from, "data-to": edge.to, "data-kind": edge.kind,
-            "aria-label": `${edge.from}: ${edge.outcome} → ${edge.to}${edge.kind === "error" ? " (runtime error route)" : ""}` },
-            React.createElement("path", { d: edge.path, markerEnd: `url(#${markerId})`,
-                strokeDasharray: edge.kind === "error" ? "5 4" : undefined }),
-            React.createElement("text", { x: edge.labelX, y: edge.labelY, textAnchor: "middle" },
-                edge.outcome.length > 20 ? `${edge.outcome.slice(0, 19)}…` : edge.outcome,
-                React.createElement("title", null, edge.outcome)))),
-        nodes.map(node => {
-            const box = layout.positions.get(node.id);
-            return React.createElement("g", {
-                key: node.id, className: `ps-workflow-node is-${node.state}${node.id === selected?.id ? " is-selected" : ""}`,
-                "data-phase": node.phase,
-                transform: `translate(${box.x},${box.y})`, role: "button", tabIndex: 0,
-                "data-node-id": node.id, "aria-label": `Inspect ${node.id}`, "aria-pressed": node.id === selected?.id,
-                onClick: () => select(node.id),
-                onKeyDown: event => {
-                    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(node.id); }
-                },
-            },
-            React.createElement("rect", { width: box.width, height: box.height, rx: node.type === "terminal" ? 30 : 8 }),
-            React.createElement("text", { x: 14, y: 23, className: "ps-workflow-node-name" },
-                node.id.length > 23 ? `${node.id.slice(0, 22)}…` : node.id),
-            React.createElement("text", { x: 14, y: 43, className: "ps-workflow-node-meta" },
-                node.shape === "v2" ? node.label.slice(0, 30) : node.type === "terminal" ? `ends · ${node.outcome || "terminal"}` : `${node.runtime || "script"} · ${node.outcome || node.state}`),
-            node.shape === "v2" ? React.createElement("text", { x: 14, y: 58, className: "ps-workflow-node-meta" },
-                node.stateLabel.length > 24 ? `${node.stateLabel.slice(0, 23)}…` : node.stateLabel) : null,
-            React.createElement("text", { x: box.width - 12, y: node.shape === "v2" ? 58 : 57, textAnchor: "end", className: "ps-workflow-node-meta" },
-                node.runs ? `×${node.runs}${node.partial ? " loaded" : ""}` : ""),
-            React.createElement("title", null, node.shape === "v2" ? `${node.id} · ${node.label} · ${node.stateLabel}` : node.id));
-        }))));
-}
-
 // The workflow screen has no composer bar: its header already names the workflow, and nobody types into it (flow-09).
 export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile = false }) {
     const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded,
@@ -244,7 +180,9 @@ export function WorkflowMainPane({ controller, log, icon, onNodeSelected, mobile
             style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
             React.createElement("div", { className: "ps-workflow-graph-region" },
                 definition
-                    ? React.createElement(WorkflowGraph, { definition, nodes, selected, select: selectNode, banners: v2?.banners })
+                    ? React.createElement("div", { className: "ps-workflow-graph-view" },
+                        React.createElement(WorkflowV2Banners, { banners: v2?.banners }),
+                        React.createElement(WorkflowGraph, { definition, nodes, selected, select: selectNode }))
                     : v2 ? React.createElement(WorkflowV2NoGraph, { projection: v2 })
                     : React.createElement("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                         view.error || "Loading workflow graph…",

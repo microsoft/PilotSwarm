@@ -23,10 +23,15 @@ sharing, and a transcript.
 
 - The **live view** occupies the main pane instead of a chat conversation.
   The graph uses the immutable workflow definition and live execution state.
-  Sibling branches stay side by side at every viewport size. Use **Fit** for
-  the whole width or **100%** and the graph's own scroll area for readable
-  detail. Skip edges and loops route around nodes, never through an unrelated
-  terminal.
+  It reads top to bottom: each step sits below the step that leads to it,
+  sibling branches sit side by side, and the edge that closes a loop curves
+  back up beside the loop's steps. Edges are curves that never pass through
+  an unrelated step. The graph opens fitted to its area. Use **Zoom in**,
+  **Zoom out** and **Fit to screen** at its bottom left. With **Move the
+  graph** (the hand, on by default) drag the background to move the graph,
+  and pinch or scroll to zoom; turn it off to keep the graph still while you
+  scroll the page. A run's progress never moves the view; a new definition or
+  revision fits it again.
   Select a node to inspect its outcome, tools, output and recent history in
   the right-hand canvas pane. Drag the divider between the workflow and that
   pane to resize it, use the divider's arrow keys, or double-click it to reset

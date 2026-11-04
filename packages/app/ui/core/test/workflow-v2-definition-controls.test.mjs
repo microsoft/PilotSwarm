@@ -299,11 +299,12 @@ test("the review names each named agent and what is pinned for it, and the tests
     assert.ok(open.includes("data-evidence=\"Agent in &#x27;review&#x27;\""), open);
     assert.ok(open.includes("its exact package revision is locked when this revision is published"));
     assert.ok(open.includes("test-r…0001 completed · succeeded; test-r…0002 running"));
-    // Mock M03 "Back to draft" (accounting row 13): the review has its Close; mock M28 "Fit" (row 91): the graph opens fitted.
+    // Mock M03 "Back to draft" (accounting row 13): the review has its Close. Mock M28 "Fit" (row 91): the graph opens fitted,
+    // by React Flow in the browser (workflow-session.spec.mjs, batch 5); the server's plain picture has no zoom buttons of its own.
     const fitted = main(mount({ readModel: draftModel(), readModelRunId: null, definitionOpen: true }));
     assert.ok(fitted.includes(">Close</button>"));
-    assert.match(fitted, /aria-pressed="true">Fit<\/button>/);
-    assert.match(fitted, /aria-pressed="false">100%<\/button>/);
+    assert.ok(fitted.includes("data-renderer=\"static\""));
+    assert.ok(!fitted.includes(">Fit</button>") && !fitted.includes(">100%</button>") && !fitted.includes("Full graph"));
 });
 
 // Owner decision q1: before publishing, the review shows the version publishing would lock now (the agent-versions read

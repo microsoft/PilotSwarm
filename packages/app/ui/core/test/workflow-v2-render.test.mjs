@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import { workflowDefinition } from "../src/workflow-view.js";
 import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
+import { workflowGraphKey } from "../../react/src/workflow-graph.js";
 import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
 import { startedData, legacyStartedData, started, completed, runtimeError, row, done, readModel } from "./workflow-v2-fixtures.mjs";
@@ -135,4 +136,33 @@ test("an unverified run status is shown with its notice", () => {
     assert.ok(html.includes("Status not certain · its data says running, latest event says paused"));
     assert.ok(html.includes("Refresh to read it again."));
     assert.ok(html.includes("Pending · run status not certain"));
+});
+
+// Batch 5 (g-01, g-02): the server, and the browser until React Flow has loaded, draw the same top-to-bottom layout as a
+// plain picture: each step a button card at its layout position, each edge a curve with its label box.
+const slots = html => [...html.matchAll(/<div class="ps-workflow-node-slot" style="left:([\d.]+)px;top:([\d.]+)px;width:202px;height:66px"><div class="ps-workflow-node[^"]*"[^>]*data-node-id="([^"]+)"/g)]
+    .map(match => ({ id: match[3], x: Number(match[1]), y: Number(match[2]) }));
+
+test("the graph is drawn top to bottom: each step below the one that leads to it, its card a button, its edges curves", () => {
+    const html = main(mount({ view: { definition: workflowDefinition(startedData), readModel: readModel({ nodeExecutions: [done("poll", 1, "changed")] }) } }));
+    assert.ok(html.includes("role=\"group\" aria-label=\"Workflow graph\" data-renderer=\"static\""));
+    const at = Object.fromEntries(slots(html).map(slot => [slot.id, slot]));
+    assert.deepEqual(Object.keys(at).sort(), ["await_ack", "done", "failed", "notify", "pause", "poll"]);
+    assert.ok(at.notify.y > at.poll.y && at.pause.y > at.poll.y && at.await_ack.y > at.notify.y && at.done.y > at.await_ack.y);
+    assert.equal([...html.matchAll(/<g class="ps-workflow-edge"/g)].length, 7);
+    assert.match(html, /<path class="ps-workflow-edge-path" d="M[\d.]+,[\d.]+ L[^"]* C[^"]*" fill="none" marker-end="url\(#wf-arrow-[^)]+\)"/);
+    assert.ok(html.includes("<title>failure / timed_out</title>"), "a merged label keeps every outcome in its title");
+    assert.match(html, /<div class="ps-workflow-node is-done[^"]*"[^>]*data-node-id="poll" role="button" tabindex="0" aria-label="Inspect poll" aria-pressed="(true|false)"/);
+    // The old picture's controls are gone; the browser's zoom, fit and hand belong to React Flow (browser specs).
+    assert.ok(!html.includes("Full graph") && !html.includes(">100%<") && !html.includes("Scrollable workflow graph"));
+});
+
+test("the graph's key changes with the graph, never with a run's progress, so the view is fitted again only for a new graph", () => {
+    const definition = workflowDefinition(startedData);
+    const before = projectWorkflowV2({ definition, events: [started("poll", 1)] });
+    const after = projectWorkflowV2({ definition, events: [started("poll", 1), completed("poll", 1, "changed"), started("notify", 1)] });
+    assert.notEqual(before.nodes.find(item => item.id === "poll").state, after.nodes.find(item => item.id === "poll").state);
+    assert.equal(workflowGraphKey(before.definition), workflowGraphKey(after.definition));
+    assert.notEqual(workflowGraphKey(definition), workflowGraphKey({ ...definition, revision: 2 }));
+    assert.notEqual(workflowGraphKey(definition), workflowGraphKey({ ...definition, states: definition.states.slice(0, 5) }));
 });

@@ -24,6 +24,14 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
     test: () => glyph(h("path", { d: "M9 3h6" }), h("path", { d: "M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" }), h("path", { d: "M7.5 15h9" })),
     details: () => glyph(h("rect", { x: "3", y: "4", width: "18", height: "16", rx: "2" }), h("path", { d: "M14 4v16" }),
         h("path", { d: "M16.5 9h2" }), h("path", { d: "M16.5 13h2" })),
+    // The graph's view controls (batch 5, g-04 and g-05).
+    "zoom-in": () => glyph(h("circle", { cx: "10.5", cy: "10.5", r: "6.5" }), h("path", { d: "M20 20l-4.8-4.8" }),
+        h("path", { d: "M10.5 7.5v6" }), h("path", { d: "M7.5 10.5h6" })),
+    "zoom-out": () => glyph(h("circle", { cx: "10.5", cy: "10.5", r: "6.5" }), h("path", { d: "M20 20l-4.8-4.8" }), h("path", { d: "M7.5 10.5h6" })),
+    fit: () => glyph(h("path", { d: "M4 9V4h5" }), h("path", { d: "M15 4h5v5" }), h("path", { d: "M20 15v5h-5" }), h("path", { d: "M9 20H4v-5" })),
+    hand: () => glyph(h("path", { d: "M7.5 12.5V7a1.5 1.5 0 0 1 3 0v4.5" }), h("path", { d: "M10.5 11V5a1.5 1.5 0 0 1 3 0v6" }),
+        h("path", { d: "M13.5 11V6.5a1.5 1.5 0 0 1 3 0V12" }),
+        h("path", { d: "M16.5 10.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1a6 6 0 0 1-4.7-2.3l-2.6-3.4a1.6 1.6 0 0 1 2.5-2l1.8 1.9" })),
 });
 
 /**

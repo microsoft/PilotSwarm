@@ -246,33 +246,39 @@ const QUALITY_EVENTS = [
 ].map((event, index) => ({ ...event, sessionId: WORKFLOW_ID, seq: index + 1, createdAt: new Date().toISOString() }));
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-    test(`the quality gate is a real branching graph at ${viewport.width}px`, async ({ page }) => {
+    test(`the quality gate is a real branching graph, top to bottom, at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);
         await routeApi(page, { workflowEvents: QUALITY_EVENTS,
             workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = page.locator(".ps-workflow-main");
         const graph = main.getByRole("group", { name: "Workflow graph" });
+        // Batch 5 (g-02): React Flow draws it once loaded.
+        await expect(graph).toHaveAttribute("data-renderer", "flow");
         await expect(graph.locator(".ps-workflow-node")).toHaveCount(5);
         await expect(graph.locator(".ps-workflow-edge")).toHaveCount(5);
         await expect(graph.locator('[data-from="failed"], [data-from="approved"], [data-from="blocked"]')).toHaveCount(0);
-        const terminals = await graph.locator('[data-node-id="approved"], [data-node-id="blocked"], [data-node-id="failed"]')
-            .evaluateAll(nodes => nodes.map(node => {
-                const matrix = node.transform.baseVal.consolidate().matrix;
-                return { x: matrix.e, y: matrix.f };
-            }));
-        expect(new Set(terminals.map(node => node.y)).size).toBe(1);
-        expect(new Set(terminals.map(node => node.x)).size).toBe(3);
-        await expect(graph.getByRole("button", { name: "Inspect evaluate_quality", exact: true })).toHaveClass(/is-failed/);
-        const scroll = main.getByRole("region", { name: "Scrollable workflow graph" });
-        const fitted = await graph.boundingBox();
-        expect(fitted.width).toBeLessThanOrEqual((await scroll.boundingBox()).width);
-        await shot(page, `quality-branches-fit-${viewport.width}`);
-        await main.getByRole("button", { name: "100%", exact: true }).click();
-        if (viewport.width === 390) {
-            expect(await scroll.evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+        // Top to bottom (g-01): each step's box is below the box of the step that leads to it; the three ends share a row.
+        const box = id => graph.locator(`[data-node-id="${id}"]`).boundingBox();
+        const collect = await box("collect_metrics"), evaluate = await box("evaluate_quality");
+        const terminals = await Promise.all(["approved", "blocked", "failed"].map(box));
+        expect(evaluate.y).toBeGreaterThan(collect.y + collect.height - 1);
+        for (const end of terminals) expect(end.y).toBeGreaterThan(evaluate.y + evaluate.height - 1);
+        expect(new Set(terminals.map(end => Math.round(end.y))).size).toBe(1);
+        expect(new Set(terminals.map(end => Math.round(end.x))).size).toBe(3);
+        // Fitted: every step is inside the graph's area when it opens.
+        const area = await graph.boundingBox();
+        for (const step of [collect, evaluate, ...terminals]) {
+            expect(step.x).toBeGreaterThanOrEqual(area.x - 1);
+            expect(step.x + step.width).toBeLessThanOrEqual(area.x + area.width + 1);
+            expect(step.y).toBeGreaterThanOrEqual(area.y - 1);
+            expect(step.y + step.height).toBeLessThanOrEqual(area.y + area.height + 1);
         }
-        await graph.getByRole("button", { name: "Inspect blocked", exact: true }).scrollIntoViewIfNeeded();
+        await expect(graph.getByRole("button", { name: "Inspect evaluate_quality", exact: true })).toHaveClass(/is-failed/);
+        // The old picture's controls are gone.
+        await expect(main.getByRole("button", { name: "100%", exact: true })).toHaveCount(0);
+        await expect(main.getByText("Full graph · scroll to explore")).toHaveCount(0);
+        await shot(page, `quality-branches-fit-${viewport.width}`);
         await graph.getByRole("button", { name: "Inspect blocked", exact: true }).click();
         if (viewport.width < 920) {
             // On a phone a tap only selects the step; Step details opens it (flow-04).
@@ -281,6 +287,72 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         }
         await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("blocked");
         await shot(page, `quality-branch-details-${viewport.width}`);
+    });
+
+    // Batch 5 (g-04, g-05): Zoom in, Zoom out, Fit to screen and the hand (Move the graph). With the hand on, dragging the
+    // background moves the graph; with it off the graph stays still under a drag and the wheel, and a step still selects.
+    // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "zooms, fits and moves" (from packages/app/web, after build).
+    test(`the graph zooms, fits and moves with the hand, and stays still without it, at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeApi(page, { workflowEvents: QUALITY_EVENTS,
+            workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        const graph = main.getByRole("group", { name: "Workflow graph" });
+        await expect(graph).toHaveAttribute("data-renderer", "flow");
+        const viewportOf = () => graph.locator(".react-flow__viewport").evaluate((element) => {
+            const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+            return { x: matrix.e, y: matrix.f, scale: matrix.a };
+        });
+        const controls = graph.getByRole("group", { name: "Graph view", exact: true });
+        await expect(controls.getByRole("button")).toHaveCount(4);
+        const fitted = await viewportOf();
+        await controls.getByRole("button", { name: "Zoom in", exact: true }).click();
+        await expect.poll(async () => (await viewportOf()).scale).toBeGreaterThan(fitted.scale * 1.05);
+        await controls.getByRole("button", { name: "Zoom out", exact: true }).click();
+        await controls.getByRole("button", { name: "Zoom out", exact: true }).click();
+        await expect.poll(async () => (await viewportOf()).scale).toBeLessThan(fitted.scale * 0.95);
+        await controls.getByRole("button", { name: "Fit to screen", exact: true }).click();
+        await expect.poll(async () => Math.abs((await viewportOf()).scale - fitted.scale)).toBeLessThan(0.01);
+        await expect.poll(async () => Math.abs((await viewportOf()).x - fitted.x)).toBeLessThan(2);
+
+        // The hand is on by default: a drag on the background (the area's top-left corner, outside every step) moves the graph.
+        const hand = controls.getByRole("button", { name: "Move the graph", exact: true });
+        await expect(hand).toHaveAttribute("aria-pressed", "true");
+        const area = await graph.boundingBox();
+        const drag = async (dx, dy) => {
+            await page.mouse.move(area.x + 10, area.y + 10);
+            await page.mouse.down();
+            await page.mouse.move(area.x + 10 + dx / 2, area.y + 10 + dy / 2, { steps: 4 });
+            await page.mouse.move(area.x + 10 + dx, area.y + 10 + dy, { steps: 4 });
+            await page.mouse.up();
+        };
+        const before = await viewportOf();
+        await drag(60, 40);
+        await expect.poll(async () => (await viewportOf()).x - before.x).toBeGreaterThan(40);
+        const moved = await viewportOf();
+        expect(moved.y - before.y).toBeGreaterThan(20);
+
+        // Off: the graph stays still under a drag and the wheel; clicking a step still selects it.
+        await hand.click();
+        await expect(hand).toHaveAttribute("aria-pressed", "false");
+        await drag(80, 60);
+        await page.mouse.move(area.x + area.width / 2, area.y + area.height / 2);
+        await page.mouse.wheel(0, -300);
+        await page.waitForTimeout(250);
+        const still = await viewportOf();
+        expect(Math.abs(still.x - moved.x)).toBeLessThan(1);
+        expect(Math.abs(still.y - moved.y)).toBeLessThan(1);
+        expect(Math.abs(still.scale - moved.scale)).toBeLessThan(0.001);
+        await graph.getByRole("button", { name: "Inspect blocked", exact: true }).click();
+        await expect(graph.getByRole("button", { name: "Inspect blocked", exact: true })).toHaveAttribute("aria-pressed", "true");
+        // The controls explain themselves on hover, as the other workflow tools do.
+        await hand.hover();
+        await expect(page.locator(".ps-icon-tooltip")).toHaveText(/^Move the graph — The graph stays still/);
+        await shot(page, `graph-controls-${viewport.width}`);
+        expect(errors).toEqual([]);
     });
 }
 
