@@ -976,6 +976,36 @@ async function readKvRevision(store: WorkflowStore, workflowSessionId: string, r
     return { ...head, kv: { revision: revisionValue, acceptedRevision: run.kvRevision, keys: names.length, bytes, whole, entries } };
 }
 
+/** The largest resolved input schema a read shows; a larger one is left out (null), and nothing else changes. */
+const INPUTS_SCHEMA_VIEW_MAX_BYTES = 32 * 1024;
+
+/**
+ * The workflow's input schema (inputs.schema) as its run checks it, with every reference to a schema of `schemas`
+ * replaced by that schema (batch 7, f-05), so a reader (the portal's sample inputs) needs no reference resolution of its
+ * own: compiled, from the revision's IR. Keywords beside a reference are kept. A reference back into a schema it is
+ * still resolving (a recursive schema), or into part of one, becomes {} (anything). Null without an input schema, or when
+ * the result is larger than INPUTS_SCHEMA_VIEW_MAX_BYTES.
+ */
+export function workflowV2ResolvedInputsSchema(ir: { inputsSchema: string | null; schemaDefs?: Record<string, JsonValue> }): JsonValue | null {
+    const defs = ir.schemaDefs ?? {};
+    if (!ir.inputsSchema || !Object.hasOwn(defs, ir.inputsSchema)) return null;
+    const resolve = (value: JsonValue, resolving: readonly string[], depth: number): JsonValue => {
+        if (depth > 64) return {};
+        if (Array.isArray(value)) return value.map(item => resolve(item, resolving, depth + 1));
+        if (!isJsonObject(value)) return value;
+        const ref = typeof value.$ref === "string" ? value.$ref : null;
+        if (ref === null) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolve(item, resolving, depth + 1)]));
+        const name = ref.startsWith("#/$defs/") ? ref.slice("#/$defs/".length) : ref.startsWith("#/schemas/") ? ref.slice("#/schemas/".length) : null;
+        const rest = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "$ref").map(([key, item]) => [key, resolve(item, resolving, depth + 1)]));
+        if (name === null || name.includes("/") || !Object.hasOwn(defs, name) || resolving.includes(name)) return rest;
+        const target = resolve(defs[name], [...resolving, name], depth + 1);
+        if (!isJsonObject(target)) return Object.keys(rest).length ? rest : target;
+        return { ...target, ...rest };
+    };
+    const resolved = resolve(defs[ir.inputsSchema], [ir.inputsSchema], 0);
+    return utf8ByteLength(canonicalJson(resolved)) > INPUTS_SCHEMA_VIEW_MAX_BYTES ? null : resolved;
+}
+
 async function readOverview(store: WorkflowStore, workflowSessionId: string, options: WorkflowV2ReadOptions): Promise<{ [key: string]: JsonValue }> {
     const definition = await store.readDefinition(workflowSessionId);
     if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
@@ -1018,7 +1048,8 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             name: revision.name, diagnostics: diagnosticsJson(revision.diagnostics),
             ...(options.includeYaml ? { yaml: jsonbSafeText(revision.yaml) } : {}),
         },
-        graph: ir ? { revision: graphRevision, initial: ir.initial, states: describeWorkflowV2States(ir) } : null,
+        // With the input schema of that revision, its references resolved (batch 7, f-05; null without one).
+        graph: ir ? { revision: graphRevision, initial: ir.initial, states: describeWorkflowV2States(ir), inputsSchema: workflowV2ResolvedInputsSchema(ir) } : null,
         runs: runs.map(run => ({ runId: run.runId, mode: run.mode, status: run.status, revision: run.revision, outcome: run.terminalOutcome })),
         run: selected && sections ? {
             runId: selected.runId, mode: selected.mode, status: selected.status, outcome: selected.terminalOutcome,

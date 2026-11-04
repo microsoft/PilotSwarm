@@ -43,6 +43,9 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
     tools: () => glyph(h("path", { d: "M4 7h9" }), h("path", { d: "M17 7h3" }), h("circle", { cx: "15", cy: "7", r: "2" }),
         h("path", { d: "M4 17h3" }), h("path", { d: "M11 17h9" }), h("circle", { cx: "9", cy: "17", r: "2" })),
     close: () => glyph(h("path", { d: "M6 6l12 12" }), h("path", { d: "M18 6L6 18" })),
+    // Sample inputs from the workflow's input schema (batch 7, f-05).
+    sample: () => glyph(h("path", { d: "M4 20l10-10" }), h("path", { d: "M15 3l1 2.5 2.5 1-2.5 1L15 10l-1-2.5-2.5-1 2.5-1z" }),
+        h("path", { d: "M19 12l.6 1.4 1.4.6-1.4.6L19 16l-.6-1.4-1.4-.6 1.4-.6z" })),
     // Reset layout: every step box back in its automatic place (batch 6, f-03).
     reset: () => glyph(h("path", { d: "M4 12a8 8 0 1 0 2.3-5.7" }), h("path", { d: "M4 4v4h4" })),
 });

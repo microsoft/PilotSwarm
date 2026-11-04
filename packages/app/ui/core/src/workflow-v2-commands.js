@@ -492,7 +492,9 @@ export function workflowV2DefinitionControls(model, command = null) {
             : "This workflow takes no publication commands from people.");
     const evidence = publicationEvidence(model, state, state === "draft" ? revision : publishedRevision, publishedRevision);
     return { state, name: text(model.revision.name), semver: text(definition.semver), revision, definitionHash, valid, errors,
-        publishedRevision, publishedDefinitionHash, liveRun, controls, busy, note, viewerReason: denied, ...evidence };
+        publishedRevision, publishedDefinitionHash, liveRun, controls, busy, note, viewerReason: denied, ...evidence,
+        // The inputs a start of the reviewed revision is checked against (f-05): the draft's revision, or the published one.
+        inputsSchema: revisionInputsSchema(model, state === "draft" ? revision : publishedRevision) };
 }
 
 /**
@@ -607,7 +609,18 @@ export function workflowV2TestControls(model, command = null) {
     return { state, name: text(model.revision.name), semver: text(model.definition.semver), revision, definitionHash, valid, errors,
         control: { operation: "test", label: pending ? "Starting test…" : "Start test", enabled: reason === null, pending,
             title: reason ?? `Test draft revision ${revision}.` },
-        busy, viewerReason: denied };
+        busy, viewerReason: denied, inputsSchema: revisionInputsSchema(model, revision) };
+}
+
+/**
+ * The input schema of exactly `revision`, its references resolved, as the read model's graph gives it (batch 7, f-05:
+ * graph.inputsSchema, of the revision the graph shows); null when the graph is of another revision or has none.
+ */
+function revisionInputsSchema(model, revision) {
+    const graph = isRecord(model?.graph) ? model.graph : null;
+    if (!graph || revision === null || graph.revision !== revision || !Object.hasOwn(graph, "inputsSchema")) return null;
+    const schema = graph.inputsSchema;
+    return isRecord(schema) || typeof schema === "boolean" ? schema : null;
 }
 
 /** A scenario name a person typed for a test: absent when empty, else 1 to 128 characters kept as typed. */
@@ -1149,4 +1162,108 @@ export function workflowV2AnswerSourceText(disposition, fallback = "not known") 
     if (disposition === "fixture") return "prepared answer";
     if (disposition === "parent") return "parent agent";
     return typeof disposition === "string" && disposition ? disposition : fallback;
+}
+
+/** How deep a sample follows nested objects and arrays; past it a value is null. */
+const SAMPLE_MAX_DEPTH = 6;
+/** An object's optional properties join its sample when it has at most this many properties in all. */
+const SAMPLE_FEW_PROPERTIES = 4;
+
+/** "prUrl", "pr_url" or "pr-url" -> "pr url". */
+function sampleWords(name) {
+    return String(name ?? "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-.]+/g, " ").trim().toLowerCase();
+}
+
+/** A JSON Schema type, or the first that is not null of a list of them. */
+function sampleType(schema) {
+    const type = Array.isArray(schema.type) ? schema.type.find(item => item !== "null") ?? schema.type[0] : schema.type;
+    if (typeof type === "string") return type;
+    if (isRecord(schema.properties) || Array.isArray(schema.required)) return "object";
+    if (schema.items !== undefined) return "array";
+    return null;
+}
+
+/** A sample of one value of `schema`, named `name` (its property name), or undefined when the schema says nothing usable. */
+function sampleOf(schema, name, depth) {
+    if (depth > SAMPLE_MAX_DEPTH) return null;
+    if (schema === true || schema === undefined) return undefined;
+    if (!isRecord(schema)) return undefined;
+    if (Array.isArray(schema.examples) && schema.examples.length) return schema.examples[0];
+    if (Object.hasOwn(schema, "default")) return schema.default;
+    if (Array.isArray(schema.enum) && schema.enum.length) return schema.enum[0];
+    if (Object.hasOwn(schema, "const")) return schema.const;
+    for (const key of ["oneOf", "anyOf"]) {
+        if (Array.isArray(schema[key]) && schema[key].length) {
+            const value = sampleOf(schema[key].find(item => !(isRecord(item) && item.type === "null")) ?? schema[key][0], name, depth + 1);
+            if (value !== undefined) return value;
+        }
+    }
+    if (Array.isArray(schema.allOf) && schema.allOf.length) {
+        const parts = schema.allOf.map(part => sampleOf(part, name, depth + 1)).filter(value => value !== undefined);
+        if (parts.length && parts.every(isRecord)) return Object.assign({}, ...parts);
+        if (parts.length) return parts[0];
+    }
+    const words = sampleWords(name);
+    switch (sampleType(schema)) {
+        case "string": {
+            const format = typeof schema.format === "string" ? schema.format : "";
+            const slug = words.replace(/\s+/g, "-") || "item";
+            let value = format === "date-time" ? "2026-01-01T09:00:00Z" : format === "date" ? "2026-01-01" : format === "time" ? "09:00:00"
+                : format === "uri" || format === "url" || format === "iri" ? `https://example.com/${slug}`
+                    : format === "email" ? `${slug.replace(/-/g, ".")}@example.com`
+                        : format === "uuid" ? "00000000-0000-4000-8000-000000000000"
+                            : words ? `example ${words}` : "example";
+            if (Number.isSafeInteger(schema.maxLength) && schema.maxLength >= 0 && value.length > schema.maxLength) value = value.slice(0, schema.maxLength);
+            if (Number.isSafeInteger(schema.minLength) && value.length < schema.minLength) value = value.padEnd(schema.minLength, "x");
+            return value;
+        }
+        case "integer":
+        case "number": {
+            const integer = sampleType(schema) === "integer";
+            if (typeof schema.minimum === "number") return integer ? Math.ceil(schema.minimum) : schema.minimum;
+            if (typeof schema.exclusiveMinimum === "number") return integer ? Math.floor(schema.exclusiveMinimum) + 1 : schema.exclusiveMinimum + 1;
+            if (typeof schema.maximum === "number" && schema.maximum < 1) return integer ? Math.floor(schema.maximum) : schema.maximum;
+            return 1;
+        }
+        case "boolean": return false;
+        case "null": return null;
+        case "array": {
+            const item = sampleOf(Array.isArray(schema.items) ? schema.items[0] : schema.items, name, depth + 1);
+            const count = Number.isSafeInteger(schema.minItems) && schema.minItems > 1 ? Math.min(schema.minItems, 3) : 1;
+            return item === undefined ? [] : Array.from({ length: count }, () => item);
+        }
+        case "object": {
+            const properties = isRecord(schema.properties) ? schema.properties : {};
+            const required = new Set(Array.isArray(schema.required) ? schema.required.filter(key => typeof key === "string") : []);
+            const names = Object.keys(properties);
+            const all = names.length <= SAMPLE_FEW_PROPERTIES;
+            const out = {};
+            for (const key of [...names, ...[...required].filter(key => !Object.hasOwn(properties, key))]) {
+                if (!required.has(key) && !all) continue;
+                const value = sampleOf(properties[key], key, depth + 1);
+                out[key] = value === undefined ? `example ${sampleWords(key) || "value"}` : value;
+            }
+            return out;
+        }
+        default: return undefined;
+    }
+}
+
+/**
+ * Sample inputs for a run, built from the workflow's input schema (batch 7, f-05; the read model's graph.inputsSchema,
+ * its references already resolved): for each field its first example, else its default, else its first enum value,
+ * else a value by its type: a short readable text from the field's name for a string ("example change" for change; a
+ * date, time, URL, e-mail address or UUID for those formats), the minimum or 1 for a number, false for a boolean, one
+ * sample item for an array, and for an object its required properties (all of them when it has four or fewer). A JSON
+ * object, or null when there is no schema or it does not describe an object (the box then keeps "{}"). Pure.
+ */
+export function workflowV2SampleInputs(schema) {
+    if (!isRecord(schema)) return null;
+    const value = sampleOf(schema, "", 0);
+    return isRecord(value) ? value : null;
+}
+
+/** The text of a JSON box that a sample may fill: empty, or an empty object as written ("{}" with any spacing). */
+export function workflowV2InputsBoxEmpty(textValue) {
+    return typeof textValue !== "string" || /^\s*(\{\s*\})?\s*$/.test(textValue);
 }

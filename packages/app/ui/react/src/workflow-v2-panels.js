@@ -10,7 +10,7 @@ import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
     workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
-    workflowV2AnswerSourceText, WORKFLOW_V2_ASK_PARENT_KINDS, workflowV2AskParentSent,
+    workflowV2AnswerSourceText, WORKFLOW_V2_ASK_PARENT_KINDS, workflowV2AskParentSent, workflowV2InputsBoxEmpty, workflowV2SampleInputs,
 } from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
@@ -35,12 +35,14 @@ const JSON_BOX_MAX_ROWS = 8;
  * resize, and what is wrong with the JSON as text under it while it is invalid (its description, so screen readers read
  * it with the box). `object` asks for a JSON object; otherwise any JSON value. Its height follows its text (f-04).
  */
-function JsonBox({ label, name, value, onChange, field, object = true, className = "" }) {
+function JsonBox({ label, name, value, onChange, field, object = true, className = "", action = null }) {
     const id = `wf-json-${React.useId().replace(/:/g, "")}`;
     const problem = jsonProblem(value, { name, object });
     const rows = Math.min(JSON_BOX_MAX_ROWS, Math.max(JSON_BOX_MIN_ROWS, String(value ?? "").split("\n").length));
+    const labelEl = h("label", { htmlFor: id }, label);
     return h("div", { className: `ps-workflow-field${className ? ` ${className}` : ""}` },
-        h("label", { htmlFor: id }, label),
+        // `action`: a small button beside the label (the inputs' Sample, f-05).
+        action ? h("div", { className: "ps-workflow-field-head" }, labelEl, action) : labelEl,
         h("textarea", { id, className: "ps-workflow-input is-code", value, rows, spellCheck: false, "data-field": field,
             "aria-invalid": problem ? true : undefined, "aria-describedby": problem ? `${id}-problem` : undefined,
             onChange: event => onChange(event.target.value) }),
@@ -50,6 +52,29 @@ function JsonBox({ label, name, value, onChange, field, object = true, className
 /** A one-line or plain-text edit box of the workflow screen, in the shared style (of-07), its label tied to it. */
 function TextBox({ label, children, className = "" }) {
     return h("label", { className: `ps-workflow-field${className ? ` ${className}` : ""}` }, h("span", null, label), children);
+}
+
+/**
+ * A run's Inputs box with sample data from the workflow's input schema (batch 7, f-05; workflowV2SampleInputs): filled
+ * when it is empty or "{}" and the person has not typed in it, again when the schema changes while it still is, and on
+ * Sample (an icon button beside its label, only when the schema gives a sample). Returns the box's text, its change
+ * handler for JsonBox and that button.
+ */
+function useSampleInputs(schema) {
+    const schemaKey = JSON.stringify(schema ?? null);
+    const sampleText = React.useMemo(() => {
+        const sample = workflowV2SampleInputs(schema);
+        return sample ? JSON.stringify(sample, null, 2) : null;
+    }, [schemaKey]);
+    const [inputs, setInputs] = React.useState(() => sampleText ?? "{}");
+    const typed = React.useRef(false);
+    React.useEffect(() => {
+        if (sampleText && !typed.current) setInputs(current => (workflowV2InputsBoxEmpty(current) ? sampleText : current));
+    }, [sampleText]);
+    const onChange = value => { typed.current = true; setInputs(value); };
+    const action = sampleText ? h(WorkflowToolButton, { label: "Sample", glyph: "sample", "data-action": "sample-inputs",
+        title: "Fill with sample inputs from the schema", onClick: () => { typed.current = false; setInputs(sampleText); } }) : null;
+    return { inputs, onChange, action };
 }
 
 /** Notices about the definition and the run. Text only; every value is a React child, never markup. */
@@ -676,7 +701,7 @@ function DefinitionSummary({ model, revisionLabel, revision, hash, validity = nu
  * the workflow is read again; what the person typed stays. Publishing and starting are separate, explicit choices.
  */
 export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, versionsNow = null }) {
-    const [inputs, setInputs] = React.useState("{}");
+    const { inputs, onChange: setInputs, action: sampleAction } = useSampleInputs(model?.inputsSchema ?? null);
     const [vars, setVars] = React.useState("");
     const [error, setError] = React.useState(null);
     const mounted = React.useRef(true);
@@ -718,7 +743,7 @@ export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id, ve
     h("p", { className: "ps-workflow-side-note" }, draft
         ? "Publishing freezes this exact revision; it starts no run and grants no tool."
         : "Starting runs the published revision with real effects; a workflow has one live run."),
-    runs ? h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, field: "inputs" }) : null,
+    runs ? h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, field: "inputs", action: sampleAction }) : null,
     runs ? h(JsonBox, { label: "Initial variables (JSON object, optional)", name: "Initial variables", value: vars, onChange: setVars, field: "vars" }) : null,
     h("div", { className: "ps-workflow-panel-actions" },
         model.controls.map(control => h("button", { key: control.operation, type: "button", className: "ps-mini-button",
@@ -1063,7 +1088,7 @@ function WorkflowV2YamlBox({ value, onChange = null, marks, changed, readOnly = 
  * the new test run.
  */
 export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
-    const [inputs, setInputs] = React.useState("{}");
+    const { inputs, onChange: setInputs, action: sampleAction } = useSampleInputs(model?.inputsSchema ?? null);
     const [vars, setVars] = React.useState("");
     const [scenario, setScenario] = React.useState("");
     const [agentMode, setAgentMode] = React.useState("mocked");
@@ -1100,7 +1125,7 @@ export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
         radio("real", "Real agents (spend model tokens)")),
     agentMode === "real" ? h("p", { role: "note", "data-notice": "real-agents", style: { margin: 0, color: TONES.warning } },
         WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT) : null,
-    h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, field: "inputs" }),
+    h(JsonBox, { label: "Inputs (JSON object)", name: "Inputs", value: inputs, onChange: setInputs, field: "inputs", action: sampleAction }),
     h(JsonBox, { label: "Initial variables (JSON object, optional)", name: "Initial variables", value: vars, onChange: setVars, field: "vars" }),
     h(TextBox, { label: "Scenario name (optional)" },
         h("input", { type: "text", className: "ps-workflow-input", value: scenario, maxLength: 128, onChange: event => setScenario(event.target.value), "data-field": "scenario" })),

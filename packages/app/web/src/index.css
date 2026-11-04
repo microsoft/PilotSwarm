@@ -4734,6 +4734,10 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 .ps-workflow-field > label,
 .ps-workflow-field > span:first-child { color: var(--ps-muted); font-size: 0.75rem; }
 .ps-workflow-field.is-grow { flex: 1 1 14em; }
+/* Batch 7 (f-05): a box's label with a small action beside it (the inputs' Sample). */
+.ps-workflow-field-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.ps-workflow-field-head > label { color: var(--ps-muted); font-size: 0.75rem; }
+.ps-workflow-field-head .ps-mini-button.ps-workflow-tool-button { min-width: 24px; min-height: 24px; padding: 2px 4px; }
 .ps-workflow-field-error { color: var(--ps-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
 .ps-workflow-yaml {
   display: flex;

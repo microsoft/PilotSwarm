@@ -75,7 +75,11 @@ workflow, a link) instead of its cron.
   **activity**, its **notices** (and a status that could not be read), and
   the **step log**. Its icon button in the header looks pressed while the
   side pane shows it; press it again for Step details. Notices and Test calls
-  show how many there are. Selecting a step shows Step details again. When a
+  show how many there are. The Inputs box of a start or test review starts
+  with sample data built from the workflow's input schema (examples,
+  defaults, enum values, or a value by type and field name) while it is empty
+  and untouched; **Sample** beside it fills it again. Selecting a step shows
+  Step details again. When a
   command you sent is refused or may not have arrived, the side pane says so
   above what it shows. Until the workflow writes to the step log, it says "No
   step output yet." Before the first run, the header's status says "No run
