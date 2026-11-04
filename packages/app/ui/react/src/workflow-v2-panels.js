@@ -712,8 +712,9 @@ export function WorkflowV2RunCommandNotice({ controller, sessionId, notice }) {
  * dialog), each as one update. Edit copies a listed variable into the form. An edit is sent at the revision it started
  * from (adversarial review R2-UI-1, workflowV2VariableEdit): when the workflow is read again at a newer revision, the
  * edit stays, the form says the variables changed since editing began, and Set and Remove wait until the person loads the
- * new values or keeps the edit to save it over them. The server checks the revision (a changed map is refused and read
- * again) and everything else.
+ * new values or keeps the edit to save it over them. Load takes only what it can read (re-check RC-1,
+ * workflowV2VariableLoad): a removed variable's old value is cleared, and a list too long to read leaves the edit as it
+ * was, behind. The server checks the revision (a changed map is refused and read again) and everything else.
  */
 export function WorkflowV2Variables({ controller, sessionId, model, id }) {
     const [edit, change] = React.useReducer(workflowV2VariableEdit, WORKFLOW_V2_VARIABLE_EDIT_EMPTY);
@@ -726,8 +727,10 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
     if (!model) return null;
     const { key, value } = edit;
     const editState = workflowV2VariableEditState(edit, model.revision);
-    const setKey = text => change({ type: "type", field: "key", text, revision: model.revision });
-    const setValue = text => change({ type: "type", field: "value", text, revision: model.revision });
+    // The shown list, so the form knows whether the name it edits is a listed variable (re-check RC-1).
+    const shownList = { entries: model.entries, complete: model.complete, preview: model.preview, revision: model.revision };
+    const setKey = text => change({ type: "type", field: "key", text, ...shownList });
+    const setValue = text => change({ type: "type", field: "value", text, ...shownList });
     const send = async input => {
         const result = await controller.sendWorkflowRunCommand(sessionId, { operation: "set_vars", runId: model.runId,
             expectedKvRevision: editState.expectedKvRevision, ...input });
@@ -774,9 +777,12 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
             style: { flexBasis: "100%", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, color: TONES.warning } },
         h("span", { style: { flex: "1 1 16em", minWidth: 0 } }, `${editState.behind.text} Load the new values, or keep your edit and save it over them.`),
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "reload",
-            onClick: () => { change({ type: "reload", entries: model.entries, revision: model.revision }); setError(null); } }, "Load new values"),
+            onClick: () => { change({ type: "reload", ...shownList }); setError(null); } }, "Load new values"),
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "keep",
-            onClick: () => { change({ type: "keep", revision: model.revision }); setError(null); } }, "Keep my edit")) : null,
+            onClick: () => { change({ type: "keep", ...shownList }); setError(null); } }, "Keep my edit")) : null,
+        // What the last Load did when it could not simply load the value (re-check RC-1): removed, not set, or not loadable here.
+        editState.notice ? h("span", { role: "status", className: "ps-workflow-variables-loaded", style: { flexBasis: "100%", color: TONES.warning } },
+            editState.notice) : null,
         error ? h("span", { role: "alert", style: { flexBasis: "100%", color: TONES.error } }, error) : null)
         : h("p", { className: "ps-workflow-variables-readonly", style: { margin: 0, color: "var(--ps-muted)" } }, model.reason));
 }

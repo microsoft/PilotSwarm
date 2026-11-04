@@ -456,6 +456,8 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
     }
     const behind = sameRun ? variablesBehind(modal, variables, Boolean(String(modal.name ?? "") || String(modal.value ?? "")), notice) : null;
     if (behind) addWrapped(behind.help, "yellow");
+    // What the last ctrl-l did when it could not simply load the value (re-check RC-1).
+    if (sameRun && typeof modal.loadNotice === "string" && modal.loadNotice) addWrapped(modal.loadNotice, "yellow");
     if (typeof modal.error === "string" && modal.error) addWrapped(modal.error, "red");
     const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, (Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40) - 16)));
     const rows = Math.max(1, listHeight - 2);

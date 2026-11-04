@@ -12,7 +12,8 @@ import {
 import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
     workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableBatchDraft,
-    workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2VariableEditBehind, workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
+    workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2VariableEditBehind, workflowV2VariableListed, workflowV2VariableLoad,
+    workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
     workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId, workflowV2StepInputKey, workflowV2StepQuestion,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
@@ -7084,7 +7085,29 @@ export class PilotSwarmUiController {
         const focused = this.workflowVariableField();
         if (!focused) return;
         const next = insertPromptTextAtCursor(focused.text, focused.cursor, String(text ?? ""));
-        this.updateWorkflowVariableForm({ ...this.workflowVariableRebase(), [focused.field]: next.prompt, [`${focused.field}Cursor`]: next.cursor, error: null });
+        this.updateWorkflowVariableForm(this.workflowVariableTyped(focused.field, next.prompt, next.cursor));
+    }
+
+    /**
+     * The patch for the one-variable form after its `field` became `text` (R2-UI-1 and re-check RC-1): a clean form takes the
+     * revision shown now as its own; when its edit starts or its name changes, whether that name is a listed variable at the
+     * edit's own revision (true, false, or null when not known); what the last Load said is cleared.
+     */
+    workflowVariableTyped(field, text, cursor) {
+        const modal = this.getState().ui.modal;
+        const rebase = this.workflowVariableRebase();
+        const patch = { ...rebase, [field]: text, [`${field}Cursor`]: cursor, error: null, loadNotice: null };
+        if (!modal || modal.type !== "workflowVariable") return patch;
+        const name = field === "name" ? text : String(modal.name ?? "");
+        const value = field === "value" ? text : String(modal.value ?? "");
+        if (!name && !value) return { ...patch, listed: null };
+        if (Object.hasOwn(rebase, "baseRevision") || name !== String(modal.name ?? "")) {
+            const variables = workflowViewProjectionFor(this.getState(), modal.sessionId).runVariables;
+            const base = Object.hasOwn(rebase, "baseRevision") ? rebase.baseRevision : modal.baseRevision;
+            const sameRevision = variables?.runId === modal.runId && Number.isSafeInteger(base) && base === variables.revision;
+            patch.listed = sameRevision ? workflowV2VariableListed(variables, name) : null;
+        }
+        return patch;
     }
 
     /** The KV revision the workflow view shows for a session's run now (its variables'), or null (R2-UI-1). */
@@ -7108,8 +7131,9 @@ export class PilotSwarmUiController {
     /**
      * R2-UI-1: a variables form (one or several) whose edit started at an older revision than the view shows now: `keep`
      * (ctrl-k) keeps the edit, to be saved over the new values at the new revision; `reload` (ctrl-l) loads the new values
-     * (the one-variable form: the named variable's value now, when it is listed; the several-variables form: empty fields)
-     * at the new revision. Nothing is sent.
+     * (the one-variable form: workflowV2VariableLoad, re-check RC-1: the named variable's value now; a removed one's old
+     * value cleared; nothing loaded, and the edit still behind, when the list cannot be read whole; the several-variables
+     * form: empty fields) at the new revision. Nothing is sent.
      */
     resolveWorkflowVariableEdit(choice) {
         const state = this.getState();
@@ -7123,24 +7147,26 @@ export class PilotSwarmUiController {
             return;
         }
         let patch = { baseRevision: variables.revision, error: null };
-        if (choice === "reload") {
-            if (modal.type === "workflowVariable") {
-                const entry = variables.entries.find(item => item.key === modal.name);
-                if (entry) patch = { ...patch, value: entry.valueText, valueCursor: entry.valueText.length };
-            } else {
-                patch = { ...patch, set: "", setCursor: 0, remove: "", removeCursor: 0 };
-            }
+        let status = choice !== "reload" ? `Your edit is kept; it is saved over revision ${variables.revision}.` : `Started over at revision ${variables.revision}.`;
+        if (choice !== "reload" && modal.type === "workflowVariable") {
+            patch = { ...patch, listed: workflowV2VariableListed(variables, String(modal.name ?? "")), loadNotice: null };
+        } else if (choice === "reload" && modal.type === "workflowVariable") {
+            // Re-check RC-1: Load takes only what it can read; it never keeps the old value while taking the new revision.
+            const loaded = workflowV2VariableLoad({ key: modal.name, value: modal.value, base: modal.baseRevision, listed: modal.listed }, variables);
+            patch = { baseRevision: loaded.base, error: null, value: loaded.value, valueCursor: loaded.value.length, listed: loaded.listed, loadNotice: loaded.notice };
+            status = loaded.notice ?? `Loaded the variables of revision ${variables.revision}.`;
+        } else if (choice === "reload") {
+            patch = { ...patch, set: "", setCursor: 0, remove: "", removeCursor: 0 };
         }
         this.dispatch({ type: "ui/modal", modal: { ...modal, ...patch } });
-        this.dispatch({ type: "ui/status", text: choice !== "reload" ? `Your edit is kept; it is saved over revision ${variables.revision}.`
-            : modal.type === "workflowVariable" ? `Loaded the variables of revision ${variables.revision}.` : `Started over at revision ${variables.revision}.` });
+        this.dispatch({ type: "ui/status", text: status });
     }
 
     deleteWorkflowVariableChar() {
         const focused = this.workflowVariableField();
         if (!focused) return;
         const next = deletePromptCharBackward(focused.text, focused.cursor);
-        this.updateWorkflowVariableForm({ [focused.field]: next.prompt, [`${focused.field}Cursor`]: next.cursor, error: null });
+        this.updateWorkflowVariableForm(this.workflowVariableTyped(focused.field, next.prompt, next.cursor));
     }
 
     moveWorkflowVariableCursor(delta) {
@@ -7178,7 +7204,7 @@ export class PilotSwarmUiController {
         const entry = entries[next];
         // A copied variable is an edit of the revision shown now (R2-UI-1).
         this.updateWorkflowVariableForm({ pick: next, name: entry.key, nameCursor: entry.key.length, value: entry.valueText,
-            valueCursor: entry.valueText.length, error: null, baseRevision: variables.revision });
+            valueCursor: entry.valueText.length, error: null, baseRevision: variables.revision, listed: true, loadNotice: null });
     }
 
     /**

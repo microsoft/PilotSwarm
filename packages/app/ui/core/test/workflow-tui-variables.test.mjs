@@ -30,9 +30,9 @@ const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set
     "test", "test_respond", "test_advance"];
 
 /** The live run with its variables (`vars`, at `revision`), and what its workflow takes from people (`commands`; null: none). */
-function model({ status = "running", vars = { a: 1, "b c": "x" }, revision = 3, runId = RUN,
+function model({ status = "running", vars = { a: 1, "b c": "x" }, revision = 3, runId = RUN, kv = JSON.stringify(vars),
     commands = { operations: ALL, restriction: null, run: { runId: RUN, stop: true } } } = {}) {
-    const base = readModel({ graph, run: { runId, status, kv: JSON.stringify(vars), ...(revision === null ? { kvRevision: null } : { kvRevision: revision }) },
+    const base = readModel({ graph, run: { runId, status, kv, ...(revision === null ? { kvRevision: null } : { kvRevision: revision }) },
         runs: [{ runId, mode: "live", status, revision: 1, outcome: null }] });
     return commands ? { ...base, personCommands: commands } : base;
 }
@@ -331,6 +331,49 @@ test("R2-UI-1: a refresh to a newer revision keeps the edit at its own revision;
     type(h, "n");
     assert.equal(h.store.getState().ui.modal.baseRevision, 5);
     assert.ok(!joined(form(h.store).lines).includes("changed since you started editing"));
+});
+
+// Re-check RC-1: ctrl-l never acts as ctrl-k. It loads only what it can read: a variable removed since the edit began has
+// its old value cleared, and a list the view cannot show whole loads nothing and leaves the edit behind.
+test("RC-1: ctrl-l clears a variable removed since the edit began, and loads nothing from a list too long to show", async () => {
+    const h = await opened(model());
+    const refresh = next => h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: next, readModelRunId: null } });
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    // Copy a (1) at revision 3 and change it.
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    h.controller.switchWorkflowVariableField();
+    type(h, "0");
+    assert.deepEqual([form(h.store).name, form(h.store).value], ["a", "10"]);
+    // Someone removed a (revision 4). ctrl-l clears its old value and says so; nothing is sent, and Enter sends nothing either.
+    refresh(model({ vars: { "b c": "x" }, revision: 4 }));
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD);
+    const removed = "'a' was removed at revision 4, after you started editing. Its old value is cleared; type a value to set it again.";
+    assert.equal(statusOf(h.store), removed);
+    assert.deepEqual([form(h.store).name, form(h.store).value], ["a", ""]);
+    assert.equal(h.store.getState().ui.modal.baseRevision, 4);
+    assert.ok(joined(form(h.store).lines).includes(removed), joined(form(h.store).lines));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.deepEqual(h.sent(), [], "the old value is not set again");
+
+    // Type a new value at revision 4; then the map grows past what the view can show (revision 5).
+    type(h, "3");
+    assert.ok(!joined(form(h.store).lines).includes(removed), "typing clears the notice");
+    refresh(model({ kv: '{"a":5,"big":"xxxx…', revision: 5 }));
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD);
+    const blocked = "The new values cannot be loaded here: the variables are longer than this view. Your edit stays at revision 4. "
+        + "Keep it to save it over the new values, or clear the form.";
+    assert.equal(statusOf(h.store), blocked);
+    assert.deepEqual([form(h.store).name, form(h.store).value], ["a", "3"]);
+    assert.equal(h.store.getState().ui.modal.baseRevision, 4, "the edit stays at its own revision");
+    assert.ok(joined(form(h.store).lines).includes("The variables changed since you started editing (revision 4, now 5)."), "still behind");
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.deepEqual(h.sent(), [], "never sent over values it did not load");
+    // Only ctrl-k moves the edit over them, on purpose.
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    const { operation_id: _id, ...wire } = h.sent()[0];
+    assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, set: { a: 3 }, expected_kv_revision: 5 });
 });
 
 test("a form whose run the view no longer shows sends nothing; Esc goes back to the view", async () => {

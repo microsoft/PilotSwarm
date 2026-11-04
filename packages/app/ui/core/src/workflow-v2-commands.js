@@ -295,32 +295,90 @@ export function workflowV2VariableEditBehind(base, revision) {
 }
 
 /** The portal's variables form when nothing is typed: no name, no value, no revision of its own (R2-UI-1). */
-export const WORKFLOW_V2_VARIABLE_EDIT_EMPTY = Object.freeze({ key: "", value: "", base: null });
+export const WORKFLOW_V2_VARIABLE_EDIT_EMPTY = Object.freeze({ key: "", value: "", base: null, listed: null, notice: null });
 
 /**
- * The portal's variables form (R2-UI-1): what is typed (`key`, `value`) and the revision the edit started from (`base`),
- * after `action`: `type` (field "key" or "value", its text; a clean form takes the shown `revision` as its own, an
- * emptied one drops it), `copy` (a listed variable's name and value at the shown `revision`), `keep` (the edit stays and
- * is saved over the shown `revision`), `reload` (the named variable's value now from `entries`, when it is listed, at the
- * shown `revision`), `clear`. A refresh of the workflow changes nothing here. Pure.
+ * Re-check RC-1: whether `key` is a listed variable in `variables` (workflowV2RunVariables' entries and complete): true or
+ * false only when the whole list could be read, else null (not known). Pure.
+ */
+export function workflowV2VariableListed(variables, key) {
+    if (!isRecord(variables) || variables.complete !== true || !Array.isArray(variables.entries)) return null;
+    return variables.entries.some(item => isRecord(item) && item.key === key);
+}
+
+/**
+ * Re-check RC-1: what "Load new values" does to a one-variable edit (`edit`: key, value, base and `listed`, whether the
+ * name was a listed variable when the edit started), from the variables shown now (`variables`: entries, complete,
+ * revision). It loads only what it can read:
+ * - `loaded`: the named variable's value now, at the shown revision;
+ * - `removed`: the name was listed when the edit started and is not now: its old value is cleared, so it is not set again
+ *   by mistake;
+ * - `unset`: the name is not set now and it is not known whether it was: the typed value is cleared too;
+ * - `new`: the name was not set when the edit started and is still not set: the new value stays;
+ * - `blocked`: the list cannot be read whole (too long for this view, or unreadable): nothing is loaded, the edit stays at
+ *   its own revision (still behind), and only Keep or clearing the form moves on.
+ * Returns { kind, value, base, listed, notice }; `notice` says what happened in plain words (null for `loaded`). Pure.
+ */
+export function workflowV2VariableLoad(edit, variables) {
+    const key = String(edit?.key ?? "");
+    const value = String(edit?.value ?? "");
+    const base = Number.isSafeInteger(edit?.base) ? edit.base : null;
+    const listed = edit?.listed === true ? true : edit?.listed === false ? false : null;
+    const revision = Number.isSafeInteger(variables?.revision) ? variables.revision : null;
+    const name = key ? keyNames([key]) : "This variable";
+    if (revision === null || workflowV2VariableListed(variables, key) === null) {
+        const why = isRecord(variables) && typeof variables.preview === "string" && variables.preview.endsWith("…")
+            ? "the variables are longer than this view" : "the variables could not be read";
+        return { kind: "blocked", value, base, listed,
+            notice: `The new values cannot be loaded here: ${why}. Your edit stays at revision ${base ?? "not known"}. Keep it to save it over the new values, or clear the form.` };
+    }
+    const entry = variables.entries.find(item => isRecord(item) && item.key === key);
+    if (entry && typeof entry.valueText === "string") return { kind: "loaded", value: entry.valueText, base: revision, listed: true, notice: null };
+    if (listed === false) {
+        return { kind: "new", value, base: revision, listed: false, notice: `${name} is still not set at revision ${revision}, so your new value stays.` };
+    }
+    if (listed === true) {
+        return { kind: "removed", value: "", base: revision, listed: false,
+            notice: `${name} was removed at revision ${revision}, after you started editing. Its old value is cleared; type a value to set it again.` };
+    }
+    return { kind: "unset", value: "", base: revision, listed: false,
+        notice: `${name} is not set at revision ${revision}; it may have been removed. The value is cleared; type a value to set it again.` };
+}
+
+/**
+ * The portal's variables form (R2-UI-1): what is typed (`key`, `value`), the revision the edit started from (`base`),
+ * whether its name was a listed variable then (`listed`; true, false, or null when not known) and what the last Load
+ * said (`notice`), after `action`: `type` (field "key" or "value", its text; a clean form takes the shown `revision` as
+ * its own, an emptied one drops it), `copy` (a listed variable's name and value at the shown `revision`), `keep` (the
+ * edit stays and is saved over the shown `revision`), `reload` (Load new values: workflowV2VariableLoad, from the shown
+ * `entries`, `complete` and `preview`; re-check RC-1: it never keeps stale values while taking the new revision),
+ * `clear`. `type` and `keep` take the shown `entries` and `complete` to know whether the name is listed. A refresh of the
+ * workflow changes nothing here. Pure.
  */
 export function workflowV2VariableEdit(edit, action) {
-    const current = isRecord(edit) ? { key: String(edit.key ?? ""), value: String(edit.value ?? ""), base: Number.isSafeInteger(edit.base) ? edit.base : null }
-        : WORKFLOW_V2_VARIABLE_EDIT_EMPTY;
+    const current = isRecord(edit) ? {
+        key: String(edit.key ?? ""), value: String(edit.value ?? ""), base: Number.isSafeInteger(edit.base) ? edit.base : null,
+        listed: edit.listed === true ? true : edit.listed === false ? false : null, notice: typeof edit.notice === "string" && edit.notice ? edit.notice : null,
+    } : WORKFLOW_V2_VARIABLE_EDIT_EMPTY;
     const revision = Number.isSafeInteger(action?.revision) ? action.revision : null;
     switch (action?.type) {
         case "type": {
-            const next = { ...current, [action.field === "value" ? "value" : "key"]: String(action.text ?? "") };
+            const next = { ...current, [action.field === "value" ? "value" : "key"]: String(action.text ?? ""), notice: null };
             const dirty = next.key !== "" || next.value !== "";
-            return { ...next, base: dirty ? current.base ?? revision : null };
+            if (!dirty) return { ...next, base: null, listed: null };
+            const base = current.base ?? revision;
+            // Whether the name is listed is known for the edit's own revision only.
+            const relisted = current.base === null || next.key !== current.key;
+            const listed = !relisted ? current.listed : base !== null && base === revision ? workflowV2VariableListed(action, next.key) : null;
+            return { ...next, base, listed };
         }
         case "copy":
-            return { key: String(action.key ?? ""), value: String(action.value ?? ""), base: revision };
+            return { key: String(action.key ?? ""), value: String(action.value ?? ""), base: revision, listed: true, notice: null };
         case "keep":
-            return { ...current, base: revision ?? current.base };
+            return { ...current, base: revision ?? current.base, listed: revision !== null ? workflowV2VariableListed(action, current.key) : current.listed, notice: null };
         case "reload": {
-            const entry = (Array.isArray(action.entries) ? action.entries : []).find(item => isRecord(item) && item.key === current.key);
-            return { ...current, value: entry && typeof entry.valueText === "string" ? entry.valueText : current.value, base: revision ?? current.base };
+            const loaded = workflowV2VariableLoad(current, { entries: action.entries, complete: action.complete, preview: action.preview, revision });
+            return { ...current, value: loaded.value, base: loaded.base, listed: loaded.listed, notice: loaded.notice };
         }
         case "clear":
             return WORKFLOW_V2_VARIABLE_EDIT_EMPTY;
@@ -331,14 +389,14 @@ export function workflowV2VariableEdit(edit, action) {
 
 /**
  * What the portal's variables form may do now (R2-UI-1): whether anything is typed, the revision an update is sent at
- * (the edit's own; the shown `revision` while nothing is typed), and whether the edit is behind the shown revision (then
- * Set and Remove wait for the person to load the new values or keep the edit). Pure.
+ * (the edit's own; the shown `revision` while nothing is typed), whether the edit is behind the shown revision (then
+ * Set and Remove wait for the person to load the new values or keep the edit), and what the last Load said (RC-1). Pure.
  */
 export function workflowV2VariableEditState(edit, revision) {
     const current = workflowV2VariableEdit(edit, null);
     const dirty = current.key !== "" || current.value !== "";
     const expectedKvRevision = dirty && current.base !== null ? current.base : revision;
-    return { dirty, expectedKvRevision, behind: dirty ? workflowV2VariableEditBehind(expectedKvRevision, revision) : null };
+    return { dirty, expectedKvRevision, behind: dirty ? workflowV2VariableEditBehind(expectedKvRevision, revision) : null, notice: current.notice };
 }
 
 /** A variable a person asked to remove, as the delete list it is sent as, or the reason it is not one. */
