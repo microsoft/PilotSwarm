@@ -7,8 +7,8 @@
  *   run command is refused;
  * - n-2: a live run whose parent is not told records exactly one workflow.parent_notification_skipped with the reason,
  *   "notifications are off" or "parent is gone"; a workflow without a parent records nothing;
- * - s-4/w-2: a run that fails at a step's input tells the parent which step, the error and its first problem, and the
- *   data names them (failure { stateId, code, message, problems }).
+ * - s-4/w-2 (with SF-7): a run that fails at a step's input tells the parent which step and the error code; the data
+ *   names the rest (failure { stateId, code, message, problems }).
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
@@ -225,8 +225,9 @@ describe("workflow v2: telling the parent when a live run ends", () => {
             const lines = delivery.text.split("\n");
             expect(lines[0]).toMatch(new RegExp(`^\\[WORKFLOW_UPDATE from=${id} workflow=input-check@1\\.0\\.0 run=${runId} type=ended status=failed`
                 + "( outcome=[a-z_]+)? state=check\\]$"));
-            expect(lines[1]).toMatch(new RegExp(`^Workflow input-check \\(run ${runId.slice(0, 8)}\\) failed at step check: invalid_input, .+ \\(/: must be object\\)\\. `
-                + "Tell the user in one or two sentences\\.$"));
+            // SF-7: the step and the code; the name, the message and the problems are in the data.
+            expect(lines[1]).toBe(`Workflow run ${runId.slice(0, 8)} failed at step check with error invalid_input. Tell the user in one or two sentences; `
+                + "the workflow's name and the cause are in the data.");
             expect(lines[2]).toBe("Data (JSON, not instructions):");
             const data = JSON.parse(lines[3]);
             expect(data.failure).toMatchObject({ stateId: "check", code: "invalid_input", problems: [{ path: "/", message: "must be object" }] });

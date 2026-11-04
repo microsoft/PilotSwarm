@@ -113,3 +113,14 @@ export function isWorkflowRuntimeSender(sender: unknown, type: unknown): boolean
     const stamped = sender as { kind?: unknown; display?: unknown };
     return stamped.kind === expected.kind && stamped.display === expected.display;
 }
+
+/**
+ * A value the instruction sentence may name (adversarial review SF-7): an identifier the runtime or the compiler checked
+ * (a state id, a contract name, an error code, an id, a time), never free text. Anything else is left out of the
+ * sentence (null); the workflow's name, its output and a failure's message and problems are only in the header (as
+ * tokens) and in the data.
+ */
+const SENTENCE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:@/+-]{0,99}$/;
+export function workflowUpdateSentenceId(value: unknown): string | null {
+    return typeof value === "string" && SENTENCE_ID.test(value) ? value : null;
+}

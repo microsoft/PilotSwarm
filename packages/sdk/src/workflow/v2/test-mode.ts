@@ -9,7 +9,7 @@ import {
     type NodeResultInput, type SessionProjection, type WorkflowNodeExecutionRow, type WorkflowRunRow, type WorkflowTestInterception,
     type WorkflowTestOperation, type WorkflowTestResponseKind,
 } from "./store.js";
-import { workflowUpdateHeader, workflowUpdateMessage, workflowUpdatePlain, workflowUpdateShortId } from "./parent-messages.js";
+import { workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId } from "./parent-messages.js";
 
 /**
  * Workflow v2 test runs (design 05 tool-mocked testing; R19, R20, R28;
@@ -271,11 +271,13 @@ export function workflowTestNoticePrompt(data: { [key: string]: JsonValue }, wor
     const field = (key: string): string | null => (typeof data[key] === "string" && data[key] ? data[key] as string : null);
     const header = workflowUpdateHeader({ from: field("sessionId") ?? "-", workflow, run: field("runId") ?? "-", type: "test_waiting",
         fields: [["state", field("stateId")], ["interception", field("interceptionId")]] });
-    const name = workflow?.name ? `Workflow ${workflowUpdatePlain(workflow.name, 80)}` : `A workflow (session ${workflowUpdateShortId(field("sessionId"))})`;
-    const what = [field("operation"), field("tool")].filter(Boolean).map(part => workflowUpdatePlain(part, 60)).join(" ");
-    return workflowUpdateMessage(header, `${name} test run ${workflowUpdateShortId(field("runId"))} waits for your mock answer to `
-        + `${what || "a held call"}${field("stateId") ? ` in step ${workflowUpdatePlain(field("stateId"), 80)}` : ""}. Answer with update_workflow `
-        + `operation test_respond (run_id ${workflowUpdatePlain(field("runId"), 80)}, interception_id ${workflowUpdatePlain(field("interceptionId"), 120)}).`, json);
+    // SF-7: checked identifiers only; the workflow's name is in the header, never in the sentence.
+    const say = (value: unknown): string | null => workflowUpdateSentenceId(value);
+    const what = [say(field("operation")), say(field("tool"))].filter(Boolean).join(" ");
+    const state = say(field("stateId"));
+    return workflowUpdateMessage(header, `A workflow (session ${workflowUpdateShortId(field("sessionId"))}) test run ${workflowUpdateShortId(field("runId"))} `
+        + `waits for your mock answer to ${what || "a held call"}${state ? ` in step ${state}` : ""}. Answer with update_workflow `
+        + `operation test_respond (run_id ${say(field("runId")) ?? "(see the data)"}, interception_id ${say(field("interceptionId")) ?? "(see the data)"}).`, json);
 }
 
 /** Whether a state's node execution is the one an interception is for, and its arguments' match key for fixtures. */

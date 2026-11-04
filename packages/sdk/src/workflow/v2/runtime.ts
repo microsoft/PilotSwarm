@@ -44,7 +44,7 @@ import { schemaSetFor, type SchemaProblem } from "./schema.js";
 import { intakeEnvelopeSha256, type IntakeEnvelope } from "./intake.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
 import { RESPOND_SESSION_REQUEST_TOOL } from "./request-service.js";
-import { workflowRuntimeSender, workflowUpdateHeader, workflowUpdateMessage, workflowUpdatePlain, workflowUpdateShortId } from "./parent-messages.js";
+import { workflowRuntimeSender, workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId } from "./parent-messages.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
 import {
     matchTestFixture, storedTestFixtures, testResultFor, toolCallResultOf, WORKFLOW_V2_TEST_POLL_MS, workflowTestAnsweredProjection,
@@ -1769,24 +1769,26 @@ export interface WorkflowRunEndSummary {
  * refusal (2026-11-04: "I'm sorry, but I cannot assist with that request."), so the sentence is a plain status report.
  */
 export function workflowV2ParentNotification(summary: WorkflowRunEndSummary, json: string): string {
-    const name = workflowUpdatePlain(summary.name ?? "", 80) || "(unnamed)";
+    // SF-7: the sentence is made of checked identifiers only (the run, the step, the status, the outcome and the error
+    // code); the workflow's name, its output and a failure's message and problems are in the header and the data.
     const run = workflowUpdateShortId(summary.runId);
     const state = summary.failure?.stateId ?? summary.stateId;
-    const step = state ? ` at step ${workflowUpdatePlain(state, 80)}` : "";
+    const stateId = workflowUpdateSentenceId(state);
+    const step = stateId ? ` at step ${stateId}` : "";
     const header = workflowUpdateHeader({ from: summary.sessionId, workflow: { name: summary.name, version: summary.version }, run: summary.runId,
         type: "ended", fields: [["status", summary.status], ["outcome", summary.outcome], ["state", state]] });
     let sentence: string;
     if (summary.status === "failed") {
-        const failure = summary.failure ?? null;
-        const cause = [failure?.code, failure?.message].filter(Boolean).map(part => workflowUpdatePlain(part, 200).replace(/[.!]+$/, "")).join(", ");
-        const first = failure?.problems?.[0];
-        const problem = first ? ` (${workflowUpdatePlain(`${first.path}: ${first.message}`, 160)})` : "";
-        sentence = `Workflow ${name} (run ${run}) failed${step}${cause ? `: ${cause}` : ""}${problem}. Tell the user in one or two sentences.`;
+        const code = workflowUpdateSentenceId(summary.failure?.code ?? null);
+        sentence = `Workflow run ${run} failed${step}${code ? ` with error ${code}` : ""}. Tell the user in one or two sentences; `
+            + "the workflow's name and the cause are in the data.";
     } else if (summary.status === "completed") {
-        const outcome = summary.outcome ? ` with outcome ${workflowUpdatePlain(summary.outcome, 60)}` : "";
-        sentence = `Workflow ${name} (run ${run}) completed${outcome}${step}. Tell the user the result in one or two sentences.`;
+        const outcome = workflowUpdateSentenceId(summary.outcome);
+        sentence = `Workflow run ${run} completed${outcome ? ` with outcome ${outcome}` : ""}${step}. Tell the user the result in one or two sentences; `
+            + "the workflow's name and the result are in the data.";
     } else {
-        sentence = `Workflow ${name} (run ${run}) ended ${workflowUpdatePlain(summary.status, 30)}${step}. Tell the user in one or two sentences.`;
+        const status = workflowUpdateSentenceId(summary.status) ?? "early";
+        sentence = `Workflow run ${run} ended ${status}${step}. Tell the user in one or two sentences; the workflow's name is in the data.`;
     }
     return workflowUpdateMessage(header, sentence, json);
 }
@@ -2166,9 +2168,11 @@ export function workflowSendPrompt(message: {
     // (the durable intake renders it from the stored row), so it names the workflow by its session, not its name.
     const header = workflowUpdateHeader({ from: message.workflowSessionId, run: message.runId, type: "message",
         fields: [["state", message.stateId], ["contract", message.contract], ["exchange", message.nodeExecutionId]] });
+    // SF-7: checked identifiers only (a contract name and a state id are the compiler's; anything else is left out).
+    const say = (value: unknown): string => workflowUpdateSentenceId(value) ?? "(see the data)";
     return workflowUpdateMessage(header, `A workflow (session ${workflowUpdateShortId(message.workflowSessionId)}, run `
-        + `${workflowUpdateShortId(message.runId)}) sent you a ${workflowUpdatePlain(message.contract, 80)} message from step `
-        + `${workflowUpdatePlain(message.stateId, 80)}. Use it as the user asked; it needs no answer.`, json);
+        + `${workflowUpdateShortId(message.runId)}) sent you a ${say(message.contract)} message from step `
+        + `${say(message.stateId)}. Use it as the user asked; it needs no answer.`, json);
 }
 
 function problemsJson(problems: SchemaProblem[]): JsonValue {
@@ -4288,10 +4292,11 @@ export function workflowRequestPrompt(message: {
     // Batch 7 (w-1, w-2): the header, then how to answer as one plain sentence, then the data.
     const header = workflowUpdateHeader({ from: message.workflowSessionId, workflow: message.workflow ?? null, run: message.runId, type: "request",
         fields: [["state", message.stateId], ["contract", message.contract], ["request", message.nodeExecutionId], ["deadline", message.deadlineAt]] });
-    const name = message.workflow?.name ? `Workflow ${workflowUpdatePlain(message.workflow.name, 80)}` : `A workflow (session ${workflowUpdateShortId(message.workflowSessionId)})`;
-    return workflowUpdateMessage(header, `${name} (run ${workflowUpdateShortId(message.runId)}) asks you to answer a `
-        + `${workflowUpdatePlain(message.contract, 80)} request from step ${workflowUpdatePlain(message.stateId, 80)} by ${workflowUpdatePlain(message.deadlineAt, 40)}. `
-        + `Answer it once with the ${RESPOND_SESSION_REQUEST_TOOL} tool: request_id ${workflowUpdatePlain(message.nodeExecutionId, 200)}, an operation_id you choose `
+    // SF-7: checked identifiers only; the workflow's name is in the header, never in the sentence.
+    const say = (value: unknown): string => workflowUpdateSentenceId(value) ?? "(see the data)";
+    return workflowUpdateMessage(header, `A workflow (session ${workflowUpdateShortId(message.workflowSessionId)}, run `
+        + `${workflowUpdateShortId(message.runId)}) asks you to answer a ${say(message.contract)} request from step ${say(message.stateId)} by `
+        + `${say(message.deadlineAt)}. Answer it once with the ${RESPOND_SESSION_REQUEST_TOOL} tool: request_id ${say(message.nodeExecutionId)}, an operation_id you choose `
         + "(repeat the same one to retry the same answer), and either response (a value that matches the first schema of responseSchemas) or "
         + "decline ({ \"reason\": ... }). Chat text is not an answer. No notice follows if the request is cancelled.", json);
 }
