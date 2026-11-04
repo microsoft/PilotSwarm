@@ -5295,6 +5295,19 @@ export class WorkflowStore {
         return rows.map(agentInvocationFrom);
     }
 
+    /**
+     * One page of a run's agent invocations whose end command is still owed (end_sent_at IS NULL), in node execution id
+     * order after `afterNodeExecutionId` (adversarial review RT-5: a run's cleanup read only its first 200 invocations,
+     * ended or not, so a later child was never ended). Keyed by id, so a page never repeats or skips one.
+     */
+    async listOwedAgentInvocations(runId: string, afterNodeExecutionId: string | null, limit = 200): Promise<WorkflowAgentInvocation[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.t.agentInvocations}
+              WHERE run_id = $1 AND end_sent_at IS NULL AND ($2::text IS NULL OR node_execution_id > $2)
+              ORDER BY node_execution_id LIMIT $3`, [runId, afterNodeExecutionId, limit]);
+        return rows.map(agentInvocationFrom);
+    }
+
     /** The agent invocations of a run's node executions among `nodeExecutionIds` (as many as the ids given). */
     async listAgentInvocationsFor(runId: string, nodeExecutionIds: readonly string[]): Promise<WorkflowAgentInvocation[]> {
         if (nodeExecutionIds.length === 0) return [];

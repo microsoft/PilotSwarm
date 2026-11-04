@@ -2320,20 +2320,34 @@ export async function endWorkflowV2AgentChild(store: WorkflowStore, client: Work
  */
 export async function endWorkflowV2RunAgents(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string): Promise<void> {
     const failed: string[] = [];
-    for (const invocation of await store.listAgentInvocations(runId)) {
-        if (invocation.endSentAt !== null) continue;
-        try {
-            await endWorkflowV2AgentChild(store, client, invocation.nodeExecutionId);
-        } catch (error) {
-            failed.push(invocation.nodeExecutionId);
-            await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
-                runId, nodeExecutionId: invocation.nodeExecutionId, childSessionId: invocation.childSessionId,
-                error: jsonbSafeText(workflowErrorMessage(error), 1_000),
-            } }]);
+    // Every owed invocation, page by page (RT-5): the cursor moves past each page, so one that stays owed (a state not
+    // decided yet, or a child that could not be ended) is not read again in this call.
+    let after: string | null = null;
+    for (;;) {
+        const page: WorkflowAgentInvocation[] = await store.listOwedAgentInvocations(runId, after, WORKFLOW_V2_OWED_AGENT_PAGE);
+        for (const invocation of page) {
+            if (invocation.endSentAt !== null) continue;
+            try {
+                await endWorkflowV2AgentChild(store, client, invocation.nodeExecutionId);
+            } catch (error) {
+                failed.push(invocation.nodeExecutionId);
+                await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
+                    runId, nodeExecutionId: invocation.nodeExecutionId, childSessionId: invocation.childSessionId,
+                    error: jsonbSafeText(workflowErrorMessage(error), 1_000),
+                } }]);
+            }
         }
+        if (page.length < WORKFLOW_V2_OWED_AGENT_PAGE) break;
+        after = page[page.length - 1].nodeExecutionId;
     }
-    if (failed.length > 0) throw new Error(`The children of agent states ${failed.join(", ")} were not ended yet.`);
+    if (failed.length > 0) {
+        const shown = failed.slice(0, 20).join(", ");
+        throw new Error(`The children of agent states ${shown}${failed.length > 20 ? ` and ${failed.length - 20} more` : ""} were not ended yet.`);
+    }
 }
+
+/** The owed agent invocations read at a time when a run's children are ended (RT-5). */
+export const WORKFLOW_V2_OWED_AGENT_PAGE = 200;
 
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {
     const { store } = deps;

@@ -19,7 +19,7 @@ function fakeHost({ run = completed, controller = "Completed", notifier = "NotFo
         recordOperationReceipt: async (_wf, _op, _kind, _sha, value) => ({ receipt: value, replayed: false }),
         readDefinition: async () => ({ parentSessionId: PARENT }),
         runNoticeRecorded: async () => noticed,
-        listAgentInvocations: async () => [],
+        listOwedAgentInvocations: async () => [],
         recordSessionEvents: async () => {},
     };
     const duroxideClient = {
