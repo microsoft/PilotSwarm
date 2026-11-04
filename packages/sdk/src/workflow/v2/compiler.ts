@@ -1488,10 +1488,34 @@ function holdsBinding(value: JsonValue): boolean {
 }
 
 /**
+ * The longest object key the compiler matches against a schema's patterns (E2bm-R1). A pattern the compiler accepts can
+ * still take time that grows as a power of its input (repeats side by side, such as a*a*), so a longer key is not
+ * matched here: its member, and any fixed part that holds such a key, are left to the run's own check.
+ */
+const COMPILE_TIME_KEY_MAX_LENGTH = 256;
+
+/** Whether a value has an object key longer than COMPILE_TIME_KEY_MAX_LENGTH anywhere (E2bm-R1). */
+function holdsLongKey(value: JsonValue): boolean {
+    const stack: JsonValue[] = [value];
+    while (stack.length > 0) {
+        const next = stack.pop() as JsonValue;
+        if (Array.isArray(next)) {
+            for (const item of next) stack.push(item);
+        } else if (isJsonObject(next)) {
+            for (const [key, item] of Object.entries(next)) {
+                if (key.length > COMPILE_TIME_KEY_MAX_LENGTH) return true;
+                stack.push(item);
+            }
+        }
+    }
+    return false;
+}
+
+/**
  * The schema a member of an object must match (E2-R3, as JSON Schema applies them): its property's schema and the
  * schema of every patternProperties name its key matches, all of them (allOf); only a key that neither names nor
  * matches takes additionalProperties. Undefined when nothing applies, or when a pattern cannot be evaluated here (the
- * run checks that member).
+ * run checks that member): an unsafe pattern, or a key longer than COMPILE_TIME_KEY_MAX_LENGTH (E2bm-R1).
  */
 function memberSchema(target: { [key: string]: JsonValue }, key: string): JsonValue | undefined {
     const applied: JsonValue[] = [];
@@ -1500,6 +1524,7 @@ function memberSchema(target: { [key: string]: JsonValue }, key: string): JsonVa
     if (named) applied.push(properties[key]);
     let matched = false;
     if (isJsonObject(target.patternProperties)) {
+        if (key.length > COMPILE_TIME_KEY_MAX_LENGTH && Object.keys(target.patternProperties).length > 0) return undefined;
         for (const [pattern, schema] of Object.entries(target.patternProperties)) {
             // Only a pattern the compiler accepts is evaluated (an unsafe one is refused where the schema is checked).
             if (unsafeSchemaPattern(pattern) !== null) return undefined;
@@ -1527,7 +1552,8 @@ function fixedParts(value: JsonValue, schema: JsonValue | undefined, defs: Recor
     parts: FixedPart[], problems: string[], depth = 0): void {
     if (depth > 32 || schema === undefined) return;
     if (!holdsBinding(value)) {
-        parts.push({ pointer, value, schema });
+        // The run's validator matches every key against the schema's patterns: a part with a very long key is left to the run.
+        if (!holdsLongKey(value)) parts.push({ pointer, value, schema });
         return;
     }
     const target = schemaTarget(defs, schema);
@@ -1599,6 +1625,8 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
             }
             continue;
         }
+        // E2bm-R1: an input with a very long key is not matched against the schema's patterns here; the run checks it.
+        if (holdsLongKey(node.input)) continue;
         validator ??= new WorkflowSchemaSet(defs);
         const problems = validator.validate(schemaName, node.input);
         if (problems.length) {
