@@ -69,7 +69,7 @@ test("SF-5 known limit: repeats side by side are accepted (their cost grows as a
     for (const pattern of ["^a*a*$", "^\\d+\\d+$"]) assert.equal(unsafeSchemaPattern(pattern), null, pattern);
 });
 
-test("escapes, classes and inline flags", () => {
+test("escapes and classes", () => {
     // Escaped and class characters are characters, not syntax.
     assert.equal(unsafeSchemaPattern("^(\\(|\\))+$"), null);
     assert.equal(unsafeSchemaPattern("^([\\]a]|b)+$"), null);
@@ -79,9 +79,83 @@ test("escapes, classes and inline flags", () => {
     // A negated class can start like anything it does not exclude.
     assert.match(unsafeSchemaPattern("^([^b]|a)+$") ?? "", /alternatives/);
     assert.equal(unsafeSchemaPattern("^([^a]|a)+$"), null);
-    // Inline flags would change what a character matches: refused.
-    assert.match(unsafeSchemaPattern("^(?i:a)+$") ?? "", /inline flags/);
     assert.match(unsafeSchemaPattern("^[a-z"), /unclosed class/);
+});
+
+// Verification of SF-5 in E2 (E2-R1, E2-R5; tests E2-T1 to E2-T3). Compile-time checks only: no hostile pattern is run.
+test("E2-T1: a lookaround's body is checked as any other part", () => {
+    for (const pattern of ["^(?=(a+)+$)a*$", "^(?!(a|a)+$)\\w+$", "(?<=(x+)+)y", "^(?<!(\\d+\\d)+)z$", "^(?=.*(a|ab)*c)"]) {
+        assert.match(unsafeSchemaPattern(pattern) ?? "", /repeat|alternatives/, pattern);
+    }
+    for (const pattern of ["^(?=.*\\d)(?=.*[a-z])[a-z\\d]{8,}$", "^(?!www\\.)[a-z.]+$", "(?<=\\$)\\d+"]) {
+        assert.equal(unsafeSchemaPattern(pattern), null, pattern);
+    }
+});
+
+test("E2-T1: a negated class is computed from its members, and a Unicode property overlaps everything", () => {
+    // [^\D] is the digits, [^\W] the word characters: they overlap what follows them.
+    for (const pattern of ["^([^\\D]+\\d)+$", "^([^\\W]+a)+$", "^([^\\S]+ )+$", "^([^\\D]|5)+$"]) {
+        assert.match(unsafeSchemaPattern(pattern) ?? "", /repeat|alternatives/, pattern);
+    }
+    // A property is not computed, negated or not, in a class or not.
+    for (const pattern of ["^(\\p{L}+x)+$", "^([^\\p{L}]+x)+$", "^(\\P{L}|x)+$", "^([\\p{Lu}a]+-)+$"]) {
+        assert.match(unsafeSchemaPattern(pattern) ?? "", /repeat|alternatives/, pattern);
+    }
+    // Exact sets still tell disjoint characters apart.
+    for (const pattern of ["^([^\\D]+-)+$", "^([\\D\\d]{2})+$", "^(\\p{L}{3})+$", "^\\p{L}+$", "^([^\\D]|x)+$"]) {
+        assert.equal(unsafeSchemaPattern(pattern), null, pattern);
+    }
+    assert.match(unsafeSchemaPattern("^[z-a]$") ?? "", /out of order/);
+});
+
+test("E2-T2: the check's work is bounded on deep, wide and nullable patterns of the longest length", () => {
+    const patterns = [
+        "(".repeat(256) + ")".repeat(256),
+        "(".repeat(170) + "a" + ")*".repeat(170),
+        "(" + "x?|".repeat(169) + "y)*",
+        "(" + "a?".repeat(254) + ")*",
+        "(" + "[^\\D]?".repeat(84) + ")+",
+        "^(?:" + "(?=a)".repeat(100) + "b)+$",
+        "[" + "a-b".repeat(170) + "]+",
+        "^(" + "[a-c]|".repeat(84) + "x)+$",
+        // Accepted only after all the work: 250 disjoint alternatives, and 169 short repeats each stopped by a letter.
+        "^(" + Array.from({ length: 250 }, (_, i) => String.fromCodePoint(0x4e00 + i)).join("|") + ")+$",
+        "(" + "a?b".repeat(169) + ")*",
+    ].map(pattern => pattern.slice(0, 512));
+    for (const pattern of patterns) {
+        assert.ok(pattern.length <= 512);
+        const started = process.hrtime.bigint();
+        const reason = unsafeSchemaPattern(pattern);
+        const ms = Number(process.hrtime.bigint() - started) / 1e6;
+        assert.ok(reason === null || typeof reason === "string", pattern.slice(0, 40));
+        assert.ok(ms < 500, `${pattern.slice(0, 40)}… took ${ms} ms`);
+    }
+    assert.equal(unsafeSchemaPattern(patterns.at(-2)), null);
+    assert.equal(unsafeSchemaPattern(patterns.at(-1)), null);
+});
+
+test("E2-T3: modifier groups are groups; under i a letter matches its other case", () => {
+    // Accepted again, as before E2: existing definitions keep compiling.
+    for (const pattern of ["^(?i:abc)$", "^(?i:a|b)+$", "^(?-i:x)$", "^(?s:.)+$", "^(?ms:a.b)$", "^(?i-s:[a-z]+)$", "^(?i:[a-z]{2}-)+$"]) {
+        assert.equal(unsafeSchemaPattern(pattern), null, pattern);
+    }
+    // Their bodies are checked, with the case they read.
+    for (const pattern of ["^(?i:(a|A)+)$", "^(?i:([a-z]+K)+)$", "^(?i:(x+)+)$", "^(?i:(k|\\u212A)+)$", "^(?i:(\\w|\\u017F)+)$"]) {
+        assert.match(unsafeSchemaPattern(pattern) ?? "", /repeat|alternatives/, pattern);
+    }
+    // Without i, the same letters of two cases are disjoint.
+    for (const pattern of ["^(a|A)+$", "^([a-z]+K)+$", "^(?-i:(a|A)+)$", "^(?i:(?-i:(a|A)+))$"]) {
+        assert.equal(unsafeSchemaPattern(pattern), null, pattern);
+    }
+    // A letter beyond ASCII under i is not computed: it overlaps everything.
+    assert.match(unsafeSchemaPattern("^(?i:(\u00e9+x)+)$") ?? "", /repeat/);
+    // Unknown, repeated or missing flags are refused.
+    for (const pattern of ["^(?x:a)$", "^(?ii:a)$", "^(?i-i:a)$", "^(?-:a)$", "^(?g:a)$"]) {
+        assert.match(unsafeSchemaPattern(pattern) ?? "", /modifier group/, pattern);
+    }
+    assert.match(unsafeSchemaPattern("^(?a)$") ?? "", /unknown group/);
+    // Named groups keep working, long names included.
+    assert.equal(unsafeSchemaPattern("^(?<aVeryLongGroupNameIndeed>[a-z]+)-\\d$"), null);
 });
 
 test("a negated escape and a character it excludes do not overlap", () => {

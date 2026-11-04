@@ -44,11 +44,22 @@ export const SCHEMA_PATTERN_MAX_LENGTH = 512;
 
 /**
  * A set of characters (code points) for the pattern check: the listed ranges, or (`neg`) every character but them.
- * Sets are compared only to tell whether two can share a character; they need not be exact.
+ * Sets are compared only to tell whether two can share a character. A set the check cannot compute exactly (a Unicode
+ * property, a letter beyond ASCII under the i flag) is `fuzzy`: it is taken to share a character with every set that
+ * is not empty (E2-R1: never the other way round).
  */
-interface CharSet { neg: boolean; ranges: Array<[number, number]> }
+interface CharSet { neg: boolean; ranges: Array<[number, number]>; fuzzy?: true }
 const NONE: CharSet = { neg: false, ranges: [] };
 const ANY: CharSet = { neg: true, ranges: [] };
+const FUZZY: CharSet = { neg: true, ranges: [], fuzzy: true };
+
+/** The work the check may do on one pattern (E2-T2): a pattern that needs more is refused as too complex. */
+const WORK_LIMIT = 1_000_000;
+let work = 0;
+function spend(amount = 1): void {
+    work += amount;
+    if (work > WORK_LIMIT) throw new UnsafePattern("a pattern is too complex to check; make it simpler");
+}
 const DIGITS: Array<[number, number]> = [[48, 57]];
 const WORD: Array<[number, number]> = [[48, 57], [65, 90], [95, 95], [97, 122]];
 const SPACE: Array<[number, number]> = [[9, 13], [32, 32], [160, 160], [5760, 5760], [8192, 8202], [8232, 8233], [8239, 8239], [8287, 8287], [12288, 12288], [65279, 65279]];
@@ -66,6 +77,7 @@ function merged(ranges: Array<[number, number]>): Array<[number, number]> {
 }
 /** `a` minus `b`, as ranges. */
 function subtract(a: Array<[number, number]>, b: Array<[number, number]>): Array<[number, number]> {
+    spend(a.length * b.length + 1);
     let out = merged(a);
     for (const [lo, hi] of merged(b)) {
         out = out.flatMap(([x, y]): Array<[number, number]> => (hi < x || lo > y ? [[x, y]]
@@ -74,24 +86,55 @@ function subtract(a: Array<[number, number]>, b: Array<[number, number]>): Array
     return out;
 }
 function intersect(a: Array<[number, number]>, b: Array<[number, number]>): Array<[number, number]> {
+    spend(a.length * b.length + 1);
     const out: Array<[number, number]> = [];
     for (const [x, y] of merged(a)) for (const [lo, hi] of merged(b)) if (Math.max(x, lo) <= Math.min(y, hi)) out.push([Math.max(x, lo), Math.min(y, hi)]);
     return merged(out);
 }
 function union(a: CharSet, b: CharSet): CharSet {
+    spend(a.ranges.length + b.ranges.length + 1);
+    if (a.fuzzy || b.fuzzy) return FUZZY;
     if (!a.neg && !b.neg) return { neg: false, ranges: merged([...a.ranges, ...b.ranges]) };
     if (a.neg && b.neg) return { neg: true, ranges: intersect(a.ranges, b.ranges) };
     const [negative, positive] = a.neg ? [a, b] : [b, a];
     return { neg: true, ranges: subtract(negative.ranges, positive.ranges) };
 }
+const empty = (set: CharSet): boolean => !set.fuzzy && !set.neg && set.ranges.length === 0;
 /** Whether two sets can share a character. */
 function overlaps(a: CharSet, b: CharSet): boolean {
+    if (a.fuzzy || b.fuzzy) return !empty(a) && !empty(b);
     if (a.neg && b.neg) return true;
     if (!a.neg && !b.neg) return intersect(a.ranges, b.ranges).length > 0;
     const [negative, positive] = a.neg ? [a, b] : [b, a];
     return subtract(positive.ranges, negative.ranges).length > 0;
 }
 const single = (code: number): CharSet => ({ neg: false, ranges: [[code, code]] });
+const isSingle = (set: CharSet): boolean => !set.fuzzy && !set.neg && set.ranges.length === 1 && set.ranges[0][0] === set.ranges[0][1];
+/** Every character not in `set` (a negated class). */
+const complement = (set: CharSet): CharSet => (set.fuzzy ? FUZZY : { neg: !set.neg, ranges: set.ranges });
+
+/** Characters that match each other under the i flag besides ASCII letters' two cases (u mode: K and the Kelvin sign, s and the long s). */
+const CASE_PAIRS: ReadonlyArray<[number, number[]]> = [
+    [0x4b, [0x212a]], [0x6b, [0x212a]], [0x212a, [0x4b, 0x6b]], [0x53, [0x17f]], [0x73, [0x17f]], [0x17f, [0x53, 0x73]],
+];
+/**
+ * A set as the i flag reads it (E2-R5): each ASCII letter with its other case, and the pairs above. A listed character
+ * beyond ASCII (other than those pairs and spaces) may have other cases this does not know, so a set that lists one
+ * becomes fuzzy; a negated set only lists what it excludes, so excluding too little errs toward overlap.
+ */
+function folded(set: CharSet): CharSet {
+    if (set.fuzzy) return set;
+    const extra: Array<[number, number]> = [];
+    for (const [lo, hi] of set.ranges) {
+        const lower: [number, number] = [Math.max(lo, 97), Math.min(hi, 122)];
+        if (lower[0] <= lower[1]) extra.push([lower[0] - 32, lower[1] - 32]);
+        const upper: [number, number] = [Math.max(lo, 65), Math.min(hi, 90)];
+        if (upper[0] <= upper[1]) extra.push([upper[0] + 32, upper[1] + 32]);
+        for (const [from, to] of CASE_PAIRS) if (from >= lo && from <= hi) for (const other of to) extra.push([other, other]);
+    }
+    if (!set.neg && subtract(set.ranges, [[0, 127], [0x17f, 0x17f], [0x212a, 0x212a], ...SPACE]).length > 0) return FUZZY;
+    return { neg: set.neg, ranges: merged([...set.ranges, ...extra]) };
+}
 
 /** The parsed pattern: alternatives of sequences of quantified atoms. */
 interface Alt { options: Item[][] }
@@ -99,13 +142,17 @@ interface Item { atom: Atom; min: number; max: number }
 type Atom =
     | { kind: "set"; set: CharSet; nullable?: boolean }
     | { kind: "group"; alt: Alt }
-    | { kind: "assert" };
+    /** A zero-width assertion; a lookaround keeps its body, which is checked as any other part (E2-R1). */
+    | { kind: "assert"; body?: Alt };
 
 class UnsafePattern extends Error {}
 
 /** Parse a JSON Schema (ECMAScript, u-mode) pattern; throws UnsafePattern with a reason for what is refused. */
 function parsePattern(pattern: string): Alt {
     let at = 0;
+    // The flags in force: none for a schema pattern, changed inside a modifier group such as (?i:...) (E2-R5).
+    let flags = { i: false, s: false };
+    const cased = (set: CharSet): CharSet => (flags.i ? folded(set) : set);
     const fail = (reason: string): never => { throw new UnsafePattern(reason); };
     const code = (): number => {
         const value = pattern.codePointAt(at);
@@ -152,8 +199,9 @@ function parsePattern(pattern: string): Alt {
                 return { kind: "set", set: value < 0 ? ANY : single(value) };
             }
             case "p": case "P": {
+                // A Unicode property: not computed, so it overlaps every set (E2-R1), negated or not.
                 if (pattern[at] === "{") { const end = pattern.indexOf("}", at); at = end > at ? end + 1 : at; }
-                return { kind: "set", set: ANY };
+                return { kind: "set", set: FUZZY };
             }
             case "k": {
                 if (pattern[at] === "<") { const end = pattern.indexOf(">", at); at = end > at ? end + 1 : at; }
@@ -167,34 +215,32 @@ function parsePattern(pattern: string): Alt {
                 return { kind: "set", set: single(c.codePointAt(0)!) };
         }
     };
+    /** A class, computed exactly from its members (E2-R1: [^\D] is the digits), then negated if it says so. */
     const charClass = (): CharSet => {
         let neg = false;
         if (pattern[at] === "^") { neg = true; at += 1; }
-        let ranges: Array<[number, number]> = [];
-        let everything = false;
+        let set: CharSet = NONE;
         const member = (): CharSet => {
             if (pattern[at] === "\\") { at += 1; const atom = escape(true); return atom.kind === "set" ? atom.set : NONE; }
             return single(code());
         };
         while (at < pattern.length && pattern[at] !== "]") {
             const first = member();
-            if (pattern[at] === "-" && pattern[at + 1] !== "]" && at + 1 < pattern.length && !first.neg && first.ranges.length === 1
-                && first.ranges[0][0] === first.ranges[0][1]) {
+            if (pattern[at] === "-" && pattern[at + 1] !== "]" && at + 1 < pattern.length && isSingle(first)) {
                 at += 1;
                 const second = member();
-                if (!second.neg && second.ranges.length === 1 && second.ranges[0][0] === second.ranges[0][1]) {
-                    ranges.push([first.ranges[0][0], second.ranges[0][0]]);
-                    continue;
-                }
-                ranges.push([45, 45]);
-                if (second.neg) everything = true; else ranges = [...ranges, ...second.ranges];
+                if (!isSingle(second)) fail("a class has a range whose end is a class escape");
+                const [low, high] = [first.ranges[0][0], second.ranges[0][0]];
+                if (low > high) fail("a class has a range out of order");
+                set = union(set, { neg: false, ranges: [[low, high]] });
+                continue;
             }
-            if (first.neg) everything = true; else ranges = [...ranges, ...first.ranges];
+            set = union(set, first);
         }
         if (pattern[at] !== "]") fail("a pattern has an unclosed class");
         at += 1;
-        if (everything) return neg ? NONE : ANY;
-        return { neg, ranges: merged(ranges) };
+        const read = cased(set);
+        return neg ? complement(read) : read;
     };
     const quantifier = (): { min: number; max: number } | null => {
         const c = pattern[at];
@@ -223,18 +269,41 @@ function parsePattern(pattern: string): Alt {
             if (c === "|") { at += 1; options.push([]); continue; }
             let atom: Atom;
             if (c === "(") {
-                const prefix = /^\((\?(:|=|!|<=|<!|<[A-Za-z_$][A-Za-z0-9_$]*>))?/.exec(pattern.slice(at))![0];
-                if (prefix === "(" && pattern[at + 1] === "?") fail("a pattern may not use inline flags or unknown groups such as (?i:...)");
+                const rest = pattern.slice(at);
+                // A modifier group (?ims-ims:...) (E2-R5): a group without a capture whose flags change inside it.
+                const modifier = /^\(\?([A-Za-z]*)(?:-([A-Za-z]*))?:/.exec(rest);
+                let prefix: string;
+                let inside = flags;
+                if (modifier && (modifier[1] !== "" || modifier[2] !== undefined)) {
+                    const [added, removed] = [modifier[1], modifier[2] ?? ""];
+                    const named = added + removed;
+                    if (!/^[ims]*$/.test(named) || new Set(named).size !== named.length || named === "") {
+                        fail("a pattern has a modifier group with an unknown, repeated or missing flag; use flags i, m and s, each once, as in (?i:...) or (?-i:...)");
+                    }
+                    const flag = (name: "i" | "s"): boolean => (added.includes(name) ? true : removed.includes(name) ? false : flags[name]);
+                    inside = { i: flag("i"), s: flag("s") };
+                    prefix = modifier[0];
+                } else {
+                    prefix = /^\((\?(:|=|!|<=|<!|<[A-Za-z_$][A-Za-z0-9_$]*>))?/.exec(rest)![0];
+                    if (prefix === "(" && pattern[at + 1] === "?") fail("a pattern has an unknown group such as (?x...)");
+                }
                 at += prefix.length;
+                const outside = flags;
+                flags = inside;
                 const inner = alternation(true);
+                flags = outside;
                 if (pattern[at] !== ")") fail("a pattern has an unmatched '('");
                 at += 1;
-                atom = /^\(\?(=|!|<=|<!)$/.test(prefix) ? { kind: "assert" } : { kind: "group", alt: inner };
+                atom = /^\(\?(=|!|<=|<!)$/.test(prefix) ? { kind: "assert", body: inner } : { kind: "group", alt: inner };
             } else if (c === "[") { at += 1; atom = { kind: "set", set: charClass() }; }
-            else if (c === "\\") { at += 1; atom = escape(false); }
-            else if (c === ".") { at += 1; atom = { kind: "set", set: { neg: true, ranges: LINE_ENDS } }; }
+            else if (c === "\\") {
+                at += 1;
+                const escaped = escape(false);
+                atom = escaped.kind === "set" ? { ...escaped, set: cased(escaped.set) } : escaped;
+            }
+            else if (c === ".") { at += 1; atom = { kind: "set", set: flags.s ? ANY : { neg: true, ranges: LINE_ENDS } }; }
             else if (c === "^" || c === "$") { at += 1; atom = { kind: "assert" }; }
-            else atom = { kind: "set", set: single(code()) };
+            else atom = { kind: "set", set: cased(single(code())) };
             const bounds = quantifier() ?? { min: 1, max: 1 };
             options[options.length - 1].push({ atom, ...bounds });
         }
@@ -244,7 +313,19 @@ function parsePattern(pattern: string): Alt {
     return alternation(false);
 }
 
-const nullableAlt = (alt: Alt): boolean => alt.options.some(option => option.every(nullableItem));
+/** Each analysis of an item or a group once per check (E2-T2): the check's work grows with the pattern's size only. */
+let memo = { nullable: new WeakMap<Alt, boolean>(), first: new WeakMap<Alt, CharSet>(), chars: new WeakMap<Item, CharSet>(),
+    lengths: new WeakMap<Item, [number, number]>() };
+function remembered<K extends object, V>(map: WeakMap<K, V>, key: K, compute: () => V): V {
+    const known = map.get(key);
+    if (known !== undefined) return known;
+    spend();
+    const value = compute();
+    map.set(key, value);
+    return value;
+}
+
+const nullableAlt = (alt: Alt): boolean => remembered(memo.nullable, alt, () => alt.options.some(option => option.every(nullableItem)));
 function nullableItem(item: Item): boolean {
     if (item.min === 0) return true;
     if (item.atom.kind === "assert") return true;
@@ -253,7 +334,7 @@ function nullableItem(item: Item): boolean {
 }
 /** The characters an alternation can start with. */
 function firstOfAlt(alt: Alt): CharSet {
-    return alt.options.reduce((set, option) => union(set, firstOfSeq(option)), NONE);
+    return remembered(memo.first, alt, () => alt.options.reduce((set, option) => union(set, firstOfSeq(option)), NONE));
 }
 function firstOfSeq(items: Item[]): CharSet {
     let set = NONE;
@@ -272,10 +353,14 @@ function firstOfItem(item: Item): CharSet {
 function charsOfItem(item: Item): CharSet {
     if (item.atom.kind === "assert") return NONE;
     if (item.atom.kind === "set") return item.atom.set;
-    return item.atom.alt.options.flat().reduce((set, inner) => union(set, charsOfItem(inner)), NONE);
+    const { alt } = item.atom;
+    return remembered(memo.chars, item, () => alt.options.flat().reduce((set, inner) => union(set, charsOfItem(inner)), NONE));
 }
 /** The shortest and the longest string an item can match (the longest may be Infinity). */
 function lengthsOfItem(item: Item): [number, number] {
+    return remembered(memo.lengths, item, () => itemLengths(item));
+}
+function itemLengths(item: Item): [number, number] {
     let atom: [number, number];
     if (item.atom.kind === "assert") atom = [0, 0];
     else if (item.atom.kind === "set") atom = item.atom.nullable ? [0, Infinity] : [1, 1];
@@ -340,6 +425,9 @@ function checkRepeatedGroup(alt: Alt, max: number): void {
 
 function checkAlt(alt: Alt): void {
     for (const item of alt.options.flat()) {
+        spend();
+        // A lookaround's body is matched as any other part, and can backtrack as much (E2-R1: ^(?=(a+)+$)a*$).
+        if (item.atom.kind === "assert") { if (item.atom.body) checkAlt(item.atom.body); continue; }
         if (item.atom.kind !== "group") continue;
         if (item.max >= 2) checkRepeatedGroup(item.atom.alt, item.max);
         checkAlt(item.atom.alt);
@@ -352,12 +440,18 @@ function checkAlt(alt: Alt): void {
  * engine is added). It is parsed, and each group that can repeat is checked: its alternatives must start with
  * different characters (all of each alternative's possible first characters, nested groups included), and an item
  * of varying length in it must not be able to match the start of what follows it. Fixed counts ({2}) never vary, so
- * ^([0-9]{2}-){2}[0-9]{2}$ is accepted; ^((a|b)|aa)+$ and ^(a+)+$ are refused. Also refused: a pattern longer than
- * SCHEMA_PATTERN_MAX_LENGTH, unmatched parentheses or classes, and inline flags. Repeats side by side (a*a*) are
- * accepted: their cost grows as a power of the input, not exponentially (a known limit). Pure.
+ * ^([0-9]{2}-){2}[0-9]{2}$ is accepted; ^((a|b)|aa)+$ and ^(a+)+$ are refused. A lookaround's body is checked as any
+ * other part, a negated class is computed from its members ([^\D] is the digits), and a set the check cannot compute
+ * (a Unicode property) is taken to overlap every other (E2-R1). Modifier groups such as (?i:...) are groups without a
+ * capture; under i a letter matches its other case (E2-R5). Also refused: a pattern longer than
+ * SCHEMA_PATTERN_MAX_LENGTH, unmatched parentheses or classes, an unknown group or flag, and a pattern whose check
+ * would take more than a fixed amount of work. Repeats side by side (a*a*) are accepted: their cost grows as a power of
+ * the input, not exponentially (a known limit). Pure.
  */
 export function unsafeSchemaPattern(pattern: string): string | null {
     if (pattern.length > SCHEMA_PATTERN_MAX_LENGTH) return `a pattern may have at most ${SCHEMA_PATTERN_MAX_LENGTH} characters`;
+    work = 0;
+    memo = { nullable: new WeakMap(), first: new WeakMap(), chars: new WeakMap(), lengths: new WeakMap() };
     try {
         checkAlt(parsePattern(pattern));
         return null;
