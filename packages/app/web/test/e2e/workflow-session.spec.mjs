@@ -2315,3 +2315,95 @@ test("UI-6: saved places that arrive after the first fit are fitted once", async
     await expectFitted(graph);
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// Owed M-13 (verification of UI-1): two draft workflows at the same revision with different YAML, switched A -> B -> A
+// in the mounted portal, with B's read held while the switch happens. Each editor shows only its own workflow's YAML,
+// A's unsaved edit survives the round trip, and each Save sends its own workflow's text to its own workflow.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "M-13" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const WORKFLOW_B = "77777777-2222-3333-4444-555555555556";
+test("M-13: switching A -> B -> A at equal revisions never shows or saves one workflow's YAML in the other", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const yamlA = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-a, version: 1.0.0 }\n# A\n";
+    const yamlB = "apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-b, version: 1.0.0 }\n# B\n";
+    const models = { [WORKFLOW_ID]: { ...draftModel(1, yamlA), workflowId: WORKFLOW_ID }, [WORKFLOW_B]: { ...draftModel(1, yamlB), workflowId: WORKFLOW_B } };
+    let holdB = null;
+    const saves = [];
+    await routeApi(page, {
+        workflowEvents: V2_EVENTS,
+        workflowState: { title: "Workflow: watch-a", status: "running" },
+        onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: models[WORKFLOW_ID] } }),
+    });
+    // Workflow B beside A: its row, its events and its read (held while `holdB` is set), and the commands of both.
+    const rowB = { sessionId: WORKFLOW_B, title: "Workflow: watch-b", status: "running", sessionKind: "workflow", parentSessionId: AGENT_ID,
+        createdAt: now - 20_000, updatedAt: now - 10_000 };
+    await page.route("**/api/v1/**", async (route) => {
+        const req = route.request();
+        const pathname = new URL(req.url()).pathname;
+        const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        const sessions = [...SESSIONS.map(session => session.sessionId === WORKFLOW_ID ? { ...session, title: "Workflow: watch-a", status: "running" } : session), rowB];
+        if (pathname.endsWith("/management/sessions")) return answer({ sessions, hasMore: false, nextCursor: null });
+        if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions, hasMore: false });
+        if (pathname.endsWith(`/sessions/${WORKFLOW_B}/workflow`) && req.method() === "GET") {
+            if (holdB) await holdB.promise;
+            return answer(models[WORKFLOW_B]);
+        }
+        if (pathname.includes(`/sessions/${WORKFLOW_B}/events`)) return answer([{ ...V2_EVENTS[0], sessionId: WORKFLOW_B }]);
+        if (pathname.endsWith(`/sessions/${WORKFLOW_B}`)) return answer({ ...rowB, events: [], messages: [] });
+        const command = /\/sessions\/([^/]+)\/workflow\/commands$/.exec(pathname);
+        if (command && req.method() === "POST") {
+            saves.push({ sessionId: command[1], command: req.postDataJSON().command });
+            return answer({ revision: 2, valid: true, diagnostics: [] });
+        }
+        return route.fallback();
+    });
+    const main = page.locator(".ps-workflow-main");
+    const editor = main.getByRole("region", { name: "Draft editor", exact: true });
+    const box = editor.getByRole("textbox", { name: "Workflow YAML", exact: true });
+    const yamlTab = () => workflowTabs(main).getByRole("tab", { name: "YAML", exact: true });
+
+    // B first, on its YAML tab (the tab is kept per workflow), clean.
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_B}`);
+    await yamlTab().click();
+    await expect(box).toHaveValue(yamlB);
+    // A, on its YAML tab, with an unsaved edit.
+    await openSession(page, "Workflow: watch-a");
+    await yamlTab().click();
+    await expect(box).toHaveValue(yamlA);
+    const editedA = `${yamlA}# edited in A\n`;
+    await box.fill(editedA);
+    await expect(editor.locator(".ps-workflow-yaml-strip").getByRole("status")).toHaveText("Unsaved changes");
+
+    // B again while its read is held: its editor shows its own YAML, before and after the read, never A's.
+    let release;
+    holdB = { promise: new Promise(resolve => { release = resolve; }) };
+    await openSession(page, "Workflow: watch-b");
+    await expect(editor).toBeVisible();
+    await expect(box).toHaveValue(yamlB);
+    release();
+    holdB = null;
+    await page.waitForTimeout(300);
+    await expect(box).toHaveValue(yamlB);
+    await expect(editor.locator(".ps-workflow-yaml-strip").getByRole("status")).toHaveCount(0);
+    // B's own edit, saved: the payload is B's text, at B's revision, to B.
+    const editedB = `${yamlB}# edited in B\n`;
+    await box.fill(editedB);
+    await editor.locator('[data-operation="replace_definition"]').click();
+    await expect.poll(() => saves.length).toBe(1);
+    expect(saves[0]).toEqual({ sessionId: WORKFLOW_B,
+        command: { operation: "replace_definition", operation_id: expect.stringMatching(/^ui-replace_definition-/), expected_revision: 1, yaml: editedB } });
+
+    // A again: its unsaved edit came back, and its Save sends A's text to A.
+    await openSession(page, "Workflow: watch-a");
+    await expect(box).toHaveValue(editedA);
+    await expect(editor.locator(".ps-workflow-yaml-strip").getByRole("status")).toHaveText("Unsaved changes");
+    await editor.locator('[data-operation="replace_definition"]').click();
+    await expect.poll(() => saves.length).toBe(2);
+    expect(saves[1]).toEqual({ sessionId: WORKFLOW_ID,
+        command: { operation: "replace_definition", operation_id: expect.stringMatching(/^ui-replace_definition-/), expected_revision: 1, yaml: editedA } });
+    expect(saves.every(save => !(save.sessionId === WORKFLOW_B && save.command.yaml.includes("# A")) && !(save.sessionId === WORKFLOW_ID && save.command.yaml.includes("# B")))).toBe(true);
+    expect(errors).toEqual([]);
+});
