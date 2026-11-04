@@ -242,6 +242,21 @@ graph:
 
 `workflow-reference` shows both in its review fan-out example.
 
+## 13. Follow a run
+
+- A `[SYSTEM: A child workflow ended ...]` message means the run ended. Tell
+  the user the result in one or two sentences from its JSON (status,
+  outcome, final state, output or error). Do not start another run.
+- For a status question, use `read_workflow` for that workflow (its run),
+  not `list_sessions`.
+- If notifications are off (`definition.notifyOnCompletion` is false),
+  nothing will arrive: read the run with `read_workflow` when the user asks.
+- If a status read fails, quote the actual error (its code and message) and
+  try once more; if it fails again, report it plainly.
+- Starting a live run (`start`, `publish_and_start`) turns the notification
+  on, even after `spawn_workflow` with `notify_on_completion: false`; pass
+  `notify_on_completion: false` to the start to keep it off.
+
 ## Example: wait for an event or poll
 
 ```yaml

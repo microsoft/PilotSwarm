@@ -217,7 +217,8 @@ shows it as `definition.notifyOnCompletion`.
 `include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
 rows), `execution_id?` (its whole result). Shows the graph, runs, a
 run's newest rows (open ones apart), KV, stop, `agent.childSessionId`,
-branches, tests.
+branches, tests. It is how you follow a run (`workflow-authoring`, Follow
+a run): use it, not `list_sessions`, for a workflow's status.
 
 `send_workflow_input`: `workflow_id`, `contract`, `payload`,
 `correlation?`, `run_id?`, `ttl_seconds?` (1 to 86,400, the default),
