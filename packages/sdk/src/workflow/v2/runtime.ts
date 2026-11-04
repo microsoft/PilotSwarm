@@ -1170,6 +1170,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     const plan = parsePlan(yield* storeTagged(ctx, R.plan, { runId: input.runId, irSha256: state.irSha256 }), true);
     let admittedThisExecution = 0;
     let idleWaits = 0;
+    // The agent states whose child this execution ended while the run was paused (RT-6 verification; not carried by
+    // continue-as-new: ending a child again is a no-op).
+    const pausedEnded = new Set<string>();
     // When the waiting requests' responders were last observed (once per backstop period; not carried by continue-as-new).
     let observedAtMs: number | null = null;
     // The run's accepted stop, as the store last reported its deadline (not carried by continue-as-new: a stop is never
@@ -1389,12 +1392,39 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         if (rerouted) continue;
 
         // 1a. Paused, as 1.8.0: nothing is admitted and no result is routed until the resume. The deadlines keep running
-        // (adversarial review RT-6): the run's (D03), and each pending state's own. A pending state past its deadline is
-        // elapsed now (the store's clock decides) and an agent state's child is ended now; its result is routed after the
-        // resume, as any other. The paused timer wakes at the nearest deadline.
+        // (adversarial review RT-6 and its verification): the run's (D03), and each pending state's own. A pending state
+        // past its deadline is elapsed now (the store's clock decides). An agent state decided while paused (its typed
+        // completion, or its deadline) is collected now and its child is ended now; its result is routed after the
+        // resume, as any other. Until its child's end is recorded the state is collected again at each wake (at most a
+        // backstop period apart), so a failed end is tried again while paused. The paused timer wakes at the nearest
+        // deadline.
         if (paused) {
             publishStatus(ctx, input, plan, state, "waiting");
             let pausedTimerMs = plan.wakeBackstopMs;
+            const realAgent = (nodeId: string): boolean => plan.nodes[nodeId]?.type === "agent" && (plan.test !== true || plan.realAgents === true);
+            const pendingAgents = state.cursors.flatMap(cursor => cursor.pending !== null && realAgent(cursor.nodeId) && !pausedEnded.has(cursor.pending)
+                ? [cursor.pending] : []);
+            if (pendingAgents.length > 0) {
+                // A stop is seen by the next admission; only the results and the run's own deadline matter here.
+                const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingAgents }));
+                if (collection.expired) {
+                    const expired = yield* expireRun();
+                    if (expired !== null) return expired;
+                    continue;
+                }
+                for (const result of collection.collected) {
+                    try {
+                        yield* storeTagged(ctx, R.endAgent, { runId: input.runId, nodeExecutionId: result.nodeExecutionId });
+                    } catch (error) {
+                        ctx.traceWarn(`[workflow-v2] run=${input.runId} the child of ${result.nodeExecutionId} was not ended yet: ${workflowErrorMessage(error)}`);
+                        continue;
+                    }
+                    pausedEnded.add(result.nodeExecutionId);
+                    // Its end is recorded: its deadline has nothing left to decide.
+                    const owner = state.cursors.find(cursor => cursor.pending === result.nodeExecutionId);
+                    if (owner !== undefined) owner.deadlineMs = null;
+                }
+            }
             const nodeDeadlines = state.cursors.flatMap(cursor => cursor.pending !== null && cursor.deadlineMs !== null
                 ? [{ nodeExecutionId: cursor.pending, deadlineMs: cursor.deadlineMs }] : []);
             if (runDeadlineMs !== null || nodeDeadlines.length > 0) {
@@ -1416,15 +1446,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                             owner.deadlineMs = reported + later.remainingMs;
                             continue;
                         }
-                        // Decided by its deadline: its result waits for the resume; it is not elapsed again.
+                        // Decided by its deadline: its result waits for the resume. An agent state's child is ended by the
+                        // collection above, at once (this pass continues), and again at each wake until its end is recorded.
                         owner.deadlineMs = null;
-                        if (plan.nodes[owner.nodeId]?.type === "agent" && (plan.test !== true || plan.realAgents === true)) {
-                            try {
-                                yield* storeTagged(ctx, R.endAgent, { runId: input.runId, nodeExecutionId });
-                            } catch (error) {
-                                ctx.traceWarn(`[workflow-v2] run=${input.runId} the child of ${nodeExecutionId} was not ended yet: ${workflowErrorMessage(error)}`);
-                            }
-                        }
                     }
                     continue;
                 }

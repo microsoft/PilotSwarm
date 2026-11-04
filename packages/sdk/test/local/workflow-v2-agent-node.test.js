@@ -17,7 +17,10 @@
  *   its typed completion routes the state and its session is told done; its
  *   deadline routes timed_out and its session is cancelled; a host refusal
  *   and a worker without a host fail the state; a cancel of the run cancels
- *   the child.
+ *   the child; while the run is paused (verification of RT-6), an agent state
+ *   decided by its completion or its deadline has its child ended at once, a
+ *   failed end is tried again while paused, and nothing is routed or
+ *   admitted until the resume.
  *
  * The child session is a test double (an orchestration that records the
  * messages its queue gets); the test completes the state through the real
@@ -589,6 +592,142 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
                 .toMatchObject({ outcome: "unavailable", error: { message: "This worker creates no agent sessions for workflow agent states." } });
         } finally {
             await bare.stop();
+        }
+    });
+});
+
+/**
+ * Two branches, each one agent state (verification of RT-6, M-12): agent states while the run is paused. A branch's
+ * result routed before the pause takes effect puts the controller on its paused path (its next state is refused); the
+ * other branch's agent state is then decided while the run is paused.
+ */
+const PAUSED_AGENTS_YAML = ({ timeoutSeconds = 3600 } = {}) => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: paused-reviewers, version: "1.0.0" }
+initialInput: { items: [a, b] }
+initial: fan
+schemas:
+  ReviewResult: { type: object, required: [verdict], properties: { verdict: { type: string } }, additionalProperties: false }
+states:
+  fan:
+    type: parallel
+    forEach: "\${input.items}"
+    concurrency: 2
+    body:
+      initial: review
+      states:
+        review:
+          type: agent
+          invoke: { prompt: "${TASK}" }
+          outputSchema: { $ref: "#/schemas/ReviewResult" }
+          timeoutSeconds: ${timeoutSeconds}
+          transition: { next: { accepted: done, changes_required: done, needs_input: done, timed_out: done, failure: done } }
+        done: { type: terminal, outcome: succeeded, output: "\${branch.item}" }
+    transition: { next: { joined: finished, blocked: stuck, failure: failed } }
+  finished: { type: terminal, outcome: succeeded, output: "\${input}" }
+  stuck: { type: terminal, outcome: blocked, output: "\${input}" }
+  failed: { type: terminal, outcome: failed }
+`;
+
+/** Both children of a PAUSED_AGENTS_YAML run, spawned and recorded. */
+async function bothChildren(h, already = 0) {
+    const spawns = await until(async () => (h.spawns.length >= already + 2 ? h.spawns.slice(already, already + 2) : null), "both children");
+    for (const spawn of spawns) {
+        await until(async () => (await h.store.readAgentInvocation(spawn.nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
+    }
+    return spawns;
+}
+
+const pauseRun = (h, workflowSessionId) => controlWorkflowV2Run(h.host, workflowSessionId, { operation: "pause", runId: null, reason: "look first" },
+    { actor: ACTOR, operationId: "pause-1" });
+const resumeRun = (h, workflowSessionId) => controlWorkflowV2Run(h.host, workflowSessionId, { operation: "resume", runId: null, reason: null },
+    { actor: ACTOR, operationId: "resume-1" });
+/** Nothing after the agent states was admitted, and nothing was routed to the join. */
+const nothingAdmitted = async (h, runId) => {
+    expect((await h.store.readRun(runId)).status).toBe("paused");
+    expect((await h.store.listNodeExecutions(runId)).map(node => node.nodeId).sort()).toEqual(["fan", "review", "review"]);
+};
+
+describe("workflow v2 agent states while the run is paused (verification of RT-6; controller 1.9.0, test-only)", () => {
+    it("ends the child of an agent state that completes while the run is paused, routes its result only after the resume, and cancels the children of a paused run that is cancelled", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, PAUSED_AGENTS_YAML());
+            const [first, second] = await bothChildren(h);
+            await pauseRun(h, workflowSessionId);
+            // The first branch's result is routed and its child is told done (as before the pause took effect); its next
+            // state is refused, so the controller is on its paused path once the child has the command.
+            expect(await completeAs(h, first.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }))
+                .toMatchObject({ ok: true, outcome: "accepted" });
+            expect(await lifecycleCommand(h, first.childSessionId)).toMatchObject({ cmd: "done" });
+            // The second branch's agent completes while the run is paused: its child is told done now, not at the resume.
+            expect(await completeAs(h, second.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-2" }))
+                .toMatchObject({ ok: true, outcome: "accepted" });
+            expect(await lifecycleCommand(h, second.childSessionId))
+                .toMatchObject({ cmd: "done", id: `workflow-agent-end:${second.nodeExecutionId}` });
+            expect(await h.store.readAgentInvocation(second.nodeExecutionId)).toMatchObject({ endRequested: "done", endSentAt: expect.any(Date) });
+            await pause(1_500);
+            await nothingAdmitted(h, runId);
+
+            await resumeRun(h, workflowSessionId);
+            expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: ["a", "b"] });
+            // Each child was ended once: the end at the resume's routing found it ended.
+            const events = await h.catalog.getSessionEvents(workflowSessionId, 0, 500);
+            expect(events.filter(event => event.eventType === "workflow.agent_ended").map(event => event.data.nodeExecutionId).sort())
+                .toEqual([first.nodeExecutionId, second.nodeExecutionId].sort());
+
+            // A paused run that is cancelled: both working children are cancelled.
+            const cancelled = await started(h, PAUSED_AGENTS_YAML());
+            const children = await bothChildren(h, 2);
+            await pauseRun(h, cancelled.workflowSessionId);
+            await controlWorkflowV2Run(h.host, cancelled.workflowSessionId, { operation: "cancel", runId: null, reason: "not needed" },
+                { actor: ACTOR, operationId: "cancel-1" });
+            expect(await ended(h, cancelled.runId)).toMatchObject({ status: "cancelled" });
+            for (const child of children) expect(await lifecycleCommand(h, child.childSessionId)).toMatchObject({ cmd: "cancel" });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("times out an agent state whose deadline passes while the run is paused, and tries its child's failed end again while still paused", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, PAUSED_AGENTS_YAML({ timeoutSeconds: 6 }));
+            const [first, second] = await bothChildren(h);
+            // The end of the second child fails (every attempt of the activity) until the store is restored.
+            const recordAgentEnd = h.store.recordAgentEnd.bind(h.store);
+            const blocked = { on: true, attempts: 0 };
+            h.store.recordAgentEnd = async (nodeExecutionId, end) => {
+                if (nodeExecutionId === second.nodeExecutionId && blocked.on) {
+                    blocked.attempts += 1;
+                    throw new Error("The store is not available (test).");
+                }
+                return await recordAgentEnd(nodeExecutionId, end);
+            };
+            await pauseRun(h, workflowSessionId);
+            expect(await completeAs(h, first.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }))
+                .toMatchObject({ ok: true });
+            expect(await lifecycleCommand(h, first.childSessionId)).toMatchObject({ cmd: "done" });
+
+            // The second state's deadline passes while the run is paused: it is timed_out now, and its child's end is tried
+            // until the activity's attempts are spent (one attempt and four retries).
+            await until(async () => (await h.store.readNodeExecution(second.nodeExecutionId))?.state === "completed", "the deadline to elapse while paused");
+            expect(await h.store.readNodeExecution(second.nodeExecutionId)).toMatchObject({ outcome: "timed_out", winner: "controller" });
+            await until(async () => blocked.attempts >= 5 || null, "the end's attempts to be spent", 60_000);
+            expect((await childMessages(h, second.childSessionId)).filter(message => message?.type === "cmd")).toEqual([]);
+            await nothingAdmitted(h, runId);
+
+            // The store is restored while the run is still paused: the end is tried again and the child is cancelled.
+            blocked.on = false;
+            expect(await lifecycleCommand(h, second.childSessionId)).toMatchObject({ cmd: "cancel", id: `workflow-agent-end:${second.nodeExecutionId}` });
+            expect(await h.store.readAgentInvocation(second.nodeExecutionId)).toMatchObject({ endRequested: "cancel", endSentAt: expect.any(Date) });
+            await nothingAdmitted(h, runId);
+
+            await resumeRun(h, workflowSessionId);
+            expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: ["a", "b"] });
+        } finally {
+            await h.stop();
         }
     });
 });
