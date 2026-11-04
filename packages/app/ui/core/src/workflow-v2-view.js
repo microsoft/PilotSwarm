@@ -653,7 +653,9 @@ function collectExecutions(events, runId, run, overlay) {
             add({ id: row.nodeExecutionId, stateId: row.stateId, ordinal: Number.isSafeInteger(row.ordinal) ? row.ordinal : undefined,
                 status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
                 errorPreview: row.errorPreview, winner: text(row.winner), attempts: Number.isSafeInteger(row.attempts) ? row.attempts : undefined,
-                kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), receive: isRecord(row.receive) ? row.receive : undefined,
+                kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), completedAt: text(row.completedAt),
+                predecessorId: text(row.predecessorId),
+                receive: isRecord(row.receive) ? row.receive : undefined,
                 agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
                 scopeId: text(row.scopeId), branch: isRecord(row.branch) ? row.branch : undefined,
                 branches: Number.isSafeInteger(row.branches) ? row.branches : undefined }, "read");
@@ -826,6 +828,10 @@ function visitStatus(node, execution, run) {
         return { state: "running", phase: kind === "script" ? "running" : "waiting", stateLabel: pendingText(kind, execution) };
     }
     const ended = { outcome: execution.outcome, resultKind: execution.resultKind };
+    // A parallel step's own time limit (owner decision join-k-of-n) passed before its join.
+    if (kind === "parallel" && execution.resultKind === "runtime_error" && execution.outcome === "timed_out") {
+        return { ...ended, state: "failed", phase: "error", stateLabel: "Time limit passed before the join" };
+    }
     if (execution.resultKind === "runtime_error") {
         return { ...ended, state: "failed", phase: "error",
             stateLabel: `Runtime error${execution.outcome ? ` · ${execution.outcome}` : execution.effectStatus ? ` · action ${execution.effectStatus}` : ""}` };
@@ -834,6 +840,16 @@ function visitStatus(node, execution, run) {
         return { ...ended, outcome: node.outcome, state: node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done",
             phase: "done", stateLabel: `Ended · ${node.outcome}` };
     }
+    // A join of the first k (owner decision join-k-of-n) says how many it took; a join blocked at its time limit says so
+    // (J1b, Q3: k could no longer happen by then).
+    const first = kind === "parallel" ? workflowV2JoinFirst(node) : null;
+    const atLimit = kind === "parallel" && execution.outcome === "blocked" && workflowV2DecidedAtLimit(execution) ? " · the time limit passed" : "";
+    if (execution.resultKind === "business" && first !== null && (execution.outcome === "joined" || execution.outcome === "blocked")) {
+        return { ...ended, state: "done", phase: "done", stateLabel: execution.outcome === "joined"
+            ? `Joined · the first ${first === 1 ? "branch" : `${first} branches`} succeeded`
+            : `Blocked · ${first === 1 ? "no branch" : `fewer than ${first} branches`} could succeed${atLimit}` };
+    }
+    if (atLimit && execution.resultKind === "business") return { ...ended, state: "done", phase: "done", stateLabel: `${outcomeText(kind, execution.outcome)}${atLimit}` };
     if (execution.resultKind === "business") return { ...ended, state: "done", phase: "done", stateLabel: outcomeText(kind, execution.outcome) };
     return { ...ended, state: "done", phase: "unclassified", stateLabel: "Completed · how it ended was not recorded" };
 }
@@ -870,7 +886,7 @@ function nodeView(node, executions, context) {
         outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined), resultKind,
         result, pending: pending || null, current: pending || latestDone || null, executions: history,
         description: [...describeWorkflowV2Execution(node, pending || latestDone), ...branchProgressLines(node, pending || latestDone, context)],
-        ...(node.type === "parallel" ? { evidence: workflowV2BranchEvidence(context.executions, context.states, pending || latestDone, context.complete) } : {}),
+        ...(node.type === "parallel" ? { evidence: workflowV2BranchEvidence(context.executions, context.states, pending || latestDone, context.complete, node) } : {}),
     };
     // Owner batch 7 (H2): a parallel step's branch box and join bar; a branch step's visit in each branch, for its picker.
     if (node.type === "parallel") view.joinBar = workflowV2JoinView(view, context);
@@ -1196,7 +1212,12 @@ function branchProgressLines(node, execution, context) {
         const queued = Math.max(0, execution.branches - progress.started);
         return [`Branches now${note}: ${progress.active} active, ${queued} queued, ${progress.started - progress.active} ended.`];
     }
-    if (execution.outcome === "blocked") return [`Join blocked${note}: ${progress.succeeded} of ${execution.branches} branches succeeded.`];
+    if (execution.outcome === "blocked") {
+        // A join of the first k (owner decision join-k-of-n) says how many it needed; J1b: that its time limit passed.
+        const first = workflowV2JoinFirst(node);
+        return [`Join blocked${note}: ${progress.succeeded} of ${execution.branches} branches succeeded${first !== null ? `; it needed ${first}` : ""}`
+            + `${workflowV2DecidedAtLimit(execution) ? "; the time limit passed" : ""}.`];
+    }
     return [];
 }
 
@@ -1251,27 +1272,101 @@ function shownVisit(list) {
     return { pending: pending ?? null, latestDone: latestDone ?? null };
 }
 
-const JOIN_WORDS = { waiting: "waiting for its branches", joined: "joined", blocked: "blocked", failed: "failed", cancelled: "ended early" };
+const JOIN_WORDS = { waiting: "waiting for its branches", joined: "joined", blocked: "blocked", failed: "failed", cancelled: "ended early",
+    timed_out: "time limit passed" };
+
+/** The k of a parallel step's join of the first k (owner decision join-k-of-n, IR 9); null for a join of every branch. Pure. */
+export function workflowV2JoinFirst(node) {
+    const first = isRecord(node?.join) ? node.join.first : null;
+    return Number.isSafeInteger(first) && first >= 1 ? first : null;
+}
+
+/** How many items a parallel step runs when the graph or its shown visit says it (a literal list's count, or the visit's branches); else null. Pure. */
+function joinItems(node, visit) {
+    if (Number.isSafeInteger(visit?.branches)) return visit.branches;
+    return isRecord(node?.forEach) && Number.isSafeInteger(node.forEach.count) ? node.forEach.count : null;
+}
 
 /**
- * What a parallel step's branch box and join bar show (owner batch 7, H2): the join's `state` (idle, waiting, joined,
- * blocked, done, failed or cancelled, from the step's own state and outcome), its `rule` ("all required") and `label`
- * ("join · all required"), its `stateText`, and the box's label ("Each branch") with, while the step runs, its branches
- * now: `counts` { running, queued, done } and their `text`. `view` is the parallel step's node view. The join shows no
- * time limit: the engine has none for it. Pure.
+ * A parallel step's join rule as people read it (owner decision join-k-of-n): "all required" for every branch; "first
+ * success" for the first 1; "first 2 of 5" when the items are known (a literal list, or the shown visit's), else
+ * "first 2". Pure.
+ */
+export function workflowV2JoinRule(node, visit = null) {
+    const first = workflowV2JoinFirst(node);
+    if (first === null) return "all required";
+    if (first === 1) return "first success";
+    const items = joinItems(node, visit);
+    return items === null ? `first ${first}` : `first ${first} of ${items}`;
+}
+
+/**
+ * The join rule in words, for a parallel step's details (owner decision join-k-of-n): who must succeed, what happens to
+ * the others, and failFast. Pure.
+ */
+export function workflowV2JoinWords(node) {
+    const first = workflowV2JoinFirst(node);
+    const rule = first === null ? "Every branch must succeed"
+        : first === 1 ? "The first branch to succeed joins; the others are cancelled"
+            : `The first ${first} branches to succeed join; the others are cancelled`;
+    if (!node?.failFast) return rule;
+    return `${rule} · ${first === null ? "the first failure cancels the others" : "once the join can no longer succeed, the others are cancelled"}`;
+}
+
+/**
+ * A parallel step's own time limit (owner decision join-k-of-n, IR 9; the engine enforces it), as people read it: null
+ * without one; else `{ text, title }`. It says "time limit 30 s" (or "time limit from the input" for a binding), and
+ * "time limit until <time>" while the shown visit waits with a deadline; once it timed out, the title says when it passed
+ * (the join's own words say that it did). Pure.
+ */
+export function workflowV2JoinLimit(node, visit = null, { running = false, timedOut = false } = {}) {
+    const seconds = node?.timeoutSeconds;
+    if (seconds === undefined || seconds === null) return null;
+    const length = typeof seconds === "number" ? formatSeconds(seconds) : null;
+    const from = length === null ? `set from the input (${String(seconds)}) when the step starts` : `${length} from the step's start`;
+    const deadline = typeof visit?.deadline === "string" ? workflowV2EventTime(visit.deadline) : null;
+    const text = length === null ? "time limit from the input" : `time limit ${length}`;
+    if (timedOut) return { text, title: `The time limit is ${from}. It passed before the join${deadline ? `, at ${deadline}` : ""}.` };
+    if (running && deadline) return { text: `time limit until ${deadline}`, title: `The time limit is ${from}: it passes at ${deadline}.` };
+    return { text, title: `The time limit is ${from}.` };
+}
+
+/**
+ * Whether a parallel step's visit was decided at or after its own time limit (owner decision join-k-of-n, J1b): its
+ * deadline and the time it ended, as the read model gives them (to the millisecond). A join decided then counted only
+ * the successes saved by the deadline. Pure.
+ */
+export function workflowV2DecidedAtLimit(execution) {
+    if (!isRecord(execution) || execution.status !== "completed") return false;
+    const deadline = typeof execution.deadline === "string" ? Date.parse(execution.deadline) : NaN;
+    const completed = typeof execution.completedAt === "string" ? Date.parse(execution.completedAt) : NaN;
+    return Number.isFinite(deadline) && Number.isFinite(completed) && completed >= deadline;
+}
+
+/**
+ * What a parallel step's branch box and join bar show (owner batch 7, H2; owner decision join-k-of-n): the join's
+ * `state` (idle, waiting, joined, blocked, done, failed, timed_out or cancelled, from the step's own state and outcome),
+ * its `rule` ("all required", "first success", "first 2 of 5") and `label` ("join · <rule>"), its `stateText`, its own
+ * time limit (`limit`: { text, title } from workflowV2JoinLimit; null without one), and the box's label ("Each branch")
+ * with, while the step runs, its branches now: `counts` { running, queued, done } and their `text`. `view` is the
+ * parallel step's node view. Pure.
  */
 export function workflowV2JoinView(view, context) {
     const visit = view.pending || view.result || null;
     const running = view.state === "running";
-    const state = running ? "waiting"
+    const timedOut = !running && view.result?.outcome === "timed_out" && view.result?.resultKind === "runtime_error";
+    // J1b (Q3): blocked at its time limit, because k could no longer happen by then.
+    const blockedAtLimit = !running && view.result?.outcome === "blocked" && workflowV2DecidedAtLimit(view.result);
+    const state = running ? "waiting" : timedOut ? "timed_out"
         : view.state === "done" ? (view.outcome === "joined" || view.outcome === "blocked" ? view.outcome : "done")
             : view.state === "failed" || view.state === "cancelled" ? view.state : "idle";
     const progress = running && visit ? context.branchProgress?.get(visit.id) ?? { started: 0, active: 0 } : null;
     const counts = progress && Number.isSafeInteger(visit.branches)
         ? { running: progress.active, queued: Math.max(0, visit.branches - progress.started), done: progress.started - progress.active } : null;
-    const rule = view.join === "all_required" || view.join === undefined ? "all required" : String(view.join);
+    const rule = workflowV2JoinRule(view, visit);
     return {
-        id: `join:${view.id}`, state, rule, label: `join · ${rule}`, stateText: JOIN_WORDS[state] ?? null,
+        id: `join:${view.id}`, state, rule, label: `join · ${rule}`, stateText: blockedAtLimit ? "blocked · time limit passed" : JOIN_WORDS[state] ?? null,
+        limit: workflowV2JoinLimit(view, visit, { running, timedOut: timedOut || blockedAtLimit }),
         group: { label: "Each branch", counts, text: counts ? `${counts.running} running · ${counts.queued} queued · ${counts.done} done` : null },
     };
 }
@@ -1518,7 +1613,12 @@ const WORKFLOW_EVENT_TEXT = {
     "workflow.response_wake_abandoned": {
         short: () => ({ text: "An answer arrived, but waking the run was not confirmed; the run collects the answer later", level: "warning" }),
     },
-    "workflow.branches_cancelled": { short: () => ({ text: "The other branches were cancelled", level: "warning" }) },
+    "workflow.branches_cancelled": {
+        // IR 9: why, when it is not failFast: the join had its successes, or the parallel step's own time limit passed.
+        short: data => ({ text: data.reason === "join" ? "The other branches were cancelled: the join had the successes it needs"
+            : data.reason === "timeout" ? "The running branches were cancelled: the parallel step's time limit passed"
+                : "The other branches were cancelled", level: "warning" }),
+    },
     "workflow.test_intercepted": {
         short: data => ({ text: `Call${text(data.operation) ? ` ${data.operation}` : ""}${text(data.tool) ? ` · ${data.tool}` : ""}${text(data.stateId) ? ` in ${stepOf(data)}` : ""}` }),
     },
@@ -1594,11 +1694,50 @@ export function workflowV2RunEnding(run, events = []) {
     return { status: run.status, why, who, at, text: `Why it ended: ${why}.${who ? ` Asked by ${who}.` : ""}${at ? ` (${at})` : ""}` };
 }
 
+/** How a branch cancelled by a branch-cancelling decision stands, by its step's winner (owner decision join-k-of-n). */
+const BRANCH_CANCELS = { join_timeout: "cancelled at time limit", join: "cancelled after the join", fail_fast: "cancelled" };
+/**
+ * A branch whose last step finished but whose next step never started (J1b "finished"; its result is kept): how it
+ * stands and why, by what came first: the time limit, the join, the join's block (failFast), or the run's own end ("").
+ */
+const FINISHED_BEFORE = {
+    join_timeout: { status: "finished before the time limit", why: "the time limit passed before its next step started" },
+    join: { status: "finished before the join", why: "the join already had the successes it needs, so its next step did not start" },
+    fail_fast: { status: "finished before the join was blocked", why: "the join was blocked, so its next step did not start" },
+    "": { status: "finished before the run ended", why: "the run ended before its next step started" },
+};
+
+/**
+ * A branch's last step among its loaded visits (review J1-R1): the one no other names as the step before it
+ * (`predecessorId`, which read_workflow gives a branch's steps); without that, the latest in the order the read lists
+ * them. Pure.
+ */
+function branchLast(list) {
+    const named = new Set(list.flatMap(item => typeof item.predecessorId === "string" ? [item.predecessorId] : []));
+    const ends = list.filter(item => !named.has(item.id));
+    return ends.length === 1 ? ends[0] : list[list.length - 1];
+}
+
+/**
+ * Whether a parallel step's visit ended after its own time limit passed (owner decision join-k-of-n, J1b): a branch of
+ * it was cancelled at the time limit, or it was decided at or after its deadline. Pure.
+ */
+function timeLimitPassed(parallel, executions) {
+    if (!isRecord(parallel) || parallel.status !== "completed") return false;
+    if (executions.some(execution => execution.winner === "join_timeout")) return true;
+    const deadline = typeof parallel.deadline === "string" ? Date.parse(parallel.deadline) : NaN;
+    const completed = typeof parallel.completedAt === "string" ? Date.parse(parallel.completedAt) : NaN;
+    return Number.isFinite(deadline) && Number.isFinite(completed) && completed >= deadline;
+}
+
 const VISIT_WINNERS = {
     cancel: "The run was cancelled while it ran",
     stop: "The run was stopped, and this step was still running when the time to finish ended",
     deadline: "The run's time limit passed",
     fail_fast: "Another branch failed, so this one was cancelled",
+    // Owner decision join-k-of-n (IR 9): a join of the first k that had its successes, and a parallel step's own time limit.
+    join: "The join already had the successes it needs, so this branch was cancelled",
+    join_timeout: "The parallel step's time limit passed, so this branch was cancelled",
 };
 
 /**
@@ -1657,15 +1796,23 @@ export function workflowV2SessionSubtree(byId, rootId, limit = 50) {
 
 /**
  * Each branch of one visit of a parallel step (owner decision q16; mocks M22 "JOIN BLOCKED k / n", M23 "Inspect
- * conflict", M24 "Inspect evidence"): by branch, where it is (running, succeeded, did not succeed, not started, or
- * queued while the visit runs), its last step, its outcome, a short result and, for a branch that did not succeed, why;
- * owner batch 7 (H2): its current step's deadline and, when that step is an agent step, its agent chat (`agent`, the
- * chat's session id). From the executions loaded (`complete`: whether every one is): a branch with none may only be
- * outside the loaded history. A blocked join names the branches that block it. { total, succeeded, running, queued,
- * blocked, blocking, rows }, or null when the visit names no branch count. `index` and `blocking` count from 0 (the
- * data's); people read them through workflowV2BranchNumber. Pure.
+ * conflict", M24 "Inspect evidence"): by branch, how it stands, its last step, its outcome, a short result and, for a
+ * branch that did not succeed, why; owner batch 7 (H2): its current step's deadline and, when that step is an agent
+ * step, its agent chat (`agent`, the chat's session id). Owner decision join-k-of-n: how it stands is running, queued,
+ * succeeded, succeeded after the time limit (J1b: it did not count), failed (it ended without success), cancelled at
+ * time limit (the parallel step's own time limit), cancelled after the join (a join of the first k had its successes),
+ * cancelled (another branch failed under failFast), finished before the time limit, before the join, before the join
+ * was blocked or before the run ended (J1b "finished": its last step finished and its result is kept, but its next step
+ * never started; one whose next step is a succeeded end, saved by the time limit, counts as a success), not started,
+ * or not in the loaded history. A branch's last step is the end of its chain of steps (review J1-R1). From the executions loaded (`complete`: whether every one is): a branch with none may only be outside the
+ * loaded history. A blocked join names the branches that block it; `needed` is how many successes the join needs
+ * (`node`, the parallel step, says its join; every branch without it); `timedOut` says the time limit ended it
+ * (timed_out, or blocked by then), and `joinedAfterLimit` that it joined after its time limit passed. { total, needed,
+ * succeeded, running, queued, blocked, timedOut, joinedAfterLimit, blocking, rows }, or null when the visit names no
+ * branch count.
+ * `index` and `blocking` count from 0 (the data's); people read them through workflowV2BranchNumber. Pure.
  */
-export function workflowV2BranchEvidence(executions, states, parallel, complete = true) {
+export function workflowV2BranchEvidence(executions, states, parallel, complete = true, node = null) {
     if (!isRecord(parallel) || !Number.isSafeInteger(parallel.branches) || parallel.branches < 0) return null;
     const byId = new Map((Array.isArray(states) ? states : []).filter(isRecord).map(state => [state.id, state]));
     const groups = new Map();
@@ -1676,6 +1823,17 @@ export function workflowV2BranchEvidence(executions, states, parallel, complete 
         groups.get(branch.index).push(execution);
     }
     const rows = [];
+    // The branches whose success counts: succeeded ones, and (J1b) finished ones whose next step is a succeeded end.
+    const counted = new Set();
+    const visited = [...groups.values()].flat();
+    const limitPassed = timeLimitPassed(parallel, visited);
+    const deadlineMs = typeof parallel.deadline === "string" ? Date.parse(parallel.deadline) : NaN;
+    // What cut a branch between two of its steps: the parallel step's time limit (after it no branch starts a new step,
+    // J1b), its join, or failFast's block; else the run's own end.
+    const cutWinner = parallel.status !== "completed" ? null
+        : parallel.outcome === "timed_out" || (limitPassed && (parallel.outcome === "joined"
+            || (parallel.outcome === "blocked" && !visited.some(execution => execution.winner === "fail_fast")))) ? "join_timeout"
+            : parallel.outcome === "joined" ? "join" : parallel.outcome === "blocked" ? "fail_fast" : "";
     for (let index = 0; index < parallel.branches; index += 1) {
         const list = (groups.get(index) ?? []).slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
         if (!list.length) {
@@ -1684,18 +1842,42 @@ export function workflowV2BranchEvidence(executions, states, parallel, complete 
             continue;
         }
         const pending = list.find(item => item.status === "pending") ?? null;
-        const last = pending ?? list[list.length - 1];
+        const last = pending ?? branchLast(list);
         const state = byId.get(last.stateId);
         const terminal = state?.type === "terminal";
         const succeeded = !pending && terminal && state.outcome === "succeeded";
         const error = parsedJson(last.errorPreview);
-        const why = pending || succeeded ? null
-            : terminal ? `It ended at '${last.stateId}' (${state.outcome})`
-                : VISIT_WINNERS[last.winner] ?? (last.resultKind === "runtime_error"
-                    ? `A runtime error (${last.outcome ?? text(error?.code) ?? "not recorded"})${because(error?.message)}`
-                    : `It stopped at step '${last.stateId}'`);
+        // A step whose result takes one of its routes: its branch went on (between two of its steps), or was cut there.
+        const route = !pending && !terminal && typeof last.outcome === "string" && isRecord(state?.next)
+            ? (Object.hasOwn(state.next, last.outcome) ? last.outcome : last.resultKind === "runtime_error" && Object.hasOwn(state.next, "failure") ? "failure" : null)
+            : null;
+        const routed = route !== null;
+        const cancelledBy = typeof last.winner === "string" && Object.hasOwn(BRANCH_CANCELS, last.winner) ? BRANCH_CANCELS[last.winner] : null;
+        // Finished (J1b): its last step finished and its result is kept, but its next step never started: the time limit,
+        // the join or its block came first, or the run's own end.
+        const cut = cancelledBy === null && routed && parallel.status === "completed" ? cutWinner ?? "" : null;
+        // A success is saved when the work before its end finished: its last step, or the step before its terminal.
+        const work = terminal ? list.find(item => item.id === last.predecessorId) ?? list.filter(item => byId.get(item.stateId)?.type !== "terminal").at(-1) : last;
+        const inTime = !Number.isFinite(deadlineMs) || typeof work?.completedAt !== "string" || Date.parse(work.completedAt) <= deadlineMs;
+        // A success saved after the time limit did not count toward a join that did not happen.
+        const late = succeeded && parallel.status === "completed" && parallel.outcome !== "joined" && !inTime;
+        // A finished step whose route leads to a succeeded end, saved by the time limit, counts as a success (J1b).
+        const next = route !== null ? byId.get(state.next[route]) : null;
+        const finishedSuccess = cut !== null && next?.type === "terminal" && next.outcome === "succeeded" && inTime;
+        const status = pending || (routed && parallel.status === "pending") ? "running"
+            : late ? "succeeded after the time limit" : succeeded ? "succeeded"
+                : cancelledBy ?? (cut === null ? "failed" : FINISHED_BEFORE[cut].status);
+        if (status === "succeeded" || finishedSuccess) counted.add(index);
+        const why = status === "running" || status === "succeeded" ? null
+            : late ? "It succeeded after the time limit, so it did not count"
+                : terminal ? `It ended at '${last.stateId}' (${state.outcome})`
+                    : cut !== null ? `Its step '${last.stateId}' finished ('${last.outcome}'), but ${FINISHED_BEFORE[cut].why}`
+                        + `${finishedSuccess ? "; its success counts" : ""}`
+                        : VISIT_WINNERS[last.winner] ?? (last.resultKind === "runtime_error"
+                            ? `A runtime error (${last.outcome ?? text(error?.code) ?? "not recorded"})${because(error?.message)}`
+                            : `It stopped at step '${last.stateId}'`);
         const preview = typeof last.outputPreview === "string" && last.outputPreview && last.outputPreview !== "null" ? clipped(last.outputPreview, 160) : null;
-        rows.push({ index, status: pending ? "running" : succeeded ? "succeeded" : "did not succeed", step: last.stateId, outcome: last.outcome ?? null,
+        rows.push({ index, status, step: last.stateId, outcome: last.outcome ?? null,
             result: preview, why, deadline: pending && typeof pending.deadline === "string" && pending.deadline ? pending.deadline : null,
             // Its agent chat, once created (as the step's Agent session opens it).
             agent: isRecord(last.agent) && last.agent.spawned === true && typeof last.agent.childSessionId === "string" && last.agent.childSessionId
@@ -1703,8 +1885,13 @@ export function workflowV2BranchEvidence(executions, states, parallel, complete 
     }
     const blocked = parallel.status === "completed" && parallel.outcome === "blocked";
     const count = status => rows.filter(row => row.status === status).length;
+    const first = workflowV2JoinFirst(node);
     return {
-        total: parallel.branches, succeeded: count("succeeded"), running: count("running"), queued: count("queued"),
-        blocked, blocking: blocked ? rows.filter(row => row.status !== "succeeded").map(row => row.index) : [], rows,
+        total: parallel.branches, needed: first ?? parallel.branches, succeeded: counted.size, running: count("running"), queued: count("queued"),
+        // The time limit ended it: timed_out, or blocked once k could no longer happen by then (J1b, Q3).
+        blocked, timedOut: parallel.status === "completed" && (parallel.outcome === "timed_out" || (blocked && limitPassed)),
+        // It joined after its time limit passed: the successes saved before it still joined (J1b, Q1).
+        joinedAfterLimit: parallel.status === "completed" && parallel.outcome === "joined" && limitPassed,
+        blocking: blocked ? rows.filter(row => !counted.has(row.index)).map(row => row.index) : [], rows,
     };
 }

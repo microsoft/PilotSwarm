@@ -25,9 +25,10 @@ export const WORKFLOW_GRAPH_NODE_WIDTH = 202;
 export const WORKFLOW_GRAPH_NODE_HEIGHT = 66;
 /** The height of an edge's label box; its width follows the text drawn. */
 export const WORKFLOW_GRAPH_LABEL_HEIGHT = 20;
-/** A parallel step's join bar (H2): the bar and, under it, its rule and state. */
+/** A parallel step's join bar (H2): the bar and, under it, its rule and state, and a line for its own time limit when it has one. */
 export const WORKFLOW_GRAPH_JOIN_WIDTH = 280;
 export const WORKFLOW_GRAPH_JOIN_HEIGHT = 26;
+export const WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT = 40;
 /** A branch box (H2): the room at its sides and bottom, the room for its label above its steps, and the stack drawn behind it. */
 export const WORKFLOW_GRAPH_GROUP_PADDING = 20;
 export const WORKFLOW_GRAPH_GROUP_HEADER = 44;
@@ -318,7 +319,8 @@ export function layoutWorkflowGraphTB(definition) {
         keyOf.set(workflowGroupId(id), `g${index}`);
         sizes.set(workflowGroupId(id), { width: width + WORKFLOW_GRAPH_GROUP_STACK, height: height + WORKFLOW_GRAPH_GROUP_STACK });
         keyOf.set(workflowJoinId(id), `j${index}`);
-        sizes.set(workflowJoinId(id), { width: WORKFLOW_GRAPH_JOIN_WIDTH, height: WORKFLOW_GRAPH_JOIN_HEIGHT });
+        sizes.set(workflowJoinId(id), { width: WORKFLOW_GRAPH_JOIN_WIDTH,
+            height: byId.get(id).timeoutSeconds !== undefined ? WORKFLOW_GRAPH_JOIN_LIMIT_HEIGHT : WORKFLOW_GRAPH_JOIN_HEIGHT });
     });
     const links = mainEdges.map(edge => ({ v: keyOf.get(edge.from), w: keyOf.get(edge.to), width: edge.labelWidth,
         height: edge.labelWidth ? WORKFLOW_GRAPH_LABEL_HEIGHT : 0 }));

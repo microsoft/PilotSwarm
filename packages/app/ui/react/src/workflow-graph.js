@@ -69,23 +69,27 @@ export function WorkflowGroupBox({ group, node = null }) {
 }
 
 /**
- * A parallel step's join bar (owner batch 7, H2): where every branch meets, with its rule and its state. It is not a
- * step of its own: a click, Enter or Space selects the parallel step. `node` is the parallel step's view.
+ * A parallel step's join bar (owner batch 7, H2): where every branch meets, with its rule and its state, and (owner
+ * decision join-k-of-n) its own time limit. It is not a step of its own: a click, Enter or Space selects the parallel
+ * step. `node` is the parallel step's view.
  */
 export function WorkflowJoinBar({ join, node = null, selected = false, onSelect }) {
     const view = node?.joinBar ?? null;
     const rule = `${view?.label ?? "join · all required"}${view?.stateText ? ` · ${view.stateText}` : ""}`;
+    // Owner decision join-k-of-n: its own time limit, which the engine enforces, on a line of its own.
+    const limit = view?.limit ?? null;
     return h("div", {
         className: `ps-workflow-join is-${view?.state ?? "idle"}${selected ? " is-selected" : ""}`, "data-join": join.parallel, role: "button", tabIndex: 0,
-        "aria-label": `Join of ${join.parallel}: ${rule}. Inspect ${join.parallel}`, "aria-pressed": selected,
-        title: `${rule}. Every branch meets here; the parallel step's next steps leave from here.`,
+        "aria-label": `Join of ${join.parallel}: ${rule}${limit ? ` · ${limit.text}` : ""}. Inspect ${join.parallel}`, "aria-pressed": selected,
+        title: `${rule}. Every branch meets here; the parallel step's next steps leave from here.${limit ? ` ${limit.title}` : ""}`,
         onClick: () => onSelect(join.parallel),
         onKeyDown: event => {
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(join.parallel); }
         },
     },
     h("span", { className: "ps-workflow-join-bar", "aria-hidden": true }),
-    h("span", { className: "ps-workflow-join-rule" }, rule));
+    h("span", { className: "ps-workflow-join-rule" }, rule),
+    limit ? h("span", { className: "ps-workflow-join-limit" }, limit.text) : null);
 }
 
 /**

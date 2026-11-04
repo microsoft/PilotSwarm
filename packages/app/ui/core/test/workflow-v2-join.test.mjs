@@ -63,7 +63,7 @@ test("while it runs: the box counts its branches and the bar waits; once joined 
     const projection = running();
     const join = byId(projection, "fan").joinBar;
     assert.deepEqual(join, { id: "join:fan", state: "waiting", rule: "all required", label: "join · all required", stateText: "waiting for its branches",
-        group: { label: "Each branch", counts: { running: 2, queued: 1, done: 0 }, text: "2 running · 1 queued · 0 done" } });
+        limit: null, group: { label: "Each branch", counts: { running: 2, queued: 1, done: 0 }, text: "2 running · 1 queued · 0 done" } });
     // Only a parallel step has a join; a body step has its branches instead.
     assert.equal(byId(projection, "review").joinBar, undefined);
     assert.equal(byId(projection, "pause").branches, undefined);

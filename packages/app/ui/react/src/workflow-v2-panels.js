@@ -4,7 +4,7 @@ import {
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
     workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2ShownNotices, workflowV2VisitEnding, workflowV2WholeValue,
     describeWorkflowV2Execution, workflowV2BranchChoice, workflowV2BranchList, workflowV2BranchNumber, workflowV2BranchSteps, workflowV2ForEachText,
-    workflowV2RevisionErrorsText,
+    workflowV2RevisionErrorsText, workflowV2JoinWords,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -243,13 +243,20 @@ function AgentChild({ agent, openSession, subtree = [] }) {
  * index from 0.
  */
 function BranchEvidence({ evidence, openSession = null }) {
-    const counts = [`${evidence.succeeded} of ${evidence.total} branches succeeded`, evidence.running ? `${evidence.running} running` : null,
+    // A join of the first k (owner decision join-k-of-n) says how many it needs.
+    const needs = evidence.needed !== undefined && evidence.needed !== evidence.total ? `; the join needs ${evidence.needed}` : "";
+    const counts = [`${evidence.succeeded} of ${evidence.total} branches succeeded${needs}`, evidence.running ? `${evidence.running} running` : null,
         evidence.queued ? `${evidence.queued} queued` : null].filter(Boolean).join(", ");
     return h("div", { className: "ps-workflow-evidence", "aria-label": "Branches" },
         h("h3", null, "Branches"),
         h("p", { style: { margin: 0 } }, `${counts}.`),
         evidence.blocked && evidence.blocking.length ? h("p", { role: "status", "data-blocking": evidence.blocking.join(","), style: { margin: 0, color: TONES.warning } },
             `The join is blocked by ${workflowV2BranchList(evidence.blocking)}.`) : null,
+        evidence.timedOut ? h("p", { role: "status", "data-timed-out": "true", style: { margin: 0, color: TONES.warning } },
+            "The time limit passed before the join: the running branches were cancelled, and the queued ones did not start.") : null,
+        // J1b (Q1): successes saved before the time limit still join after it.
+        evidence.joinedAfterLimit ? h("p", { role: "status", "data-joined-after-limit": "true", style: { margin: 0 } },
+            "The time limit passed after enough branches succeeded: the join still used them, and the running branches were cancelled.") : null,
         evidence.rows.length ? h("table", null,
             h("thead", null, h("tr", null, ["#", "Current step", "Status", "Deadline", "Result", "Agent chat"].map(label => h("th", { key: label }, label)))),
             h("tbody", null, evidence.rows.map(row => h("tr", { key: row.index, "data-branch": row.index, "data-status": row.status },
@@ -262,8 +269,9 @@ function BranchEvidence({ evidence, openSession = null }) {
 
 /**
  * A parallel step's details (owner batch 7, H2): For each (where its items come from, never a literal list's values;
- * how many run at a time; the join rule), its Branch steps (each selects that step) and its Branches. No hooks: tests
- * call it as a function.
+ * how many run at a time; the join rule in words), its own time limit when it has one (owner decision join-k-of-n: its
+ * length, and when the shown visit's ends), its Branch steps (each selects that step) and its Branches. No hooks:
+ * tests call it as a function.
  */
 function ParallelSections({ selected, current, nodes, select, openSession }) {
     const property = (label, value) => h("div", { className: "ps-workflow-property", key: label }, h("span", null, label), h("strong", null, value));
@@ -272,7 +280,10 @@ function ParallelSections({ selected, current, nodes, select, openSession }) {
         h("h3", null, "For each"),
         property("Items", workflowV2ForEachText(selected.forEach)),
         property("At a time", selected.concurrency === 1 ? "One branch at a time" : `Up to ${selected.concurrency} branches at a time`),
-        property("Join", `${selected.join === "all_required" ? "Every branch must succeed" : String(selected.join)}${selected.failFast ? " · the first failure cancels the others" : ""}`),
+        property("Join", workflowV2JoinWords(selected)),
+        selected.timeoutSeconds !== undefined ? property("Time limit", typeof selected.timeoutSeconds === "number"
+            ? `${formatSeconds(selected.timeoutSeconds)} from the step's start` : `From the input when the step starts (${String(selected.timeoutSeconds)})`) : null,
+        selected.timeoutSeconds !== undefined && current?.deadline ? property("Time limit ends", workflowV2EventTime(current.deadline) ?? current.deadline) : null,
         Number.isSafeInteger(current?.branches) ? property("Branches", String(current.branches)) : null,
         steps.length ? h(React.Fragment, null,
             h("h3", null, "Branch steps"),

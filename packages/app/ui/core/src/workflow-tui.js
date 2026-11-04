@@ -5,6 +5,7 @@ import {
     compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
     workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue, workflowV2BranchList, workflowV2BranchNumber,
+    workflowV2JoinWords,
 } from "./workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
@@ -1279,14 +1280,14 @@ function nodeRow(entry, selected, idWidth, labelWidth, width) {
     ];
 }
 
-const JOIN_COLORS = { waiting: "yellow", joined: "green", done: "green", blocked: "red", failed: "red", cancelled: "gray", idle: "gray" };
+const JOIN_COLORS = { waiting: "yellow", joined: "green", done: "green", blocked: "red", failed: "red", timed_out: "red", cancelled: "gray", idle: "gray" };
 
 /**
  * A parallel step's join line in the list (owner batch 7, H2): after its branch steps, where every branch meets, with
  * its rule and its state. It is not a state: ↑↓ pass over it.
  */
 function joinRow(join, width) {
-    const text = `  ⋯ ${join.label}${join.stateText ? ` · ${join.stateText}` : ""}`;
+    const text = `  ⋯ ${join.label}${join.stateText ? ` · ${join.stateText}` : ""}${join.limit ? ` · ${join.limit.text}` : ""}`;
     return [{ text: bounded(text, Math.max(20, width)), color: JOIN_COLORS[join.state] ?? "gray" }];
 }
 
@@ -1550,14 +1551,22 @@ function detailLines(selection, width) {
             if (evidence.blocked && evidence.blocking.length) {
                 add(`  The join is blocked by ${workflowV2BranchList(evidence.blocking)}.`, "yellow");
             }
+            // Owner decision join-k-of-n (J1b): whether the time limit ended it, or passed after enough branches succeeded.
+            if (evidence.timedOut) add("  The time limit passed before the join.", "yellow");
+            if (evidence.joinedAfterLimit) add("  The time limit passed after enough branches succeeded; the join still used them.", "gray");
             for (const row of evidence.rows.slice(0, EVIDENCE_ROWS)) {
                 add(`  branch ${workflowV2BranchNumber(row.index)} · ${row.status}${row.step ? ` · at '${row.step}'` : ""}${row.why ? ` · ${row.why}` : row.result ? ` · ${row.result}` : ""}`,
-                    row.status === "did not succeed" ? "yellow" : "gray");
+                    row.status === "failed" || row.status.startsWith("cancelled") ? "yellow" : "gray");
             }
             if (evidence.rows.length > EVIDENCE_ROWS) add(`  … ${evidence.rows.length - EVIDENCE_ROWS} more branches (the portal lists them all)`, "gray");
         }
-        // A parallel step's join (owner batch 7, H2), as the portal's join bar says it.
-        if (node.joinBar) add(`Join: ${node.joinBar.rule}${node.joinBar.stateText ? ` · ${node.joinBar.stateText}` : ""}`, "cyan");
+        // A parallel step's join (owner batch 7, H2), as the portal's join bar says it, the rule in words and its own time
+        // limit (owner decision join-k-of-n).
+        if (node.joinBar) {
+            add(`Join: ${node.joinBar.rule}${node.joinBar.stateText ? ` · ${node.joinBar.stateText}` : ""}`, "cyan");
+            for (const text of wrapped(workflowV2JoinWords(node), Math.max(20, width), "  ")) add(text, "gray");
+            if (node.joinBar.limit) for (const text of wrapped(node.joinBar.limit.title, Math.max(20, width), "  ")) add(text, "gray");
+        }
     } else if (node.outcome) {
         add(`Last outcome: ${node.outcome}`);
     }

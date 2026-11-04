@@ -40,9 +40,10 @@ const model = () => readModel({ graph, nodeExecutions: [
 test("a parallel step's visit lists each branch, and a blocked join names the branches that block it", () => {
     const fan = projectWorkflowV2({ readModel: model() }).nodes.find(node => node.id === "fan");
     assert.deepEqual(fan.evidence, {
-        total: 3, succeeded: 1, running: 0, queued: 0, blocked: true, blocking: [1, 2], rows: [
+        // Owner decision join-k-of-n: how many successes the join needs (every branch here), and whether its time limit ended it.
+        total: 3, needed: 3, succeeded: 1, running: 0, queued: 0, blocked: true, timedOut: false, joinedAfterLimit: false, blocking: [1, 2], rows: [
             { index: 0, status: "succeeded", step: "branch_done", outcome: "succeeded", result: "{\"ok\":true}", why: null, deadline: null, agent: null },
-            { index: 1, status: "did not succeed", step: "work", outcome: "crashed", result: null, why: "A runtime error (crashed): exit code 1",
+            { index: 1, status: "failed", step: "work", outcome: "crashed", result: null, why: "A runtime error (crashed): exit code 1",
                 deadline: null, agent: null },
             { index: 2, status: "not started", step: null, outcome: null, result: null, why: null, deadline: null, agent: null },
         ],
@@ -56,7 +57,7 @@ test("a parallel step's visit lists each branch, and a blocked join names the br
     const running = workflowV2BranchEvidence(executions, [...states, { id: "failed_end", type: "terminal", outcome: "failed", parallel: "fan" }],
         { id: "nx-fan-1", status: "pending", branches: 4 }, false);
     assert.deepEqual(running.rows.map(row => [row.status, row.why]), [
-        ["running", null], ["did not succeed", "It ended at 'failed_end' (failed)"], ["did not succeed", "Another branch failed, so this one was cancelled"],
+        ["running", null], ["failed", "It ended at 'failed_end' (failed)"], ["cancelled", "Another branch failed, so this one was cancelled"],
         ["not in the loaded history", null]]);
     assert.deepEqual([running.running, running.blocked, running.blocking], [1, false, []]);
     // Owner batch 7 (H2): while the visit runs with its whole history loaded, a branch not begun is queued; a running
@@ -140,7 +141,7 @@ test("the portal shows a parallel step's branches and the three ways to ask the 
     assert.match(html, /aria-label="Branches"><h3>Branches<\/h3><p[^>]*>1 of 3 branches succeeded\.<\/p>/);
     assert.match(html, /<p role="status" data-blocking="1,2"[^>]*>The join is blocked by branches 2, 3\.<\/p>/);
     assert.match(html, /<th>#<\/th><th>Current step<\/th><th>Status<\/th><th>Deadline<\/th><th>Result<\/th><th>Agent chat<\/th>/);
-    assert.match(html, /<tr data-branch="1" data-status="did not succeed"><td>2<\/td><td>work<\/td><td>did not succeed<\/td><td>—<\/td><td>A runtime error \(crashed\): exit code 1<\/td><td>—<\/td><\/tr>/);
+    assert.match(html, /<tr data-branch="1" data-status="failed"><td>2<\/td><td>work<\/td><td>failed<\/td><td>—<\/td><td>A runtime error \(crashed\): exit code 1<\/td><td>—<\/td><\/tr>/);
     assert.match(html, /<tr data-branch="0" data-status="succeeded"><td>1<\/td><td>branch_done<\/td><td>succeeded<\/td><td>—<\/td><td>\{&quot;ok&quot;:true\}<\/td><td>—<\/td><\/tr>/);
     assert.match(html, /<tr data-branch="2" data-status="not started"><td>3<\/td><td>—<\/td><td>not started<\/td><td>—<\/td><td>—<\/td><td>—<\/td><\/tr>/);
     assert.match(html, /aria-label="Ask the parent agent"[^>]*><h3>Ask the parent agent<\/h3>/);
@@ -155,7 +156,7 @@ test("the TUI lists a parallel step's branch results and the branches that block
     const lines = selectWorkflowViewModal(h.store.getState(), 160, 80).detailsLines.map(line => line.text.trim());
     // People read branches from 1 (owner batch 7, H2).
     for (const line of ["Branch results: 1 of 3 succeeded", "The join is blocked by branches 2, 3.", "branch 1 · succeeded · at 'branch_done' · {\"ok\":true}",
-        "branch 2 · did not succeed · at 'work' · A runtime error (crashed): exit code 1", "branch 3 · not started"]) {
+        "branch 2 · failed · at 'work' · A runtime error (crashed): exit code 1", "branch 3 · not started"]) {
         assert.ok(lines.includes(line), `${line}\n${lines.join("\n")}`);
     }
 });

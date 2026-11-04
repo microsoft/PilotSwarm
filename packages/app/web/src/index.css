@@ -5338,7 +5338,7 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 }
 .ps-workflow-group.is-waiting { border-color: var(--ps-accent); }
 .ps-workflow-group.is-joined, .ps-workflow-group.is-done { border-color: var(--ps-success); }
-.ps-workflow-group.is-blocked, .ps-workflow-group.is-failed { border-color: var(--ps-danger); }
+.ps-workflow-group.is-blocked, .ps-workflow-group.is-failed, .ps-workflow-group.is-timed_out { border-color: var(--ps-danger); }
 .ps-workflow-group-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 8px 12px; pointer-events: auto; cursor: grab; }
 .ps-workflow-graph-static .ps-workflow-group-head { cursor: default; }
 .ps-workflow-group-label { flex: none; color: var(--ps-foreground); font-size: 11px; font-weight: 600; }
@@ -5360,9 +5360,11 @@ select.ps-workflow-input option { background: var(--ps-background); color: var(-
 }
 .ps-workflow-join-bar { display: block; height: 7px; margin-bottom: 3px; border-radius: 3px; background: var(--ps-muted); }
 .ps-workflow-join-rule { min-width: 0; color: var(--ps-foreground); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-workflow-join-limit { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-workflow-join.is-waiting .ps-workflow-join-bar { background: var(--ps-accent); }
 .ps-workflow-join.is-joined .ps-workflow-join-bar, .ps-workflow-join.is-done .ps-workflow-join-bar { background: var(--ps-success); }
-.ps-workflow-join.is-blocked .ps-workflow-join-bar, .ps-workflow-join.is-failed .ps-workflow-join-bar { background: var(--ps-danger); }
+.ps-workflow-join.is-blocked .ps-workflow-join-bar, .ps-workflow-join.is-failed .ps-workflow-join-bar,
+.ps-workflow-join.is-timed_out .ps-workflow-join-bar { background: var(--ps-danger); }
 .ps-workflow-join.is-cancelled .ps-workflow-join-bar { background: var(--ps-warning); }
 .ps-workflow-join.is-selected .ps-workflow-join-bar, .ps-workflow-join:focus-visible .ps-workflow-join-bar { box-shadow: 0 0 0 2px var(--ps-accent); }
 /* React Flow, in the app's colours in every theme: edges and arrowheads in the muted text colour, the dots of the
