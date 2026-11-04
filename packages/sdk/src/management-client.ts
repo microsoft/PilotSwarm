@@ -1397,6 +1397,7 @@ export class PilotSwarmManagementClient {
                 rowState: row.state,
                 status: customStatus?.status,
                 orchestrationStatus: orchStatus,
+                sessionKind: row.sessionKind,
             });
             if (recoveredState) {
                 await this._catalog!.updateSession(sessionId, {

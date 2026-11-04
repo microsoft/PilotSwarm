@@ -43,8 +43,11 @@ test("a recover that ends the run ends its agent children and starts the parent'
     const { host, log } = fakeHost();
     const result = await recoverWorkflowV2Run(host, "run-1", { requestedBy: "parent-1", operationId: "recover-1" });
     assert.equal(result.receipt.action, "ended");
+    // F-C2: the end names the workflow (the child's parent) as requestedBy, so the child records it as its parent's cleanup
+    // instead of sending the workflow a CHILD_UPDATE prompt.
     assert.deepEqual(log.enqueued, [["session-child-1", "messages", {
-        type: "cmd", cmd: "cancel", id: "workflow-agent-end:nx-1", args: { reason: "The workflow state this session ran ended (cancelled)." },
+        type: "cmd", cmd: "cancel", id: "workflow-agent-end:nx-1", requestedBy: "wf-1",
+        args: { reason: "The workflow state this session ran ended (cancelled)." },
     }]]);
     assert.ok(log.events.includes("workflow.agent_ended"));
     assert.equal(log.started.length, 1);

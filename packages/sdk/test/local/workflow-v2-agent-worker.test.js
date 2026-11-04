@@ -295,7 +295,99 @@ function agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId
     return { evidence, boundary };
 }
 
+/**
+ * F-C2: one agent state with an inline prompt and no route for a runtime error (as the deployment's "subagent-check"), so
+ * a step whose child never completes fails the run timed_out at its deadline. As a document (JSON is YAML).
+ */
+const PROSE_WORKFLOW = JSON.stringify({
+    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "prose-step", version: "1.0.0" }, initial: "summarize",
+    states: {
+        summarize: {
+            type: "agent", invoke: { prompt: "Summarize the change in one line." }, outcomes: ["success"], timeoutSeconds: 20,
+            transition: { next: { success: "done" } },
+        },
+        done: { type: "terminal", outcome: "succeeded" },
+    },
+}, null, 2);
+
 describe("workflow v2 agent states on a real worker (test-only option, inactive)", () => {
+    // F-C2 (the deployment at 65932bfc): a step whose model ends its turn in prose never completes; at the deadline the run
+    // fails timed_out and the controller cancels the child. The end names the workflow as requestedBy, so the child takes it
+    // as its parent's own cleanup: it records session.child_cleanup_completed on the workflow and sends it no CHILD_UPDATE
+    // prompt. After the child's cancel, the workflow's row, the session list and a status read all still say failed, with
+    // the run's error. (The deployment's race, a status read in the moment between the run's end and its controller's end,
+    // is not forced here; failed-runtime-status.test.js covers that read with the controller still running.)
+    it("F-C2: a step that never completes times out; after its child's cancel the workflow's row and the list still say failed, with its error", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        // The child's turn (its request declares complete_workflow_node): an answer in prose, no completion. Others: "ok".
+        const turns = [];
+        const respond = (body, position) => {
+            const tools = (body.tools ?? []).map(tool => tool.function?.name);
+            if (!tools.includes("complete_workflow_node")) return { content: "ok" };
+            turns.push({ prompt: position.lastUserText, step: position.step });
+            return { content: "I looked at the change; it seems fine." };
+        };
+        const { traces, traceWriter } = traceTail();
+        const worker = { testOptions: { workflowRequests: true }, logLevel: "warning", traceWriter };
+        await withScriptedModel(env, { respond, worker }, async ({ client, model }) => {
+            const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+            await catalog.initialize();
+            const duroxide = client._getDuroxideClient();
+            try {
+                const store = catalog.workflowStore();
+                const parent = randomUUID();
+                await catalog.createSession(parent, { owner: OWNER });
+                const workflowSessionId = randomUUID();
+                const created = await createWorkflowV2({ catalog, store, duroxideClient: duroxide, requests: true }, {
+                    workflowSessionId, parentSessionId: parent, yaml: PROSE_WORKFLOW, actor: ACTOR, operationId: "create", publish: true,
+                    start: { inputs: {} }, notifyParent: false,
+                });
+                expect(created.receipt.valid, JSON.stringify(created.receipt.diagnostics)).toBe(true);
+                const runId = created.receipt.run.runId;
+                const nodeExecutionId = nodeExecutionIdFor(runId, "root", "summarize", 1);
+                const { boundary } = agentStateProbe({ store, catalog, duroxide, model, turns, traces, runId, nodeExecutionId, workflowSessionId });
+
+                await boundary("the child's turn reaches the model and ends in prose", async () => (turns.length > 0 ? turns[0] : null));
+                const run = await boundary("the run ends", async () => {
+                    const row = await store.readRun(runId);
+                    return row && ENDED.includes(row.status) ? row : null;
+                });
+                expect(run).toMatchObject({ status: "failed", controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION });
+                expect(await store.readNodeExecution(nodeExecutionId)).toMatchObject({ outcome: "timed_out", winner: "controller" });
+                const invocation = await boundary("the child's end is sent", async () => {
+                    const row = await store.readAgentInvocation(nodeExecutionId);
+                    return row?.endSentAt ? row : null;
+                });
+                expect(invocation.endRequested).toBe("cancel");
+                const child = invocation.childSessionId;
+
+                // The child takes the end as its parent's cleanup: recorded on the workflow, with the end's id and requestedBy.
+                const cleanup = await boundary("the child records its cleanup on the workflow", async () =>
+                    (await catalog.getSessionEvents(workflowSessionId, 0, 500, ["session.child_cleanup_completed"]))
+                        .find(event => event.data?.childSessionId === child) ?? null);
+                expect(cleanup.data).toMatchObject({ childSessionId: child, commandId: `workflow-agent-end:${nodeExecutionId}`,
+                    requestedBy: workflowSessionId, status: "cancelled" });
+                await boundary("the child's cancel completes", async () => ((await catalog.getSession(child))?.state === "cancelled" ? true : null));
+                await boundary("the controller ends", async () =>
+                    (["Completed", "Failed"].includes((await duroxide.getStatus(run.controllerInstanceId))?.status) ? true : null));
+
+                // The workflow's row: failed, with the run's error.
+                const row = await catalog.getSession(workflowSessionId);
+                expect(row).toMatchObject({ sessionKind: "workflow", state: "failed" });
+                expect(String(row.lastError ?? "")).toContain("timed_out");
+                // The session list reads the rows: failed there too.
+                expect((await catalog.listSessions()).find(item => item.sessionId === workflowSessionId)).toMatchObject({ state: "failed" });
+                // A status read now (what a sendToSession to the workflow runs) says failed and leaves the row as it is.
+                expect((await client._getSessionInfo(workflowSessionId)).status).toBe("failed");
+                const after = await catalog.getSession(workflowSessionId);
+                expect(after.state).toBe("failed");
+                expect(after.lastError).toBe(row.lastError);
+            } finally {
+                await catalog.close();
+            }
+        });
+    });
+
     it("runs an agent state's child through the worker's own agent host: resolved, created, bound, at 1.0.83, completing its state", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const pluginDir = join(env.baseDir, `agent-worker-plugin-${env.runId}`);

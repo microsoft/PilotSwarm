@@ -2356,8 +2356,11 @@ export async function endWorkflowV2AgentChild(store: WorkflowStore, client: Work
     const status = (await client.getStatus(sessionInstance)).status;
     const sent = status !== "NotFound" && !TERMINAL_ORCHESTRATION_STATUSES.includes(status);
     if (sent) {
+        // requestedBy (the child's parent, the workflow) makes this the parent's own cleanup: the child records it on the
+        // workflow (session.child_cleanup_completed) instead of sending the workflow a CHILD_UPDATE prompt, which no
+        // controller reads and whose status read rewrote a failed workflow row to running (F-C2).
         await client.enqueueEvent(sessionInstance, "messages", JSON.stringify({
-            type: "cmd", cmd: end, id: `workflow-agent-end:${nodeExecutionId}`,
+            type: "cmd", cmd: end, id: `workflow-agent-end:${nodeExecutionId}`, requestedBy: invocation.workflowSessionId,
             args: { reason: end === "done" ? "The workflow state this session ran was completed." : `The workflow state this session ran ended (${node.outcome}).` },
         }));
     }

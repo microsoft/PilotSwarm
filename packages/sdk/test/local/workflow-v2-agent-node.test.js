@@ -529,7 +529,8 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
                 .toMatchObject({ ok: true, replayed: false, nodeExecutionId, outcome: "accepted", kind: "result" });
             const run = await ended(h, runId);
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { verdict: "ok" } });
-            expect(await lifecycleCommand(h, spawn.childSessionId)).toMatchObject({ type: "cmd", cmd: "done", id: `workflow-agent-end:${nodeExecutionId}` });
+            expect(await lifecycleCommand(h, spawn.childSessionId))
+                .toMatchObject({ type: "cmd", cmd: "done", id: `workflow-agent-end:${nodeExecutionId}`, requestedBy: workflowSessionId });
             expect((await childMessages(h, spawn.childSessionId))[0]).toEqual({ prompt: spawn.prompt, clientMessageIds: [spawn.clientMessageId] });
             expect(h.spawns).toHaveLength(1);
 
@@ -561,7 +562,7 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked" });
             expect((await h.store.listNodeExecutions(late.runId)).map(node => [node.nodeId, node.outcome, node.winner]))
                 .toEqual([["review", "timed_out", "controller"], ["late", "blocked", "controller"]]);
-            expect(await lifecycleCommand(h, spawn.childSessionId)).toMatchObject({ cmd: "cancel" });
+            expect(await lifecycleCommand(h, spawn.childSessionId)).toMatchObject({ cmd: "cancel", requestedBy: late.workflowSessionId });
             expect(await completeAs(h, spawn.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }))
                 .toMatchObject({ ok: false, error: { code: "NODE_CLOSED" } });
 

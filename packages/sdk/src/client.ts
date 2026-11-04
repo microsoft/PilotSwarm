@@ -1321,6 +1321,9 @@ export class PilotSwarmClient {
             }).catch(() => {});
         } else if (
             cmsRow
+            // A workflow's row is written by the workflow store; a failed one is its run's end (F-C2, see
+            // resolveStaleRunningRowRecovery).
+            && cmsRow.sessionKind !== "workflow"
             && orchStatus.status === "Running"
             && (cmsRow.state === "error" || cmsRow.state === "failed")
         ) {

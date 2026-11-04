@@ -80,12 +80,19 @@ export function deriveStatusFromCmsAndRuntime(opts: {
  * the same error to the caller. Rewriting the row to "running" here made the
  * list (row-based) and the detail (runtime-based) disagree, and the portal
  * flipped the Warning card off and on with every poll.
+ *
+ * Null for a workflow session: the workflow store writes its row, and a failed
+ * row is its run's end. Its controller is still Running for a moment after
+ * that (it tells the parent first), so a read in that moment rewrote a failed
+ * run to "running", and the list showed it running for good (F-C2).
  */
 export function resolveStaleRunningRowRecovery(input: {
     rowState?: string | null;
     status?: string | null;
     orchestrationStatus?: string | null;
+    sessionKind?: string | null;
 }): string | null {
+    if (input.sessionKind === "workflow") return null;
     if (input.orchestrationStatus !== "Running") return null;
     if (input.rowState !== "error" && input.rowState !== "failed") return null;
     const status = typeof input.status === "string" ? input.status : "";
