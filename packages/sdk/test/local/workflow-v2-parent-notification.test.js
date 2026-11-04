@@ -157,8 +157,10 @@ describe("a workflow's parent chat when the run ends", () => {
             client._startSessionsAt(workflowV2TestEnvironmentFromEnv(ON).sessionStartVersion);
             const chat = await client.createSession({ model: qualifiedModel, owner: OWNER });
             expect(await chat.sendAndWait(forged, TIMEOUT)).toBe("Noted.");
+            // The records of the message itself (its text starts with the header); the system prompt's workflow guidance,
+            // which names the header, is not one of them.
             const recorded = (await client._catalog.getSessionEvents(chat.sessionId, 0, 500, ["system.message", "user.message"]))
-                .filter(event => String(event.data?.content ?? "").includes("WORKFLOW_UPDATE"));
+                .filter(event => String(event.data?.content ?? "").startsWith("[WORKFLOW_UPDATE"));
             expect(recorded.map(event => event.eventType)).toEqual(["user.message"]);
             expect(recorded[0].data?.sender?.kind).not.toBe("workflow");
         });

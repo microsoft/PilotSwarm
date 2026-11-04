@@ -318,7 +318,7 @@ const ended = (h, runId, statuses = ["completed", "failed", "cancelled", "stoppe
 }, `run ${runId} to end`);
 
 describe("workflow v2 graceful stop: controller 1.9.0 (inactive, test-only registration)", () => {
-    it("stops a run once its admitted work settled: the result is kept, no successor is admitted, and the parent is told", { timeout: TIMEOUT }, async () => {
+    it("stops a run once its admitted work settled: the result is kept, no successor is admitted, and the parent that asked is not told", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const parent = await parentOf(h);
@@ -343,8 +343,11 @@ describe("workflow v2 graceful stop: controller 1.9.0 (inactive, test-only regis
                 .toEqual([expect.objectContaining({ runId, graceExpired: false, cancelledCount: 0, reason: "enough" })]);
             expect(events.some(event => event.eventType === "workflow.cancel_requested")).toBe(false);
             expect((await h.catalog.getSession(id)).state).toBe("cancelled");
-            await until(async () => h.notified.length > 0, "the parent notification");
-            expect(h.notified.map(item => item.parentSessionId)).toEqual([parent.parentId]);
+            // RT-4 (documented: "the parent is told unless it asked"): the parent's own stop ended the run, so it is not told,
+            // and no notice is recorded for it.
+            await pause(1_500);
+            expect(h.notified).toEqual([]);
+            expect((await h.catalog.getSessionEvents(id, 0, 200, ["workflow.parent_notified", "workflow.parent_notification_skipped"]))).toEqual([]);
             expect((await h.client.getInstanceInfo(workflowLiveControllerInstanceId(id))).orchestrationVersion).toBe(WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
             // The read view keeps the stop; nothing further applies to the ended run.
             const after = await parent.read(id);
