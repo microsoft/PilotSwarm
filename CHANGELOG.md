@@ -15,6 +15,25 @@ changes fix this:
 - Output above the limit is reported as "Output too large", and the Action
   prints "Azure CLI output exceeded the capture limit".
 
+**Azure deploy: HorizonDB API 2026-10-01-preview.** HorizonDB moved compute
+and the settings group from the cluster to a child pool resource. Attaching
+the extension settings group through the old API (2026-01-20-preview) now
+ends in `FailedToApply`, so the HorizonDB step waited ten minutes and failed.
+The HorizonDB module and the CI database script now use the new API:
+
+- Bicep creates the settings group, then the cluster, then one pool
+  (`DefaultPool`), then the password login, then the firewall rule on the
+  pool. A new pool starts on the built-in settings group; the deploy then
+  attaches the extension group with one pool PATCH and waits until the pool
+  reports it as `InSync` (about two minutes, one restart).
+- The connection host name comes from the cluster's read-write endpoint. New
+  clusters use `<cluster>.rw.<id>.<region>.horizondb.azure.com`.
+- `HORIZONDB_REPLICA_COUNT` is now `HORIZONDB_NODE_COUNT`. The old name still
+  works.
+- The deploy Action names HorizonDB failures: settings group not `InSync` in
+  time, `FailedToApply`, cluster busy (`ClusterNotReady`), and pool lookup
+  failures.
+
 ## 0.8.8 — 2026-11-02
 
 **Message of the day.** Admins can post a fleet-wide message with an optional
