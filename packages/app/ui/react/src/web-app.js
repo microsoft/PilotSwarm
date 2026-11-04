@@ -6239,7 +6239,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "${viewState.filterQuery}".`
                 : "No sessions yet.")
-            : rows.map((row) => React.createElement(SessionListRow, {
+            : (rowNodes => isMobilePane
+                // On a phone, long rows pan sideways in a track of their own
+                // nested in the vertical list: two native scrollers, one axis
+                // each, so the system keeps every swipe on one axis.
+                ? React.createElement("div", { className: "ps-session-list-track" },
+                    React.createElement("div", { className: "ps-session-list-track-rows" }, rowNodes))
+                : rowNodes)(rows.map((row) => React.createElement(SessionListRow, {
                 key: row.sessionId,
                 row,
                 theme,
@@ -6251,7 +6257,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 // Drag-to-folder is a fine-pointer gesture: arming it on
                 // touch hijacks the finger that should be scrolling the list.
                 drag: selection || touchInput || viewState.sortMode !== "saved" ? null : dragHandlers,
-            }))),
+            })))),
     React.createElement("div", {
         className: "ps-session-find-controls",
         onPointerDown: (event) => {

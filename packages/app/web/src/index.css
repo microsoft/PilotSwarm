@@ -9378,17 +9378,53 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   }
 }
 
-/* The phone's session list scrolls vertically only, and natively: the
-   system's own momentum, at the display's refresh rate, on the compositor.
-   It used to let long rows pan sideways, which needed a script to drive both
-   axes from touch events; that ran on the main thread at 60fps and read as
-   choppy beside native scrolling. Rows now fit the pane and a long title ends
-   in an ellipsis, as on the desktop. The selected session's full title is in
-   the detail box below the list. */
+/* The phone's session list scrolls natively on both axes: the system's own
+   momentum, at the display's refresh rate, on the compositor. Two nested
+   scrollers, one axis each: the list scrolls up and down, and a track inside
+   it pans long rows sideways. iOS and Android then keep each swipe on one
+   axis themselves, as with a carousel in a feed. (A single two-axis scroller
+   drifts diagonally; the script that once locked the axis ran on the main
+   thread at 60fps and read as choppy.) */
 .ps-mobile-session-pane .ps-action-list {
   overflow-x: hidden;
   overscroll-behavior: contain;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
+}
+
+.ps-session-list-track {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+  /* The gesture is the affordance; a scrollbar would sit below the last row. */
+  scrollbar-width: none;
+}
+
+.ps-session-list-track::-webkit-scrollbar {
+  display: none;
+}
+
+/* Rows grow to their content and share the widest row's width, so a
+   selected row highlights edge to edge wherever the track is panned. */
+.ps-session-list-track-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: max-content;
+  min-width: 100%;
+}
+
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .ps-list-button {
+  max-width: none;
+}
+
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .ps-session-row-title__text,
+.ps-session-pane.ps-mobile-session-pane .ps-session-list-track .ps-line {
+  overflow: visible;
+  text-overflow: clip;
 }
 
 /* The mobile inspector KEEPS horizontal scroll: the sequence grid is sized to

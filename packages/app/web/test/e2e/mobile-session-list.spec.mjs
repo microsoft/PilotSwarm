@@ -50,31 +50,62 @@ test("a tap still selects", async ({ page }) => {
 
 // The list scrolls natively on a phone: nothing of ours sits between the
 // finger and the browser, so the system's own momentum and refresh rate apply.
-test("the list scrolls natively: no script holds the finger, nothing pans sideways", async ({ page }) => {
+// Up/down is the list; sideways is a track nested inside it, one axis each.
+test("the list scrolls natively on both axes: no script holds the finger", async ({ page }) => {
     await openList(page);
     const list = page.locator(".ps-mobile-session-slideover .ps-session-list").first();
     await expect.poll(() => list.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(600);
     const shape = await list.evaluate((el) => {
-        const style = getComputedStyle(el);
-        // A touch that starts and moves: no listener of ours may cancel it.
-        const fire = (type, y) => {
+        const track = el.querySelector(".ps-session-list-track");
+        const fire = (target, type, y) => {
             const event = new Event(type, { bubbles: true, cancelable: true });
             Object.defineProperty(event, "targetTouches", { value: y == null ? [] : [{ clientX: 100, clientY: y }] });
-            el.dispatchEvent(event);
+            target.dispatchEvent(event);
             return event.defaultPrevented;
         };
-        fire("touchstart", 500);
-        const prevented = [fire("touchmove", 490), fire("touchmove", 420), fire("touchmove", 300)].some(Boolean);
-        fire("touchend", null);
-        return { prevented, overflowX: style.overflowX, touchAction: style.touchAction, wide: el.scrollWidth - el.clientWidth };
+        const row = track.querySelector(".ps-session-list-button");
+        fire(row, "touchstart", 500);
+        const prevented = [fire(row, "touchmove", 490), fire(row, "touchmove", 420), fire(row, "touchmove", 300)].some(Boolean);
+        fire(row, "touchend", null);
+        const ls = getComputedStyle(el), ts = getComputedStyle(track);
+        return { prevented, listX: ls.overflowX, listY: ls.overflowY, trackX: ts.overflowX, trackY: ts.overflowY,
+            listWide: el.scrollWidth - el.clientWidth, trackWide: track.scrollWidth - track.clientWidth,
+            rowWidths: [...track.querySelectorAll(".ps-session-list-button")].map(b => Math.round(b.getBoundingClientRect().width)) };
     });
     expect(shape.prevented, "a touchmove was cancelled: the list is script-scrolled").toBe(false);
-    expect(shape.overflowX).toBe("hidden");
-    expect(shape.touchAction).toContain("pan-y");
-    expect(shape.wide, "a row is wider than the list").toBeLessThanOrEqual(1);
-    // Long titles end in an ellipsis instead of overflowing.
-    const clipped = await list.locator(".ps-session-list-button[data-session-id] .ps-line").evaluateAll((lines) => lines.filter((line) => line.scrollWidth > line.clientWidth + 1).map((line) => getComputedStyle(line).textOverflow));
-    expect(clipped.every((value) => value === "ellipsis")).toBe(true);
+    expect([shape.listX, shape.listY]).toEqual(["hidden", "auto"]);
+    expect([shape.trackX, shape.trackY]).toEqual(["auto", "hidden"]);
+    expect(shape.listWide, "only the track may be wider than the list").toBeLessThanOrEqual(1);
+    expect(shape.trackWide, "long rows have somewhere to pan to").toBeGreaterThan(20);
+    expect(new Set(shape.rowWidths).size, "rows share the widest row's width").toBe(1);
+    // Long titles are whole, not ellipsized: panning is how they are read.
+    const clipped = await list.locator(".ps-session-list-button[data-session-id] .ps-line").evaluateAll((lines) => lines.filter((line) => line.scrollWidth > line.clientWidth + 1).length);
+    expect(clipped).toBe(0);
+});
+
+test("Chromium: a sideways finger drag pans the rows and leaves the list where it was", async () => {
+    const browser = await chromium.launch();
+    try {
+        const page = await browser.newPage({ ...devices["Pixel 7"] });
+        await openList(page);
+        const list = page.locator(".ps-mobile-session-slideover .ps-session-list").first();
+        const track = list.locator(".ps-session-list-track");
+        await expect.poll(() => track.evaluate(el => el.scrollWidth - el.clientWidth)).toBeGreaterThan(20);
+        const selected = await page.locator(".ps-session-list-button.is-selected").textContent();
+        const box = await list.boundingBox();
+        const x = Math.round(box.x + box.width - 30), y = Math.round(box.y + box.height / 2);
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+        for (const d of [8, 30, 60, 100, 140, 180]) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x - d, y: y - Math.round(d / 12) }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await expect.poll(() => track.evaluate(el => el.scrollLeft)).toBeGreaterThan(20);
+        expect(await list.evaluate(el => el.scrollTop), "a sideways swipe must not scroll the list").toBeLessThanOrEqual(2);
+        await page.waitForTimeout(800);
+        expect(await page.locator(".ps-session-list-button.is-selected").textContent()).toBe(selected);
+        await cdp.detach();
+    } finally {
+        await browser.close();
+    }
 });
 
 test("Chromium: a real finger drag scrolls the list and selects nothing", async () => {
