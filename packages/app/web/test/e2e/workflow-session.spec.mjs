@@ -2148,3 +2148,85 @@ test("d-1: a workflow a person started says 'You' as its starter, for its owner"
     await expect(page.locator(".ps-session-detail-box.is-collapsed .ps-session-detail-marks")).toContainText("No run yet");
     await page.locator(".ps-session-detail-summary").click();
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// Batch 7 (f-05): a run's Inputs box is filled from the workflow's input schema (the read model's graph.inputsSchema):
+// Publish and start, Start and Test review show the sample untouched; typing stops the refill; Sample fills it again.
+// Without a schema the box is "{}" and there is no Sample button.
+// Batch 7 (n-2): Run activity says when the parent agent was not told that the live run ended.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "f-05:|n-2:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const INPUTS_SCHEMA = {
+    type: "object", required: ["buildId", "state"],
+    properties: { buildId: { type: "integer", examples: [7] }, state: { type: "string", enum: ["running", "succeeded"] } },
+};
+const SAMPLE = { buildId: 7, state: "running" };
+const withSchema = (model, schema = INPUTS_SCHEMA) => ({ ...model, graph: { ...model.graph, ...(schema ? { inputsSchema: schema } : {}) } });
+const PUBLISHED_START_MODEL = { ...V2_READ_MODEL, runs: [], run: null,
+    personCommands: { operations: ["start"], viewer: { allowed: true } } };
+const DRAFT_TEST_MODEL = { ...PUBLISH_MODEL,
+    personCommands: { ...PUBLISH_MODEL.personCommands, operations: [...PUBLISH_MODEL.personCommands.operations, "test"] } };
+
+for (const [name, model, button, region] of [
+    ["Publish and start", withSchema(PUBLISH_MODEL), "Publish…", "Publish review"],
+    ["Start", withSchema(PUBLISHED_START_MODEL), "Start…", "Start the live run"],
+    ["Test review", withSchema(DRAFT_TEST_MODEL), "Test…", null],
+]) {
+    test(`f-05: ${name} shows the Inputs sample from the schema; typing stops the refill and Sample fills it again`, async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const { commands } = await routeV2(page, { events: name === "Start" ? [] : V2_EVENTS, readModel: () => model, onCommand: (route, command) => accept(route, command) });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        await page.locator(".ps-workflow-main").getByRole("button", { name: button, exact: true }).click();
+        const panel = region ? page.getByRole("region", { name: region, exact: true }) : page.locator('.ps-workflow-side-panel[data-panel="test"]');
+        const inputs = panel.getByRole("textbox", { name: "Inputs (JSON object)", exact: true });
+        await expect.poll(async () => { try { return JSON.parse(await inputs.inputValue()); } catch { return null; } }).toEqual(SAMPLE);
+        const sample = panel.locator('[data-action="sample-inputs"]');
+        await expect(sample).toBeVisible();
+        // Typing stops the refill: the person's text stays.
+        await inputs.fill("{ \"buildId\": 9 }");
+        await page.waitForTimeout(500);
+        await expect(inputs).toHaveValue("{ \"buildId\": 9 }");
+        // An emptied box is the person's too until Sample: it is not refilled by itself.
+        await inputs.fill("");
+        await page.waitForTimeout(300);
+        await expect(inputs).toHaveValue("");
+        // Sample fills it again.
+        await sample.click();
+        await expect.poll(async () => JSON.parse(await inputs.inputValue())).toEqual(SAMPLE);
+        expect(commands).toEqual([]);
+        expect(errors).toEqual([]);
+    });
+}
+
+test("f-05: without an input schema the Inputs box is {} and there is no Sample button", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await routeV2(page, { readModel: () => PUBLISH_MODEL, onCommand: (route, command) => accept(route, command) });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await page.locator(".ps-workflow-main").getByRole("button", { name: "Publish…", exact: true }).click();
+    const review = page.getByRole("region", { name: "Publish review", exact: true });
+    await expect(review.getByRole("textbox", { name: "Inputs (JSON object)", exact: true })).toHaveValue("{}");
+    await expect(review.locator('[data-action="sample-inputs"]')).toHaveCount(0);
+});
+
+test("n-2: Run activity says the parent agent was not told when notifications are off", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const ended = { ...V2_READ_MODEL,
+        runs: [{ runId: "run-1", mode: "live", status: "completed", revision: 1, outcome: "succeeded" }],
+        run: { ...V2_READ_MODEL.run, status: "completed", outcome: "succeeded", terminalState: "done" } };
+    const at = new Date().toISOString();
+    const events = [
+        ...V2_EVENTS,
+        { sessionId: WORKFLOW_ID, seq: 2, eventType: "workflow.completed", createdAt: at, data: { runId: "run-1", stateId: "done", outcome: "succeeded" } },
+        { sessionId: WORKFLOW_ID, seq: 3, eventType: "workflow.parent_notification_skipped", createdAt: at, data: { runId: "run-1", reason: "notifications are off" } },
+    ];
+    await routeV2(page, { events, readModel: () => ended, onCommand: (route, command) => accept(route, command) });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await page.locator(".ps-workflow-main").getByRole("button", { name: "Run activity", exact: true }).click();
+    const activity = page.locator('.ps-workflow-side-panel[data-panel="activity"] .ps-workflow-run-activity');
+    await expect(activity).toContainText("The parent agent was not told: notifications are off.");
+    expect(errors).toEqual([]);
+});
