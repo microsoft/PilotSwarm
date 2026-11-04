@@ -104,3 +104,17 @@ test("a management adapter answers an unavailable store as a coded 503 it may sh
     const other = new Error("something else");
     assert.equal(workflowAdapterFailure(other), other);
 });
+
+test("a workflow tool whose host cannot be made answers like its own refusals: ok false, the code and the reason", async () => {
+    const { workflowToolErrorPayload } = await import("../../dist/workflow/v2/tools.js");
+    const unreachable = JSON.parse(workflowToolErrorPayload(coded("connect ECONNREFUSED 10.0.0.4:5432 postgres://u:secret@10.0.0.4/db", "ECONNREFUSED")));
+    assert.equal(unreachable.ok, false);
+    assert.equal(unreachable.error.code, "WORKFLOW_STORE_UNAVAILABLE");
+    assert.match(unreachable.error.message, /^The workflow store is not available right now: connect ECONNREFUSED/);
+    assert.doesNotMatch(unreachable.error.message, /secret/);
+    const other = JSON.parse(workflowToolErrorPayload(new Error("unexpected")));
+    assert.deepEqual(other, { ok: false, error: { code: "WORKFLOW_ERROR", message: "unexpected" } });
+    const refusal = JSON.parse(workflowToolErrorPayload(new WorkflowStoreError("WORKFLOW_NOT_FOUND", "No v2 workflow x.")));
+    assert.equal(refusal.error.code, "WORKFLOW_NOT_FOUND");
+    assert.equal(refusal.error.message, "No v2 workflow x.");
+});
