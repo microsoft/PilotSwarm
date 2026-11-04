@@ -182,3 +182,65 @@ test("SF-8: a partly bound input's fixed parts are checked: wrong type, missing 
     const allBound = compileWorkflowV2(SCRIPT(`"\${inputs.whole}"`));
     assert.equal(allBound.valid, true, JSON.stringify(allBound.diagnostics));
 });
+
+// Verification of SF-8: each fixed part of a partly bound input is validated whole, with the run's validator.
+const RICH = input => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: rich-script, version: "1.0.0" }
+inputs: { schema: { type: object } }
+initial: calc
+schemas:
+  Address:
+    type: object
+    required: [city]
+    properties:
+      city: { type: string, minLength: 2 }
+states:
+  calc:
+    type: script
+    source: |
+      await setResult("done", context.input);
+    inputSchema:
+      type: object
+      properties:
+        age: { type: integer, minimum: 18 }
+        user: { type: string }
+        home: { $ref: "#/schemas/Address" }
+        tags: { type: array, items: { type: string, maxLength: 3 } }
+        pair: { type: array, prefixItems: [{ type: integer }, { type: string }] }
+    input: ${input}
+    outcomes: [done]
+    transition: { next: { done: finish, failure: refused } }
+  finish: { type: terminal, outcome: succeeded }
+  refused: { type: terminal, outcome: failed }
+`;
+const problemOf = yaml => codes(compileWorkflowV2(yaml), "WORKFLOW_STATE_INPUT_INVALID")[0]?.message ?? "";
+
+test("SF-8: a fixed scalar below its minimum beside a binding is refused", () => {
+    assert.match(problemOf(RICH(`{ age: 12, user: "\${inputs.user}" }`)), /\/age must be >= 18/);
+});
+
+test("SF-8: a fixed nested object missing a required property, or with a too-short string, is refused", () => {
+    assert.match(problemOf(RICH(`{ user: "\${inputs.user}", home: { street: "x" } }`)), /\/home must have required property 'city'/);
+    assert.match(problemOf(RICH(`{ user: "\${inputs.user}", home: { city: "x" } }`)), /\/home\/city must NOT have fewer than 2 characters/);
+});
+
+test("SF-8: a fixed array item beside a bound one, and a prefixItems item, are checked", () => {
+    assert.match(problemOf(RICH(`{ tags: ["ok", "\${inputs.tag}", "toolong"] }`)), /\/tags\/2 must NOT have more than 3 characters/);
+    assert.match(problemOf(RICH(`{ pair: ["\${inputs.n}", 7] }`)), /\/pair\/1 must be string/);
+});
+
+test("SF-8: a written-out object holding a binding must have its required properties, nested too", () => {
+    assert.match(problemOf(RICH(`{ home: { street: "\${inputs.street}" } }`)), /\/home must have required property 'city'/);
+});
+
+test("SF-8: valid fixed parts beside bindings compile; a part holding a binding is left to the run", () => {
+    for (const input of [
+        `{ age: 30, user: "\${inputs.user}", home: { city: "Oslo" }, tags: ["a", "\${inputs.tag}"], pair: [1, "\${inputs.s}"] }`,
+        `{ age: "\${inputs.age}", home: { city: "\${inputs.city}" } }`,
+    ]) {
+        const compiled = compileWorkflowV2(RICH(input));
+        assert.equal(compiled.valid, true, `${input}: ${JSON.stringify(compiled.diagnostics)}`);
+    }
+});

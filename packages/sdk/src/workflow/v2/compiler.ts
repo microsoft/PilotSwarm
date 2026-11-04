@@ -1487,42 +1487,64 @@ function holdsBinding(value: JsonValue): boolean {
     try { return bindingRootsOf(value).size > 0; } catch { return true; }
 }
 
-/** The JSON Schema type names a fixed value has (an integer is a number too). */
-function jsonTypesOf(value: JsonValue): string[] {
-    if (value === null) return ["null"];
-    if (Array.isArray(value)) return ["array"];
-    if (typeof value === "number") return Number.isInteger(value) ? ["integer", "number"] : ["number"];
-    return [typeof value];
+/** A fixed part of a partly bound input: where it is, the value as written, and the schema it must match. */
+interface FixedPart { pointer: string; value: JsonValue; schema: JsonValue }
+
+/**
+ * The fixed parts of a partly bound input and what a bound part's written-out object must have (adversarial review SF-8
+ * and its verification): a part with no binding is collected whole, to be validated with the run's own validator; in a
+ * part that holds a binding, an object written out must have its schema's required properties (returned as problems),
+ * and its members and array items are visited with their own schemas (properties or additionalProperties; prefixItems
+ * or items). Composed schemas (allOf, anyOf, oneOf) are visited no further: the run checks them.
+ */
+function fixedParts(value: JsonValue, schema: JsonValue | undefined, defs: Record<string, JsonValue>, pointer: string,
+    parts: FixedPart[], problems: string[], depth = 0): void {
+    if (depth > 32 || schema === undefined) return;
+    if (!holdsBinding(value)) {
+        parts.push({ pointer, value, schema });
+        return;
+    }
+    const target = schemaTarget(defs, schema);
+    if (!isJsonObject(target)) return;
+    if (Array.isArray(value)) {
+        value.forEach((item, index) => {
+            const itemSchema = Array.isArray(target.prefixItems) && index < target.prefixItems.length ? target.prefixItems[index] : target.items;
+            fixedParts(item, itemSchema as JsonValue | undefined, defs, `${pointer}/${index}`, parts, problems, depth + 1);
+        });
+        return;
+    }
+    if (!isJsonObject(value)) return;
+    const required = Array.isArray(target.required) ? target.required.filter((key): key is string => typeof key === "string") : [];
+    for (const key of required) if (!Object.hasOwn(value, key)) problems.push(`${pointer || "/"} must have required property '${key}'`);
+    const properties = isJsonObject(target.properties) ? target.properties : {};
+    for (const [key, item] of Object.entries(value)) {
+        const itemSchema = Object.hasOwn(properties, key) ? properties[key]
+            : target.additionalProperties !== undefined && target.additionalProperties !== true ? target.additionalProperties : undefined;
+        fixedParts(item, itemSchema as JsonValue | undefined, defs, `${pointer}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`, parts, problems, depth + 1);
+    }
 }
 
 /**
- * The first fixed part of a partly bound input that cannot match its schema (adversarial review SF-8), as
- * "<pointer> <problem>", or null: an object written out (not bound) that lacks a required property, and a part with no
- * binding whose type, enum or const the schema rules out. Only what the schema states plainly is checked (type,
- * required, properties, enum, const); a part that holds a binding is left to the run.
+ * The first problems of a partly bound input's fixed parts, as "<pointer> <problem>" (SF-8 verification): each fixed
+ * part is validated whole against its schema with the run's validator (nested required properties, minimum, pattern,
+ * items and the rest), and each written-out object that holds a binding must have its required properties.
  */
-function fixedPartProblem(value: JsonValue, schema: JsonValue | undefined, defs: Record<string, JsonValue>, pointer: string, depth = 0): string | null {
-    if (depth > 32) return null;
-    const target = schemaTarget(defs, schema);
-    if (!isJsonObject(target)) return null;
-    const at = pointer || "/";
-    if (!holdsBinding(value)) {
-        const types: JsonValue[] = Array.isArray(target.type) ? target.type : typeof target.type === "string" ? [target.type] : [];
-        if (types.length > 0 && !jsonTypesOf(value).some(type => types.includes(type))) return `${at} must be ${types.join(" or ")}`;
-        if (Array.isArray(target.enum) && !target.enum.some(item => canonicalJson(item) === canonicalJson(value))) return `${at} must be one of its enum values`;
-        if (Object.hasOwn(target, "const") && canonicalJson(target.const as JsonValue) !== canonicalJson(value)) return `${at} must be its const value`;
-        return null;
+function fixedPartsProblems(input: JsonValue, schema: JsonValue, defs: Record<string, JsonValue>): string[] {
+    const parts: FixedPart[] = [];
+    const problems: string[] = [];
+    fixedParts(input, schema, defs, "", parts, problems);
+    if (parts.length > 0) {
+        // Each part's schema is added under a name no workflow schema can have (they start with a letter), so its own
+        // references still resolve against the workflow's schemas.
+        const named = Object.fromEntries(parts.map((part, index) => [`_fixed.${index}`, part.schema]));
+        const validator = new WorkflowSchemaSet({ ...defs, ...named });
+        parts.forEach((part, index) => {
+            for (const problem of validator.validate(`_fixed.${index}`, part.value)) {
+                problems.push(`${part.pointer}${problem.path === "/" ? "" : problem.path || ""} ${problem.message}`.replace(/^ /, "/ "));
+            }
+        });
     }
-    if (!isJsonObject(value) || Array.isArray(value)) return null;
-    const required = Array.isArray(target.required) ? target.required.filter((key): key is string => typeof key === "string") : [];
-    for (const key of required) if (!Object.hasOwn(value, key)) return `${at} must have required property '${key}'`;
-    const properties = isJsonObject(target.properties) ? target.properties : {};
-    for (const [key, item] of Object.entries(value)) {
-        if (!Object.hasOwn(properties, key)) continue;
-        const problem = fixedPartProblem(item, properties[key], defs, `${pointer}/${key}`, depth + 1);
-        if (problem !== null) return problem;
-    }
-    return null;
+    return problems;
 }
 
 /**
@@ -1546,11 +1568,11 @@ function checkFixedInputs(nodes: Record<string, WorkflowIRNode>, contracts: Reco
         let bound: boolean;
         try { bound = bindingRootsOf(node.input).size > 0; } catch { continue; }
         if (bound) {
-            // SF-8: the fixed parts of a partly bound input are checked too, where the schema says what they must be.
-            const problem = fixedPartProblem(node.input, defs[schemaName], defs, "");
-            if (problem !== null) {
+            // SF-8: the fixed parts of a partly bound input are checked too, each whole, with the run's validator.
+            const problems = fixedPartsProblems(node.input, defs[schemaName], defs);
+            if (problems.length) {
                 diagnostics.error("WORKFLOW_STATE_INPUT_INVALID", path, `a fixed part of this input is sent as written, and it does not match ${target.what}: `
-                    + `${problem}.`);
+                    + `${problems.slice(0, 3).join("; ")}.`);
             }
             continue;
         }
