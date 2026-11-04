@@ -2376,8 +2376,9 @@ export async function endWorkflowV2AgentChild(store: WorkflowStore, client: Work
     if (!node || node.nodeType !== "agent" || node.state !== "completed") return null;
     const { invocation } = await store.recordAgentEnd(nodeExecutionId, node.winner === "agent" ? "done" : "cancel");
     const end = invocation.endRequested ?? (node.winner === "agent" ? "done" : "cancel");
-    // A spawn that created the child after an end found no session sends the end again (afterSpawn).
-    if (invocation.endSentAt !== null && options.afterSpawn !== true) return { end, sent: false };
+    // A spawn that created the child after an end found no session sends the end again (afterSpawn), and only then: an end
+    // already sent to a child that existed is never sent again (verification of WFO-2).
+    if (invocation.endSentAt !== null && !(options.afterSpawn === true && invocation.endChildStatus === "NotFound")) return { end, sent: false };
     const sessionInstance = `session-${invocation.childSessionId}`;
     const status = (await client.getStatus(sessionInstance)).status;
     const sent = status !== "NotFound" && !TERMINAL_ORCHESTRATION_STATUSES.includes(status);
@@ -3894,7 +3895,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             update: { touch: true },
         });
         // WFO-2: an attempt may have created the child before every attempt to record it failed, and the state may have
-        // been decided before that (its end then found no session): end the child now, whatever an earlier end recorded.
+        // been decided before that (its end then found no session): end the child now. An end already sent to a child
+        // that existed is not sent again (endWorkflowV2AgentChild).
         const invocation = await store.readAgentInvocation(input.nodeExecutionId);
         const client = actx.getClient();
         if (invocation && invocation.spawnAttempts > 0 && client) {
