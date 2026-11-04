@@ -1,6 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.8.9 — 2026-11-04
+
+**Phone session list.** The session list no longer sits in a strip above the
+chat. The leftmost toolbar button (☰) slides it over the chat at full
+height; picking a session, ✕, the backdrop or Escape closes it, and a dot on
+☰ marks a session waiting on a question. Sub-agents fold behind a chevron in
+the status dot's place, rows are two points larger, and the list scrolls
+natively in both directions: up and down, and long rows sideways. The
+session filter moved to the list header and to Settings › Appearance. The
+toolbar's Chat button is gone; Diagnostics cycles chat, inspector, activity
+and back to the chat.
+
+**Session pickers.** The Master of Agents picker (phone and desktop) and the
+phone's maximized-chat session selector use the same list as the phone
+slide-over, with larger + and × buttons.
+
+**Desktop session list width.** The session list keeps one width when you
+switch between sessions with and without a canvas, beside a canvas width
+remembered wider than the window, and after Settings opens and closes. A
+page load no longer changes the width a frame late, which had pulled a chat
+back to its bottom under a reader who had just scrolled up.
+
+**Smaller portal fixes.** The composer fits narrow panes; zen ignores the
+reading column; arrow and page keys keep the selected session on screen;
+artifact cards no longer widen the phone chat; the markdown reader closes
+when you leave its session.
 
 **Azure deploy: large Azure CLI output.** The base-infra step checks each
 Foundry deployment against `az cognitiveservices model list`. In some
