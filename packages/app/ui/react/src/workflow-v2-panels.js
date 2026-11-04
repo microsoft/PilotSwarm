@@ -779,6 +779,12 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model: givenModel
     const [textValue, setTextValue] = React.useState(() => kept ? kept.text : model?.yaml ?? "");
     const latest = React.useRef({ base, textValue });
     latest.current = { base, textValue };
+    // The edit as it is now, for a host that opens this workflow elsewhere (a Master of Agents panel; UI-2). No dispatch.
+    React.useEffect(() => {
+        if (!controller.workflowDraftBuffers) controller.workflowDraftBuffers = new Map();
+        if (base && base.sessionId === sessionId) controller.workflowDraftBuffers.set(sessionId, { sessionId, base, text: textValue });
+    });
+    React.useEffect(() => () => { controller.workflowDraftBuffers?.delete(sessionId); }, [controller, sessionId]);
     React.useEffect(() => () => {
         const { base: was, textValue: text } = latest.current;
         const edit = was && was.sessionId === sessionId && text !== was.yaml ? { sessionId, base: was, text } : null;

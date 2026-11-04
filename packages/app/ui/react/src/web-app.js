@@ -7417,7 +7417,7 @@ function ChatPane(props) {
     return workflow
         ? React.createElement(WorkflowMainPane, {
             controller: props.controller, icon: React.createElement(WorkflowGlyph, { decorative: true }),
-            onNodeSelected: props.onWorkflowNodeSelected, mobile: Boolean(props.mobile),
+            onNodeSelected: props.onWorkflowNodeSelected, mobile: Boolean(props.mobile), onOpenSide: props.onWorkflowOpenSide ?? null,
         })
         : React.createElement(ChatTranscriptPane, props);
 }

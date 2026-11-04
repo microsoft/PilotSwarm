@@ -310,7 +310,7 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
     </Modal>;
 }
 
-function LivePanel({ node, panels, panelKey, mobile = false, visible = true, focused, parent, createTransport, drafts, draftKey, refreshScheduler, onPanelKey, composerHost, perChat, onArtifact, header, controlsHost, onControlAction, mobileStatusHost }) {
+function LivePanel({ node, panels, panelKey, mobile = false, visible = true, focused, parent, createTransport, drafts, draftKey, refreshScheduler, onPanelKey, composerHost, perChat, onArtifact, onWorkflowSide, header, controlsHost, onControlAction, mobileStatusHost }) {
     const [ready, setReady] = React.useState(null), [error, setError] = React.useState(""), [retry, setRetry] = React.useState(0);
     const resources = React.useRef(null);
     React.useEffect(() => {
@@ -523,7 +523,7 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
         <header>{header.title}{ready && !mobile && <SessionHeaderStatus controller={ready} />}{error && ready && <button className="ps-moa-stale" title={error} onClick={() => setRetry(n => n + 1)}>Cached · Retry</button>}{header.actions}</header>
         {ready && <SessionPane controller={ready} actionsOnly actionsHost={controlsHost} onAction={onControlAction} onDialogChange={setActionsOpen} />}
         <div ref={ref} className="ps-moa-live">
-            {ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} mobile={mobile} fullWidth showComposer={false} activityInHeader /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : <div className="ps-moa-empty" role="status">Connecting…</div>}
+            {ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} mobile={mobile} fullWidth showComposer={false} activityInHeader onWorkflowOpenSide={onWorkflowSide ? request => onWorkflowSide(ready, request) : null} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : <div className="ps-moa-empty" role="status">Connecting…</div>}
         </div>
         {ready && mobile && mobileStatusHost && createPortal(<SessionHeaderStatus controller={ready} />, mobileStatusHost)}
         {ready && visible && <ModalLayer controller={ready} />}
@@ -698,6 +698,25 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
         const empty = emptyMoaPanel();
         replace(node.id, { id: crypto.randomUUID(), type: "split", direction, ratio: 50, first: node.id ? node : emptyMoaPanel(), second: empty }, empty.id); setMenu(null);
     };
+    // UI-2: a workflow panel's side-pane request (a header panel, a step's details) opens that workflow in the workspace,
+    // where its side pane is, on the same panel, step and run, carrying any unsaved YAML (bound to its session).
+    const openWorkflowSide = (node, child, request) => {
+        const sessionId = request?.sessionId ?? node.sessionId;
+        const childView = child?.getState().ui.workflowViews?.[sessionId] ?? {};
+        const buffer = child?.workflowDraftBuffers?.get(sessionId);
+        const draftEdit = buffer && buffer.sessionId === sessionId && buffer.text !== buffer.base?.yaml ? buffer
+            : childView.draftEdit?.sessionId === sessionId ? childView.draftEdit : null;
+        zoom(node);
+        controller.dispatch({ type: "ui/workflowView", sessionId, view: {
+            sidePanel: request?.panel ?? null,
+            ...(request?.nodeId ? { selectedNodeId: request.nodeId } : {}),
+            ...(childView.selectedRunId !== undefined ? { selectedRunId: childView.selectedRunId } : {}),
+            ...(childView.mainTab ? { mainTab: childView.mainTab } : {}),
+            ...(draftEdit ? { draftEdit, draftDirty: true } : {}),
+        } });
+        controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
+        controller.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
+    };
     const zoom = (node, artifact = null) => {
         setError("");
         const source = moa.panels.current.get(`${layout.id}:${node.id}`)?.getState();
@@ -791,7 +810,7 @@ function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout
         const session = state.sessions.byId[node.sessionId], title = node.type === "empty" ? "Empty panel" : session?.title || "Session";
         const active = selected === node.id;
         return <section key={node.id} style={mobile ? undefined : style} hidden={mobile && !active} className={`ps-moa-panel ${active ? "is-focused" : ""} ${dragging.drag?.sourceId === node.id ? "is-drag-source" : ""}`} tabIndex={-1} data-moa-panel={visible ? node.id : undefined} data-session-id={visible ? node.sessionId : undefined} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onPointerDown={e => dragging.onPointerDown(e, node.id)} onLostPointerCapture={dragging.onLostPointerCapture} onPointerDownCapture={e => { if (e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onClickCapture={e => { dragging.onClickCapture(e); if (!e.isPropagationStopped()) setFocus(node.id); }} onFocusCapture={e => { if (e.target.matches?.(":focus-visible") || e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); if (dragging.drag) return; setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
-            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} panels={moa.panels} panelKey={`${layout.id}:${node.id}`} node={node} mobile={mobile} visible={visible} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={visible && active && !dashboardPicker && !dashboardEdit && !picker && !menu && !clearing && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={node.sessionId} refreshScheduler={moa.refreshScheduler} composerHost={composerHost} perChat={value.composerMode !== "shared"} onArtifact={(sessionId, filename) => zoom(node, { sessionId, filename })} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span></>, actions: <>{splitButtons(node)}<IconButton label="Focus panel" icon="focus" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
+            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} panels={moa.panels} panelKey={`${layout.id}:${node.id}`} node={node} mobile={mobile} visible={visible} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={visible && active && !dashboardPicker && !dashboardEdit && !picker && !menu && !clearing && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={node.sessionId} refreshScheduler={moa.refreshScheduler} composerHost={composerHost} perChat={value.composerMode !== "shared"} onArtifact={(sessionId, filename) => zoom(node, { sessionId, filename })} onWorkflowSide={(child, request) => openWorkflowSide(node, child, request)} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span></>, actions: <>{splitButtons(node)}<IconButton label="Focus panel" icon="focus" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
 
         </section>;
     }

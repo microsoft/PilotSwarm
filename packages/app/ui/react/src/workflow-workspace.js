@@ -141,7 +141,7 @@ const MAIN_TABS = [["graph", "Graph"], ["yaml", "YAML"]];
  * button, whose pressed look says the side pane shows it; a second press goes back to Step details. The graph stays
  * mounted while the YAML is shown, so it comes back at the same zoom and place.
  */
-export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = false }) {
+export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = false, onOpenSide = null }) {
     const { sessionId, session, view, places, nodes, selected, select, openSide, showSide, status, v2, definition, readError, workflowModel, selectedRunId,
         ownModelLoaded, runControls, variables, publication, draftEditor, testControls, runNotice, definitionModel, activity, notices, test,
         sidePanel, mainTab, noticeInYaml } = useWorkflowView(controller);
@@ -164,15 +164,23 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
     // Elsewhere selecting a step opens its details beside the graph, as before, and so does mobile Zen, which leaves Zen for
     // the details it asks for (onNodeSelected). Step details always opens (`open`).
     const selectNode = (id, { open = false } = {}) => {
-        select(id, { open: open || !mobile || Boolean(onNodeSelected) || id === view.selectedNodeId });
+        if (onOpenSide && (open || id === view.selectedNodeId)) {
+            select(id, { open: false });
+            onOpenSide({ sessionId, panel: null, nodeId: id });
+            return;
+        }
+        select(id, { open: !onOpenSide && (open || !mobile || Boolean(onNodeSelected) || id === view.selectedNodeId) });
         onNodeSelected?.();
     };
     // A panel's icon button: pressed while the side pane shows that panel (a second press goes back to Step details);
     // otherwise it shows the panel and brings the side pane up (on a phone, the details layer).
+    // A host without a side pane of its own (a Master of Agents panel; UI-2) takes the request instead: it opens this
+    // workflow where one is, on that panel, its step, its run and any unsaved YAML.
     const panelButton = (panel, props) => {
         const shown = sideShown && sidePanel === panel;
         return h(WorkflowToolButton, { ...props, "aria-expanded": shown,
-            onClick: () => (shown ? showSide(null, { open: false }) : showSide(panel)) });
+            onClick: () => (onOpenSide ? onOpenSide({ sessionId, panel, nodeId: selected?.id ?? null })
+                : shown ? showSide(null, { open: false }) : showSide(panel)) });
     };
     const setTab = tab => controller.dispatch({ type: "ui/workflowView", sessionId, view: { mainTab: tab } });
     const onTabKey = event => {
