@@ -8,6 +8,7 @@ import {
 } from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
+import { redactWorkflowSecrets } from "./redact.js";
 import { schemaSetFor } from "./schema.js";
 import {
     correlationTextOf,
@@ -373,7 +374,8 @@ export async function inspectWorkflowV2Controller(host: Pick<WorkflowV2Host, "du
     const ended = controller.status === "NotFound" || ENDED_ORCHESTRATION_STATUSES.includes(controller.status);
     return {
         status: controller.status,
-        error: controller.error === undefined ? null : jsonbSafeText(controller.error, 2_000),
+        // SF-6 verification: a controller's error is shown in reads and stored in recover receipts with its secrets hidden.
+        error: controller.error === undefined ? null : jsonbSafeText(redactWorkflowSecrets(controller.error), 2_000),
         needsRecovery: ACTIVE_RUN_STATUSES.includes(run.status) && ended,
     };
 }

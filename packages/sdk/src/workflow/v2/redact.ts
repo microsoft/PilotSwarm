@@ -16,7 +16,9 @@ import type { JsonValue } from "./json.js";
 const SECRET_NAME = "[A-Za-z0-9_]{0,40}(?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|private[_-]?key|account[_-]?key|"
     + "client[_-]?secret|authorization|signature|credentials?|cookie)[A-Za-z0-9_-]{0,40}|sig|key|pass";
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,30}:\/\/)[^\s/@'"<>]+@/gi;
-const AUTH_SCHEME = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/g;
+// Any letter case (SF-6 verification); a credential is 8 or more characters with a digit or a symbol, so prose such
+// as "basic validation" is left alone.
+const AUTH_SCHEME = /\b(Bearer|Basic)\s+(?=[A-Za-z0-9._~+/=-]{8})(?=[A-Za-z]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]+/gi;
 const JSON_FIELD = new RegExp(`"(${SECRET_NAME})"(\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`, "gi");
 const ESCAPED_JSON_FIELD = new RegExp(`\\\\"(${SECRET_NAME})\\\\"(\\s*:\\s*)\\\\"(?:[^"\\\\]|\\\\[^"])*\\\\"`, "gi");
 const KEY_VALUE = new RegExp(`\\b(${SECRET_NAME})(\\s*[=:]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;&'"<>)\\]}]+)`, "gi");
@@ -34,16 +36,45 @@ export function redactWorkflowSecrets(text: string): string {
 
 const SECRET_NAME_EXACT = new RegExp(`^(?:${SECRET_NAME})$`, "i");
 
-/** An error value (text, or a JSON error with its code, message and details) with every secret hidden; null stays null. */
-export function redactWorkflowErrorValue<T extends JsonValue | null | undefined>(value: T): T {
+/**
+ * The error codes whose structured details name a workflow variable in a member called `key` (a KV key, not a secret).
+ * Elsewhere a member called `key` is hidden like any other secret-named member (SF-6 verification).
+ */
+const KEY_SAFE_CODES: ReadonlySet<string> = new Set(["KV_LIMIT", "KV_KEY_NOT_FOUND", "KV_KEY_INVALID", "KV_CONFLICT"]);
+
+/**
+ * An error value (text, or a JSON error with its code, message and details) with every secret hidden; null stays null.
+ * A member named `key` is kept only in an error whose code says it names a workflow variable (`keepKey`, or the
+ * envelope's own `code`).
+ */
+export function redactWorkflowErrorValue<T extends JsonValue | null | undefined>(value: T, options: { keepKey?: boolean } = {}): T {
     if (typeof value === "string") return redactWorkflowSecrets(value) as T;
-    if (Array.isArray(value)) return value.map(item => redactWorkflowErrorValue(item)) as T;
+    if (Array.isArray(value)) return value.map(item => redactWorkflowErrorValue(item, options)) as T;
     if (value && typeof value === "object") {
+        const record = value as { [key: string]: JsonValue };
+        const keepKey = options.keepKey === true || (typeof record.code === "string" && KEY_SAFE_CODES.has(record.code));
         // Object.fromEntries defines each member as its own, so a JSON member named __proto__ stays one (VR-5).
-        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
-            typeof item === "string" && SECRET_NAME_EXACT.test(key) && key !== "key" ? "<hidden>" : redactWorkflowErrorValue(item as JsonValue)])) as T;
+        return Object.fromEntries(Object.entries(record).map(([key, item]) => [key,
+            typeof item === "string" && SECRET_NAME_EXACT.test(key) && !(key === "key" && keepKey) ? "<hidden>"
+                : redactWorkflowErrorValue(item, { keepKey })])) as T;
     }
     return value;
+}
+
+/** Whether a refusal's code names a workflow variable in its details' `key` member. */
+export function workflowErrorKeepsKey(code: string): boolean {
+    return KEY_SAFE_CODES.has(code);
+}
+
+/**
+ * Error text as it is stored (a node's, an outbox message's or a run's error column; SF-6 verification): JSON text has
+ * its secrets hidden member by member and is written back as canonical JSON; any other text has them hidden as text.
+ */
+export function redactWorkflowErrorText(text: string, canonical: (value: JsonValue) => string): string {
+    let parsed: JsonValue;
+    try { parsed = JSON.parse(text) as JsonValue; } catch { return redactWorkflowSecrets(text); }
+    const redacted = redactWorkflowErrorValue(parsed);
+    return JSON.stringify(redacted) === JSON.stringify(parsed) ? text : canonical(redacted);
 }
 
 /** The fields of a workflow event that carry error text. */

@@ -8,7 +8,7 @@ import {
     utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue,
 } from "./json.js";
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
-import { redactWorkflowErrorValue, redactWorkflowEventData } from "./redact.js";
+import { redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets } from "./redact.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -1618,6 +1618,14 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
     return `nx-${sha256Hex(canonicalJson([runId, scopeId, nodeId, ordinal])).slice(0, 40)}`;
 }
 
+/**
+ * A result's text as it is stored (SF-6 verification): a runtime error's has its secrets hidden before it is written,
+ * so the node's and the outbox message's error columns never hold them; a business result's is stored as it is.
+ */
+function storedResultText(result: Pick<NodeResultInput, "resultKind" | "valueText">): string {
+    return result.resultKind === "runtime_error" ? redactWorkflowErrorText(result.valueText, canonicalJson) : result.valueText;
+}
+
 export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
@@ -1964,7 +1972,7 @@ export class WorkflowStore {
             if (update.state !== undefined) updates.state = update.state;
             if (update.title !== undefined) updates.title = jsonbSafeText(update.title, 200);
             if (update.titleLocked !== undefined) updates.titleLocked = update.titleLocked;
-            if (update.lastError !== undefined) updates.lastError = update.lastError === null ? null : jsonbSafeText(update.lastError, 4_000);
+            if (update.lastError !== undefined) updates.lastError = update.lastError === null ? null : jsonbSafeText(redactWorkflowSecrets(update.lastError), 4_000);
             if (update.orchestrationId !== undefined) updates.orchestrationId = update.orchestrationId;
             if (update.touch) updates.lastActiveAt = new Date().toISOString();
             if (Object.keys(updates).length > 0) {
@@ -3194,8 +3202,8 @@ export class WorkflowStore {
                 [input.nodeExecutionId, input.runId, input.scopeId, input.nodeId, input.ordinal, input.nodeType, input.predecessorId,
                     input.arrivalRoute, input.inputText, inputSha256, result ? "completed" : "pending",
                     result?.outcome ?? null, result?.resultKind ?? null,
-                    result?.resultKind === "business" ? result.valueText : null,
-                    result?.resultKind === "runtime_error" ? result.valueText : null,
+                    result?.resultKind === "business" ? storedResultText(result) : null,
+                    result?.resultKind === "runtime_error" ? storedResultText(result) : null,
                     result?.winner ?? null, input.kvRevision, claim ? null : waitSeconds,
                     receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null, decidedAt,
                     run.mode === "test" && run.virtualNow !== null ? run.virtualNow.toISOString() : null],
@@ -3447,7 +3455,7 @@ export class WorkflowStore {
                         winner = $5, completed_at = now()
                   WHERE node_execution_id = $1 AND state = 'pending'
                   RETURNING *`,
-                [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner],
+                [nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner],
             ) : { rows: [] };
             if (rows[0]) {
                 await this.project(client, projection);
@@ -4041,7 +4049,7 @@ export class WorkflowStore {
                         AND (deadline_at <= (SELECT at FROM decided)
                              OR EXISTS (SELECT 1 FROM ${this.t.requestOperations} WHERE exchange_id = $1 AND outcome = 'expired'))
                       RETURNING *`,
-                    [nodeExecutionId, result.outcome, result.valueText]);
+                    [nodeExecutionId, result.outcome, storedResultText(result)]);
                 if (rows[0]) {
                     await this.project(client, projection);
                     return { result: "elapsed" as const, node: nodeFrom(rows[0]) };
@@ -4105,7 +4113,7 @@ export class WorkflowStore {
                   WHERE node_execution_id = $1 AND state = 'pending' AND deadline_at > (SELECT at FROM decided)
                     AND NOT EXISTS (SELECT 1 FROM ${this.t.requestOperations} WHERE exchange_id = $1 AND outcome = 'expired')
                   RETURNING *`,
-                [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]);
+                [nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner]);
             if (!completed[0]) return { result: "expired" as const, node };
             await this.project(client, projection);
             return { result: "failed" as const, node: nodeFrom(completed[0]) };
@@ -4170,11 +4178,11 @@ export class WorkflowStore {
                             error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
                             winner = $5, completed_at = now()
                       WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
-                    [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]);
+                    [nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner]);
                 const { rows: failed } = await client.query(
                     `UPDATE ${this.t.outbox} SET state = 'failed', decided_at = clock_timestamp(), error = $2
                       WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`,
-                    [nodeExecutionId, result.valueText]);
+                    [nodeExecutionId, storedResultText(result)]);
                 if (!completed[0] || !failed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${nodeExecutionId} changed under its locks.`);
                 await this.project(client, projection);
                 return { kind: "refused" as const, node: nodeFrom(completed[0]), message: outboxFrom(failed[0]) };
@@ -4248,7 +4256,7 @@ export class WorkflowStore {
             if (pending.mode !== "request") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a request.`);
             const { rows: failed } = await client.query(
                 `UPDATE ${this.t.outbox} SET state = 'failed', decided_at = clock_timestamp(), error = $2
-                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`, [nodeExecutionId, result.valueText]);
+                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`, [nodeExecutionId, storedResultText(result)]);
             const { rows: completed } = live && failed[0] ? await client.query(
                 `UPDATE ${this.t.nodes}
                     SET state = 'completed', outcome = $2, result_kind = $3,
@@ -4256,7 +4264,7 @@ export class WorkflowStore {
                         error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
                         winner = $5, completed_at = now()
                   WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
-                [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]) : { rows: [] };
+                [nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner]) : { rows: [] };
             if (completed[0]) await this.project(client, projection);
             const node = completed[0] ? nodeFrom(completed[0]) : await this.nodeIn(client, nodeExecutionId);
             return { won: Boolean(completed[0]), node, message: failed[0] ? outboxFrom(failed[0]) : pending };
@@ -4468,11 +4476,11 @@ export class WorkflowStore {
                             error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
                             winner = $5, completed_at = now()
                       WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
-                    [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]);
+                    [nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner]);
                 const { rows: failed } = await client.query(
                     `UPDATE ${this.t.outbox} SET state = 'failed', decided_at = clock_timestamp(), error = $2
                       WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`,
-                    [nodeExecutionId, result.valueText]);
+                    [nodeExecutionId, storedResultText(result)]);
                 if (!completed[0] || !failed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Send ${nodeExecutionId} changed under its locks.`);
                 await this.project(client, projection);
                 return { kind: "refused" as const, node: nodeFrom(completed[0]), message: outboxFrom(failed[0]) };
@@ -4590,7 +4598,7 @@ export class WorkflowStore {
             }
             const { rows: failed } = await client.query(
                 `UPDATE ${this.t.outbox} SET state = 'failed', decided_at = clock_timestamp(), error = $2
-                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`, [nodeExecutionId, result.valueText]);
+                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`, [nodeExecutionId, storedResultText(result)]);
             const { rows: completed } = live && failed[0] ? await client.query(
                 `UPDATE ${this.t.nodes}
                     SET state = 'completed', outcome = $2, result_kind = $3,
@@ -4598,7 +4606,7 @@ export class WorkflowStore {
                         error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
                         winner = $5, completed_at = now()
                   WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
-                [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]) : { rows: [] };
+                [nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner]) : { rows: [] };
             if (completed[0]) await this.project(client, projection);
             const node = completed[0] ? nodeFrom(completed[0]) : await this.nodeIn(client, nodeExecutionId);
             return { delivered: false, won: Boolean(completed[0]), node, message: failed[0] ? outboxFrom(failed[0]) : pending };
@@ -5457,7 +5465,7 @@ export class WorkflowStore {
                         AND (deadline_at <= (SELECT at FROM decided)
                              OR EXISTS (SELECT 1 FROM ${this.t.agentCompletions} WHERE node_execution_id = $1 AND outcome = 'expired'))
                       RETURNING *`,
-                    [nodeExecutionId, result.outcome, result.valueText]);
+                    [nodeExecutionId, result.outcome, storedResultText(result)]);
                 if (rows[0]) {
                     await this.project(client, projection);
                     return { result: "elapsed" as const, node: nodeFrom(rows[0]) };
@@ -5757,7 +5765,8 @@ export class WorkflowStore {
                     SET status = $2, terminal_node_id = $3, terminal_outcome = $4, terminal_output = $5, terminal_error = $6,
                         paused_from = NULL, updated_at = now(), finished_at = now()
                   WHERE run_id = $1 RETURNING *`,
-                [input.runId, input.status, input.terminalNodeId, input.terminalOutcome, input.outputText, input.errorText]);
+                [input.runId, input.status, input.terminalNodeId, input.terminalOutcome, input.outputText,
+                    input.errorText === null ? null : redactWorkflowErrorText(input.errorText, canonicalJson)]);
             if (input.terminalNode) {
                 const { result } = input.terminalNode;
                 await client.query(
@@ -5767,7 +5776,7 @@ export class WorkflowStore {
                             error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
                             winner = $5, completed_at = now()
                       WHERE node_execution_id = $1 AND run_id = $6 AND state = 'pending'`,
-                    [input.terminalNode.nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner, input.runId]);
+                    [input.terminalNode.nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner, input.runId]);
             }
             await client.query(
                 `UPDATE ${this.t.nodes}
@@ -6215,7 +6224,7 @@ export class WorkflowStore {
                             winner = $5, completed_at = clock_timestamp()
                       WHERE node_execution_id = $1 AND state = 'pending'
                       RETURNING *`,
-                    [record.nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]);
+                    [record.nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner]);
                 if (!completed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${record.nodeExecutionId} changed under its lock.`);
                 decided = nodeFrom(completed[0]);
             }

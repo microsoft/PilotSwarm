@@ -36,10 +36,14 @@ test("JSON-shaped secret fields are hidden, in plain and in escaped JSON text", 
 });
 
 test("an error value has its secrets hidden at any depth; a field named for a secret is hidden whole", () => {
-    const value = { code: "execution_failed", message: `password=${SENTINEL}`, details: [{ token: SENTINEL, key: "threshold", tokenLimit: 5 }, `Bearer ${SENTINEL}`] };
+    const value = { code: "execution_failed", message: `password=${SENTINEL}`, details: [{ token: SENTINEL, key: SENTINEL, tokenLimit: 5 }, `Bearer ${SENTINEL}`] };
+    // SF-6 verification: a member called `key` is hidden too, unless the error's code says it names a workflow variable.
     assert.deepEqual(redactWorkflowErrorValue(value), {
-        code: "execution_failed", message: "password=<hidden>", details: [{ token: "<hidden>", key: "threshold", tokenLimit: 5 }, "Bearer <hidden>"],
+        code: "execution_failed", message: "password=<hidden>", details: [{ token: "<hidden>", key: "<hidden>", tokenLimit: 5 }, "Bearer <hidden>"],
     });
+    assert.deepEqual(redactWorkflowErrorValue({ code: "KV_LIMIT", message: "too long", details: { key: "threshold" } }),
+        { code: "KV_LIMIT", message: "too long", details: { key: "threshold" } });
+    assert.deepEqual(redactWorkflowErrorValue({ key: "threshold" }, { keepKey: true }), { key: "threshold" });
     assert.equal(redactWorkflowErrorValue(null), null);
     assert.equal(redactWorkflowErrorValue(7), 7);
 });
@@ -101,4 +105,41 @@ test("VR-5: an own __proto__ member survives redaction of an error value and of 
     assert.equal(out.error.message, "secret=<hidden>");
     assert.equal(Object.getPrototypeOf(out), Object.prototype);
     assert.doesNotThrow(() => canonicalJson(out));
+});
+
+// SF-6 verification: the remaining exits (tests M-06).
+test("SF-6: a lowercase bearer or basic credential is hidden whole", () => {
+    for (const text of [`authorization: bearer ${SENTINEL}`, `Authorization: BEARER ${SENTINEL}`, `header basic ${SENTINEL}`]) {
+        const redacted = redactWorkflowSecrets(text);
+        assert.ok(!redacted.includes(SENTINEL), redacted);
+    }
+    for (const prose of ["Basic validation failed for step one.", "the bearer of this message"]) assert.equal(redactWorkflowSecrets(prose), prose);
+});
+
+test("SF-6: stored error text is redacted as JSON when it is JSON, and as text otherwise; unchanged text stays byte-identical", async () => {
+    const { redactWorkflowErrorText } = await import("../../dist/workflow/v2/redact.js");
+    const { canonicalJson } = await import("../../dist/workflow/v2/json.js");
+    const json = JSON.stringify({ code: "execution_failed", message: `postgres://u:${SENTINEL}@h/db`, details: { key: SENTINEL } });
+    const stored = redactWorkflowErrorText(json, canonicalJson);
+    assert.ok(!stored.includes(SENTINEL), stored);
+    assert.deepEqual(JSON.parse(stored).details, { key: "<hidden>" });
+    assert.equal(redactWorkflowErrorText(`plain token=${SENTINEL}`, canonicalJson), "plain token=<hidden>");
+    const clean = JSON.stringify({ code: "timed_out", message: "The run reached its deadline." });
+    assert.equal(redactWorkflowErrorText(clean, canonicalJson), clean);
+});
+
+test("SF-6: a controller's error is shown and kept in recover receipts with its secrets hidden", async () => {
+    const { inspectWorkflowV2Controller } = await import("../../dist/workflow/v2/service.js");
+    const view = await inspectWorkflowV2Controller({ duroxideClient: { getStatus: async () => ({ status: "Failed", error: `boom {"password":"${SENTINEL}"} Bearer ${SENTINEL}` }) } },
+        { status: "running", controllerInstanceId: "ctl" });
+    assert.equal(view.status, "Failed");
+    assert.equal(view.needsRecovery, true);
+    assert.ok(!view.error.includes(SENTINEL), view.error);
+});
+
+test("SF-6: a refusal keeps a KV key in its details, and hides any other `key`", () => {
+    const kv = workflowStoreFailure(new WorkflowStoreError("KV_LIMIT", "KV keys are 1-128 characters.", { key: "threshold" }));
+    assert.deepEqual(kv.details, { key: "threshold" });
+    const other = workflowStoreFailure(new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "bad", { key: SENTINEL }));
+    assert.deepEqual(other.details, { key: "<hidden>" });
 });

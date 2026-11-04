@@ -1,5 +1,5 @@
 import type { JsonValue } from "./json.js";
-import { redactWorkflowErrorValue, redactWorkflowSecrets } from "./redact.js";
+import { redactWorkflowErrorValue, redactWorkflowSecrets, workflowErrorKeepsKey } from "./redact.js";
 import { WorkflowStoreError } from "./store.js";
 
 /**
@@ -46,7 +46,7 @@ export function workflowStoreFailure(error: unknown): WorkflowStoreError {
     // A refusal keeps its code, its message and its details, with any secret hidden (SF-6).
     if (error instanceof WorkflowStoreError) {
         const message = redactWorkflowSecrets(error.message);
-        const details = redactWorkflowErrorValue(error.details);
+        const details = redactWorkflowErrorValue(error.details, { keepKey: workflowErrorKeepsKey(error.code) });
         return message === error.message && JSON.stringify(details) === JSON.stringify(error.details) ? error : new WorkflowStoreError(error.code, message, details);
     }
     const message = sanitizeWorkflowErrorText(error) || "No reason was given.";
