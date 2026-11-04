@@ -1,3 +1,4 @@
+import { formatLocalTime } from "./formatting.js";
 import { WORKFLOW_ATTENTION_OUTCOMES, WORKFLOW_CONTROL_EVENT_TYPES, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
 
 const DETAIL_LIMIT = 40;
@@ -139,7 +140,8 @@ export function appendWorkflowProgress(chat, event, message) {
         step, outcome: data.outcome, durationMs: data.durationMs,
         tools: Array.isArray(data.toolCalls) ? data.toolCalls.length : 0,
         outputPreview: typeof data.outputPreview === "string" ? data.outputPreview.slice(0, 1000) : null,
-        checkedAt: Number.isNaN(timestamp.getTime()) ? null : `${timestamp.toISOString().slice(11, 19)} UTC`,
+        // The reader's own time zone, with its short name (owner decision local-time-20261104).
+        checkedAt: Number.isNaN(timestamp.getTime()) ? null : formatLocalTime(timestamp, { clock: true }),
     }];
     const progress = {
         stateId: data.stateId,

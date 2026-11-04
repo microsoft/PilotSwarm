@@ -12,7 +12,7 @@
  * never read as a legacy workflow, and a legacy payload is never read as V2.
  * Canvas ticks are not read at all: V2 does not draw a workflow canvas.
  */
-import { shortSessionId as shortId } from "./formatting.js";
+import { formatLocalTime, shortSessionId as shortId } from "./formatting.js";
 
 // Agent and parallel states (IR 8) and stopped runs are written only by controller 1.9.0 (INACTIVE: only tests run it);
 // they are read here so a test deployment shows them, and nothing else changes for the others.
@@ -744,7 +744,7 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null, rea
             return { phase: run?.pauseSettled === false ? "pausing" : "paused", ended: false, label: mode + label };
         }
         case "running": return run?.stop
-            ? { phase: "stopping", ended: false, label: `${mode}Stopping · steps already started may finish until ${run.stop.deadline ?? "its deadline"}` }
+            ? { phase: "stopping", ended: false, label: `${mode}Stopping · steps already started may finish until ${run.stop.deadline ? shownTime(run.stop.deadline) : "its deadline"}` }
             : { phase: "running", ended: false, label: `${mode}Running` };
         default:
             return control?.kind === "paused" ? { phase: "paused", ended: false, label: "Paused" } : { phase: "none", ended: false, label: "No run yet" };
@@ -1455,11 +1455,17 @@ export function workflowV2ActorText(actor) {
     return null;
 }
 
-/** An event's time as "YYYY-MM-DD HH:MM:SS UTC", or null. Pure. */
-export function workflowV2EventTime(value) {
-    const ms = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
-    return Number.isFinite(ms) ? `${new Date(ms).toISOString().slice(0, 19).replace("T", " ")} UTC` : null;
+/**
+ * An event's or a deadline's time as people read it (owner decision local-time-20261104): "YYYY-MM-DD HH:MM:SS <zone>"
+ * in the reader's own time zone, the browser's (the terminal machine's in the TUI), with the zone's short name
+ * (formatLocalTime); null for no time. `timeZone` (an IANA name) fixes the zone, for tests. Stored data stays ISO UTC.
+ */
+export function workflowV2EventTime(value, timeZone = undefined) {
+    return formatLocalTime(value, { timeZone });
 }
+
+/** A time the read model or an event gives as ISO text, as people read it (workflowV2EventTime); the text as is when it is no time. */
+const shownTime = value => workflowV2EventTime(value) ?? value;
 
 const names = value => {
     const keys = Array.isArray(value) ? value.filter(key => typeof key === "string" && key) : [];
@@ -1528,7 +1534,7 @@ const WORKFLOW_EVENT_TEXT = {
         },
     },
     "workflow.stop_requested": {
-        short: data => ({ text: `Stop asked; steps already started may finish${text(data.deadlineAt) ? ` until ${data.deadlineAt}` : ""}${because(data.reason)}`, level: "warning" }),
+        short: data => ({ text: `Stop asked; steps already started may finish${text(data.deadlineAt) ? ` until ${shownTime(data.deadlineAt)}` : ""}${because(data.reason)}`, level: "warning" }),
     },
     "workflow.stopped": { short: data => ({ text: `Run stopped${because(data.reason)}${stoppedRunningText(data)}`, level: "warning" }) },
     "workflow.cancel_requested": {
@@ -1595,7 +1601,7 @@ const WORKFLOW_EVENT_TEXT = {
     "workflow.state_cancelled": { short: data => ({ text: `${StepOf(data)} stopped`, level: "warning" }) },
     "workflow.agent_spawned": {
         short: data => ({ text: `Agent chat for ${stepOf(data)} created${text(data.childSessionId) ? ` (session ${shortId(data.childSessionId)})` : ""}`
-            + `${text(data.deadline) ? `; its time limit is ${data.deadline}` : ""}` }),
+            + `${text(data.deadline) ? `; its time limit is ${shownTime(data.deadline)}` : ""}` }),
     },
     "workflow.agent_ended": {
         short: data => ({ text: `Agent chat for ${stepOf(data)} ended${workflowV2AgentEndText(data.end) ? ` (${workflowV2AgentEndText(data.end)})` : ""}` }),
@@ -1608,7 +1614,7 @@ const WORKFLOW_EVENT_TEXT = {
     },
     "workflow.request_delivered": {
         short: data => ({ text: `Request${text(data.contract) ? ` ${data.contract}` : ""} sent${text(data.responderSessionId) ? ` to session ${shortId(data.responderSessionId)}` : ""}`
-            + `${text(data.deadlineAt) ? `; answer due by ${data.deadlineAt}` : ""}` }),
+            + `${text(data.deadlineAt) ? `; answer due by ${shownTime(data.deadlineAt)}` : ""}` }),
     },
     "workflow.response_wake_abandoned": {
         short: () => ({ text: "An answer arrived, but waking the run was not confirmed; the run collects the answer later", level: "warning" }),

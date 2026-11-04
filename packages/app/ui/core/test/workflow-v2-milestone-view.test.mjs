@@ -15,6 +15,10 @@ import {
 import { WorkflowV2NodeContent, WorkflowV2TestInterceptions, workflowV2RunPickerModel } from "../../react/src/workflow-v2-panels.js";
 import { RUN, readModel, row, done } from "./workflow-v2-fixtures.mjs";
 
+// Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
+// result depends on the zone of the machine that runs it.
+process.env.TZ = "UTC";
+
 /** An agent state, a parallel state whose body is one script and a terminal, and the outer terminals. */
 const milestoneStates = [
     { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer", package: "review-kit", version: "1.2.0" }, timeoutSeconds: 600,
@@ -53,7 +57,7 @@ test("a parallel state is drawn leading to its body's first state, as how each b
 test("a stopping run says what may still settle; a stopped run is ended, and the picker names it", () => {
     const stopping = workflowV2RunStatus({ run: { runId: RUN, mode: "live", status: "running", stop: { deadline: "2026-11-02T10:00:00.000Z" } }, runId: RUN });
     assert.equal(stopping.phase, "stopping");
-    assert.match(stopping.label, /Stopping · steps already started may finish until 2026-11-02T10:00:00.000Z/);
+    assert.match(stopping.label, /Stopping · steps already started may finish until 2026-11-02 10:00:00 UTC/);
     const stopped = projectWorkflowV2({ readModel: readModel({ graph, run: { status: "stopped" }, nodeExecutions: [done("review", 1, "accepted")] }) });
     assert.equal(stopped.status.phase, "stopped");
     assert.equal(stopped.status.ended, true);

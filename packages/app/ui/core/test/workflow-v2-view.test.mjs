@@ -9,6 +9,10 @@ import {
     RUN, states, requestStates, startedData, legacyStartedData, ev, started, completed, runtimeError, ended, row, done, readModel,
 } from "./workflow-v2-fixtures.mjs";
 
+// Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
+// result depends on the zone of the machine that runs it.
+process.env.TZ = "UTC";
+
 const definition = workflowDefinition(startedData);
 const byId = (projection, id) => projection.nodes.find(node => node.id === id);
 

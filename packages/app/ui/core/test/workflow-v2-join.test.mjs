@@ -16,6 +16,10 @@ import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { WorkflowGroupBox, WorkflowJoinBar } from "../../react/src/workflow-graph.js";
 import { readModel, row, done } from "./workflow-v2-fixtures.mjs";
 
+// Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
+// result depends on the zone of the machine that runs it.
+process.env.TZ = "UTC";
+
 /** The owner's case: for each reviewer, prepare it, have an agent review, and end the branch; then pause, or end blocked. */
 const fan = (extra = {}) => ({ id: "fan", type: "parallel", forEach: "${input.reviewers}", concurrency: 2, join: "all_required", failFast: false,
     body: { initial: "prepare", states: ["prepare", "review", "reviewed"] }, outcomes: ["joined", "blocked"],

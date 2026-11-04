@@ -21,6 +21,10 @@ import {
 import { WorkflowV2NodeContent, WorkflowV2RunActivity } from "../../react/src/workflow-v2-panels.js";
 import { RUN, done, readModel } from "./workflow-v2-fixtures.mjs";
 
+// Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
+// result depends on the zone of the machine that runs it.
+process.env.TZ = "UTC";
+
 const at = minute => `2026-11-03T08:${String(minute).padStart(2, "0")}:00.000Z`;
 const event = (seq, eventType, data, minute = seq) => ({ seq, eventType, data: { runId: RUN, ...data }, createdAt: at(minute) });
 const ALICE = { kind: "user", provider: "test", subject: "alice", displayName: "Alice" };
@@ -56,14 +60,14 @@ test("the activity lists who did what, newest first, for one run and one visit",
     // Each kind of event the list knows, in plain words.
     const one = (type, data) => workflowV2Activity([event(1, type, data)], { runId: RUN })[0]?.what;
     assert.equal(one("workflow.stop_requested", { deadlineAt: "2026-11-03T09:00:00Z", reason: "release" }),
-        "Stop asked; steps already started may finish until 2026-11-03T09:00:00Z: release");
+        "Stop asked; steps already started may finish until 2026-11-03 09:00:00 UTC: release");
     assert.equal(one("workflow.stopped", { graceExpired: true, cancelledCount: 2 }), "Run stopped; 2 steps were still running when the time to finish ended, so they were cancelled");
     assert.equal(one("workflow.cancelled", { command: "delete", deleted: true }), "Run cancelled (the workflow was deleted)");
     assert.equal(one("workflow.agent_spawned", { stateId: "review", childSessionId: "child-1234567890", deadline: "2026-11-03T10:00:00Z" }),
-        "Agent chat for step 'review' created (session child-12); its time limit is 2026-11-03T10:00:00Z");
+        "Agent chat for step 'review' created (session child-12); its time limit is 2026-11-03 10:00:00 UTC");
     assert.equal(one("workflow.agent_ended", { stateId: "review", end: "cancel" }), "Agent chat for step 'review' ended (cancelled)");
     assert.equal(one("workflow.request_delivered", { contract: "Review@1", responderSessionId: "reviewer-1", deadlineAt: "2026-11-03T10:00:00Z" }),
-        "Request Review@1 sent to session reviewer; answer due by 2026-11-03T10:00:00Z");
+        "Request Review@1 sent to session reviewer; answer due by 2026-11-03 10:00:00 UTC");
     assert.equal(one("workflow.response_wake_abandoned", {}), "An answer arrived, but waking the run was not confirmed; the run collects the answer later");
     assert.equal(one("workflow.state_completed", { stateId: "review", outcome: "accepted" }), "Step 'review' ended 'accepted'");
     assert.equal(one("workflow.completed", { outcome: "succeeded", stateId: "done" }), "Run ended succeeded at 'done'");

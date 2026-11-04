@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { appendEventToHistory, buildHistoryModel } from "../src/index.js";
 
+// Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
+// result depends on the zone of the machine that runs it.
+process.env.TZ = "UTC";
+
 function fixture() {
     let seq = 0;
     const event = (eventType, data, sessionId = "workflow") => ({

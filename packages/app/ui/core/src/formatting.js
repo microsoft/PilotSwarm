@@ -240,6 +240,42 @@ export function formatDisplayDateTime(value, opts = {}) {
     }
 }
 
+/*
+ * One formatter per time zone, built lazily (see above): the reader's own zone under the key "" (the browser's in the
+ * portal, the terminal machine's in the TUI; resolved when it is first used), and any zone a caller names. The parts
+ * are read in "en-US" so the layout and the zone's short name ("PST", "UTC", "GMT+1") do not depend on the locale.
+ */
+const localTimeFormatters = new Map();
+
+function localTimeFormat(timeZone) {
+    const key = timeZone ?? "";
+    let formatter = localTimeFormatters.get(key);
+    if (!formatter) {
+        formatter = new Intl.DateTimeFormat("en-US", {
+            ...(timeZone ? { timeZone } : {}),
+            year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+            hourCycle: "h23", timeZoneName: "short",
+        });
+        localTimeFormatters.set(key, formatter);
+    }
+    return formatter;
+}
+
+/**
+ * A time as people read it in their own time zone (owner decision local-time-20261104): "2026-11-04 12:30:00 PST" in
+ * the browser's zone (the terminal machine's in the TUI), with the zone's short name; `clock` gives only
+ * "12:30:00 PST". `timeZone` (an IANA name) fixes the zone, for tests. Stored data and the APIs stay ISO UTC; this is
+ * only how a time is shown. Null for a value that is not a time.
+ */
+export function formatLocalTime(value, { timeZone = undefined, clock = false } = {}) {
+    const ms = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
+    if (!Number.isFinite(ms)) return null;
+    const parts = {};
+    for (const part of localTimeFormat(timeZone).formatToParts(new Date(ms))) parts[part.type] = part.value;
+    const time = `${parts.hour}:${parts.minute}:${parts.second} ${parts.timeZoneName}`;
+    return clock ? time : `${parts.year}-${parts.month}-${parts.day} ${time}`;
+}
+
 export function formatHumanDurationSeconds(value) {
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "?";
     const totalSeconds = Math.round(value);

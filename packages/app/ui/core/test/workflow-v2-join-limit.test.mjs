@@ -26,6 +26,10 @@ import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { WorkflowJoinBar } from "../../react/src/workflow-graph.js";
 import { readModel, row, done } from "./workflow-v2-fixtures.mjs";
 
+// Times are shown in the reader's own time zone (owner decision local-time-20261104): this file fixes it to UTC, so no
+// result depends on the zone of the machine that runs it.
+process.env.TZ = "UTC";
+
 const literal = count => ({ count, sha256: "a".repeat(64) });
 /** A parallel step over reviewers: prepare, an agent review, the branch's end; then pause, or end blocked, or (with a time limit) late. */
 const fan = (extra = {}) => ({ id: "fan", type: "parallel", forEach: "${input.reviewers}", concurrency: 2, join: "all_required", failFast: false,
