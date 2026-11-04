@@ -35,7 +35,10 @@ export function deriveSessionStatus(input: TerminalSessionLike): PilotSwarmSessi
     if (input.orchestrationStatus === "Failed") return "failed";
     // A workflow's row is written by the workflow store, and a terminal one is its run's end. It stands while the
     // controller finishes (it ends the step children and tells the parent first, still publishing "running"), so a read
-    // in that moment answers the run's end, as the row and the session list do (review note on F-C2).
+    // in that moment answers the run's end, as the row and the session list do (review note on F-C2). Once the workflow
+    // has a live run the row is that run's: its admission resets the row to pending, and a test run's projections no
+    // longer change its state or error (WorkflowStore.project and insertRun; review B1). A draft with only test runs
+    // shows its latest test.
     if (input.sessionKind === "workflow" && (input.rowState === "failed" || input.rowState === "completed" || input.rowState === "cancelled")) {
         return input.rowState;
     }

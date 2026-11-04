@@ -1964,14 +1964,27 @@ export class WorkflowStore {
         }
     }
 
-    private async project(client: PoolClient, projection: SessionProjection | undefined): Promise<void> {
+    /**
+     * Apply a session projection: record its events, then update the session row. `owner` is the run the projection
+     * reports, when it reports one (review B1): once the workflow has a live run, the row's state and lastError are that
+     * run's, so a test run's projection (a draft's test, admitted before publication, that begins, pauses or ends after
+     * the live run was admitted) records its events and leaves both alone. The caller holds the workflow's session lock
+     * (lockLiveSession), as every live admission does, so the live run read here is the one the row follows.
+     */
+    private async project(client: PoolClient, projection: SessionProjection | undefined, owner?: Pick<WorkflowRunRow, "mode" | "workflowSessionId">)
+        : Promise<void> {
         if (!projection) return;
         // SF-6: the secrets in an event's error fields are hidden before it is stored.
         const events = (projection.events ?? []).map(event => ({ eventType: event.eventType, data: jsonbSafeValue(redactWorkflowEventData(event.data)) }));
         if (events.length > 0) {
             await client.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [projection.sessionId, JSON.stringify(events), null]);
         }
-        const update = projection.update;
+        let update = projection.update;
+        if (update && owner?.mode === "test" && (update.state !== undefined || update.lastError !== undefined)) {
+            const { rows: live } = await client.query(
+                `SELECT 1 FROM ${this.t.runs} WHERE workflow_session_id = $1 AND mode = 'live' LIMIT 1`, [owner.workflowSessionId]);
+            if (live.length > 0) update = { ...update, state: undefined, lastError: undefined };
+        }
         if (update) {
             const updates: Record<string, string | boolean | null> = {};
             if (update.state !== undefined) updates.state = update.state;
@@ -2087,7 +2100,7 @@ export class WorkflowStore {
             const run = await this.lockRun(client, input.runId);
             if (!live || !runNotBegun(run)) return { recorded: false, run };
             await this.insertReceiptOnce(client, run.workflowSessionId, input.receipt);
-            await this.project(client, input.projection);
+            await this.project(client, input.projection, run);
             return { recorded: true, run };
         });
     }
@@ -2142,8 +2155,11 @@ export class WorkflowStore {
         await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, 1, $2, $3)`,
             [start.runId, start.kvText, operationId]);
         if (start.mode === "live") {
+            // Review B1: the row follows its live run from its admission. A draft's test may have left it terminal, with
+            // that test's error; the live run starts pending with none. Every caller returns a replayed receipt before
+            // this, so a repeated start never resets the row of a live run that has ended.
             await client.query(`SELECT ${this.t.updateSession}($1, $2)`,
-                [definition.workflowSessionId, JSON.stringify({ orchestrationId: start.controllerInstanceId })]);
+                [definition.workflowSessionId, JSON.stringify({ orchestrationId: start.controllerInstanceId, state: "pending", lastError: null })]);
         }
         return { runId: start.runId, mode: start.mode, controllerInstanceId: start.controllerInstanceId, revision: revision.revision, irSha256: revision.irSha256 };
     }
@@ -2479,7 +2495,7 @@ export class WorkflowStore {
             await this.project(client, { sessionId: input.workflowSessionId, events: [{
                 eventType: input.pause ? "workflow.paused" : "workflow.resumed",
                 data: { runId: run.runId, actor: actorJson(input.actor), ...(input.reason ? { reason: jsonbSafeText(input.reason, 500) } : {}) },
-            }], update: { state: updated.status === "paused" ? "waiting" : updated.status === "admitted" ? "pending" : "running", touch: true } });
+            }], update: { state: updated.status === "paused" ? "waiting" : updated.status === "admitted" ? "pending" : "running", touch: true } }, run);
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: kind, runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
             return { receipt, replayed: false };
@@ -2637,7 +2653,7 @@ export class WorkflowStore {
             [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." })]);
         await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
             runId: run.runId, reason: jsonbSafeText(input.reason, 500), command, ...marks,
-        } }], update: { state: "cancelled", lastError: jsonbSafeText(input.reason, 500), touch: true } });
+        } }], update: { state: "cancelled", lastError: jsonbSafeText(input.reason, 500), touch: true } }, run);
         return runFrom(rows[0]);
     }
 
@@ -2954,13 +2970,13 @@ export class WorkflowStore {
                 const { rows } = await client.query(
                     `UPDATE ${this.t.runs} SET paused_from = 'running', updated_at = now() ${deadline} WHERE run_id = $1 RETURNING *`, [runId, ...deadlineParams]);
                 // The session row shows a paused workflow as waiting (the session statuses have no "paused").
-                await this.project(client, projection ? { ...projection, update: { ...projection.update, state: "waiting" } } : undefined);
+                await this.project(client, projection ? { ...projection, update: { ...projection.update, state: "waiting" } } : undefined, run);
                 return { run: runFrom(rows[0]), transitioned: true };
             }
             if (run.status !== "admitted") return { run, transitioned: false };
             const { rows } = await client.query(
                 `UPDATE ${this.t.runs} SET status = 'running', updated_at = now() ${deadline} WHERE run_id = $1 RETURNING *`, [runId, ...deadlineParams]);
-            await this.project(client, projection);
+            await this.project(client, projection, run);
             return { run: runFrom(rows[0]), transitioned: true };
         });
     }
@@ -5845,7 +5861,7 @@ export class WorkflowStore {
                   WHERE run_id = $1 AND state = 'pending'`,
                 [input.runId, canonicalJson({ code: "cancelled", message: input.endPending.message }), input.endPending.winner]);
             await this.decidePendingSendsIn(client, run.workflowSessionId, input.runId);
-            await this.project(client, input.projection);
+            await this.project(client, input.projection, run);
             return { ended: true, run: runFrom(rows[0]) };
         });
     }
@@ -5916,7 +5932,7 @@ export class WorkflowStore {
                 [run.runId, errorText, at]);
             await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
             const ended = { run: runFrom(rows[0]), graceExpired, cancelled };
-            await this.project(client, input.projection(ended));
+            await this.project(client, input.projection(ended), run);
             return { result: "ended" as const, ...ended };
         });
     }
@@ -5996,7 +6012,7 @@ export class WorkflowStore {
                 [run.runId, errorText]);
             await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
             const ended = { run: runFrom(rows[0]), cancelled };
-            await this.project(client, input.projection(ended));
+            await this.project(client, input.projection(ended), run);
             return { result: "ended" as const, ...ended };
         });
     }
@@ -6448,7 +6464,7 @@ export class WorkflowStore {
             const nodes = await count(`DELETE FROM ${this.t.nodes} WHERE run_id = $1`);
             const kvRevisions = await count(`DELETE FROM ${this.t.kvRevisions} WHERE run_id = $1`);
             await client.query(`DELETE FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
-            await this.project(client, options.projection?.(run));
+            await this.project(client, options.projection?.(run), run);
             return { pruned: true as const, run, deleted: { interceptions, inbox, nodes, kvRevisions } };
         });
     }
