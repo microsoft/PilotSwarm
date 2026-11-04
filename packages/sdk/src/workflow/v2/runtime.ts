@@ -35,6 +35,7 @@ import {
     isJsonObject,
     isStorableText,
     jsonbSafeText,
+    jsonSha256,
     previewJson,
     sha256Hex,
     WorkflowJsonError,
@@ -2262,7 +2263,7 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
     }
     if (node.type === "parallel") {
         return {
-            id: node.id, type: "parallel", forEach: node.forEach, concurrency: node.concurrency, join: node.join, failFast: node.failFast,
+            id: node.id, type: "parallel", forEach: workflowV2ForEachView(node.forEach), concurrency: node.concurrency, join: node.join, failFast: node.failFast,
             body: { initial: node.body.initial, states: node.body.states }, outcomes: [PARALLEL_JOINED, PARALLEL_BLOCKED], next: node.next,
         };
     }
@@ -2277,6 +2278,16 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
         };
     }
     return { id: node.id, type: "terminal", outcome: node.outcome };
+}
+
+/**
+ * A parallel state's forEach as the graph and the workflow.started event show it (adversarial review SF-3): a binding
+ * as its text; a literal list only as how many items it has and its digest, never its values, which a reader of the
+ * session may not be allowed to see (the definition's YAML is for those who may change the workflow).
+ */
+export function workflowV2ForEachView(forEach: JsonValue): JsonValue {
+    if (typeof forEach === "string") return forEach;
+    return { count: Array.isArray(forEach) ? forEach.length : null, sha256: jsonSha256(forEach) };
 }
 
 export function describeWorkflowV2States(ir: WorkflowIR): Array<{ [key: string]: JsonValue }> {
