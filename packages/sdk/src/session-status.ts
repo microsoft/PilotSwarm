@@ -59,14 +59,27 @@ export function deriveSessionStatus(input: TerminalSessionLike): PilotSwarmSessi
     return (input.status || input.rowState || "pending") as PilotSwarmSessionStatus;
 }
 
-/** A conversational session's completion, written back by a status read; never over a workflow's run end (R2-RT-2). */
+/**
+ * A conversational session's completion, written back by a status read. Never a workflow session's (R2-RT-2 and its
+ * re-check RC1): the workflow store writes its row, and a read's snapshot may be older than a run end or a repair
+ * committed since; a failed controller is written back by the store's own conditional write (recordControllerFailed).
+ */
 export function shouldSyncCompletedStatus(input: TerminalSessionLike): boolean {
-    return !workflowOwnsTerminalRow(input) && isCompletedTerminalSession(input) && input.rowState !== "completed";
+    return input.sessionKind !== "workflow" && isCompletedTerminalSession(input) && input.rowState !== "completed";
 }
 
-/** A failed orchestration, written back by a status read; never over a workflow's run end (R2-RT-2). */
+/** A failed orchestration, written back by a status read; never a workflow session's (see shouldSyncCompletedStatus). */
 export function shouldSyncFailedStatus(input: TerminalSessionLike): boolean {
-    return !workflowOwnsTerminalRow(input) && input.orchestrationStatus === "Failed" && input.rowState !== "failed";
+    return input.sessionKind !== "workflow" && input.orchestrationStatus === "Failed" && input.rowState !== "failed";
+}
+
+/**
+ * Whether a status read should ask the workflow store to record a workflow's failed controller (re-check R2-RT2-RC1): its
+ * controller orchestration failed and the row it read does not say the run ended. The store decides again under the
+ * session lock, from the row and the live run as they are then (WorkflowStore.recordControllerFailed).
+ */
+export function shouldRecordWorkflowControllerFailed(input: TerminalSessionLike): boolean {
+    return input.sessionKind === "workflow" && input.orchestrationStatus === "Failed" && !workflowOwnsTerminalRow(input);
 }
 
 export function deriveStatusFromCmsAndRuntime(opts: {

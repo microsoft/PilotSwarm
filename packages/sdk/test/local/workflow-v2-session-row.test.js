@@ -12,12 +12,16 @@
  * - The live run's own end is the detail's answer while its controller still runs (the F-C2 window).
  * - Review R2-RT-2: an ended live run's row that a status read overwrote with failed is put right from the run
  *   (store.repairEndedRunSessionRow, which recover runs); a test run or an active run is not touched.
+ * - Its re-check RC1: neither client writes a workflow's row from its read's snapshot. A failed controller is recorded by
+ *   the store under its lock, only while the row and the live run still say the run has not ended
+ *   (store.recordControllerFailed): a read whose snapshot is older than the run's end leaves that end as it is.
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
+import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
@@ -244,6 +248,57 @@ describe("workflow v2: a workflow session's row follows its live run (review B1)
             await h.catalog.updateSession(tested, { state: "failed" });
             expect(await h.store.repairEndedRunSessionRow(test)).toEqual({ repaired: false });
             expect((await h.catalog.getSession(tested)).state).toBe("failed");
+        } finally {
+            await h.close();
+        }
+    });
+
+    // Re-check R2-RT2-RC1: a detail read takes its snapshot of the row (running), the run then ends (completed), and only then
+    // does the read decide what to write, with the controller orchestration failed. Neither client writes over the end.
+    it("RC1: a read's older snapshot never writes over a run's end, in either client; a failed controller of a running run is recorded under the lock", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const reads = (row, updates) => {
+                const catalog = { getSession: async () => row, updateSession: async (id, patch) => { updates.push([id, patch]); }, workflowStore: () => h.store };
+                const failed = { status: "Failed", customStatus: JSON.stringify({ status: "running", error: "The controller failed." }) };
+                return {
+                    client: () => PilotSwarmClient.prototype._getSessionInfo.call({ _catalog: catalog, duroxideClient: { getStatus: async () => failed },
+                        _getLatestResponse: async () => null }, row.sessionId),
+                    management: () => PilotSwarmManagementClient.prototype.getSession.call({ _ensureStarted() {}, _catalog: catalog, _readJsonValue: async () => null,
+                        _duroxideClient: { getInstanceInfo: async () => ({ status: "Failed" }), getStatus: async () => failed } }, row.sessionId),
+                };
+            };
+            for (const which of ["client", "management"]) {
+                const live = randomUUID();
+                const { workflowSessionId } = await h.workflow(`barrier-${which}`, { live });
+                await h.begin(workflowSessionId, live, "live");
+                const stale = await h.catalog.getSession(workflowSessionId);
+                expect(stale.state).toBe("running");
+                // The run ends after the read's snapshot, before its write.
+                await h.finish(workflowSessionId, live, "completed");
+                const updates = [];
+                await reads(stale, updates)[which]();
+                expect(updates, which).toEqual([]);
+                expect(await h.seen(workflowSessionId), which).toMatchObject({ state: "completed", lastError: null, listed: "completed", detail: "completed" });
+
+                // A running run whose controller failed: the store records it, once the row and the run still say so.
+                const running = randomUUID();
+                const { workflowSessionId: stuck } = await h.workflow(`stuck-${which}`, { live: running });
+                await h.begin(stuck, running, "live");
+                const now = await h.catalog.getSession(stuck);
+                await reads(now, updates)[which]();
+                expect(updates, which).toEqual([]);
+                expect(await h.catalog.getSession(stuck), which).toMatchObject({ state: "failed", lastError: "The controller failed." });
+                expect((await h.store.readRun(running)).status, "the run itself is recover's to end").toBe("running");
+            }
+            // The store's own rule: a row that says the run ended, or a run that ended, is left alone.
+            const ended = randomUUID();
+            const { workflowSessionId: done } = await h.workflow("ended-run", { live: ended });
+            await h.begin(done, ended, "live");
+            await h.finish(done, ended, "completed");
+            await h.catalog.updateSession(done, { state: "running" });
+            expect(await h.store.recordControllerFailed({ workflowSessionId: done, message: "late" })).toEqual({ written: false });
+            expect((await h.catalog.getSession(done)).state).toBe("running");
         } finally {
             await h.close();
         }

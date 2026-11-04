@@ -152,7 +152,10 @@ import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelection } from "./provider-catalog.js";
-import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
+import {
+    resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldRecordWorkflowControllerFailed, shouldSyncCompletedStatus, shouldSyncFailedStatus,
+    resolveStaleRunningRowRecovery,
+} from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 import { systemAgentUUID, type AgentConfig } from "./agent-loader.js";
@@ -1394,6 +1397,12 @@ export class PilotSwarmManagementClient {
                 waitReason: null,
                 ...(failureMessage ? { lastError: failureMessage } : {}),
             }).catch(() => {});
+        } else if (shouldRecordWorkflowControllerFailed(terminalStatusInput)) {
+            // Re-check R2-RT2-RC1: a workflow's row is never written from this read's snapshot; the workflow store records a
+            // failed controller only while, under its lock, the row and the live run still say the run has not ended.
+            const message = typeof customStatus?.error === "string" && customStatus.error.trim() ? customStatus.error.trim() : null;
+            const store = this._catalog?.workflowStore?.() ?? null;
+            await store?.recordControllerFailed({ workflowSessionId: sessionId, message }).catch(() => {});
         } else {
             const recoveredState = resolveStaleRunningRowRecovery({
                 rowState: row.state,

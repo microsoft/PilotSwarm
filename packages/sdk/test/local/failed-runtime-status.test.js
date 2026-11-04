@@ -1,6 +1,7 @@
 import { describe, it } from "vitest";
 import {
-    deriveSessionStatus, deriveStatusFromCmsAndRuntime, resolveStaleRunningRowRecovery, shouldSyncCompletedStatus, shouldSyncFailedStatus,
+    deriveSessionStatus, deriveStatusFromCmsAndRuntime, resolveStaleRunningRowRecovery, shouldRecordWorkflowControllerFailed, shouldSyncCompletedStatus,
+    shouldSyncFailedStatus,
 } from "../../src/session-status.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { PilotSwarmManagementClient } from "../../src/management-client.ts";
@@ -189,6 +190,13 @@ describe("F-C2: a session read while its orchestration still runs, with its row 
                 false, rowState);
         }
         assertEqual(deriveSessionStatus({ sessionKind: "workflow", rowState: "running", orchestrationStatus: "Failed" }), "failed");
+        // Re-check RC1: a workflow's row is never written back from a read's snapshot; its store records a failed controller.
+        assertEqual(shouldSyncFailedStatus({ sessionKind: "workflow", rowState: "running", orchestrationStatus: "Failed" }), false);
+        assertEqual(shouldSyncCompletedStatus({ sessionKind: "workflow", parentSessionId: "p", rowState: "running", status: "completed",
+            orchestrationStatus: "Completed" }), false);
+        assertEqual(shouldRecordWorkflowControllerFailed({ sessionKind: "workflow", rowState: "running", orchestrationStatus: "Failed" }), true);
+        assertEqual(shouldRecordWorkflowControllerFailed({ sessionKind: "workflow", rowState: "completed", orchestrationStatus: "Failed" }), false);
+        assertEqual(shouldRecordWorkflowControllerFailed({ sessionKind: "agent", rowState: "running", orchestrationStatus: "Failed" }), false);
         assertEqual(deriveSessionStatus({ sessionKind: "agent", rowState: "completed", orchestrationStatus: "Failed" }), "failed");
         assertEqual(shouldSyncFailedStatus({ sessionKind: "agent", rowState: "completed", orchestrationStatus: "Failed" }), true);
     });

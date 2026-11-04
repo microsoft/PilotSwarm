@@ -2925,6 +2925,27 @@ export class WorkflowStore {
         });
     }
 
+    /**
+     * A workflow's controller orchestration failed while its live run had not ended (re-check R2-RT2-RC1): its session row
+     * says failed, with `message`. Decided under the session lock from the row and the live run as they are now, never from
+     * a status read's older snapshot: a deleted session, a row that says the run ended, no live run, or a live run that
+     * has ended (its end, or recover's repair, owns the row) is left alone. Returns whether the row changed.
+     */
+    async recordControllerFailed(input: { workflowSessionId: string; message: string | null }): Promise<{ written: boolean }> {
+        return this.transaction(async client => {
+            if (!await this.lockLiveSession(client, input.workflowSessionId)) return { written: false };
+            const { rows: session } = await client.query(`SELECT state FROM ${this.t.sessions} WHERE session_id = $1`, [input.workflowSessionId]);
+            const state = session[0]?.state;
+            if (state === "failed" || state === "completed" || state === "cancelled") return { written: false };
+            const { rows: live } = await client.query(
+                `SELECT status FROM ${this.t.runs} WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC LIMIT 1`, [input.workflowSessionId]);
+            if (!live[0] || !ACTIVE_RUN_STATUSES.includes(str(live[0], "status") as WorkflowRunStatus)) return { written: false };
+            await this.project(client, { sessionId: input.workflowSessionId, update: {
+                state: "failed", lastError: input.message ?? "The workflow controller failed before the run ended.", touch: true } });
+            return { written: true };
+        });
+    }
+
     async recordSessionEvents(sessionId: string, events: SessionEventRecord[]): Promise<void> {
         if (events.length === 0) return;
         // SF-6: the secrets in an event's error fields are hidden before it is stored.

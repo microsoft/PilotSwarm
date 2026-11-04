@@ -3771,6 +3771,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * find due yet, with the milliseconds left; a result that won first (a
      * cancellation or a deletion) is kept.
      */
+    // How long a paused 1.8.0 run waits before it looks again at a decided wait (R2-RT1-RC1): its backstop period.
+    const pausedRecheckMs = Math.max(1, deps.wakeBackstopMs ?? WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS);
     register("elapse", async (_ctx, rawInput, requests) => {
         const input = record(rawInput, "elapse input");
         const runId = text(input.runId, "runId");
@@ -3784,7 +3786,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 || (executed.nodeType !== "wait" && executed.nodeType !== "messaging" && !(requests && (executed.nodeType === "agent" || executed.nodeType === "parallel")))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a wait state or a receive state of run ${runId}.`);
             }
-            if (executed.state !== "pending") continue;
+            if (executed.state !== "pending") {
+                // Re-check R2-RT1-RC1 (controller 1.8.0, whose collections give no result while its run is paused): a wait or a
+                // receive decided while the run is paused keeps its past deadline in that controller's cursor until the
+                // resume, which would ask again at once. It is reported not due for a backstop period, so a paused run waits
+                // that long between its looks; after the resume its result is collected and routed as before.
+                if (!requests && run.status === "paused") notDue.push({ nodeExecutionId, remainingMs: pausedRecheckMs });
+                continue;
+            }
             // IR 9: a parallel state's own time limit (controller 1.9.0), decided only here or by a test run's clock
             // (store.elapseParallelNode, the store's one count): timed_out, or blocked when k could no longer happen by then,
             // with its running branches' work cancelled in the same transaction; or its join is due (k successes were

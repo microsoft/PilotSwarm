@@ -317,7 +317,7 @@ describe("workflow v2 wait states", () => {
         }
     });
 
-    it("elapses while paused and admits its successor only after resume", { timeout: TIMEOUT }, async () => {
+    it("elapses while paused, looks again only once per backstop period while paused, and admits its successor only after resume", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const parent = await parentOf(h);
@@ -334,6 +334,16 @@ describe("workflow v2 wait states", () => {
             expect(h.refusals).not.toContain(runId);
             expect((await h.store.listNodeExecutions(runId)).map(item => item.nodeId)).toEqual(["nap"]);
             expect((await parent.read(id)).run).toMatchObject({ status: "paused", pauseSettled: true });
+            // Re-check R2-RT1-RC1: a sustained pause. The decided wait's deadline has passed, but the controller looks again
+            // only once per backstop period (500 ms here), not on a 1 ms timer: over 3 seconds a handful of looks.
+            const before = h.elapses.length;
+            await new Promise(resolve => setTimeout(resolve, 3_000));
+            const looks = h.elapses.slice(before);
+            expect(looks.length).toBeGreaterThanOrEqual(2);
+            expect(looks.length).toBeLessThanOrEqual(10);
+            expect(looks.every(answer => answer.notDue.some(wait => wait.nodeExecutionId === node.nodeExecutionId && wait.remainingMs === 500)), JSON.stringify(looks))
+                .toBe(true);
+            expect((await h.store.readRun(runId)).status).toBe("paused");
             expect(await parent.update(id, { operation: "resume", operation_id: "resume" })).toMatchObject({ ok: true, status: "running" });
             const run = await finished(h.store, runId);
             expect(run).toMatchObject({ status: "completed", terminalOutput: { woke: { from: "start" } } });
