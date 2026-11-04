@@ -1,6 +1,9 @@
 import { describe, it } from "vitest";
-import { deriveSessionStatus, deriveStatusFromCmsAndRuntime, resolveStaleRunningRowRecovery, shouldSyncFailedStatus } from "../../src/session-status.ts";
+import {
+    deriveSessionStatus, deriveStatusFromCmsAndRuntime, resolveStaleRunningRowRecovery, shouldSyncCompletedStatus, shouldSyncFailedStatus,
+} from "../../src/session-status.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
+import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
 describe("Failed runtime status sync", () => {
@@ -177,8 +180,60 @@ describe("F-C2: a session read while its orchestration still runs, with its row 
         }
         assertEqual(deriveSessionStatus({ sessionKind: "workflow", rowState: "running", status: "running", orchestrationStatus: "Running" }), "running");
         assertEqual(deriveSessionStatus({ sessionKind: "agent", rowState: "failed", status: "running", orchestrationStatus: "Running" }), "running");
-        // A failed orchestration is still failed.
-        assertEqual(deriveSessionStatus({ sessionKind: "workflow", rowState: "completed", orchestrationStatus: "Failed" }), "failed");
+        // Adversarial review R2-RT-2: a controller that failed after the run's end was stored does not change that end; a
+        // controller that failed before it, or an agent's orchestration, is still failed.
+        for (const rowState of ["completed", "cancelled", "failed"]) {
+            assertEqual(deriveSessionStatus({ sessionKind: "workflow", rowState, status: "completed", orchestrationStatus: "Failed" }), rowState);
+            assertEqual(shouldSyncFailedStatus({ sessionKind: "workflow", rowState, orchestrationStatus: "Failed" }), false, rowState);
+            assertEqual(shouldSyncCompletedStatus({ sessionKind: "workflow", parentSessionId: "p", rowState, status: "completed", orchestrationStatus: "Completed" }),
+                false, rowState);
+        }
+        assertEqual(deriveSessionStatus({ sessionKind: "workflow", rowState: "running", orchestrationStatus: "Failed" }), "failed");
+        assertEqual(deriveSessionStatus({ sessionKind: "agent", rowState: "completed", orchestrationStatus: "Failed" }), "failed");
+        assertEqual(shouldSyncFailedStatus({ sessionKind: "agent", rowState: "completed", orchestrationStatus: "Failed" }), true);
+    });
+});
+
+// Adversarial review R2-RT-2: a workflow whose run ended (completed, cancelled or stopped) and whose controller then failed
+// (its notice to the parent never got through) keeps its row: neither client's detail read answers failed or writes
+// failed over it. An agent session's failed orchestration is still written back (the control).
+describe("R2-RT-2: a workflow's ended row stands over a controller that failed after the end", () => {
+    const rowOf = (sessionKind, state) => ({
+        sessionId: "s-2", sessionKind, orchestrationId: "session-s-2", title: null, state, model: null,
+        createdAt: new Date(), updatedAt: new Date(), lastActiveAt: null, deletedAt: null, currentIteration: 0,
+        lastError: null, waitReason: null, parentSessionId: "parent-1", isSystem: false, agentId: null, splash: null,
+    });
+    /** Both clients' detail reads over stand-ins: the row, and an orchestration that failed (a workflow's last status, completed). */
+    function readers(row) {
+        const FAILED = { status: "Failed", customStatus: JSON.stringify({ status: row.sessionKind === "workflow" ? "completed" : "running", sessionKind: row.sessionKind }) };
+        const updates = [];
+        const catalog = { getSession: async () => row, updateSession: async (sessionId, patch) => { updates.push([sessionId, patch]); } };
+        const sdk = { _catalog: catalog, duroxideClient: { getStatus: async () => FAILED }, _getLatestResponse: async () => null };
+        const mgmt = {
+            _ensureStarted() {}, _catalog: catalog, _readJsonValue: async () => null,
+            _duroxideClient: { getInstanceInfo: async () => ({ status: "Failed", orchestrationVersion: "1.9.0" }), getStatus: async () => FAILED },
+        };
+        return {
+            updates,
+            client: () => PilotSwarmClient.prototype._getSessionInfo.call(sdk, row.sessionId),
+            management: () => PilotSwarmManagementClient.prototype.getSession.call(mgmt, row.sessionId),
+        };
+    }
+
+    it("both clients answer the run's end and write nothing, for a completed, cancelled or failed workflow row", async () => {
+        for (const state of ["completed", "cancelled", "failed"]) {
+            const h = readers(rowOf("workflow", state));
+            assertEqual((await h.client()).status, state, `client ${state}`);
+            assertEqual((await h.management()).status, state, `management client ${state}`);
+            assertEqual(JSON.stringify(h.updates), "[]", `no write over the ${state} row`);
+        }
+    });
+
+    it("an agent session's failed orchestration is still written back by both clients", async () => {
+        const h = readers(rowOf("agent", "idle"));
+        assertEqual((await h.client()).status, "failed");
+        assertEqual((await h.management()).status, "failed");
+        assertEqual(h.updates.map(([, patch]) => patch.state).join(","), "failed,failed");
     });
 });
 

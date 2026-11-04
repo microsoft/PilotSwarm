@@ -1289,7 +1289,9 @@ export class PilotSwarmClient {
             orchestrationStatus: orchStatus.status,
         });
 
+        // The session's kind too (review R2-RT-2): a workflow's run end is never written over by this read.
         const terminalStatusInput = cmsRow ? {
+            sessionKind: cmsRow.sessionKind,
             parentSessionId: cmsRow.parentSessionId,
             isSystem: cmsRow.isSystem,
             rowState: cmsRow.state,

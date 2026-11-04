@@ -25,6 +25,8 @@ function fakeHost({ mode = "live", parent = "parent-1", childFails = false } = {
         recordAgentEnd: async () => ({ invocation: { ...invocation } }),
         markAgentEndSent: async () => { invocation.endSentAt = "2026-11-04T07:00:00Z"; return { marked: true }; },
         recordSessionEvents: async (_id, events) => { log.events.push(...events.map(event => event.eventType)); },
+        // R2-RT-2: an ended run's session row is put right first (its own test is in workflow-v2-control).
+        repairEndedRunSessionRow: async () => ({ repaired: false }),
     };
     const duroxideClient = {
         getStatus: async (instance) => {

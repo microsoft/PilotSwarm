@@ -10,6 +10,8 @@
  *   not reset the row of a live run that has ended.
  * - A test run that begins or ends after the live run was admitted records its events and leaves the row alone.
  * - The live run's own end is the detail's answer while its controller still runs (the F-C2 window).
+ * - Review R2-RT-2: an ended live run's row that a status read overwrote with failed is put right from the run
+ *   (store.repairEndedRunSessionRow, which recover runs); a test run or an active run is not touched.
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -203,6 +205,45 @@ describe("workflow v2: a workflow session's row follows its live run (review B1)
             await h.begin(workflowSessionId, live, "live");
             await h.finish(workflowSessionId, live, "failed", LIVE_ERROR);
             expect(await h.seen(workflowSessionId)).toEqual({ state: "failed", lastError: LIVE_ERROR, listed: "failed", detail: "failed", detailError: LIVE_ERROR });
+        } finally {
+            await h.close();
+        }
+    });
+
+    // Adversarial review R2-RT-2: a status read before that fix wrote "failed" over the row of a live run that had ended, when
+    // its controller then failed. recover puts the row right from the run (store.repairEndedRunSessionRow); the detail read
+    // with the controller failed answers the run's end.
+    it("R2-RT-2: an ended live run's row overwritten with failed is put right from the run; a test run or an active run is not touched", { timeout: TIMEOUT }, async () => {
+        const h = await fixture(getEnv());
+        try {
+            const live = randomUUID();
+            const { workflowSessionId } = await h.workflow("repair", { live });
+            await h.begin(workflowSessionId, live, "live");
+            // Active: nothing to put right.
+            expect(await h.store.repairEndedRunSessionRow(live)).toEqual({ repaired: false });
+            await h.finish(workflowSessionId, live, "completed");
+            // The overwrite of an earlier build's status read.
+            await h.catalog.updateSession(workflowSessionId, { state: "failed", lastError: "The orchestration failed." });
+            expect((await h.catalog.getSession(workflowSessionId)).state).toBe("failed");
+            expect(await h.store.repairEndedRunSessionRow(live)).toEqual({ repaired: true });
+            expect(await h.seen(workflowSessionId)).toEqual({ state: "completed", lastError: null, listed: "completed", detail: "completed", detailError: null });
+            expect(await h.store.repairEndedRunSessionRow(live)).toEqual({ repaired: false });
+
+            // A failed run gets its own error back; a test run never changes the row.
+            const failedRun = randomUUID();
+            const { workflowSessionId: failing } = await h.workflow("repair-failed", { live: failedRun });
+            await h.begin(failing, failedRun, "live");
+            await h.finish(failing, failedRun, "failed", LIVE_ERROR);
+            await h.catalog.updateSession(failing, { state: "completed", lastError: null });
+            expect(await h.store.repairEndedRunSessionRow(failedRun)).toEqual({ repaired: true });
+            expect(await h.seen(failing)).toMatchObject({ state: "failed", lastError: LIVE_ERROR, detail: "failed" });
+            const { workflowSessionId: tested } = await h.workflow("repair-test");
+            const test = randomUUID();
+            await h.test(tested, test, "test-1");
+            await h.finish(tested, test, "completed");
+            await h.catalog.updateSession(tested, { state: "failed" });
+            expect(await h.store.repairEndedRunSessionRow(test)).toEqual({ repaired: false });
+            expect((await h.catalog.getSession(tested)).state).toBe("failed");
         } finally {
             await h.close();
         }

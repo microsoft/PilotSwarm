@@ -465,6 +465,9 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
  */
 async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow, operationId: string): Promise<void> {
     if (ACTIVE_RUN_STATUSES.includes(run.status)) return;
+    // Adversarial review R2-RT-2: the session row says the live run's end again, should a status read have written failed
+    // over it after its controller failed.
+    await host.store.repairEndedRunSessionRow(run.runId);
     let unended: unknown = null;
     try {
         await endWorkflowV2RunAgents(host.store, host.duroxideClient, run.runId);

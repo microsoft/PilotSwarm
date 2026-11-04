@@ -31,17 +31,25 @@ export function isCompletedTerminalSession(input: TerminalSessionLike): boolean 
     return input.turnResultType === "completed" || input.latestResponseType === "completed";
 }
 
+/**
+ * Whether a workflow session's row holds its run's end (failed, completed or cancelled): the workflow store wrote it,
+ * and it stands over whatever its controller orchestration says (review note on F-C2, review B1, adversarial review
+ * R2-RT-2), so a status read answers it and never writes over it.
+ */
+export function workflowOwnsTerminalRow(input: Pick<TerminalSessionLike, "sessionKind" | "rowState">): boolean {
+    return input.sessionKind === "workflow" && (input.rowState === "failed" || input.rowState === "completed" || input.rowState === "cancelled");
+}
+
 export function deriveSessionStatus(input: TerminalSessionLike): PilotSwarmSessionStatus {
-    if (input.orchestrationStatus === "Failed") return "failed";
     // A workflow's row is written by the workflow store, and a terminal one is its run's end. It stands while the
     // controller finishes (it ends the step children and tells the parent first, still publishing "running"), so a read
-    // in that moment answers the run's end, as the row and the session list do (review note on F-C2). Once the workflow
-    // has a live run the row is that run's: its admission resets the row to pending, and a test run's projections no
-    // longer change its state or error (WorkflowStore.project and insertRun; review B1). A draft with only test runs
-    // shows its latest test.
-    if (input.sessionKind === "workflow" && (input.rowState === "failed" || input.rowState === "completed" || input.rowState === "cancelled")) {
-        return input.rowState;
-    }
+    // in that moment answers the run's end, as the row and the session list do (review note on F-C2). It stands too when
+    // the controller orchestration failed after the end was stored (its notice to the parent never got through: review
+    // R2-RT-2). Once the workflow has a live run the row is that run's: its admission resets the row to pending, and a
+    // test run's projections no longer change its state or error (WorkflowStore.project and insertRun; review B1). A
+    // draft with only test runs shows its latest test.
+    if (workflowOwnsTerminalRow(input)) return input.rowState as PilotSwarmSessionStatus;
+    if (input.orchestrationStatus === "Failed") return "failed";
     if (isCompletedTerminalSession(input)) return "completed";
     if (input.orchestrationStatus === "Running" && !input.status) {
         if (input.rowState === "error" || input.rowState === "failed" || input.rowState === "completed") {
@@ -51,12 +59,14 @@ export function deriveSessionStatus(input: TerminalSessionLike): PilotSwarmSessi
     return (input.status || input.rowState || "pending") as PilotSwarmSessionStatus;
 }
 
+/** A conversational session's completion, written back by a status read; never over a workflow's run end (R2-RT-2). */
 export function shouldSyncCompletedStatus(input: TerminalSessionLike): boolean {
-    return isCompletedTerminalSession(input) && input.rowState !== "completed";
+    return !workflowOwnsTerminalRow(input) && isCompletedTerminalSession(input) && input.rowState !== "completed";
 }
 
+/** A failed orchestration, written back by a status read; never over a workflow's run end (R2-RT-2). */
 export function shouldSyncFailedStatus(input: TerminalSessionLike): boolean {
-    return input.orchestrationStatus === "Failed" && input.rowState !== "failed";
+    return !workflowOwnsTerminalRow(input) && input.orchestrationStatus === "Failed" && input.rowState !== "failed";
 }
 
 export function deriveStatusFromCmsAndRuntime(opts: {

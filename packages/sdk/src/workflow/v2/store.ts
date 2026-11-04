@@ -2868,6 +2868,32 @@ export class WorkflowStore {
     }
 
     /** Record transcript events outside a transition (notifications, cleanup requests). */
+    /**
+     * Put a workflow session's row back to its live run's end (adversarial review R2-RT-2), for recover: a status read
+     * before that fix wrote "failed" over it when the controller orchestration failed after the end was stored (its
+     * notice to the parent never got through). The row gets the state the run's end writes (completed, failed, or
+     * cancelled for a cancelled or stopped run) and an error from it: none for a completed run, the stored error for a
+     * failed one, the error's message for a cancelled or stopped one. Under the session and run locks. A deleted session,
+     * a run still active, a test run, or a row that already says so changes nothing. Returns whether the row changed.
+     */
+    async repairEndedRunSessionRow(runId: string): Promise<{ repaired: boolean }> {
+        return this.transaction(async client => {
+            const workflowSessionId = await this.workflowOfRun(client, runId);
+            const live = await this.lockLiveSession(client, workflowSessionId);
+            const run = await this.lockRun(client, runId);
+            if (!live || run.mode !== "live" || ACTIVE_RUN_STATUSES.includes(run.status)) return { repaired: false };
+            const state = run.status === "completed" ? "completed" : run.status === "failed" ? "failed" : "cancelled";
+            const { rows } = await client.query(`SELECT state FROM ${this.t.sessions} WHERE session_id = $1`, [workflowSessionId]);
+            if (!rows[0] || rows[0].state === state) return { repaired: false };
+            const error = run.terminalError;
+            const lastError = state === "completed" || error === null ? null
+                : state === "failed" ? jsonbSafeText(canonicalJson(error), 2_000)
+                    : isJsonObject(error) && typeof error.message === "string" ? jsonbSafeText(error.message, 500) : null;
+            await this.project(client, { sessionId: workflowSessionId, update: { state, lastError, touch: true } }, run);
+            return { repaired: true };
+        });
+    }
+
     async recordSessionEvents(sessionId: string, events: SessionEventRecord[]): Promise<void> {
         if (events.length === 0) return;
         // SF-6: the secrets in an event's error fields are hidden before it is stored.

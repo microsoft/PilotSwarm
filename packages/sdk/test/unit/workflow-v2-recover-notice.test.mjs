@@ -21,6 +21,8 @@ function fakeHost({ run = completed, controller = "Completed", notifier = "NotFo
         runNoticeRecorded: async () => noticed,
         listOwedAgentInvocations: async () => [],
         recordSessionEvents: async () => {},
+        // R2-RT-2: an ended run's session row is put right first (its own test is in workflow-v2-control).
+        repairEndedRunSessionRow: async () => ({ repaired: false }),
     };
     const duroxideClient = {
         getStatus: async (instance) => ({ status: instance === "ctl-1" ? controller : instance.startsWith("wfn-") ? notifier : "NotFound" }),
@@ -31,6 +33,20 @@ function fakeHost({ run = completed, controller = "Completed", notifier = "NotFo
 }
 
 const recover = (host, operationId = "recover-1") => recoverWorkflowV2Run(host, "run-1", { requestedBy: PARENT, operationId });
+
+// Adversarial review R2-RT-2: a recover of an ended run puts its session row right from the run first (the store's own
+// check is in workflow-v2-session-row); a run still active is not touched.
+test("R2-RT-2: a recover of an ended run asks the store to put its session row right; an active one does not", async () => {
+    const { host } = fakeHost({ controller: "Failed" });
+    const repaired = [];
+    host.store.repairEndedRunSessionRow = async (runId) => { repaired.push(runId); return { repaired: true }; };
+    await recover(host);
+    assert.deepEqual(repaired, ["run-1"]);
+    const active = fakeHost({ run: { ...completed, status: "running" }, controller: "Running" });
+    active.host.store.repairEndedRunSessionRow = async (runId) => { repaired.push(runId); return { repaired: true }; };
+    await recover(active.host, "recover-2");
+    assert.deepEqual(repaired, ["run-1"]);
+});
 
 test("a completed run whose controller ended before telling the parent: a recover starts its notifier", async () => {
     const { host, started } = fakeHost();
