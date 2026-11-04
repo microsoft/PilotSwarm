@@ -1,7 +1,7 @@
 import { parseDocument } from "yaml";
 import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
-import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
+import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, wholeSchemaRefusal, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 
 /**
  * Workflow v2 compiler: YAML -> diagnostics and an immutable, hashed IR.
@@ -461,6 +461,11 @@ function schemaField(value: unknown, generatedName: string, path: string, schema
     }
     if (isJsonObject(value) && Object.keys(value).length === 1 && typeof value.$ref === "string" && value.$ref.startsWith("#/schemas/")) {
         const name = value.$ref.slice("#/schemas/".length);
+        // Review R1: only a whole named schema, never a pointer into one.
+        if (name.includes("/")) {
+            diagnostics.error("WORKFLOW_SCHEMA_INVALID", `${path}.$ref`, `${path}.$ref: ${wholeSchemaRefusal(value.$ref)}`);
+            return null;
+        }
         if (!schemas.declared.has(name)) {
             diagnostics.error("WORKFLOW_SCHEMA_UNKNOWN", `${path}.$ref`, `schema '${name}' is not declared under schemas.`);
             return null;

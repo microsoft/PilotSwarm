@@ -134,8 +134,9 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 ## 6. Declare typed contracts
 
 - Put JSON Schema 2020-12 documents under `schemas` and refer to them as
-  `{ $ref: "#/schemas/Name" }`. Only local references work. `$id`,
-  `$schema` and `$anchor` are refused.
+  `{ $ref: "#/schemas/Name" }`. Only local references to a whole schema work
+  (nothing after the name). `$id`, `$schema`, `$anchor` and `dependencies`
+  are refused (use `dependentSchemas` or `dependentRequired`).
 - `pattern` and `patternProperties` are refused too: use `enum` or `const`,
   `minLength` and `maxLength`, or check the text in an agent step.
 - Make payloads strict: `additionalProperties: false` and `required`.

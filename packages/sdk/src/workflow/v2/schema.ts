@@ -43,6 +43,20 @@ export class WorkflowSchemaError extends Error {
 const PATTERN_KEYWORDS: ReadonlySet<string> = new Set(["pattern", "patternProperties"]);
 
 /**
+ * The legacy `dependencies` keyword, refused (review Q2 of the owner batch): Ajv2020 8.20.0 still registers it in its
+ * applicator vocabulary (dist/vocabularies/applicator/index.js, getApplicator: dependencies_1 for both drafts), and its
+ * schema-valued entries are compiled as subschemas (applicator/dependencies.js, validateSchemaDeps). It is not a
+ * subschema keyword this module follows, so a pattern inside it would be copied as data and then run. 2020-12 splits it
+ * into dependentSchemas (followed) and dependentRequired (data).
+ */
+const DEPENDENCIES_REFUSAL = "'dependencies' is not supported in workflow schemas: use dependentSchemas or dependentRequired (JSON Schema 2020-12).";
+
+/** A `$ref` names one whole schema (review R1 of the owner batch): `#/schemas/<Name>` or `#/$defs/<Name>`, nothing after the name. */
+export function wholeSchemaRefusal(value: string): string {
+    return `a $ref names one whole schema: '#/schemas/<Name>', with nothing after the name (got '${value}').`;
+}
+
+/**
  * Why a workflow schema may not use `pattern` or `patternProperties`, and what to use instead. A regular expression can
  * take a very long time on some inputs, and no check of the expression can rule that out (adversarial review SF-5 and
  * its verifications), so neither keyword is accepted anywhere in a workflow schema.
@@ -53,21 +67,26 @@ export function patternRefusal(keyword: string): string {
 }
 
 /**
- * Where a normalized schema uses `pattern` or `patternProperties` in a schema position (the subschema keywords
- * normalizeSchema follows; the values of const, enum, default, examples and annotations are data), or null. For
- * revisions compiled before the keywords were refused (WorkflowSchemaSet).
+ * The first use a workflow schema may not have, in a normalized schema's schema positions (the subschema keywords
+ * normalizeSchema follows; the values of const, enum, default, examples and annotations are data, and a $ref may not
+ * point into them): `pattern` or `patternProperties` (Q1 (d)), `dependencies` (review Q2), or a `$ref` with anything after
+ * the schema's name (review R1). Null when there is none. For revisions saved before these rules (WorkflowSchemaSet).
  */
-export function patternKeywordIn(schema: JsonValue, path: string): { keyword: string; path: string } | null {
+export function refusedSchemaUseIn(schema: JsonValue, path: string): { keyword: string; path: string; message: string } | null {
     if (!isJsonObject(schema)) return null;
     for (const [key, item] of Object.entries(schema)) {
         const at = `${path}.${key}`;
-        if (PATTERN_KEYWORDS.has(key)) return { keyword: key, path: at };
-        let found: { keyword: string; path: string } | null = null;
-        if (SUBSCHEMA_KEYWORDS.has(key)) found = patternKeywordIn(item, at);
+        if (PATTERN_KEYWORDS.has(key)) return { keyword: key, path: at, message: patternRefusal(key) };
+        if (key === "dependencies") return { keyword: key, path: at, message: DEPENDENCIES_REFUSAL };
+        if (key === "$ref" && (typeof item !== "string" || !item.startsWith("#/$defs/") || !SCHEMA_NAME_PATTERN.test(item.slice("#/$defs/".length)))) {
+            return { keyword: key, path: at, message: wholeSchemaRefusal(String(item)) };
+        }
+        let found: { keyword: string; path: string; message: string } | null = null;
+        if (SUBSCHEMA_KEYWORDS.has(key)) found = refusedSchemaUseIn(item, at);
         else if (SUBSCHEMA_ARRAY_KEYWORDS.has(key) && Array.isArray(item)) {
-            for (const [index, entry] of item.entries()) { found = patternKeywordIn(entry, `${at}[${index}]`); if (found) break; }
+            for (const [index, entry] of item.entries()) { found = refusedSchemaUseIn(entry, `${at}[${index}]`); if (found) break; }
         } else if (SUBSCHEMA_MAP_KEYWORDS.has(key) && isJsonObject(item)) {
-            for (const [name, entry] of Object.entries(item)) { found = patternKeywordIn(entry, `${at}.${name}`); if (found) break; }
+            for (const [name, entry] of Object.entries(item)) { found = refusedSchemaUseIn(entry, `${at}.${name}`); if (found) break; }
         }
         if (found) return found;
     }
@@ -86,6 +105,7 @@ export function normalizeSchema(schema: unknown, path: string): JsonValue {
     for (const [key, value] of Object.entries(schema)) {
         const at = `${path}.${key}`;
         if (PATTERN_KEYWORDS.has(key)) throw new WorkflowSchemaError(patternRefusal(key), at);
+        if (key === "dependencies") throw new WorkflowSchemaError(DEPENDENCIES_REFUSAL, at);
         if (FORBIDDEN_KEYWORDS.has(key)) throw new WorkflowSchemaError(`'${key}' is not supported in workflow schemas`, at);
         if (key === "$ref") {
             if (typeof value !== "string") throw new WorkflowSchemaError("$ref must be a string", at);
@@ -93,7 +113,10 @@ export function normalizeSchema(schema: unknown, path: string): JsonValue {
             if (value.startsWith("#/schemas/")) ref = `#/$defs/${value.slice("#/schemas/".length)}`;
             else if (value.startsWith("#/$defs/")) ref = value;
             else throw new WorkflowSchemaError(`only local references '#/schemas/<Name>' are allowed (got '${value}')`, at);
-            const name = ref.slice("#/$defs/".length).split("/")[0];
+            const name = ref.slice("#/$defs/".length);
+            // R1: a pointer into a schema (#/schemas/Holder/const) could reach data, such as a const or an example that
+            // holds a pattern, and the validator would then run it as a schema. Only a whole named schema may be named.
+            if (name.includes("/")) throw new WorkflowSchemaError(wholeSchemaRefusal(value), at);
             if (!SCHEMA_NAME_PATTERN.test(name)) throw new WorkflowSchemaError(`reference '${value}' names an invalid schema`, at);
             out.push([key, ref]);
         } else if (SUBSCHEMA_KEYWORDS.has(key)) {
@@ -166,14 +189,15 @@ export class WorkflowSchemaSet {
     private readonly validators = new Map<string, Validator>();
 
     /**
-     * Throws WorkflowSchemaError when a definition uses `pattern` or `patternProperties`: a revision compiled before they
-     * were refused fails here, plainly, instead of running an expression nobody checked.
+     * Throws WorkflowSchemaError when a definition uses `pattern`, `patternProperties` or `dependencies`, or a `$ref` with
+     * anything after the schema's name (refusedSchemaUseIn): a revision saved before those rules fails here, plainly,
+     * instead of running an expression nobody checked.
      */
     constructor(readonly defs: Record<string, JsonValue>) {
         for (const [name, schema] of Object.entries(defs)) {
-            const found = patternKeywordIn(schema, `$defs.${name}`);
+            const found = refusedSchemaUseIn(schema, `$defs.${name}`);
             if (found) {
-                throw new WorkflowSchemaError(`${patternRefusal(found.keyword)} This revision was saved before that rule; save and publish `
+                throw new WorkflowSchemaError(`${found.message} This revision was saved before that rule; save and publish `
                     + "a revision without it.", found.path);
             }
         }
