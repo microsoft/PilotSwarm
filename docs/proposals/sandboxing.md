@@ -55,6 +55,23 @@ or storage. A parallel threat model and privacy review must cover those services
 Cloud-specific identity, provisioning and network behavior belong in provider
 implementations, not the public core.
 
+## Proposed convergence direction
+
+Build toward one common compute core and separately managed provider lifecycles,
+not two parallel remote-execution frameworks.
+
+The [compute-provider draft](https://github.com/microsoft/PilotSwarm/pull/244)
+provides a proposed surface for targets, host connection, workspace paths,
+rollout and model/MCP brokerage. The
+[isolated-runtime proposal](https://github.com/microsoft/PilotSwarm/pull/253)
+records complementary ownership, state and completion requirements. Reuse
+mechanisms that satisfy those requirements; do not preserve an interface merely
+because a prototype already uses it.
+
+This document combines those contributions into a proposed direction. It does
+not declare either implementation ready, supersede the existing proposals or
+assign implementation ownership without agreement.
+
 ## Dynamic environments require lifecycle management
 
 A long-lived machine can already exist when a worker needs it. A dynamic
@@ -157,18 +174,40 @@ services remain behind trusted authorization. A server-connection ticket is not
 automatically permission for every tool or operation on that server. Define where
 those operation restrictions are enforced.
 
-## Converge existing work rather than add another framework
+## Delivery sequence and the first code change
 
-The [compute-provider draft](https://github.com/microsoft/PilotSwarm/pull/244)
-provides a proposed common surface for targets, host connection, workspace paths,
-rollout and model/MCP brokerage. The
-[isolated-runtime proposal](https://github.com/microsoft/PilotSwarm/pull/253)
-records complementary ownership, state and completion requirements.
+### First: harden the existing compute-provider contract
 
-Propose one common implementation, carrying forward the required behavior and
-useful qualification scenarios rather than preserving both sets of interfaces.
-The compute-provider draft is a starting point for that reconciliation, not an
-assertion that it already satisfies every requirement above.
+The proposed first code PR is deliberately bounded to four reviewed cases in
+three areas, with regressions against the actual implementation:
+
+- **Placement:** persist default target selection and refuse explicit remote
+  placement when its target authority cannot be read. Genuinely unselected local
+  sessions remain supported.
+- **Model configuration:** refresh effective provider configuration and backing
+  credential resolvers after selection changes or rotation. Stable stand-ins
+  must not retain an obsolete account, project or configuration.
+- **State exclusion:** close mutation admission and drain already-admitted
+  SessionFs writes before saving/restoring. Hold the barrier for the complete
+  operation and reopen safely.
+
+This is a proposed correctness PR, not code included with this document. It
+adds no cloud provider, new persistence backend, process-continuity feature or
+sharing policy. It does not complete the broader worker-failure fencing or
+committed-completion work.
+
+### Then: reconcile the required recovery behavior
+
+Carry the execution-ownership, state-fidelity and committed-completion outcomes
+above into the common path. Choose an explicitly supported state/model/tool
+profile. Distinguish newly introduced defects, inherited behavior and deliberate
+feature limits rather than treating every difference as a reason to preserve
+the prototype unchanged.
+
+### Then: integrate and qualify the first dynamic provider
+
+Add durable allocation/reconciliation, host bootstrap, protected connectivity,
+identity, real workspace access and cleanup behind the common boundary.
 
 The first delivery should demonstrate a configured repo-backed session:
 attach resources, run native operations in the isolated environment, change an
@@ -204,5 +243,5 @@ qualified independently.
    implemented, and what proves safe replacement?
 4. How are repository files actually made available inside the environment, and
    which content/retry semantics remain unchanged?
-5. How do the common-core and provider changes converge into one reviewed
-   implementation and qualification plan?
+5. Who integrates and reviews the common-core and provider changes, and what is
+   the acceptance plan for the first workload?
