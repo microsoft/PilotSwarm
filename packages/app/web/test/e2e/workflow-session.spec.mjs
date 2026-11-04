@@ -1890,16 +1890,16 @@ test("r-3: the step log fills the side pane, a step on the graph shows Step deta
 // ------------------------------------------------------------------------------------------------------------
 // Batch 6 (f-02): a workflow has neither zen nor full screen. Its side pane header has neither button (a chat's has
 // both); zen or full screen turned on from a chat reads as off while a workflow is shown (normal layout: the session
-// list and the workflow pane, no maximized canvas) and comes back as it was left on the chat; Escape in a workflow
-// with stored zen on is not swallowed by zen.
+// list and the workflow pane, no maximized canvas), and the chat's zen (saved with its view) comes back as it was left;
+// Escape in a workflow with stored zen on is not swallowed by zen.
 // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "f-02:" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen and full screen come back as they were left", async ({ page }) => {
+test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen comes back as it was left", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await routeApi(page, { workflowEvents: QUALITY_EVENTS, workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
-    await routeProfile(page);
+    const profile = await routeProfile(page);
     const side = page.getByRole("region", { name: "Session canvas" });
     const zenButton = side.getByRole("button", { name: /^(Zen mode|Leave zen mode)$/ });
     const fullScreenButton = side.getByRole("button", { name: "Full screen canvas", exact: true });
@@ -1926,6 +1926,8 @@ test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen a
     await zenButton.click();
     await expect(side.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
     await expect(sessionRows.first()).toBeHidden();
+    // The chat's zen is part of its saved view (the page saves 400 ms after a change): let it save before the next load.
+    await expect.poll(() => profile.settings?.sessionViews?.[AGENT_ID]?.desktop?.zen ?? false).toBe(true);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await expect(page.locator(".ps-workflow-main")).toBeVisible();
     await expect(sessionRows.filter({ hasText: "Workflow: branching-workflow-test" }).first()).toBeVisible();
@@ -1939,16 +1941,15 @@ test("f-02: a workflow's side pane has no Zen or Full screen, and a chat's zen a
     await expect(side.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
     await side.getByRole("button", { name: "Leave zen mode", exact: true }).click();
 
-    // Full screen from the chat, then the workflow: not maximized; back on the chat, full screen again.
+    // Full screen from the chat, then the workflow: not maximized. (Full screen is not part of a saved view in 0.8.9: a
+    // page load starts without it, so it is not checked again on the chat after the load.)
     await fullScreenButton.click();
     await expect(page.getByRole("button", { name: "Restore canvas", exact: true }).first()).toBeVisible();
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await expect(page.locator(".ps-workflow-main")).toBeVisible();
     await expect(sessionRows.filter({ hasText: "Workflow: branching-workflow-test" }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Restore canvas", exact: true })).toHaveCount(0);
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
-    await expect(page.getByRole("button", { name: "Restore canvas", exact: true }).first()).toBeVisible();
-    await shot(page, "f02-chat-full-screen-back");
+    await shot(page, "f02-workflow-not-full-screen");
     expect(errors).toEqual([]);
 });
 
