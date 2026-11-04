@@ -172,7 +172,48 @@ their own supervisor evidence. Windows qualification requires an installed .NET
 telemetry and persistent build servers and use a cleared owned NuGet config.
 Exact integrated-head CI remains a separate gate. The candidate native capability is
 `pilotswarm.compute.native.v1`; old compute/SessionFs workers do not advertise it.
-Historical local orchestration handlers remain registered. Migration and
-orchestration numbering on a pinned integration branch must be reconciled with
-current main before merge. No destructive reset or transparent live-mode
-conversion is part of rollout.
+Historical local orchestration handlers remain registered. This integration
+preserves main's migrations 0084-0087 and appends compute targets as 0088 and
+native execution/completion as 0089. Orchestration 1.0.83 is frozen and native
+work uses 1.0.84. No destructive reset or transparent live-mode conversion is
+part of rollout.
+
+## Reproduce the development checks
+
+Use the repository's supported Node engine and lockfile, then build before
+running module tests. From a fresh public source checkout:
+
+```text
+npm ci
+npm run build
+npm run test:api --workspace=pilotswarm-sdk
+node --test packages/sdk/test/unit/compute-*.test.mjs
+```
+
+In an existing checkout, restore dependencies after a manifest change or a
+missing-dependency failure rather than replacing local settings. The native
+fixtures create owned homes and synthetic loopback model authority. They do not
+need `.env`, a private model catalog, a user's global CLI home, a cloud account or
+real inference credentials. The public consumer installs an actual local SDK
+tarball, not a workspace link.
+
+The real PostgreSQL suite uses only an explicit process-local
+`PS_TEST_DATABASE_URL` pointing to an owned disposable test database:
+
+```text
+cd packages/sdk
+node ../../node_modules/vitest/vitest.mjs run test/local/compute-native-writeback.test.js test/local/compute-targets.test.js
+```
+
+Missing database configuration is a coverage gap, not a passing transaction
+gate. See [local setup](../contributing/local-ci-and-tests.md); do not point this
+at a shared deployment. Run privacy after staging and check diff whitespace.
+Use native path separators on Windows.
+
+Windows validation needs actual Git Bash tools for the POSIX-oriented unit
+fixtures while native Windows `tar` must handle Windows paths. Set this only
+in the test process; do not edit the machine PATH. Some Linux deployment-policy
+fixtures assert Unix modes and script behavior and are not qualified by running
+them under Windows. Linux CI and each target OS/supervisor remain explicit gates.
+The Windows Job Object result must not be presented as qualification of another
+host, transport or provider.
