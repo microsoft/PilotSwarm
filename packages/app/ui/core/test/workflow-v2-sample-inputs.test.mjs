@@ -106,3 +106,16 @@ test("UI-3: an example, default, enum value or const with a string over 1,000 ch
     assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { a: { const: { nested: long }, type: "object" } } }), { a: {} });
     assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { a: { type: "string", examples: ["z".repeat(1_000)] } } }), { a: "z".repeat(1_000) });
 });
+
+// UI-3 residual (E2-T7): a given value is looked at to any depth for a string longer than a sample may hold.
+test("E2-T7: a default with a long text deeper than the sample depth is not used; a deep default of short texts is", () => {
+    const nest = (depth, leaf) => (depth === 0 ? leaf : { level: nest(depth - 1, leaf) });
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { deep: { type: "object", default: nest(10, "y".repeat(1_500)) } } }),
+        { deep: {} });
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { deep: { type: "object", default: nest(10, "ok") } } }),
+        { deep: nest(10, "ok") });
+    // A value with more parts than the budget has characters is too large to be a sample: the type is used.
+    const wide = Array.from({ length: 20_000 }, () => 0);
+    assert.deepEqual(workflowV2SampleInputs({ type: "object", properties: { list: { type: "array", items: { type: "integer" }, default: wide } } }),
+        { list: [1] });
+});

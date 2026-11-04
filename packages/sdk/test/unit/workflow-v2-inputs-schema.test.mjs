@@ -166,3 +166,11 @@ test("SF-4: a schema just under the budget is shown, and its count is its size",
     assert.ok(shown);
     assert.ok(stats.bytes >= 20 * 1024 && stats.bytes < 32 * 1024);
 });
+
+// SF-4 residual (E2): a string is counted as JSON writes it, escapes included.
+test("SF-4: a string's escapes count: 17 KiB of quotes (34 KiB as JSON) is over the budget", () => {
+    const stats = { values: 0, bytes: 0 };
+    assert.equal(workflowV2ResolvedInputsSchema(ir({ inputs: { type: "object", description: "\"".repeat(17 * 1024) } }), stats), null);
+    assert.ok(stats.bytes > 34 * 1024, `counted ${stats.bytes} bytes`);
+    assert.ok(workflowV2ResolvedInputsSchema(ir({ inputs: { type: "object", description: "d".repeat(17 * 1024) } })), "the same length unescaped is shown");
+});

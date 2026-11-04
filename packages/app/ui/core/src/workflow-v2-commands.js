@@ -1211,11 +1211,29 @@ function chargeSample(budget, chars) {
     if (budget.used > SAMPLE_MAX_CHARS) throw SAMPLE_OVER_BUDGET;
 }
 
-/** Whether a value holds a string longer than SAMPLE_MAX_STRING, at any depth (looked at only within the budget). */
-function holdsLongString(value, depth = 0) {
-    if (typeof value === "string") return value.length > SAMPLE_MAX_STRING;
-    if (depth > SAMPLE_MAX_DEPTH || !value || typeof value !== "object") return false;
-    return Object.entries(value).some(([key, item]) => key.length > SAMPLE_MAX_STRING || holdsLongString(item, depth + 1));
+/**
+ * Whether a value holds a string (or a key) longer than SAMPLE_MAX_STRING, at any depth (UI-3 verification, E2-T7). The
+ * walk has a step budget: a value with more parts than a sample may have characters is taken as holding one (it is too
+ * large to be a sample). No recursion, so a deep value cannot exhaust the stack.
+ */
+function holdsLongString(value) {
+    const stack = [value];
+    let steps = 0;
+    while (stack.length > 0) {
+        const item = stack.pop();
+        steps += 1;
+        if (steps > SAMPLE_MAX_CHARS) return true;
+        if (typeof item === "string") {
+            if (item.length > SAMPLE_MAX_STRING) return true;
+            continue;
+        }
+        if (!item || typeof item !== "object") continue;
+        for (const [key, child] of Object.entries(item)) {
+            if (key.length > SAMPLE_MAX_STRING) return true;
+            stack.push(child);
+        }
+    }
+    return false;
 }
 
 /**

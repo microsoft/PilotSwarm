@@ -1006,11 +1006,12 @@ export function workflowV2ResolvedInputsSchema(ir: { inputsSchema: string | null
         stats.values += 1;
         if (stats.values > INPUTS_SCHEMA_VIEW_MAX_VALUES) throw INPUTS_SCHEMA_OVER_BUDGET;
         if (depth > 64) { charge(2); return {}; }
-        if (typeof value === "string") { charge(utf8ByteLength(value) + 2); return value; }
+        // A string as JSON writes it, its escapes included (SF-4 residual).
+        if (typeof value === "string") { charge(utf8ByteLength(JSON.stringify(value))); return value; }
         if (!Array.isArray(value) && !isJsonObject(value)) { charge(String(value).length); return value; }
         charge(2);
         if (Array.isArray(value)) return value.map(item => { charge(1); return resolve(item, resolving, depth + 1); });
-        const entry = (key: string, item: JsonValue): [string, JsonValue] => { charge(utf8ByteLength(key) + 4); return [key, resolve(item, resolving, depth + 1)]; };
+        const entry = (key: string, item: JsonValue): [string, JsonValue] => { charge(utf8ByteLength(JSON.stringify(key)) + 2); return [key, resolve(item, resolving, depth + 1)]; };
         const ref = typeof value.$ref === "string" ? value.$ref : null;
         if (ref === null) return Object.fromEntries(Object.entries(value).map(([key, item]) => entry(key, item)));
         const name = ref.startsWith("#/$defs/") ? ref.slice("#/$defs/".length) : ref.startsWith("#/schemas/") ? ref.slice("#/schemas/".length) : null;
