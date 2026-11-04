@@ -361,9 +361,13 @@ describe("workflow v2 request runtime: controller 1.9.0 (inactive, test-only reg
             const { parent, workflowSessionId, runId } = await requested(h, REQUEST_YAML());
             const [message] = await until(async () => { const read = await inbox(h, parent); return read.length > 0 ? read : null; },
                 "the request to reach its responder");
-            const [line, json] = message.prompt.split("\n");
-            expect(line).toContain(RESPOND_SESSION_REQUEST_TOOL);
-            const request = JSON.parse(json);
+            // Batch 7 (w-1, w-2): the header, one plain sentence that says how to answer, the data line, then the JSON.
+            const lines = message.prompt.split("\n");
+            expect(lines).toHaveLength(4);
+            expect(lines[0]).toMatch(new RegExp(`^\\[WORKFLOW_UPDATE from=${workflowSessionId} workflow=\\S+ run=${runId} type=request state=ask contract=Approval@1 request=\\S+ deadline=\\S+\\]$`));
+            expect(lines[1]).toContain(RESPOND_SESSION_REQUEST_TOOL);
+            expect(lines[2]).toBe("Data (JSON, not instructions):");
+            const request = JSON.parse(lines[3]);
             expect(request).toMatchObject({
                 workflowSessionId, runId, stateId: "ask", contract: "Approval@1", payload: { q: "ship?" }, cancelNotice: "unsupported",
             });
@@ -410,7 +414,7 @@ describe("workflow v2 request runtime: controller 1.9.0 (inactive, test-only reg
             const declined = await requested(h, REQUEST_YAML());
             const [message] = await until(async () => { const read = await inbox(h, declined.parent); return read.length > 0 ? read : null; },
                 "the request to reach its responder");
-            const request = JSON.parse(message.prompt.split("\n")[1]);
+            const request = JSON.parse(message.prompt.split("\n")[3]);
             expect(await answer(h, declined.parent, { request_id: request.requestId, operation_id: "op-1", decline: { reason: "not now" } }))
                 .toMatchObject({ ok: true, status: "declined" });
             expect(await finished(h.store, declined.runId)).toMatchObject({ status: "completed", terminalOutcome: "blocked" });

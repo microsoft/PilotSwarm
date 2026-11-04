@@ -93,6 +93,20 @@ export interface WorkflowTestAgentToolDeps {
 
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
+/** A run's workflow name and version, or null when the store cannot say (best effort: a notice never fails for it). */
+async function workflowLabelOf(store: unknown, runId: string): Promise<{ name: string | null; version: string | null } | null> {
+    const reader = store as { readRun?: (id: string) => Promise<{ workflowSessionId: string; revision: number } | null>;
+        readRevisionLabel?: (id: string, revision: number) => Promise<{ name?: string | null; semver?: string | null } | null> };
+    if (typeof reader.readRun !== "function" || typeof reader.readRevisionLabel !== "function") return null;
+    try {
+        const run = await reader.readRun(runId);
+        const label = run ? await reader.readRevisionLabel(run.workflowSessionId, run.revision) : null;
+        return label ? { name: label.name ?? null, version: label.semver ?? null } : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * The framework tool calls of a session under a real-agent test (see the
  * module's comment): `callerSessionId` is the session that calls (the
@@ -107,11 +121,13 @@ export function workflowTestAgentToolCall(deps: WorkflowTestAgentToolDeps, scope
         try {
             const definition = await store.readDefinition(scope.workflowSessionId);
             if (!definition?.parentSessionId || !await deps.authorizeNotice(scope.workflowSessionId, definition.parentSessionId)) return;
+            // The workflow's name for the header (w-1), when this store can say it; the notice goes without it otherwise.
+            const label = await workflowLabelOf(store, scope.runId);
             await deps.notice(definition.parentSessionId, workflowTestNoticePrompt({
                 sessionId: scope.workflowSessionId, runId: scope.runId, interceptionId: record.interceptionId, operation: record.operation,
                 stateId: scope.stateId, tool: record.tool, arguments: previewJson(record.arguments, 2_000), responseSchema: record.responseSchema,
                 agentSessionId: callerSessionId,
-            }), `workflow-test:${record.interceptionId}`);
+            }, label), `workflow-test:${record.interceptionId}`);
         } catch (error) {
             await store.recordSessionEvents(scope.workflowSessionId, [{ eventType: "workflow.test_notice_failed", data: {
                 runId: scope.runId, interceptionId: record.interceptionId, error: jsonbSafeText(error instanceof Error ? error.message : String(error), 1_000),

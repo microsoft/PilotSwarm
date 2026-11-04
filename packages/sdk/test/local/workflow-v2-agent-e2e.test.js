@@ -56,7 +56,7 @@ describe("workflow v2 driven by an agent", () => {
     it("drafts without running, publishes the reviewed hash, runs with delegated tools and wakes the parent once", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const respond = (_body, position) => {
-            if (position.lastUserText.includes("A child workflow ended")) return { content: "Noted the workflow result." };
+            if (position.lastUserText.includes("type=ended")) return { content: "Noted the workflow result." };
             if (!position.lastUserText.includes(PROMPT)) return { content: "ok" };
             const parse = (text) => {
                 try { return JSON.parse(text ?? "{}"); }
@@ -114,9 +114,9 @@ describe("workflow v2 driven by an agent", () => {
                 expect(run.terminalOutput).toEqual({ key: "v2-e2e/first", count: 1 });
 
                 await until(() => model.sessionRequests(PROMPT)
-                    .some((record) => record.position.lastUserText.includes("A child workflow ended")), "the parent wake", 60_000);
+                    .some((record) => record.position.lastUserText.includes("type=ended")), "the parent wake", 60_000);
                 const wakes = model.sessionRequests(PROMPT).filter((record) => record.position.step === 0
-                    && record.position.lastUserText.includes("A child workflow ended"));
+                    && record.position.lastUserText.includes("type=ended"));
                 expect(wakes).toHaveLength(1);
                 expect(wakes[0].position.lastUserText).toContain(started.run.runId);
                 const events = await mgmt.getSessionEvents(draft.workflowId);
