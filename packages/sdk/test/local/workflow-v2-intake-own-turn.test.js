@@ -30,7 +30,14 @@ import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_83/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
-const WORKFLOW_SENDER = { kind: "system", display: "workflow message" };
+/**
+ * The sender a workflow's message is recorded with (batch 7, w-4; SF-2): kind workflow, named by its session (a send's
+ * text names no workflow), with the header's type and ids, read from the message's own header.
+ */
+const workflowSender = text => {
+    const field = name => new RegExp(`\\b${name}=(\\S+?)[\\s\\]]`).exec(text)?.[1] ?? null;
+    return { kind: "workflow", display: `workflow ${field("from").slice(0, 8)}`, workflow: { type: "message", sessionId: field("from"), runId: field("run") } };
+};
 const W = "First turn W: wait for the build.";
 const CHILD = "c0ffee00-0000-4000-8000-000000000002";
 const S = "Child summary S: the risk scan found two risky changes.";
@@ -95,7 +102,7 @@ describe("workflow v2 durable intake: decide's turn for the intake alone on the 
             const events = await h.catalog.getSessionEvents(h.sessionId, 0, 1000);
             const itemRecords = events.filter(event => Array.isArray(event.data?.clientMessageIds)
                 && event.data.clientMessageIds.includes(expected.clientMessageId));
-            expect(itemRecords.map(event => [event.eventType, event.data.content, event.data.sender])).toEqual([["system.message", expected.text, WORKFLOW_SENDER]]);
+            expect(itemRecords.map(event => [event.eventType, event.data.content, event.data.sender])).toEqual([["system.message", expected.text, workflowSender(expected.text)]]);
             const notes = events.filter(event => event.eventType === "system.message" && WAIT_NOTE.test(String(event.data?.content ?? "")));
             expect(notes).toHaveLength(1);
             expect(notes[0].data.content).toContain(S);

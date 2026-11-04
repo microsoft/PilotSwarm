@@ -49,7 +49,14 @@ import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_83/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
-const WORKFLOW_SENDER = { kind: "system", display: "workflow message" };
+/**
+ * The sender a workflow's message is recorded with (batch 7, w-4; SF-2): kind workflow, named by its session (a send's
+ * text names no workflow), with the header's type and ids, read from the message's own header.
+ */
+const workflowSender = text => {
+    const field = name => new RegExp(`\\b${name}=(\\S+?)[\\s\\]]`).exec(text)?.[1] ?? null;
+    return { kind: "workflow", display: `workflow ${field("from").slice(0, 8)}`, workflow: { type: "message", sessionId: field("from"), runId: field("run") } };
+};
 
 /** A run that sends: the real store admits the carried items first (exposure r2), as ManagedSession asks before its send. */
 const sends = result => async (_call, _prompt, opts) => {
@@ -106,7 +113,7 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
 
             // The transcript records the item once, as its plain copy would be; the plain copy itself is never read.
             const records = await recordsOf(h, expected.clientMessageId);
-            expect(records.map(event => [event.eventType, event.data.content, event.data.sender])).toEqual([["system.message", expected.text, WORKFLOW_SENDER]]);
+            expect(records.map(event => [event.eventType, event.data.content, event.data.sender])).toEqual([["system.message", expected.text, workflowSender(expected.text)]]);
             const events = await h.catalog.getSessionEvents(h.sessionId, 0, 1000);
             expect(events.some(event => JSON.stringify(event.data ?? {}).includes(`plain-${input.envelope.exchangeId}`))).toBe(false);
 
@@ -168,7 +175,7 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
 
             // Turn start recorded the item on the first attempt and found it recorded on the retry.
             const records = await recordsOf(h, expected.clientMessageId);
-            expect(records.map(event => [event.eventType, event.data.sender])).toEqual([["system.message", WORKFLOW_SENDER]]);
+            expect(records.map(event => [event.eventType, event.data.sender])).toEqual([["system.message", workflowSender(expected.text)]]);
         });
     });
 
