@@ -21,7 +21,10 @@
  * skip and returns; a delivery that runs out fails the notifier, and the
  * controller after its failure path's one more delivery; a begin whose
  * notifier start runs out takes the failure path, whose delivery tells the
- * parent or runs out too.
+ * parent or runs out too. A run-end notice owed after an interrupted report
+ * outlives notifiers that run out and is delivered once by a new recover,
+ * also by two recovers at once and past 60 earlier notices (verification of
+ * RT-4, M-10).
  */
 import { describe, it, expect } from "vitest";
 import { createServer } from "node:http";
@@ -1192,4 +1195,115 @@ states:
             await probe.close();
         }
     });
+
+    // Verification of RT-4 (M-10): a normal terminal run whose controller is interrupted before its report owes its parent
+    // the notice. That debt outlives a notifier that runs out and a recover's notifier that runs out; a repeat of a recover
+    // whose notifier ended starts nothing; a new recover's notifier delivers the notice, also when its first delivery is
+    // lost after the parent took it; two recovers at once deliver another run's notice once; and 60 earlier notices of the
+    // workflow do not hide a run's debt. The stored run never changes.
+    it("M-10: an owed run-end notice outlives notifiers that run out and is delivered once by a new recover, also by concurrent recovers and past 60 earlier notices", { timeout: 420_000 }, async () => {
+        const deliveries = [];
+        const control = { fail: true, loseFirst: false, hold: null };
+        const restore = compressFinalizeSchedule(10);
+        let h = null;
+        try {
+            h = await harness(getEnv(), {
+                // The controller's own report waits while `hold` is set; the test ends the controller meanwhile.
+                [WORKFLOW_V2_ACTIVITIES.notifyParent]: (fn) => async (ctx, input) => {
+                    const hold = control.hold;
+                    if (hold) {
+                        hold.arrive();
+                        await hold.wait();
+                        throw new Error("interrupted by the test");
+                    }
+                    return await fn(ctx, input);
+                },
+            }, {
+                authorizeParentNotification: async () => true,
+                notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => {
+                    deliveries.push(clientMessageId);
+                    if (control.fail) throw new Error("injected: the parent's session does not take the message");
+                    if (control.loseFirst) {
+                        // The parent's queue took the message; the activity fails before it records that.
+                        control.loseFirst = false;
+                        throw new Error("injected: lost after the parent took the message");
+                    }
+                },
+            });
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            const recover = async (id, operationId) => JSON.parse(await updateWorkflowFromTool({ workflow_id: id, operation: "recover", operation_id: operationId },
+                { callerSessionId: parentId, host: h.host }));
+            /** A completed run whose controller ends while its report waits: the run is stored as ended, and its notice is owed. */
+            const interrupted = async () => {
+                control.hold = gate();
+                const run = await notifying(h, parentId, TWO_STEPS);
+                await control.hold.reached;
+                const ended = await finished(h, run.runId, 60_000);
+                expect(ended).toMatchObject({ status: "completed", terminalOutput: { n: 2 } });
+                await h.client.cancelInstance(run.controllerInstanceId, "terminated by the test");
+                await until(async () => (await h.client.getStatus(run.controllerInstanceId)).status === "Failed", "the controller to end");
+                const hold = control.hold;
+                control.hold = null;
+                hold.open();
+                expect(await h.store.runNoticeRecorded(run.id, run.runId)).toBe(false);
+                expect(await notificationsOf(h, run.id)).toEqual([]);
+                return { ...run, ended, messageId: `workflow:${run.id}:${run.runId}:terminal` };
+            };
+            const sent = messageId => deliveries.filter(id => id === messageId).length;
+
+            const done = await interrupted();
+            const base = workflowNotifyInstanceId(done.runId);
+            // A recover of the ended run changes nothing in it and starts the notifier, whose delivery runs out (ten
+            // batches of five attempts). The debt stays: no notice is recorded.
+            expect(await recover(done.id, "recover-1")).toMatchObject({ ok: true, replayed: false, action: "none", status: "completed" });
+            expect((await h.client.waitForOrchestration(base, 150_000)).status).toBe("Failed");
+            expect(sent(done.messageId)).toBe(50);
+            expect(await h.store.runNoticeRecorded(done.id, done.runId)).toBe(false);
+            // The repeat of that recover finds the notifier ended: it starts one of its own, which runs out too.
+            expect(await recover(done.id, "recover-1")).toMatchObject({ ok: true, replayed: true, action: "none" });
+            await until(async () => sent(done.messageId) >= 100 || null, "the recover's notifier to run out", 150_000);
+            await new Promise(resolve => setTimeout(resolve, 1_000));
+            expect(sent(done.messageId)).toBe(100);
+            // A further repeat finds that notifier ended as well, and starts nothing: no delivery is attempted.
+            expect(await recover(done.id, "recover-1")).toMatchObject({ ok: true, replayed: true, action: "none" });
+            await new Promise(resolve => setTimeout(resolve, 1_500));
+            expect(sent(done.messageId)).toBe(100);
+            expect(await notificationsOf(h, done.id)).toEqual([]);
+            // With the parent reachable, a new recover's notifier delivers the notice; its first delivery is lost after the
+            // parent took it, and the next sends the same message id. The notice is recorded once.
+            control.fail = false;
+            control.loseFirst = true;
+            expect(await recover(done.id, "recover-2")).toMatchObject({ ok: true, replayed: false, action: "none", status: "completed" });
+            await until(async () => (await notificationsOf(h, done.id)).length > 0 || null, "the notice to be recorded", 60_000);
+            expect(sent(done.messageId)).toBe(102);
+            expect(await notificationsOf(h, done.id)).toEqual([["workflow.parent_notified", done.runId]]);
+            expect(await h.store.readRun(done.runId)).toEqual(done.ended);
+            // Recorded: neither a repeat nor a new recover delivers it again.
+            expect(await recover(done.id, "recover-2")).toMatchObject({ ok: true, replayed: true });
+            expect(await recover(done.id, "recover-3")).toMatchObject({ ok: true, replayed: false, action: "none" });
+            await new Promise(resolve => setTimeout(resolve, 1_500));
+            expect(sent(done.messageId)).toBe(102);
+            expect(await notificationsOf(h, done.id)).toEqual([["workflow.parent_notified", done.runId]]);
+
+            // Another owed notice, behind 60 earlier notices of other runs of the workflow (more than one page of 50), and two
+            // recovers at once: the debt is found, and the notice is delivered and recorded once.
+            const other = await interrupted();
+            await h.store.recordSessionEvents(other.id, Array.from({ length: 60 }, () => ({
+                eventType: "workflow.parent_notified", data: { runId: randomUUID(), parentSessionId: parentId } })));
+            expect(await h.store.runNoticeRecorded(other.id, other.runId)).toBe(false);
+            const [a, b] = await Promise.all([recover(other.id, "together-a"), recover(other.id, "together-b")]);
+            expect([a, b]).toEqual([expect.objectContaining({ ok: true, action: "none" }), expect.objectContaining({ ok: true, action: "none" })]);
+            await until(async () => (await h.store.runNoticeRecorded(other.id, other.runId)) || null, "the other notice to be recorded", 60_000);
+            await new Promise(resolve => setTimeout(resolve, 1_500));
+            expect(sent(other.messageId)).toBe(1);
+            const told = (await h.host.catalog.getSessionEvents(other.id, 0, 200, ["workflow.parent_notified"]))
+                .filter(event => event.data?.runId === other.runId);
+            expect(told).toHaveLength(1);
+            expect(await h.store.readRun(other.runId)).toEqual(other.ended);
+        } finally {
+            try { if (h) await h.stop(); } finally { restore(); }
+        }
+    });
 });
+

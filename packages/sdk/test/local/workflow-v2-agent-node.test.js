@@ -11,7 +11,10 @@
  * - The store: an agent state's admission records its invocation with the
  *   node's deadline; complete_workflow_node's operation (shape, identity,
  *   contract, correction budget, durable expiry, repeats and conflicts); the
- *   deadline's elapse; the spawn and end records.
+ *   deadline's elapse; the spawn and end records; a run's owed children,
+ *   ended page by page on real rows past 200 settled ones, with failures,
+ *   undecided states and a row added meanwhile kept for the next call
+ *   (verification of RT-5, M-11).
  * - Controller 1.9.0 on a native duroxide runtime with a test-double host:
  *   the child is created with the host-generated wrapper and a stable id;
  *   its typed completion routes the state and its session is told done; its
@@ -19,7 +22,8 @@
  *   and a worker without a host fail the state; a cancel of the run cancels
  *   the child; while the run is paused (verification of RT-6), an agent state
  *   decided by its completion or its deadline has its child ended at once, a
- *   failed end is tried again while paused, and nothing is routed or
+ *   failed end is tried again while paused, a deadline is the store's when
+ *   its clock and the controller's differ (M-12), and nothing is routed or
  *   admitted until the resume, also when every cursor waits on work (review
  *   R2-RT-1: an error with no route, a failFast branch failure of IR 8 and
  *   IR 9, the first decided agent's failed end, and the node limit end
@@ -28,7 +32,10 @@
  *   child of a loser branch whose end fails is owed: the run goes on at
  *   once, and the end is tried again, running or paused, until it works
  *   (reviews J1-R2 and J1C-1, J1d), also while the run always has a result
- *   ready and across continue-as-new (review J1d-R1, J1e).
+ *   ready and across continue-as-new (review J1d-R1, J1e); a recover that
+ *   ends a dead controller's run ends its agent children, and its repeats
+ *   and a new recover finish a cleanup interrupted before or after the send
+ *   with one command id and no new child (verification of RT-3, M-09).
  *
  * The child session is a test double (an orchestration that records the
  * messages its queue gets); the test completes the state through the real
@@ -45,12 +52,12 @@ import {
     compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_AGENT_IR_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_REQUEST_IR_VERSION,
 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
-import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
+import { controlWorkflowV2Run, createWorkflowV2, recoverWorkflowV2Run } from "../../src/workflow/v2/service.ts";
 import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import { completeWorkflowNodeFromTool, COMPLETE_WORKFLOW_NODE_TOOL } from "../../src/workflow/v2/agent-node-service.ts";
 import {
-    branchScopeId, describeWorkflowV2State, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChildSessionId,
-    workflowAgentClientMessageId, workflowLiveControllerInstanceId,
+    branchScopeId, describeWorkflowV2State, endWorkflowV2RunAgents, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_OWED_AGENT_PAGE,
+    WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChildSessionId, workflowAgentClientMessageId, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor, WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -593,6 +600,186 @@ describe("workflow v2 agent states: the store", () => {
             expect(await h.complete(second.childSessionId, "after", { outcome: "accepted", output: { verdict: "ok" } }))
                 .toMatchObject({ kind: "refused", code: "NODE_CLOSED" });
             expect(await h.store.beginAgentSpawn(second.nodeExecutionId)).toMatchObject({ action: "decided" });
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
+/**
+ * Copies of the agent state `template` (its node execution and invocation) in its run, made in SQL: `count` of them,
+ * with ids `<prefix>0001`..., ordinals from `ordinal + 1`. Each is decided (cancelled by the controller) except the
+ * numbers in `pending`; with `settled`, its child's end was already requested and sent.
+ */
+async function cloneAgents(h, template, { prefix, count, ordinal, pending = [], settled = false }) {
+    await h.q(`INSERT INTO SCHEMA.workflow_node_executions
+        SELECT (jsonb_populate_record(NULL::SCHEMA.workflow_node_executions, to_jsonb(n) || jsonb_build_object(
+            'node_execution_id', $2::text || lpad(g::text, 4, '0'), 'ordinal', $3::int + g,
+            'state', CASE WHEN g = ANY($4::int[]) THEN 'pending' ELSE 'completed' END,
+            'outcome', CASE WHEN g = ANY($4::int[]) THEN NULL ELSE 'cancelled' END,
+            'result_kind', CASE WHEN g = ANY($4::int[]) THEN NULL ELSE 'runtime_error' END,
+            'error', CASE WHEN g = ANY($4::int[]) THEN NULL ELSE '{"code":"cancelled","message":"test"}' END,
+            'output', NULL,
+            'winner', CASE WHEN g = ANY($4::int[]) THEN NULL ELSE 'controller' END,
+            'completed_at', CASE WHEN g = ANY($4::int[]) THEN NULL ELSE n.entered_at END))).*
+          FROM SCHEMA.workflow_node_executions n, generate_series(1, $5::int) g
+         WHERE n.node_execution_id = $1`, [template, prefix, ordinal, pending, count]);
+    await h.q(`INSERT INTO SCHEMA.workflow_agent_invocations
+        SELECT (jsonb_populate_record(NULL::SCHEMA.workflow_agent_invocations, to_jsonb(i) || jsonb_build_object(
+            'node_execution_id', $2::text || lpad(g::text, 4, '0'), 'child_session_id', $2::text || 'child-' || lpad(g::text, 4, '0'),
+            'spawn_attempts', 1, 'spawned_at', i.created_at,
+            'end_requested', CASE WHEN $4::boolean THEN 'cancel' ELSE NULL END,
+            'end_requested_at', CASE WHEN $4::boolean THEN i.created_at ELSE NULL END,
+            'end_sent_at', CASE WHEN $4::boolean THEN i.created_at ELSE NULL END,
+            'end_child_status', CASE WHEN $4::boolean THEN 'Completed' ELSE NULL END))).*
+          FROM SCHEMA.workflow_agent_invocations i, generate_series(1, $3::int) g
+         WHERE i.node_execution_id = $1`, [template, prefix, count, settled]);
+    return Array.from({ length: count }, (_, i) => `${prefix}${String(i + 1).padStart(4, "0")}`);
+}
+
+/** A duroxide client double for ending children: every session runs; `failing` sessions refuse the end; `onSend` runs after each. */
+function endClient() {
+    return {
+        sent: [], failing: new Set(), onSend: null,
+        async getStatus() { return { status: "Running" }; },
+        async enqueueEvent(instanceId) {
+            this.sent.push(instanceId);
+            if (this.failing.has(instanceId)) throw new Error("The child's session is not reachable (test).");
+            if (this.onSend) await this.onSend(instanceId);
+        },
+    };
+}
+
+// Verification of RT-5 (M-11) on real SQL: the owed children of a run are read page by page (WORKFLOW_V2_OWED_AGENT_PAGE)
+// by node execution id, so 200 settled rows hide no owed one; failures and undecided states on several pages are kept
+// for the next call, and the rest are ended once; a row added while the cleanup runs is ended by this call or the next.
+describe("workflow v2 agent states: ending a run's owed children on real rows (verification of RT-5, M-11)", () => {
+    it("M-11: 200 settled children hide no owed 201st; 450 owed are ended once across pages; failures and undecided ones stay owed; a late row is never lost", { timeout: TIMEOUT }, async () => {
+        const h = await agentFixture(getEnv());
+        try {
+            expect(WORKFLOW_V2_OWED_AGENT_PAGE).toBe(200);
+            const child = id => `session-${id.replace(/^(.*?)(\d{4})$/, "$1child-$2")}`;
+            // As a set: the database orders by its collation, not as JavaScript does.
+            const owedOf = async runId => (await h.q(`SELECT node_execution_id FROM SCHEMA.workflow_agent_invocations
+                WHERE run_id = $1 AND end_sent_at IS NULL`, [runId])).map(row => row.node_execution_id).sort();
+
+            // 200 children already ended, then one owed whose id sorts after all of them.
+            const first = await h.workflow();
+            const firstTemplate = (await h.admit(first)).nodeExecutionId;
+            const settled = await cloneAgents(h, firstTemplate, { prefix: "m11-a-s-", count: 200, ordinal: 1, settled: true });
+            const [late201] = await cloneAgents(h, firstTemplate, { prefix: "m11-a-z-", count: 1, ordinal: 500 });
+            const one = endClient();
+            await endWorkflowV2RunAgents(h.store, one, first.runId);
+            expect(one.sent).toEqual([child(late201)]);
+            expect(await h.store.readAgentInvocation(late201)).toMatchObject({ endRequested: "cancel", endSentAt: expect.any(Date), endChildStatus: "Running" });
+            expect(await h.store.readAgentInvocation(settled[199])).toMatchObject({ endChildStatus: "Completed" });
+            // Only the agent state still running is owed; it is not decided, so nothing is sent for it.
+            expect(await owedOf(first.runId)).toEqual([firstTemplate]);
+
+            // 450 owed children across three pages: two undecided (pages 1 and 2) and two whose end fails (pages 1 and 3).
+            const second = await h.workflow();
+            const secondTemplate = (await h.admit(second)).nodeExecutionId;
+            const owed = await cloneAgents(h, secondTemplate, { prefix: "m11-b-n-", count: 450, ordinal: 1, pending: [10, 250] });
+            const undecided = [owed[9], owed[249]];
+            const failing = [owed[19], owed[419]];
+            const two = endClient();
+            for (const id of failing) two.failing.add(child(id));
+            // While the cleanup runs, two more rows are added: one whose id sorts before the pages read, one after.
+            let early = null;
+            let later = null;
+            two.onSend = async () => {
+                if (early !== null) return;
+                [early] = await cloneAgents(h, secondTemplate, { prefix: "m11-b-a-", count: 1, ordinal: 900 });
+                [later] = await cloneAgents(h, secondTemplate, { prefix: "m11-b-z-", count: 1, ordinal: 901 });
+            };
+            const failure = await endWorkflowV2RunAgents(h.store, two, second.runId).then(() => null, error => error);
+            expect(failure?.message).toMatch(/were not ended yet/);
+            for (const id of failing) expect(failure.message).toContain(id);
+            // Each child was sent its end at most once in the call; the undecided ones none.
+            expect(new Set(two.sent).size).toBe(two.sent.length);
+            for (const id of undecided) expect(two.sent).not.toContain(child(id));
+            expect(two.sent).toContain(child(later));
+            expect(two.sent).not.toContain(child(early));
+            expect(two.sent.filter(id => id.includes("m11-b-n-"))).toHaveLength(448);
+            expect(await owedOf(second.runId)).toEqual([...new Set([early, ...failing, ...undecided, secondTemplate])].sort());
+            const failures = await h.catalog.getSessionEvents(second.workflowSessionId, 0, 1000, ["workflow.agent_end_failed"]);
+            expect(failures.map(event => event.data.nodeExecutionId).sort()).toEqual([...failing].sort());
+
+            // The next call, with the children reachable: the failed ones and the early row are ended, once each.
+            const three = endClient();
+            await endWorkflowV2RunAgents(h.store, three, second.runId);
+            expect(three.sent.sort()).toEqual([early, ...failing].map(child).sort());
+            // The undecided ones are decided later; the next call ends them, and then nothing is owed but the running one.
+            await h.q(`UPDATE SCHEMA.workflow_node_executions SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error',
+                error = '{"code":"cancelled","message":"test"}', winner = 'controller', completed_at = clock_timestamp()
+                WHERE node_execution_id = ANY($1::text[])`, [undecided]);
+            const four = endClient();
+            await endWorkflowV2RunAgents(h.store, four, second.runId);
+            expect(four.sent.sort()).toEqual(undecided.map(child).sort());
+            expect(await owedOf(second.runId)).toEqual([secondTemplate]);
+            const ended = await h.catalog.getSessionEvents(second.workflowSessionId, 0, 1000, ["workflow.agent_ended"]);
+            expect(ended).toHaveLength(452);
+            expect(new Set(ended.map(event => event.data.nodeExecutionId)).size).toBe(452);
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
+// Verification of WFO-2 (D-T4) on real invocation and status storage: an end that found no child session (NotFound) after
+// a spawn attempt began is checked again by each cleanup. A child created late gets the end then, and its recorded status
+// retires the check. A spawn that never created a child stays owed: each cleanup costs one status read and sends nothing
+// (the known limit; nothing proves the spawn will not create it later). An end that found no child before any spawn attempt
+// is final.
+describe("workflow v2 agent states: a child created after its end found no session (verification of WFO-2, D-T4)", () => {
+    it("D-T4: a late child gets its end at the next cleanup and the check retires; a child never created stays checked, one status read per cleanup", { timeout: TIMEOUT }, async () => {
+        const h = await agentFixture(getEnv());
+        try {
+            const run = await h.workflow();
+            const template = (await h.admit(run)).nodeExecutionId;
+            const [late, never, unattempted] = await cloneAgents(h, template, { prefix: "dt4-", count: 3, ordinal: 1 });
+            await h.q("UPDATE SCHEMA.workflow_agent_invocations SET spawn_attempts = 0, spawned_at = NULL WHERE node_execution_id = $1", [unattempted]);
+            const child = id => `session-${id.replace(/^(.*?)(\d{4})$/, "$1child-$2")}`;
+            const statuses = new Map();
+            const client = {
+                reads: [], sent: [],
+                async getStatus(instanceId) { this.reads.push(instanceId); return { status: statuses.get(instanceId) ?? "NotFound" }; },
+                async enqueueEvent(instanceId) { this.sent.push(instanceId); },
+            };
+            // As a set: the store's order is the database collation's, not JavaScript's.
+            const owed = async () => (await h.store.listOwedAgentInvocations(run.runId, null, 200)).map(invocation => invocation.nodeExecutionId).sort();
+
+            // No child exists yet: each end is recorded as sent to no session, and nothing is queued.
+            await endWorkflowV2RunAgents(h.store, client, run.runId);
+            expect(client.sent).toEqual([]);
+            for (const id of [late, never, unattempted]) {
+                expect(await h.store.readAgentInvocation(id)).toMatchObject({ endRequested: "cancel", endSentAt: expect.any(Date), endChildStatus: "NotFound" });
+            }
+            // After a spawn attempt began, the end is owed again: the attempt may create the child. Without one, it is final.
+            expect(await owed()).toEqual([template, late, never].sort());
+
+            // The late spawn creates its child: the next cleanup sends the end once, and the recorded status retires the check.
+            statuses.set(child(late), "Running");
+            client.reads.length = 0;
+            await endWorkflowV2RunAgents(h.store, client, run.runId);
+            expect(client.sent).toEqual([child(late)]);
+            expect(await h.store.readAgentInvocation(late)).toMatchObject({ endChildStatus: "Running" });
+            expect(await owed()).toEqual([template, never].sort());
+            expect(client.reads.filter(id => id === child(never))).toHaveLength(1);
+            const ended = await h.catalog.getSessionEvents(run.workflowSessionId, 0, 100, ["workflow.agent_ended"]);
+            expect(ended.filter(event => event.data.nodeExecutionId === late).map(event => [event.data.sent, event.data.childStatus]))
+                .toEqual([[false, "NotFound"], [true, "Running"]]);
+
+            // Repeated cleanups: the late child gets nothing more; the never-created one costs one status read each and sends nothing.
+            for (let round = 0; round < 3; round += 1) {
+                client.reads.length = 0;
+                await endWorkflowV2RunAgents(h.store, client, run.runId);
+                expect(client.reads.filter(id => id === child(never))).toHaveLength(1);
+                expect(client.reads.filter(id => id === child(late) || id === child(unattempted))).toEqual([]);
+            }
+            expect(client.sent).toEqual([child(late)]);
+            expect(await owed()).toEqual([template, never].sort());
+            expect(await h.store.readAgentInvocation(never)).toMatchObject({ endChildStatus: "NotFound", spawnAttempts: 1 });
         } finally {
             await h.stop();
         }
@@ -1152,6 +1339,75 @@ describe("workflow v2 agent states while the run is paused (verification of RT-6
             await h.stop();
         }
     });
+
+    // Verification of RT-6 (M-12): the store's clock and the controller's differ. The controller keeps the deadline the store
+    // reported at admission and wakes by its own clock; the store decides by its own. A real skew cannot be made in one
+    // process, so the test moves the stored deadlines, which is what a skew looks like to each side: a later stored
+    // deadline is a store clock behind the controller's, an earlier one a store clock ahead of it.
+    it("M-12: with the clocks apart, a paused agent state is timed out by the store's deadline, never early by the controller's, and a completion past the store's is refused", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        const db = await openWorkflowStore(getEnv(), { initialize: false });
+        try {
+            const { workflowSessionId, runId } = await started(h, PAUSED_AGENTS_YAML({ timeoutSeconds: 8 }));
+            const [behind, ahead] = await bothChildren(h);
+            const elapses = [];
+            const elapseAgentNode = h.store.elapseAgentNode.bind(h.store);
+            h.store.elapseAgentNode = async (nodeExecutionId, ...rest) => {
+                const answer = await elapseAgentNode(nodeExecutionId, ...rest);
+                elapses.push({ nodeExecutionId, at: Date.now(), result: answer.result });
+                return answer;
+            };
+            await pauseRun(h, workflowSessionId);
+            // The controller's deadline of both: the one the store reported at admission.
+            const controllerDeadline = (await h.store.readNodeExecution(behind.nodeExecutionId)).deadlineAt.getTime();
+            const shift = async (nodeExecutionId, seconds) => {
+                for (const table of ["workflow_node_executions", "workflow_agent_invocations"]) {
+                    await db.q(`UPDATE SCHEMA.${table} SET deadline_at = deadline_at + $2::integer * interval '1 second' WHERE node_execution_id = $1`,
+                        [nodeExecutionId, seconds]);
+                }
+            };
+            await shift(behind.nodeExecutionId, 8);
+            await shift(ahead.nodeExecutionId, -5);
+            expect(Date.now(), "precondition: the deadlines moved before the controller's").toBeLessThan(controllerDeadline - 1_000);
+            const storeDeadline = async nodeExecutionId => (await h.store.readNodeExecution(nodeExecutionId)).deadlineAt.getTime();
+            const behindDeadline = await storeDeadline(behind.nodeExecutionId);
+
+            // The store's clock ahead: past its deadline, a completion is refused, and nothing is decided until the controller asks.
+            await until(async () => (await db.q("SELECT clock_timestamp() > deadline_at AS past FROM SCHEMA.workflow_agent_invocations WHERE node_execution_id = $1",
+                [ahead.nodeExecutionId]))[0]?.past || null, "the store's earlier deadline to pass");
+            expect(await completeAs(h, ahead.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "late-1" }))
+                .toMatchObject({ ok: false, error: { code: "NODE_EXPIRED" } });
+            expect(await h.store.readNodeExecution(ahead.nodeExecutionId)).toMatchObject({ state: "pending" });
+
+            // At the controller's own deadline, it asks the store for both: the one whose stored deadline passed is timed out;
+            // the other is not due by the store's clock, so it stays pending past the controller's deadline.
+            await until(async () => (await h.store.readNodeExecution(ahead.nodeExecutionId))?.state === "completed", "the controller's wake");
+            expect(await h.store.readNodeExecution(ahead.nodeExecutionId)).toMatchObject({ outcome: "timed_out", winner: "controller" });
+            expect(await lifecycleCommand(h, ahead.childSessionId)).toMatchObject({ cmd: "cancel", id: `workflow-agent-end:${ahead.nodeExecutionId}` });
+            await until(async () => elapses.some(call => call.nodeExecutionId === behind.nodeExecutionId) || null, "the controller's question about the other");
+            const early = elapses.filter(call => call.nodeExecutionId === behind.nodeExecutionId);
+            expect(early[0].result).toBe("not_due");
+            expect(early[0].at).toBeGreaterThanOrEqual(controllerDeadline - 1_000);
+            await pause(1_500);
+            expect(await h.store.readNodeExecution(behind.nodeExecutionId)).toMatchObject({ state: "pending" });
+            await nothingAdmitted(h, runId);
+
+            // At the store's later deadline, still paused, it is timed out, and its child is cancelled.
+            await until(async () => (await h.store.readNodeExecution(behind.nodeExecutionId))?.state === "completed", "the store's later deadline", 30_000);
+            const decided = await h.store.readNodeExecution(behind.nodeExecutionId);
+            expect(decided).toMatchObject({ outcome: "timed_out", winner: "controller" });
+            expect(decided.completedAt.getTime()).toBeGreaterThanOrEqual(behindDeadline);
+            expect(elapses.filter(call => call.nodeExecutionId === behind.nodeExecutionId).at(-1).result).toBe("elapsed");
+            expect(await lifecycleCommand(h, behind.childSessionId)).toMatchObject({ cmd: "cancel", id: `workflow-agent-end:${behind.nodeExecutionId}` });
+            await nothingAdmitted(h, runId);
+
+            await resumeRun(h, workflowSessionId);
+            expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: ["a", "b"] });
+        } finally {
+            await db.stop();
+            await h.stop();
+        }
+    });
 });
 
 /** One agent state that routes only `accepted` (review R2-RT-1): an error it reports has no route, and no catch-all takes it. */
@@ -1348,6 +1604,90 @@ describe("workflow v2 while the run is paused with every cursor waiting (review 
 
             await resumeRun(h, workflowSessionId);
             expect(await ended(h, runId)).toMatchObject({ status: "failed", terminalError: { code: "limit_exceeded" } });
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
+/**
+ * A duroxide client that fails `method` for the session instance of `childSessionId` (the child's queue or status, not
+ * reachable for now) and passes everything else to the real client.
+ */
+function failingFor(client, childSessionId, method = "enqueueEvent") {
+    return new Proxy(client, {
+        get(target, property) {
+            if (property === method) {
+                return async (instanceId, ...rest) => {
+                    if (instanceId === `session-${childSessionId}`) throw new Error("The child's session is not reachable (test).");
+                    return await target[method](instanceId, ...rest);
+                };
+            }
+            const value = target[property];
+            return typeof value === "function" ? value.bind(target) : value;
+        },
+    });
+}
+
+// Verification of RT-3 (M-09) on the real provider, for a live run (the real-agent test run is in workflow-v2-test-agents):
+// a recover ends the run of a dead controller, then its child cleanup is interrupted twice (the child's queue cannot be
+// reached; then the end is sent but its record is lost). Repeats of that recover, and a new one, finish the cleanup with
+// one stable command id and never create another child.
+describe("workflow v2 recover ends a dead controller's agent children (verification of RT-3, M-09; controller 1.9.0, test-only)", () => {
+    it("M-09: a recover whose child cleanup fails, then loses the record of a sent end, is finished by its repeats and a new recover, with one command id and no new child", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const { workflowSessionId, runId } = await started(h, AGENT_YAML());
+            const [spawn] = await until(async () => (h.spawns.length > 0 ? h.spawns : null), "the agent state's child");
+            await until(async () => (await h.store.readAgentInvocation(spawn.nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
+            // The controller dies while its agent state runs.
+            const controller = workflowLiveControllerInstanceId(workflowSessionId);
+            await h.client.cancelInstance(controller, "terminated by the test");
+            await until(async () => (await h.client.getStatus(controller)).status === "Failed" || null, "the controller to end");
+            expect((await h.store.readRun(runId)).status).toBe("running");
+
+            // Crash after finish, before child cleanup: the recover ends the run, but the child's queue cannot be reached.
+            const unreachable = { ...h.host, duroxideClient: failingFor(h.client, spawn.childSessionId) };
+            await expect(recoverWorkflowV2Run(unreachable, runId, { requestedBy: null, operationId: "recover-1" })).rejects.toThrow(/were not ended yet/);
+            expect(await h.store.readRun(runId)).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
+            expect(await h.store.readNodeExecution(spawn.nodeExecutionId)).toMatchObject({ state: "completed", winner: "controller" });
+            expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ endRequested: "cancel", endSentAt: null });
+            expect((await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd")).toEqual([]);
+
+            // Crash after enqueue, before mark: the repeat of that recover sends the end, and its record is lost once.
+            const markAgentEndSent = h.store.markAgentEndSent.bind(h.store);
+            let lose = 1;
+            h.store.markAgentEndSent = async (...args) => {
+                if (lose > 0) {
+                    lose -= 1;
+                    throw new Error("The store is not available (test).");
+                }
+                return await markAgentEndSent(...args);
+            };
+            await expect(recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-1" })).rejects.toThrow(/were not ended yet/);
+            const command = { type: "cmd", cmd: "cancel", id: `workflow-agent-end:${spawn.nodeExecutionId}`, requestedBy: workflowSessionId };
+            expect((await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd")).toEqual([expect.objectContaining(command)]);
+            expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ endSentAt: null });
+
+            // The same recover again: the end is sent again with the same id (the child takes one id once) and recorded.
+            expect(await recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-1" }))
+                .toMatchObject({ replayed: true, receipt: { action: "ended", status: "failed" } });
+            expect((await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd"))
+                .toEqual([expect.objectContaining(command), expect.objectContaining(command)]);
+            expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ endSentAt: expect.any(Date), endChildStatus: "Running" });
+
+            // A new recover finds nothing owed: nothing is sent, and no child is created.
+            expect(await recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-2" }))
+                .toMatchObject({ replayed: false, receipt: { action: "none", status: "failed" } });
+            expect((await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd")).toHaveLength(2);
+            expect(h.spawns).toHaveLength(1);
+            expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ spawnAttempts: 1 });
+            const events = await h.catalog.getSessionEvents(workflowSessionId, 0, 500);
+            expect(events.filter(event => event.eventType === "workflow.agent_end_failed").map(event => event.data.nodeExecutionId))
+                .toEqual([spawn.nodeExecutionId, spawn.nodeExecutionId]);
+            expect(events.filter(event => event.eventType === "workflow.agent_ended").map(event => event.data))
+                .toEqual([expect.objectContaining({ nodeExecutionId: spawn.nodeExecutionId, end: "cancel", sent: true })]);
+            expect(events.filter(event => event.eventType === "workflow.agent_spawned")).toHaveLength(1);
         } finally {
             await h.stop();
         }

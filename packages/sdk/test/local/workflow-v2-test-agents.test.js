@@ -27,6 +27,10 @@
  *   not under a test.
  * - Only a real-agent test run's pending agent state records an agent's tool
  *   call.
+ * - A recover of a real-agent test run whose controller died ends its
+ *   agent's child (no parent is told); a cleanup interrupted before or after
+ *   the send is finished by repeats of that recover and a new one, with one
+ *   command id and no new child (verification of RT-3, M-09).
  *
  * The agent host is the real createWorkflowAgentNodeHost with test-double
  * dependencies (a mutable agent catalog and a child double). No model runs:
@@ -37,11 +41,11 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
+import { createWorkflowV2, recoverWorkflowV2Run } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/v2/agent-node-service.ts";
 import { createWorkflowAgentNodeHost } from "../../src/workflow/v2/agent-host.ts";
-import { registerWorkflowV2, sessionQueueTransport, workflowAgentChildSessionId } from "../../src/workflow/v2/runtime.ts";
+import { registerWorkflowV2, sessionQueueTransport, workflowAgentChildSessionId, workflowNotifyInstanceId } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 import { WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } from "../../src/workflow/v2/test-mode.ts";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "../../src/workflow/v2/test-agent-tools.ts";
@@ -413,4 +417,70 @@ describe("workflow v2 real-agent test runs: controller 1.9.0 (inactive, test-onl
             await h.stop();
         }
     });
+
+    // Verification of RT-3 (M-09) on the real provider, for a real-agent test run (the live run's case is in
+    // workflow-v2-agent-node): the same interrupted cleanup, finished by repeats of the recover and a new one.
+    it("M-09: a recover of a real-agent test run whose controller died ends its agent's child once, through an interrupted cleanup, with no new child", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const workflow = await h.workflow({ prompt: TASK });
+            const runId = await h.test(workflow, "real-1");
+            const review = nodeExecutionIdFor(runId, "root", "review", 1);
+            const child = (await spawned(h, review)).childSessionId;
+            const { controllerInstanceId } = await h.store.readRun(runId);
+            await h.client.cancelInstance(controllerInstanceId, "terminated by the test");
+            await until(async () => (await h.client.getStatus(controllerInstanceId)).status === "Failed" || null, "the controller to end");
+            expect((await h.store.readRun(runId)).status).toBe("running");
+
+            // The recover ends the run, but the child's queue cannot be reached.
+            const unreachable = { ...h.host, duroxideClient: failingFor(h.client, child) };
+            await expect(recoverWorkflowV2Run(unreachable, runId, { requestedBy: null, operationId: "recover-1" })).rejects.toThrow(/were not ended yet/);
+            expect(await h.store.readRun(runId)).toMatchObject({ mode: "test", status: "failed", terminalError: { code: "controller_ended" } });
+            expect(await h.store.readAgentInvocation(review)).toMatchObject({ endRequested: "cancel", endSentAt: null });
+
+            // Its repeat sends the end, and the record of it is lost once; the next repeat sends it again with the same id.
+            const markAgentEndSent = h.store.markAgentEndSent.bind(h.store);
+            let lose = 1;
+            h.store.markAgentEndSent = async (...args) => {
+                if (lose > 0) {
+                    lose -= 1;
+                    throw new Error("The store is not available (test).");
+                }
+                return await markAgentEndSent(...args);
+            };
+            await expect(recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-1" })).rejects.toThrow(/were not ended yet/);
+            expect(await recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-1" }))
+                .toMatchObject({ replayed: true, receipt: { action: "ended", status: "failed" } });
+            const command = { type: "cmd", cmd: "cancel", id: `workflow-agent-end:${review}`, requestedBy: workflow.workflowSessionId };
+            expect((await childMessages(h, child)).filter(message => message?.type === "cmd"))
+                .toEqual([expect.objectContaining(command), expect.objectContaining(command)]);
+            expect(await h.store.readAgentInvocation(review)).toMatchObject({ endSentAt: expect.any(Date), endChildStatus: "Running" });
+
+            // A new recover finds nothing owed. No child was created again, and no parent was told of a test run's end.
+            expect(await recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-2" }))
+                .toMatchObject({ replayed: false, receipt: { action: "none", status: "failed" } });
+            expect((await childMessages(h, child)).filter(message => message?.type === "cmd")).toHaveLength(2);
+            expect(h.children).toHaveLength(1);
+            expect(await h.store.readAgentInvocation(review)).toMatchObject({ spawnAttempts: 1 });
+            expect((await h.client.getStatus(workflowNotifyInstanceId(runId))).status).toBe("NotFound");
+        } finally {
+            await h.stop();
+        }
+    });
 });
+
+/** A duroxide client that fails `method` for the session instance of `childSessionId` and passes everything else on. */
+function failingFor(client, childSessionId, method = "enqueueEvent") {
+    return new Proxy(client, {
+        get(target, property) {
+            if (property === method) {
+                return async (instanceId, ...rest) => {
+                    if (instanceId === `session-${childSessionId}`) throw new Error("The child's session is not reachable (test).");
+                    return await target[method](instanceId, ...rest);
+                };
+            }
+            const value = target[property];
+            return typeof value === "function" ? value.bind(target) : value;
+        },
+    });
+}
