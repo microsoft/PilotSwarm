@@ -1196,14 +1196,17 @@ export function workflowV2SelectionAfterBranchChange(selection, stateId) {
  * also while the step is not reached in it: re-check UI-RC2-4) and, in the portal, the branch chosen in Details
  * (`branchIndex`) when it was made; a new parallel visit, or another branch chosen in Details since, ends it, and the step
  * shows that branch's latest result again. A branch change in Details also clears the choice (re-check UI-RC2-3), so a
- * round trip back to its branch does not bring it back. A choice without these fields (made before them) is kept. Pure.
+ * round trip back to its branch does not bring it back. A choice without these fields (made before them) is kept. A
+ * choice made while the step had no branch to choose (`branchIndex` null: not reached yet in that parallel visit) is not
+ * ended by the default branch its first reach brings (re-check UI-RC3-1); only a branch chosen in Details, which clears
+ * it, or another parallel visit ends it. Pure.
  */
 function selectionStillApplies(node, selection, branch) {
     // Re-check UI-RC2-4: compared with the parallel step's visit now, also while no branch of it has reached the step.
     const parallelNow = node?.parallelVisitId !== undefined ? node.parallelVisitId : node?.branches?.parallelExecutionId ?? null;
     if (Object.hasOwn(selection, "parallelExecutionId") && (selection.parallelExecutionId ?? null) !== (parallelNow ?? null)) return false;
-    if (Object.hasOwn(selection, "branchIndex") && isRecord(branch) && Number.isSafeInteger(branch.index)
-        && (selection.branchIndex ?? null) !== branch.index) return false;
+    if (Number.isSafeInteger(selection.branchIndex) && isRecord(branch) && Number.isSafeInteger(branch.index)
+        && selection.branchIndex !== branch.index) return false;
     return true;
 }
 

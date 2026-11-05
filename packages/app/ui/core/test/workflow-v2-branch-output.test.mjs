@@ -11,7 +11,8 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-    compactWorkflowV2Executions, projectWorkflowV2, workflowV2SelectionAfterBranchChange, workflowV2ShownExecution, workflowV2VisitPlaces,
+    compactWorkflowV2Executions, projectWorkflowV2, workflowV2BranchChoice, workflowV2SelectionAfterBranchChange, workflowV2ShownExecution,
+    workflowV2VisitPlaces,
 } from "../src/workflow-v2-view.js";
 import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { done, readModel, row } from "./workflow-v2-fixtures.mjs";
@@ -240,10 +241,75 @@ test("UI-RC2-4: a choice made while the step is unreached binds to the current p
         row("reviewed", 1, "pending", { nodeExecutionId: "nx-reviewed-2b0", ...at("nx-fan-2", 0) })]);
     assert.equal(reached.parallelVisitId, "nx-fan-2");
     assert.equal(workflowV2ShownExecution(reached, "run-1", selection, null).chosen, true);
+    // Re-check UI-RC3-1: also with the default branch the reach brings, as the portal passes it.
+    assert.ok(reached.branches, "the reach brings a branch to choose");
+    assert.equal(workflowV2ShownExecution(reached, "run-1", selection, workflowV2BranchChoice(reached.branches, null)).chosen, true);
     // Visit 3, again not reaching reviewed: the choice ends.
     const third = reviewedOf([...visit1, done("fan", 2, "joined", { nodeExecutionId: "nx-fan-2", branches: 1 }),
         done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-2b0", ...at("nx-fan-2", 0) }),
         row("fan", 3, "pending", { nodeExecutionId: "nx-fan-3", branches: 1 })]);
     assert.equal(third.parallelVisitId, "nx-fan-3");
     assert.equal(workflowV2ShownExecution(third, "run-1", selection).chosen, false);
+});
+
+// Re-check UI-RC3-1: a History choice made while the step has no branch to choose (its branchIndex is null) survives the
+// step's first reach within the same parallel visit through the real panel: the default branch that the reach brings does
+// not end it, and the whole value is read for the chosen visit, never for the new branch's. A branch chosen in Details
+// still ends it (the portal's onBranch clears it), and a choice that named a branch still ends with another branch.
+test("UI-RC3-1: a choice made before the step had a branch survives the default branch of its first reach; the whole value is the chosen visit's", () => {
+    const find = (element, match) => {
+        if (Array.isArray(element)) return element.map(item => find(item, match)).find(Boolean) ?? null;
+        if (!element || typeof element !== "object" || !element.props) return null;
+        if (match(element.props)) return element;
+        return find(element.props.children, match);
+    };
+    const visit1 = [
+        done("fan", 1, "joined", { nodeExecutionId: "nx-fan-1", branches: 1 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-1b0", ...at("nx-fan-1", 0) }),
+        done("reviewed", 1, "succeeded", { nodeExecutionId: "nx-reviewed-1b0", outputPreview: '{"who":"old"}', ...at("nx-fan-1", 0) }),
+    ];
+    const reviewedOf = list => projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: list }) }).nodes.find(node => node.id === "reviewed");
+    const props = { nodes: [], select: () => {}, runOutput: null, runError: null, runId: "run-1" };
+    // Visit 2 runs and has not reached reviewed: History's Result button of visit 1's result, pressed as a click would.
+    const unreached = reviewedOf([...visit1, row("fan", 2, "pending", { nodeExecutionId: "nx-fan-2", branches: 1 }),
+        row("prepare", 1, "pending", { nodeExecutionId: "nx-prepare-2b0", ...at("nx-fan-2", 0) })]);
+    assert.equal(unreached.branches, null);
+    const recorded = [];
+    const history = WorkflowV2NodeContent({ ...props, tab: "history", selected: unreached, branchIndex: null,
+        onSelectExecution: (id, bound) => recorded.push([id, bound]), onTab: () => {} });
+    find(history, item => item["data-action"] === "show-result" && item["data-execution"] === "nx-reviewed-1b0").props.onClick();
+    assert.deepEqual(recorded, [["nx-reviewed-1b0", { parallelExecutionId: "nx-fan-2", branchIndex: null }]]);
+    // The choice as the portal stores it (selectWorkflowExecution keeps a null branchIndex).
+    const selection = { runId: "run-1", stateId: "reviewed", executionId: "nx-reviewed-1b0", ...recorded[0][1] };
+    // The first reach within visit 2: branch 1 reaches reviewed and ends there with a result of its own.
+    const reached = reviewedOf([...visit1, row("fan", 2, "pending", { nodeExecutionId: "nx-fan-2", branches: 1 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-2b0", ...at("nx-fan-2", 0) }),
+        done("reviewed", 1, "succeeded", { nodeExecutionId: "nx-reviewed-2b0", outputPreview: '{"who":"new"}', ...at("nx-fan-2", 0) })]);
+    assert.equal(reached.parallelVisitId, "nx-fan-2");
+    assert.equal(workflowV2BranchChoice(reached.branches, null)?.ended?.id, "nx-reviewed-2b0", "the default branch has a result of its own");
+    // Output with no branch chosen in Details (branchIndex null: the panel shows the default branch).
+    const reads = [];
+    const output = WorkflowV2NodeContent({ ...props, tab: "output", selected: reached, selection, branchIndex: null,
+        onSelectExecution: () => {}, onReadWholeValue: id => reads.push(id) });
+    const whole = find(output, item => item["data-action"] === "whole-value");
+    assert.ok(whole, "the whole-value control");
+    assert.equal(whole.props["data-execution"], "nx-reviewed-1b0");
+    whole.props.onClick();
+    assert.deepEqual(reads, ["nx-reviewed-1b0"], "the whole value read is the chosen visit's, not the new branch's");
+    const shown = plain(render(reached, "output", { selection, onReadWholeValue: () => {} }));
+    assert.ok(shown.includes("chosen in History") && shown.includes('"who": "old"') && !shown.includes('"who": "new"'), shown);
+    // A branch chosen in Details clears the choice (the portal's onBranch), and Output follows that branch again.
+    assert.equal(workflowV2SelectionAfterBranchChange(selection, "reviewed"), null);
+    assert.equal(workflowV2ShownExecution(reached, "run-1", null, reached.branches.choices[0]).execution.id, "nx-reviewed-2b0");
+    // A choice that named a branch still ends when another branch is shown.
+    assert.equal(workflowV2ShownExecution(reached, "run-1", { ...selection, branchIndex: 1 }, reached.branches.choices[0]).chosen, false);
+    // Another parallel visit still ends the choice made with no branch.
+    const third = reviewedOf([...visit1, done("fan", 2, "joined", { nodeExecutionId: "nx-fan-2", branches: 1 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-2b0", ...at("nx-fan-2", 0) }),
+        done("reviewed", 1, "succeeded", { nodeExecutionId: "nx-reviewed-2b0", ...at("nx-fan-2", 0) }),
+        row("fan", 3, "pending", { nodeExecutionId: "nx-fan-3", branches: 1 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-3b0", ...at("nx-fan-3", 0) }),
+        done("reviewed", 1, "succeeded", { nodeExecutionId: "nx-reviewed-3b0", ...at("nx-fan-3", 0) })]);
+    assert.equal(third.parallelVisitId, "nx-fan-3");
+    assert.equal(workflowV2ShownExecution(third, "run-1", selection, workflowV2BranchChoice(third.branches, null)).chosen, false);
 });
