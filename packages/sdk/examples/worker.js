@@ -170,7 +170,11 @@ if (mcpNames.length > 0) {
 // default); the pod's terminationGracePeriodSeconds must exceed it.
 let shutdownPromise;
 function shutdown(signal) {
-    shutdownPromise ??= drainAndExit(signal);
+    shutdownPromise ??= drainAndExit(signal).catch(() => {
+        console.error("[worker] Shutdown failed after drain and telemetry flush.");
+        process.exitCode = 1;
+        process.exit(1);
+    });
     return shutdownPromise;
 }
 

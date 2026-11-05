@@ -1,10 +1,11 @@
 import { telemetryConfig } from "./config.mjs";
+import { createTelemetryShutdown } from "./shutdown.mjs";
 
 const config = telemetryConfig();
 const providers = [];
-let shutdownPromise;
 let shuttingDown = false;
 let shutdownExportFailed = false;
+const shutdownProviders = createTelemetryShutdown(providers, () => shutdownExportFailed);
 
 export const telemetryEnabled = Boolean(config && (config.metrics === "otlp" || config.traces === "otlp"));
 
@@ -70,12 +71,6 @@ if (telemetryEnabled) {
 /** Call after draining the worker, before process.exit. Repeated calls share the same flush. */
 export function shutdownTelemetry() {
     shuttingDown = true;
-    shutdownPromise ??= Promise.all(providers.map(provider => provider.shutdown())).then(
-        () => {
-            // The periodic reader reports export failures through diagnostics, not rejection.
-            if (shutdownExportFailed) throw new Error("[otel] Telemetry shutdown failed.");
-        },
-        () => { throw new Error("[otel] Telemetry shutdown failed."); },
-    );
-    return shutdownPromise;
+    // The periodic reader reports export failures through diagnostics, not rejection.
+    return shutdownProviders();
 }

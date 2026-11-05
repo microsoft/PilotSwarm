@@ -34,7 +34,10 @@ Diagnostics do not print endpoints, header values, or exporter error payloads.
 Export failures are reported with a generic diagnostic; OTLP is not a durable
 queue. A collector outage can lose telemetry, without making a turn fail.
 Graceful shutdown drains the worker first, then awaits exporter shutdown and
-its final metric export before exit. A hard kill can lose buffered metrics.
+its final metric export before exit. All enabled providers settle before a
+failure is reported. Signal handlers log a sanitized shutdown failure and exit
+with status 1 instead of leaving an unhandled rejection. A hard kill can lose
+buffered metrics.
 
 **Trace privacy:** `OTEL_TRACES_EXPORTER=otlp` exports existing manual SDK spans.
 Those spans can contain session identifiers, model names, tool names, and
