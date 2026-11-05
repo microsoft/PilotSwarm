@@ -47,6 +47,7 @@ import {
     WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
     registerWorkflowV2,
 } from "./workflow/index.js";
+import { workflowParentNotifier } from "./workflow/parent-delivery.js";
 import fs from "node:fs";
 import os from "node:os";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -1046,18 +1047,7 @@ export class PilotSwarmWorker {
         };
         // A parent whose session orchestration has ended reads no queued message: none is queued, and the caller is told
         // (adversarial review WFO-3: the catalog row alone said the parent was there).
-        const notifyWorkflowParent = async (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string)
-            : Promise<{ delivered: boolean }> => {
-            const instanceId = `session-${parentSessionId}`;
-            const status = (await workflowClient.getStatus(instanceId)).status;
-            if (status === "NotFound" || ["Completed", "Failed", "Terminated"].includes(status)) return { delivered: false };
-            await workflowClient.enqueueEvent(
-                instanceId,
-                "messages",
-                JSON.stringify({ prompt, sender, ...(clientMessageId ? { clientMessageIds: [clientMessageId] } : {}) }),
-            );
-            return { delivered: true };
-        };
+        const notifyWorkflowParent = workflowParentNotifier(workflowClient);
         registerWorkflowActivities(this.runtime, {
             catalog: this._catalog,
             enabled: () => workflowScriptSettings.enabled,
