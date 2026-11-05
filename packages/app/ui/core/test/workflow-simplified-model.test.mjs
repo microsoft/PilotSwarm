@@ -163,6 +163,18 @@ test("a link to a Workflow opens its session's chat with the Workflow shown (S8)
     assert.equal(state.sessions.workflowRowId, "wf-2");
     assert.equal(selectWorkflowTabContext(state).workflowId, "wf-2");
     assert.ok(!state.sessions.collapsedIds.has(OWNER), "the Workflow's session is opened so its row shows");
+    // The right block opens on the Workflow tab once, when the link resolves; a later session-list refresh leaves it alone.
+    assert.equal(state.ui.canvasOpen, true);
+    assert.equal(state.ui.sidePaneTab, WORKFLOW_SIDE_TAB);
+    const seq = state.ui.workflowOpenSeq;
+    assert.ok(seq >= 1);
+    state = appReducer(state, { type: "sessions/loaded", sessions: SESSIONS });
+    assert.equal(state.ui.workflowOpenSeq, seq, "a refresh does not open it again");
+    // A link to an ordinary session does not open the Workflow tab.
+    let plain = appReducer(createInitialState({ mode: "local" }), { type: "sessions/navigationIntent", sessionId: "other" });
+    plain = appReducer(plain, { type: "sessions/loaded", sessions: SESSIONS });
+    assert.equal(plain.sessions.activeSessionId, "other");
+    assert.notEqual(plain.ui.sidePaneTab, WORKFLOW_SIDE_TAB);
 });
 
 test("an agent node's chat shows in the middle; the tab shows its Workflow with that node selected (S6)", () => {

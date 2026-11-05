@@ -91,9 +91,9 @@ test("the join's rule and its words: all required, first success, first k of n w
     assert.equal(workflowV2JoinRule(fan({ join: { first: 2 } }), { branches: 4 }), "first 2 of 4", "the shown visit says how many");
     assert.equal(workflowV2JoinWords(fan()), "Every branch must succeed");
     assert.equal(workflowV2JoinWords(fan({ failFast: true })), "Every branch must succeed · the first failure cancels the others");
-    assert.equal(workflowV2JoinWords(fan({ join: { first: 1 } })), "The first branch to succeed joins; the others are cancelled");
+    assert.equal(workflowV2JoinWords(fan({ join: { first: 1 } })), "The first branch to succeed joins; the others are canceled");
     assert.equal(workflowV2JoinWords(fan({ join: { first: 2 }, failFast: true })),
-        "The first 2 branches to succeed join; the others are cancelled · once the join can no longer succeed, the others are cancelled");
+        "The first 2 branches to succeed join; the others are canceled · once the join can no longer succeed, the others are canceled");
 });
 
 test("the time limit as people read it: none, its length, from the input, until when while it waits, and that it passed", () => {
@@ -118,13 +118,13 @@ test("a visit that timed out: the bar says so with its time limit; the branches 
     });
     assert.deepEqual(parallel.evidence.rows.map(row => [row.index, row.status, row.why]), [
         [0, "succeeded", null],
-        [1, "cancelled at time limit", "The parallel step's time limit passed, so this branch was cancelled"],
+        [1, "cancelled at time limit", "The parallel step's time limit passed, so this branch was canceled"],
         [2, "not started", null],
     ]);
     assert.deepEqual([parallel.evidence.timedOut, parallel.evidence.blocked, parallel.evidence.needed, parallel.evidence.succeeded], [true, false, 3, 1]);
     // The cancelled branch state's own ending says why.
     const cancelled = byId(projection, "review").executions.find(execution => execution.id === "nx-review-b1");
-    assert.equal(workflowV2VisitEnding(cancelled).why, "The parallel step's time limit passed, so this branch was cancelled");
+    assert.equal(workflowV2VisitEnding(cancelled).why, "The parallel step's time limit passed, so this branch was canceled");
 
     const bar = renderToStaticMarkup(WorkflowJoinBar({ join: { id: "join:fan", parallel: "fan" }, node: parallel, selected: false, onSelect() {} }));
     assert.match(bar, /class="ps-workflow-join is-timed_out" data-join="fan"/);
@@ -136,7 +136,7 @@ test("a visit that timed out: the bar says so with its time limit; the branches 
         ["Time limit ends", "2026-11-04 20:30:00 UTC"]]) {
         assert.ok(html.includes(`<span>${label}</span><strong>${value}</strong>`), `${label}: ${html}`);
     }
-    assert.match(html, /data-timed-out="true"[^>]*>The time limit passed before the join: the running branches were cancelled, and the queued ones did not start\.<\/p>/);
+    assert.match(html, /data-timed-out="true"[^>]*>The time limit passed before the join: the running branches were canceled, and the queued ones did not start\.<\/p>/);
     assert.match(html, /<tr data-branch="1" data-status="cancelled at time limit"><td>2<\/td><td>review<\/td><td>cancelled at time limit<\/td>/);
     assert.match(html, /<tr data-branch="2" data-status="not started"><td>3<\/td>/);
 });
@@ -152,11 +152,11 @@ test("the first 2 of 4 joined: the bar says the rule; the losers are cancelled a
     // J1b (d): its step finished and its result is kept; its next step never started.
     assert.equal(parallel.evidence.rows[2].why,
         "Its step 'prepare' finished ('ready'), but the join already had the successes it needs, so its next step did not start");
-    assert.equal(parallel.evidence.rows[1].why, "The join already had the successes it needs, so this branch was cancelled");
+    assert.equal(parallel.evidence.rows[1].why, "The join already had the successes it needs, so this branch was canceled");
     assert.equal(parallel.evidence.joinedAfterLimit, false);
     assert.deepEqual([parallel.evidence.needed, parallel.evidence.succeeded, parallel.evidence.timedOut], [2, 2, false]);
     const html = details(projection, "fan");
-    assert.ok(html.includes("<span>Join</span><strong>The first 2 branches to succeed join; the others are cancelled</strong>"), html);
+    assert.ok(html.includes("<span>Join</span><strong>The first 2 branches to succeed join; the others are canceled</strong>"), html);
     assert.ok(!html.includes("<span>Time limit</span>"), "no time limit without one");
     assert.match(html, /2 of 4 branches succeeded; the join needs 2\./);
 
@@ -227,7 +227,7 @@ test("J1b (Q1, d): a join after its time limit used the successes saved before i
     assert.equal(parallel.evidence.rows[2].why, "Its step 'prepare' finished ('ready'), but the time limit passed before its next step started");
     assert.deepEqual([parallel.evidence.joinedAfterLimit, parallel.evidence.timedOut, parallel.evidence.succeeded], [true, false, 1]);
     const html = details(projection, "fan");
-    assert.match(html, /data-joined-after-limit="true"[^>]*>The time limit passed after enough branches succeeded: the join still used them, and the running branches were cancelled\.<\/p>/);
+    assert.match(html, /data-joined-after-limit="true"[^>]*>The time limit passed after enough branches succeeded: the join still used them, and the running branches were canceled\.<\/p>/);
     assert.match(html, /<tr data-branch="2" data-status="finished before the time limit"><td>3<\/td><td>prepare<\/td><td>finished before the time limit<\/td>/);
 });
 

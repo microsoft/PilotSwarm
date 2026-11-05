@@ -57,7 +57,7 @@ test("a parallel step's visit lists each branch, and a blocked join names the br
     const running = workflowV2BranchEvidence(executions, [...states, { id: "failed_end", type: "terminal", outcome: "failed", parallel: "fan" }],
         { id: "nx-fan-1", status: "pending", branches: 4 }, false);
     assert.deepEqual(running.rows.map(row => [row.status, row.why]), [
-        ["running", null], ["failed", "It ended at 'failed_end' (failed)"], ["cancelled", "Another branch failed, so this one was cancelled"],
+        ["running", null], ["failed", "It ended at 'failed_end' (failed)"], ["cancelled", "Another branch failed, so this one was canceled"],
         ["not in the loaded history", null]]);
     assert.deepEqual([running.running, running.blocked, running.blocking], [1, false, []]);
     // Owner batch 7 (H2): while the visit runs with its whole history loaded, a branch not begun is queued; a running

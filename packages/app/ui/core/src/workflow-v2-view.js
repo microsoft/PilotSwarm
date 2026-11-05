@@ -1599,10 +1599,10 @@ export function workflowV2JoinRule(node, visit = null) {
 export function workflowV2JoinWords(node) {
     const first = workflowV2JoinFirst(node);
     const rule = first === null ? "Every branch must succeed"
-        : first === 1 ? "The first branch to succeed joins; the others are cancelled"
-            : `The first ${first} branches to succeed join; the others are cancelled`;
+        : first === 1 ? "The first branch to succeed joins; the others are canceled"
+            : `The first ${first} branches to succeed join; the others are canceled`;
     if (!node?.failFast) return rule;
-    return `${rule} · ${first === null ? "the first failure cancels the others" : "once the join can no longer succeed, the others are cancelled"}`;
+    return `${rule} · ${first === null ? "the first failure cancels the others" : "once the join can no longer succeed, the others are canceled"}`;
 }
 
 /**
@@ -2017,7 +2017,7 @@ export function workflowV2RunEnding(run, events = []) {
     } else if (run.status === "cancelled") {
         end = last("workflow.cancelled");
         const deleted = end?.data.deleted === true || end?.data.command === "delete" || details.command === "delete";
-        why = `${deleted ? "The workflow was deleted" : "It was cancelled"}${because(end?.data.reason ?? envelope?.message)}`;
+        why = `${deleted ? "The workflow was deleted" : "It was canceled"}${because(end?.data.reason ?? envelope?.message)}`;
         who = text(details.requestedBy) ? `session ${shortId(details.requestedBy)}` : null;
     } else {
         end = last("workflow.stopped");
@@ -2066,13 +2066,13 @@ function timeLimitPassed(parallel, executions) {
 }
 
 const VISIT_WINNERS = {
-    cancel: "The run was cancelled while it ran",
+    cancel: "The run was canceled while it ran",
     stop: "The run was stopped, and this step was still running when the time to finish ended",
     deadline: "The run's time limit passed",
-    fail_fast: "Another branch failed, so this one was cancelled",
+    fail_fast: "Another branch failed, so this one was canceled",
     // Owner decision join-k-of-n (IR 9): a join of the first k that had its successes, and a parallel step's own time limit.
-    join: "The join already had the successes it needs, so this branch was cancelled",
-    join_timeout: "The parallel step's time limit passed, so this branch was cancelled",
+    join: "The join already had the successes it needs, so this branch was canceled",
+    join_timeout: "The parallel step's time limit passed, so this branch was canceled",
 };
 
 /**

@@ -446,11 +446,7 @@ function RunNodePanel({ controller, child, selected }) {
     const [detailTab, setDetailTab] = React.useState("details");
     const [branchPick, setBranchPick] = React.useState(null);
     if (!selected) return h("p", { className: "ps-wf-muted" }, "Select a node to see it.");
-    if (selected.shape !== "v2") {
-        return h("div", { className: "ps-wf-facts" },
-            h("div", { className: "ps-wf-fact" }, h("span", null, "Node"), h("strong", null, `${selected.id} · ${selected.type === "terminal" ? "End" : "Script"}`)),
-            h("div", { className: "ps-wf-fact" }, h("span", null, "Status"), h("strong", null, String(selected.state ?? ""))));
-    }
+    if (selected.shape !== "v2") return h(LegacyNodePanel, { selected });
     const runId = projection?.runId ?? null;
     const tabs = [["details", "Details"], ["output", "Output"], ["history", "History"]];
     return h("section", { className: "ps-wf-node", "aria-label": "Node details" },
@@ -486,6 +482,34 @@ function RunNodePanel({ controller, child, selected }) {
             } : null,
             parentSessionId: session?.parentSessionId ?? null,
         }));
+}
+
+/**
+ * The Node panel of a version 1 Workflow (its nodes come from its events): what the old step details showed, in the
+ * Workflow tab's words. Every value is text, never markup.
+ */
+function LegacyNodePanel({ selected }) {
+    const [detailTab, setDetailTab] = React.useState("details");
+    const result = selected.result ?? null;
+    const row = (label, value) => h("div", { className: "ps-wf-fact", key: label }, h("span", null, label), h("strong", null, String(value)));
+    const tabs = [["details", "Details"], ["output", "Output"]];
+    return h("section", { className: "ps-wf-node", "aria-label": "Node details", "data-shape": "v1" },
+        h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id),
+            ` · ${selected.type === "terminal" ? "End" : "Script"} · ${String(selected.state ?? "")}`),
+        h("div", { className: "ps-wf-node-tabs", role: "tablist", "aria-label": "Node detail views" },
+            tabs.map(([id, title]) => h("button", { key: id, type: "button", role: "tab", "aria-selected": detailTab === id,
+                className: detailTab === id ? "is-on" : "", onClick: () => setDetailTab(id) }, title))),
+        detailTab === "details"
+            ? h("div", { className: "ps-wf-facts" },
+                row("Ran", `${selected.runs ?? 0} ${selected.runs === 1 ? "time" : "times"}${selected.partial ? " in loaded history" : ""}`),
+                row("Last outcome", selected.outcome || "Not recorded"),
+                Array.isArray(result?.toolCalls) && result.toolCalls.length
+                    ? row("Tools", result.toolCalls.map(tool => `${tool?.name || "Tool"}${tool?.ok === false ? " (failed)" : ""}`).join(" · ")) : null)
+            : h("div", { className: "ps-wf-node-output" },
+                h("pre", null, result
+                    ? String(result.error || result.reason || result.outputPreview || result.summary || "No output was recorded.")
+                    : "This node has no result in the loaded history."),
+                result?.stderrTail ? h(React.Fragment, null, h("h3", null, "Standard error"), h("pre", null, String(result.stderrTail))) : null));
 }
 
 /** The Log panel (W10): this Workflow's events only, newest first, one sentence each. */

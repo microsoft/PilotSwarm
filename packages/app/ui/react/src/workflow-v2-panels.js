@@ -255,10 +255,10 @@ function BranchEvidence({ evidence, openSession = null }) {
         evidence.blocked && evidence.blocking.length ? h("p", { role: "status", "data-blocking": evidence.blocking.join(","), style: { margin: 0, color: TONES.warning } },
             `The join is blocked by ${workflowV2BranchList(evidence.blocking)}.`) : null,
         evidence.timedOut ? h("p", { role: "status", "data-timed-out": "true", style: { margin: 0, color: TONES.warning } },
-            "The time limit passed before the join: the running branches were cancelled, and the queued ones did not start.") : null,
+            "The time limit passed before the join: the running branches were canceled, and the queued ones did not start.") : null,
         // J1b (Q1): successes saved before the time limit still join after it.
         evidence.joinedAfterLimit ? h("p", { role: "status", "data-joined-after-limit": "true", style: { margin: 0 } },
-            "The time limit passed after enough branches succeeded: the join still used them, and the running branches were cancelled.") : null,
+            "The time limit passed after enough branches succeeded: the join still used them, and the running branches were canceled.") : null,
         evidence.rows.length ? h("table", null,
             h("thead", null, h("tr", null, ["#", "Current step", "Status", "Deadline", "Result", "Agent chat"].map(label => h("th", { key: label }, label)))),
             h("tbody", null, evidence.rows.map(row => h("tr", { key: row.index, "data-branch": row.index, "data-status": row.status },

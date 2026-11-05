@@ -878,7 +878,16 @@ export function appReducer(state, action) {
     const next = baseReducer(state, effective);
     if (next === state) return next;
     const reconciled = reconcileSessionView(state, reconcileSessionSort(state, next, effective), effective);
-    return workflowTarget ? openWorkflowTab(reconciled) : reconciled;
+    // A link to a Workflow (S8, `?session=<workflow>`) opens its session's Workflow tab once, when the link resolves.
+    return workflowTarget || workflowLinkResolved(state, reconciled) ? openWorkflowTab(reconciled) : reconciled;
+}
+
+/** Whether this action resolved a deep link to a Workflow row (the link's target is now the selected Workflow row). */
+function workflowLinkResolved(before, after) {
+    const was = before.sessions?.navigationIntent ?? null;
+    const now = after.sessions?.navigationIntent ?? null;
+    if (!now || now.status !== "resolved" || (was && was.status === "resolved" && was.sessionId === now.sessionId)) return false;
+    return Boolean(after.sessions?.workflowRowId) && after.sessions.workflowRowId === now.sessionId;
 }
 
 // The right block shows the Workflow tab (L1, S4): the canvas column, on its Workflow side, recorded as the session's own

@@ -123,8 +123,8 @@ test("a run that ended says why: completed, failed, cancelled with its reason an
     assert.equal(workflowV2RunEnding({ runId: RUN, status: "running" }, EVENTS), null);
     const envelope = JSON.stringify({ code: "cancelled", message: "No longer needed", details: { command: "cancel", requestedBy: "parent-1234567890" } });
     assert.deepEqual(workflowV2RunEnding({ runId: RUN, status: "cancelled", error: envelope }, EVENTS), {
-        status: "cancelled", why: "It was cancelled: No longer needed", who: "session parent-1", at: "2026-11-03 08:06:00 UTC",
-        text: "Why it ended: It was cancelled: No longer needed. Asked by session parent-1. (2026-11-03 08:06:00 UTC)" });
+        status: "cancelled", why: "It was canceled: No longer needed", who: "session parent-1", at: "2026-11-03 08:06:00 UTC",
+        text: "Why it ended: It was canceled: No longer needed. Asked by session parent-1. (2026-11-03 08:06:00 UTC)" });
     assert.equal(workflowV2RunEnding({ runId: RUN, status: "cancelled" }, [event(1, "workflow.cancelled", { command: "delete", deleted: true })]).why,
         "The workflow was deleted");
     assert.equal(workflowV2RunEnding({ runId: RUN, status: "completed", terminalState: "done", outcome: "succeeded" }, []).text,
@@ -146,13 +146,13 @@ test("a visit that ended says why, and how its agent chat ended", () => {
         errorPreview: JSON.stringify({ code: "timed_out", message: "The agent did not finish in 600 s." }), agent: { end: "cancel" } }).text,
     "Its time limit passed. The agent did not finish in 600 s. Its agent chat ended (cancelled).");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "cancel",
-        errorPreview: JSON.stringify({ code: "cancelled", message: "The workflow run was cancelled." }) }).text, "The run was cancelled while it ran.");
+        errorPreview: JSON.stringify({ code: "cancelled", message: "The workflow run was cancelled." }) }).text, "The run was canceled while it ran.");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "accepted", resultKind: "business", winner: "agent", agent: { end: "done" } }).text,
         "It ended 'accepted'. Its agent chat ended (its result was taken).");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "crashed", resultKind: "runtime_error", winner: "controller",
         errorPreview: JSON.stringify({ code: "crashed", message: "exit code 1" }) }).text, "A runtime error (crashed). exit code 1");
     assert.equal(workflowV2VisitEnding({ status: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "fail_fast" }).why,
-        "Another branch failed, so this one was cancelled");
+        "Another branch failed, so this one was canceled");
 });
 
 const SESSIONS = {
@@ -182,12 +182,12 @@ const cancelledModel = () => readModel({
 
 test("the portal says why the run ended and lists its activity; a step's details say why its visit ended, with that visit's activity", () => {
     const projected = projectWorkflowV2({ readModel: cancelledModel(), events: EVENTS });
-    assert.equal(projected.ending.text, "Why it ended: It was cancelled: No longer needed. Asked by session parent-1. (2026-11-03 08:06:00 UTC)");
+    assert.equal(projected.ending.text, "Why it ended: It was canceled: No longer needed. Asked by session parent-1. (2026-11-03 08:06:00 UTC)");
     assert.equal(projectWorkflowV2({ readModel: readModel(), events: EVENTS }).ending, null, "a running run has none");
 
     const html = renderToStaticMarkup(React.createElement(WorkflowV2RunActivity, { ending: projected.ending, events: EVENTS, runId: RUN }));
     assert.match(html, /<section class="ps-workflow-run-activity" aria-label="Run activity"/);
-    assert.match(html, /<p role="status" data-ending="cancelled"[^>]*>Why it ended: It was cancelled: No longer needed\./);
+    assert.match(html, /<p role="status" data-ending="cancelled"[^>]*>Why it ended: It was canceled: No longer needed\./);
     assert.match(html, /<summary>Activity of this run \(6\)<\/summary>/);
     assert.match(html, /<li data-level="warning"[^>]*>2026-11-03 08:03:00 UTC · Paused: lunch · by Alice<\/li>/);
     assert.equal(renderToStaticMarkup(React.createElement(WorkflowV2RunActivity, { ending: null, events: [], runId: RUN })), "");
@@ -195,7 +195,7 @@ test("the portal says why the run ended and lists its activity; a step's details
     const poll = projected.nodes.find(node => node.id === "poll");
     const details = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "details", selected: poll, nodes: projected.nodes, select: () => {},
         runOutput: null, runError: null, runId: RUN, events: EVENTS }));
-    assert.match(details, /<span>Why it ended<\/span><strong>The run was cancelled while it ran\.<\/strong>/);
+    assert.match(details, /<span>Why it ended<\/span><strong>The run was canceled while it ran\.<\/strong>/);
     assert.match(details, /<summary>Activity of this visit \(2\)<\/summary>/);
 });
 
@@ -226,8 +226,8 @@ test("the TUI says why the run and the visit shown ended, lists that visit's act
     new PilotSwarmUiController({ store, transport: {} });
     const lines = selectWorkflowViewModal(store.getState(), 160, 80).detailsLines.map(line => line.text.trim());
     const text = lines.join(" ");
-    assert.ok(text.includes("Why it ended: It was cancelled: No longer needed. Asked by session parent-1. (2026-11-03 08:06:00 UTC)"), lines.join("\n"));
-    assert.ok(lines.includes("Why it ended: The run was cancelled while it ran."), lines.join("\n"));
+    assert.ok(text.includes("Why it ended: It was canceled: No longer needed. Asked by session parent-1. (2026-11-03 08:06:00 UTC)"), lines.join("\n"));
+    assert.ok(lines.includes("Why it ended: The run was canceled while it ran."), lines.join("\n"));
     assert.ok(lines.includes("Activity of this visit (newest first):"), lines.join("\n"));
     assert.ok(lines.includes("2026-11-03 08:05:00 UTC · Node poll failed (cancelled): The workflow run was cancelled."), lines.join("\n"));
 });
