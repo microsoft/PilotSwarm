@@ -6,6 +6,7 @@ import { WorkflowStoreError } from "../../dist/workflow/v2/store.js";
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "../../dist/workflow/v2/agent-node-service.js";
 import { respondSessionRequestFromTool, workflowRespondFailure } from "../../dist/workflow/v2/request-service.js";
 import { WorkflowSchemaSet } from "../../dist/workflow/v2/schema.js";
+import { jsonbSafeText } from "../../dist/workflow/v2/json.js";
 
 // Adversarial review SF-6: one secret-safe projection of workflow error text, wherever it is persisted or shown.
 
@@ -205,6 +206,43 @@ test("E2bH-SF6-1: an event's lastError field is an error field: its secrets are 
     const out = redactWorkflowEventData({ runId: "r", exchangeId: "x", attempts: 8, lastError: `enqueue failed: token=${SENTINEL}` });
     assert.equal(out.lastError, "enqueue failed: token=<hidden>");
     assert.equal(out.attempts, 8);
+});
+
+// Verification E2bH-T5: an Authorization value in mixed quotes and in JSON diagnostics, a scheme word alone, an opaque
+// value; and text clipped before it is redacted (several store writes clip first: a stop's or a cancel's reason, event
+// fields clipped by their producer): a credential the clip cut short is hidden whatever its length, so no prefix of it
+// shows; clipped after redaction, nothing of it shows either.
+test("E2bH-T5: quoted and JSON Authorization values, a scheme word alone, an opaque value; a credential cut by a clip is hidden whatever its length", () => {
+    for (const [text, hidden] of [
+        [`authorization='Bearer ${SENTINEL}'; next`, `authorization='Bearer <hidden>'; next`],
+        [`{"error":"connect failed: \\"Authorization: Bearer ${SENTINEL}\\""}`, null],
+        [`Header "Authorization" was 'Basic ${SENTINEL}'`, null],
+        [`Authorization: Bearer`, "Authorization: <hidden>"],
+        [`Authorization: ${SENTINEL}`, "Authorization: <hidden>"],
+    ]) {
+        const out = redactWorkflowSecrets(text);
+        assert.equal(out.includes(SENTINEL), false, `${text} -> ${out}`);
+        if (hidden !== null) assert.equal(out, hidden, text);
+    }
+    // Clipped first, then redacted: every cut inside the credential, by jsonbSafeText as the store clips.
+    const CUT = "Zq9xw7Lk";
+    for (const [lead, tail] of [[`call failed: Bearer `, " and more"], [`call failed: basic `, " and more"],
+        [`connect to postgres://admin:`, "@db.example.com:5432/app and more"], [`headers: Authorization: Bearer `, " and more"],
+        [`retry with token=`, " and more"]]) {
+        const text = `${lead}${CUT}${SENTINEL}${tail}`;
+        for (let kept = 1; kept < CUT.length; kept += 1) {
+            const out = redactWorkflowSecrets(jsonbSafeText(text, lead.length + kept));
+            assert.equal(out.includes(CUT.slice(0, kept)), false, `${lead} cut after ${kept}: ${out}`);
+        }
+        // Redacted first, then clipped: nothing of it either.
+        for (let kept = 1; kept < CUT.length + 10; kept += 1) {
+            assert.equal(jsonbSafeText(redactWorkflowSecrets(text), lead.length + kept).includes(CUT.slice(0, 1)), false, `${lead} then cut`);
+        }
+    }
+    // A short word that no clip cut is prose, as before; and a URL clipped in its path keeps its host.
+    for (const prose of ["A basic idea.", "the bearer of this message", "Basic plan", "https://example.com/pa…"]) {
+        assert.equal(redactWorkflowSecrets(prose), prose);
+    }
 });
 
 // Adversarial review R2-SF-4 (with R2-RT-3): the agent's completion tool and the request answer tool answer every failure

@@ -11,7 +11,9 @@ import type { JsonValue } from "./json.js";
  * - elsewhere, a Bearer token of 8 or more characters, or a Basic credential of 8 or more base64 characters, whatever
  *   their mix (E2-R2; "a basic idea" is left alone, "basic validation" is not);
  * - the value of a password, token, secret, key, signature, credential, authorization or cookie, written key=value,
- *   key: value (a connection string, a query string, a header) or as a JSON field ("token": "...").
+ *   key: value (a connection string, a query string, a header) or as a JSON field ("token": "...");
+ * - a credential that a clip cut short (text clipped before it is redacted ends in "…", jsonbSafeText; verification
+ *   E2bH-T5): a ****** or a Basic credential of any length, and a URL's user and password before the cut.
  * It never adds or removes anything else, so a message without secrets is unchanged. Pure.
  */
 
@@ -19,11 +21,15 @@ import type { JsonValue } from "./json.js";
 const SECRET_NAME = "[A-Za-z0-9_]{0,40}(?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|private[_-]?key|account[_-]?key|"
     + "client[_-]?secret|authorization|signature|credentials?|cookie)[A-Za-z0-9_-]{0,40}|sig|key|pass";
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,30}:\/\/)[^\s/@'"<>]+@/gi;
+// A URL whose user and password a clip cut off before the "@" (E2bH-T5): everything after the scheme, up to the cut.
+// Each part is bounded and the user part has no ":", so it costs linear time.
+const URL_USERINFO_CUT = /\b([a-z][a-z0-9+.-]{0,30}:\/\/)[^\s/@'"<>…:]{0,200}:[^\s/@'"<>…]{0,200}…/gi;
 // An Authorization header or field written key: value or key=value (E2-R2; any letter case): the whole value.
 const AUTHORIZATION = /\b([A-Za-z0-9_-]{0,40}authorization[A-Za-z0-9_-]{0,40})(\s*[=:]\s*)("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|[^\r\n]*)/gi;
-// Outside one, any letter case (SF-6 verification): a token of 8 or more characters, whatever its mix (E2-R2).
-const BEARER = /\b(Bearer)\s+[^\s"'<>\\]{8,}/gi;
-const BASIC = /\b(Basic)\s+[A-Za-z0-9+/=_-]{8,}/gi;
+// Outside one, any letter case (SF-6 verification): a token of 8 or more characters, whatever its mix (E2-R2), or a
+// shorter one that a clip cut (followed by its "…", which stays; E2bH-T5).
+const BEARER = /\b(Bearer)\s+(?:[^\s"'<>\\]{8,}|[^\s"'<>\\…]{1,7}(?=…))/gi;
+const BASIC = /\b(Basic)\s+(?:[A-Za-z0-9+/=_-]{8,}|[A-Za-z0-9+/=_-]{1,7}(?=…))/gi;
 const JSON_FIELD = new RegExp(`"(${SECRET_NAME})"(\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`, "gi");
 const ESCAPED_JSON_FIELD = new RegExp(`\\\\"(${SECRET_NAME})\\\\"(\\s*:\\s*)\\\\"(?:[^"\\\\]|\\\\[^"])*\\\\"`, "gi");
 // Not a value already hidden after its scheme word ("Authorization: Bearer <hidden>").
@@ -43,6 +49,7 @@ export function redactWorkflowSecrets(text: string): string {
     if (typeof text !== "string" || text === "") return text;
     return text
         .replace(URL_USERINFO, "$1<hidden>@")
+        .replace(URL_USERINFO_CUT, "$1<hidden>…")
         .replace(AUTHORIZATION, hideAuthorization)
         .replace(BEARER, "$1 <hidden>")
         .replace(BASIC, "$1 <hidden>")
