@@ -417,8 +417,10 @@ describe("workflow v2 parallel joins: the store", () => {
             expect(fanRow.completedAt.getTime()).toBeGreaterThanOrEqual(fanRow.deadlineAt.getTime());
             expect(await h.store.readNodeExecution(hold)).toMatchObject({ state: "completed", outcome: "cancelled", winner: "join_timeout" });
             const events = await h.catalog.getSessionEvents(run.workflowSessionId, 0, 200);
+            // S6-UI2: the end event carries the row's completed_at.
             expect(events.filter(event => event.data?.nodeExecutionId === run.fan && event.eventType === "workflow.state_failed").map(event => event.data))
-                .toEqual([{ runId: run.runId, nodeExecutionId: run.fan, outcome: "timed_out", branches: 2, succeeded: 0 }]);
+                .toEqual([{ runId: run.runId, nodeExecutionId: run.fan, outcome: "timed_out", branches: 2, succeeded: 0,
+                    completedAt: fanRow.completedAt.toISOString() }]);
             expect(events.filter(event => event.eventType === "workflow.branches_cancelled").map(event => event.data)).toEqual([expect.objectContaining({
                 runId: run.runId, cancelled: [hold], cancelledCount: 1, reason: "timeout" })]);
 
