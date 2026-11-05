@@ -13,6 +13,7 @@ import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
     workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableBatchDraft,
     workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2VariableEditBehind, workflowV2VariableListed, workflowV2VariableLoad,
+    WORKFLOW_V2_VARIABLE_EARLIER_SAVED,
     workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
     workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId, workflowV2StepInputKey, workflowV2StepQuestion,
 } from "./workflow-v2-commands.js";
@@ -7061,7 +7062,7 @@ export class PilotSwarmUiController {
         // R2-UI-1: the form keeps the revision its edit started from (baseRevision), and sends at it.
         this.dispatch({ type: "ui/modal", modal: { type: "workflowVariable", sessionId: selection.modal.sessionId, runId: decided.runId,
             field: "name", name: "", nameCursor: 0, value: "", valueCursor: 0, pick: -1, error: null, baseRevision: this.workflowVariablesRevision(selection.modal.sessionId),
-            returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
+            formId: this.nextWorkflowFormId(), returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
         this.dispatch({ type: "ui/status", text: "Variables — Tab name/value · ↑↓ copy a listed variable · Enter set · ctrl-r remove · Esc back" });
     }
 
@@ -7096,7 +7097,7 @@ export class PilotSwarmUiController {
     workflowVariableTyped(field, text, cursor) {
         const modal = this.getState().ui.modal;
         const rebase = this.workflowVariableRebase();
-        const patch = { ...rebase, [field]: text, [`${field}Cursor`]: cursor, error: null, loadNotice: null };
+        const patch = { ...rebase, [field]: text, [`${field}Cursor`]: cursor, error: null, loadNotice: null, saveNotice: null };
         if (!modal || modal.type !== "workflowVariable") return patch;
         const name = field === "name" ? text : String(modal.name ?? "");
         const value = field === "value" ? text : String(modal.value ?? "");
@@ -7204,7 +7205,7 @@ export class PilotSwarmUiController {
         const entry = entries[next];
         // A copied variable is an edit of the revision shown now (R2-UI-1).
         this.updateWorkflowVariableForm({ pick: next, name: entry.key, nameCursor: entry.key.length, value: entry.valueText,
-            valueCursor: entry.valueText.length, error: null, baseRevision: variables.revision, listed: true, loadNotice: null });
+            valueCursor: entry.valueText.length, error: null, baseRevision: variables.revision, listed: true, loadNotice: null, saveNotice: null });
     }
 
     /**
@@ -7257,15 +7258,31 @@ export class PilotSwarmUiController {
         return { revision, behind: retrying ? null : workflowV2VariableEditBehind(revision, variables.revision) };
     }
 
+    /** A new id for a variables form opened now, so an answer finds only the form it was sent from (re-check UI-RC2-6). */
+    nextWorkflowFormId() {
+        this.workflowFormIds = (this.workflowFormIds ?? 0) + 1;
+        return this.workflowFormIds;
+    }
+
     /**
-     * After an update sent from a variables form `form` (the one-variable form, or the several-variables form): accepted,
-     * back to the workflow view; refused or unanswered, the form stays with what was typed, and the status line says so too.
+     * After an update sent from a variables form `form` (the one-variable form, or the several-variables form, as it was
+     * when sent): accepted, back to the workflow view, but only from that same form (its id, session and run) with exactly
+     * what was sent in it (re-check UI-RC2-6). A person who typed on meanwhile keeps the newer edit, and the form says the
+     * earlier change was saved; a form opened since is not touched, and the status line says it. Refused or unanswered,
+     * the form stays with what was typed, and the status line says so too.
      */
     afterWorkflowVariableUpdate(form, result) {
         const current = this.getState().ui.modal;
         if (result?.ok) {
-            if (current?.type === form.type && current.sessionId === form.sessionId && current.runId === form.runId) {
+            const same = current?.type === form.type && current.sessionId === form.sessionId && current.runId === form.runId && current.formId === form.formId;
+            const typed = modal => JSON.stringify(modal.type === "workflowVariable" ? [modal.name ?? "", modal.value ?? ""] : [modal.set ?? "", modal.remove ?? ""]);
+            if (same && typed(current) === typed(form)) {
                 this.dispatch({ type: "ui/modal", modal: current.returnModal ?? null });
+            } else if (same) {
+                this.dispatch({ type: "ui/modal", modal: { ...current, saveNotice: WORKFLOW_V2_VARIABLE_EARLIER_SAVED } });
+                this.dispatch({ type: "ui/status", text: WORKFLOW_V2_VARIABLE_EARLIER_SAVED });
+            } else {
+                this.dispatch({ type: "ui/status", text: "The earlier variables update was saved." });
             }
             return;
         }
@@ -7295,7 +7312,7 @@ export class PilotSwarmUiController {
         }
         this.dispatch({ type: "ui/modal", modal: { type: "workflowVariableBatch", sessionId: selection.modal.sessionId, runId: decided.runId,
             field: "set", set: "", setCursor: 0, remove: "", removeCursor: 0, error: null, baseRevision: this.workflowVariablesRevision(selection.modal.sessionId),
-            returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
+            formId: this.nextWorkflowFormId(), returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
         this.dispatch({ type: "ui/status", text: "Several variables — Tab set/remove · Enter send as one update (a removal asks first) · Esc back" });
     }
 
@@ -7306,6 +7323,7 @@ export class PilotSwarmUiController {
             const rebase = this.workflowVariableRebase();
             if (Object.keys(rebase).length) this.updateWorkflowModal("workflowVariableBatch", rebase);
         }
+        if (this.getState().ui.modal?.saveNotice) this.updateWorkflowModal("workflowVariableBatch", { saveNotice: null });
         this.editWorkflowModalField("workflowVariableBatch", ["set", "remove"], action);
     }
 

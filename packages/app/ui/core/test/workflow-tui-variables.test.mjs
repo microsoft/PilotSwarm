@@ -376,6 +376,54 @@ test("RC-1: ctrl-l clears a variable removed since the edit began, and loads not
     assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, set: { a: 3 }, expected_kv_revision: 5 });
 });
 
+// Re-check UI-RC2-6: an update's answer belongs to the form and the edit it was sent from. Typing on while it is in flight
+// keeps the newer edit (not saved) and says the earlier change was saved; a form opened since is left as it is.
+test("UI-RC2-6: a late accepted save keeps a newer edit and says so; after the form was closed it leaves the view alone", async () => {
+    const pending = [];
+    const later = () => new Promise(resolve => pending.push(() => resolve({ kvRevision: 4 })));
+    const h = await opened(model(), [later, later]);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    type(h, "a");
+    h.controller.switchWorkflowVariableField();
+    type(h, "1");
+    const sending = h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    assert.equal(pending.length, 1, "precondition: the update is in flight");
+    // The person types on while it is in flight.
+    type(h, "2");
+    pending.shift()();
+    await sending;
+    await settle();
+    let modal = h.store.getState().ui.modal;
+    assert.equal(modal.type, "workflowVariable", "the form stays open with the newer edit");
+    assert.deepEqual([modal.name, modal.value], ["a", "12"]);
+    assert.equal(statusOf(h.store), "Your earlier change was saved. Your newer edit is kept; it is not saved yet.");
+    assert.ok(joined(form(h.store).lines).includes("Your earlier change was saved. Your newer edit is kept; it is not saved yet."));
+    // Typing again clears the notice.
+    type(h, "3");
+    assert.ok(!joined(form(h.store).lines).includes("Your earlier change was saved."));
+
+    // Another update in flight; the form is closed meanwhile (a new one cannot open while it is sent): the answer leaves the
+    // view as it is and says the earlier update was saved; a form opened afterwards is a new one, empty.
+    const second = h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    assert.equal(pending.length, 1, "precondition: the second update is in flight");
+    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    const view = h.store.getState().ui.modal;
+    assert.equal(view.type, "workflowView");
+    pending.shift()();
+    await second;
+    await settle();
+    assert.deepEqual(h.store.getState().ui.modal, view, "the view is left as it is");
+    assert.equal(statusOf(h.store), "The earlier variables update was saved.");
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    const reopened = h.store.getState().ui.modal;
+    assert.equal(reopened.type, "workflowVariable");
+    assert.notEqual(reopened.formId, modal.formId);
+    assert.deepEqual([reopened.name, reopened.value, reopened.saveNotice ?? null], ["", "", null]);
+    assert.equal(h.sent().length, 2);
+});
+
 test("a form whose run the view no longer shows sends nothing; Esc goes back to the view", async () => {
     const h = await opened(model());
     const view = h.store.getState().ui.modal;

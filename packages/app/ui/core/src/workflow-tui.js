@@ -456,8 +456,10 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
     }
     const behind = sameRun ? variablesBehind(modal, variables, Boolean(String(modal.name ?? "") || String(modal.value ?? "")), notice) : null;
     if (behind) addWrapped(behind.help, "yellow");
-    // What the last ctrl-l did when it could not simply load the value (re-check RC-1).
+    // What the last ctrl-l did when it could not simply load the value (re-check RC-1), and an earlier save accepted after
+    // the person typed on (re-check UI-RC2-6).
     if (sameRun && typeof modal.loadNotice === "string" && modal.loadNotice) addWrapped(modal.loadNotice, "yellow");
+    if (typeof modal.saveNotice === "string" && modal.saveNotice) addWrapped(modal.saveNotice, "yellow");
     if (typeof modal.error === "string" && modal.error) addWrapped(modal.error, "red");
     const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, (Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40) - 16)));
     const rows = Math.max(1, listHeight - 2);
@@ -516,6 +518,7 @@ export function selectWorkflowVariableBatchModal(state, maxWidth = 100, viewport
     }
     const behind = sameRun ? variablesBehind(modal, variables, Boolean(setText.trim() || removeText.trim()), notice) : null;
     if (behind) addWrapped(behind.help.replace("ctrl-l loads the new values", "ctrl-l starts over at the new revision"), "yellow");
+    if (typeof modal.saveNotice === "string" && modal.saveNotice) addWrapped(modal.saveNotice, "yellow");
     if (typeof modal.error === "string" && modal.error) addWrapped(modal.error, "red");
     // The revision Enter sends at: the edit's own (R2-UI-1).
     const sendRevision = Number.isSafeInteger(modal.baseRevision) ? modal.baseRevision : variables?.revision ?? null;

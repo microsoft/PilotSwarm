@@ -295,7 +295,10 @@ export function workflowV2VariableEditBehind(base, revision) {
 }
 
 /** The portal's variables form when nothing is typed: no name, no value, no revision of its own (R2-UI-1). */
-export const WORKFLOW_V2_VARIABLE_EDIT_EMPTY = Object.freeze({ key: "", value: "", base: null, listed: null, notice: null });
+export const WORKFLOW_V2_VARIABLE_EDIT_EMPTY = Object.freeze({ key: "", value: "", base: null, listed: null, notice: null, generation: 0 });
+
+/** What the form says when a save it sent was accepted after the person had typed on (re-check UI-RC2-6). */
+export const WORKFLOW_V2_VARIABLE_EARLIER_SAVED = "Your earlier change was saved. Your newer edit is kept; it is not saved yet.";
 
 /**
  * Re-check RC-1: whether `key` is a listed variable in `variables` (workflowV2RunVariables' entries and complete): true or
@@ -352,18 +355,22 @@ export function workflowV2VariableLoad(edit, variables) {
  * its own, an emptied one drops it), `copy` (a listed variable's name and value at the shown `revision`), `keep` (the
  * edit stays and is saved over the shown `revision`), `reload` (Load new values: workflowV2VariableLoad, from the shown
  * `entries`, `complete` and `preview`; re-check RC-1: it never keeps stale values while taking the new revision),
- * `clear`. `type` and `keep` take the shown `entries` and `complete` to know whether the name is listed. A refresh of the
- * workflow changes nothing here. Pure.
+ * `clear`, and `saved` (re-check UI-RC2-6: the answer to an update sent from the edit of `generation`). `type` and `keep`
+ * take the shown `entries` and `complete` to know whether the name is listed. Every change of the edit raises its
+ * `generation`, so `saved` empties the form only when it answers exactly the edit on screen; after a newer edit it keeps
+ * that edit and says the earlier change was saved. A refresh of the workflow changes nothing here. Pure.
  */
 export function workflowV2VariableEdit(edit, action) {
     const current = isRecord(edit) ? {
         key: String(edit.key ?? ""), value: String(edit.value ?? ""), base: Number.isSafeInteger(edit.base) ? edit.base : null,
         listed: edit.listed === true ? true : edit.listed === false ? false : null, notice: typeof edit.notice === "string" && edit.notice ? edit.notice : null,
+        generation: Number.isSafeInteger(edit.generation) && edit.generation >= 0 ? edit.generation : 0,
     } : WORKFLOW_V2_VARIABLE_EDIT_EMPTY;
     const revision = Number.isSafeInteger(action?.revision) ? action.revision : null;
+    const generation = current.generation + 1;
     switch (action?.type) {
         case "type": {
-            const next = { ...current, [action.field === "value" ? "value" : "key"]: String(action.text ?? ""), notice: null };
+            const next = { ...current, [action.field === "value" ? "value" : "key"]: String(action.text ?? ""), notice: null, generation };
             const dirty = next.key !== "" || next.value !== "";
             if (!dirty) return { ...next, base: null, listed: null };
             const base = current.base ?? revision;
@@ -373,15 +380,21 @@ export function workflowV2VariableEdit(edit, action) {
             return { ...next, base, listed };
         }
         case "copy":
-            return { key: String(action.key ?? ""), value: String(action.value ?? ""), base: revision, listed: true, notice: null };
+            return { key: String(action.key ?? ""), value: String(action.value ?? ""), base: revision, listed: true, notice: null, generation };
         case "keep":
-            return { ...current, base: revision ?? current.base, listed: revision !== null ? workflowV2VariableListed(action, current.key) : current.listed, notice: null };
+            return { ...current, base: revision ?? current.base, listed: revision !== null ? workflowV2VariableListed(action, current.key) : current.listed,
+                notice: null, generation };
         case "reload": {
             const loaded = workflowV2VariableLoad(current, { entries: action.entries, complete: action.complete, preview: action.preview, revision });
-            return { ...current, value: loaded.value, base: loaded.base, listed: loaded.listed, notice: loaded.notice };
+            return { ...current, value: loaded.value, base: loaded.base, listed: loaded.listed, notice: loaded.notice, generation };
         }
         case "clear":
-            return WORKFLOW_V2_VARIABLE_EDIT_EMPTY;
+            return { ...WORKFLOW_V2_VARIABLE_EDIT_EMPTY, generation };
+        case "saved":
+            // Only the edit that was sent is emptied; a newer one stays, with what happened to the earlier one. An empty form
+            // (cleared, or a new run's) has nothing newer to keep, and is left as it is.
+            if (action.generation === current.generation) return { ...WORKFLOW_V2_VARIABLE_EDIT_EMPTY, generation };
+            return current.key === "" && current.value === "" ? current : { ...current, notice: WORKFLOW_V2_VARIABLE_EARLIER_SAVED };
         default:
             return current;
     }

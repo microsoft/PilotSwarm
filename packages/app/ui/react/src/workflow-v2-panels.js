@@ -731,6 +731,10 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
     const [error, setError] = React.useState(null);
     const mounted = React.useRef(true);
     React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+    // The edit and run on screen now (re-check UI-RC2-6): an answer to an earlier update must not clear a newer edit or its
+    // error, or touch the form of another run.
+    const onScreen = React.useRef({ generation: edit.generation, runId: null });
+    onScreen.current = { generation: edit.generation, runId: model?.runId ?? null };
     // A draft belongs to the run it was typed for: another run starts with an empty form.
     const runId = model?.runId ?? null;
     React.useEffect(() => { change({ type: "clear" }); setError(null); }, [runId]);
@@ -742,9 +746,16 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
     const setKey = text => change({ type: "type", field: "key", text, ...shownList });
     const setValue = text => change({ type: "type", field: "value", text, ...shownList });
     const send = async input => {
+        // Re-check UI-RC2-6: the answer belongs to the edit sent (its generation) of the run it was sent for; typing on
+        // meanwhile keeps the newer edit, and another run's form is not touched (the run's notice reports the update).
+        const sent = edit.generation;
+        const sentRun = model.runId;
         const result = await controller.sendWorkflowRunCommand(sessionId, { operation: "set_vars", runId: model.runId,
             expectedKvRevision: editState.expectedKvRevision, ...input });
-        if (result?.ok && mounted.current) { change({ type: "clear" }); setError(null); }
+        if (!result?.ok || !mounted.current || onScreen.current.runId !== sentRun) return;
+        const unchanged = onScreen.current.generation === sent;
+        change({ type: "saved", generation: sent });
+        if (unchanged) setError(null);
     };
     const onSet = event => {
         event.preventDefault();
