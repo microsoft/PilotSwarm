@@ -37,6 +37,13 @@
  *   claims in them never become successes; valid calls still work.
  * - J1b-T4: a winner whose terminal fails after the time limit gives way to the next success committed in time.
  * - J1cd-T5: a branch's last state is found through its chain when its terminal's id sorts first and the times are equal.
+ * Part 3, cleanup of the branches a decision cut (HG-5; J1cd-T2, J1cd-T7):
+ * - JK-15: a losing script's own process ends after the join and after the time limit; its side effect after its wait
+ *   never happens; a queued branch never starts. (A script's own subprocesses are not probed: a guarded script may not
+ *   start one.)
+ * - JK-17: the request to stop a cut script fails once: it is owed and asked again while the run goes on, and that request
+ *   ends the script (its liveness check out of the way); it fails every time: the script's own liveness check still ends
+ *   it, and its late effect never happens, though the run already ended.
  * Part 5, the compiler and stored IR (no database):
  * - JK-01: every shape of `join` that is not all, all_required or { first: k } with k a safe integer from 1 to 64 is
  *   refused at its own path, never read as another; the accepted ones compile to their exact IR.
@@ -68,7 +75,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 import {
     commitOrder, elapsedResult, endOf, eventsOf, executionsOf, gate, joinBaseOf, joinDoc, joinRuntimeOn, pause, persisted, startJoin, until, within, yamlOf,
-    branchRowsOf, JOIN_ACTOR, WORK,
+    branchRowsOf, JOIN_ACTOR, WORK, PROBED_WORK, probeServer, processAlive,
 } from "../helpers/workflow-v2-join-harness.js";
 import {
     compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_AGENT_IR_VERSION, WORKFLOW_V2_JOIN_IR_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_PARALLEL_MAX_ITEMS,
@@ -1586,6 +1593,126 @@ describe("J3 robust joins, part 5: the compiler and stored IR", () => {
             expect(read.irVersion).toBe(WORKFLOW_V2_AGENT_IR_VERSION);
             expect(read.nodes.fan.join).toBe("all_required");
             expect(read.nodes.fan.timeoutSeconds).toBeUndefined();
+        }
+    });
+});
+
+// ─── Part 3: cleanup of cut branches (HG-5) ─────────────────
+
+/** A context whose durable client's cancelInstance is `cancel` (the rest as the real one), for the activity `ctx`. */
+function withCancel(ctx, cancel) {
+    const client = ctx.getClient();
+    const proxied = client === null || client === undefined ? client : new Proxy(client, {
+        get: (target, key) => key === "cancelInstance" ? cancel(target)
+            : typeof target[key] === "function" ? target[key].bind(target) : target[key],
+    });
+    return new Proxy(ctx, { get: (target, key) => key === "getClient" ? () => proxied
+        : typeof target[key] === "function" ? target[key].bind(target) : target[key] });
+}
+
+describe("J3 robust joins, part 3: cleanup of cut branches (controller 1.9.0, test-only)", () => {
+    it("JK-15 (HG-5): a losing script's process ends after the join and after the time limit; no late effect; a queued branch never starts", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const probe = await probeServer();
+        const workers = [];
+        try {
+            workers.push(await joinRuntimeOn(base));
+            // A race of the first 1, two at a time: branch 1 wins in 300 ms, branch 2 would run a minute, branch 3 is queued.
+            const race = await startJoin(base, joinDoc({ work: PROBED_WORK, join: { first: 1 }, concurrency: 2,
+                items: [{ ms: 300, probe: probe.url }, { ms: 60_000, probe: probe.url }, { ms: 100, probe: probe.url }] }));
+            const loserPid = await until(() => probe.pidOf(1), "the losing script to report its process");
+            expect(processAlive(loserPid), "precondition: the losing script's process runs").toBe(true);
+            expect(await endOf(base, race.runId)).toMatchObject({ status: "completed", terminalNodeId: "finished",
+                terminalOutput: [{ index: 0, output: { index: 0, ms: 300 } }] });
+            expect(await base.store.readNodeExecution(race.at(1, "work"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+            await until(() => !processAlive(loserPid) || null, "the losing script's process to end", 15_000);
+            expect(probe.count("/start/2/"), "the queued branch never started").toBe(0);
+            expect(await branchRowsOf(base, race, 2)).toEqual([]);
+
+            // A few seconds after the cut (its own wait was a minute), the loser made no late effect.
+            await pause(2_000);
+            expect(probe.count("/late/1"), "the race's loser made no late effect").toBe(0);
+
+            // A time limit of 6 s against a script of a minute: cut at the time limit, its process ends, no late effect.
+            probe.hits.length = 0;
+            const timed = await startJoin(base, joinDoc({ work: PROBED_WORK, timeoutSeconds: 6, items: [{ ms: 60_000, probe: probe.url }] }));
+            const timedPid = await until(() => probe.pidOf(0), "the timed script to report its process", 30_000);
+            expect(await endOf(base, timed.runId)).toMatchObject({ terminalNodeId: "late" });
+            expect(await base.store.readNodeExecution(timed.at(0, "work"))).toMatchObject({ outcome: "cancelled", winner: "join_timeout" });
+            await until(() => !processAlive(timedPid) || null, "the timed script's process to end", 15_000);
+            await pause(2_000);
+            expect(probe.count("/late/0"), "the timed script made no late effect").toBe(0);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await probe.close();
+            await base.close();
+        }
+    });
+
+    it("JK-17 (J1cd-T2, J1cd-T7): a failed stop request of a cut script is owed and asked again; when it always fails the script's liveness check still ends it", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const probe = await probeServer();
+        const failing = new Map();
+        const tries = new Map();
+        const workers = [];
+        /** The cancelBranches activity with its stop requests failing for a run as `failing` says (1: once; -1: always). */
+        const wrapCancel = fn => async (ctx, input) => fn(withCancel(ctx, client => async (...args) => {
+            const runId = input?.runId;
+            tries.set(runId, (tries.get(runId) ?? 0) + 1);
+            const left = failing.get(runId) ?? 0;
+            if (left !== 0) {
+                failing.set(runId, left - 1);
+                throw new Error("The stop request did not reach the effect (test).");
+            }
+            return client.cancelInstance(...args);
+        }), input);
+        try {
+            workers.push(await joinRuntimeOn(base, { wrap: { [R.cancelBranches]: wrapCancel }, deps: { livenessIntervalMs: 120_000 } }));
+            const raceDoc = ({ goOn = false } = {}) => {
+                const doc = joinDoc({ work: PROBED_WORK, join: { first: 1 }, concurrency: 2,
+                    items: [{ ms: 300, probe: probe.url }, { ms: 60_000, probe: probe.url }] });
+                // The run goes on after the join (a long wait), so its controller tries an owed stop again.
+                if (goOn) {
+                    doc.states.fan.transition.next.joined = "after";
+                    doc.states.after = { type: "wait", seconds: 600, transition: { next: { elapsed: "finished" } } };
+                }
+                return doc;
+            };
+
+            // Once, with the script's own liveness check out of the way (2 minutes): the first request fails, the cut is owed,
+            // and the controller asks again while the run goes on; that request stops the effect and the process.
+            const once = await startJoin(base, raceDoc({ goOn: true }));
+            failing.set(once.runId, 1);
+            const oncePid = await until(() => probe.pidOf(1), "the first run's losing script to start");
+            await persisted(base, [once.at(1, "work")], "the loser cut for the join", "completed");
+            await until(async () => (tries.get(once.runId) ?? 0) >= 2 || null, "the owed stop to be asked again", 30_000);
+            expect(await base.store.readRun(once.runId), "asked again while the run goes on").toMatchObject({ status: "running" });
+            await until(async () => (await eventsOf(base, once.workflowSessionId)).filter(event => event.eventType === "workflow.cancel_requested")
+                .some(event => event.data.effects.some(effect => effect.nodeExecutionId === once.at(1, "work"))) || null, "the stop of the loser's effect", 15_000);
+            await until(() => !processAlive(oncePid) || null, "the first run's losing script to end", 15_000);
+            await controlWorkflowV2Run(base.host, once.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: JOIN_ACTOR, operationId: "cancel-1" });
+            expect(await endOf(base, once.runId)).toMatchObject({ status: "cancelled" });
+            await workers.pop().stop();
+
+            // Always, with the default liveness check: every request fails; the run ends at once, and the script's own liveness
+            // check ends it all the same, with no late effect.
+            workers.push(await joinRuntimeOn(base, { wrap: { [R.cancelBranches]: wrapCancel } }));
+            probe.hits.length = 0;
+            const always = await startJoin(base, raceDoc());
+            failing.set(always.runId, -1);
+            const alwaysPid = await until(() => probe.pidOf(1), "the second run's losing script to start");
+            expect(await endOf(base, always.runId)).toMatchObject({ terminalNodeId: "finished" });
+            expect(await base.store.readNodeExecution(always.at(1, "work"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+            await until(() => !processAlive(alwaysPid) || null, "the second run's losing script to end by its own liveness check", 15_000);
+            expect(tries.get(always.runId), "precondition: the stop request was tried and failed").toBeGreaterThanOrEqual(1);
+            expect((await eventsOf(base, always.workflowSessionId)).filter(event => event.eventType === "workflow.cancel_requested"), "no stop was ever requested")
+                .toEqual([]);
+            await pause(2_000);
+            expect(probe.count("/late/1"), "no late effect").toBe(0);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await probe.close();
+            await base.close();
         }
     });
 });

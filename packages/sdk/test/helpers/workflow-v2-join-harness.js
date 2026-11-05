@@ -83,7 +83,7 @@ export const WORK = "const item = context.input;\n"
     + "await setResult(item.fail ? \"bad\" : item.seconds ? \"hold\" : \"ok\", { index: context.branch.index, ...item });\n";
 
 /** A parallel state over `items` (the join tests' joinDoc): its join, failFast, concurrency and time limit as given. */
-export function joinDoc({ items = [], forEach = "${input.items}", join, failFast = false, concurrency, timeoutSeconds, name = "join-robust" } = {}) {
+export function joinDoc({ items = [], forEach = "${input.items}", join, failFast = false, concurrency, timeoutSeconds, name = "join-robust", work = WORK } = {}) {
     const timed = timeoutSeconds !== undefined;
     return {
         ...head(name),
@@ -96,7 +96,7 @@ export function joinDoc({ items = [], forEach = "${input.items}", join, failFast
                 body: {
                     initial: "work",
                     states: {
-                        work: { type: "script", source: WORK, transition: { next: { ok: "done", bad: "refused", hold: "hold" } } },
+                        work: { type: "script", source: work, transition: { next: { ok: "done", bad: "refused", hold: "hold" } } },
                         hold: { type: "wait", seconds: "${input.seconds}", transition: { next: { elapsed: "done" } } },
                         done: { type: "terminal", outcome: "succeeded", output: "${input}" },
                         refused: { type: "terminal", outcome: "blocked", output: "${input}" },
@@ -110,6 +110,50 @@ export function joinDoc({ items = [], forEach = "${input.items}", join, failFast
             ...(timed ? { late: { type: "terminal", outcome: "blocked", output: "${input}" } } : {}),
         },
     };
+}
+
+/**
+ * HG-5: a branch script that reports to `item.probe` its start with its process id (`/start/<index>/<pid>`), waits
+ * `item.ms`, then reports a side effect it makes only after the wait (`/late/<index>`), then ends `ok` (`bad` for an item
+ * with `fail`). Without a probe it only waits.
+ */
+export const PROBED_WORK = "const item = context.input;\n"
+    + "if (item.probe) await fetch(`${item.probe}/start/${context.branch.index}/${process.pid}`);\n"
+    + "await new Promise(resolve => setTimeout(resolve, item.ms ?? 0));\n"
+    + "if (item.probe) await fetch(`${item.probe}/late/${context.branch.index}`);\n"
+    + "await setResult(item.fail ? \"bad\" : \"ok\", { index: context.branch.index, ms: item.ms ?? 0 });\n";
+
+/** A loopback server the probed scripts report to: which started (with their process ids), and which made a late effect. */
+export async function probeServer() {
+    const { createServer } = await import("node:http");
+    const hits = [];
+    const server = createServer((req, res) => {
+        hits.push(req.url);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+    });
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    return {
+        url: `http://127.0.0.1:${server.address().port}`,
+        hits,
+        count: prefix => hits.filter(hit => hit.startsWith(prefix)).length,
+        /** The process id branch `index` reported when it started, or null. */
+        pidOf: index => {
+            const hit = hits.find(item => item.startsWith(`/start/${index}/`));
+            return hit ? Number(hit.split("/")[3]) : null;
+        },
+        close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }),
+    };
+}
+
+/** Whether process `pid` still exists (signal 0; EPERM: it exists, owned by someone else). */
+export function processAlive(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return error?.code === "EPERM";
+    }
 }
 
 /** A wait's success as its elapse stores it (outcome elapsed), with `value` as its output. */
@@ -137,15 +181,15 @@ export async function joinBaseOf(env) {
  * A worker-equivalent registration on `base` (workflowRequests, the request tag declared), with `wrap` (activity name ->
  * (realHandler) => handler) around the real handlers (HG-1). `calls` counts each wrapped activity's deliveries; `handlers`
  * are the real registered handlers, so a test can call one as a contender exactly as a delivery would (with the events it
- * records). Locks are duroxide's defaults, renewed while an activity runs, as a worker's (a script may run for seconds);
- * `fastLocks` shortens them (2 s, the shortest that renews: duroxide 0.1.32 renews a lock under 15 s at half its
+ * records). The activity lock is a PilotSwarm worker's default (10 s, renewed every 5 s while an activity runs: a running
+ * activity also learns of its orchestration's cancellation at a renewal); `fastLocks` shortens it (2 s, the shortest that renews: duroxide 0.1.32 renews a lock under 15 s at half its
  * timeout rounded up to whole seconds, and duroxide-pg extends by whole seconds) for a test that stops a runtime with work
  * in flight and needs it taken over quickly.
  */
-export async function joinRuntimeOn(base, { wrap = {}, workerConcurrency = JOIN_WORKER_SLOTS, wakeBackstopMs = 500, fastLocks = false } = {}) {
+export async function joinRuntimeOn(base, { wrap = {}, workerConcurrency = JOIN_WORKER_SLOTS, wakeBackstopMs = 500, fastLocks = false, deps = {} } = {}) {
     const runtime = new Runtime(base.provider, {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
-        ...(fastLocks ? { workerLockTimeoutMs: 2_000, orchestratorLockTimeoutMs: 2_000 } : {}),
+        ...(fastLocks ? { workerLockTimeoutMs: 2_000, orchestratorLockTimeoutMs: 2_000 } : { workerLockTimeoutMs: 10_000 }),
     });
     const calls = {};
     const handlers = {};
@@ -166,6 +210,7 @@ export async function joinRuntimeOn(base, { wrap = {}, workerConcurrency = JOIN_
         deleteSession: async sessionId => base.catalog.softDeleteSession(sessionId),
         wakeBackstopMs, workflowRequests: true,
         sessionQueue: { ...sessionQueueTransport(base.client), version: async () => "1.0.83" },
+        ...deps,
     });
     await runtime.start();
     let running = true;

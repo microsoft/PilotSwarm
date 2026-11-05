@@ -934,6 +934,51 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
         }
     });
 
+    // J3 JK-16: a race of agent branches, two at a time: the join ends the loser's child with a cancel from the workflow, its
+    // late typed completion finds its state closed, the winner's child is told done, and the queued branch never gets a
+    // child. (The child double runs no sub-agents: descendants are not covered here.)
+    it("JK-16: the join cancels the losing agent's child; its late completion is refused; the queued branch never gets a child", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const yaml = RACE_AGENT_YAML.replace('initialInput: { heads: [{ head: "abc" }, { head: "def" }] }',
+                'initialInput: { heads: [{ head: "abc" }, { head: "def" }, { head: "ghi" }] }');
+            expect(yaml).not.toBe(RACE_AGENT_YAML);
+            const { workflowSessionId, runId } = await started(h, yaml);
+            const spawns = await until(async () => (h.spawns.length >= 2 ? h.spawns : null), "two branches' agent children");
+            const fan = nodeExecutionIdFor(runId, "root", "fan", 1);
+            const review = index => nodeExecutionIdFor(runId, branchScopeId(fan, index), "review", 1);
+            const winner = spawns.find(spawn => spawn.nodeExecutionId === review(0));
+            const loser = spawns.find(spawn => spawn.nodeExecutionId === review(1));
+            expect(winner && loser, "precondition: branches 1 and 2 have children").toBeTruthy();
+            for (const spawn of [winner, loser]) {
+                await until(async () => (await h.store.readAgentInvocation(spawn.nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
+            }
+            expect(await completeAs(h, winner.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "win-1" })).toMatchObject({ ok: true });
+            await until(async () => (await h.store.readNodeExecution(fan))?.state === "completed", "the join");
+            expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "joined", output: [{ index: 0, output: { verdict: "ok" } }] });
+            expect(await h.store.readNodeExecution(loser.nodeExecutionId)).toMatchObject({ outcome: "cancelled", winner: "join" });
+            // The loser's child is ended with a cancel from the workflow; the winner's is told done.
+            expect(await lifecycleCommand(h, loser.childSessionId))
+                .toMatchObject({ cmd: "cancel", id: `workflow-agent-end:${loser.nodeExecutionId}`, requestedBy: workflowSessionId });
+            expect(await lifecycleCommand(h, winner.childSessionId)).toMatchObject({ cmd: "done", requestedBy: workflowSessionId });
+            // Its late completion finds the state closed, and changes nothing.
+            expect(await completeAs(h, loser.childSessionId, { outcome: "accepted", output: { verdict: "late" }, operation_id: "late-1" }))
+                .toMatchObject({ ok: false, error: { code: "NODE_CLOSED" } });
+            expect(await h.store.readNodeExecution(fan)).toMatchObject({ outcome: "joined", output: [{ index: 0, output: { verdict: "ok" } }] });
+            // The queued branch never started: no state, no child.
+            await until(async () => (await h.store.listNodeExecutions(runId)).some(node => node.nodeId === "hold") || null, "the run to go on after the join");
+            expect(h.spawns).toHaveLength(2);
+            expect((await h.store.listNodeExecutions(runId)).filter(node => node.scopeId === branchScopeId(fan, 2))).toEqual([]);
+            const view = await readWorkflowV2View(h.store, workflowSessionId);
+            expect(view.run.nodeExecutions.find(node => node.nodeExecutionId === loser.nodeExecutionId))
+                .toMatchObject({ winner: "join", agent: { childSessionId: loser.childSessionId, end: "cancel", endSent: true } });
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-1" });
+            expect(await ended(h, runId)).toMatchObject({ status: "cancelled" });
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("fails the state when the host refuses or the worker has none, and cancels the child when the run is cancelled", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
