@@ -2782,8 +2782,10 @@ export class WorkflowStore {
 
     /**
      * Apply a lifecycle command (cancel, done or delete) that a parent's
-     * durable session sent to its v2 workflow child, once per operation id,
-     * in one transaction under the session, definition and run locks:
+     * durable session sent to its v2 workflow child, or that an operator sent
+     * (the management API, the agent manager; no requester), once per
+     * operation id, in one transaction under the session, definition and run
+     * locks:
      * - delete soft-deletes the child here, whatever its run is doing: the
      *   deletion trigger (migrations 0090, 0091) tombstones the definition
      *   and ends an active run in this same transaction (its pending nodes
@@ -2810,7 +2812,8 @@ export class WorkflowStore {
         requestSha256: string;
         command: "cancel" | "done" | "delete";
         reason: string;
-        requestedBy: string;
+        /** The parent session that sent it; null for an operator's command (the management API, the agent manager). */
+        requestedBy: string | null;
     }): Promise<{ receipt: WorkflowSessionCommandReceipt; replayed: boolean; run: WorkflowRunRow | null; wake: boolean }> {
         return this.transaction(async client => {
             if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");

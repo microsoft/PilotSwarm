@@ -18,6 +18,10 @@
  *   delete deletes the workflow; both before the controller reads anything.
  * - DX-2, R5: 150 wakes and a cancel an older build queued (only in the queue), behind a held plan: no turn reads more
  *   than 32 messages in a row, so the controller does not fail, and the queued cancel still ends the run (1.8.0, 1.9.0).
+ * - The operator paths: the management API's cancelSession, completeSession and deleteSession, and the agent manager's
+ *   manage_agent_session (its call: applyOperatorCommandToWorkflowV2 with the durable client), end a begun run in the
+ *   store at once while the controller is in the middle of an admission, and no state is admitted after them; an
+ *   operator's cancel of a run that has not begun tells the parent (1.9.0).
  *
  * No model runs. Not an activation proof.
  *
@@ -28,10 +32,15 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { applySessionCommandToWorkflowV2, controlWorkflowV2Run, createWorkflowV2, SESSION_COMMAND_OPERATION_PREFIX } from "../../src/workflow/v2/service.ts";
+import {
+    applyOperatorCommandToWorkflowV2, applySessionCommandToWorkflowV2, controlWorkflowV2Run, createWorkflowV2, OPERATOR_COMMAND_OPERATION_PREFIX,
+    SESSION_COMMAND_OPERATION_PREFIX,
+} from "../../src/workflow/v2/service.ts";
 import {
     registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_COMMAND_READ_BATCH, WORKFLOW_V2_REQUEST_ACTIVITIES,
+    workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
+import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -366,5 +375,128 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
         } finally {
             await h.stop();
         }
+    });
+
+    // The operator paths (S7-DX2 follow-up): the same command-loss defect through other entry points.
+    describe("operator paths", () => {
+        /** A harness whose admission of "next" waits, per run, until the test opens it (the controller is in the middle of a turn). */
+        const heldHarness = async () => {
+            const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
+            const holds = new Map();
+            const h = await harness(getEnv(), { requests: true, wrap: {
+                [R.enter]: fn => async (ctx, input) => {
+                    const held = input?.nodeId === "next" ? holds.get(input.runId) : undefined;
+                    if (held) { holds.delete(input.runId); held.arrive(); await held.wait(); }
+                    return fn(ctx, input);
+                },
+            } });
+            return { h, hold: runId => { const held = gate(); holds.set(runId, held); return held; } };
+        };
+        /** Start TWO_WAITS and wait until its controller is held in its admission of "next". */
+        const heldAtNext = async (h, hold, options) => {
+            const run = await started(h, TWO_WAITS, options);
+            const held = hold(run.runId);
+            await held.reached;
+            return { ...run, held };
+        };
+        const cancelledAtOnce = (h, runId) => until(async () => {
+            const run = await h.store.readRun(runId);
+            return run.status === "cancelled" ? run : null;
+        }, `run ${runId} to end in the store`, 30_000);
+
+        it("the management API's cancelSession, completeSession and deleteSession end a begun run in the store at once; no state follows", { timeout: TIMEOUT }, async () => {
+            const env = getEnv();
+            const { h, hold } = await heldHarness();
+            const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema });
+            await mgmt.start();
+            try {
+                for (const [name, call, command, reason] of [
+                    ["cancelSession", id => mgmt.cancelSession(id, "operator cancel"), "cancel", "operator cancel"],
+                    ["completeSession", id => mgmt.completeSession(id, "operator done"), "done", "operator done"],
+                    ["deleteSession", id => mgmt.deleteSession(id, "operator delete"), "delete", null],
+                ]) {
+                    const run = await heldAtNext(h, hold);
+                    // The controller is held in its admission of "next": the command is applied in the store meanwhile.
+                    const calling = call(run.workflowSessionId);
+                    const ended = await cancelledAtOnce(h, run.runId);
+                    if (command === "delete") {
+                        expect(await h.catalog.getSession(run.workflowSessionId), name).toBeNull();
+                    } else {
+                        expect(ended.terminalError, name).toMatchObject({ code: "cancelled", message: reason,
+                            details: { command, requestedBy: null, accepted: true, operationId: expect.stringMatching(new RegExp(`^${OPERATOR_COMMAND_OPERATION_PREFIX}${command}-`)) } });
+                    }
+                    run.held.open();
+                    await calling;
+                    expect((await h.client.waitForOrchestration(run.controller, 30_000)).status, name).toBe("Completed");
+                    expect((await h.store.listNodeExecutions(run.runId)).map(node => node.nodeId), name).toEqual(["first"]);
+                }
+            } finally {
+                await mgmt.stop();
+                await h.stop();
+            }
+        });
+
+        it("the agent manager's manage_agent_session (applyOperatorCommandToWorkflowV2) ends a begun run at once; an operator's cancel before begin tells the parent", { timeout: TIMEOUT }, async () => {
+            const { h, hold } = await heldHarness();
+            try {
+                const host = { store: h.store, deleteSessionFacts: null, duroxideClient: h.client };
+                for (const cmd of ["cancel", "done"]) {
+                    const run = await heldAtNext(h, hold);
+                    const command = { type: "cmd", cmd, id: `${cmd}-mgr-1`, args: { reason: `${cmd} requested by agent-manager` } };
+                    // As the tool does: "enqueue" queues the command for the controller, which finishes the ended run.
+                    const applied = await applyOperatorCommandToWorkflowV2(host, { targetSessionId: run.workflowSessionId, command });
+                    expect(applied, cmd).toEqual({ action: "enqueue" });
+                    await h.client.enqueueEvent(run.controller, "messages", JSON.stringify(command));
+                    expect(await h.store.readRun(run.runId), cmd).toMatchObject({ status: "cancelled", terminalError: { details: { command: cmd,
+                        requestedBy: null, accepted: true, operationId: `${OPERATOR_COMMAND_OPERATION_PREFIX}${cmd}-mgr-1` } } });
+                    run.held.open();
+                    await controllerFinished(h, run.controller, "cancelled");
+                    expect((await h.store.listNodeExecutions(run.runId)).map(node => node.nodeId), cmd).toEqual(["first"]);
+                }
+                const deleted = await heldAtNext(h, hold);
+                expect(await applyOperatorCommandToWorkflowV2(host, { targetSessionId: deleted.workflowSessionId,
+                    command: { type: "cmd", cmd: "delete", id: "delete-mgr-1", args: { reason: "delete requested by agent-manager" } } }))
+                    .toMatchObject({ action: "applied", receipt: { command: "delete", applied: "store", status: "deleted" } });
+                expect((await h.store.readRun(deleted.runId)).status).toBe("cancelled");
+                deleted.held.open();
+                expect((await h.client.waitForOrchestration(deleted.controller, 30_000)).status).toBe("Completed");
+                expect((await h.store.listNodeExecutions(deleted.runId)).map(node => node.nodeId)).toEqual(["first"]);
+                // An ordinary agent session is not a workflow: its command is queued as before.
+                const agent = randomUUID();
+                await h.catalog.createSession(agent, {});
+                expect(await applyOperatorCommandToWorkflowV2(host, { targetSessionId: agent, command: { type: "cmd", cmd: "cancel", id: "cancel-mgr-2" } }))
+                    .toEqual({ action: "enqueue" });
+            } finally {
+                await h.stop();
+            }
+            // Before begin: the run ends in the store, and as no controller will tell its parent, the notice is started.
+            const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
+            const begin = gate();
+            let begun = false;
+            const early = await harness(getEnv(), { requests: true, wrap: {
+                [R.begin]: fn => async (ctx, input) => {
+                    if (!begun) { begun = true; begin.arrive(); await begin.wait(); }
+                    return fn(ctx, input);
+                },
+            } });
+            try {
+                const parent = randomUUID();
+                const run = await started(early, HOLD(), { parent });
+                await begin.reached;
+                expect(await applyOperatorCommandToWorkflowV2({ store: early.store, deleteSessionFacts: null, duroxideClient: early.client },
+                    { targetSessionId: run.workflowSessionId, command: { type: "cmd", cmd: "cancel", id: "cancel-mgr-3", args: { reason: "not yet" } } }))
+                    .toMatchObject({ action: "applied", receipt: { command: "cancel", applied: "store", status: "cancelled" } });
+                expect(await early.store.readRun(run.runId)).toMatchObject({ status: "cancelled",
+                    terminalError: { details: { beforeBegin: true, operationId: `${OPERATOR_COMMAND_OPERATION_PREFIX}cancel-mgr-3` } } });
+                await until(async () => (await early.client.getStatus(workflowNotifyInstanceId(run.runId))).status !== "NotFound" || null,
+                    "the parent notice to start");
+                begin.open();
+                expect((await early.client.waitForOrchestration(run.controller, 30_000)).status).toBe("Completed");
+                expect(await early.store.listNodeExecutions(run.runId)).toEqual([]);
+            } finally {
+                begin.open();
+                await early.stop();
+            }
+        });
     });
 });

@@ -503,8 +503,8 @@ async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient" 
  * is left alone. The begin activity starts the same notifier when the
  * run's controller starts (workflow-v2-controller begin).
  */
-async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, run: WorkflowRunRow, operationId: string,
-    callerSessionId: string | null): Promise<void> {
+async function notifyCancelledBeforeBegin(host: { store: WorkflowStore; duroxideClient: Pick<WorkflowV2Host["duroxideClient"], "startOrchestrationVersioned"> },
+    run: WorkflowRunRow, operationId: string, callerSessionId: string | null): Promise<void> {
     const error = run.terminalError;
     const details = isJsonObject(error) && isJsonObject(error.details) ? error.details : null;
     if (run.mode !== "live" || run.status !== "cancelled" || !details || details.beforeBegin !== true || details.operationId !== operationId) return;
@@ -991,21 +991,68 @@ function parseSessionLifecycleCommand(raw: unknown): { cmd: "cancel" | "done" | 
  * "enqueue": the caller queues the command as before.
  */
 export async function applySessionCommandToWorkflowV2(
-    host: { store: WorkflowStore; deleteSessionFacts?: ((sessionId: string) => Promise<unknown>) | null },
+    host: WorkflowLifecycleCommandHost,
     request: { callerInstanceId: string; targetSessionId: string; command: unknown },
-): Promise<{ action: "enqueue" } | { action: "applied"; receipt: WorkflowSessionCommandReceipt | null }> {
+): Promise<WorkflowLifecycleCommandResult> {
+    return applyLifecycleCommandToWorkflowV2(host, { targetSessionId: request.targetSessionId, command: request.command, caller: { instanceId: request.callerInstanceId } });
+}
+
+/** The operation id prefix of a receipt that an operator's lifecycle command stored (applyOperatorCommandToWorkflowV2). */
+export const OPERATOR_COMMAND_OPERATION_PREFIX = "operator-command:";
+
+/**
+ * A lifecycle command (cancel, done or delete) from an operator path that has authorized it itself: the management API's
+ * cancelSession, completeSession and deleteSession, and the agent manager's manage_agent_session (S7-DX2 follow-up). For a
+ * v2 workflow it is applied in the store as a parent's is (applySessionCommandToWorkflowV2: delete deletes the workflow,
+ * cancel and done end an active run), once per command id (OPERATOR_COMMAND_OPERATION_PREFIX), with no requester (the
+ * parent is told of the end); the caller then queues the command only when the result says "enqueue". Any other session
+ * (an agent, a legacy workflow) returns "enqueue": the caller queues the command as before.
+ */
+export async function applyOperatorCommandToWorkflowV2(
+    host: WorkflowLifecycleCommandHost,
+    request: { targetSessionId: string; command: unknown },
+): Promise<WorkflowLifecycleCommandResult> {
+    return applyLifecycleCommandToWorkflowV2(host, { targetSessionId: request.targetSessionId, command: request.command, caller: null });
+}
+
+/**
+ * The store, how a deleted workflow session's facts are removed, and (an operator path) the durable client that tells
+ * the parent of a run its command ended before the run began, for a lifecycle command.
+ */
+export interface WorkflowLifecycleCommandHost {
+    store: WorkflowStore;
+    deleteSessionFacts?: ((sessionId: string) => Promise<unknown>) | null;
+    duroxideClient?: Pick<WorkflowV2Host["duroxideClient"], "startOrchestrationVersioned"> | null;
+}
+
+/** "enqueue": the caller queues the command; "applied": the store applied it, and nothing is queued. */
+export type WorkflowLifecycleCommandResult = { action: "enqueue" } | { action: "applied"; receipt: WorkflowSessionCommandReceipt | null };
+
+/**
+ * applySessionCommandToWorkflowV2 and applyOperatorCommandToWorkflowV2: `caller` is the parent's orchestration instance
+ * (only the workflow's parent may send it, and a requestedBy must name it), or null for an operator path (no parent check,
+ * no requester).
+ */
+async function applyLifecycleCommandToWorkflowV2(
+    host: WorkflowLifecycleCommandHost,
+    request: { targetSessionId: string; command: unknown; caller: { instanceId: string } | null },
+): Promise<WorkflowLifecycleCommandResult> {
     const command = parseSessionLifecycleCommand(request.command);
     if (!command) return { action: "enqueue" };
     const link = await host.store.readSessionLink(request.targetSessionId);
     if (!link || link.sessionKind !== "workflow") return { action: "enqueue" };
     const definition = await host.store.readDefinition(request.targetSessionId);
     if (!definition) return { action: "enqueue" };
-    const caller = request.callerInstanceId.startsWith("session-") ? request.callerInstanceId.slice("session-".length) : null;
-    if (!caller || link.parentSessionId !== caller || definition.parentSessionId !== caller || (command.requestedBy !== null && command.requestedBy !== caller)) {
-        throw new WorkflowStoreError("FORBIDDEN", `Only the session that created workflow ${request.targetSessionId} may send it ${command.cmd}.`);
+    let caller: string | null = null;
+    if (request.caller !== null) {
+        const instanceId = request.caller.instanceId;
+        caller = instanceId.startsWith("session-") ? instanceId.slice("session-".length) : null;
+        if (!caller || link.parentSessionId !== caller || definition.parentSessionId !== caller || (command.requestedBy !== null && command.requestedBy !== caller)) {
+            throw new WorkflowStoreError("FORBIDDEN", `Only the session that created workflow ${request.targetSessionId} may send it ${command.cmd}.`);
+        }
     }
     const workflowSessionId = request.targetSessionId;
-    const operationId = `${SESSION_COMMAND_OPERATION_PREFIX}${command.id}`;
+    const operationId = `${request.caller === null ? OPERATOR_COMMAND_OPERATION_PREFIX : SESSION_COMMAND_OPERATION_PREFIX}${command.id}`;
     const requestSha256 = jsonSha256({ kind: `session-${command.cmd}`, reason: command.reason });
     /**
      * The child is deleted: found deleted, or deleted after the link was read
@@ -1044,6 +1091,9 @@ export async function applySessionCommandToWorkflowV2(
     // again), which applies it to the ended run (its post-end work); a run still active (an older receipt the store could
     // not apply) keeps it queued as before.
     if (stored.wake || (receipt.applied === "queued" && run !== null && ACTIVE_RUN_STATUSES.includes(run.status))) return { action: "enqueue" };
+    // A run this command ended before it began has no controller to tell its parent: the parent is told here, unless the
+    // parent sent it (an operator's command, with the durable client; a repeat tells it again, at least once).
+    if (run !== null && host.duroxideClient) await notifyCancelledBeforeBegin({ store: host.store, duroxideClient: host.duroxideClient }, run, operationId, caller);
     return { action: "applied", receipt };
 }
 

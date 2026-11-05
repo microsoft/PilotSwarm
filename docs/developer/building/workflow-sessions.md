@@ -347,20 +347,16 @@ started), the run ends as **cancelled** without reaching a terminal state
 (complete also ends it as cancelled, with reason "Stopped"), and the parent
 is told unless it asked. Delete also removes the session.
 
-For a version 2 workflow, a cancel or complete that `update_workflow` or the
-parent agent sends ends the run in the store when it is accepted. Its pending
-steps are cancelled in the same transaction, so no further step starts. The
-controller finds the ended run at its next store call: it stops the cancelled
-scripts, ends agent children, tells the parent (unless the parent asked) and
-finishes. A delete from the parent agent deletes the workflow at once, which
-ends its run. A paused run ends too, and a graceful stop in progress is
-replaced by the cancel. On a run that already ended, the request is recorded
-with that end and changes nothing. A cancel, complete or delete sent to an
-active run another way (the management API's `cancelSession`,
-`completeSession` and `deleteSession`, or the agent manager's
-`manage_agent_session`) still reaches the controller as a queued message. The
-controller applies it when it reads it, as described under Running
-workflows.
+For a version 2 workflow, a cancel or complete ends the run in the store when
+it is accepted, from every entry point: `update_workflow`, the parent agent,
+the management API and the agent manager's `manage_agent_session`. Its
+pending steps are cancelled in the same transaction, so no further step
+starts. The controller finds the ended run at its next store call: it stops
+the cancelled scripts, ends agent children, tells the parent (unless the
+parent asked) and finishes. A delete deletes the workflow at once, which ends
+its run. A paused run ends too, and a graceful stop in progress is replaced
+by the cancel. On a run that already ended, the request is recorded with
+that end and changes nothing.
 
 The kill reaches the worker when the running script state next renews its
 activity lock. The lock times out after `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`
@@ -469,10 +465,9 @@ duroxide limits shape it:
   state: it has already ended the run, and the controller's next store call
   finds that (see Stopping a workflow). duroxide carries at most 100 unread
   queue messages into the next execution and drops the newer ones, so a
-  continue-as-new can drop wake messages. It can also drop a queued command
-  that has at least 100 earlier unread messages ahead of it. Such a command
-  is one an older build queued, or one sent another way than
-  `update_workflow` or the parent agent.
+  continue-as-new can drop wake messages. It can also drop a command that an
+  older build only queued, when at least 100 earlier unread messages are
+  ahead of it.
 - duroxide fails a turn that takes more than 100 queued messages in a row.
   The controller's read of the queue before an admission takes at most 32
   messages per batch, and a store activity comes before the next batch. A

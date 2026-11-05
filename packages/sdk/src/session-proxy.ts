@@ -83,7 +83,7 @@ import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
 import { spawnNesting } from "./workflow/v2/input-policy.js";
-import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
+import { applyOperatorCommandToWorkflowV2, applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
 import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/v2/intake-admission.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
@@ -2921,20 +2921,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             await sdkClient.deleteSession(targetId);
                             return `[SYSTEM: session ${targetId.slice(0, 8)} was already ${target.state} and has been deleted. Reason: ${reason}]`;
                         }
-                        await sdkClient._getDuroxideClient().enqueueEvent(
-                            `session-${targetId}`,
-                            "messages",
-                            JSON.stringify({ type: "cmd", cmd: "delete", id: `delete-mgr-${Date.now()}`, args: { reason } }),
-                        );
+                        const deleteCommand = { type: "cmd", cmd: "delete", id: `delete-mgr-${Date.now()}`, args: { reason } };
+                        // S7-DX2 follow-up: a v2 workflow is deleted in its store at once; any other session gets the command queued.
+                        if (!await operatorCommandApplied(sdkClient, targetId, deleteCommand)) {
+                            await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(deleteCommand));
+                        }
                         return `[SYSTEM: graceful deletion requested for ${targetId}. It cancels its descendants first, then deletes itself. Poll read_session_info to confirm. Reason: ${reason}]`;
                     }
 
                     const cmd = action === "complete" ? "done" : "cancel";
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        `session-${targetId}`,
-                        "messages",
-                        JSON.stringify({ type: "cmd", cmd, id: `${cmd}-mgr-${Date.now()}`, args: { reason } }),
-                    );
+                    const command = { type: "cmd", cmd, id: `${cmd}-mgr-${Date.now()}`, args: { reason } };
+                    // S7-DX2 follow-up: a v2 workflow's active run ends in its store at once; the command is then queued only when
+                    // its controller is to finish it (any other session gets it queued as before).
+                    if (!await operatorCommandApplied(sdkClient, targetId, command)) {
+                        await sdkClient._getDuroxideClient().enqueueEvent(`session-${targetId}`, "messages", JSON.stringify(command));
+                    }
                     return `[SYSTEM: ${action} requested for ${targetId}. It settles on its own schedule — poll read_session_info to confirm. Reason: ${reason}]`;
                 } catch (error: any) {
                     return `[SYSTEM: manage_agent_session failed — ${error?.message || String(error)}]`;
@@ -6270,8 +6271,24 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         }
     });
 
-    // ── sendCommandToSession ────────────────────────────────
-    // Sends a raw JSON command directly to a session's orchestration event queue.
+    // ── Workflow v2 lifecycle commands (S7-DX2) ────────────────
+    /**
+     * An operator's lifecycle command (the agent manager's manage_agent_session) for `targetSessionId`, which its caller has
+     * authorized: a v2 workflow's is applied in the store (applyOperatorCommandToWorkflowV2). True when nothing more is to
+     * be sent; false when the caller queues the command.
+     */
+    const operatorCommandApplied = async (sdkClient: any, targetSessionId: string, command: unknown): Promise<boolean> => {
+        if (!catalog?.workflowStore) return false;
+        const facts = factStore ?? null;
+        const applied = await applyOperatorCommandToWorkflowV2({
+            store: catalog.workflowStore(),
+            deleteSessionFacts: facts ? (sessionId: string) => facts.deleteSessionFactsForSession(sessionId) : null,
+            duroxideClient: sdkClient._getDuroxideClient(),
+        }, { targetSessionId, command });
+        // A workflow with no active run has nothing for the store to apply: the command goes as before.
+        return applied.action === "applied" && applied.receipt?.applied !== "none";
+    };
+
     /**
      * A lifecycle command (cancel, done or delete) from the session whose orchestration runs `activityCtx` to its child
      * `targetSessionId`, for a v2 workflow child: the v2 store applies it (applySessionCommandToWorkflowV2: only the
@@ -6293,6 +6310,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         return true;
     };
 
+    // ── sendCommandToSession ────────────────────────────────
+    // Sends a raw JSON command directly to a session's orchestration event queue.
     // Unlike sendToSession, this does NOT wrap the payload in { prompt: ... }.
     runtime.registerActivity("sendCommandToSession", async (
         activityCtx: any,

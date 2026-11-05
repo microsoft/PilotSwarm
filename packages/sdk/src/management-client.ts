@@ -174,7 +174,7 @@ import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolve
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
 import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
 import { workflowAdapterFailure } from "./workflow/v2/failure.js";
-import type { WorkflowV2Host } from "./workflow/v2/service.js";
+import { applyOperatorCommandToWorkflowV2, type WorkflowV2Host } from "./workflow/v2/service.js";
 import {
     AgentPackageValidationError,
     deleteAgentPackageEverywhere,
@@ -1631,7 +1631,7 @@ export class PilotSwarmManagementClient {
         if (session.status === "cancelled" || session.status === "failed") return;
 
         const doneReason = reason ?? "Completed by management client";
-        await this.sendCommand(sessionId, {
+        await this._sendLifecycleCommand(sessionId, {
             cmd: "done",
             id: buildLifecycleCommandId("done"),
             args: { reason: doneReason },
@@ -1685,7 +1685,7 @@ export class PilotSwarmManagementClient {
         }
 
         const cancelReason = reason ?? "Cancelled by management client";
-        await this.sendCommand(sessionId, {
+        await this._sendLifecycleCommand(sessionId, {
             cmd: "cancel",
             id: buildLifecycleCommandId("cancel"),
             args: { reason: cancelReason },
@@ -1744,7 +1744,7 @@ export class PilotSwarmManagementClient {
             return;
         }
 
-        await this.sendCommand(sessionId, {
+        await this._sendLifecycleCommand(sessionId, {
             cmd: "delete",
             id: buildLifecycleCommandId("delete"),
             args: { reason: deleteReason },
@@ -4435,6 +4435,26 @@ export class PilotSwarmManagementClient {
             "messages",
             JSON.stringify({ cancelPending: ids }),
         );
+    }
+
+    /**
+     * A cancel, done or delete for a session (S7-DX2 follow-up): a v2 workflow's is applied in its store first
+     * (applyOperatorCommandToWorkflowV2: delete deletes the workflow, cancel and done end its active run at once, so no
+     * further step starts), and the command is queued for its controller only when that says so; any other session's
+     * command is queued as before (sendCommand).
+     */
+    private async _sendLifecycleCommand(sessionId: string, command: { cmd: "cancel" | "done" | "delete"; id: string; args: { reason: string } }): Promise<void> {
+        this._ensureStarted();
+        const store = this._workflowStoreOrNull();
+        if (store) {
+            const facts = this._factStore;
+            const applied = await applyOperatorCommandToWorkflowV2({
+                store, deleteSessionFacts: facts ? (id: string) => facts.deleteSessionFactsForSession(id) : null, duroxideClient: this._duroxideClient,
+            }, { targetSessionId: sessionId, command: { type: "cmd", ...command } });
+            // A workflow with no active run has nothing for the store to apply: the command goes as before.
+            if (applied.action === "applied" && applied.receipt?.applied !== "none") return;
+        }
+        await this.sendCommand(sessionId, command);
     }
 
     /**
