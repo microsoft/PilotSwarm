@@ -1256,12 +1256,30 @@ describe("workflow v2 parallel joins and time limits, J1b: controller 1.9.0 (ina
             const terminals = await Promise.all([0, 1].map(index => base.store.readNodeExecution(nodeExecutionIdFor(race.runId, branchScopeId(race.fan, index), "done", 1))));
             expect(terminals.map(row => row?.outcome ?? null)).toEqual(["succeeded", "succeeded"]);
             expect(terminals[0].enteredAt.getTime()).toBeLessThanOrEqual(terminals[1].enteredAt.getTime());
-            // (b): the lone success came after the time limit: timed_out, its result kept as finished and marked late.
+            // (b): the lone success came after the time limit: timed_out, its result kept and marked late. Which of two legal
+            // orders the restart took decides how its branch ended (J1f: not a product rule, and not chosen by this test):
+            // - the first pass after the restart elapsed the time limit before it collected the wait's result: the branch's
+            //   terminal was never admitted, and the report keeps the wait's result as finished;
+            // - the worker stopped while a collection was on its way (the controller looks every backstop period, 500 ms);
+            //   it ran after the restart, found the late result and routed it, and the branch's terminal was admitted after
+            //   the time limit (a terminal still is): the report says terminal, succeeded, late.
+            // Either way the late success does not count. The persisted terminal row says which order it was.
             const lone = await endOf(alone.runId);
             expect(lone).toMatchObject({ status: "completed", terminalNodeId: "late" });
-            const details = (await base.store.readNodeExecution(alone.fan)).error.details;
+            const aloneFanRow = await base.store.readNodeExecution(alone.fan);
+            expect(aloneFanRow).toMatchObject({ outcome: "timed_out", resultKind: "runtime_error" });
+            const details = aloneFanRow.error.details;
             expect(details).toMatchObject({ timedOut: true, total: 1, needed: 1, succeeded: 0 });
-            expect(details.branches).toEqual([expect.objectContaining({ index: 0, ended: "finished", nodeExecutionId: alone.hold(0), outcome: "elapsed", late: true })]);
+            const aloneDone = await base.store.readNodeExecution(nodeExecutionIdFor(alone.runId, branchScopeId(alone.fan, 0), "done", 1));
+            if (aloneDone) {
+                expect(aloneDone).toMatchObject({ state: "completed", outcome: "succeeded" });
+                expect(aloneDone.enteredAt.getTime(), "admitted after the time limit").toBeGreaterThan(aloneFan.deadlineAt.getTime());
+                expect(details.branches).toEqual([expect.objectContaining({ index: 0, ended: "terminal", nodeExecutionId: aloneDone.nodeExecutionId,
+                    outcome: "succeeded", late: true })]);
+            } else {
+                expect(details.branches).toEqual([expect.objectContaining({ index: 0, ended: "finished", nodeExecutionId: alone.hold(0), outcome: "elapsed",
+                    late: true })]);
+            }
         } finally {
             for (const worker of workers) await worker.stop();
             await base.catalog.close();
