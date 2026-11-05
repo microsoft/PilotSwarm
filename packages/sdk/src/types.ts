@@ -1504,7 +1504,10 @@ export interface PilotSwarmWorkerOptions {
      * `renewal buffer` ms before the lock expires, so the buffer is the
      * longest stall (a blocked event loop, a paused database) the item
      * survives without losing its lock. Locks of 15 s or more use the buffer;
-     * shorter locks renew at half their timeout and ignore it.
+     * shorter locks renew at half their timeout, rounded up to whole seconds
+     * (at least 1 s), and ignore it. So a lock under 2 s renews no earlier
+     * than it expires: an activity that runs longer loses it, is stopped and
+     * runs again until it is given up. Use whole seconds of at least 2.
      */
     workerLockTimeoutMs?: number;
     /**

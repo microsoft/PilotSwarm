@@ -635,7 +635,8 @@ async function restartBaseOf(env) {
 async function restartRuntimeOn(base) {
     const runtime = new Runtime(base.provider, {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
-        workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000,
+        // Whole seconds of at least 2: a shorter activity lock renews no earlier than it expires (duroxide 0.1.32).
+        workerLockTimeoutMs: 2_000, orchestratorLockTimeoutMs: 2_000,
     });
     registerWorkflowV2({
         registerActivity: (name, fn) => runtime.registerActivity(name, fn),

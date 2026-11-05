@@ -1121,8 +1121,9 @@ states:
         const workers = [];
         const abandoned = [];
         const crashes = [];
-        // Short locks: work a stopped worker held is taken by the next worker within seconds.
-        const runtimeOptions = { workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000 };
+        // Short locks: work a stopped worker held is taken by the next worker within seconds. Whole seconds of at least 2: a
+        // shorter activity lock renews no earlier than it expires (duroxide 0.1.32), so a script would run again (J3-fix2).
+        const runtimeOptions = { workerLockTimeoutMs: 2_000, orchestratorLockTimeoutMs: 2_000 };
         /** A worker that crashes inside the first script entry it makes: the process started, the entry transaction rolled back. */
         const crashingWorker = async (name) => {
             let armed = true;

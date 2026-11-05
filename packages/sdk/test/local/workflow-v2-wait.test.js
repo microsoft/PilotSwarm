@@ -279,7 +279,8 @@ describe("workflow v2 wait states", () => {
 
     it("keeps the absolute deadline across a worker restart and across continue-as-new", { timeout: 180_000 }, async () => {
         const base = await baseOf(getEnv());
-        const runtimeOptions = { workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000 };
+        // Whole seconds of at least 2: a shorter activity lock renews no earlier than it expires (duroxide 0.1.32).
+        const runtimeOptions = { workerLockTimeoutMs: 2_000, orchestratorLockTimeoutMs: 2_000 };
         const workers = [];
         try {
             // The worker stops while the wait is pending and stays down for a 2.5 s outage window.

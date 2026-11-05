@@ -6301,9 +6301,12 @@ export class WorkflowStore {
      * else timed_out with its report; the work its branches still run is
      * cancelled either way (winner join_timeout). A join, a run end or a
      * deletion that decided the state first is kept (decided). `projection`
-     * gives the state's own events from what was decided.
+     * gives the state's own events from what was decided; it is required, so
+     * no caller in the product decides the state without its event (JK-09).
+     * Store tests in plain JavaScript may leave it out to check a decision
+     * alone.
      */
-    async elapseParallelNode(nodeExecutionId: string, projection?: (decided: ParallelSettled) => SessionProjection): Promise<
+    async elapseParallelNode(nodeExecutionId: string, projection: (decided: ParallelSettled) => SessionProjection): Promise<
         { result: "elapsed" | "join_due"; node: WorkflowNodeExecutionRow; cancelled: string[] } | { result: "decided"; node: WorkflowNodeExecutionRow }
         | { result: "not_due"; remainingMs: number; node: WorkflowNodeExecutionRow }> {
         return this.transaction(async client => {
@@ -6353,7 +6356,8 @@ export class WorkflowStore {
         nodeExecutionId: string;
         notStarted: readonly number[];
         joined: (output: JsonValue) => NodeResultInput;
-        projection?: (decided: ParallelSettled) => SessionProjection;
+        /** The state's own events from what was decided; required, as elapseParallelNode's (JK-09). */
+        projection: (decided: ParallelSettled) => SessionProjection;
     }): Promise<{ result: "decided" | "won" | "wait"; node: WorkflowNodeExecutionRow; cancelled: string[] }> {
         return this.transaction(async client => {
             const live = await this.lockLiveSession(client, await this.workflowOfNode(client, input.nodeExecutionId));

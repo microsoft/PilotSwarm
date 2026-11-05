@@ -426,6 +426,10 @@ Each workflow session is a duroxide orchestration (`workflow-session`,
 version `1.0.0`), separate from the agent orchestration. The compiled graph
 and every state's result are recorded in its history, so a worker restart
 resumes at the state that was running: finished states are never run again,
-and the state that was running is run again from its start. Write scripts so
-that running one twice is safe. The orchestration continues as new every 20
+and the state that was running is run again from its start. A script can
+also run again without a restart: when its worker stalls for longer than
+its activity lock allows (`PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`, renewed while
+it runs), the lock is lost, that run is stopped, and another worker runs the
+script from its start. Scripts run at least once, not exactly once: write
+them so that running one twice is safe. The orchestration continues as new every 20
 script states to keep its history small.

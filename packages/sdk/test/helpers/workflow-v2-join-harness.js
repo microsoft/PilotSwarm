@@ -138,12 +138,14 @@ export async function joinBaseOf(env) {
  * (realHandler) => handler) around the real handlers (HG-1). `calls` counts each wrapped activity's deliveries; `handlers`
  * are the real registered handlers, so a test can call one as a contender exactly as a delivery would (with the events it
  * records). Locks are duroxide's defaults, renewed while an activity runs, as a worker's (a script may run for seconds);
- * `fastLocks` shortens them for a test that stops a runtime with work in flight and needs it taken over quickly.
+ * `fastLocks` shortens them (2 s, the shortest that renews: duroxide 0.1.32 renews a lock under 15 s at half its
+ * timeout rounded up to whole seconds, and duroxide-pg extends by whole seconds) for a test that stops a runtime with work
+ * in flight and needs it taken over quickly.
  */
 export async function joinRuntimeOn(base, { wrap = {}, workerConcurrency = JOIN_WORKER_SLOTS, wakeBackstopMs = 500, fastLocks = false } = {}) {
     const runtime = new Runtime(base.provider, {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
-        ...(fastLocks ? { workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000 } : {}),
+        ...(fastLocks ? { workerLockTimeoutMs: 2_000, orchestratorLockTimeoutMs: 2_000 } : {}),
     });
     const calls = {};
     const handlers = {};
