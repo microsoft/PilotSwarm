@@ -83,7 +83,7 @@ test("a pending or failed delivery with an annotation is shown as recorded, not 
     const failed = projectWorkflowV2({ readModel: model(message({ state: "failed", errorPreview: '{"code":"delivery_failed"}', intakeOutcome: "refused_size", intakeOutcomeAt: AT }),
         [done("notify", 1, "delivery_failed", { resultKind: "runtime_error" })]) });
     assert.equal(exec(failed).state, "failed");
-    assert.equal(exec(failed).stateLabel, "Runtime error · delivery_failed");
+    assert.equal(exec(failed).stateLabel, "Failed · delivery_failed");
     assert.equal(exec(failed).current.outbox.state, "failed");
 });
 

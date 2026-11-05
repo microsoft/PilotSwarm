@@ -99,13 +99,13 @@ test("w opens the view on the pending agent state: its state, transitions with t
     assert.deepEqual(view.rows.map(rowText).map(text => text.trim().split(/\s+/).slice(0, 3).join(" ")), [
         "▶ ● review", "✓ fix script", "○ fan parallel", "○ work script", "○ branch_done branch", "⋯ join ·", "○ done ends", "○ failed ends",
     ]);
-    assert.equal(rowText(view.rows[5]).trim(), "⋯ join · all required");
+    assert.equal(rowText(view.rows[5]).trim(), "⋯ Continues when all items succeed");
     assert.equal(view.selectedRowIndex, 0);
-    assert.match(rowText(view.rows[0]), /agent · code-reviewer\s+Agent working · waiting for its typed result ×3/);
+    assert.match(rowText(view.rows[0]), /Agent · code-reviewer\s+Agent working · waiting for its typed result · ran 3 times/);
     const details = lineTexts(view);
     // The run it shows comes first (the live run here), then the selected state.
     assert.match(details[0], /^Run: Live run · running · revision 1 · run-1$/);
-    assert.ok(details.includes("review · agent · code-reviewer · first step"));
+    assert.ok(details.includes("review · Agent · code-reviewer · first step"));
     assert.ok(details.includes("Status: Agent working · waiting for its typed result"));
     assert.ok(details.includes("Next steps:"));
     assert.ok(details.includes("  accepted → fan"));

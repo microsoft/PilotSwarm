@@ -112,9 +112,9 @@ test("a visit that timed out: the bar says so with its time limit; the branches 
     const parallel = byId(projection, "fan");
     assert.deepEqual([parallel.state, parallel.stateLabel], ["failed", "Time limit passed before the join"]);
     assert.deepEqual(parallel.joinBar, {
-        id: "join:fan", state: "timed_out", rule: "all required", label: "join · all required", stateText: "time limit passed",
+        id: "join:fan", state: "timed_out", rule: "all required", label: "Continues when all items succeed", stateText: "time limit passed",
         limit: { text: "time limit 30 s", title: "The time limit is 30 s from the step's start. It passed before the join, at 2026-11-04 20:30:00 UTC." },
-        group: { label: "Each branch", counts: null, text: null },
+        group: { label: "For each item", counts: null, text: null },
     });
     assert.deepEqual(parallel.evidence.rows.map(row => [row.index, row.status, row.why]), [
         [0, "succeeded", null],
@@ -128,8 +128,8 @@ test("a visit that timed out: the bar says so with its time limit; the branches 
 
     const bar = renderToStaticMarkup(WorkflowJoinBar({ join: { id: "join:fan", parallel: "fan" }, node: parallel, selected: false, onSelect() {} }));
     assert.match(bar, /class="ps-workflow-join is-timed_out" data-join="fan"/);
-    assert.match(bar, /<span class="ps-workflow-join-rule">join · all required · time limit passed<\/span><span class="ps-workflow-join-limit">time limit 30 s<\/span>/);
-    assert.match(bar, /aria-label="Join of fan: join · all required · time limit passed · time limit 30 s\. Inspect fan"/);
+    assert.match(bar, /<span class="ps-workflow-join-rule">Continues when all items succeed · time limit passed<\/span><span class="ps-workflow-join-limit">time limit 30 s<\/span>/);
+    assert.match(bar, /aria-label="fan: Continues when all items succeed · time limit passed · time limit 30 s\. Inspect fan"/);
 
     const html = details(projection, "fan");
     for (const [label, value] of [["Join", "Every branch must succeed"], ["Time limit", "30 s from the step&#x27;s start"],
@@ -145,7 +145,7 @@ test("the first 2 of 4 joined: the bar says the rule; the losers are cancelled a
     const projection = firstTwo();
     const parallel = byId(projection, "fan");
     assert.equal(parallel.stateLabel, "Joined · the first 2 branches succeeded");
-    assert.deepEqual([parallel.joinBar.state, parallel.joinBar.label, parallel.joinBar.limit], ["joined", "join · first 2 of 4", null]);
+    assert.deepEqual([parallel.joinBar.state, parallel.joinBar.label, parallel.joinBar.limit], ["joined", "Continues when the first 2 of 4 items succeed", null]);
     assert.deepEqual(parallel.evidence.rows.map(row => [row.index, row.status, row.step]), [
         [0, "succeeded", "reviewed"], [1, "cancelled after the join", "review"], [2, "finished before the join", "prepare"], [3, "succeeded", "reviewed"],
     ]);
@@ -164,7 +164,7 @@ test("the first 2 of 4 joined: the bar says the rule; the losers are cancelled a
     const blocked = projectWorkflowV2({ readModel: readModel({
         graph: { revision: 1, initial: "fan", states: statesOf(fan({ join: { first: 1 } })) },
         nodeExecutions: [row("fan", 1, "completed", { branches: 2, outcome: "blocked", resultKind: "business", winner: "controller" })] }) });
-    assert.deepEqual([byId(blocked, "fan").stateLabel, byId(blocked, "fan").joinBar.label], ["Blocked · no branch could succeed", "join · first success"]);
+    assert.deepEqual([byId(blocked, "fan").stateLabel, byId(blocked, "fan").joinBar.label], ["Blocked · no branch could succeed", "Continues when the first item succeeds"]);
     assert.ok(byId(blocked, "fan").description.includes("Join blocked: 0 of 2 branches succeeded; it needed 1."), byId(blocked, "fan").description.join("\n"));
     // While the visit runs, a branch between two of its steps is running, not ended.
     const busy = projectWorkflowV2({ readModel: readModel({
@@ -289,10 +289,10 @@ test("the graph: timed_out leaves from the join bar as a runtime-error route; a 
 
 test("the activity list says why branches were cancelled", () => {
     assert.equal(workflowEventText("workflow.branches_cancelled", { reason: "timeout" }).text,
-        "The running branches were cancelled: the parallel step's time limit passed");
+        "The running items were canceled: the For each node's time limit passed");
     assert.equal(workflowEventText("workflow.branches_cancelled", { reason: "join" }).text,
-        "The other branches were cancelled: the join had the successes it needs");
-    assert.equal(workflowEventText("workflow.branches_cancelled", {}).text, "The other branches were cancelled");
+        "The other items were canceled: the For each node had the successes it needs");
+    assert.equal(workflowEventText("workflow.branches_cancelled", {}).text, "The other items were canceled");
 });
 
 test("the TUI's join line says the rule, its state and the time limit; its details say the rule in words", () => {
@@ -306,9 +306,9 @@ test("the TUI's join line says the rule, its state and the time limit; its detai
     store.dispatch({ type: "ui/modal", modal: { type: "workflowView", sessionId: "wf", selectedNodeId: "fan", detailsScroll: 0 } });
     const view = selectWorkflowViewModal(store.getState(), 160, 80);
     const rows = view.rows.map(cells => cells.map(cell => cell.text).join("").trim());
-    assert.ok(rows.includes("⋯ join · all required · waiting for its branches · time limit until 2026-11-04 20:30:00 UTC"), rows.join("\n"));
+    assert.ok(rows.includes("⋯ Continues when all items succeed · waiting for its items · time limit until 2026-11-04 20:30:00 UTC"), rows.join("\n"));
     const lines = view.detailsLines.map(line => line.text.trim());
-    assert.ok(lines.includes("Join: all required · waiting for its branches"), lines.join("\n"));
+    assert.ok(lines.includes("Continues when all items succeed · waiting for its items"), lines.join("\n"));
     assert.ok(lines.includes("Every branch must succeed"), lines.join("\n"));
     assert.ok(lines.some(line => line.startsWith("The time limit is 30 s from the step's start: it passes at")), lines.join("\n"));
 });

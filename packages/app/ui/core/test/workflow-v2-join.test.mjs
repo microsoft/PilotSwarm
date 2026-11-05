@@ -51,8 +51,8 @@ const details = (projection, id, props = {}) => renderToStaticMarkup(React.creat
     tab: "details", selected: byId(projection, id), nodes: projection.nodes, select: () => {}, runOutput: null, runError: null, ...props }));
 
 test("labels and words: a branch's end says so, the items' source never shows a literal list's values, branch steps come in route order, branches count from 1", () => {
-    assert.equal(workflowV2NodeLabel(states.find(node => node.id === "reviewed")), "branch ends · succeeded");
-    assert.equal(workflowV2NodeLabel(states.find(node => node.id === "done")), "ends · succeeded");
+    assert.equal(workflowV2NodeLabel(states.find(node => node.id === "reviewed")), "Item ends · succeeded");
+    assert.equal(workflowV2NodeLabel(states.find(node => node.id === "done")), "End · succeeded");
     assert.equal(workflowV2ForEachText("${input.reviewers}"), "the list in ${input.reviewers}");
     assert.equal(workflowV2ForEachText(literal(3)), "3 items in the definition");
     assert.equal(workflowV2ForEachText(literal(1)), "1 item in the definition");
@@ -66,8 +66,8 @@ test("labels and words: a branch's end says so, the items' source never shows a 
 test("while it runs: the box counts its branches and the bar waits; once joined or blocked it says so; it shows no time limit", () => {
     const projection = running();
     const join = byId(projection, "fan").joinBar;
-    assert.deepEqual(join, { id: "join:fan", state: "waiting", rule: "all required", label: "join · all required", stateText: "waiting for its branches",
-        limit: null, group: { label: "Each branch", counts: { running: 2, queued: 1, done: 0 }, text: "2 running · 1 queued · 0 done" } });
+    assert.deepEqual(join, { id: "join:fan", state: "waiting", rule: "all required", label: "Continues when all items succeed", stateText: "waiting for its items",
+        limit: null, group: { label: "For each item", counts: { running: 2, queued: 1, done: 0 }, text: "0 done · 2 running · 1 waiting" } });
     // Only a parallel step has a join; a body step has its branches instead.
     assert.equal(byId(projection, "review").joinBar, undefined);
     assert.equal(byId(projection, "pause").branches, undefined);
@@ -75,26 +75,26 @@ test("while it runs: the box counts its branches and the bar waits; once joined 
     assert.deepEqual([ended("joined").state, ended("joined").stateText, ended("joined").group.counts], ["joined", "joined", null]);
     assert.deepEqual([ended("blocked").state, ended("blocked").stateText], ["blocked", "blocked"]);
     const idle = byId(projectWorkflowV2({ readModel: readModel({ graph, noRun: true }) }), "fan").joinBar;
-    assert.deepEqual([idle.state, idle.stateText, idle.group.text, idle.label], ["idle", null, null, "join · all required"]);
+    assert.deepEqual([idle.state, idle.stateText, idle.group.text, idle.label], ["idle", null, null, "Continues when all items succeed"]);
 });
 
 test("the box and the bar as drawn: counts, state and rule; a click on the bar selects the parallel step", () => {
     const fanView = byId(running(), "fan");
     const box = renderToStaticMarkup(React.createElement(WorkflowGroupBox, { group: { id: "group:fan", parallel: "fan" }, node: fanView }));
     assert.match(box, /class="ps-workflow-group is-waiting" data-group="fan" role="group"/);
-    assert.match(box, /<span class="ps-workflow-group-label">Each branch<\/span><span class="ps-workflow-group-counts">2 running · 1 queued · 0 done<\/span>/);
+    assert.match(box, /<span class="ps-workflow-group-label">For each item<\/span><span class="ps-workflow-group-counts">0 done · 2 running · 1 waiting<\/span>/);
     const selected = [];
     const element = WorkflowJoinBar({ join: { id: "join:fan", parallel: "fan" }, node: fanView, selected: false, onSelect: id => selected.push(id) });
     const bar = renderToStaticMarkup(element);
     assert.match(bar, /class="ps-workflow-join is-waiting" data-join="fan" role="button"/);
-    assert.match(bar, /<span class="ps-workflow-join-rule">join · all required · waiting for its branches<\/span><\/div>$/);
+    assert.match(bar, /<span class="ps-workflow-join-rule">Continues when all items succeed · waiting for its items<\/span><\/div>$/);
     assert.ok(!bar.includes("⏱") && !bar.includes("ps-workflow-join-time"), "no time limit is shown");
     element.props.onClick();
     element.props.onKeyDown({ key: "Enter", preventDefault() {} });
     assert.deepEqual(selected, ["fan", "fan"], "the bar is not a step: it selects the parallel step");
     // Before any run the box has no counts.
     const quiet = renderToStaticMarkup(React.createElement(WorkflowGroupBox, { group: { id: "group:fan", parallel: "fan" }, node: null }));
-    assert.ok(quiet.includes(">Each branch<") && !quiet.includes("ps-workflow-group-counts"), quiet);
+    assert.ok(quiet.includes(">For each item<") && !quiet.includes("ps-workflow-group-counts"), quiet);
 });
 
 test("a parallel step's details: For each, Branch steps, Branches with deadlines and agent chats, and its next steps from the join", () => {
@@ -107,7 +107,7 @@ test("a parallel step's details: For each, Branch steps, Branches with deadlines
     assert.ok(!html.includes("Time limit") && !html.includes("⏱"), "no time limit is shown for the join");
     const order = ["prepare", "review", "reviewed"].map(id => html.indexOf(`data-branch-step="${id}"`));
     assert.ok(order.every(at => at > 0) && order[0] < order[1] && order[1] < order[2], "branch steps in route order");
-    assert.ok(html.includes("reviewed · branch ends · succeeded"), html);
+    assert.ok(html.includes("reviewed · Item ends · succeeded"), html);
     assert.match(html, /aria-label="Branches"><h3>Branches<\/h3><p[^>]*>0 of 3 branches succeeded, 2 running, 1 queued\.<\/p>/);
     // People read branches from 1; the data attributes keep the index from 0.
     assert.match(html, /<tr data-branch="0" data-status="running"><td>1<\/td><td>review<\/td><td>running<\/td><td>2026-11-04 18:20:00 UTC<\/td><td>—<\/td><td><button[^>]*data-action="open-branch-chat" data-session="child-0"[^>]*>Open chat<\/button><\/td><\/tr>/);
@@ -162,9 +162,9 @@ test("a chosen branch's details say that branch's status and last outcome; the s
     const projection = mixed();
     const prepare = byId(projection, "prepare");
     // The step as a whole: one of its three branches still runs it (R2-UI-4); the latest ended visit in the list failed.
-    assert.deepEqual([prepare.stateLabel, prepare.outcome, prepare.resultKind], ["Running · in 1 of 3 branches", "crashed", "runtime_error"]);
+    assert.deepEqual([prepare.stateLabel, prepare.outcome, prepare.resultKind], ["1 ok · 1 failed · 1 running", "crashed", "runtime_error"]);
     assert.deepEqual(prepare.branches.choices.map(choice => [choice.index, choice.status.stateLabel, choice.lastOutcome]), [
-        [0, "Runtime error · crashed", { outcome: "crashed", resultKind: "runtime_error" }],
+        [0, "Failed · crashed", { outcome: "crashed", resultKind: "runtime_error" }],
         [1, "Running", null],
         [2, "Done · ready", { outcome: "ready", resultKind: "business" }],
     ]);
@@ -175,11 +175,11 @@ test("a chosen branch's details say that branch's status and last outcome; the s
     const ready = html(2);
     assert.ok(ready.includes("<span>Status</span><strong>Done · ready</strong>"), ready);
     assert.ok(ready.includes("<span>Last outcome</span><strong>ready</strong>"), ready);
-    assert.ok(ready.includes("<span>All branches</span><strong>Running · in 1 of 3 branches</strong>"), ready);
+    assert.ok(ready.includes("<span>All branches</span><strong>1 ok · 1 failed · 1 running</strong>"), ready);
     assert.ok(ready.includes("<span>Visits, all branches</span>"), ready);
     assert.ok(!valuesMention(ready, "crashed"), "nothing of another branch's visit");
     const failed = html(0);
-    assert.ok(failed.includes("<span>Status</span><strong>Runtime error · crashed</strong>"), failed);
+    assert.ok(failed.includes("<span>Status</span><strong>Failed · crashed</strong>"), failed);
     assert.ok(failed.includes("<span>Last outcome</span><strong>crashed · runtime error</strong>"), failed);
     assert.ok(failed.includes("In branch 1 of its parallel step."), failed);
     const running = details(projection, "prepare");

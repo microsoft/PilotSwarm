@@ -11,24 +11,59 @@ const h = React.createElement;
  * so a step keeps its button semantics, classes and texts whichever draws it.
  */
 
-/** One step: a button named "Inspect <id>" that selects it, with its name, what it does, its state and its visits. */
+const glyph = (...children) => h("svg", { className: "ps-workflow-node-glyph", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2,
+    strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", focusable: "false" }, ...children);
+
+/** Workflow Simplified (10, F5): an icon for each node type. */
+const NODE_GLYPHS = {
+    script: () => glyph(h("path", { d: "M8 8l-4 4 4 4" }), h("path", { d: "M16 8l4 4-4 4" }), h("path", { d: "M13.5 5l-3 14" })),
+    agent: () => glyph(h("path", { d: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" }), h("circle", { cx: "19", cy: "19", r: "1.2" })),
+    wait: () => glyph(h("circle", { cx: "12", cy: "12", r: "8" }), h("path", { d: "M12 8v4l3 2" })),
+    request: () => glyph(h("path", { d: "M4 5h16v11h-9l-5 4v-4H4z" }), h("path", { d: "M10 8.5a2 2 0 1 1 2.6 1.9c-.4.2-.6.5-.6.9v.4" }), h("path", { d: "M12 14v.2" })),
+    send: () => glyph(h("path", { d: "M21 3L10 14" }), h("path", { d: "M21 3l-7 18-4-7-7-4z" })),
+    receive: () => glyph(h("path", { d: "M4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5" }), h("path", { d: "M12 4v10" }), h("path", { d: "M8 10l4 4 4-4" })),
+    parallel: () => glyph(h("rect", { x: "3", y: "8", width: "13", height: "11", rx: "2" }), h("path", { d: "M7 8V5h13v11h-4" })),
+};
+
+/** How often a node ran, with a noun (usability finding 4: "×3" read as retries). */
+function ranText(node) {
+    if (!Number.isSafeInteger(node.runs) || node.runs < 2 || node.itemCounts) return null;
+    return `ran ${node.runs} times${node.partial ? " in the loaded history" : ""}`;
+}
+
+/**
+ * One node: a button named "Inspect <id>" that selects it, with its type's icon, its name, its type in a word, its state
+ * and how often it ran (Workflow Simplified, 10). The node a Workflow starts at carries the Start marker (F4); an end is
+ * a ring, filled once the Workflow reached it, in its outcome's colour; a node the Workflow did not reach is dimmed (W7).
+ */
 export function WorkflowStepCard({ node, selected = false, onSelect }) {
-    const meta = node.shape === "v2" ? node.label
-        : node.type === "terminal" ? `ends · ${node.outcome || "terminal"}` : `${node.runtime || "script"} · ${node.outcome || node.state}`;
+    const v2 = node.shape === "v2";
+    const terminal = node.type === "terminal";
+    const meta = v2 ? node.label : terminal ? `End · ${node.outcome || "end"}` : `Script · ${node.outcome || node.state}`;
+    const kind = v2 ? node.kind : terminal ? "terminal" : "script";
+    const Glyph = NODE_GLYPHS[kind] ?? null;
+    const reached = terminal && (node.state === "done" || node.state === "failed" || node.state === "cancelled");
+    const notReached = v2 && node.hasRun && node.phase === "not-reached";
+    const ran = ranText(node);
     return h("div", {
-        className: `ps-workflow-node is-${node.state}${selected ? " is-selected" : ""}${node.type === "terminal" ? " is-terminal" : ""}`,
-        "data-phase": node.phase, "data-node-id": node.id, role: "button", tabIndex: 0,
+        className: `ps-workflow-node is-${node.state}${selected ? " is-selected" : ""}${terminal ? " is-terminal" : ""} is-kind-${kind}`
+            + `${reached ? " is-reached" : ""}${notReached ? " is-not-reached" : ""}${node.initial ? " is-initial" : ""}`,
+        "data-phase": node.phase, "data-kind": kind, ...(terminal ? { "data-outcome": node.outcome ?? "" } : {}), "data-node-id": node.id,
+        role: "button", tabIndex: 0,
         "aria-label": `Inspect ${node.id}`, "aria-pressed": selected,
-        title: node.shape === "v2" ? `${node.id} · ${node.label} · ${node.stateLabel}` : node.id,
+        title: v2 ? `${node.id} · ${node.label} · ${node.stateLabel}` : node.id,
         onClick: () => onSelect(node.id),
         onKeyDown: event => {
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(node.id); }
         },
     },
-    h("span", { className: "ps-workflow-node-name" }, node.id),
-    h("span", { className: "ps-workflow-node-meta" }, meta),
-    node.shape === "v2" ? h("span", { className: "ps-workflow-node-meta" }, node.stateLabel) : null,
-    node.runs ? h("span", { className: "ps-workflow-node-runs" }, `×${node.runs}${node.partial ? " loaded" : ""}`) : null);
+    node.initial ? h("span", { className: "ps-workflow-node-start", "aria-hidden": "true" }, h("span", null, "Start")) : null,
+    terminal ? h("span", { className: "ps-workflow-node-ring", "aria-hidden": "true" }) : Glyph ? h("span", { className: "ps-workflow-node-icon" }, h(Glyph)) : null,
+    h("span", { className: "ps-workflow-node-text" },
+        h("span", { className: "ps-workflow-node-name" }, node.id),
+        h("span", { className: "ps-workflow-node-meta" }, meta),
+        v2 ? h("span", { className: "ps-workflow-node-meta is-state" }, node.stateLabel) : null,
+        ran ? h("span", { className: "ps-workflow-node-runs" }, ran) : null));
 }
 
 /** What an edge says to a screen reader: its route, or (owner batch 7, H2) the way into a branch box or into a join bar. */
@@ -62,9 +97,9 @@ export function WorkflowEdgeShape({ edge, markerEnd }) {
 export function WorkflowGroupBox({ group, node = null }) {
     const view = node?.joinBar ?? null;
     return h("div", { className: `ps-workflow-group is-${view?.state ?? "idle"}`, "data-group": group.parallel, role: "group",
-        "aria-label": `Each branch of ${group.parallel}${view?.group.text ? `: ${view.group.text}` : ""}` },
-    h("div", { className: "ps-workflow-group-head", title: `The steps each branch of ${group.parallel} runs, one branch per item.` },
-        h("span", { className: "ps-workflow-group-label" }, view?.group.label ?? "Each branch"),
+        "aria-label": `For each item of ${group.parallel}${view?.group.text ? `: ${view.group.text}` : ""}` },
+    h("div", { className: "ps-workflow-group-head", title: `The nodes ${group.parallel} runs once for each item.` },
+        h("span", { className: "ps-workflow-group-label" }, view?.group.label ?? "For each item"),
         view?.group.text ? h("span", { className: "ps-workflow-group-counts" }, view.group.text) : null));
 }
 
@@ -75,13 +110,13 @@ export function WorkflowGroupBox({ group, node = null }) {
  */
 export function WorkflowJoinBar({ join, node = null, selected = false, onSelect }) {
     const view = node?.joinBar ?? null;
-    const rule = `${view?.label ?? "join · all required"}${view?.stateText ? ` · ${view.stateText}` : ""}`;
+    const rule = `${view?.label ?? "Continues when all items succeed"}${view?.stateText ? ` · ${view.stateText}` : ""}`;
     // Owner decision join-k-of-n: its own time limit, which the engine enforces, on a line of its own.
     const limit = view?.limit ?? null;
     return h("div", {
         className: `ps-workflow-join is-${view?.state ?? "idle"}${selected ? " is-selected" : ""}`, "data-join": join.parallel, role: "button", tabIndex: 0,
-        "aria-label": `Join of ${join.parallel}: ${rule}${limit ? ` · ${limit.text}` : ""}. Inspect ${join.parallel}`, "aria-pressed": selected,
-        title: `${rule}. Every branch meets here; the parallel step's next steps leave from here.${limit ? ` ${limit.title}` : ""}`,
+        "aria-label": `${join.parallel}: ${rule}${limit ? ` · ${limit.text}` : ""}. Inspect ${join.parallel}`, "aria-pressed": selected,
+        title: `${rule}. The nodes after ${join.parallel} start from here.${limit ? ` ${limit.title}` : ""}`,
         onClick: () => onSelect(join.parallel),
         onKeyDown: event => {
             if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(join.parallel); }

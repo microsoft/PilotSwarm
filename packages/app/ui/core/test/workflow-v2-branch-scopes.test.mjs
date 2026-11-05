@@ -39,7 +39,7 @@ test("a branch's later visit number never makes another branch's running visit s
     rows.push(row("poll", 1, "pending", { nodeExecutionId: "nx-poll-b1-1", ...branch("nx-fan-1", 1) }));
     const poll = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows }) }), "poll");
     assert.equal(poll.state, "running", JSON.stringify([poll.state, poll.stateLabel]));
-    assert.equal(poll.stateLabel, "Running · in 1 of 2 branches");
+    assert.equal(poll.stateLabel, "1 ok · 1 running", "its items, counted with nouns (Workflow Simplified W5)");
     assert.equal(poll.pending?.id, "nx-poll-b1-1");
     assert.equal(poll.partial, false, "nothing is missing: no visit lost its end");
     assert.equal(poll.runs, 6, "each branch's visits count on their own");

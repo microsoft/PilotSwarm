@@ -42,12 +42,12 @@ const EVENTS = [
 
 test("the activity lists who did what, newest first, for one run and one visit", () => {
     assert.deepEqual(workflowV2Activity(EVENTS, { runId: RUN }), [
-        { seq: 6, at: "2026-11-03 08:06:00 UTC", what: "Run cancelled: No longer needed", who: null, level: "warning" },
-        { seq: 5, at: "2026-11-03 08:05:00 UTC", what: "Step 'poll' failed (cancelled): The workflow run was cancelled.", who: null, level: "error" },
+        { seq: 6, at: "2026-11-03 08:06:00 UTC", what: "Workflow canceled: No longer needed", who: null, level: "warning" },
+        { seq: 5, at: "2026-11-03 08:05:00 UTC", what: "Node poll failed (cancelled): The workflow run was cancelled.", who: null, level: "error" },
         { seq: 4, at: "2026-11-03 08:04:00 UTC", what: "Variables changed: set a, b; removed c", who: "agent session parent-1", level: "info" },
         { seq: 3, at: "2026-11-03 08:03:00 UTC", what: "Paused: lunch", who: "Alice", level: "warning" },
-        { seq: 2, at: "2026-11-03 08:02:00 UTC", what: "Step 'poll' started (visit 1)", who: null, level: "info" },
-        { seq: 1, at: "2026-11-03 08:01:00 UTC", what: "Run started (revision 1)", who: null, level: "info" },
+        { seq: 2, at: "2026-11-03 08:02:00 UTC", what: "Node poll started", who: null, level: "info" },
+        { seq: 1, at: "2026-11-03 08:01:00 UTC", what: "Workflow started (revision 1)", who: null, level: "info" },
     ]);
     assert.deepEqual(workflowV2Activity(EVENTS, { runId: RUN, nodeExecutionId: "nx-poll-1" }).map(row => row.seq), [5, 2]);
     assert.deepEqual(workflowV2Activity(EVENTS, { runId: RUN, limit: 2 }).map(row => row.seq), [6, 5]);
@@ -60,25 +60,25 @@ test("the activity lists who did what, newest first, for one run and one visit",
     // Each kind of event the list knows, in plain words.
     const one = (type, data) => workflowV2Activity([event(1, type, data)], { runId: RUN })[0]?.what;
     assert.equal(one("workflow.stop_requested", { deadlineAt: "2026-11-03T09:00:00Z", reason: "release" }),
-        "Stop asked; steps already started may finish until 2026-11-03 09:00:00 UTC: release");
-    assert.equal(one("workflow.stopped", { graceExpired: true, cancelledCount: 2 }), "Run stopped; 2 steps were still running when the time to finish ended, so they were cancelled");
-    assert.equal(one("workflow.cancelled", { command: "delete", deleted: true }), "Run cancelled (the workflow was deleted)");
+        "Stop asked; started nodes may finish until 2026-11-03 09:00:00 UTC: release");
+    assert.equal(one("workflow.stopped", { graceExpired: true, cancelledCount: 2 }), "Canceled after started nodes finished; 2 nodes were still running when the time to finish ended, so they were canceled");
+    assert.equal(one("workflow.cancelled", { command: "delete", deleted: true }), "Workflow canceled (it was deleted)");
     assert.equal(one("workflow.agent_spawned", { stateId: "review", childSessionId: "child-1234567890", deadline: "2026-11-03T10:00:00Z" }),
-        "Agent chat for step 'review' created (session child-12); its time limit is 2026-11-03 10:00:00 UTC");
-    assert.equal(one("workflow.agent_ended", { stateId: "review", end: "cancel" }), "Agent chat for step 'review' ended (cancelled)");
+        "Agent chat for node review created (session child-12); its time limit is 2026-11-03 10:00:00 UTC");
+    assert.equal(one("workflow.agent_ended", { stateId: "review", end: "cancel" }), "Agent chat for node review ended (cancelled)");
     assert.equal(one("workflow.request_delivered", { contract: "Review@1", responderSessionId: "reviewer-1", deadlineAt: "2026-11-03T10:00:00Z" }),
         "Request Review@1 sent to session reviewer; answer due by 2026-11-03 10:00:00 UTC");
     assert.equal(one("workflow.response_wake_abandoned", {}), "An answer arrived, but waking the run was not confirmed; the run collects the answer later");
-    assert.equal(one("workflow.state_completed", { stateId: "review", outcome: "accepted" }), "Step 'review' ended 'accepted'");
-    assert.equal(one("workflow.completed", { outcome: "succeeded", stateId: "done" }), "Run ended succeeded at 'done'");
+    assert.equal(one("workflow.state_completed", { stateId: "review", outcome: "accepted" }), "Node review ended: accepted");
+    assert.equal(one("workflow.completed", { outcome: "succeeded", stateId: "done" }), "Workflow completed at done");
     assert.equal(one("workflow.unknown_kind", {}), undefined);
     // ui-05: a failed step with no error text says what happened to its action, as the step log does.
-    assert.equal(one("workflow.state_failed", { stateId: "poll", effectStatus: "Failed", resultKind: "runtime_error" }), "Step 'poll' failed: the action Failed");
+    assert.equal(one("workflow.state_failed", { stateId: "poll", effectStatus: "Failed", resultKind: "runtime_error" }), "Node poll failed: the action Failed");
 });
 
 test("Q2: a step's reminder has a line in the workflow's activity and in the agent chat's activity", () => {
     const reminded = event(1, "workflow.agent_reminded", { nodeExecutionId: "nx-review-1", stateId: "review", childSessionId: "child-1", turn: 2, n: 1, max: 3 });
-    assert.equal(workflowV2Activity([reminded], { runId: RUN })[0].what, "Step 'review' reminded to finish (1 of 3)");
+    assert.equal(workflowV2Activity([reminded], { runId: RUN })[0].what, "Node review reminded to finish (1 of 3)");
     // In the step's details, for its visit only.
     assert.equal(workflowV2Activity([reminded], { runId: RUN, nodeExecutionId: "nx-review-1" }).length, 1);
     assert.equal(workflowV2Activity([reminded], { runId: RUN, nodeExecutionId: "nx-other" }).length, 0);
@@ -229,5 +229,5 @@ test("the TUI says why the run and the visit shown ended, lists that visit's act
     assert.ok(text.includes("Why it ended: It was cancelled: No longer needed. Asked by session parent-1. (2026-11-03 08:06:00 UTC)"), lines.join("\n"));
     assert.ok(lines.includes("Why it ended: The run was cancelled while it ran."), lines.join("\n"));
     assert.ok(lines.includes("Activity of this visit (newest first):"), lines.join("\n"));
-    assert.ok(lines.includes("2026-11-03 08:05:00 UTC · Step 'poll' failed (cancelled): The workflow run was cancelled."), lines.join("\n"));
+    assert.ok(lines.includes("2026-11-03 08:05:00 UTC · Node poll failed (cancelled): The workflow run was cancelled."), lines.join("\n"));
 });

@@ -188,20 +188,52 @@ export function workflowV2AgentBindingRows(binding) {
     return rows;
 }
 
-/** One short line that names what the state does. */
+/** An end's outcome as people read it (O8: "canceled", one l; the stored outcome stays `cancelled`). */
+export function workflowV2OutcomeWord(outcome) {
+    return outcome === "cancelled" ? "canceled" : String(outcome ?? "");
+}
+
+/**
+ * One short line that names what the node does (Workflow Simplified, 03 and 10: its type in a word, never the Node.js
+ * runtime as "node"; an Ask node is a request; For each is a parallel node).
+ */
 export function workflowV2NodeLabel(node) {
     switch (workflowV2Kind(node)) {
-        case "script": return `script · ${node.runtime || "node"}`;
-        case "wait": return typeof node.seconds === "number" ? `wait · ${formatSeconds(node.seconds)}` : "wait · bound duration";
-        case "receive": return `receive · ${node.contract}`;
-        case "send": return `send · ${node.contract}`;
-        case "request": return `request · ${node.contract}`;
-        case "agent": return node.invoke?.source === "agent" ? `agent · ${node.invoke.name}` : "agent · inline prompt";
-        case "parallel": return `parallel · ${node.concurrency === 1 ? "one branch at a time" : `up to ${node.concurrency} branches`}`;
-        // A branch's end is not the workflow's (owner batch 7, H2).
-        case "terminal": return `${typeof node.parallel === "string" ? "branch ends" : "ends"} · ${node.outcome}`;
-        default: return String(node?.type || "step");
+        case "script": return "Script";
+        case "wait": return typeof node.seconds === "number" ? `Wait · ${formatSeconds(node.seconds)}` : "Wait";
+        case "receive": return `Receive · ${node.contract}`;
+        case "send": return `Send · ${node.contract}`;
+        case "request": return `Ask · ${node.contract}`;
+        case "agent": return node.invoke?.source === "agent" ? `Agent · ${node.invoke.name}` : "Agent";
+        case "parallel": return `For each · ${node.concurrency === 1 ? "one item at a time" : `up to ${node.concurrency} at a time`}`;
+        // An item's end is not the Workflow's (owner batch 7, H2).
+        case "terminal": return `${typeof node.parallel === "string" ? "Item ends" : "End"} · ${workflowV2OutcomeWord(node.outcome)}`;
+        default: return String(node?.type || "node");
     }
+}
+
+/**
+ * A For each node's items, counted with nouns (Workflow Simplified W5, usability finding 1): "2 ok · 1 failed", never the
+ * last item's status. `counts` is { ok, failed, canceled, running }. Pure.
+ */
+export function workflowV2ItemCountsText(counts) {
+    if (!isRecord(counts)) return "";
+    return [["ok", "ok"], ["failed", "failed"], ["canceled", "canceled"], ["running", "running"]]
+        .filter(([key]) => Number.isSafeInteger(counts[key]) && counts[key] > 0)
+        .map(([key, word]) => `${counts[key]} ${word}`).join(" · ");
+}
+
+/** The item cancellations of a For each node (a join that had what it needed, its time limit, a failure that stopped the others). */
+const ITEM_CANCEL_WINNERS = new Set(["join", "join_timeout", "fail_fast"]);
+
+/** How one item's visit of a node ended, for the node's counts (W5): ok, failed, canceled or running; null without a visit. */
+function itemKind(node, visit, run) {
+    if (!visit) return null;
+    if (visit.status === "pending") return run?.ended ? "canceled" : "running";
+    if (visit.outcome === "cancelled" || ITEM_CANCEL_WINNERS.has(visit.winner)) return "canceled";
+    if (visit.resultKind === "runtime_error") return "failed";
+    if (node?.type === "terminal") return node.outcome === "cancelled" ? "canceled" : node.outcome === "succeeded" ? "ok" : "failed";
+    return "ok";
 }
 
 /** A business outcome of the state, or a runtime-error route (failure and error codes). */
@@ -755,9 +787,9 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null, rea
     if (end) {
         // A terminal state with an outcome is the workflow's own decision. A failure without one is a runtime or controller failure.
         const business = end.stateId !== null && end.outcome !== null;
-        const label = end.status === "completed" ? `Completed · ${end.outcome ?? "ended"}`
-            : end.status === "cancelled" ? "Cancelled"
-            : end.status === "stopped" ? "Stopped · no new step was started after the stop"
+        const label = end.status === "completed" ? (end.outcome && end.outcome !== "succeeded" ? `Completed · ${end.outcome}` : "Completed")
+            : end.status === "cancelled" ? "Canceled · immediately"
+            : end.status === "stopped" ? "Canceled · after started nodes finished"
                 : business ? `Failed · ended at '${end.stateId}' (${end.outcome})` : `Failed · ${end.code || "runtime error"}`;
         return { phase: end.status, ended: true, label: mode + label, businessOutcome: business ? end.outcome : null, error: end.error,
             terminalState: end.stateId };
@@ -775,14 +807,14 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null, rea
     }
     const status = run?.status ?? (control?.kind ?? (begun ? "running" : null));
     switch (status) {
-        case "admitted": return { phase: "admitted", ended: false, label: `${mode}Waiting to start` };
+        case "admitted": return { phase: "admitted", ended: false, label: `${mode}Running` };
         case "paused": {
             const label = run?.pausedFrom === "admitted" ? "Paused before it started"
-                : run?.pauseSettled === false ? "Pausing · waiting for running steps to finish" : "Paused";
+                : run?.pauseSettled === false ? "Pausing · waiting for started nodes to finish" : "Paused";
             return { phase: run?.pauseSettled === false ? "pausing" : "paused", ended: false, label: mode + label };
         }
         case "running": return run?.stop
-            ? { phase: "stopping", ended: false, label: `${mode}Stopping · steps already started may finish until ${run.stop.deadline ? shownTime(run.stop.deadline) : "its deadline"}` }
+            ? { phase: "stopping", ended: false, label: `${mode}Canceling… · started nodes may finish until ${run.stop.deadline ? shownTime(run.stop.deadline) : "its time limit"}` }
             : { phase: "running", ended: false, label: `${mode}Running` };
         default:
             return control?.kind === "paused" ? { phase: "paused", ended: false, label: "Paused" } : { phase: "none", ended: false, label: "No run yet" };
@@ -794,8 +826,8 @@ const outcomeText = (kind, outcome) => {
     if (kind === "wait") return outcome === "elapsed" ? "Elapsed" : `Done · ${outcome}`;
     if (kind === "send") return outcome === "sent" ? "Sent · queued at recipient" : `Done · ${outcome}`;
     if (kind === "request") return outcome === "responded" ? "Responded" : outcome === "declined" ? "Declined" : `Done · ${outcome}`;
-    if (kind === "parallel") return outcome === "joined" ? "Joined · every branch succeeded" : outcome === "blocked" ? "Blocked · a branch did not succeed" : `Done · ${outcome}`;
-    if (kind === "agent") return `Completed by its agent · ${outcome}`;
+    if (kind === "parallel") return outcome === "joined" ? "Continued · every item succeeded" : outcome === "blocked" ? "Blocked · an item did not succeed" : `Done · ${outcome}`;
+    if (kind === "agent") return `Done by its agent · ${outcome}`;
     return outcome ? `Done · ${outcome}` : "Done";
 };
 
@@ -805,7 +837,7 @@ const pendingText = (kind, execution) => {
     if (kind === "send") return execution?.outbox?.state === "delivered" ? "Sent · queued at recipient" : "Delivering";
     if (kind === "request") return "Awaiting response";
     if (kind === "agent") return "Agent working · waiting for its typed result";
-    if (kind === "parallel") return "Running its branches";
+    if (kind === "parallel") return "Running its items";
     return execution?.immediateOutcome ? "Deciding" : "Running";
 };
 
@@ -860,7 +892,7 @@ export function describeWorkflowV2Execution(node, execution) {
 function visitStatus(node, execution, run) {
     const kind = workflowV2Kind(node);
     if (execution.status === "pending") {
-        if (run.ended) return { state: "cancelled", phase: "ended-early", stateLabel: "Run ended first" };
+        if (run.ended) return { state: "cancelled", phase: "ended-early", stateLabel: "The Workflow ended first" };
         if (run.phase === "unverified") return { state: "idle", phase: "unverified", stateLabel: "Pending · run status not certain" };
         if (run.phase === "paused") return { state: "idle", phase: "paused", stateLabel: "Pending · run paused" };
         return { state: "running", phase: kind === "script" ? "running" : "waiting", stateLabel: pendingText(kind, execution) };
@@ -870,13 +902,17 @@ function visitStatus(node, execution, run) {
     if (kind === "parallel" && execution.resultKind === "runtime_error" && execution.outcome === "timed_out") {
         return { ...ended, state: "failed", phase: "error", stateLabel: "Time limit passed before the join" };
     }
+    // An item canceled as intended (its For each node had what it needed) is not a failure (usability finding 1).
+    if (execution.resultKind === "runtime_error" && execution.outcome === "cancelled") {
+        return { ...ended, state: "cancelled", phase: "done", stateLabel: "Canceled" };
+    }
     if (execution.resultKind === "runtime_error") {
         return { ...ended, state: "failed", phase: "error",
-            stateLabel: `Runtime error${execution.outcome ? ` · ${execution.outcome}` : execution.effectStatus ? ` · action ${execution.effectStatus}` : ""}` };
+            stateLabel: `Failed${execution.outcome ? ` · ${execution.outcome}` : execution.effectStatus ? ` · action ${execution.effectStatus}` : ""}` };
     }
     if (node.type === "terminal") {
         return { ...ended, outcome: node.outcome, state: node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done",
-            phase: "done", stateLabel: `Ended · ${node.outcome}` };
+            phase: "done", stateLabel: `Reached · ${workflowV2OutcomeWord(node.outcome)}` };
     }
     // A join of the first k (owner decision join-k-of-n) says how many it took; a join blocked at its time limit says so
     // (J1b, Q3: k could no longer happen by then).
@@ -1028,7 +1064,21 @@ function nodeView(node, executions, context) {
         }
     } else if (reachedByRun) {
         state = node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done";
-        phase = "done"; outcome = node.outcome; resultKind = "business"; stateLabel = `Ended · ${node.outcome}`;
+        phase = "done"; outcome = node.outcome; resultKind = "business"; stateLabel = `Reached · ${workflowV2OutcomeWord(node.outcome)}`;
+    }
+    // Workflow Simplified (W5, usability finding 1): a node several items reached says how its items went, with nouns, and is
+    // red when any item failed; never the colour of whichever item ended last. An item canceled as intended (a join that
+    // had what it needed) is not a failure.
+    let itemCounts = null;
+    if (typeof node.parallel === "string" && current.length > 1) {
+        itemCounts = { ok: 0, failed: 0, canceled: 0, running: 0, total: current.length };
+        for (const scope of current) {
+            const kindOf = itemKind(node, scope.pending ?? scope.latestDone, context.run);
+            if (kindOf) itemCounts[kindOf] += 1;
+        }
+        state = itemCounts.failed ? "failed" : itemCounts.running ? "running" : itemCounts.ok ? "done" : itemCounts.canceled ? "cancelled" : state;
+        phase = itemCounts.failed ? "error" : itemCounts.running ? "running" : itemCounts.ok || itemCounts.canceled ? "done" : phase;
+        stateLabel = workflowV2ItemCountsText(itemCounts) || stateLabel;
     }
     // Re-check RC-5: not reached yet in the parallel step's current visit; an earlier visit's state and result are not its own.
     const parallelOrdinal = Number.isSafeInteger(parallelVisit?.ordinal) ? parallelVisit.ordinal : null;
@@ -1041,6 +1091,9 @@ function nodeView(node, executions, context) {
     const binding = workflowV2AgentBinding(node, context.pins);
     const view = {
         ...node, shape: "v2", kind, label: workflowV2NodeLabel(node), state, phase, stateLabel, runs,
+        // Workflow Simplified (10, W7): whether the shown graph has a run (a node it did not reach is dimmed), and the
+        // node's items when several reached it (W5).
+        hasRun: Boolean(context.hasRun), ...(itemCounts ? { itemCounts } : {}),
         ...(binding ? { binding } : {}),
         partial: !context.complete || stalePending || runs > list.length,
         outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined), resultKind,
@@ -1161,7 +1214,8 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     context.parallelOrdinals = new Map(context.states.filter(node => node?.type === "parallel").map(node => [node.id,
         new Map(executions.filter(item => item.stateId === node.id && typeof item.id === "string" && Number.isSafeInteger(item.ordinal))
             .map(item => [item.id, item.ordinal]))]));
-    const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
+    // Workflow Simplified (F4): the node a Workflow starts at carries the Start marker.
+    const nodes = (active?.states || []).map(node => ({ ...nodeView(node, executions, context), initial: node.id === active.initial }));
     return {
         shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
         diagnostics: shared?.diagnostics || [], inbox: bound ? run?.inbox || [] : [], outbox: bound ? run?.outbox || [] : [],
@@ -1501,8 +1555,17 @@ function shownVisit(list) {
     return { pending: pending ?? null, latestDone: latestDone ?? null };
 }
 
-const JOIN_WORDS = { waiting: "waiting for its branches", joined: "joined", blocked: "blocked", failed: "failed", cancelled: "ended early",
+const JOIN_WORDS = { waiting: "waiting for its items", joined: "continued", blocked: "blocked", failed: "failed", cancelled: "ended early",
     timed_out: "time limit passed" };
+
+/** When a For each node continues, in words (W6): "Continues when all items succeed", "… the first 2 of 5 items succeed". Pure. */
+export function workflowV2ContinueWords(node, visit = null) {
+    const first = workflowV2JoinFirst(node);
+    if (first === null) return "Continues when all items succeed";
+    if (first === 1) return "Continues when the first item succeeds";
+    const items = joinItems(node, visit);
+    return `Continues when the first ${first}${items === null ? "" : ` of ${items}`} items succeed`;
+}
 
 /** The k of a parallel step's join of the first k (owner decision join-k-of-n, IR 9); null for a join of every branch. Pure. */
 export function workflowV2JoinFirst(node) {
@@ -1592,12 +1655,19 @@ export function workflowV2JoinView(view, context) {
     const progress = running && visit ? context.branchProgress?.get(visit.id) ?? { started: 0, active: 0 } : null;
     const counts = progress && Number.isSafeInteger(visit.branches) ? workflowV2BranchCounts(visit.branches, progress, context) : null;
     const rule = workflowV2JoinRule(view, visit);
+    // Workflow Simplified (W5, W6): the box says "For each item" and how its items go, with nouns; its continue rule is
+    // said under it in words, not as a separate bar.
+    // An ended visit says how many of its items succeeded ("2 of 3 succeeded"), when its items are known.
+    const ended = !running && visit && Number.isSafeInteger(visit.branches) && visit.branches > 0 ? context.branchProgress?.get(visit.id) ?? null : null;
+    const groupText = counts === null
+        ? (ended ? `${Math.min(ended.succeeded ?? 0, visit.branches)} of ${visit.branches} succeeded` : null)
+        : counts.partial
+            ? `${counts.runningExact ? "" : "at least "}${counts.done} done · ${counts.running} running · ${counts.unknown} not known`
+            : [`${counts.done} done`, `${counts.running} running`, counts.queued ? `${counts.queued} waiting` : null].filter(Boolean).join(" · ");
     return {
-        id: `join:${view.id}`, state, rule, label: `join · ${rule}`, stateText: blockedAtLimit ? "blocked · time limit passed" : JOIN_WORDS[state] ?? null,
+        id: `join:${view.id}`, state, rule, label: workflowV2ContinueWords(view, visit), stateText: blockedAtLimit ? "blocked · time limit passed" : JOIN_WORDS[state] ?? null,
         limit: workflowV2JoinLimit(view, visit, { running, timedOut: timedOut || blockedAtLimit }),
-        group: { label: "Each branch", counts, text: counts === null ? null : counts.partial
-            ? `${counts.runningExact ? "" : "at least "}${counts.running} running · at least ${counts.done} done · ${counts.unknown} unknown`
-            : `${counts.running} running · ${counts.queued} queued · ${counts.done} done` },
+        group: { label: "For each item", counts, text: groupText },
     };
 }
 
@@ -1735,7 +1805,7 @@ const EARLIER_ATTEMPT = " An earlier attempt may have told the parent.";
 function stoppedRunningText(data) {
     const count = Number.isSafeInteger(data?.cancelledCount) ? data.cancelledCount : 0;
     if (data?.graceExpired !== true || !count) return "";
-    return `; ${count === 1 ? "1 step was" : `${count} steps were`} still running when the time to finish ended, so ${count === 1 ? "it was" : "they were"} cancelled`;
+    return `; ${count === 1 ? "1 node was" : `${count} nodes were`} still running when the time to finish ended, so ${count === 1 ? "it was" : "they were"} canceled`;
 }
 
 // The log's long forms are Markdown: a value an event carries is one inline code span, so it cannot become markup.
@@ -1754,7 +1824,7 @@ const byWho = actor => {
     const who = workflowV2ActorText(actor);
     return who ? ` by ${NOBODY_NAMED.has(who) ? who : span(who, 60)}` : "";
 };
-const stepOf = data => (text(data.stateId) ? `step '${data.stateId}'` : "a step");
+const stepOf = data => (text(data.stateId) ? `node ${data.stateId}` : "a node");
 const StepOf = data => `${stepOf(data)[0].toUpperCase()}${stepOf(data).slice(1)}`;
 
 /**
@@ -1764,7 +1834,7 @@ const StepOf = data => `${stepOf(data)[0].toUpperCase()}${stepOf(data).slice(1)}
  * and end lines, which also write version 1 runs and the definition table, stay in workflow-sessions.js.
  */
 const WORKFLOW_EVENT_TEXT = {
-    "workflow.started": { short: data => ({ text: `${data.mode === "test" ? "Test run" : "Run"} started${Number.isSafeInteger(data.revision) ? ` (revision ${data.revision})` : ""}` }) },
+    "workflow.started": { short: data => ({ text: `${data.mode === "test" ? "Test run" : "Workflow"} started${Number.isSafeInteger(data.revision) ? ` (revision ${data.revision})` : ""}` }) },
     "workflow.paused": {
         short: data => ({ text: `Paused${because(data.reason)}`, level: "warning" }),
         long: data => ({ text: `⏸ Workflow paused${byWho(data.actor)}${filled(data.reason) ? `: ${span(data.reason, 200)}` : "."}`, summary: "paused", color: "yellow" }),
@@ -1786,13 +1856,13 @@ const WORKFLOW_EVENT_TEXT = {
         },
     },
     "workflow.stop_requested": {
-        short: data => ({ text: `Stop asked; steps already started may finish${text(data.deadlineAt) ? ` until ${shownTime(data.deadlineAt)}` : ""}${because(data.reason)}`, level: "warning" }),
+        short: data => ({ text: `Stop asked; started nodes may finish${text(data.deadlineAt) ? ` until ${shownTime(data.deadlineAt)}` : ""}${because(data.reason)}`, level: "warning" }),
         // The step log's line (adversarial review R2-UI-6).
-        long: data => ({ text: `⏹ Stop asked${byWho(data.actor)}: steps already started may finish${text(data.deadlineAt) ? ` until ${span(shownTime(data.deadlineAt), 40)}` : ""}`
+        long: data => ({ text: `⏹ Stop asked${byWho(data.actor)}: started nodes may finish${text(data.deadlineAt) ? ` until ${span(shownTime(data.deadlineAt), 40)}` : ""}`
             + `${filled(data.reason) ? `. Reason: ${span(data.reason, 200)}` : "."}`, summary: "stop asked", color: "yellow" }),
     },
     "workflow.stopped": {
-        short: data => ({ text: `Run stopped${because(data.reason)}${stoppedRunningText(data)}`, level: "warning" }),
+        short: data => ({ text: `Canceled after started nodes finished${because(data.reason)}${stoppedRunningText(data)}`, level: "warning" }),
         long: data => ({ text: `⏹ Workflow stopped${filled(data.reason) ? `: ${span(data.reason, 200)}` : ""}${stoppedRunningText(data)}.`,
             summary: "stopped", color: "yellow" }),
     },
@@ -1808,10 +1878,10 @@ const WORKFLOW_EVENT_TEXT = {
         },
     },
     "workflow.cancelled": {
-        short: data => ({ text: `Run cancelled${data.deleted === true || data.command === "delete" ? " (the workflow was deleted)" : ""}${because(data.reason)}`, level: "warning" }),
+        short: data => ({ text: `Workflow canceled${data.deleted === true || data.command === "delete" ? " (it was deleted)" : ""}${because(data.reason)}`, level: "warning" }),
     },
-    "workflow.completed": { short: data => ({ text: `Run ended${text(data.outcome) ? ` ${data.outcome}` : ""}${text(data.stateId) ? ` at '${data.stateId}'` : ""}` }) },
-    "workflow.failed": { short: data => ({ text: `Run failed${text(data.stateId) ? ` at '${data.stateId}'` : ""}${because(data.error)}`, level: "error" }) },
+    "workflow.completed": { short: data => ({ text: `Workflow completed${text(data.outcome) && data.outcome !== "succeeded" ? ` · ${data.outcome}` : ""}${text(data.stateId) ? ` at ${data.stateId}` : ""}` }) },
+    "workflow.failed": { short: data => ({ text: `Workflow failed${text(data.stateId) ? ` at ${data.stateId}` : ""}${because(data.error)}`, level: "error" }) },
     "workflow.input_accepted": {
         short: data => ({ text: `Input${text(data.contract) ? ` ${data.contract}` : ""} accepted${text(data.senderSessionId) ? ` from session ${shortId(data.senderSessionId)}` : ""}` }),
         long: data => {
@@ -1847,8 +1917,8 @@ const WORKFLOW_EVENT_TEXT = {
             return { text: `✉ The parent session was not told that the run ended${reason || "."}${earlier}`, summary: "parent not told", color: "yellow" };
         },
     },
-    "workflow.state_started": { short: data => ({ text: `${StepOf(data)} started${Number.isSafeInteger(data.ordinal) ? ` (visit ${data.ordinal})` : ""}` }) },
-    "workflow.state_completed": { short: data => ({ text: `${StepOf(data)} ended${text(data.outcome) ? ` '${data.outcome}'` : ""}` }) },
+    "workflow.state_started": { short: data => ({ text: `${StepOf(data)} started${Number.isSafeInteger(data.ordinal) && data.ordinal > 1 ? ` (time ${data.ordinal})` : ""}` }) },
+    "workflow.state_completed": { short: data => ({ text: `${StepOf(data)} ended${text(data.outcome) ? `: ${data.outcome}` : ""}` }) },
     "workflow.state_failed": {
         short: data => {
             const error = parsedJson(data.error);
@@ -1857,7 +1927,7 @@ const WORKFLOW_EVENT_TEXT = {
             return { text: `${StepOf(data)} failed${text(data.outcome) ? ` (${data.outcome})` : ""}${because(reason)}`, level: "error" };
         },
     },
-    "workflow.state_cancelled": { short: data => ({ text: `${StepOf(data)} stopped`, level: "warning" }) },
+    "workflow.state_cancelled": { short: data => ({ text: `${StepOf(data)} canceled`, level: "warning" }) },
     "workflow.agent_spawned": {
         short: data => ({ text: `Agent chat for ${stepOf(data)} created${text(data.childSessionId) ? ` (session ${shortId(data.childSessionId)})` : ""}`
             + `${text(data.deadline) ? `; its time limit is ${shownTime(data.deadline)}` : ""}` }),
@@ -1880,9 +1950,9 @@ const WORKFLOW_EVENT_TEXT = {
     },
     "workflow.branches_cancelled": {
         // IR 9: why, when it is not failFast: the join had its successes, or the parallel step's own time limit passed.
-        short: data => ({ text: data.reason === "join" ? "The other branches were cancelled: the join had the successes it needs"
-            : data.reason === "timeout" ? "The running branches were cancelled: the parallel step's time limit passed"
-                : "The other branches were cancelled", level: "warning" }),
+        short: data => ({ text: data.reason === "join" ? "The other items were canceled: the For each node had the successes it needs"
+            : data.reason === "timeout" ? "The running items were canceled: the For each node's time limit passed"
+                : "The other items were canceled", level: "warning" }),
     },
     "workflow.test_intercepted": {
         short: data => ({ text: `Call${text(data.operation) ? ` ${data.operation}` : ""}${text(data.tool) ? ` · ${data.tool}` : ""}${text(data.stateId) ? ` in ${stepOf(data)}` : ""}` }),

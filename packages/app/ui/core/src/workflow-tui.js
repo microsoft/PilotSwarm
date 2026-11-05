@@ -1318,7 +1318,8 @@ function nodeRow(entry, selected, idWidth, labelWidth, width) {
     const marker = selected ? "▶ " : "  ";
     const id = bounded(entry.id, idWidth).padEnd(idWidth);
     const label = bounded(entry.label, labelWidth).padEnd(labelWidth);
-    const runs = entry.runs ? ` ×${entry.runs}${entry.partial ? " loaded" : ""}` : "";
+    // Counts carry nouns (Workflow Simplified, usability finding 4): "ran 3 times", never "×3".
+    const runs = entry.runs > 1 && !entry.itemCounts ? ` · ran ${entry.runs} times${entry.partial ? " in the loaded history" : ""}` : "";
     const used = marker.length + 2 + idWidth + 1 + labelWidth + 1 + runs.length;
     const stateLabel = bounded(entry.stateLabel, Math.max(8, width - used));
     return [
@@ -1627,7 +1628,7 @@ function detailLines(selection, width) {
         // A parallel step's join (owner batch 7, H2), as the portal's join bar says it, the rule in words and its own time
         // limit (owner decision join-k-of-n).
         if (node.joinBar) {
-            add(`Join: ${node.joinBar.rule}${node.joinBar.stateText ? ` · ${node.joinBar.stateText}` : ""}`, "cyan");
+            add(`${node.joinBar.label}${node.joinBar.stateText ? ` · ${node.joinBar.stateText}` : ""}`, "cyan");
             for (const text of wrapped(workflowV2JoinWords(node), Math.max(20, width), "  ")) add(text, "gray");
             if (node.joinBar.limit) for (const text of wrapped(node.joinBar.limit.title, Math.max(20, width), "  ")) add(text, "gray");
         }

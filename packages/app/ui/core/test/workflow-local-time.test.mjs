@@ -39,7 +39,7 @@ test("with no zone named, the reader's own (here America/Los_Angeles): event tim
         { text: "time limit until 2026-11-04 12:30:00 PST", title: "The time limit is 2 min from the step's start: it passes at 2026-11-04 12:30:00 PST." });
     // A time an event carries as ISO text is shown the same way.
     assert.equal(workflowEventText("workflow.stop_requested", { deadlineAt: WINTER, reason: "release" }).text,
-        "Stop asked; steps already started may finish until 2026-11-04 12:30:00 PST: release");
+        "Stop asked; started nodes may finish until 2026-11-04 12:30:00 PST: release");
     // A wait's deadline in its step's description.
     const view = projectWorkflowV2({ readModel: readModel({ nodeExecutions: [row("pause", 1, "pending", { deadline: WINTER })] }) });
     assert.deepEqual(view.nodes.find(node => node.id === "pause").description, ["Waiting until 2026-11-04 12:30:00 PST."]);

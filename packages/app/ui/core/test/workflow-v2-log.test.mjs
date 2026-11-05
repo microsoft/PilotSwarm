@@ -181,7 +181,7 @@ test("the nine control events are workflow events, in the history paging types, 
             "⏹ Asked 2 running actions to stop.", "2 actions asked to stop", "yellow"],
         // Adversarial review R2-UI-6: a graceful stop's request.
         [event("workflow.stop_requested", { runId: "r", actor: user, graceSeconds: 60, reason: "release freeze" }),
-            "⏹ Stop asked by `u-1`: steps already started may finish. Reason: `release freeze`", "stop asked", "yellow"],
+            "⏹ Stop asked by `u-1`: started nodes may finish. Reason: `release freeze`", "stop asked", "yellow"],
         [event("workflow.parent_notified", { runId: "r", parentSessionId: "parent-123456" }),
             "✉ The parent session was told that the run ended (`parent-1`).", "parent told the run ended", "gray"],
         [event("workflow.parent_notification_skipped", { runId: "r", reason: "Parent authority is no longer available" }),
@@ -255,7 +255,7 @@ test("R2-UI-6: a graceful stop is logged from its request to its end, and closes
     assert.deepEqual([stopped.kind, stopped.title, stopped.color], ["card", "Workflow stopped", "yellow"]);
     assert.equal(formatWorkflowEventText(rows.at(-1)),
         "⏹ Workflow stopped: `done for today`; 1 step was still running when the time to finish ended, so it was cancelled.");
-    assert.match(formatWorkflowEventText(rows.at(-2)), /^⏹ Stop asked by `agent session abcdef12`: steps already started may finish\.$/);
+    assert.match(formatWorkflowEventText(rows.at(-2)), /^⏹ Stop asked by `agent session abcdef12`: started nodes may finish\.$/);
     // A live append gives the same transcript.
     let live = buildHistoryModel(rows.slice(0, 3));
     for (const next of rows.slice(3)) live = appendEventToHistory(live, next);

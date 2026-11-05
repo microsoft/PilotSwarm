@@ -36,9 +36,9 @@ test("the legacy graph renders as before, without v2 marks", () => {
 test("a v2 graph shows typed state labels, runtime-error routes and run status from the read model", () => {
     const model = readModel({ nodeExecutions: [row("pause", 1, "pending", { deadline: "2026-11-01T12:00:30.000Z" }), done("poll", 1, "changed")] });
     const html = main(mount({ view: { definition: workflowDefinition(startedData), readModel: model } }));
-    assert.ok(html.includes("wait · 30 s"));
-    assert.ok(html.includes("send · Alert@1"));
-    assert.ok(html.includes("receive · Ack@1"));
+    assert.ok(html.includes("Wait · 30 s"));
+    assert.ok(html.includes("Send · Alert@1"));
+    assert.ok(html.includes("Receive · Ack@1"));
     assert.ok(html.includes("Done · changed"));
     assert.ok(html.includes("data-kind=\"error\""));
     assert.ok(html.includes("stroke-dasharray=\"5 4\""));
@@ -129,7 +129,7 @@ test("a v2 definition is not redrawn once the read model says there is no graph"
     assert.ok(html.includes("This workflow definition is invalid"));
     assert.ok(html.includes("state is not valid"));
     assert.ok(!html.includes("data-node-id"), "the older graph is not drawn");
-    assert.ok(!html.includes("send · Alert@1"));
+    assert.ok(!html.includes("Send · Alert@1"));
     assert.ok(node(controller).includes("This workflow definition is invalid"));
     const withGraph = main(mount({ view: { definition: workflowDefinition(startedData), readModel: readModel({ noRun: true }) } }));
     assert.ok(withGraph.includes("data-node-id"));

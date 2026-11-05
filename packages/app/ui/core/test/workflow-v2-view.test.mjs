@@ -50,16 +50,16 @@ test("a v2 business result is done, not failed, and a runtime error is told apar
     assert.equal(byId(failedOutcome, "poll").state, "done", "a business outcome named failure is not a runtime error");
     const error = projectWorkflowV2({ definition, events: [completed("poll", 1, "changed"), runtimeError("poll", 2, "timed_out", "Script timed out")] });
     assert.equal(byId(error, "poll").state, "failed");
-    assert.equal(byId(error, "poll").stateLabel, "Runtime error · timed_out");
+    assert.equal(byId(error, "poll").stateLabel, "Failed · timed_out");
     assert.equal(byId(error, "poll").result.errorPreview, "Script timed out");
     assert.equal(workflowNodeViews(definition, [completed("poll", 1, "changed")])[0].state, "done");
 });
 
 test("run status separates a workflow's own terminal outcome from a runtime or controller failure", () => {
     const succeeded = projectWorkflowV2({ readModel: readModel({ run: { status: "completed", outcome: "succeeded", terminalState: "done" } }) });
-    assert.equal(succeeded.status.label, "Completed · succeeded");
+    assert.equal(succeeded.status.label, "Completed");
     assert.equal(byId(succeeded, "done").state, "done");
-    assert.equal(byId(succeeded, "done").stateLabel, "Ended · succeeded");
+    assert.equal(byId(succeeded, "done").stateLabel, "Reached · succeeded");
     const blocked = projectWorkflowV2({ readModel: readModel({ run: { status: "completed", outcome: "blocked", terminalState: "done" } }) });
     assert.equal(blocked.status.label, "Completed · blocked");
     const business = projectWorkflowV2({ readModel: readModel({ run: { status: "failed", outcome: "failed", terminalState: "failed" } }) });
@@ -71,7 +71,7 @@ test("run status separates a workflow's own terminal outcome from a runtime or c
     assert.equal(byId(runtime, "failed").state, "idle");
     const controller = projectWorkflowV2({ definition, events: [ended("workflow.failed", { code: "controller_ended", error: "The controller ended." })] });
     assert.equal(controller.status.label, "Failed · controller_ended");
-    assert.equal(projectWorkflowV2({ definition, events: [ended("workflow.cancelled", { reason: "Stopped" })] }).status.label, "Cancelled");
+    assert.equal(projectWorkflowV2({ definition, events: [ended("workflow.cancelled", { reason: "Stopped" })] }).status.label, "Canceled · immediately");
 });
 
 test("wait, receive and send states say what they wait for or did, and never claim the recipient read a message", () => {
@@ -88,7 +88,7 @@ test("wait, receive and send states say what they wait for or did, and never cla
     const wait = byId(view, "pause");
     assert.deepEqual([wait.state, wait.phase, wait.stateLabel], ["running", "waiting", "Waiting"]);
     assert.deepEqual(wait.description, ["Waiting until 2026-11-01 12:00:30 UTC."]);
-    assert.equal(wait.label, "wait · 30 s");
+    assert.equal(wait.label, "Wait · 30 s");
     const receive = byId(view, "await_ack");
     assert.equal(receive.stateLabel, "Waiting for message");
     assert.equal(receive.description[0], "Waiting for Ack@1 from any permitted sender.");
@@ -103,7 +103,7 @@ test("wait, receive and send states say what they wait for or did, and never cla
         outbox: [{ exchangeId: "nx-notify-1", nodeExecutionId: "nx-notify-1", recipientSessionId: "parent-1", state: "pending", attempts: 0 }] }) });
     assert.equal(byId(delivering, "notify").stateLabel, "Delivering");
     const failedSend = projectWorkflowV2({ readModel: readModel({ nodeExecutions: [done("notify", 1, "delivery_failed", { resultKind: "runtime_error" })] }) });
-    assert.equal(byId(failedSend, "notify").stateLabel, "Runtime error · delivery_failed");
+    assert.equal(byId(failedSend, "notify").stateLabel, "Failed · delivery_failed");
     const elapsed = projectWorkflowV2({ definition, events: [completed("await_ack", 1, "elapsed", "null")] });
     assert.equal(byId(elapsed, "await_ack").stateLabel, "Wait elapsed · no message");
     assert.equal(byId(elapsed, "await_ack").state, "done");
@@ -116,7 +116,7 @@ test("a request state is shown only when the read model carries it, with its own
     const model = readModel({ graph: requestGraph, nodeExecutions: [row("ask", 1, "pending")],
         outbox: [{ exchangeId: "nx-ask-1", nodeExecutionId: "nx-ask-1", recipientSessionId: "reviewer-1", state: "delivered", attempts: 1 }] });
     const pending = projectWorkflowV2({ readModel: model });
-    assert.equal(byId(pending, "ask").label, "request · Review@1");
+    assert.equal(byId(pending, "ask").label, "Ask · Review@1");
     assert.equal(byId(pending, "ask").stateLabel, "Awaiting response");
     assert.equal(byId(pending, "ask").description[0], "Awaiting a response to Review@1 from reviewer-1.");
     const declined = projectWorkflowV2({ readModel: readModel({ graph: requestGraph, nodeExecutions: [done("ask", 1, "declined", { responderSessionId: "reviewer-1" })] }) });
@@ -130,12 +130,12 @@ test("a request state is shown only when the read model carries it, with its own
 
 test("admitted, paused, pausing, pending and ended runs keep their own labels", () => {
     const admitted = projectWorkflowV2({ readModel: readModel({ run: { status: "admitted" } }) });
-    assert.equal(admitted.status.label, "Waiting to start");
+    assert.equal(admitted.status.label, "Running");
     assert.equal(byId(admitted, "poll").stateLabel, "Not reached");
     const pausing = projectWorkflowV2({ readModel: readModel({ run: { status: "paused", pausedFrom: "running", pauseSettled: false },
         nodeExecutions: [row("poll", 1, "pending")] }) });
     assert.equal(pausing.status.phase, "pausing");
-    assert.equal(pausing.status.label, "Pausing · waiting for running steps to finish");
+    assert.equal(pausing.status.label, "Pausing · waiting for started nodes to finish");
     assert.equal(byId(pausing, "poll").stateLabel, "Running");
     const paused = projectWorkflowV2({ readModel: readModel({ run: { status: "paused", pausedFrom: "running", pauseSettled: true },
         nodeExecutions: [row("pause", 1, "pending")] }) });
@@ -144,9 +144,9 @@ test("admitted, paused, pausing, pending and ended runs keep their own labels", 
     assert.equal(byId(paused, "pause").state, "idle");
     assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "paused", pausedFrom: "admitted", pauseSettled: true } }) }).status.label, "Paused before it started");
     const cancelled = projectWorkflowV2({ readModel: readModel({ run: { status: "cancelled" }, nodeExecutions: [row("poll", 1, "pending")] }) });
-    assert.equal(cancelled.status.label, "Cancelled");
+    assert.equal(cancelled.status.label, "Canceled · immediately");
     assert.equal(byId(cancelled, "poll").state, "cancelled");
-    assert.equal(byId(cancelled, "poll").stateLabel, "Run ended first");
+    assert.equal(byId(cancelled, "poll").stateLabel, "The Workflow ended first");
     assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "running", mode: "test" } }) }).status.label, "Test run · Running");
     const fromEvents = projectWorkflowV2({ definition, events: [started("poll", 1), ev("workflow.paused", { runId: RUN })] });
     assert.equal(fromEvents.status.label, "Paused");
@@ -169,7 +169,7 @@ test("q15 (mock M16): replies that arrived before the run was ready show beside 
     assert.equal(one.status.label, "Paused · 1 reply waiting");
     assert.ok(one.banners.some(banner => banner.text === "Reply waiting: 1 reply arrived while the run is paused. The run uses it once it resumes."));
     const admitted = projectWorkflowV2({ now, readModel: readModel({ run: { status: "admitted" }, inbox: [reply("m-1")] }) });
-    assert.equal(admitted.status.label, "Waiting to start · 1 reply waiting");
+    assert.equal(admitted.status.label, "Running · 1 reply waiting");
     assert.ok(admitted.banners.some(banner => banner.text
         === "Reply waiting: 1 reply arrived before the run started. The run uses it when it reaches the step that takes it."));
     const running = projectWorkflowV2({ now, readModel: readModel({ run: { status: "running" }, inbox: [reply("m-1"), reply("m-2")] }) });
@@ -201,7 +201,7 @@ test("durable events outrank a stale canvas tick, and a stale read model never r
     assert.equal(byId(readNewer, "poll").stateLabel, "Done · changed");
     const endedByEvent = projectWorkflowV2({ readModel: readModel({ run: { status: "running" } }),
         events: [ended("workflow.completed", { stateId: "done", outcome: "succeeded" })] });
-    assert.equal(endedByEvent.status.label, "Completed · succeeded");
+    assert.equal(endedByEvent.status.label, "Completed");
 });
 
 test("draft, invalid and no-run read models say so instead of drawing or inventing a run", () => {
@@ -322,7 +322,7 @@ test("no overlay of any kind is painted unless the run is bound to the graph's r
         events: [completed("poll", 1, "changed"), ended("workflow.completed", { stateId: "done", outcome: "succeeded" })],
     });
     assert.equal(mismatched.bound, false);
-    assert.equal(mismatched.status.label, "Revision 2 run · Completed · succeeded");
+    assert.equal(mismatched.status.label, "Revision 2 run · Completed");
     assert.equal(mismatched.status.terminalState, null);
     assert.ok(mismatched.nodes.every(node => node.state === "idle" && node.stateLabel === "Not shown on the graph" && node.runs === 0));
     assert.equal(mismatched.output, null);
@@ -380,7 +380,7 @@ test("a read model that contradicts a pause or resume event is reported as unver
     assert.equal(projectWorkflowV2({ readModel: running([]), events: [paused(5), resumed(6)] }).status.label, "Running");
     assert.equal(projectWorkflowV2({ readModel: pausedModel, events: [paused(5)] }).status.label, "Paused");
     assert.equal(projectWorkflowV2({ readModel: running([]) }).status.label, "Running");
-    assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "admitted" } }), events: [resumed(2)] }).status.label, "Waiting to start");
+    assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "admitted" } }), events: [resumed(2)] }).status.label, "Running");
     assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "admitted" } }), events: [paused(2)] }).status.phase, "unverified");
     const status = (afterSeq, event) => projectWorkflowV2({ readModel: running([]), events: [event], readModelAfterSeq: afterSeq }).status;
     assert.equal(status(7, paused(5)).label, "Running", "an event older than the snapshot cannot contradict it");
@@ -389,5 +389,5 @@ test("a read model that contradicts a pause or resume event is reported as unver
     assert.equal(status(7, ev("workflow.paused", { runId: RUN })).phase, "unverified", "an event with no sequence is never ordered");
     assert.equal(status("7", paused(5)).phase, "unverified", "an unusable watermark is not trusted");
     const ended = projectWorkflowV2({ readModel: readModel({ run: { status: "completed", outcome: "succeeded", terminalState: "done" } }), events: [paused(9)] });
-    assert.equal(ended.status.label, "Completed · succeeded");
+    assert.equal(ended.status.label, "Completed");
 });

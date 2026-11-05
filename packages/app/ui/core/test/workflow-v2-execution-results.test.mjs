@@ -210,13 +210,13 @@ test("a runtime error is that visit's own, with its code; a preview the read cut
     const h = await viewing(failing, "poll");
     let lines = details(h.store);
     assert.ok(lines.includes("Result of visit 3 (latest; [ older · ] newer)"), lines.join("\n"));
-    assert.ok(lines.includes("  Runtime error · timed_out: {\"code\":\"timed_out\",\"message\":\"The script did not finish.\"}"));
+    assert.ok(lines.includes("  Failed · timed_out: {\"code\":\"timed_out\",\"message\":\"The script did not finish.\"}"));
     await older(h);
     lines = details(h.store);
     assert.ok(lines.some(line => line.startsWith("  Output: {\"text\":\"xxx")));
     assert.ok(lines.includes("  The read keeps only the start of this value; f reads the whole value."));
     // The state's label and its history still name the later visit's error; this visit's result line does not.
-    assert.ok(lines.includes("Status: Runtime error · timed_out"), lines.join("\n"));
+    assert.ok(lines.includes("Status: Failed · timed_out"), lines.join("\n"));
     assert.ok(!lines.some(line => line.startsWith("  Runtime error")), "the later visit's error is not shown for this one");
 });
 

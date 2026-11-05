@@ -36,9 +36,9 @@ const byId = (projection, id) => projection.nodes.find(node => node.id === id);
 test("agent and parallel states are read as v2 states, with their own labels; malformed ones are refused", () => {
     const definition = workflowV2Definition(graph);
     assert.equal(definition.states.length, 6);
-    assert.equal(workflowV2NodeLabel(milestoneStates[0]), "agent · code-reviewer");
-    assert.equal(workflowV2NodeLabel({ ...milestoneStates[0], invoke: { source: "prompt" } }), "agent · inline prompt");
-    assert.equal(workflowV2NodeLabel(milestoneStates[1]), "parallel · up to 2 branches");
+    assert.equal(workflowV2NodeLabel(milestoneStates[0]), "Agent · code-reviewer");
+    assert.equal(workflowV2NodeLabel({ ...milestoneStates[0], invoke: { source: "prompt" } }), "Agent");
+    assert.equal(workflowV2NodeLabel(milestoneStates[1]), "For each · up to 2 at a time");
     assert.throws(() => workflowV2Definition({ ...graph, states: [{ ...milestoneStates[0], invoke: undefined }, ...milestoneStates.slice(1)] }), /has no task/);
     assert.throws(() => workflowV2Definition({ ...graph, states: [milestoneStates[0], { ...milestoneStates[1], body: undefined }, ...milestoneStates.slice(2)] }),
         /has no body or concurrency/);
@@ -57,7 +57,7 @@ test("a parallel state is drawn leading to its body's first state, as how each b
 test("a stopping run says what may still settle; a stopped run is ended, and the picker names it", () => {
     const stopping = workflowV2RunStatus({ run: { runId: RUN, mode: "live", status: "running", stop: { deadline: "2026-11-02T10:00:00.000Z" } }, runId: RUN });
     assert.equal(stopping.phase, "stopping");
-    assert.match(stopping.label, /Stopping · steps already started may finish until 2026-11-02 10:00:00 UTC/);
+    assert.match(stopping.label, /Canceling… · started nodes may finish until 2026-11-02 10:00:00 UTC/);
     const stopped = projectWorkflowV2({ readModel: readModel({ graph, run: { status: "stopped" }, nodeExecutions: [done("review", 1, "accepted")] }) });
     assert.equal(stopped.status.phase, "stopped");
     assert.equal(stopped.status.ended, true);
@@ -103,7 +103,7 @@ test("an agent state's node names its child session and opens its actual chat; a
         row("fan", 1, "pending", { branches: 3 }),
         row("work", 1, "pending", { scopeId: "nx-fan-1#0", branch: { parallelNodeExecutionId: "nx-fan-1", index: 0 } }),
     ] }) });
-    assert.equal(byId(branched, "fan").stateLabel, "Running its branches");
+    assert.equal(byId(branched, "fan").stateLabel, "Running its items");
     assert.ok(byId(branched, "fan").description.includes("3 branches from its manifest."));
     // People read branches from 1 (owner batch 7, H2); the data's index is 0.
     assert.ok(byId(branched, "work").description.includes("In branch 1 of its parallel step."));

@@ -337,13 +337,13 @@ test("READ-WIRE-02: the side pane shows the selected run's read failure, with a 
     assert.ok(html.includes("role=\"alert\""));
     assert.ok(html.includes("could not be read: Service unavailable."));
     assert.ok(html.includes(">Retry<"));
-    assert.ok(html.includes("wait · 30 s"), "the graph stays");
+    assert.ok(html.includes("Wait · 30 s"), "the graph stays");
     assert.ok(html.includes("Done · changed"), "the last read model stays");
     // Another run selected: neither that run's error nor the live run's model is shown.
     const other = render({ ...failed, selectedRunId: "run-2" });
     assert.ok(!other.includes("could not be read"));
     assert.ok(!other.includes("Done · changed"));
-    assert.ok(other.includes("wait · 30 s"), "the workflow's graph");
+    assert.ok(other.includes("Wait · 30 s"), "the workflow's graph");
     // No failure, no alert.
     assert.ok(!render({ ...failed, readModelError: null }).includes("could not be read"));
     // A legacy definition has no read model: a failure recorded before it loaded is not shown.
@@ -393,7 +393,7 @@ test("READ-WIRE-01: with run A's history loaded, a selected run B whose model is
     for (const [label, view] of [["loading", loading], ["failed", failed]]) {
         const html = renderPane(view, runAEvents);
         assertNoRunA(html, label);
-        assert.ok(html.includes("wait · 30 s"), `${label}: the workflow's graph stays`);
+        assert.ok(html.includes("Wait · 30 s"), `${label}: the workflow's graph stays`);
         assert.ok(html.includes(">Selected run not loaded<"), `${label}: the header says so`);
         assert.equal(html.includes("could not be read: Service unavailable."), label === "failed", label);
         const projected = projectWorkflowV2({ ...workflowReadModelView(view), definition, events: runAEvents });
@@ -422,12 +422,12 @@ test("READ-WIRE-01: with run A's history loaded, a selected run B whose model is
     // events is not drawn again, and the reason stays.
     const noGraph = fixtureReadModel({ graph: null, nodeExecutions: [done("poll", 1, "changed")] });
     const own = renderPane({ definition, readModel: noGraph, readModelRunId: null }, runAEvents);
-    assert.ok(own.includes("No workflow graph to show") && own.includes("is valid, but its graph is not available") && !own.includes("wait · 30 s"));
+    assert.ok(own.includes("No workflow graph to show") && own.includes("is valid, but its graph is not available") && !own.includes("Wait · 30 s"));
     for (const [label, view] of [["loading", { ...loading, readModel: noGraph }], ["failed", { ...failed, readModel: noGraph }]]) {
         const html = renderPane(view, runAEvents);
         assert.ok(html.includes("No workflow graph to show"), `${label}: still no graph`);
         assert.ok(html.includes("is valid, but its graph is not available"), `${label}: and why`);
-        assert.ok(!html.includes("wait · 30 s"), `${label}: the events' definition is not drawn again`);
+        assert.ok(!html.includes("Wait · 30 s"), `${label}: the events' definition is not drawn again`);
         assert.ok(html.includes(">Selected run not loaded<"), label);
         assertNoRunA(html, label);
     }
@@ -436,7 +436,7 @@ test("READ-WIRE-01: with run A's history loaded, a selected run B whose model is
         revision: { valid: false, diagnostics: [{ severity: "error", code: "E1", path: "$.states", message: "broken state" }] } });
     const invalidOther = renderPane({ ...loading, readModel: invalid }, runAEvents);
     assert.ok(invalidOther.includes("This workflow definition is invalid") && invalidOther.includes("broken state"));
-    assert.ok(!invalidOther.includes("wait · 30 s"));
+    assert.ok(!invalidOther.includes("Wait · 30 s"));
     const projected = projectWorkflowV2({ ...workflowReadModelView({ ...loading, readModel: invalid }), definition, events: runAEvents });
     assert.equal(projected.definition, null);
     assert.equal(projected.modelStatus, "invalid");
@@ -463,7 +463,7 @@ test("READ-WIRE-01: the controller's run selection, with run A's history loaded,
     await until(() => h.calls.at(-1)?.[1]?.runId === "run-2", "run B's request");
     const whileLoading = pane();
     assertNoRunA(whileLoading, "loading");
-    assert.ok(whileLoading.includes("wait · 30 s") && whileLoading.includes(">Selected run not loaded<"));
+    assert.ok(whileLoading.includes("Wait · 30 s") && whileLoading.includes(">Selected run not loaded<"));
 
     runB.reject(Object.assign(new Error("Service unavailable."), { code: "INTERNAL_ERROR", status: 503 }));
     await loading;
@@ -471,7 +471,7 @@ test("READ-WIRE-01: the controller's run selection, with run A's history loaded,
     h.store.dispatch({ type: "ui/workflowView", sessionId: SID, view: { sidePanel: "notices" } });
     const failed = pane();
     assertNoRunA(failed, "failed");
-    assert.ok(failed.includes("could not be read: Service unavailable.") && failed.includes(">Retry<") && failed.includes("wait · 30 s"));
+    assert.ok(failed.includes("could not be read: Service unavailable.") && failed.includes(">Retry<") && failed.includes("Wait · 30 s"));
 
     h.transport.respond = async () => modelB;
     await h.controller.ensureWorkflowReadModel(SID, { force: true });

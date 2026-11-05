@@ -84,8 +84,8 @@ test("the shared Ink app draws the view: the states, the selected one's details 
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     const html = render(store.getState());
     assert.match(html, /data-title="Workflow: review-once · Running"/);
-    assert.match(html, /▶ ● review\s+agent · code-reviewer\s+Agent working · waiting for its typed result/);
-    assert.match(html, /○ done\s+ends · succeeded/);
+    assert.match(html, /▶ ● review\s+Agent · code-reviewer\s+Agent working · waiting for its typed result/);
+    assert.match(html, /○ done\s+End · succeeded/);
     assert.match(html, /data-title="Step review — ↑↓ step · ←→ run · Tab agent chat · Enter open · Esc close"/);
     assert.match(html, /  accepted → done/);
     assert.match(html, /▸ visit 1 · working · child-1/);
