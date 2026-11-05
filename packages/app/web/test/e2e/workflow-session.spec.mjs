@@ -2461,3 +2461,251 @@ test("M-13: switching A -> B -> A at equal revisions never shows or saves one wo
     expect(saves.every(save => !(save.sessionId === WORKFLOW_B && save.command.yaml.includes("# A")) && !(save.sessionId === WORKFLOW_ID && save.command.yaml.includes("# B")))).toBe(true);
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// Owed M-17 (verification of UI-6): the one late fit of saved places happens only while the person has not touched the
+// view and none was remembered. (A) A zoom before the profile arrives: the places are taken, the view stays where the
+// person put it (the far box stays off screen). (B) A remembered view (the person zoomed, went to another session and
+// came back): the new graph starts from it, and the late places do not refit it. The profile is held until released.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "M-17" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+/** The profile, held until `release()`: then it answers with the saved place of `done` far away. */
+async function heldProfile(page) {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const saved = { workflowLayouts: { [LAYOUT_KEY]: { at: Date.now(), steps: { done: [4000, 2400] } } } };
+    await page.route("**/api/v1/**", async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        if (pathname.endsWith("/me/profile")) {
+            await held;
+            return route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: saved } } });
+        }
+        if (pathname.endsWith("/me/profile/settings")) return route.fulfill({ json: { ok: true, result: { profileSettings: saved } } });
+        return route.fallback();
+    });
+    return { release: () => release() };
+}
+
+/** Whether the step's box is outside the graph's area (the view was not fitted to it). */
+async function offScreen(graph, id) {
+    const area = await graph.boundingBox();
+    const box = await graph.locator(`[data-node-id="${id}"]`).boundingBox();
+    return !box || box.x >= area.x + area.width || box.y >= area.y + area.height || box.x + box.width <= area.x || box.y + box.height <= area.y;
+}
+
+test("M-17 (UI-6): saved places that arrive after the person zoomed are taken without a refit", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { onCommand: (route, command) => accept(route, command) });
+    const profile = await heldProfile(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const graph = page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    const fitted = await settledView(graph);
+    await graph.getByRole("button", { name: "Zoom in", exact: true }).click();
+    const zoomed = await settledView(graph);
+    expect(zoomed.scale).toBeGreaterThan(fitted.scale * 1.05);
+    profile.release();
+    // The places are taken (the box moves far away) and the view stays where the person put it.
+    await expect.poll(async () => (await flowNodeAt(graph, "done")).x, { timeout: 15_000 }).toBe(4000);
+    sameView(await settledView(graph), zoomed);
+    expect(await offScreen(graph, "done")).toBe(true);
+    expect(errors).toEqual([]);
+});
+
+test("M-17 (UI-6): a remembered view is where the graph starts again, and saved places that arrive later do not refit it", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { onCommand: (route, command) => accept(route, command) });
+    const profile = await heldProfile(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const graph = page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await settledView(graph);
+    await graph.getByRole("button", { name: "Zoom in", exact: true }).click();
+    const remembered = await settledView(graph);
+    // Another session and back: a new graph, started from the remembered view, which no one has touched since.
+    await openAgent(page);
+    await openSession(page, "Workflow: watch-v2");
+    await flowReady(graph);
+    sameView(await settledView(graph), remembered);
+    profile.release();
+    await expect.poll(async () => (await flowNodeAt(graph, "done")).x, { timeout: 15_000 }).toBe(4000);
+    sameView(await settledView(graph), remembered);
+    expect(await offScreen(graph, "done")).toBe(true);
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// Owed M-17 (verification of UI-7): the run's confirm dialog through the portal's own key handling. Tab and Shift+Tab
+// stay inside it, go round its Close, Cancel and Stop Run in order and skip a disabled control and a hidden one; Enter
+// or Space on its Cancel button cancels (the portal's Enter does not confirm); Escape cancels; each time nothing is sent
+// and focus goes back to Stop; Enter on the dialog itself confirms, and exactly one stop is sent. (A control inside a
+// hidden parent is not covered: a known limit of the dialog's focus filter, which checks a control's own hidden flag.)
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "M-17 \\(UI-7\\)" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("M-17 (UI-7): the confirm dialog keeps Tab inside, skips disabled and hidden controls, cancels on Enter on Cancel and on Escape, confirms on Enter", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const { commands } = await routeV2(page, { onCommand: (route, command) => accept(route, command, { status: "stopping" }) });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const controls = page.locator(".ps-workflow-main").getByRole("group", { name: "Run controls", exact: true });
+    const stop = controls.getByRole("button", { name: "Stop", exact: true });
+    const dialog = page.getByRole("dialog", { name: "Stop Workflow Run", exact: true });
+    /** The focused element: its name (its label, else its text), and whether it is inside the dialog. */
+    const focused = () => page.evaluate(() => {
+        const active = document.activeElement;
+        const box = document.querySelector('[role="dialog"]');
+        return { text: active?.getAttribute("aria-label") || active?.textContent?.trim() || "", inside: Boolean(box && box.contains(active)), dialog: active === box };
+    });
+    const CONTROLS = ["Close", "Cancel", "Stop Run"];
+
+    await stop.click();
+    await expect(dialog).toBeFocused();
+    // A disabled and a hidden control in the dialog: never focused.
+    await dialog.evaluate((box) => {
+        const disabled = document.createElement("button");
+        disabled.textContent = "Disabled extra";
+        disabled.disabled = true;
+        const hidden = document.createElement("button");
+        hidden.textContent = "Hidden extra";
+        hidden.hidden = true;
+        box.append(disabled, hidden);
+    });
+    const forward = [];
+    for (let i = 0; i < 5; i += 1) {
+        await page.keyboard.press("Tab");
+        forward.push(await focused());
+    }
+    // From the dialog, Tab goes to its first control and then cycles through its enabled, shown controls, in order.
+    expect(forward.every(item => item.inside)).toBe(true);
+    expect(forward.map(item => item.text)).toEqual([...CONTROLS, ...CONTROLS.slice(0, 2)]);
+    const back = [];
+    for (let i = 0; i < 3; i += 1) {
+        await page.keyboard.press("Shift+Tab");
+        back.push(await focused());
+    }
+    // Shift+Tab goes back, around from the first to the last.
+    expect(back.every(item => item.inside)).toBe(true);
+    expect(back.map(item => item.text)).toEqual(["Close", "Stop Run", "Cancel"]);
+
+    // Enter on Cancel cancels: nothing sent, focus back on Stop.
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await expect(stop).toBeFocused();
+    expect(commands).toEqual([]);
+
+    // Escape cancels.
+    await stop.click();
+    await expect(dialog).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(stop).toBeFocused();
+    expect(commands).toEqual([]);
+
+    // Space on Cancel cancels too.
+    await stop.click();
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).focus();
+    await page.keyboard.press(" ");
+    await expect(dialog).toHaveCount(0);
+    expect(commands).toEqual([]);
+
+    // Enter on the dialog itself confirms: exactly one stop.
+    await stop.click();
+    await expect(dialog).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(() => commands.length).toBe(1);
+    expect(commands[0]).toEqual({ operation: "stop", operation_id: expect.stringMatching(/^ui-stop-/), run_id: "run-1" });
+    await page.waitForTimeout(300);
+    expect(commands).toHaveLength(1);
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// Owed M-18 (verification of UI-8): the run picker and the step log, mounted, with the same step's distinct results in a
+// live run and a test run. The log shows the chosen run's entries only, through live appends and after a reload (the
+// history rebuilt), and keeps the session's own notice (no run id) in every choice, never as a run's entry.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "M-18" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("M-18 (UI-8): the step log shows the chosen run's results only, through live appends and a reload; the session's notice stays in each", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let seqs = 0;
+    const event = (eventType, data) => ({ sessionId: WORKFLOW_ID, seq: ++seqs, eventType, createdAt: new Date().toISOString(), data });
+    const step = (runId, n, value, outcome = "changed") => [
+        event("workflow.state_started", { runId, nodeExecutionId: `nx-${runId}-poll-${n}`, stateId: "poll", scopeId: "root", ordinal: n, type: "script", step: n, kvRevision: 1 }),
+        event("workflow.state_completed", { runId, nodeExecutionId: `nx-${runId}-poll-${n}`, stateId: "poll", step: n, outcome, resultKind: "business",
+            outputPreview: JSON.stringify({ v: value }) }),
+    ];
+    const started = (runId, mode) => event("workflow.started", { ...V2_EVENTS[0].data, runId, mode });
+    const events = [
+        started("run-1", "live"), ...step("run-1", 1, "live-1"),
+        started("run-t", "test"), ...step("run-t", 1, "test-1"),
+        // The session's own notice: no run id.
+        event("workflow.recovered", { action: "none", requestedBy: "agent-session-1" }),
+    ];
+    const runs = [{ runId: "run-1", mode: "live", status: "running", revision: 1, outcome: null },
+        { runId: "run-t", mode: "test", status: "running", revision: 1, outcome: null }];
+    const runModel = (runId, mode, value) => ({ ...V2_READ_MODEL, runs,
+        run: { ...V2_READ_MODEL.run, runId, mode, ...(mode === "test" ? { test: { interceptions: [], virtualClock: { elapsedSeconds: 0 } } } : {}),
+            nodeExecutions: [{ ...V2_READ_MODEL.run.nodeExecutions[0], nodeExecutionId: `nx-${runId}-poll-1`, outputPreview: JSON.stringify({ v: value }) }] } });
+    const sockets = [];
+    let subscribed = false;
+    await routeApi(page, {
+        workflowEvents: events,
+        workflowState: { title: "Workflow: watch-v2", status: "running" },
+        onSocket: (socket) => {
+            sockets.push(socket);
+            socket.onMessage((raw) => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
+        },
+        onReadWorkflow: (route) => {
+            const runId = new URL(route.request().url()).searchParams.get("runId");
+            return route.fulfill({ json: { ok: true, result: runId === "run-t" ? runModel("run-t", "test", "test-1") : runModel("run-1", "live", "live-1") } });
+        },
+    });
+    const main = page.locator(".ps-workflow-main");
+    const picker = main.getByRole("combobox", { name: "Workflow run" });
+    const log = page.locator('.ps-workflow-side-panel[data-panel="log"] .ps-workflow-log').filter({ visible: true });
+    /** The log shows exactly the values of `shown` (and none of `hidden`), and the session's notice. */
+    const expectLog = async (shown, hidden) => {
+        for (const value of shown) await expect(log).toContainText(value);
+        for (const value of hidden) await expect(log).not.toContainText(value);
+        await expect(log).toContainText(/recovery requested/i);
+    };
+    const open = async () => {
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        await expect(picker).toBeVisible();
+        await main.getByRole("button", { name: "Step log", exact: true }).click();
+    };
+
+    await open();
+    await expect(picker).toHaveValue("");
+    await expectLog(["live-1"], ["test-1"]);
+    await picker.selectOption("run-t");
+    await expectLog(["test-1"], ["live-1"]);
+
+    // Live appends of both runs while the test run is chosen: only its own shows.
+    await expect.poll(() => subscribed).toBe(true);
+    const appended = [...step("run-t", 2, "test-2", "unchanged"), ...step("run-1", 2, "live-2", "unchanged")];
+    events.push(...appended);
+    for (const socket of sockets) {
+        for (const item of appended) socket.send(JSON.stringify({ type: "sessionEvent", sessionId: WORKFLOW_ID, event: item }));
+    }
+    await expectLog(["test-1", "test-2"], ["live-1", "live-2"]);
+    await picker.selectOption("");
+    await expectLog(["live-1", "live-2"], ["test-1", "test-2"]);
+
+    // A reload rebuilds the history from the stored events: the same split.
+    await open();
+    await expectLog(["live-1", "live-2"], ["test-1", "test-2"]);
+    await picker.selectOption("run-t");
+    await expectLog(["test-1", "test-2"], ["live-1", "live-2"]);
+    expect(errors).toEqual([]);
+});
+
