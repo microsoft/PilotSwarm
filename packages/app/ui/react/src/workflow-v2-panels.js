@@ -4,7 +4,7 @@ import {
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
     workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2ShownNotices, workflowV2VisitEnding, workflowV2WholeValue,
     describeWorkflowV2Execution, workflowV2BranchChoice, workflowV2BranchList, workflowV2BranchNumber, workflowV2BranchSteps, workflowV2ForEachText,
-    workflowV2RevisionErrorsText, workflowV2JoinWords, workflowV2VisitScope,
+    workflowV2RevisionErrorsText, workflowV2JoinWords, workflowV2VisitScope, workflowV2NotReachedText,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
@@ -472,8 +472,10 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
             shown.chosen && onSelectExecution ? h("button", { type: "button", className: "ps-mini-button", "data-action": "latest-result",
                 onClick: () => onSelectExecution(null) }, "Show the latest result") : null,
             shown.chosen && shown.missing ? h("pre", null, "Its result is not shown, and no other visit's result is shown in its place.") : null,
-            !shown.chosen && !result && terminalValue === null ? h("pre", null, branchWords
-                ? `This step has no result in ${branchWords} in the loaded history yet.` : "This step has no result in the loaded history.") : null,
+            !shown.chosen && !result && terminalValue === null ? h("pre", { "data-not-reached": selected.notReached && !branchWords ? "true" : undefined }, branchWords
+                ? `This step has no result in ${branchWords} in the loaded history yet.`
+                // Re-check RC-5: not reached yet in the parallel step's current visit; an earlier visit's result is not shown as its own.
+                : selected.notReached ? workflowV2NotReachedText(selected.notReached) : "This step has no result in the loaded history.") : null,
             result?.kind === "pending" ? h("pre", null, "This visit has not ended; it has no result yet.") : null,
             result?.kind === "error"
                 ? h(Value, { value: result.value ?? result.code ?? (result.effectStatus ? `Action ${result.effectStatus}` : "No error text was recorded."), label: "Runtime error",
@@ -496,7 +498,12 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
     // A row of one execution chooses exactly that execution's result; a row of combined repeats lists them one by one below.
     const choose = onSelectExecution ? (execution => h("button", { type: "button", className: "ps-mini-button", "data-action": "show-result",
         "data-execution": execution.id, "aria-pressed": shown.chosen && shown.executionId === execution.id,
-        onClick: () => { onSelectExecution(execution.id); onTab?.("output"); } }, "Result")) : null;
+        // Re-check RC-6: the choice keeps the parallel visit and the branch it was made in; a later change of either ends it.
+        onClick: () => {
+            onSelectExecution(execution.id, selected.branches || selected.where
+                ? { parallelExecutionId: selected.branches?.parallelExecutionId ?? null, branchIndex: branchChoice?.index ?? null } : undefined);
+            onTab?.("output");
+        } }, "Result")) : null;
     const table = items => h("table", null,
         h("thead", null, h("tr", null, [...(branched ? ["Branch"] : []), ...["Visit", "Result", "Outcome"], ...(choose ? [""] : [])]
             .map((label, i) => h("th", { key: i }, label)))),
@@ -510,7 +517,10 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
     return h(React.Fragment, null,
         h("p", null, branchChoice
             ? `Most recent visits of branch ${workflowV2BranchNumber(branchChoice.index)} (the branch chosen in Details) in the loaded history. Unchanged repeats are combined.`
-            : "Most recent visits in the loaded history. Unchanged repeats are combined."),
+            // Re-check RC-5: none of these visits is in the parallel step's current visit; each row says which it was in.
+            : selected.notReached ? `Not reached yet in ${Number.isSafeInteger(selected.notReached.parallelVisit) ? `visit ${selected.notReached.parallelVisit}` : "the current visit"}`
+                + ` of '${selected.notReached.parallelStateId}'. Its visits in earlier parallel visits, newest first. Unchanged repeats are combined.`
+                : "Most recent visits in the loaded history. Unchanged repeats are combined."),
         rows.length ? table(rows) : h("p", null, "No visits in the loaded history."),
         all.length > rows.length ? h("details", null,
             h("summary", null, branchChoice ? `Every loaded visit, all branches (${all.length})` : `Every loaded visit (${all.length})`),

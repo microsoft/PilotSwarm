@@ -340,8 +340,8 @@ export function WorkflowNodePane({ controller, log = null }) {
                     // Ask the workflow's parent agent about the visit shown (owner decision q16): only for a workflow with a parent.
                     onAskParent: session?.parentSessionId && v2?.bound
                         ? (kind, note, executionId) => controller.askParentAboutStep(sessionId, { stateId: selected.id, executionId, kind, note }) : null,
-                    onSelectExecution: executionId => controller.selectWorkflowExecution(sessionId,
-                        executionId === null ? null : { runId: v2?.runId ?? null, stateId: selected.id, executionId }),
+                    onSelectExecution: (executionId, bound) => controller.selectWorkflowExecution(sessionId,
+                        executionId === null ? null : { runId: v2?.runId ?? null, stateId: selected.id, executionId, ...(bound ?? {}) }),
                     // That execution's whole value (read for exactly the shown run), and the run's older history.
                     executionValues: view.executionValues ?? null,
                     onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId: v2?.runId ?? null, executionId }).catch(() => {}); },

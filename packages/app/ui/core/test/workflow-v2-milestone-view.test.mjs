@@ -117,7 +117,8 @@ test("an agent state's node names its child session and opens its actual chat; a
             scopeId: "nx-fan-1#0", branch: { parallelNodeExecutionId: "nx-fan-1", index: 0 } }),
         row("work", 1, "pending", { nodeExecutionId: "nx-work-2", scopeId: "nx-fan-1#2", branch: { parallelNodeExecutionId: "nx-fan-1", index: 2 } }),
     ] }) });
-    assert.ok(byId(progressed, "fan").description.includes("Branches now: 1 active, 0 queued, 2 ended."), byId(progressed, "fan").description.join("\n"));
+    // Re-check RC-8: branch 2's work finished and its end is not admitted yet: it is between steps, still at work.
+    assert.ok(byId(progressed, "fan").description.includes("Branches now: 2 active, 0 queued, 1 ended."), byId(progressed, "fan").description.join("\n"));
     // Mock M22: a blocked join says how many of its branches succeeded.
     const blocked = projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [
         done("review", 1, "accepted"),

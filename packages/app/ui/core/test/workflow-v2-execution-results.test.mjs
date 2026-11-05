@@ -347,3 +347,46 @@ test("i compares the variables the shown visit applied with the accepted ones, f
     assert.ok(html.includes("Revision 1 → 3: 1 added, 1 removed, 1 changed, 0 unchanged."));
     assert.equal([...html.matchAll(/data-change="(added|removed|changed)"/g)].length, 3);
 });
+
+// Re-check RC-7: in the TUI a branch step's result and [ ] status name the shown visit's branch and parallel visit, and say
+// that [ ] go through every branch. RC-6: the choice keeps the parallel visit current when it was made; a new one ends it.
+const BRANCH_GRAPH = { revision: 1, initial: "fan", states: [
+    { id: "fan", type: "parallel", forEach: "${input.items}", concurrency: 2, join: "all_required", failFast: false,
+        body: { initial: "prepare", states: ["prepare", "reviewed"] }, outcomes: ["joined", "blocked"], next: { joined: "done", blocked: "failed" } },
+    { id: "prepare", type: "script", runtime: "node", timeoutSeconds: 60, outcomes: ["ready"], next: { ready: "reviewed" }, parallel: "fan" },
+    { id: "reviewed", type: "terminal", outcome: "succeeded", parallel: "fan" },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+    { id: "failed", type: "terminal", outcome: "failed" },
+] };
+const inBranch = (fan, index) => ({ scopeId: `${fan}#${index}`, branch: { parallelNodeExecutionId: fan, index } });
+const BRANCH_ROWS = [
+    done("fan", 1, "joined", { nodeExecutionId: "nx-fan-1", branches: 2 }),
+    done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-1b0", outputPreview: "{\"who\":\"a\"}", ...inBranch("nx-fan-1", 0) }),
+    done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-1b1", outputPreview: "{\"who\":\"b\"}", ...inBranch("nx-fan-1", 1) }),
+    row("fan", 2, "pending", { nodeExecutionId: "nx-fan-2", branches: 1 }),
+    done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-2b0", outputPreview: "{\"who\":\"c\"}", ...inBranch("nx-fan-2", 0) }),
+];
+
+test("RC-7: the TUI names the branch and parallel visit of a branch step's shown result; RC-6: a new parallel visit ends a choice", async () => {
+    const h = await viewing(readModel({ graph: BRANCH_GRAPH, nodeExecutions: BRANCH_ROWS }), "prepare");
+    let lines = details(h.store);
+    assert.ok(lines.includes("Result of visit 1 in branch 1 · parallel visit 2 (latest; [ older · ] newer, all branches)"), lines.join("\n"));
+    assert.ok(lines.includes("  Output: {\"who\":\"c\"}"));
+    // [ : the newest older visit, of branch 2 in the first parallel visit; every one says where it was.
+    await older(h);
+    assert.equal(statusOf(h.store), "Showing the result of visit 1 in branch 2 · parallel visit 1");
+    assert.deepEqual(chosenOf(h.store), { runId: RUN, stateId: "prepare", executionId: "nx-prepare-1b1", parallelExecutionId: "nx-fan-2" });
+    lines = details(h.store);
+    assert.ok(lines.includes("Result of visit 1 in branch 2 · parallel visit 1 (chosen; [ older · ] newer, all branches)"), lines.join("\n"));
+    assert.ok(lines.includes("  Output: {\"who\":\"b\"}"));
+    await older(h);
+    assert.equal(statusOf(h.store), "Showing the result of visit 1 in branch 1 · parallel visit 1");
+    assert.ok(details(h.store).includes("  Output: {\"who\":\"a\"}"));
+    // A third parallel visit starts: the choice made in the second ends, and no older visit's result is shown as the step's own.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: readModel({ graph: BRANCH_GRAPH, nodeExecutions: [
+        ...BRANCH_ROWS.slice(0, 3), done("fan", 2, "joined", { nodeExecutionId: "nx-fan-2", branches: 1 }), BRANCH_ROWS[4],
+        row("fan", 3, "pending", { nodeExecutionId: "nx-fan-3", branches: 1 })] }), readModelRunId: null } });
+    lines = details(h.store);
+    assert.ok(!lines.some(line => line.startsWith("Result of visit")), lines.join("\n"));
+    assert.ok(!lines.includes("  Output: {\"who\":\"a\"}"));
+});

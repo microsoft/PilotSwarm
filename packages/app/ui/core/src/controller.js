@@ -9892,15 +9892,23 @@ export class PilotSwarmUiController {
      * Choose the execution whose own result the workflow views show (the
      * portal's History tab, the TUI's [ ]): exactly `{ runId, stateId,
      * executionId }` of the shown run, or null for the latest result again.
-     * It applies only to that run and state; nothing is read or sent.
+     * For a branch step it also keeps the parallel visit that was current
+     * (`parallelExecutionId`) and the branch chosen in Details (`branchIndex`)
+     * when it was chosen: a new parallel visit or another branch ends the
+     * choice (re-check RC-6, workflowV2ShownExecution). It applies only to
+     * that run and state; nothing is read or sent.
      */
     selectWorkflowExecution(sessionId, selection) {
         if (!sessionId || this.getState().sessions.byId[sessionId]?.sessionKind !== "workflow") return;
         const valid = selection === null || (selection !== null && typeof selection === "object" && typeof selection.executionId === "string"
             && selection.executionId !== "" && typeof selection.stateId === "string" && (selection.runId === null || typeof selection.runId === "string"));
         if (!valid) return;
+        const bound = selection === null ? {} : {
+            ...(selection.parallelExecutionId === null || typeof selection.parallelExecutionId === "string" ? { parallelExecutionId: selection.parallelExecutionId } : {}),
+            ...(selection.branchIndex === null || Number.isSafeInteger(selection.branchIndex) ? { branchIndex: selection.branchIndex } : {}),
+        };
         this.dispatch({ type: "ui/workflowView", sessionId, view: { selectedExecution: selection === null ? null
-            : { runId: selection.runId, stateId: selection.stateId, executionId: selection.executionId } } });
+            : { runId: selection.runId, stateId: selection.stateId, executionId: selection.executionId, ...bound } } });
     }
 
     /**

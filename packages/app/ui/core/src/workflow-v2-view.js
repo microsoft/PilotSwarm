@@ -337,13 +337,15 @@ export function workflowV2OlderStart(run, older = null) {
  * openInbox, openOutbox, test.openInterceptions: older than the page), then the page. One row per id; what the read
  * model holds wins over an older page. An older page's row that was still open when it was read (pending, or waiting
  * for an answer), and that the read model now neither holds nor lists as open while its open list is complete, has
- * changed since: it is left out and counted (`staleOlder`), never shown as it was. Pure.
+ * changed since: it is left out and counted (`staleOlder`; of node executions, `staleExecutions`), never shown as it
+ * was. Pure.
  */
 export function workflowV2RunRows(run, older = null) {
     const list = value => Array.isArray(value) ? value.filter(isRecord) : [];
     const loaded = isRecord(run) ? workflowV2OlderSections(older, run.runId) : null;
     const pages = isRecord(run?.pages) ? run.pages : null;
     let staleOlder = 0;
+    let staleExecutions = 0;
     let gaps = 0;
     const merge = (section, page, open, stillOpen) => {
         const key = ROW_KEYS[section];
@@ -359,7 +361,11 @@ export function workflowV2RunRows(run, older = null) {
             const id = row[key];
             if (typeof id !== "string" || seen.has(id)) continue;
             seen.add(id);
-            if (stillOpen && stillOpen(row) && openComplete) { staleOlder++; continue; }
+            if (stillOpen && stillOpen(row) && openComplete) {
+                staleOlder++;
+                if (section === "executions") staleExecutions++;
+                continue;
+            }
             before.push(row);
         }
         return [...before, ...fresh];
@@ -369,7 +375,7 @@ export function workflowV2RunRows(run, older = null) {
     const inbox = merge("inbox", run?.inbox, run?.openInbox, null);
     const outbox = merge("outbox", run?.outbox, run?.openOutbox, row => row.state === "pending");
     const interceptions = test ? merge("interceptions", test.interceptions, test.openInterceptions, row => row.state === "awaiting_parent") : [];
-    return { nodeExecutions, inbox, outbox, interceptions, staleOlder, gaps };
+    return { nodeExecutions, inbox, outbox, interceptions, staleOlder, staleExecutions, gaps };
 }
 
 /**
@@ -415,8 +421,19 @@ function normalizeRun(raw, older = null) {
         stop: isRecord(raw.stop) ? raw.stop : null, test: isRecord(raw.test) ? { ...raw.test, interceptions: rows.interceptions } : null,
         terminalState: raw.terminalState ?? null, output: raw.output ?? null, error: raw.error ?? null,
         kvRevision: raw.kvRevision, kv: raw.kv, nodeExecutions: rows.nodeExecutions, inbox: rows.inbox, outbox: rows.outbox,
-        history: { ...workflowV2RunHistory(raw, older), staleOlder: rows.staleOlder, gaps: rows.gaps },
+        history: runHistoryOf(raw, older, rows),
     };
+}
+
+/**
+ * A run's history (workflowV2RunHistory) with what its rows left out (re-check RC-9): a node execution loaded from older
+ * history that changed since and was left out (`staleOlder`) is missing until older history is read again, so the
+ * run's executions are not all loaded (`complete` false), and counts made from them say they are partial instead of
+ * exact (a branch that ended there would be called queued). Pure.
+ */
+function runHistoryOf(raw, older, rows) {
+    const history = workflowV2RunHistory(raw, older);
+    return { ...history, complete: history.complete && rows.staleExecutions === 0, staleOlder: rows.staleOlder, gaps: rows.gaps };
 }
 
 const unrecognized = reason => ({ ok: false, status: "unrecognized", definition: null, diagnostics: [], run: null, overlay: false,
@@ -911,9 +928,22 @@ const endedAt = item => {
 };
 
 /**
+ * Re-check RC-5: what a branch step not reached yet in its parallel step's current visit says instead of a result:
+ * `notReached` is a node view's ({ parallelStateId, parallelVisit }). Pure.
+ */
+export function workflowV2NotReachedText(notReached) {
+    if (!isRecord(notReached)) return null;
+    const visit = Number.isSafeInteger(notReached.parallelVisit) ? `visit ${notReached.parallelVisit}` : "the current visit";
+    return `This step is not reached yet in ${visit} of '${notReached.parallelStateId}', so it has no state or result of its own there. `
+        + "Its visits in earlier parallel visits are in History.";
+}
+
+/**
  * A step's visits by the scope they count in (R2-UI-4), each scope's shown visit (shownVisit, within the scope), and the
- * scopes that are the step's now: a branch step's are the branches of its parallel step's shown visit (`parallelVisit`),
- * when any reached the step; every other step's are all of them.
+ * scopes that are the step's now: a branch step's are the branches of its parallel step's shown visit (`parallelVisit`);
+ * every other step's are all of them. Re-check RC-5: when that parallel visit is known and no branch of it reached the
+ * step yet, none is (`notReached`), never an earlier parallel visit's in its place; those stay in the step's history.
+ * Only visits that say their branch tell this; without any, all of them are the step's, as before.
  */
 function visitScopes(list, parallelVisit) {
     const byScope = new Map();
@@ -924,9 +954,10 @@ function visitScopes(list, parallelVisit) {
     }
     const scopes = [...byScope].map(([key, items]) => ({ key, items, ...shownVisit(items),
         index: Number.isSafeInteger(items[0]?.branch?.index) ? items[0].branch.index : null }));
-    const current = typeof parallelVisit?.id === "string"
-        ? scopes.filter(scope => scope.items.some(item => item.branch?.parallelNodeExecutionId === parallelVisit.id)) : [];
-    return { scopes, current: current.length ? current : scopes };
+    const known = typeof parallelVisit?.id === "string";
+    const current = known ? scopes.filter(scope => scope.items.some(item => item.branch?.parallelNodeExecutionId === parallelVisit.id)) : [];
+    if (known && scopes.some(scope => scope.items.some(item => isRecord(item.branch)))) return { scopes, current, notReached: current.length === 0 };
+    return { scopes, current: current.length ? current : scopes, notReached: false };
 }
 
 function nodeView(node, executions, context) {
@@ -935,7 +966,8 @@ function nodeView(node, executions, context) {
     // R2-UI-4: visit numbers count within a scope (the root, or one branch of one parallel visit). Each scope's pending
     // visit is stale only against an ended visit of the same scope, and a branch step says its branches' state in the
     // parallel step's shown visit: running while any of them runs, else its latest ended visit there.
-    const { scopes, current } = visitScopes(list, typeof node.parallel === "string" ? context.parallelVisits?.get(node.parallel) ?? null : null);
+    const parallelVisit = typeof node.parallel === "string" ? context.parallelVisits?.get(node.parallel) ?? null : null;
+    const { scopes, current, notReached } = visitScopes(list, parallelVisit);
     const byBranch = (a, b) => (a.index ?? Infinity) - (b.index ?? Infinity);
     const running = current.filter(scope => scope.pending).sort(byBranch);
     const pending = running[0]?.pending;
@@ -964,6 +996,12 @@ function nodeView(node, executions, context) {
         state = node.outcome === "failed" ? "failed" : node.outcome === "cancelled" ? "cancelled" : "done";
         phase = "done"; outcome = node.outcome; resultKind = "business"; stateLabel = `Ended · ${node.outcome}`;
     }
+    // Re-check RC-5: not reached yet in the parallel step's current visit; an earlier visit's state and result are not its own.
+    const parallelOrdinal = Number.isSafeInteger(parallelVisit?.ordinal) ? parallelVisit.ordinal : null;
+    const notReachedView = notReached ? { parallelStateId: node.parallel, parallelVisit: parallelOrdinal } : null;
+    if (notReachedView && !shown && !reachedByRun) {
+        stateLabel = `Not reached in ${parallelOrdinal === null ? "this visit" : `visit ${parallelOrdinal}`} of '${node.parallel}'`;
+    }
     // Every loaded visit, newest first: older history a person loaded reaches any visit of the state.
     const history = [...list].reverse();
     const binding = workflowV2AgentBinding(node, context.pins);
@@ -973,7 +1011,9 @@ function nodeView(node, executions, context) {
         partial: !context.complete || stalePending || runs > list.length,
         outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined), resultKind,
         result, pending: pending || null, current: pending || latestDone || null, executions: history,
-        description: [...describeWorkflowV2Execution(node, pending || latestDone), ...branchProgressLines(node, pending || latestDone, context)],
+        ...(notReachedView ? { notReached: notReachedView } : {}),
+        description: [...describeWorkflowV2Execution(node, pending || latestDone), ...branchProgressLines(node, pending || latestDone, context),
+            ...(notReachedView ? [workflowV2NotReachedText(notReachedView)] : [])],
         ...(node.type === "parallel" ? { evidence: workflowV2BranchEvidence(context.executions, context.states, pending || latestDone, context.complete, node) } : {}),
     };
     // Owner batch 7 (H2): a parallel step's branch box and join bar; a branch step's visit in each branch, for its picker.
@@ -1134,16 +1174,30 @@ export function compactWorkflowV2Executions(executions) {
 }
 
 /**
+ * Re-check RC-6: whether a saved History choice (`selection`) still applies to a branch step as it is shown now. A choice
+ * records the parallel step's visit that was current (`parallelExecutionId`) and, in the portal, the branch chosen in
+ * Details (`branchIndex`) when it was made; a new parallel visit, or another branch chosen in Details since, ends it, and
+ * the step shows that branch's latest result again. A choice without these fields (made before them) is kept. Pure.
+ */
+function selectionStillApplies(node, selection, branch) {
+    if (Object.hasOwn(selection, "parallelExecutionId") && (selection.parallelExecutionId ?? null) !== (node?.branches?.parallelExecutionId ?? null)) return false;
+    if (Object.hasOwn(selection, "branchIndex") && isRecord(branch) && Number.isSafeInteger(branch.index)
+        && (selection.branchIndex ?? null) !== branch.index) return false;
+    return true;
+}
+
+/**
  * Which execution of a state a person reads (R01 history; design 02 node occurrences), by its exact identity: the one `selection` names
  * ({ runId, stateId, executionId }) when it is for exactly this run (`runId`, the run the projection overlays) and this
- * state (`node`, a v2 node view); otherwise the state's latest completed execution, as before. A chosen execution that
- * is not among the state's loaded executions is `missing`, and the latest result is never shown in its place. `index`
- * is its place in `node.executions` (newest first), -1 when there is none. Pure.
+ * state (`node`, a v2 node view), and, for a branch step, the same parallel visit and branch as when it was chosen
+ * (selectionStillApplies, re-check RC-6); otherwise the state's latest completed execution, as before. A chosen
+ * execution that is not among the state's loaded executions is `missing`, and the latest result is never shown in its
+ * place. `index` is its place in `node.executions` (newest first), -1 when there is none. Pure.
  */
 export function workflowV2ShownExecution(node, runId, selection, branch = null) {
     const executions = Array.isArray(node?.executions) ? node.executions : [];
     const chosen = isRecord(selection) && typeof selection.executionId === "string" && selection.executionId !== ""
-        && selection.stateId === node?.id && (selection.runId ?? null) === (runId ?? null);
+        && selection.stateId === node?.id && (selection.runId ?? null) === (runId ?? null) && selectionStillApplies(node, selection, branch);
     if (!chosen) {
         // A branch step with a branch chosen in its details (or its default branch): that branch's latest ended visit,
         // never another branch's in its place (adversarial review R2-UI-5).
@@ -1279,26 +1333,43 @@ export function workflowV2KvCompare(before, after) {
 /**
  * Each parallel state execution's branches as the loaded executions show them (mock M21 "active and queued counts",
  * M22 "JOIN BLOCKED k / n accepted"): by the parallel state's node execution id, the branches that have begun
- * (`started`), those with work still pending (`active`), and those that reached a terminal state that succeeded
- * (`succeeded`). From the executions loaded only: older history not loaded may hold more (the caller says so). Pure.
+ * (`started`), those still at work (`active`), and those that reached a terminal state that succeeded (`succeeded`).
+ * Re-check RC-8: a branch is ended only by a recorded end, as its evidence row says (workflowV2BranchEvidence): its last
+ * step (the end of its chain, branchLast) is a terminal, was cancelled (the join, the time limit, failFast), or ended
+ * with a result no route takes. A step whose result takes a route (a loop's next check, an error with a recovery route)
+ * leaves its branch between two steps: still at work, not ended, while its next step is not admitted yet. From the
+ * executions loaded only: older history not loaded may hold more (the caller says so). Pure.
  */
 export function workflowV2BranchProgress(executions, states = []) {
-    const succeededTerminal = new Set((Array.isArray(states) ? states : []).filter(node => node?.type === "terminal" && node.outcome === "succeeded").map(node => node.id));
+    const byId = new Map((Array.isArray(states) ? states : []).filter(isRecord).map(state => [state.id, state]));
     const byParallel = new Map();
     for (const execution of Array.isArray(executions) ? executions : []) {
         const branch = execution?.branch;
         if (!isRecord(branch) || typeof branch.parallelNodeExecutionId !== "string" || !Number.isSafeInteger(branch.index)) continue;
         const branches = byParallel.get(branch.parallelNodeExecutionId) ?? new Map();
-        const seen = branches.get(branch.index) ?? { pending: false, succeeded: false };
-        if (execution.status === "pending") seen.pending = true;
-        if (execution.status === "completed" && succeededTerminal.has(execution.stateId)) seen.succeeded = true;
-        branches.set(branch.index, seen);
+        if (!branches.has(branch.index)) branches.set(branch.index, []);
+        branches.get(branch.index).push(execution);
         byParallel.set(branch.parallelNodeExecutionId, branches);
     }
     const progress = new Map();
     for (const [id, branches] of byParallel) {
-        const list = [...branches.values()];
-        progress.set(id, { started: list.length, active: list.filter(item => item.pending).length, succeeded: list.filter(item => item.succeeded).length });
+        let active = 0, succeeded = 0;
+        for (const list of branches.values()) {
+            const sorted = list.slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
+            if (sorted.some(item => item.status === "pending")) { active++; continue; }
+            const last = branchLast(sorted);
+            const state = byId.get(last.stateId);
+            if (state?.type === "terminal") {
+                if (state.outcome === "succeeded") succeeded++;
+                continue;
+            }
+            if (typeof last.winner === "string" && Object.hasOwn(BRANCH_CANCELS, last.winner)) continue;
+            const next = isRecord(state?.next) ? state.next : null;
+            const routed = next !== null && typeof last.outcome === "string"
+                && (Object.hasOwn(next, last.outcome) || (last.resultKind === "runtime_error" && Object.hasOwn(next, "failure")));
+            if (routed) active++;
+        }
+        progress.set(id, { started: branches.size, active, succeeded });
     }
     return progress;
 }
@@ -1997,7 +2068,8 @@ export function workflowV2BranchEvidence(executions, states, parallel, complete 
         // A finished step whose route leads to a succeeded end, saved by the time limit, counts as a success (J1b).
         const next = route !== null ? byId.get(state.next[route]) : null;
         const finishedSuccess = cut !== null && next?.type === "terminal" && next.outcome === "succeeded" && inTime;
-        const status = pending || (routed && parallel.status === "pending") ? "running"
+        // A cancellation is a recorded end even when its error has a recovery route (re-check RC-8: as the branch counts say).
+        const status = pending || (routed && cancelledBy === null && parallel.status === "pending") ? "running"
             : late ? "succeeded after the time limit" : succeeded ? "succeeded"
                 : cancelledBy ?? (cut === null ? "failed" : FINISHED_BEFORE[cut].status);
         if (status === "succeeded" || finishedSuccess) counted.add(index);

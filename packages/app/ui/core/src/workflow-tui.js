@@ -1393,8 +1393,10 @@ function executionResultLines(node, projection) {
             { text: "Its result is not shown, and no other visit's result is shown in its place.", color: "yellow", indent: "  " }];
     }
     const execution = shown.execution;
-    const visit = Number.isSafeInteger(execution.ordinal) ? `visit ${execution.ordinal}` : "a visit";
-    const lines = [{ text: `Result of ${visit} (${shown.chosen ? "chosen" : "latest"}${keys})`, color: "cyan", indent: "" }];
+    // Re-check RC-7: a branch step's visit names its branch and, with more than one, its parallel visit; [ ] go through the
+    // visits of every branch.
+    const visit = `${Number.isSafeInteger(execution.ordinal) ? `visit ${execution.ordinal}` : "a visit"}${visitPlace(node, execution)}`;
+    const lines = [{ text: `Result of ${visit} (${shown.chosen ? "chosen" : "latest"}${keys}${keys && node.where ? ", all branches" : ""})`, color: "cyan", indent: "" }];
     const result = workflowV2ExecutionResult(execution);
     const shownText = value => (typeof value === "string" ? value : valueText(value)).replace(/\s+/g, " ").trim();
     if (result.kind === "pending") lines.push({ text: "Not ended yet: it has no result.", color: "yellow", indent: "  " });
@@ -1469,8 +1471,17 @@ export function workflowViewExecutionStep(selection, delta) {
     if (target >= executions.length) return { ok: false, selection: null, status: "No older visit in the loaded history of this run" };
     const execution = executions[target];
     if (typeof execution?.id !== "string" || !execution.id) return { ok: false, selection: null, status: "That visit has no identity in the loaded history" };
-    return { ok: true, selection: { runId, stateId: node.id, executionId: execution.id },
-        status: `Showing the result of visit ${Number.isSafeInteger(execution.ordinal) ? execution.ordinal : "—"}` };
+    // Re-check RC-6: a branch step's choice keeps the parallel visit current now; a new one ends it. RC-7: the status names
+    // the visit's branch and parallel visit.
+    const bound = node.branches || node.where ? { parallelExecutionId: node.branches?.parallelExecutionId ?? null } : {};
+    return { ok: true, selection: { runId, stateId: node.id, executionId: execution.id, ...bound },
+        status: `Showing the result of visit ${Number.isSafeInteger(execution.ordinal) ? execution.ordinal : "—"}${visitPlace(node, execution)}` };
+}
+
+/** Re-check RC-7: " in branch 2 · parallel visit 1" for a branch step's visit (its place, workflowV2VisitPlaces), else "". */
+function visitPlace(node, execution) {
+    const place = typeof execution?.id === "string" ? node?.where?.[execution.id] : null;
+    return place && typeof place.label === "string" ? ` in ${place.label}` : "";
 }
 
 /**
