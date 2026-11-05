@@ -44,6 +44,13 @@
  * - JK-17: the request to stop a cut script fails once: it is owed and asked again while the run goes on, and that request
  *   ends the script (its liveness check out of the way); it fails every time: the script's own liveness check still ends
  *   it, and its late effect never happens, though the run already ended.
+ * Part 7, a worker process killed between a store write and its acknowledgement (JK-07; HG-2):
+ * - JK-07: a forked worker (built code) dies (exit 137) right after the join, a branch's end or the time limit was stored,
+ *   before the activity's acknowledgement; another worker process takes over: the decision stays as stored, one decision
+ *   and one route, nothing started again, the cut still made. Needs a built SDK (dist/).
+ * Part 6, store transactions (JK-08):
+ * - JK-08: a failure before the decision's COMMIT rolls back the decision, its cut and its event as one; a COMMIT whose
+ *   answer is lost leaves the decision stored, and the retry finds it (same winner, one event); no lock outlives either.
  * Part 5, the compiler and stored IR (no database):
  * - JK-01: every shape of `join` that is not all, all_required or { first: k } with k a safe integer from 1 to 64 is
  *   refused at its own path, never read as another; the accepted ones compile to their exact IR.
@@ -75,7 +82,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 import {
     commitOrder, elapsedResult, endOf, eventsOf, executionsOf, gate, joinBaseOf, joinDoc, joinRuntimeOn, pause, persisted, startJoin, until, within, yamlOf,
-    branchRowsOf, JOIN_ACTOR, WORK, PROBED_WORK, probeServer, processAlive,
+    branchRowsOf, JOIN_ACTOR, WORK, PROBED_WORK, probeServer, processAlive, forkJoinWorker,
 } from "../helpers/workflow-v2-join-harness.js";
 import {
     compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_AGENT_IR_VERSION, WORKFLOW_V2_JOIN_IR_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_PARALLEL_MAX_ITEMS,
@@ -1712,6 +1719,160 @@ describe("J3 robust joins, part 3: cleanup of cut branches (controller 1.9.0, te
         } finally {
             for (const worker of workers) await worker.stop();
             await probe.close();
+            await base.close();
+        }
+    });
+});
+
+// ─── Part 6: store transactions (JK-08) ─────────────────────
+
+describe("J3 robust joins, part 6: the decision's transaction (no controller)", () => {
+    it("JK-08: a failure before COMMIT rolls back the decision, its cut and its event as one; a lost COMMIT answer leaves it stored and the retry finds it; no lock outlives either", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const decisionUpdate = (sql, params, fan) => sql.includes("SET state = 'completed', outcome = $2") && params?.[0] === fan;
+            const decisionEvents = async run => (await h.catalog.getSessionEvents(run.workflowSessionId, 0, 500))
+                .filter(event => event.data?.nodeExecutionId === run.fan && (event.eventType === "workflow.state_completed" || event.eventType === "workflow.state_failed"));
+            const projection = run => decided => ({ sessionId: run.workflowSessionId, events: [{ eventType: "workflow.state_completed",
+                data: { runId: run.runId, nodeExecutionId: run.fan, outcome: decided.result.outcome } }] });
+            /** The session row can be locked at once by another connection: nothing holds it. */
+            const unlocked = async run => {
+                const other = await h.pool.connect();
+                try {
+                    await other.query("BEGIN");
+                    await other.query(`SELECT 1 FROM "${h.schema}".sessions WHERE session_id = $1 FOR NO KEY UPDATE NOWAIT`, [run.workflowSessionId]);
+                    await other.query("ROLLBACK");
+                    return true;
+                } finally {
+                    other.release();
+                }
+            };
+            const prepared = async () => {
+                const run = await storedRun(h, joinDoc({ items: WAITS(2), join: { first: 1 } }));
+                await run.enterFan(WAITS(2), null);
+                await run.hold(0);
+                await run.hold(1);
+                await run.succeed(0);
+                await run.confirm(0);
+                return run;
+            };
+            const decide = run => h.store.decideParallelJoin({ nodeExecutionId: run.fan, notStarted: [], joined: joinedValue, projection: projection(run) });
+
+            // A failure before COMMIT (a serialization failure at the decision's write): all of it rolls back.
+            const before = await prepared();
+            let thrown = 0;
+            h.control.hook = ({ sql, params, query }) => {
+                if (thrown === 0 && decisionUpdate(sql, params, before.fan)) {
+                    thrown += 1;
+                    throw Object.assign(new Error("could not serialize access due to concurrent update (test)"), { code: "40001" });
+                }
+                return query(sql, params);
+            };
+            await expect(decide(before)).rejects.toThrow(/could not serialize access/);
+            h.control.hook = null;
+            expect(thrown, "precondition: the fault was reached").toBe(1);
+            expect(await h.store.readNodeExecution(before.fan)).toMatchObject({ state: "pending" });
+            expect(await h.store.readNodeExecution(before.at(1, "hold")), "the cut rolled back with it").toMatchObject({ state: "pending" });
+            expect(await decisionEvents(before)).toEqual([]);
+            expect((await h.catalog.getSessionEvents(before.workflowSessionId, 0, 500)).filter(event => event.eventType === "workflow.branches_cancelled")).toEqual([]);
+            expect(await unlocked(before)).toBe(true);
+            // The retry decides once.
+            expect(await decide(before)).toMatchObject({ result: "won", node: { outcome: "joined", output: [{ index: 0, output: { index: 0 } }] } });
+            expect(await decisionEvents(before)).toHaveLength(1);
+            expect(await h.store.readNodeExecution(before.at(1, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+
+            // A COMMIT whose answer is lost: the decision is stored; the retry finds it, with the same winner and one event.
+            const after = await prepared();
+            let lost = 0;
+            let deciding = false;
+            h.control.hook = async ({ sql, params, query }) => {
+                if (decisionUpdate(sql, params, after.fan)) deciding = true;
+                const answer = await query(sql, params);
+                if (deciding && lost === 0 && sql === "COMMIT") {
+                    lost += 1;
+                    throw new Error("Connection terminated unexpectedly (test, after COMMIT)");
+                }
+                return answer;
+            };
+            await expect(decide(after)).rejects.toThrow(/Connection terminated unexpectedly/);
+            h.control.hook = null;
+            expect(lost, "precondition: the COMMIT ran and its answer was lost").toBe(1);
+            const stored = await h.store.readNodeExecution(after.fan);
+            expect(stored).toMatchObject({ state: "completed", outcome: "joined", output: [{ index: 0, output: { index: 0 } }] });
+            expect(await decisionEvents(after)).toHaveLength(1);
+            expect(await unlocked(after)).toBe(true);
+            const retried = await decide(after);
+            expect(retried).toMatchObject({ result: "decided", node: { outcome: "joined" } });
+            expect(retried.node.completedAt.getTime()).toBe(stored.completedAt.getTime());
+            expect(await decisionEvents(after), "no second event").toHaveLength(1);
+            // A time limit's question reached later finds it decided too.
+            expect(await h.store.elapseParallelNode(after.fan, projection(after))).toMatchObject({ result: "decided", node: { outcome: "joined" } });
+        } finally {
+            h.control.hook = null;
+            await h.stop();
+        }
+    });
+});
+
+// ─── Part 7: a worker process killed after a store write (JK-07) ───
+
+describe("J3 robust joins, part 7: a worker process killed between a store write and its acknowledgement (controller 1.9.0, built code)", () => {
+    it("JK-07 (HG-2): killed after the join, a branch's end or the time limit was stored: another worker process takes over; one decision, one route, the cut made", { timeout: 240_000 }, async () => {
+        const env = getEnv();
+        const base = await joinBaseOf(env);
+        const workers = [];
+        try {
+            /** One case: a worker that dies at `point`, the run `doc`, `act` after its waits are pending; then another worker. */
+            const killedAt = async (point, doc, act) => {
+                const dying = await forkJoinWorker(env, { faultInject: point });
+                workers.push(dying);
+                await dying.ready;
+                const run = await startJoin(base, doc);
+                await persisted(base, [run.at(0, "hold"), run.at(1, "hold")], "both waits pending", "pending", 60_000);
+                await act(run);
+                const death = await within(dying.exited, 60_000, `the worker to die at ${point}`);
+                expect(death, `precondition: it died at ${point}, not otherwise`).toEqual({ code: 137, signal: null });
+                expect(dying.logs.join("\n")).toContain(`[fault-injection] hit point=${point}`);
+                const before = { fan: await base.store.readNodeExecution(run.fan), root: await rootIdsOf(base, run.runId) };
+                const next = await forkJoinWorker(env);
+                workers.push(next);
+                expect(await next.ready, "another process").not.toBe(dying.pid);
+                return { run, before, ended: await endOf(base, run.runId, 90_000) };
+            };
+            const waits = (extra = {}) => joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, ...extra });
+
+            // After the join was stored: the decision stays, the cut and the route follow once.
+            const joined = await killedAt("workflow.v2.join.after-store", waits(),
+                run => base.store.completeNode(run.at(0, "hold"), elapsedResult()));
+            expect(joined.before.fan, "precondition: the join was stored before the death").toMatchObject({ state: "completed", outcome: "joined" });
+            expect(joined.before.root, "precondition: no route yet").toEqual(["fan"]);
+            expect(joined.ended).toMatchObject({ status: "completed", terminalNodeId: "finished", terminalOutput: [{ index: 0, output: { seconds: 600 } }] });
+            expect(decisionOf(await base.store.readNodeExecution(joined.run.fan))).toEqual(decisionOf(joined.before.fan));
+            expect(await base.store.readNodeExecution(joined.run.at(1, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+            expect(await rootIdsOf(base, joined.run.runId)).toEqual(["fan", "finished"]);
+            expect(decisionsOf(await eventsOf(base, joined.run.workflowSessionId), joined.run.fan)).toHaveLength(1);
+
+            // After a branch's end was stored: its terminal is decided once; the join follows.
+            const ended = await killedAt("workflow.v2.endBranch.after-store", waits(),
+                run => base.store.completeNode(run.at(0, "hold"), elapsedResult()));
+            expect(ended.before.fan.state, "precondition: the join not yet asked").toBe("pending");
+            expect(ended.ended).toMatchObject({ status: "completed", terminalNodeId: "finished" });
+            const endEvents = (await eventsOf(base, ended.run.workflowSessionId))
+                .filter(event => event.eventType === "workflow.state_completed" && event.data?.nodeExecutionId === ended.run.at(0, "done"));
+            expect(endEvents, "the branch's end recorded once").toHaveLength(1);
+            expect(decisionsOf(await eventsOf(base, ended.run.workflowSessionId), ended.run.fan)).toHaveLength(1);
+            expect(await rootIdsOf(base, ended.run.runId)).toEqual(["fan", "finished"]);
+
+            // After the time limit was stored: timed_out stays; the cut and the route follow once.
+            const timed = await killedAt("workflow.v2.elapse.after-store", waits({ timeoutSeconds: 6 }), async () => {});
+            expect(timed.before.fan, "precondition: the time limit was stored before the death").toMatchObject({ state: "completed", outcome: "timed_out" });
+            expect(timed.ended).toMatchObject({ status: "completed", terminalNodeId: "late" });
+            expect(decisionOf(await base.store.readNodeExecution(timed.run.fan))).toEqual(decisionOf(timed.before.fan));
+            expect(decisionsOf(await eventsOf(base, timed.run.workflowSessionId), timed.run.fan)).toHaveLength(1);
+            expect(await rootIdsOf(base, timed.run.runId)).toEqual(["fan", "late"]);
+            for (const index of [0, 1]) expect(await base.store.readNodeExecution(timed.run.at(index, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join_timeout" });
+        } finally {
+            for (const worker of workers) await worker.stop();
             await base.close();
         }
     });

@@ -48,6 +48,7 @@ import {
 } from "./parallel.js";
 import { intakeEnvelopeSha256, type IntakeEnvelope } from "./intake.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../activity-routing.js";
+import { faultPoint } from "../../fault-injection.js";
 import { RESPOND_SESSION_REQUEST_TOOL } from "./request-service.js";
 import {
     promptSafeJson, workflowRuntimeSender, workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId,
@@ -3806,6 +3807,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             // cuts its branches (their effects and children) once it is decided.
             if (executed.nodeType === "parallel") {
                 const elapsed = await store.elapseParallelNode(nodeExecutionId, decided => parallelDecidedProjection(run, executed, decided));
+                // Crash tests (J3 JK-07): the time limit is stored, its acknowledgement not yet sent. A no-op unless named.
+                if (elapsed.result !== "not_due") faultPoint("workflow.v2.elapse.after-store");
                 if (elapsed.result === "not_due") notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
                 continue;
             }
@@ -4339,6 +4342,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 update: { touch: true },
             })).node;
         }
+        // Crash tests (J3 JK-07): the branch's end is stored, its acknowledgement not yet sent. A no-op unless named.
+        faultPoint("workflow.v2.endBranch.after-store");
         return { succeeded: stored.state === "completed" && stored.resultKind === "business" && stored.outcome === "succeeded", outcome: stored.outcome };
     });
 
@@ -4504,6 +4509,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 joined: joinedResult,
                 projection: decided => parallelDecidedProjection(run, executed, decided),
             });
+            // Crash tests (J3 JK-07): the join is stored, its acknowledgement not yet sent. A no-op unless named.
+            if (settled.result !== "wait") faultPoint("workflow.v2.join.after-store");
             return settled.result === "wait" ? { decided: false } : { decided: true, cut: parallelCutOf(settled.node) };
         }
         if (executed.state === "completed") return { outcome: executed.outcome };

@@ -285,3 +285,39 @@ export async function scheduledInputs(base, instanceId, name) {
         return typeof payload.input === "string" ? JSON.parse(payload.input) : payload.input;
     });
 }
+
+/**
+ * HG-2: fork a separate worker process (workflow-v2-join-worker-process.js, built code) on the test's database, armed to
+ * die at `faultInject` (PILOTSWARM_FAULT_INJECT, for that process only). Returns its `pid`, `ready` (its runtime runs),
+ * `exited` ({ code, signal }), its `logs`, and `stop()`.
+ */
+export async function forkJoinWorker(env, { faultInject = null } = {}) {
+    const { fork } = await import("node:child_process");
+    const { fileURLToPath } = await import("node:url");
+    const script = fileURLToPath(new URL("./workflow-v2-join-worker-process.js", import.meta.url));
+    const child = fork(script, [], {
+        env: { ...process.env, ...(faultInject ? { PILOTSWARM_FAULT_INJECT: faultInject } : { PILOTSWARM_FAULT_INJECT: "" }) },
+        stdio: ["pipe", "pipe", "pipe", "ipc"],
+    });
+    const logs = [];
+    for (const stream of [child.stdout, child.stderr]) stream.on("data", data => logs.push(...String(data).split("\n").filter(Boolean)));
+    const exited = new Promise(resolve => child.on("exit", (code, signal) => resolve({ code, signal })));
+    const ready = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`the worker process did not start in 45 s: ${logs.join("\n")}`)), 45_000);
+        child.on("message", message => {
+            if (message?.type === "ready") { clearTimeout(timer); resolve(message.pid); }
+            if (message?.type === "error") { clearTimeout(timer); reject(new Error(`the worker process failed: ${message.error}`)); }
+        });
+        child.on("error", error => { clearTimeout(timer); reject(error); });
+    });
+    child.send({ type: "start", store: env.store, cmsSchema: env.cmsSchema, duroxideSchema: env.duroxideSchema });
+    return {
+        pid: child.pid, ready, exited, logs,
+        async stop() {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            child.send({ type: "stop" });
+            await Promise.race([exited, pause(5_000)]);
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        },
+    };
+}
