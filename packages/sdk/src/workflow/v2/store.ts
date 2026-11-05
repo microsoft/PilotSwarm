@@ -49,6 +49,12 @@ export const ACTIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "r
 /** A run that may admit a new node execution (a paused run admits none). */
 export const ADMITTING_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running"];
 
+/**
+ * The winners of a node execution that a run's end, or a cut, cancelled: a lifecycle command (cancel), the workflow's
+ * deletion (delete, the deletion trigger), a graceful stop, a failFast cut, or the run deadline.
+ */
+export type CancelledNodeWinner = "cancel" | "delete" | "stop" | "fail_fast" | "deadline";
+
 /** A run whose controller has not begun it: admitted, or paused before it began. */
 export function runNotBegun(run: { status: WorkflowRunStatus; pausedFrom: "admitted" | "running" | null }): boolean {
     return run.status === "admitted" || (run.status === "paused" && run.pausedFrom === "admitted");
@@ -3982,9 +3988,10 @@ export class WorkflowStore {
      * The node executions of a run decided by a cancel (winner `cancel`), or by another such end (a stop's: `stop`; a
      * parallel state's failFast cancellation of its other branches: `fail_fast`).
      */
-    async listCancelledNodeIds(runId: string, winner: "cancel" | "stop" | "fail_fast" | "deadline" = "cancel"): Promise<string[]> {
+    async listCancelledNodeIds(runId: string, winner: CancelledNodeWinner | readonly CancelledNodeWinner[] = "cancel"): Promise<string[]> {
+        const winners = typeof winner === "string" ? [winner] : [...winner];
         const { rows } = await this.pool.query(
-            `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND winner = $2 ORDER BY node_execution_id`, [runId, winner]);
+            `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND winner = ANY($2::text[]) ORDER BY node_execution_id`, [runId, winners]);
         return rows.map(row => str(row, "node_execution_id"));
     }
 

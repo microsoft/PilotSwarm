@@ -10,7 +10,8 @@
  *
  * - V-3: a terminal-first workflow with 33 wakes and then a cancel: no state is admitted after the acceptance, and the run
  *   ends cancelled (1.8.0 and 1.9.0).
- * - V-2: wakes queued all the time do not hold back a graceful stop or the run deadline (1.9.0).
+ * - V-2: wakes queued all the time (counted only when the queue accepted them, N-4) do not hold back a graceful stop or
+ *   the run deadline, and a paused run continues as new under them, the condition the old pre-rollover drain met (1.9.0).
  * - DX-1: at controller 1.9.0's paused continue-as-new, a cancel behind more than 100 wakes: the run ended when the cancel
  *   was accepted, and the controller finishes.
  * - A cancel accepted while the controller is admitting the next state: no further state is admitted (1.8.0 and 1.9.0).
@@ -18,6 +19,9 @@
  *   delete deletes the workflow; both before the controller reads anything.
  * - DX-2, R5: 150 wakes and a cancel an older build queued (only in the queue), behind a held plan: no turn reads more
  *   than 32 messages in a row, so the controller does not fail, and the queued cancel still ends the run (1.8.0, 1.9.0).
+ * - N-1: an end another writer stored (an accepted cancel during a held 1.8.0 collection; an operator's delete of a
+ *   running 1.9.0 workflow) gets its running script effect a stop request, with the script's own liveness check slowed.
+ * - N-2: an older queued parent command that lost to a person's cancel does not silence the parent's notice (1.9.0).
  * - The operator paths: the management API's cancelSession, completeSession and deleteSession, and the agent manager's
  *   manage_agent_session (its call: applyOperatorCommandToWorkflowV2 with the durable client), end a begun run in the
  *   store at once while the controller is in the middle of an admission, and no state is admitted after them; an
@@ -38,7 +42,7 @@ import {
 } from "../../src/workflow/v2/service.ts";
 import {
     registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_COMMAND_READ_BATCH, WORKFLOW_V2_REQUEST_ACTIVITIES,
-    workflowNotifyInstanceId,
+    workflowEffectInstanceId, workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -64,6 +68,22 @@ const HOLD = ({ limits } = {}) => ({
 });
 /** A workflow whose first state is its terminal. */
 const TERMINAL_FIRST = { ...head("terminal-first"), initial: "done", states: { done: { type: "terminal", outcome: "succeeded" } } };
+/**
+ * A script that sleeps 90 s, with no route for a runtime error (no failure route, no catch-all): its effect is still
+ * running when the run ends, and only an explicit stop ends it early when the script's own liveness check is slow.
+ */
+const SLOW_SCRIPT = {
+    ...head("slow-script"),
+    initial: "work",
+    states: {
+        work: { type: "script", timeoutSeconds: 120, source: "await new Promise(resolve => setTimeout(resolve, 90_000));\nawait setResult(\"ok\", {});\n",
+            transition: { next: { ok: "done" } } },
+        done: { type: "terminal", outcome: "succeeded" },
+    },
+};
+/** The script's own liveness check, slowed past the test window: only an explicit stop ends its effect early. */
+const SLOW_LIVENESS = { livenessIntervalMs: 120_000 };
+
 /** A one-second wait, then a ten-minute one. */
 const TWO_WAITS = {
     ...head("two-waits"),
@@ -96,9 +116,9 @@ function gate() {
 
 /**
  * A worker-equivalent registration: controller 1.9.0 with its tagged activities when `requests`, else 1.8.0. An activity
- * named in `wrap` is wrapped (to hold it).
+ * named in `wrap` is wrapped (to hold it); `options` replace registration options (a slow liveness check, a parent notice).
  */
-async function harness(env, { requests, wrap = {} }) {
+async function harness(env, { requests, wrap = {}, options = {} }) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -119,6 +139,7 @@ async function harness(env, { requests, wrap = {} }) {
         deleteSession: async sessionId => catalog.softDeleteSession(sessionId),
         wakeBackstopMs: 500,
         ...(requests ? { workflowRequests: true, sessionQueue: { ...sessionQueueTransport(client), version: async () => "1.0.83" } } : {}),
+        ...options,
     });
     await runtime.start();
     return {
@@ -147,18 +168,38 @@ async function queueWakes(h, controller, runId, count) {
     for (let n = 0; n < count; n += 1) await h.client.enqueueEvent(controller, "messages", wake(runId, n));
 }
 
-/** Queue a wake every few milliseconds until stopped: the queue is never empty for long. */
-function pumpWakes(h, controller, runId) {
+/**
+ * Queue wakes from `producers` loops, each every few milliseconds, until stopped: the queue is never empty for long.
+ * `sent()` counts only the wakes the queue accepted (review N-4). A failure while the run is active is unexpected: the
+ * pump stops, and stop() throws it; a failure after the run ended (its controller completed) ends the pump quietly.
+ * halt() stops it without throwing, for a test's finally.
+ */
+function pumpWakes(h, controller, runId, producers = 1) {
     let on = true;
     let sent = 0;
-    const running = (async () => {
+    let failure = null;
+    const loop = async () => {
         while (on) {
-            await h.client.enqueueEvent(controller, "messages", wake(runId, sent)).catch(() => undefined);
-            sent += 1;
+            try {
+                await h.client.enqueueEvent(controller, "messages", wake(runId, sent));
+                sent += 1;
+            } catch (error) {
+                const run = await h.store.readRun(runId).catch(() => null);
+                if (on && run !== null && ["admitted", "running", "paused"].includes(run.status)) failure ??= error;
+                on = false;
+            }
             await pause(2);
         }
-    })();
-    return { sent: () => sent, stop: async () => { on = false; await running; } };
+    };
+    const running = Promise.all(Array.from({ length: producers }, loop));
+    const halt = async () => { on = false; await running; };
+    return {
+        sent: () => sent, halt,
+        async stop() {
+            await halt();
+            if (failure) throw failure;
+        },
+    };
 }
 
 const cancel = (h, workflowSessionId, operationId = "cancel-1") =>
@@ -279,30 +320,60 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
     // V-2: the queue is never empty, so every wait of the controller ends with a wake at once.
     it("V-2 (1.9.0): wakes queued all the time hold back neither a graceful stop nor the run deadline", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv(), { requests: true });
+        let pump = null;
         try {
             // A graceful stop with no grace: the wait is pending, so it ends the run stopped at once.
             const stopped = await started(h, HOLD());
             await until(async () => (await h.store.listNodeExecutions(stopped.runId)).some(node => node.nodeId === "hold" && node.state === "pending") || null,
                 "the wait to start");
-            let pump = pumpWakes(h, stopped.controller, stopped.runId);
-            await until(async () => pump.sent() >= 50 || null, "the wakes to flow");
-            let asked = Date.now();
+            pump = pumpWakes(h, stopped.controller, stopped.runId);
+            await until(async () => pump.sent() >= 50 || null, "50 wakes to be accepted");
+            const asked = Date.now();
             await controlWorkflowV2Run(h.host, stopped.workflowSessionId, { operation: "stop", runId: null, reason: "enough", graceSeconds: 0 },
                 { actor: ACTOR, operationId: "stop-1" });
-            expect(await ended(h, stopped.runId, diagnosis(h, stopped.controller), 20_000)).toMatchObject({ status: "stopped" });
+            const atStop = pump.sent();
+            expect(await ended(h, stopped.runId, diagnosis(h, stopped.controller), 20_000)).toMatchObject({ runId: stopped.runId, status: "stopped" });
             expect(Date.now() - asked).toBeLessThan(20_000);
+            expect(pump.sent(), "wakes kept flowing while the stop was handled").toBeGreaterThan(atStop);
             await pump.stop();
-
-            // The run deadline (3 s), with the wakes flowing from the start.
-            const timed = await started(h, HOLD({ limits: { timeoutSeconds: 3 } }));
-            pump = pumpWakes(h, timed.controller, timed.runId);
-            asked = Date.now();
-            const run = await ended(h, timed.runId, diagnosis(h, timed.controller), 25_000);
-            expect(run).toMatchObject({ status: "failed", terminalNodeId: null });
-            expect(Date.now() - asked).toBeLessThan(25_000);
-            expect(pump.sent()).toBeGreaterThan(100);
-            await pump.stop();
+            pump = null;
         } finally {
+            await pump?.halt();
+            await h.stop();
+        }
+    });
+
+    // V-2 at the rollover: the condition the old pre-continue-as-new drain met. A paused run counts every wait, so with wakes
+    // flowing it reaches its 50th wait and continues as new while the queue is still being filled; the old drain read on
+    // until the queue was empty. The run deadline must still end the run on time, and the controller must roll over.
+    it("V-2 (1.9.0): under sustained wakes a paused run continues as new and still ends at its run deadline", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv(), { requests: true });
+        let pump = null;
+        try {
+            const DEADLINE_SECONDS = 15;
+            const run = await started(h, HOLD({ limits: { timeoutSeconds: DEADLINE_SECONDS } }));
+            const began = Date.now();
+            const diagnose = diagnosis(h, run.controller);
+            await until(async () => (await h.store.listNodeExecutions(run.runId)).some(node => node.nodeId === "hold" && node.state === "pending") || null,
+                "the wait to start", 30_000, diagnose);
+            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "pause", runId: null, reason: "hold still" },
+                { actor: ACTOR, operationId: "pause-1" });
+            await until(async () => (await h.store.readRun(run.runId))?.status === "paused" || null, "the pause", 30_000, diagnose);
+            const executions = (await h.client.listExecutions(run.controller)).length;
+            pump = pumpWakes(h, run.controller, run.runId, 4);
+            // The rollover happens while the wakes flow: more executions, and at least 50 accepted wakes (one per paused wait).
+            await until(async () => (await h.client.listExecutions(run.controller)).length > executions || null,
+                "a continue-as-new under sustained wakes", 30_000, diagnose);
+            expect(pump.sent()).toBeGreaterThanOrEqual(50);
+            const atRollover = pump.sent();
+            const endedRun = await ended(h, run.runId, diagnose, (DEADLINE_SECONDS + 25) * 1_000);
+            expect(endedRun).toMatchObject({ runId: run.runId, status: "failed", terminalNodeId: null });
+            expect(Date.now() - began).toBeLessThan((DEADLINE_SECONDS + 25) * 1_000);
+            expect(pump.sent(), "wakes kept flowing after the rollover").toBeGreaterThan(atRollover);
+            await pump.stop();
+            pump = null;
+        } finally {
+            await pump?.halt();
             await h.stop();
         }
     });
@@ -498,5 +569,104 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
                 await early.stop();
             }
         });
+    });
+
+    // Review N-1 (S7-DX3): every end that another writer stores is reconciled the same way, and the running effects it
+    // cancelled are asked to stop, whoever won. A real script effect with a slowed liveness check shows it: only the
+    // explicit stop ends it before its 90 s sleep.
+    describe("N-1: an end another writer stored stops the running effects", () => {
+        /** The script state's node execution once its effect runs. */
+        const scriptRunning = (h, runId) => until(async () => {
+            const node = (await h.store.listNodeExecutions(runId)).find(item => item.nodeId === "work");
+            return node?.effectAttempts >= 1 ? node : null;
+        }, "the script to start");
+        /** The script's effect orchestration stops (it would run 90 s if nothing asked it to stop). */
+        const effectStopped = (h, nodeExecutionId) => until(async () => {
+            const status = await h.client.getStatus(workflowEffectInstanceId(nodeExecutionId));
+            return status.status !== "Running" ? status : null;
+        }, "the script's effect to be stopped", 40_000);
+
+        it("(a) 1.8.0: a cancel accepted while its collection is held; the collection reports the end and the effect is stopped", { timeout: TIMEOUT }, async () => {
+            let hold = null;
+            const h = await harness(getEnv(), { requests: false, options: SLOW_LIVENESS, wrap: {
+                [WORKFLOW_V2_ACTIVITIES.collect]: fn => async (ctx, input) => {
+                    const held = hold;
+                    if (held) { hold = null; held.arrive(); await held.wait(); }
+                    return fn(ctx, input);
+                },
+            } });
+            try {
+                const run = await started(h, SLOW_SCRIPT);
+                const node = await scriptRunning(h, run.runId);
+                const held = gate();
+                hold = held;
+                await held.reached;
+                await cancel(h, run.workflowSessionId);
+                expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "cancelled", winner: "cancel" });
+                held.open();
+                const stopped = await effectStopped(h, node.nodeExecutionId);
+                expect(stopped.status).not.toBe("Running");
+                const asked = await h.catalog.getSessionEvents(run.workflowSessionId, 0, 500, ["workflow.cancel_requested"]);
+                expect(asked.flatMap(event => event.data.effects.map(effect => effect.nodeExecutionId))).toContain(node.nodeExecutionId);
+                await controllerFinished(h, run.controller, "cancelled");
+            } finally {
+                await h.stop();
+            }
+        });
+
+        it("(b) 1.9.0: an operator's delete of a running workflow; the controller's next store call finds it and the effect is stopped", { timeout: TIMEOUT }, async () => {
+            const h = await harness(getEnv(), { requests: true, options: SLOW_LIVENESS });
+            try {
+                const run = await started(h, SLOW_SCRIPT);
+                const node = await scriptRunning(h, run.runId);
+                expect(await applyOperatorCommandToWorkflowV2({ store: h.store, deleteSessionFacts: null, duroxideClient: h.client }, {
+                    targetSessionId: run.workflowSessionId, command: { type: "cmd", cmd: "delete", id: "delete-mgr-1", args: { reason: "not needed" } },
+                })).toMatchObject({ action: "applied", receipt: { command: "delete", applied: "store" } });
+                expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({ outcome: "cancelled", winner: "delete" });
+                // Nothing is queued for a delete: the controller finds it at its next collection (its backstop is 500 ms).
+                const stopped = await effectStopped(h, node.nodeExecutionId);
+                expect(stopped.status).not.toBe("Running");
+                expect((await h.client.waitForOrchestration(run.controller, 30_000)).status).toBe("Completed");
+            } finally {
+                await h.stop();
+            }
+        });
+    });
+
+    // Review N-2 (S7-DX3): the parent notice follows the stored end, the first run-ending commit, not a queued command that
+    // lost. An older build's queued parent "done" (requestedBy: the parent) is read after a person's cancel ended the run.
+    it("N-2 (1.9.0): an older queued parent command that lost to a person's cancel does not silence the parent's notice", { timeout: TIMEOUT }, async () => {
+        const notices = [];
+        const plan = gate();
+        let planned = false;
+        const h = await harness(getEnv(), { requests: true, options: {
+            authorizeParentNotification: async () => true,
+            notifyParent: async (parentSessionId, text) => { notices.push({ parentSessionId, text }); },
+        }, wrap: {
+            [WORKFLOW_V2_REQUEST_ACTIVITIES.plan]: fn => async (ctx, input) => {
+                if (!planned) { planned = true; plan.arrive(); await plan.wait(); }
+                return fn(ctx, input);
+            },
+        } });
+        try {
+            const parent = randomUUID();
+            const run = await started(h, HOLD(), { parent });
+            await plan.reached;
+            // The older build's command, only queued (read first), then a person's cancel through the store (it wins the end).
+            await h.client.enqueueEvent(run.controller, "messages",
+                JSON.stringify({ type: "cmd", cmd: "done", id: "old-done", args: { reason: "done by the parent (older build)" }, requestedBy: parent }));
+            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "stopped by a person" },
+                { actor: { kind: "user", provider: "test", subject: `person-${randomUUID()}` }, operationId: "person-cancel" });
+            expect(await h.store.readRun(run.runId)).toMatchObject({ status: "cancelled",
+                terminalError: { message: "stopped by a person", details: { command: "cancel", requestedBy: null, accepted: true } } });
+            plan.open();
+            await controllerFinished(h, run.controller, "cancelled");
+            await until(async () => notices.length > 0 || null, "the parent's notice");
+            expect(notices.map(notice => notice.parentSessionId)).toEqual([parent]);
+            expect(notices[0].text).toContain("cancelled");
+        } finally {
+            plan.open();
+            await h.stop();
+        }
     });
 });

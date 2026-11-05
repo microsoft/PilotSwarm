@@ -354,9 +354,11 @@ pending steps are cancelled in the same transaction, so no further step
 starts. The controller finds the ended run at its next store call: it stops
 the cancelled scripts, ends agent children, tells the parent (unless the
 parent asked) and finishes. A delete deletes the workflow at once, which ends
-its run. A paused run ends too, and a graceful stop in progress is replaced
-by the cancel. On a run that already ended, the request is recorded with
-that end and changes nothing.
+its run; the controller then stops its scripts and ends its agent children,
+and tells no one. A paused run ends too, and a graceful stop in progress is
+replaced by the cancel. On a run that already ended, the request is recorded
+with that end and changes nothing. Whatever ended the run first decides who
+is told: a later command that lost changes nothing.
 
 The kill reaches the worker when the running script state next renews its
 activity lock. The lock times out after `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`

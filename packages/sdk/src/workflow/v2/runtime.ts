@@ -81,6 +81,7 @@ import {
     type WorkflowAgentInvocation,
     type WorkflowAgentTask,
     type WorkflowTestInterception,
+    type CancelledNodeWinner,
     commandEndOf,
     workflowTestInterceptionId,
 } from "./store.js";
@@ -776,12 +777,30 @@ function parseResult(value: unknown): ControllerResult {
     return { runId: text(result.runId, "runId"), status: result.status, outcome: textOrNull(result.outcome, "outcome") };
 }
 
-/** observeEnd's answer: the ended run, and the lifecycle command whose acceptance ended it (null for any other end). */
-function parseObservedEnd(value: unknown): ControllerResult & { command: "cancel" | "done" | null } {
+/** observeEnd's answer: the ended run, and whether the end is its workflow's deletion. */
+function parseObservedEnd(value: unknown): ControllerResult & { deleted: boolean } {
     const observed = record(value, "observed end");
-    const command = observed.command === "cancel" || observed.command === "done" ? observed.command : null;
-    expect(command !== null || observed.command === null, "observed command is invalid");
-    return { ...parseResult(observed), command };
+    const deleted = observed.deleted === true;
+    expect(deleted || observed.deleted === false, "observed deletion is invalid");
+    return { ...parseResult(observed), deleted };
+}
+
+/**
+ * A run-ending activity's answer (finish, cancel): the run's result, and whether another writer had ended the run first
+ * (S7-DX3, N-1, N-2: `elsewhere`; an answer recorded before that field says not).
+ */
+function parseEndResult(value: unknown): { result: ControllerResult; elsewhere: boolean } {
+    const ended = record(value, "end result");
+    expect(ended.elsewhere === undefined || ended.elsewhere === true, "end result elsewhere is invalid");
+    return { result: parseResult(value), elsewhere: ended.elsewhere === true };
+}
+
+/** Controller 1.8.0's collection: its results (a list, as before), and, since S7-DX3, whether the run ended. */
+function parseLegacyCollected(value: unknown): { collected: CollectedResult[]; ended: boolean } {
+    if (Array.isArray(value)) return { collected: parseCollected(value), ended: false };
+    const result = record(value, "collect result");
+    expect(result.ended === true, "collect end is invalid");
+    return { collected: parseCollected(result.collected), ended: true };
 }
 
 /**
@@ -789,9 +808,9 @@ function parseObservedEnd(value: unknown): ControllerResult & { command: "cancel
  * the terminal's output failed its contract and the error goes to the
  * catch-all state instead (only when the controller offered that route).
  */
-function parseTerminalFinish(value: unknown): { routed: false; result: ControllerResult } | { routed: true; nodeExecutionId: string; code: string } {
+function parseTerminalFinish(value: unknown): { routed: false; result: ControllerResult; elsewhere: boolean } | { routed: true; nodeExecutionId: string; code: string } {
     const finished = record(value, "finish result");
-    if (finished.routed === undefined) return { routed: false, result: parseResult(value) };
+    if (finished.routed === undefined) return { routed: false, ...parseEndResult(value) };
     const routed = record(finished.routed, "finish route");
     return { routed: true, nodeExecutionId: text(routed.nodeExecutionId, "nodeExecutionId"), code: text(routed.code, "code") };
 }
@@ -961,8 +980,10 @@ function* finishRun(
     request: { failure: { nodeId: string | null; nodeExecutionId: string | null; code: string; message: string } },
     profile: ControllerProfile = LEGACY_PROFILE,
 ): Generator<ScheduledTask, ControllerResult, unknown> {
-    const result = parseResult(yield* profile.persist(ctx, "finish", { runId, ...request }));
-    return yield* reportEnded(ctx, runId, result, profile);
+    const finished = parseEndResult(yield* profile.persist(ctx, "finish", { runId, ...request }));
+    // S7-DX3 (N-1): another writer ended the run first: its end is reconciled as any other observed end.
+    if (finished.elsewhere) return yield* endedElsewhere(ctx, runId, profile);
+    return yield* reportEnded(ctx, runId, finished.result, profile);
 }
 
 /**
@@ -1025,29 +1046,32 @@ function* takeQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask,
 }
 
 /**
- * S7-DX2: the run ended in another transaction, as one of this controller's store calls found it (an admission, its stop's
- * end, the run deadline's end): the store ended it as an accepted cancel or done was recorded, or a deletion ended it.
- * After an accepted command, the controller does what applyCommand does after its end: the effects that end cancelled
- * are asked to stop (observeEnd), 1.9.0's agent children are ended (afterEnd), the parent is told (unless it asked: the
- * notice reads the requester the end records) and the final status is published. After any other end, the children are
- * ended, as before.
+ * The one reconciliation of a run that another writer ended (S7-DX2, S7-DX3 N-1, N-2), whichever store call of this
+ * controller found it: an admission, a collection (1.8.0 and 1.9.0), the finish of a terminal or a failure, a command's
+ * cancel, the stop's end or the run deadline's end. The ender may be an accepted cancel or done (any entry point), the
+ * workflow's deletion, the run deadline, or a recover. observeEnd asks the effects of every node that end cancelled to
+ * stop (repeat-safe). Then, for any end but a deletion, the run's end is reported as this controller reports its own
+ * (reportEnded: 1.9.0's agent children are ended, the parent is told by the requester the stored end records, never by a
+ * command that lost, and the final status is published); a deletion ends the children only, as before.
  */
-function* endedElsewhere(ctx: OrchestrationContext, input: ControllerInput, profile: ControllerProfile): Generator<ScheduledTask, ControllerResult, unknown> {
-    const observed = parseObservedEnd(yield* profile.persist(ctx, "observeEnd", { runId: input.runId }));
-    if (profile.afterEnd) yield* profile.afterEnd(ctx, input.runId);
+function* endedElsewhere(ctx: OrchestrationContext, runId: string, profile: ControllerProfile): Generator<ScheduledTask, ControllerResult, unknown> {
+    const observed = parseObservedEnd(yield* profile.persist(ctx, "observeEnd", { runId }));
     const result: ControllerResult = { runId: observed.runId, status: observed.status, outcome: observed.outcome };
-    if (observed.command === null) return result;
-    yield* profile.persist(ctx, "notifyParent", { runId: input.runId });
-    ctx.setCustomStatus(JSON.stringify({ status: "cancelled", sessionKind: "workflow", workflow: { v: 2, runId: input.runId, outcome: observed.outcome } }));
+    if (!observed.deleted) return yield* reportEnded(ctx, runId, result, profile);
+    if (profile.afterEnd) yield* profile.afterEnd(ctx, runId);
     return result;
 }
 
 /** Apply one lifecycle command (cancel, done or delete) and end the controller. */
 function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, command: WorkflowCommand,
     profile: ControllerProfile = LEGACY_PROFILE): Generator<ScheduledTask, ControllerResult, unknown> {
-    const ended = parseResult(yield* profile.persist(ctx, "cancel", {
+    const applied = parseEndResult(yield* profile.persist(ctx, "cancel", {
         runId: input.runId, command: command.cmd, reason: command.reason ?? null, requestedBy: command.requestedBy ?? null,
     }));
+    // S7-DX3 (N-2): another writer ended the run first (an accepted cancel or done, a deletion, a finish): the notice and the
+    // status follow that stored end, never this command's requester.
+    if (applied.elsewhere) return yield* endedElsewhere(ctx, input.runId, profile);
+    const ended = applied.result;
     // Controller 1.9.0: the children of the agent states this end decided are cancelled (IR 8).
     if (profile.afterEnd) yield* profile.afterEnd(ctx, input.runId);
     if (command.cmd !== "delete") {
@@ -1122,7 +1146,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
             if (!entered.admitted) {
                 // A paused run admits nothing until it is resumed; an ended one is done (S7-DX2: its post-end work).
                 if (entered.status === "paused") { paused = true; break; }
-                return yield* endedElsewhere(ctx, input, LEGACY_PROFILE);
+                return yield* endedElsewhere(ctx, input.runId, LEGACY_PROFILE);
             }
             // The ordinal and the step count only once the admission is stored.
             state.ordinals[key] = ordinal;
@@ -1138,7 +1162,11 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 const finished = parseTerminalFinish(yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.finish, {
                     runId: input.runId, terminalNodeExecutionId: entered.nodeExecutionId, ...(catchAll !== null ? { routeOutputErrors: true } : {}),
                 }));
-                if (!finished.routed) return yield* reportEnded(ctx, input.runId, finished.result);
+                if (!finished.routed) {
+                    // S7-DX3 (N-1): another writer ended the run before this finish: its end is reconciled.
+                    if (finished.elsewhere) return yield* endedElsewhere(ctx, input.runId, LEGACY_PROFILE);
+                    return yield* reportEnded(ctx, input.runId, finished.result);
+                }
                 expect(catchAll !== null && finished.nodeExecutionId === entered.nodeExecutionId, "finish routed an output error the controller did not offer");
                 state.catchAllEntered = true;
                 cursor.nodeId = catchAll;
@@ -1219,8 +1247,11 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
             }
         }
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
-        const collected = parseCollected(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.collect,
+        const collection = parseLegacyCollected(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.collect,
             { runId: input.runId, nodeExecutionIds: pendingIds }, STORE_RETRY));
+        // S7-DX3 (N-1): a run another writer ended routes none of its results; its end is reconciled (observeEnd).
+        if (collection.ended) return yield* endedElsewhere(ctx, input.runId, LEGACY_PROFILE);
+        const collected = collection.collected;
         if (collected.length > 0) {
             for (const result of collected) {
                 const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
@@ -1358,7 +1389,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             return null;
         }
         // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
-        if (!expiry.expired) return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
+        if (!expiry.expired) return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
         return yield* reportEnded(ctx, input.runId, expiry.result, REQUEST_PROFILE);
     };
     // S7-DX2: a lifecycle command is store state, not a queued message, so continue-as-new may drop unread wakes.
@@ -1571,7 +1602,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             else {
                 // A stop is seen by the next admission or collection; only the results and the run's own deadline matter here.
                 const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingAgents }));
-                if (collection.ended) return { result: yield* endedElsewhere(ctx, input, REQUEST_PROFILE) };
+                if (collection.ended) return { result: yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE) };
                 if (collection.expired) {
                     const expired = yield* expireRun();
                     return expired !== null ? { result: expired } : null;
@@ -1658,7 +1689,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 // Review R2-RT-1: the limit ends the run where it would admit, so a run read now as past its deadline,
                 // stopping or paused is not ended by it here (an admission's order); a paused one at its limit ends after the resume.
                 const seen = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: [] }));
-                if (seen.ended) return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
+                if (seen.ended) return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
                 if (seen.expired) {
                     const expired = yield* expireRun();
                     if (expired !== null) return expired;
@@ -1696,7 +1727,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 if (entered.stopping !== null) { stopping = entered.stopping; break; }
                 if (entered.status === "paused") { paused = true; break; }
                 // Another end decided the run (an accepted cancel or done, a deletion): its post-end work (S7-DX2).
-                return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
+                return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
             }
             state.ordinals[key] = ordinal;
             state.steps += 1;
@@ -1714,7 +1745,11 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 const finished = parseTerminalFinish(yield* persistentlyTagged(ctx, R.finish, {
                     runId: input.runId, terminalNodeExecutionId: entered.nodeExecutionId, ...(catchAll !== null ? { routeOutputErrors: true } : {}),
                 }));
-                if (!finished.routed) return yield* reportEnded(ctx, input.runId, finished.result, REQUEST_PROFILE);
+                if (!finished.routed) {
+                    // S7-DX3 (N-1): another writer ended the run before this finish: its end is reconciled.
+                    if (finished.elsewhere) return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
+                    return yield* reportEnded(ctx, input.runId, finished.result, REQUEST_PROFILE);
+                }
                 expect(catchAll !== null && finished.nodeExecutionId === entered.nodeExecutionId, "finish routed an output error the controller did not offer");
                 state.catchAllEntered = true;
                 cursor.nodeId = catchAll;
@@ -1844,7 +1879,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
         const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingIds }));
         // S7-DX2: a run that another transaction ended (an accepted cancel or done, a deletion) routes none of its results.
-        if (collection.ended) return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
+        if (collection.ended) return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
         // A run past its deadline (read after the results): the store ends it before any of them is routed.
         if (collection.expired) {
             const expired = yield* expireRun();
@@ -1907,7 +1942,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 const finished = parseStopFinish(yield* persistentlyTagged(ctx, R.stop, { runId: input.runId }));
                 if (finished.ended) {
                     // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
-                    if (finished.result.status !== "stopped") return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
+                    if (finished.result.status !== "stopped") return yield* endedElsewhere(ctx, input.runId, REQUEST_PROFILE);
                     return yield* reportEnded(ctx, input.runId, finished.result, REQUEST_PROFILE);
                 }
                 const read = parseNow(yield ctx.utcNow());
@@ -2841,7 +2876,9 @@ const WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS = 2_000;
  * an attempt's 30 s that the wait for deliveries and the wait for the lock may use together (E3-R1). The 30 s is the
  * attempt timeout of controller 1.8.0's store activities (WORKFLOW_V2_STORE_RETRY); 1.9.0's tagged activities have none.
  * The budget bounds only these two voluntary waits, not the attempt (review DX-5): a holder that hangs in a connection,
- * a SQL call or the send keeps the lock; the other attempts wait, fail, and run out, and recover sends the notice.
+ * a SQL call or the send keeps the lock, and can stay pending with no end (a 1.9.0 attempt has no timeout). The other
+ * attempts and recover make progress only after that holder settles, or after its database connection or its worker
+ * process ends and releases the lock (S7-DX3, N-3); nothing here releases the lock while the old send may still run.
  */
 export const WORKFLOW_V2_NOTICE_LOCK_WAIT_MS = 20_000;
 const WORKFLOW_V2_NOTICE_LOCK_POLL_MS = 500;
@@ -3561,11 +3598,16 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // (a branch cancelled under failFast, IR 8, is never collected: its controller dropped it first).
         const collected = rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind,
             ...(row.winner === BRANCH_CANCEL_WINNERS.join || row.winner === BRANCH_CANCEL_WINNERS.timeout ? { cut: true } : {}) }));
-        // Controller 1.8.0 (frozen: its loop is not changed; adversarial review R2-RT-1): a paused run's results are not given
-        // to it, read after them, so it routes none of them and ends no run by them until the resume, also when its cursor
-        // waits on work and no admission would find the pause. They stay stored; a collection after the resume returns them.
-        // Its histories replay as recorded: only what this activity answers from now on changes.
-        if (!requests) return (await runOf(runId)).status === "paused" ? [] : collected;
+        // Controller 1.8.0 (adversarial review R2-RT-1): a paused run's results are not given to it, read after them, so it
+        // routes none of them and ends no run by them until the resume, also when its cursor waits on work and no admission
+        // would find the pause. They stay stored; a collection after the resume returns them. Its loop was changed in place
+        // since (S7-DX2, S7-DX3; Workflow V2 was never activated): a run that ended is reported as ended.
+        if (!requests) {
+            const current = await runOf(runId);
+            // S7-DX3 (N-1): a run another writer ended is reported so (its controller reconciles the end, observeEnd).
+            if (!ACTIVE_RUN_STATUSES.includes(current.status)) return { collected, ended: true };
+            return current.status === "paused" ? [] : collected;
+        }
         // Controller 1.9.0: also the run's accepted stop, read after the results, so a stop accepted before this read
         // reaches the controller with them (it routes none of them then). A stop is never withdrawn.
         const run = await runOf(runId);
@@ -3582,7 +3624,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     register("finish", async (_ctx, rawInput, requests) => {
         const input = record(rawInput, "finish input");
         const run = await runOf(text(input.runId, "runId"));
-        if (!ACTIVE_RUN_STATUSES.includes(run.status)) return { runId: run.runId, status: run.status, outcome: run.terminalOutcome };
+        // S7-DX3: `elsewhere` says another writer (or an earlier attempt of this finish) had ended the run; the controller
+        // reconciles that end (endedElsewhere), which reports it as its own end would be.
+        if (!ACTIVE_RUN_STATUSES.includes(run.status)) return { runId: run.runId, status: run.status, outcome: run.terminalOutcome, elsewhere: true };
         // A failure ends the run from its row alone: it must succeed even when
         // the pinned IR cannot be read (that may be why the run is failing).
         const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
@@ -3660,7 +3704,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     });
                     // A cancellation or deletion that committed first decided the run.
                     const after = await runOf(run.runId);
-                    if (!ACTIVE_RUN_STATUSES.includes(after.status)) return { runId: after.runId, status: after.status, outcome: after.terminalOutcome };
+                    if (!ACTIVE_RUN_STATUSES.includes(after.status)) return { runId: after.runId, status: after.status, outcome: after.terminalOutcome, elsewhere: true };
                     if (stored.node.resultKind !== "runtime_error" || stored.node.outcome === null) {
                         throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Terminal ${executed.nodeExecutionId} has a business result while its run is active.`);
                     }
@@ -3689,18 +3733,20 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 update: { state: status, lastError: status === "failed" ? redactErrorThenClip(errorText ?? "Workflow failed", 2_000) : null, touch: true },
             },
         });
-        return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome };
+        return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome, ...(ended.ended ? {} : { elsewhere: true }) };
     });
 
     /**
-     * Ask the effect of every node whose stored result is the run's cancellation (winner cancel) to stop. The list comes
-     * from the store on every execution, so an activity retried after the run's end still sends the requests.
+     * Ask the effect of every node whose stored result is the run's cancellation (by default winner cancel; `winners` for
+     * another end) to stop. The list comes from the store on every execution, so an activity retried after the run's end
+     * still sends the requests (repeat-safe: an effect that has ended is skipped).
      */
-    const stopCancelledEffects = async (actx: ActivityContext, run: WorkflowRunRow, reason: string): Promise<void> => {
+    const stopCancelledEffects = async (actx: ActivityContext, run: WorkflowRunRow, reason: string,
+        winners: readonly CancelledNodeWinner[] = ["cancel"]): Promise<void> => {
         const client = actx.getClient();
         if (!client) throw new Error("Workflow cancellation needs the durable client.");
         const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
-        for (const nodeExecutionId of await store.listCancelledNodeIds(run.runId)) {
+        for (const nodeExecutionId of await store.listCancelledNodeIds(run.runId, winners)) {
             const instanceId = workflowEffectInstanceId(nodeExecutionId);
             const status = await client.getStatus(instanceId);
             if (status.status === "Running" || status.status === "Suspended") {
@@ -3714,17 +3760,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     };
 
     /**
-     * S7-DX2: a run that another transaction ended, as its controller found it (endedElsewhere): its status and outcome,
-     * and the lifecycle command (cancel or done) whose acceptance ended it, or null for any other end. After an accepted
-     * command, the effects that end cancelled are asked to stop, as the cancel activity asks.
+     * S7-DX2, S7-DX3 (N-1): a run that another writer ended, as its controller found it (endedElsewhere). The effects of
+     * every node that end cancelled are asked to stop, whoever won (an accepted command: winner cancel; the workflow's
+     * deletion: delete; the run deadline: deadline), as the cancel activity asks; repeat-safe. Its answer: the run's status
+     * and outcome, and whether the end is its workflow's deletion (no parent notice then).
      */
     register("observeEnd", async (actx, rawInput) => {
         const run = await runOf(text(record(rawInput, "observe end input").runId, "runId"));
-        const ended = commandEndOf(run);
-        if (ended !== null) {
-            await stopCancelledEffects(actx, run, ended.command === "done" ? "Stopped" : "Cancelled");
+        const deleted = (await store.readSessionLink(run.workflowSessionId))?.deleted !== false;
+        if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
+            const reason = commandEndOf(run)?.command === "done" ? "Stopped" : deleted ? "Deleted" : "Cancelled";
+            await stopCancelledEffects(actx, run, reason, ["cancel", "delete", "deadline"]);
         }
-        return { runId: run.runId, status: run.status, outcome: run.terminalOutcome, command: ended?.command ?? null };
+        return { runId: run.runId, status: run.status, outcome: run.terminalOutcome, deleted };
     });
 
     register("cancel", async (actx, rawInput) => {
@@ -3747,7 +3795,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // Soft-deleting the session tombstones the definition in the same
         // transaction (migration 0090 trigger), whichever path deletes it.
         if (command === "delete") await deps.deleteSession(run.workflowSessionId);
-        return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome };
+        // S7-DX3 (N-2): `elsewhere` says another writer had ended the run: the controller follows that stored end.
+        return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome, ...(ended.ended ? {} : { elsewhere: true }) };
     });
 
     /**
