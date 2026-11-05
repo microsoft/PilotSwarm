@@ -158,64 +158,65 @@ test("shutdown rejects export failure with bounded timeout and no sensitive diag
         return true;
     });
 
-    test("a fast trace shutdown failure waits for slower metrics flush before rejecting", async () => {
-        const metricsFlushed = Promise.withResolvers();
-        const traceFailed = Promise.withResolvers();
-        const order = [];
-        const shutdown = createTelemetryShutdown([
-            { shutdown: async () => { await metricsFlushed.promise; order.push("metrics flushed"); } },
-            { shutdown: () => {
-                order.push("trace failed");
-                traceFailed.resolve();
-                return Promise.reject(new Error("PRIVATE_TRACE_ERROR"));
-            } },
-        ]);
-        const pending = shutdown();
-        assert.equal(shutdown(), pending, "repeated shutdown must share every provider flush");
-        let settled = false;
-        const outcome = pending.then(() => { settled = true; }, error => { settled = true; return error; });
-        await traceFailed.promise;
-        await Promise.resolve();
-        await Promise.resolve();
-        assert.equal(settled, false, "trace rejection must not complete shutdown before metrics");
-        metricsFlushed.resolve();
-        const error = await outcome;
-        assert.equal(error.message, "[otel] Telemetry shutdown failed.");
-        assert.deepEqual(order, ["trace failed", "metrics flushed"]);
-    });
+});
 
-    test("worker signals deliberately exit with sanitized failure only after drain and all flushes", async () => {
-        const metricsFlushed = Promise.withResolvers();
-        const traceFailed = Promise.withResolvers();
-        const handlers = {};
-        const logs = [];
-        const order = [];
-        const fakeProcess = { on: (signal, handler) => { handlers[signal] = handler; },
-            exit: code => { order.push(`exit ${code}`); }, exitCode: undefined };
-        const flush = createTelemetryShutdown([
-            { shutdown: async () => { await metricsFlushed.promise; order.push("metrics flushed"); } },
-            { shutdown: () => { traceFailed.resolve(); throw new Error("PRIVATE_TRACE_ERROR"); } },
-        ]);
-        const source = readFileSync(new URL("../../packages/sdk/examples/worker.js", import.meta.url), "utf8");
-        const block = source.slice(source.indexOf("let shutdownPromise;"), source.indexOf("// Block forever"));
-        const shutdown = runInNewContext(`${block}\nshutdown;`, {
-            worker: { gracefulShutdown: async () => { order.push("drained"); } },
-            shutdownTelemetry: flush, process: fakeProcess,
-            console: { log() {}, error: message => logs.push(message) },
-        });
-        // Exercise both installed handlers. They share one handled drain promise.
-        const signalPromise = handlers.SIGTERM();
-        assert.equal(handlers.SIGINT(), signalPromise);
-        assert.equal(shutdown("SIGTERM"), signalPromise);
-        await traceFailed.promise;
-        await Promise.resolve();
-        await Promise.resolve();
-        assert.deepEqual(order, ["drained"]);
-        assert.equal(fakeProcess.exitCode, undefined);
-        metricsFlushed.resolve();
-        await signalPromise;
-        assert.deepEqual(order, ["drained", "metrics flushed", "exit 1"]);
-        assert.equal(fakeProcess.exitCode, 1);
-        assert.deepEqual(logs, ["[worker] Shutdown failed after drain and telemetry flush."]);
+test("a fast trace shutdown failure waits for slower metrics flush before rejecting", async () => {
+    const metricsFlushed = Promise.withResolvers();
+    const traceFailed = Promise.withResolvers();
+    const order = [];
+    const shutdown = createTelemetryShutdown([
+        { shutdown: async () => { await metricsFlushed.promise; order.push("metrics flushed"); } },
+        { shutdown: () => {
+            order.push("trace failed");
+            traceFailed.resolve();
+            return Promise.reject(new Error("PRIVATE_TRACE_ERROR"));
+        } },
+    ]);
+    const pending = shutdown();
+    assert.equal(shutdown(), pending, "repeated shutdown must share every provider flush");
+    let settled = false;
+    const outcome = pending.then(() => { settled = true; }, error => { settled = true; return error; });
+    await traceFailed.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(settled, false, "trace rejection must not complete shutdown before metrics");
+    metricsFlushed.resolve();
+    const error = await outcome;
+    assert.equal(error.message, "[otel] Telemetry shutdown failed.");
+    assert.deepEqual(order, ["trace failed", "metrics flushed"]);
+});
+
+test("worker signals deliberately exit with sanitized failure only after drain and all flushes", async () => {
+    const metricsFlushed = Promise.withResolvers();
+    const traceFailed = Promise.withResolvers();
+    const handlers = {};
+    const logs = [];
+    const order = [];
+    const fakeProcess = { on: (signal, handler) => { handlers[signal] = handler; },
+        exit: code => { order.push(`exit ${code}`); }, exitCode: undefined };
+    const flush = createTelemetryShutdown([
+        { shutdown: async () => { await metricsFlushed.promise; order.push("metrics flushed"); } },
+        { shutdown: () => { traceFailed.resolve(); throw new Error("PRIVATE_TRACE_ERROR"); } },
+    ]);
+    const source = readFileSync(new URL("../../packages/sdk/examples/worker.js", import.meta.url), "utf8");
+    const block = source.slice(source.indexOf("let shutdownPromise;"), source.indexOf("// Block forever"));
+    const shutdown = runInNewContext(`${block}\nshutdown;`, {
+        worker: { gracefulShutdown: async () => { order.push("drained"); } },
+        shutdownTelemetry: flush, process: fakeProcess,
+        console: { log() {}, error: message => logs.push(message) },
     });
+    // Exercise both installed handlers. They share one handled drain promise.
+    const signalPromise = handlers.SIGTERM();
+    assert.equal(handlers.SIGINT(), signalPromise);
+    assert.equal(shutdown("SIGTERM"), signalPromise);
+    await traceFailed.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(order, ["drained"]);
+    assert.equal(fakeProcess.exitCode, undefined);
+    metricsFlushed.resolve();
+    await signalPromise;
+    assert.deepEqual(order, ["drained", "metrics flushed", "exit 1"]);
+    assert.equal(fakeProcess.exitCode, 1);
+    assert.deepEqual(logs, ["[worker] Shutdown failed after drain and telemetry flush."]);
 });
