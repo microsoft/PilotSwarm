@@ -135,18 +135,25 @@ export async function joinBaseOf(env) {
 
 /**
  * A worker-equivalent registration on `base` (workflowRequests, the request tag declared), with `wrap` (activity name ->
- * (realHandler) => handler) around the real handlers (HG-1). `calls` counts each wrapped activity's deliveries.
+ * (realHandler) => handler) around the real handlers (HG-1). `calls` counts each wrapped activity's deliveries; `handlers`
+ * are the real registered handlers, so a test can call one as a contender exactly as a delivery would (with the events it
+ * records). Locks are duroxide's defaults, renewed while an activity runs, as a worker's (a script may run for seconds);
+ * `fastLocks` shortens them for a test that stops a runtime with work in flight and needs it taken over quickly.
  */
-export async function joinRuntimeOn(base, { wrap = {}, workerConcurrency = JOIN_WORKER_SLOTS, wakeBackstopMs = 500 } = {}) {
+export async function joinRuntimeOn(base, { wrap = {}, workerConcurrency = JOIN_WORKER_SLOTS, wakeBackstopMs = 500, fastLocks = false } = {}) {
     const runtime = new Runtime(base.provider, {
         dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
-        workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000,
+        ...(fastLocks ? { workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000 } : {}),
     });
     const calls = {};
+    const handlers = {};
     registerWorkflowV2({
-        registerActivity: (name, fn) => runtime.registerActivity(name, wrap[name]
-            ? (() => { const wrapped = wrap[name](fn); return async (ctx, input) => { calls[name] = (calls[name] ?? 0) + 1; return wrapped(ctx, input); }; })()
-            : fn),
+        registerActivity: (name, fn) => {
+            handlers[name] = fn;
+            return runtime.registerActivity(name, wrap[name]
+                ? (() => { const wrapped = wrap[name](fn); return async (ctx, input) => { calls[name] = (calls[name] ?? 0) + 1; return wrapped(ctx, input); }; })()
+                : fn);
+        },
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
         store: base.store, catalog: base.catalog, enabled: () => true,
@@ -160,7 +167,7 @@ export async function joinRuntimeOn(base, { wrap = {}, workerConcurrency = JOIN_
     });
     await runtime.start();
     let running = true;
-    return { calls, async stop() { if (!running) return; running = false; await runtime.shutdown(100); } };
+    return { calls, handlers, async stop() { if (!running) return; running = false; await runtime.shutdown(100); } };
 }
 
 /**

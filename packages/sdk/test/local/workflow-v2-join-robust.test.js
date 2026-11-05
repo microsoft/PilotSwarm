@@ -529,14 +529,15 @@ describe("J3 robust joins: commit order, repeats and lost acknowledgements (cont
             expect(timedRow.error.details.branches.map(branch => [branch.index, branch.ended])).toEqual([[0, "cancelled"], [1, "cancelled"], [2, "not_started"]]);
             expect(decisionOf(await base.store.readNodeExecution(timer.fan))).toEqual(decisionOf(timedRow));
 
-            // (C) Both at the deadline: the success's commit and the time limit run at once (the controller's elapse too).
+            // (C) Both at the deadline: the success's commit and the time limit run at once (the controller's elapse too). The
+            // time limit contender is the registered elapse activity, as a delivery runs it (with the decision's events).
             // Either legal order may win; SQL's clock says which one did, and the decision must follow it.
             const both = await startJoin(base, doc());
             const bothFan = await ready(both);
             await until(async () => Date.now() >= bothFan.deadlineAt.getTime() - 15 || null, "the third run's deadline to come near", 10_000);
             const [success, elapse] = await Promise.all([
                 base.store.completeNode(both.at(0, "hold"), elapsedResult()),
-                base.store.elapseParallelNode(both.fan).catch(error => ({ error })),
+                workers[0].handlers[R.elapse]({}, { runId: both.runId, nodeExecutionIds: [both.fan] }).catch(error => ({ error })),
             ]);
             expect(elapse.error).toBeUndefined();
             const ended = await endOf(base, both.runId);
