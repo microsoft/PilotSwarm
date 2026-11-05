@@ -112,6 +112,9 @@ test("RC-5: a step not reached yet in the current parallel visit shows no earlie
     const history = plain(render(reviewed, "history"));
     assert.ok(history.includes("Not reached yet in visit 2 of 'fan'. Its visits in earlier parallel visits, newest first."), history);
     assert.ok(history.includes("<td>1 · parallel visit 1</td>"), history);
+    // Re-check UI-RC2-2: the step's only visits are in the parallel step's first visit, but the parallel step had two, so
+    // each says its parallel visit.
+    assert.equal(reviewed.where["nx-reviewed-1b0"].label, "branch 1 · parallel visit 1");
     // Once a branch of the second visit reaches it, that visit's own state and result are shown.
     const reached = project([...rows.slice(0, 4), done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-2b0", ...at("nx-fan-2", 0) }),
         done("reviewed", 1, "succeeded", { nodeExecutionId: "nx-reviewed-2b0", outputPreview: '{"who":"new"}', ...at("nx-fan-2", 0) })]);
@@ -119,6 +122,16 @@ test("RC-5: a step not reached yet in the current parallel visit shows no earlie
     assert.equal(reached.result.id, "nx-reviewed-2b0");
     // The step's first visit, shown while no second visit of the parallel step exists, is its own as before.
     assert.equal(project(rows.slice(0, 3)).result.id, "nx-reviewed-1b0");
+});
+
+// Re-check UI-RC2-2: a visit's place names its parallel visit whenever it could be mistaken: visits in two parallel visits,
+// a parallel step that had two visits, or a visit outside the parallel step's current visit (its own visit not loaded).
+test("UI-RC2-2: the parallel visit is named when the step's visits, the parallel step's visits or the current visit call for it", () => {
+    const visits = [{ id: "nx-a", branch: { parallelNodeExecutionId: "nx-fan-1", index: 0 } }];
+    assert.equal(workflowV2VisitPlaces(visits, new Map([["nx-fan-1", 1]]))["nx-a"].label, "branch 1", "one parallel visit, the current one");
+    assert.equal(workflowV2VisitPlaces(visits, new Map([["nx-fan-1", 1]]), "nx-fan-1")["nx-a"].label, "branch 1");
+    assert.equal(workflowV2VisitPlaces(visits, new Map([["nx-fan-1", 1], ["nx-fan-2", 2]]))["nx-a"].label, "branch 1 · parallel visit 1");
+    assert.equal(workflowV2VisitPlaces(visits, new Map([["nx-fan-2", 2]]), "nx-fan-2")["nx-a"].label, "branch 1 · parallel visit not loaded");
 });
 
 // Re-check RC-6: a result chosen in History keeps the branch chosen in Details and the parallel visit current when it was

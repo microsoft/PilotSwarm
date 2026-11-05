@@ -893,18 +893,24 @@ function visitStatus(node, execution, run) {
 /**
  * Where each visit of a branch step was (adversarial review R2-UI-5), by its execution id: its branch (`index`, and its
  * `number` as people read it), its parallel step's visit (`parallelVisit`, that visit's number, when known) and a `label`
- * ("branch 2", or "branch 2 · parallel visit 1" when the step has visits in more than one parallel visit). Pure.
+ * ("branch 2", or "branch 2 · parallel visit 1"). Re-check UI-RC2-2: the parallel visit is named whenever it could be
+ * mistaken: the step has visits in more than one parallel visit, the parallel step itself had more than one visit
+ * (`parallelOrdinals`, its loaded visits by execution id), or a visit is not in the parallel step's current visit
+ * (`currentParallelId`). Pure.
  */
-export function workflowV2VisitPlaces(executions, parallelOrdinals = null) {
+export function workflowV2VisitPlaces(executions, parallelOrdinals = null, currentParallelId = null) {
     const list = (Array.isArray(executions) ? executions : []).filter(item => typeof item?.id === "string" && isRecord(item.branch)
         && typeof item.branch.parallelNodeExecutionId === "string" && Number.isSafeInteger(item.branch.index));
     const visits = new Set(list.map(item => item.branch.parallelNodeExecutionId));
+    const parentVisits = parallelOrdinals instanceof Map ? parallelOrdinals.size : 0;
+    const current = typeof currentParallelId === "string" && currentParallelId ? currentParallelId : null;
     return Object.fromEntries(list.map(item => {
         const ordinal = parallelOrdinals instanceof Map ? parallelOrdinals.get(item.branch.parallelNodeExecutionId) : undefined;
         const parallelVisit = Number.isSafeInteger(ordinal) ? ordinal : null;
         const number = workflowV2BranchNumber(item.branch.index);
+        const named = visits.size > 1 || parentVisits > 1 || (current !== null && item.branch.parallelNodeExecutionId !== current);
         return [item.id, { index: item.branch.index, number, parallelExecutionId: item.branch.parallelNodeExecutionId, parallelVisit,
-            label: `branch ${number}${visits.size > 1 ? ` · parallel visit ${parallelVisit ?? "not loaded"}` : ""}` }];
+            label: `branch ${number}${named ? ` · parallel visit ${parallelVisit ?? "not loaded"}` : ""}` }];
     }));
 }
 
@@ -1020,7 +1026,7 @@ function nodeView(node, executions, context) {
     if (node.type === "parallel") view.joinBar = workflowV2JoinView(view, context);
     if (typeof node.parallel === "string") {
         view.branches = workflowV2BranchChoices(list, context.parallelVisits?.get(node.parallel) ?? null, { node, run: context.run });
-        view.where = workflowV2VisitPlaces(list, context.parallelOrdinals?.get(node.parallel) ?? null);
+        view.where = workflowV2VisitPlaces(list, context.parallelOrdinals?.get(node.parallel) ?? null, parallelVisit?.id ?? null);
     }
     return view;
 }
