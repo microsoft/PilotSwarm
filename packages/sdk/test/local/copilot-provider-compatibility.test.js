@@ -324,7 +324,7 @@ describe.concurrent("Copilot provider wire compatibility (real SDK/CLI, syntheti
                 const openAiClient = [...manager.clients.values()][0];
                 // Never pretty-print a CopilotClient on failure: it contains
                 // the child's environment, including inherited credentials.
-                expect(manager.client === openAiClient).toBe(true);
+                expect(manager.client === openAiClient.raw).toBe(true);
                 // Catalog-only seam: the real client above still owns turns.
                 // A pool namespace must never be mistaken for a GitHub token
                 // by vision lookups (NUL in an env token used to fail closed).
