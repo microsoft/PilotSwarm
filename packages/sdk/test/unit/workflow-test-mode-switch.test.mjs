@@ -3,8 +3,9 @@
  * PILOTSWARM_WORKFLOW_TEST_MODE is exactly `on`. Off, on every surface:
  * - the agent tool: update_workflow and read_workflow of a 1.9.0 turn declare no test operation, argument or field, and
  *   the handler refuses a test operation in words, before anything is read;
- * - a person's commands (the Web API and MCP run them): refused the same way; the bootstrap capabilities and a read
- *   model's personCommands do not list them, so the portal and the terminal UI offer no test control and no test run;
+ * - a person's commands (the Web API and MCP run them): a test operation answers as one that does not exist; the
+ *   bootstrap capabilities and a read model's personCommands do not list them, so the portal and the terminal UI offer
+ *   no test control and no test run;
  * - the base guidance does not mention testing.
  * With the flag on, each is as it was (the test-mode tests keep running with it: vitest sets it for the SDK's local
  * tests, and the unit tests that cover test mode set it themselves).
@@ -181,15 +182,27 @@ test("agent tool: with test mode off, the handler refuses each test operation in
 
 const PERSON = { kind: "user", provider: "test", subject: "alice" };
 
-test("a person's commands (Web API, MCP): test operations refused in words before anything is read, and not advertised", async () => {
-    for (const operation of ["test", "test_respond", "test_advance"]) {
+test("a person's commands (Web API, MCP): with test mode off a test operation answers as an operation that does not exist, and is not advertised", async () => {
+    const refusal = async (operation, workflowSessionId = "wf") => {
         const { host, reads } = hostOf({ testMode: false });
-        await assert.rejects(updateWorkflowForPerson({ operation, operation_id: "t-1", run_id: "run-1" }, { host, workflowSessionId: "wf", actor: PERSON }), error => {
-            assert.equal(error.code, "WORKFLOW_COMMAND_INVALID", operation);
-            assert.match(error.message, OFF_REFUSAL, operation);
+        let caught = null;
+        await assert.rejects(updateWorkflowForPerson({ operation, operation_id: "t-1", run_id: "run-1" }, { host, workflowSessionId, actor: PERSON }), error => {
+            caught = error;
             return true;
         });
-        assert.deepEqual(reads, [], operation);
+        return { code: caught.code, message: caught.message, reads };
+    };
+    const unknown = await refusal("teleport");
+    assert.equal(unknown.code, "WORKFLOW_COMMAND_INVALID");
+    assert.match(unknown.message, /^operation must be replace_definition, .* or stop\.$/);
+    const missing = await refusal("teleport", "missing");
+    assert.equal(missing.code, "WORKFLOW_NOT_FOUND");
+    for (const operation of ["test", "test_respond", "test_advance"]) {
+        // The same refusal, the same reads, no word of testing: as absent as an unknown operation.
+        const answer = await refusal(operation);
+        assert.deepEqual(answer, unknown, operation);
+        assert.ok(!/test/i.test(answer.message), operation);
+        assert.deepEqual(await refusal(operation, "missing"), missing, `${operation} on a session that is not a workflow`);
     }
     // The bootstrap's capabilities: stop, and the test operations only with test mode on.
     assert.deepEqual(workflowHumanMilestoneOperations(false), ["stop"]);

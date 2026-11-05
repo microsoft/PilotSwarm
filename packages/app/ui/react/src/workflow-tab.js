@@ -1,11 +1,11 @@
 import React from "react";
 import { createPortal } from "react-dom";
 import { useControllerSelector } from "./use-controller-state.js";
-import { selectWorkflowViewSnapshotFor, workflowNodeViews, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
+import { selectWorkflowViewSnapshotFor, workflowNodeViews, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import { formatSeconds, projectWorkflowV2, workflowV2Activity, workflowV2BranchPickKey, workflowV2SelectionAfterBranchChange } from "../../core/src/workflow-v2-view.js";
 import {
-    workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2JsonObjectDraft, workflowV2RunCommandNotice, workflowV2RunControls,
-    workflowV2RunVariables, workflowV2SampleInputs,
+    WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2JsonObjectDraft, workflowV2RunCommandNotice,
+    workflowV2RunControls, workflowV2RunVariables, workflowV2SampleInputs, workflowV2TestControls, workflowV2TestModeListed, workflowV2TestResponder,
 } from "../../core/src/workflow-v2-commands.js";
 import { formatLocalTime } from "../../core/src/formatting.js";
 import {
@@ -13,7 +13,8 @@ import {
     workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
-    WorkflowV2DraftEditor, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RevisionCompare, WorkflowV2RunCommandNotice, WorkflowV2Variables,
+    WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RevisionCompare, WorkflowV2RunCommandNotice,
+    WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock, WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2Variables,
     WorkflowV2YamlView,
 } from "./workflow-v2-panels.js";
 import { WorkflowGraph } from "./workflow-graph.js";
@@ -173,7 +174,7 @@ export function WorkflowTab({ controller, mobile = false }) {
                     onClick: () => setTab({ view: "workflows" }) }, `Workflows · ${count}`))),
         view === "definition"
             ? h(DefinitionView, { key: definition.newestId, controller, definition, tab, setTab, mobile, ownerTitle: byId?.[ownerId]?.title ?? null,
-                onStarted: id => openWorkflow(id), askChat })
+                ownerWorking: ownerId ? workflowParentWorking(byId?.[ownerId]) : false, onStarted: id => openWorkflow(id), askChat })
             : workflow
                 ? h(WorkflowRunView, { key: workflow.sessionId, controller, definition, workflow, tab, setTab, mobile, onOpen: openWorkflow,
                     nodeStateId: context.nodeStateId })
@@ -197,16 +198,27 @@ function DefinitionPicker({ definitions, chosen, views, onChoose, onNew }) {
             h("option", { value: "__new__" }, "New definition… (asks the chat)")));
 }
 
-/** The definition's newest revision line (07, D3). */
-function revisionLine(model) {
+/**
+ * The definition's newest revision line (07, D3), when it is not valid: one line over the graph. While the session that
+ * owns it is still working (its chat is in a turn: it is writing the definition), the line is calm (owner batch 7, H1):
+ * `{ text, calm }`, or null for a valid revision.
+ */
+function revisionLine(model, { writing = false, writer = null } = {}) {
     const revision = model?.revision;
     if (!revision || !Number.isSafeInteger(revision.revision)) return null;
     if (revision.valid !== false) return null;
-    const first = (Array.isArray(revision.diagnostics) ? revision.diagnostics : []).find(item => item && item.severity !== "warning") ?? null;
+    const diagnostics = (Array.isArray(revision.diagnostics) ? revision.diagnostics : []).filter(item => item && item.severity !== "warning");
+    const first = diagnostics[0] ?? null;
     const where = first && Number.isSafeInteger(first.line) ? `line ${first.line}: ` : "";
     const why = first?.message ? ` · ${where}${first.message}` : "";
     const graphRevision = Number.isSafeInteger(model?.graph?.revision) && model.graph.revision !== revision.revision ? model.graph.revision : null;
-    return `Revision ${revision.revision} not valid${why}.${graphRevision ? ` Showing revision ${graphRevision}.` : ""}`;
+    const showing = graphRevision ? ` Showing revision ${graphRevision}.` : "";
+    if (writing) {
+        const count = diagnostics.length;
+        return { calm: true, text: `${writer ?? "The chat"} is still writing this definition. Revision ${revision.revision} has `
+            + `${count || "unlisted"} error${count === 1 ? "" : "s"} so far.${showing}` };
+    }
+    return { calm: false, text: `Revision ${revision.revision} not valid${why}.${showing}` };
 }
 
 /** The selected node's facts in the Definition view (D9 Node): its type, input, outcomes and time limit. */
@@ -239,7 +251,7 @@ function BottomPanel({ panels, panel, onPanel, mobile, children, extra = null })
             if (!closedByBack && window.history.state?.psWorkflowSheet) window.history.back();
         };
     }, [mobile, Boolean(panel)]);
-    const labels = { node: "Node", log: "Log", variables: "Variables", revisions: "Revisions" };
+    const labels = { node: "Node", log: "Log", variables: "Variables", revisions: "Revisions", test: "Test" };
     const tabs = h("div", { className: "ps-wf-panel-tabs", role: "tablist", "aria-label": "Workflow panel" },
         panels.map(id => h("button", { key: id, type: "button", role: "tab", "aria-selected": panel === id, className: panel === id ? "is-on" : "",
             onClick: () => onPanel(panel === id && !mobile ? null : id) }, labels[id])));
@@ -253,7 +265,7 @@ function BottomPanel({ panels, panel, onPanel, mobile, children, extra = null })
 }
 
 /** The Definition view (07). `definition.newestId` is the workflow child whose definition it shows. */
-function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted }) {
+function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted, ownerTitle = null, ownerWorking = false }) {
     const child = useWorkflowChild(controller, definition.newestId);
     const { sessionId, view, workflowModel, places } = child;
     const projection = useDefinitionProjection(child);
@@ -278,7 +290,10 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
             if (startControl.enabled) setStarting(true);
         } else if (!definition.startable) setTab({ start: false });
     }, [tab.start, startControl?.enabled, definition.startable]);
-    const panel = WORKFLOW_DEFINITION_PANELS.includes(tab.definitionPanel) ? tab.definitionPanel : null;
+    // Test mode (spec 16): hidden unless the server lists a test operation for this workflow (PILOTSWARM_WORKFLOW_TEST_MODE=on).
+    const testing = workflowV2TestModeListed(workflowModel);
+    const panels = testing ? [...WORKFLOW_DEFINITION_PANELS, "test"] : WORKFLOW_DEFINITION_PANELS;
+    const panel = panels.includes(tab.definitionPanel) ? tab.definitionPanel : null;
     const select = id => {
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: id } });
         // A desktop click opens the node's facts; a phone tap only selects, and a second tap opens them (12).
@@ -287,7 +302,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     const onPlaces = React.useCallback(steps => controller.dispatch({ type: "ui/workflowLayout", key: `session:${sessionId}`, steps, at: Date.now() }),
         [controller, sessionId]);
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }), [controller, sessionId]);
-    const line = revisionLine(workflowModel);
+    const line = revisionLine(workflowModel, { writing: ownerWorking, writer: ownerTitle });
     const revision = Number.isSafeInteger(workflowModel?.revision?.revision) ? workflowModel.revision.revision : null;
     const notice = workflowV2RunCommandNotice(runCommand);
     const nextNumber = definition.workflows.length + 1;
@@ -301,18 +316,24 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                 onClick: () => setTab({ definitionPanel: panel === "revisions" ? null : "revisions" }) }, "Compare")),
         !definition.startable && definition.workflows.length
             ? h("p", { className: "ps-wf-line is-quiet" }, `This definition's newest copy has started as Workflow #${definition.workflows.length}. To start it again, ask the chat.`) : null,
-        line ? h("p", { className: "ps-wf-line is-error", role: "status" }, line) : null,
+        line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined },
+            line.text) : null,
         notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
                 places: places ?? null, onPlaces, mobile })
+                // No graph to draw: the line above says why; its errors are listed under it (folded while the chat writes).
+                : projection && line ? (line.calm
+                    ? h("details", { className: "ps-wf-errors" }, h("summary", null, "Errors so far"), h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics }))
+                    : h("div", { className: "ps-wf-errors" }, h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics })))
                 : projection ? h(WorkflowV2NoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the workflow definition…")),
         mode === "yaml" ? h("div", { className: "ps-wf-main ps-wf-yaml" },
             editor ? h(WorkflowV2DraftEditor, { key: sessionId, controller, sessionId, model: editor, savedEdit: view.draftEdit ?? null })
                 : h(WorkflowV2YamlView, { key: sessionId, controller, sessionId, model: workflowModel, reads: view.definitionRevisions ?? null })) : null,
-        h(BottomPanel, { panels: WORKFLOW_DEFINITION_PANELS, panel, mobile, onPanel: id => setTab({ definitionPanel: id }) },
+        h(BottomPanel, { panels, panel, mobile, onPanel: id => setTab({ definitionPanel: id }) },
             panel === "node" ? h(NodeFacts, { node: selected })
+                : panel === "test" ? h(TestPanel, { controller, child, runCommand })
                 : panel === "revisions"
                     ? (revision !== null && revision >= 2
                         ? h(WorkflowV2RevisionCompare, { controller, sessionId, latest: revision, reads: view.definitionRevisions ?? null })
@@ -320,6 +341,33 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                     : null),
         starting && startControl ? h(StartDialog, { controller, sessionId, publication, control: startControl, name: definition.name, number: nextNumber,
             onClose: () => setStarting(false), onStarted: () => { setStarting(false); onStarted(sessionId); } }) : null);
+}
+
+/**
+ * The Test panel of the Definition view: test mode (spec 16), shown only when the server lists a test operation for the
+ * workflow (the deployment sets PILOTSWARM_WORKFLOW_TEST_MODE=on). It is the old screen's test review, its test runs
+ * and, for the test run chosen, its held calls, its virtual clock and the answer form, from the same components. Test
+ * runs are not Workflows: they show here only.
+ */
+function TestPanel({ controller, child, runCommand }) {
+    const { sessionId, session, view, readModel, workflowModel, readError } = child;
+    const controls = React.useMemo(() => workflowV2TestControls(readModel ?? workflowModel, runCommand), [readModel, workflowModel, runCommand]);
+    const responder = React.useMemo(() => workflowV2TestResponder(readModel, runCommand), [readModel, runCommand]);
+    const run = readModel?.run && readModel.run.mode === "test" ? readModel.run : null;
+    const answering = view.answeringInterceptionId ?? null;
+    return h("div", { className: "ps-wf-test", "data-panel": "test" },
+        controls ? h(WorkflowV2TestPanel, { controller, sessionId, model: controls })
+            : h("p", { className: "ps-wf-muted" }, workflowModel?.definition?.state === "published" ? WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT
+                : "This workflow takes no test from people."),
+        h(WorkflowV2RunPicker, { controller, sessionId, workflowModel, selectedRunId: view.selectedRunId ?? null, ownModelLoaded: readModel != null,
+            error: readError }),
+        run?.test ? h("div", { className: "ps-workflow-test-calls" },
+            h(WorkflowV2TestInterceptions, { test: run.test, controller, sessionId, responder, answering, history: run.history ?? null,
+                onLoadOlder: restart => controller.loadOlderWorkflowHistory(sessionId, { restart }), parentSessionId: session?.parentSessionId ?? null }),
+            responder?.advance ? h(WorkflowV2TestClock, { controller, sessionId, responder }) : null,
+            responder?.respond && answering
+                ? h(WorkflowV2TestAnswer, { controller, sessionId, responder, interceptionId: answering, parentSessionId: session?.parentSessionId ?? null })
+                : null) : null);
 }
 
 /** The Workflows list (08, W1): one row per Workflow of the definition, newest first. */
@@ -369,6 +417,10 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
     const { sessionId, session, view, places, events, projection, readModel, readError } = child;
     // Live while it is shown, also when its session's chat is the active session (the companion subscription).
     React.useEffect(() => controller.watchWorkflow(sessionId), [controller, sessionId]);
+    // A Workflow is its live run: a test run chosen in the Definition view's Test panel (test mode) is not shown here.
+    React.useEffect(() => {
+        if (view.selectedRunId) controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedRunId: null } });
+    }, [controller, sessionId, view.selectedRunId]);
     const nodes = child.nodes;
     const graph = child.definition;
     const chosen = nodeStateId && view.selectedNodeId == null ? nodeStateId : view.selectedNodeId;
@@ -503,6 +555,8 @@ function LegacyNodePanel({ selected }) {
             ? h("div", { className: "ps-wf-facts" },
                 row("Ran", `${selected.runs ?? 0} ${selected.runs === 1 ? "time" : "times"}${selected.partial ? " in loaded history" : ""}`),
                 row("Last outcome", selected.outcome || "Not recorded"),
+                Object.keys(selected.next || {}).length
+                    ? row("Next", Object.entries(selected.next).map(([outcome, target]) => `${outcome} → ${target}`).join(" · ")) : null,
                 Array.isArray(result?.toolCalls) && result.toolCalls.length
                     ? row("Tools", result.toolCalls.map(tool => `${tool?.name || "Tool"}${tool?.ok === false ? " (failed)" : ""}`).join(" · ")) : null)
             : h("div", { className: "ps-wf-node-output" },
@@ -512,9 +566,22 @@ function LegacyNodePanel({ selected }) {
                 result?.stderrTail ? h(React.Fragment, null, h("h3", null, "Standard error"), h("pre", null, String(result.stderrTail))) : null));
 }
 
-/** The Log panel (W10): this Workflow's events only, newest first, one sentence each. */
+/**
+ * The Log panel (W10): this Workflow only, newest first, one sentence each. That is its live run's events and the
+ * Workflow's own notices (no run id, such as a recovery request); a test run's events never show (test mode is hidden,
+ * spec 16, and test runs are not Workflows).
+ */
 function WorkflowLog({ events, runId }) {
-    const rows = React.useMemo(() => workflowV2Activity(events, { runId, limit: 200 }), [events, runId]);
+    const rows = React.useMemo(() => {
+        const list = Array.isArray(events) ? events : EMPTY_EVENTS;
+        const testRuns = new Set(list.filter(event => event?.eventType === "workflow.started" && event.data?.mode && event.data.mode !== "live")
+            .map(event => event.data.runId));
+        const own = list.filter(event => {
+            const id = event?.data?.runId ?? null;
+            return id === null || (!testRuns.has(id) && (runId === null || id === runId));
+        });
+        return workflowV2Activity(own, { runId: null, limit: 200 });
+    }, [events, runId]);
     if (!rows.length) return h("p", { className: "ps-wf-muted" }, "Nothing has happened yet.");
     return h("ol", { className: "ps-wf-log", "aria-label": "Workflow log" },
         rows.map((row, index) => h("li", { key: row.seq ?? index, "data-level": row.level },

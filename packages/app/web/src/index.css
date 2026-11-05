@@ -12682,6 +12682,9 @@ textarea.ps-link-input {
   background: color-mix(in srgb, var(--ps-danger) 10%, transparent);
 }
 .ps-wf-line.is-quiet { color: var(--ps-muted); }
+.ps-wf-errors { padding: 6px 10px; overflow: auto; align-self: flex-start; }
+.ps-wf-errors > summary { cursor: pointer; color: var(--ps-muted); }
+.ps-wf-test { display: flex; flex-direction: column; gap: 8px; }
 .ps-wf-main { position: relative; display: flex; flex: 1 1 auto; min-height: 150px; }
 .ps-wf-main[hidden] { display: none; }
 .ps-wf-main > * { flex: 1 1 auto; min-width: 0; }

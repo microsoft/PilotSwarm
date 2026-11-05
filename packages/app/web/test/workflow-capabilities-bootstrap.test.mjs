@@ -40,7 +40,8 @@ async function bootstrapHarness({ config, getter = true } = {}) {
     const mgmt = {
         _ensureStarted() {},
         _catalog: {
-            workflowStore: () => ({}),
+            // A version 2 workflow "wf1" outside every agent step (a person's command reads its definition and lineage).
+            workflowStore: () => ({ readDefinition: async (id) => (id === "wf1" ? { parentSessionId: "p1" } : null), readWorkflowLineage: async () => null }),
             getSession: async (sessionId) => ({ sessionId, sessionKind: "workflow", deletedAt: null }),
         },
         config: config ?? {},
@@ -127,17 +128,27 @@ test("with the test-only option, it advertises the controller version and the op
                 await h.close();
             }
         }
-        // A test operation sent anyway is refused in words while test mode is off, before the workflow is read.
+        // A test operation sent anyway, while test mode is off, answers as an operation that does not exist (owner answer
+        // Q3): the same code, status and words as an unknown operation, with no word of testing.
         delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
         const h = await bootstrapHarness({ config: { workflowCommands: { requests: true } } });
         try {
-            for (const operation of ["test", "test_respond", "test_advance"]) {
+            const refusal = async (operation) => {
+                let caught = null;
                 await assert.rejects(h.mgmt.updateWorkflow("wf1", { operation, operation_id: "t-1", run_id: "run-1" }, { principal: null }), (error) => {
-                    assert.equal(error.code, "WORKFLOW_COMMAND_INVALID", operation);
-                    assert.equal(error.status, 400, operation);
-                    assert.match(error.message, /^Testing workflows is turned off on this server\. operation must be .* or stop\.$/, operation);
+                    caught = error;
                     return true;
                 });
+                return { code: caught.code, status: caught.status, message: caught.message };
+            };
+            const unknown = await refusal("no_such_operation");
+            assert.equal(unknown.code, "WORKFLOW_COMMAND_INVALID");
+            assert.equal(unknown.status, 400);
+            assert.match(unknown.message, /^operation must be .* or stop\.$/);
+            for (const operation of ["test", "test_respond", "test_advance"]) {
+                const answer = await refusal(operation);
+                assert.deepEqual(answer, unknown, operation);
+                assert.ok(!/test/i.test(answer.message), operation);
             }
         } finally {
             await h.close();

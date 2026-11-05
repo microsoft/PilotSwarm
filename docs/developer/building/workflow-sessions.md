@@ -432,9 +432,12 @@ and its tests stay. One deployment flag shows it again:
 |---|---|
 | `PILOTSWARM_WORKFLOW_TEST_MODE=on` (exactly `on`; off by default) | The `update_workflow` operations `test`, `test_respond` and `test_advance` are declared to agents and taken from them; a person's workflow commands (Web API, MCP) take them and the bootstrap lists them, so the portal and the terminal UI show test controls and test runs. The base guidance mentions the test notice. |
 
-Off, each test operation is refused in words ("Testing workflows is turned
-off on this server."), the portal and the terminal UI show no test control or
-test run, and stored test runs are kept but not shown. The flag is separate
+Off, agents are not declared the test operations and an agent's tool refuses
+one in words ("Testing workflows is turned off on this server."); a person's
+command (Web API, MCP) of one answers as an operation that does not exist (the
+unknown operation's refusal, with no word of testing); the portal and the
+terminal UI show no test control or test run, and stored test runs are kept but
+not shown. The flag is separate
 from `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` and changes nothing else; test
 operations still need workers that run controller 1.9.0. The `workflow-testing`
 guide is kept apart from the authoring skills, in

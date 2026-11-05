@@ -495,6 +495,15 @@ export function workflowTestModeRefusal(operation: unknown, host: Pick<WorkflowT
     return unknownOperationError(operation, { milestone: true, testing: false });
 }
 
+/**
+ * A person's command (Web API, MCP) of a test operation while workflow test mode is off answers as an operation that
+ * does not exist (spec 16; owner answer Q3): the refusal any unknown operation gets on this host, with no word of
+ * testing. Null for every other operation and host.
+ */
+export function workflowTestModeAbsentError(operation: unknown, host: Pick<WorkflowToolHost, "requests" | "testMode">): WorkflowStoreError | null {
+    return workflowTestModeRefusal(operation, host) ? unknownOperationError(null, { milestone: true, testing: false }) : null;
+}
+
 async function testOperation(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor, authorize: (workflowSessionId: string) => Promise<void>)
     : Promise<{ [key: string]: JsonValue }> {
     const workflowSessionId = requiredString(args, "workflow_id");

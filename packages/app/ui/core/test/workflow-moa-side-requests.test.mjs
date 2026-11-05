@@ -19,8 +19,11 @@ test("the workflow pane hands panel and step-details requests to a host that has
     assert.match(workspace, /export function WorkflowMainPane\(\{ controller, icon, onNodeSelected, mobile = false, onOpenSide = null \}\)/);
     assert.match(workspace, /onClick: \(\) => \(onOpenSide \? onOpenSide\(\{ sessionId, panel, nodeId: selected\?\.id \?\? null \}\)/);
     assert.match(workspace, /if \(onOpenSide && \(open \|\| id === view\.selectedNodeId\)\) \{\s*select\(id, \{ open: false \}\);\s*onOpenSide\(\{ sessionId, panel: null, nodeId: id \}\);/);
+    // Workflow Simplified (spec 18): a Master of Agents panel that holds a Workflow shows the Workflow tab, as the portal
+    // does; the old workflow pane is no longer mounted there.
     const webApp = read("../../react/src/web-app.js");
-    assert.match(webApp, /onOpenSide: props\.onWorkflowOpenSide \?\? null/);
+    assert.doesNotMatch(webApp, /WorkflowMainPane/);
+    assert.match(webApp, /function ChatPane\(props\) \{[\s\S]*?return React\.createElement\(WorkflowTab, \{ controller: props\.controller, mobile: Boolean\(props\.mobile\) \}\);\s*\}/);
 });
 
 test("a Master of Agents panel opens the workflow in the workspace on that panel, step, run and unsaved YAML", () => {

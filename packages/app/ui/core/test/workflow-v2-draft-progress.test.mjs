@@ -13,7 +13,7 @@ import { selectWorkflowViewSnapshot, workflowParentWorking, workflowViewSnapshot
 import {
     projectWorkflowV2, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2NoticeCount, workflowV2RevisionErrorsText, workflowV2ShownNotices,
 } from "../src/workflow-v2-view.js";
-import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
+import { WorkflowTab } from "../../react/src/workflow-tab.js";
 import { readModel } from "./workflow-v2-fixtures.mjs";
 
 const BAD = { severity: "error", code: "WORKFLOW_ROUTE_INVALID", path: "states.fan", message: "route goes nowhere", line: 7 };
@@ -35,15 +35,6 @@ function mount(model, parentStatus) {
     store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModelRunId: null, readModel: model } });
     return { store, controller: new PilotSwarmUiController({ store, transport: {} }) };
 }
-const main = ({ controller }) => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, icon: null }));
-const side = ({ controller }) => renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller }));
-const tool = (html, name) => html.match(new RegExp(`<button [^>]*aria-label="${name}"[^>]*>`))?.[0] ?? null;
-/** The Notices button's badge as drawn: its count and tint, or null for a button without one (or no button). */
-const badgeOf = html => {
-    const button = html.match(/<button [^>]*aria-label="Notices"[^>]*>([\s\S]*?)<\/button>/)?.[1] ?? "";
-    const badge = button.match(/<span class="ps-workflow-tool-badge"(?: data-level="([a-z]+)")?[^>]*>([^<]*)<\/span>/);
-    return badge ? { level: badge[1] ?? null, count: badge[2] } : null;
-};
 
 test("the parent agent works while it is running, as the session list steadies it (5 s hold); a wait, a schedule, a question or an idle session does not", () => {
     assert.equal(workflowParentWorking({ status: "running" }), true);
@@ -89,29 +80,35 @@ test("the calm state is for an invalid latest revision while the parent agent wo
     assert.equal(workflowV2NoticeCount(workflowV2ShownNotices(newer.banners)), 1);
 });
 
-test("while the parent agent writes: the calm screen with its errors folded, no alert, and Notices without a count; otherwise the invalid state", () => {
+// Workflow Simplified: the Workflow tab's Definition view keeps H1. Its invalid line (07, D3: one line over the graph) is
+// calm while the chat that owns the definition is writing it, its errors folded; otherwise it is the error line. The
+// Notices button it used to have is removed (spec 17), so nothing here counts or tints a button. Selecting the Workflow
+// keeps its session's chat (09, S4); the tab is on its Definition view.
+test("while the chat writes the definition: one calm line, its errors folded; otherwise the error line over the graph (07 D3, H1)", () => {
+    const tab = ({ controller, store }) => {
+        const state = store.getState();
+        const key = state.sessions.byId.wf?.parentSessionId && state.sessions.byId[state.sessions.byId.wf.parentSessionId] ? "agent-1" : "wf";
+        store.dispatch({ type: "ui/workflowTab", ownerId: key, patch: { view: "definition" } });
+        return renderToStaticMarkup(React.createElement(WorkflowTab, { controller }));
+    };
     const writing = mount(invalid(), "running");
-    const html = main(writing);
-    assert.match(html, /<div class="ps-workflow-empty is-drafting" role="status" data-drafting="2"><strong>The agent is still writing this workflow\.<\/strong><details class="ps-workflow-draft-errors"><summary>Revision 2 has 1 error<\/summary>/);
+    assert.equal(writing.store.getState().sessions.activeSessionId, "agent-1", "the chat stays in the middle");
+    const html = tab(writing);
+    assert.match(html, /<p class="ps-wf-line is-quiet" role="status" data-drafting="true">Author is still writing this definition\. Revision 2 has 1 error so far\.<\/p>/);
+    assert.match(html, /<details class="ps-wf-errors"><summary>Errors so far<\/summary>/);
     assert.ok(html.includes("route goes nowhere"), "the errors are there, folded");
-    assert.ok(!html.includes("role=\"alert\"") && !html.includes("This workflow definition is invalid"), html);
-    // Review UI7-2: the quiet notice stays reachable; the button has no count and no tint.
-    assert.ok(tool(html, "Notices"), "the Notices button stays");
-    assert.equal(badgeOf(html), null, "the revision's errors are not counted");
-    assert.ok(side(writing).includes("The agent is still writing this workflow."), "the side pane says the same");
+    assert.ok(!html.includes("is-error") && !html.includes("role=\"alert\""), html);
+    assert.ok(!html.includes("aria-label=\"Notices\""), "no Notices button (17)");
     for (const status of ["idle", "waiting", null]) {
-        const shown = main(mount(invalid(), status));
-        assert.ok(shown.includes("This workflow definition is invalid") && shown.includes("role=\"alert\""), `${status}: the invalid state`);
-        assert.ok(!shown.includes("is-drafting"), `${status}`);
-        assert.deepEqual(badgeOf(shown), { level: "error", count: "1" }, `${status}: its errors are counted`);
+        const shown = tab(mount(invalid(), status));
+        assert.match(shown, /<p class="ps-wf-line is-error" role="status">Revision 2 not valid · line 7: route goes nowhere\.<\/p>/, `${status}`);
+        assert.ok(!shown.includes("data-drafting"), `${status}`);
     }
-    // A newer invalid revision beside a published graph: the graph is drawn; while the agent writes, its errors are listed
-    // behind Notices without a count or tint, so the notice can still be read.
-    const graph = main(mount(newerInvalid(), "running"));
+    // A newer invalid revision beside a published graph: the graph is drawn under the line.
+    const graph = tab(mount(newerInvalid(), "running"));
     assert.ok(graph.includes("data-node-id"));
-    assert.ok(tool(graph, "Notices"));
-    assert.equal(badgeOf(graph), null);
-    assert.deepEqual(badgeOf(main(mount(newerInvalid(), "idle"))), { level: "error", count: "1" });
+    assert.match(graph, /Author is still writing this definition\. Revision 2 has 2 errors so far\. Showing revision 1\./);
+    assert.match(tab(mount(newerInvalid(), "idle")), /Revision 2 not valid · line 7: route goes nowhere\. Showing revision 1\./);
 });
 
 test("the Notices button: shown for any notice or a failed read; only counted notices give it a count and a tint", () => {

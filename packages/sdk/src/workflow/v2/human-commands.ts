@@ -4,7 +4,7 @@ import { jsonbSafeText, type JsonValue } from "./json.js";
 import { WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, WORKFLOW_V2_STOP_CONTROLLER_VERSIONS } from "./runtime.js";
 import type { WorkflowV2Host } from "./service.js";
 import { WorkflowStoreError, type WorkflowActor, type WorkflowStore } from "./store.js";
-import { UPDATE_WORKFLOW_OPERATIONS, operationWords, runUpdateWorkflowCommand, workflowTestModeRefusal } from "./tools.js";
+import { UPDATE_WORKFLOW_OPERATIONS, operationWords, runUpdateWorkflowCommand, workflowTestModeAbsentError } from "./tools.js";
 import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-mode-switch.js";
 
 /**
@@ -33,7 +33,8 @@ import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OPERATIONS } from "./test-m
  *   workflow takes every command the host takes.
  * - The milestone operations (stop, test, test_respond, test_advance) are
  *   taken only by a host that runs controller 1.9.0, as for the tool; the
- *   test operations only while workflow test mode is on (spec 16).
+ *   test operations only while workflow test mode is on (spec 16): while it
+ *   is off, a test operation answers as an operation that does not exist.
  */
 
 /** A person's brakes: the lifecycle controls a workflow in an agent state's subtree still takes (design 03). */
@@ -200,9 +201,9 @@ export async function updateWorkflowForPerson(command: unknown, context: { host:
     if (args.operation === "recover") {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "recover is not a person's command; the workflow's parent agent recovers a run.");
     }
-    // Test mode hidden (spec 16): a test operation is refused in words before the workflow is read.
-    const testRefusal = workflowTestModeRefusal(args.operation, host);
-    if (testRefusal) throw testRefusal;
+    // Test mode hidden (spec 16; owner answer Q3): while it is off, a test operation answers as an operation that does
+    // not exist: the same checks as any unknown operation, then the same refusal, with no word of testing.
+    const absent = workflowTestModeAbsentError(args.operation, host);
     const [row, definition] = await Promise.all([host.catalog.getSession(workflowSessionId), host.store.readDefinition(workflowSessionId)]);
     if (!row || row.deletedAt || row.sessionKind !== "workflow" || !definition) {
         throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `Session ${workflowSessionId} is not a version 2 workflow.`);
@@ -211,5 +212,6 @@ export async function updateWorkflowForPerson(command: unknown, context: { host:
         const lineage = await host.store.readWorkflowLineage(workflowSessionId);
         if (lineage?.agentRoot) throw workflowHumanInputError(workflowSessionId, "workflow", lineage);
     }
+    if (absent) throw absent;
     return await runUpdateWorkflowCommand({ ...args, workflow_id: workflowSessionId }, host, actor, async () => {});
 }

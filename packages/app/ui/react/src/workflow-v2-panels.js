@@ -1020,9 +1020,10 @@ export function WorkflowV2YamlView({ controller, sessionId, model, reads = null 
     const entry = known && reads && typeof reads === "object" ? reads[revision] : null;
     const value = entry?.value?.definitionRevision ?? null;
     const yamlText = value && typeof value.yaml === "string" ? value.yaml : null;
+    // Words (03, 17): no draft or published; the revision and what a person can do.
     const note = !known ? "There is no revision to show yet."
-        : published ? `Published revision ${revision} is fixed. A new version needs a new workflow, made as a draft.`
-            : `Draft revision ${revision}, read-only: you cannot change this workflow.`;
+        : published ? `Revision ${revision} · read-only. To change it, ask the chat.`
+            : `Revision ${revision} · read-only: you cannot change this definition.`;
     return h("section", { className: "ps-workflow-yaml-view", "aria-label": "Workflow YAML", "data-revision": known ? revision : undefined },
     h("p", { className: "ps-workflow-yaml-note" }, note),
     !known ? null

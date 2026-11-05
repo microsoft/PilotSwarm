@@ -8,7 +8,6 @@ import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-navigation.js";
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
-import { WorkflowMainPane } from "./workflow-workspace.js";
 import { WorkflowTab } from "./workflow-tab.js";
 import { WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowBadgeCount } from "../../core/src/workflow-owner.js";
 import { normalizeSidePaneTab } from "../../core/src/state.js";
@@ -7460,19 +7459,14 @@ function activeSessionIsWorkflow(state) {
 /**
  * The middle column (Workflow Simplified, 06): always a chat. A Workflow row selects the chat of the session that owns it
  * (its Workflow shows in the right block's Workflow tab), so the active session is a workflow only when that session is
- * not loaded; the Workflow tab then shows it here. A Master of Agents panel keeps its workflow screen, which hands its
- * panels to the workspace (UI-2).
+ * not loaded; the Workflow tab then shows it here. A Master of Agents panel that holds a Workflow shows the same Workflow
+ * tab (spec 18: one screen for a Workflow everywhere; the old workflow screen, with its Notices and Publish review, is
+ * no longer mounted).
  */
 function ChatPane(props) {
     const workflow = useControllerSelector(props.controller, state =>
         state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
     if (!workflow) return React.createElement(ChatTranscriptPane, props);
-    if (props.onWorkflowOpenSide || props.onWorkflowNodeSelected) {
-        return React.createElement(WorkflowMainPane, {
-            controller: props.controller, icon: React.createElement(WorkflowGlyph, { decorative: true }),
-            onNodeSelected: props.onWorkflowNodeSelected, mobile: Boolean(props.mobile), onOpenSide: props.onWorkflowOpenSide ?? null,
-        });
-    }
     return React.createElement(WorkflowTab, { controller: props.controller, mobile: Boolean(props.mobile) });
 }
 

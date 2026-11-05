@@ -7,9 +7,9 @@
  *
  * Off:
  * - the agent tool declares no test operation and the handler refuses one, in words (tools.ts);
- * - a person's commands (Web API, MCP) refuse them the same way, the bootstrap capabilities and a read model's
- *   personCommands do not list them (human-commands.ts), so the portal and the terminal UI show no test controls
- *   and no test runs;
+ * - a person's commands (Web API, MCP) answer them as operations that do not exist (the unknown operation's refusal,
+ *   with no word of testing), the bootstrap capabilities and a read model's personCommands do not list them
+ *   (human-commands.ts), so the portal and the terminal UI show no test controls and no test runs;
  * - the MCP update_workflow tool does not name them;
  * - the base guidance does not mention them (guidance.ts).
  *

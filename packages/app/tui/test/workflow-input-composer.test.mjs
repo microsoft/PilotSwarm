@@ -61,7 +61,15 @@ test("an ordinary session's composer is unchanged, and it is never asked about; 
         assert.match(html, /<input/, sessionId);
         assert.match(html, /Type a message and press Enter/, sessionId);
     }
+    // Workflow Simplified (spec 09, S4; 18): selecting a Workflow row keeps its session's chat, so its composer is the chat's.
     store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    assert.equal(store.getState().sessions.activeSessionId, "r1");
+    assert.match(render(controller), /Type a message and press Enter/);
+    // A Workflow whose session is not loaded stays active itself, and keeps its own note.
+    store.dispatch({ type: "sessions/merged", session: { sessionId: "wf-alone", title: "Workflow: review", status: "running", sessionKind: "workflow",
+        parentSessionId: "not-loaded" } });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf-alone" });
+    assert.equal(store.getState().sessions.activeSessionId, "wf-alone");
     assert.equal(render(controller), '<span data-kind="readonly">Workflow session</span>');
     assert.deepEqual(asked, []);
 });
