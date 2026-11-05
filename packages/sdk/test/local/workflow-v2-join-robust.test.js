@@ -20,6 +20,23 @@
  *   never called not started; never more than `concurrency` branches at work.
  * - JK-13: exactly n - k failures still allow the join; one more blocks it (failFast cancels the rest; without failFast
  *   the rest run to their end); every finished result stays in the report.
+ * Part 2:
+ * - JK-11: the time limit decides while the run is paused: its active script is cut, nothing routes or starts until the
+ *   resume, a late success loses, a repeated resume replays its receipt; a pause between the decision and its route.
+ * - JK-18: a completion and a cancellation of the same branch work: whichever the store takes first stands; a retry with
+ *   another cause relabels nothing; other runs stay untouched; a cut branch admits no new step; the report keeps every
+ *   finished result, each branch once.
+ * - JK-19: a parallel state's later visit is its own: an earlier visit's late end, timer, join and cleanup change nothing
+ *   of it; each visit has its own deadline, items and winners; a second parallel state is isolated.
+ * - JK-20: a real continue-as-new while a join of the first k waits keeps its deadline, its first winner and its
+ *   branches; the time limit crossing in the new execution still decides once.
+ * - JK-27: every wake lost: the backstop still joins, in commit order; duplicate and stray queue notices change nothing.
+ * - JK-28: a cancel, a graceful stop and the run's own deadline against the join and the time limit: each end keeps its
+ *   own kind, nothing routes after the run ended, and the parallel state is never called timed_out by them.
+ * - JK-32: malformed internal envelopes to the join, branch end and time limit activities are refused with no change;
+ *   claims in them never become successes; valid calls still work.
+ * - J1b-T4: a winner whose terminal fails after the time limit gives way to the next success committed in time.
+ * - J1cd-T5: a branch's last state is found through its chain when its terminal's id sorts first and the times are equal.
  *
  * Every timing or fault case first proves its stored precondition and that its hook was reached (O7); a missed window
  * fails as VOID, never as a pass. Branch scripts run as real script processes. No model runs.
@@ -29,13 +46,15 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { openWorkflowStore } from "../helpers/workflow-v2-request-fixture.js";
 import {
-    commitOrder, elapsedResult, endOf, eventsOf, gate, joinBaseOf, joinDoc, joinRuntimeOn, pause, persisted, startJoin, until, within, yamlOf,
-    branchRowsOf, JOIN_ACTOR,
+    commitOrder, elapsedResult, endOf, eventsOf, executionsOf, gate, joinBaseOf, joinDoc, joinRuntimeOn, pause, persisted, startJoin, until, within, yamlOf,
+    branchRowsOf, JOIN_ACTOR, WORK,
 } from "../helpers/workflow-v2-join-harness.js";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
+import { controlWorkflowV2Run } from "../../src/workflow/v2/service.ts";
 import {
-    BRANCH_ROUTE, branchScopeId, WORKFLOW_V2_REQUEST_ACTIVITIES, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId,
+    BRANCH_ROUTE, branchScopeId, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_ACTIVITIES, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+    workflowEffectInstanceId, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 
@@ -631,6 +650,530 @@ describe("J3 robust joins: commit order, repeats and lost acknowledgements (cont
             expect(patientRun.terminalOutput.branches[4]).toMatchObject({ index: 4, ended: "terminal", outcome: "succeeded" });
             expect((await base.store.listNodeExecutions(patient.runId)).filter(node => node.outcome === "cancelled"), "nothing was cut").toEqual([]);
         } finally {
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+});
+
+// ─── Part 2 ──────────────────────────────────────────────────
+
+/** A join of the first 1 over a looping root: the parallel state runs twice (its second items from `count`), then `other`. */
+const COUNT = "const round = context.input[0].output.round;\n"
+    + "await setResult(round === 1 ? \"again\" : \"next\", { items: [{ seconds: 600, round: 2 }, { seconds: 600, round: 2 }, { seconds: 600, round: 2 }] });\n";
+const branchBody = prefix => ({
+    initial: `${prefix}work`,
+    states: {
+        [`${prefix}work`]: { type: "script", source: WORK, transition: { next: { ok: `${prefix}done`, bad: `${prefix}refused`, hold: `${prefix}hold` } } },
+        [`${prefix}hold`]: { type: "wait", seconds: "${input.seconds}", transition: { next: { elapsed: `${prefix}done` } } },
+        [`${prefix}done`]: { type: "terminal", outcome: "succeeded", output: "${input}" },
+        [`${prefix}refused`]: { type: "terminal", outcome: "blocked", output: "${input}" },
+    },
+});
+const loopDoc = () => ({
+    apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "join-visits", version: "1.0.0" },
+    initialInput: { items: [{ seconds: 600, round: 1 }, { seconds: 600, round: 1 }] },
+    initial: "fan",
+    states: {
+        fan: { type: "parallel", forEach: "${input.items}", concurrency: 3, join: { first: 1 }, timeoutSeconds: 120, body: branchBody(""),
+            transition: { next: { joined: "count", blocked: "stuck", timed_out: "late", failure: "failed" } } },
+        count: { type: "script", source: COUNT, transition: { next: { again: "fan", next: "other" } } },
+        other: { type: "parallel", forEach: "${input.items}", concurrency: 2, join: { first: 1 }, body: branchBody("o"),
+            transition: { next: { joined: "finished", blocked: "stuck", failure: "failed" } } },
+        finished: { type: "terminal", outcome: "succeeded", output: "${input}" },
+        stuck: { type: "terminal", outcome: "blocked", output: "${input}" },
+        late: { type: "terminal", outcome: "blocked", output: "${input}" },
+        failed: { type: "terminal", outcome: "failed" },
+    },
+});
+const deadlineText = async (base, id) => (await base.q(`SELECT deadline_at::text AS at FROM SCHEMA.workflow_node_executions WHERE node_execution_id = $1`, [id]))[0]?.at ?? null;
+const rootIdsOf = async (base, runId) => (await base.store.listNodeExecutions(runId)).filter(node => node.scopeId === "root").map(node => node.nodeId);
+const failedHold = { outcome: "execution_failed", resultKind: "runtime_error", valueText: canonicalJson({ code: "execution_failed", message: "no" }), winner: "controller" };
+
+describe("J3 robust joins, part 2: the store (no controller)", () => {
+    it("JK-18: completion first stands, cancellation first stands; a retry with another cause relabels nothing; other runs untouched; a cut branch admits no new step; the report keeps each branch once", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            // An unrelated run with work pending: nothing below touches it.
+            const other = await storedRun(h, joinDoc({ items: WAITS(2), join: { first: 1 } }));
+            await other.enterFan(WAITS(2), null);
+            for (const index of [0, 1]) await other.hold(index);
+            const otherBefore = await Promise.all([0, 1].map(index => h.store.readNodeExecution(other.at(index, "hold"))));
+
+            // The first 2 of 4: branch 1 succeeded and ended, branch 2 failed, branch 3's work completes before the decision,
+            // branch 4 still runs.
+            const run = await storedRun(h, joinDoc({ items: WAITS(4), join: { first: 2 } }));
+            await run.enterFan(WAITS(4), null);
+            for (const index of [0, 1, 2, 3]) await run.hold(index);
+            await run.succeed(0);
+            await run.confirm(0);
+            await h.store.completeNode(run.at(1, "hold"), failedHold);
+            expect(await run.succeed(2), "completion first").toMatchObject({ won: true });
+            await run.confirm(2);
+            const joined = await run.join([]);
+            expect(joined).toMatchObject({ result: "won", node: { outcome: "joined", output: [{ index: 0, output: { index: 0 } }, { index: 2, output: { index: 2 } }] } });
+            expect(joined.cancelled).toEqual([run.at(3, "hold")]);
+            // The completion stands with its output; the failure keeps its error; the cancelled work rejects a later completion.
+            expect(await h.store.readNodeExecution(run.at(2, "hold"))).toMatchObject({ outcome: "elapsed", output: { index: 2 } });
+            expect(await h.store.readNodeExecution(run.at(1, "hold"))).toMatchObject({ outcome: "execution_failed", resultKind: "runtime_error", error: { code: "execution_failed" } });
+            expect(await run.succeed(3), "cancellation first").toMatchObject({ won: false, node: { outcome: "cancelled", winner: "join", error: { code: "cancelled" } } });
+            // A retry with another cause and repeated scopes relabels nothing and records nothing new.
+            const retry = await h.store.cancelBranchScopes({ runId: run.runId, scopeIds: [3, 3, 2, 1].map(index => branchScopeId(run.fan, index)), reason: "timeout" });
+            const ids = retry.cancelled.map(item => item.nodeExecutionId);
+            expect(new Set(ids).size, "each node once").toBe(ids.length);
+            expect(ids).toEqual([run.at(3, "hold")]);
+            expect(retry.cancelled[0].reason, "the first stored cause").toBe("join");
+            expect(await h.store.readNodeExecution(run.at(3, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+            const events = await h.catalog.getSessionEvents(run.workflowSessionId, 0, 500);
+            expect(events.filter(event => event.eventType === "workflow.branches_cancelled")).toHaveLength(1);
+            // A cut branch admits no new step of its own.
+            expect(await h.store.enterNode({
+                runId: run.runId, nodeExecutionId: nodeExecutionIdFor(run.runId, branchScopeId(run.fan, 3), "hold", 2), scopeId: branchScopeId(run.fan, 3),
+                nodeId: "hold", ordinal: 2, nodeType: "wait", predecessorId: run.at(3, "hold"), arrivalRoute: "elapsed",
+                inputText: canonicalJson({ index: 3 }), kvRevision: 1, waitSeconds: 600, immediate: null,
+            })).toMatchObject({ admitted: false, reason: "cut" });
+            // The unrelated run is as it was.
+            const otherAfter = await Promise.all([0, 1].map(index => h.store.readNodeExecution(other.at(index, "hold"))));
+            expect(otherAfter.map(row => [row.state, row.outcome])).toEqual(otherBefore.map(row => [row.state, row.outcome]));
+
+            // A blocked join's report: each branch once, the finished results kept.
+            const blocked = await storedRun(h, joinDoc({ items: WAITS(3), join: { first: 2 } }));
+            await blocked.enterFan(WAITS(3), null);
+            for (const index of [0, 1, 2]) await blocked.hold(index);
+            await blocked.succeed(0);
+            await blocked.confirm(0);
+            for (const index of [1, 2]) await h.store.completeNode(blocked.at(index, "hold"), failedHold);
+            const decided = await blocked.join([]);
+            expect(decided).toMatchObject({ result: "won", node: { outcome: "blocked", resultKind: "business" } });
+            const report = decided.node.output;
+            expect(report).toMatchObject({ joined: false, total: 3, needed: 2, succeeded: 1 });
+            expect(report.branches.map(branch => branch.index)).toEqual([0, 1, 2]);
+            expect(report.branches[0]).toMatchObject({ ended: "terminal", outcome: "succeeded", output: { index: 0 } });
+            for (const index of [1, 2]) expect(report.branches[index]).toMatchObject({ ended: "error", outcome: "execution_failed", error: { code: "execution_failed" } });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("J1b-T4: a winner whose terminal fails after the time limit gives way to the next success committed in time", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const items = WAITS(3);
+            const run = await storedRun(h, joinDoc({ items, join: { first: 1 }, timeoutSeconds: 2 }));
+            await run.enterFan(items, 2);
+            for (const index of [0, 1, 2]) await run.hold(index);
+            await run.succeed(0);
+            await run.succeed(1);
+            const { deadlineAt } = await h.store.readNodeExecution(run.fan);
+            await until(async () => Date.now() > deadlineAt.getTime() + 300 || null, "the time limit to pass", 10_000);
+            // The time limit: the join is due with branch 1 (the first success); branch 3's work is cut.
+            expect(await h.store.elapseParallelNode(run.fan)).toMatchObject({ result: "join_due", cancelled: [run.at(2, "hold")] });
+            // Branch 1's terminal is admitted after the time limit and fails its output check: it is no success any more.
+            expect(await h.store.enterNode({
+                runId: run.runId, nodeExecutionId: run.at(0, "done"), scopeId: branchScopeId(run.fan, 0), nodeId: "done", ordinal: 1, nodeType: "terminal",
+                predecessorId: run.at(0, "hold"), arrivalRoute: "elapsed", inputText: canonicalJson({ index: 0 }), kvRevision: 1, waitSeconds: null, immediate: null,
+            })).toMatchObject({ admitted: true });
+            await h.store.completeNode(run.at(0, "done"), { outcome: "invalid_output", resultKind: "runtime_error",
+                valueText: canonicalJson({ code: "invalid_output", message: "The branch's output does not match its schema." }), winner: "controller" });
+            // The next success committed in time takes its place: the join waits for its terminal, then joins with it.
+            expect(await run.join([])).toMatchObject({ result: "wait" });
+            await run.confirm(1);
+            expect(await run.join([])).toMatchObject({ result: "won", node: { outcome: "joined", output: [{ index: 1, output: { index: 1 } }] } });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("J1cd-T5: a branch's last state is found through its chain when its terminal's id sorts first and the times are equal", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            // Runs until one whose branch 1 terminal id sorts before its wait's id (ids come from the run id: about one in two).
+            let run = null;
+            for (let attempt = 0; attempt < 40 && run === null; attempt += 1) {
+                const candidate = await storedRun(h, joinDoc({ items: WAITS(2), join: { first: 1 } }));
+                if (candidate.at(0, "done") < candidate.at(0, "hold")) run = candidate;
+            }
+            expect(run, "precondition: a run whose terminal id sorts first").not.toBeNull();
+            await run.enterFan(WAITS(2), null);
+            await run.hold(0);
+            await run.hold(1);
+            await run.succeed(0);
+            await run.confirm(0);
+            // The wait and the terminal at the same instant, entered and committed.
+            const pair = [run.at(0, "hold"), run.at(0, "done")];
+            await h.q(`UPDATE SCHEMA.workflow_node_executions SET entered_at = (SELECT min(entered_at) FROM SCHEMA.workflow_node_executions WHERE node_execution_id = ANY($1::text[])),
+                completed_at = (SELECT max(completed_at) FROM SCHEMA.workflow_node_executions WHERE node_execution_id = ANY($1::text[])) WHERE node_execution_id = ANY($1::text[])`, [pair]);
+            const same = await h.q(`SELECT entered_at::text AS e, completed_at::text AS c FROM SCHEMA.workflow_node_executions WHERE node_execution_id = ANY($1::text[])`, [pair]);
+            expect(new Set(same.map(row => `${row.e}|${row.c}`)).size, "precondition: equal times").toBe(1);
+            // The chain says the terminal is the branch's end: the join joins (a mis-sorted end would make it wait).
+            expect(await run.join([])).toMatchObject({ result: "won", node: { outcome: "joined", output: [{ index: 0, output: { index: 0 } }] } });
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("JK-32: malformed internal envelopes are refused with no change; claims in them never become successes; valid calls still work", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        try {
+            // The registered handlers themselves, called directly with the real store (no runtime runs them).
+            const handlers = new Map();
+            registerWorkflowV2({ registerActivity: (name, fn) => handlers.set(name, fn), registerOrchestrationVersioned: () => {} }, {
+                store: base.store, catalog: base.catalog, enabled: () => true,
+                resolveToolBinding: async () => null,
+                openToolExecutor: async () => { throw new Error("These workflows call no tools."); },
+                authorizeParentNotification: async () => false,
+                notifyParent: async () => { throw new Error("These workflows notify no parent."); },
+                deleteSession: async sessionId => base.catalog.softDeleteSession(sessionId),
+                wakeBackstopMs: 500, workflowRequests: true,
+                sessionQueue: { ...sessionQueueTransport(base.client), version: async () => "1.0.83" },
+            });
+            const ctx = { getClient: () => base.client, traceWarn: () => {}, traceInfo: () => {} };
+            const call = (name, input) => handlers.get(name)(ctx, input);
+            const firstK = await storedRun(base, joinDoc({ items: WAITS(3), join: { first: 2 } }));
+            await firstK.enterFan(WAITS(3), null);
+            for (const index of [0, 1, 2]) await firstK.hold(index);
+            const another = await storedRun(base, joinDoc({ items: WAITS(2), join: { first: 1 } }));
+            await another.enterFan(WAITS(2), null);
+            for (const index of [0, 1]) await another.hold(index);
+            await another.succeed(0);
+            await another.confirm(0);
+            const all = await storedRun(base, joinDoc({ items: WAITS(2) }));
+            await all.enterFan(WAITS(2), null);
+            for (const index of [0, 1]) await all.hold(index);
+            await all.succeed(1);
+            const snapshot = async () => ({
+                rows: (await Promise.all([firstK, another, all].map(run => base.store.listNodeExecutions(run.runId))))
+                    .flat().map(row => [row.nodeExecutionId, row.state, row.outcome, row.winner]),
+                events: (await Promise.all([firstK, another, all].map(run => base.catalog.getSessionEvents(run.workflowSessionId, 0, 500)))).flat().length,
+            });
+            const before = await snapshot();
+            const results = list => ({ runId: firstK.runId, parallelNodeExecutionId: firstK.fan, results: list });
+            // The join: another run's parallel state, a state that is not a parallel state, an index out of range, an index
+            // twice, an end kind that does not exist.
+            await expect(call(R.join, { runId: firstK.runId, parallelNodeExecutionId: another.fan, results: [] })).rejects.toThrow(/is not a parallel state of run/);
+            await expect(call(R.join, { runId: firstK.runId, parallelNodeExecutionId: firstK.at(0, "hold"), results: [] })).rejects.toThrow(/is not a parallel state/);
+            await expect(call(R.join, results([{ index: 3, via: "terminal", nodeExecutionId: firstK.at(0, "hold") }]))).rejects.toThrow(/index is invalid/);
+            await expect(call(R.join, results([{ index: 0, via: "not_started", nodeExecutionId: null }, { index: 0, via: "not_started", nodeExecutionId: null }])))
+                .rejects.toThrow(/index is invalid/);
+            await expect(call(R.join, results([{ index: 0, via: "won", nodeExecutionId: null }]))).rejects.toThrow(/is invalid/);
+            // Claims of success (a pending state, another run's ended terminal) count for nothing: the store decides by its rows.
+            expect(await call(R.join, results([{ index: 0, via: "terminal", nodeExecutionId: firstK.at(0, "hold") },
+                { index: 1, via: "terminal", nodeExecutionId: another.at(0, "done") }]))).toEqual({ decided: false });
+            // A join of every branch (IR 8): a branch's end that is another run's row, or another branch's, is refused.
+            await expect(call(R.join, { runId: all.runId, parallelNodeExecutionId: all.fan, results: [
+                { index: 0, via: "terminal", nodeExecutionId: another.at(0, "done") }, { index: 1, via: "terminal", nodeExecutionId: all.at(1, "hold") }] }))
+                .rejects.toThrow(/ended without a decided state/);
+            await expect(call(R.join, { runId: all.runId, parallelNodeExecutionId: all.fan, results: [
+                { index: 0, via: "terminal", nodeExecutionId: all.at(1, "hold") }, { index: 1, via: "terminal", nodeExecutionId: all.at(1, "hold") }] }))
+                .rejects.toThrow(/is not a state of branch 0/);
+            // A branch end: another run's state, a root state, a state that is not a terminal.
+            await expect(call(R.endBranch, { runId: firstK.runId, nodeExecutionId: another.at(0, "done") })).rejects.toThrow(/is not a branch state of run/);
+            await expect(call(R.endBranch, { runId: firstK.runId, nodeExecutionId: firstK.fan })).rejects.toThrow(/is not a branch state of run/);
+            await expect(call(R.endBranch, { runId: firstK.runId, nodeExecutionId: firstK.at(0, "hold") })).rejects.toThrow(/is not a terminal state/);
+            // The time limit: another run's state.
+            await expect(call(R.elapse, { runId: firstK.runId, nodeExecutionIds: [another.fan] })).rejects.toThrow(/is not a wait state or a receive state of run/);
+            // Nothing changed: no state, no event.
+            expect(await snapshot()).toEqual(before);
+
+            // Valid calls work: two successes and their ends, then the join.
+            await firstK.succeed(1);
+            await firstK.succeed(0);
+            for (const index of [1, 0]) {
+                expect(await base.store.enterNode({
+                    runId: firstK.runId, nodeExecutionId: firstK.at(index, "done"), scopeId: branchScopeId(firstK.fan, index), nodeId: "done", ordinal: 1,
+                    nodeType: "terminal", predecessorId: firstK.at(index, "hold"), arrivalRoute: "elapsed", inputText: canonicalJson({ index }), kvRevision: 1,
+                    waitSeconds: null, immediate: null,
+                })).toMatchObject({ admitted: true });
+                expect(await call(R.endBranch, { runId: firstK.runId, nodeExecutionId: firstK.at(index, "done") })).toMatchObject({ succeeded: true, outcome: "succeeded" });
+            }
+            expect(await call(R.join, results([{ index: 1, via: "terminal", nodeExecutionId: firstK.at(1, "done") },
+                { index: 0, via: "terminal", nodeExecutionId: firstK.at(0, "done") }]))).toEqual({ decided: true, cut: "join" });
+            expect(await base.store.readNodeExecution(firstK.fan)).toMatchObject({ outcome: "joined", output: [{ index: 1, output: { index: 1 } }, { index: 0, output: { index: 0 } }] });
+            expect(await base.store.readNodeExecution(firstK.at(2, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+            // The unrelated runs were not cut.
+            expect(await base.store.readNodeExecution(another.at(1, "hold"))).toMatchObject({ state: "pending" });
+            expect(await base.store.readNodeExecution(all.at(0, "hold"))).toMatchObject({ state: "pending" });
+        } finally {
+            await base.close();
+        }
+    });
+});
+
+describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
+    it("JK-11: the time limit decides while paused: the active script is cut, nothing routes or starts until the resume; a late success loses; a repeated resume replays", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const held = { runId: null, gate: gate() };
+        const workers = [];
+        const command = (run, operation, operationId) => controlWorkflowV2Run(base.host, run.workflowSessionId, { operation, runId: null, reason: null },
+            { actor: JOIN_ACTOR, operationId });
+        try {
+            workers.push(await joinRuntimeOn(base, { wrap: {
+                [R.join]: fn => async (ctx, input) => {
+                    if (input?.runId === held.runId) { held.gate.arrive(); await held.gate.wait(); }
+                    return fn(ctx, input);
+                },
+            } }));
+            // The first 2 of 4, two at a time: branch 1 waits, branch 2's script runs a minute, branches 3 and 4 are queued.
+            const run = await startJoin(base, joinDoc({ join: { first: 2 }, concurrency: 2, timeoutSeconds: 8,
+                items: [{ seconds: 600 }, { ms: 60_000 }, { seconds: 600 }, { seconds: 600 }] }));
+            await persisted(base, [run.at(0, "hold"), run.at(1, "work")], "branch 1's wait and branch 2's script at work");
+            const fanBefore = await base.store.readNodeExecution(run.fan);
+            const deadline = await deadlineText(base, run.fan);
+            expect(Date.now(), "VOID (not a product result): set up after the time limit; run it again").toBeLessThan(fanBefore.deadlineAt.getTime() - 2_000);
+            await command(run, "pause", "pause-1");
+            // One success while paused, before the time limit.
+            expect(await base.store.completeNode(run.at(0, "hold"), elapsedResult())).toMatchObject({ won: true });
+            const [inTime] = await commitOrder(base, [run.at(0, "hold")], run.fan);
+            expect(inTime.inTime, "precondition: the success is in time").toBe(true);
+            // The time limit decides while paused: timed_out (1 of 2), the script is cut and its action stopped.
+            const decided = await until(async () => {
+                const row = await base.store.readNodeExecution(run.fan);
+                return row?.state === "completed" ? row : null;
+            }, "the time limit to decide while paused", 40_000);
+            expect((await base.store.readRun(run.runId)).status).toBe("paused");
+            expect(decided).toMatchObject({ outcome: "timed_out", resultKind: "runtime_error" });
+            expect(decided.error.details).toMatchObject({ timedOut: true, total: 4, needed: 2, succeeded: 1 });
+            expect(decided.error.details.branches[0]).toMatchObject({ index: 0, nodeExecutionId: run.at(0, "hold"), outcome: "elapsed" });
+            expect(decided.error.details.branches[0].late).toBeUndefined();
+            expect(await base.store.readNodeExecution(run.at(1, "work"))).toMatchObject({ outcome: "cancelled", winner: "join_timeout" });
+            await until(async () => {
+                const status = await base.client.getStatus(workflowEffectInstanceId(run.at(1, "work")));
+                return status.status !== "Running" ? status : null;
+            }, "the cut script's action to stop while paused", 30_000);
+            // A late success loses; nothing routes and no queued branch starts while paused; the deadline stays.
+            expect(await base.store.completeNode(run.at(1, "work"), { outcome: "ok", resultKind: "business", valueText: "{}", winner: "effect" }))
+                .toMatchObject({ won: false });
+            await pause(1_500);
+            expect(await rootIdsOf(base, run.runId)).toEqual(["fan"]);
+            for (const index of [2, 3]) expect(await branchRowsOf(base, run, index)).toEqual([]);
+            expect(await deadlineText(base, run.fan)).toBe(deadline);
+            // The resume, twice with one operation id: the second is a replay; one route to `late`.
+            expect(await command(run, "resume", "resume-1")).toMatchObject({ replayed: false });
+            expect(await command(run, "resume", "resume-1")).toMatchObject({ replayed: true });
+            expect(await endOf(base, run.runId)).toMatchObject({ status: "completed", terminalNodeId: "late" });
+            expect(await rootIdsOf(base, run.runId)).toEqual(["fan", "late"]);
+            await expect(command(run, "resume", "resume-2")).rejects.toMatchObject({ code: "RUN_ENDED" });
+            expect(decisionsOf(await eventsOf(base, run.workflowSessionId), run.fan)).toHaveLength(1);
+            for (const index of [2, 3]) expect(await branchRowsOf(base, run, index)).toEqual([]);
+
+            // A pause between the decision and its route: the join that cuts the branches is held while the run is paused.
+            const between = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: 8 }));
+            await persisted(base, [0, 1].map(index => between.at(index, "hold")), "both waits pending");
+            held.runId = between.runId;
+            await within(held.gate.reached, 40_000, "the join after the time limit to reach the gate");
+            expect(await base.store.readNodeExecution(between.fan), "precondition: decided").toMatchObject({ state: "completed", outcome: "timed_out" });
+            await command(between, "pause", "pause-1");
+            held.runId = null;
+            held.gate.open();
+            await pause(1_500);
+            expect((await base.store.readRun(between.runId)).status).toBe("paused");
+            expect(await rootIdsOf(base, between.runId), "no route while paused").toEqual(["fan"]);
+            const resumedAt = Date.now();
+            await command(between, "resume", "resume-1");
+            expect(await endOf(base, between.runId)).toMatchObject({ terminalNodeId: "late" });
+            const lateRow = (await base.store.listNodeExecutions(between.runId)).find(node => node.nodeId === "late");
+            // The route came after the resume, not in the 1.5 s while paused (a second of slack for the two clocks).
+            expect(lateRow.enteredAt.getTime(), "routed after the resume").toBeGreaterThanOrEqual(resumedAt - 1_000);
+        } finally {
+            held.gate.open();
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+
+    it("JK-19: a later visit of a parallel state is its own: the earlier visit's late end, timer, join and cleanup change nothing of it; a second parallel state stays apart", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const workers = [];
+        try {
+            workers.push(await joinRuntimeOn(base));
+            const run = await startJoin(base, loopDoc());
+            const first = run.fan;
+            const second = nodeExecutionIdFor(run.runId, "root", "fan", 2);
+            const at = (fan, index, nodeId) => nodeExecutionIdFor(run.runId, branchScopeId(fan, index), nodeId, 1);
+            await persisted(base, [0, 1].map(index => at(first, index, "hold")), "the first visit's waits pending");
+            expect(await base.store.completeNode(at(first, 0, "hold"), elapsedResult({ seconds: 600, round: 1 }))).toMatchObject({ won: true });
+            await persisted(base, [0, 1, 2].map(index => at(second, index, "hold")), "the second visit's waits pending");
+            const [firstRow, secondRow] = await Promise.all([first, second].map(id => base.store.readNodeExecution(id)));
+            expect(firstRow).toMatchObject({ outcome: "joined", output: [{ index: 0, output: { seconds: 600, round: 1 } }] });
+            expect(secondRow).toMatchObject({ state: "pending" });
+            expect(secondRow.input).toHaveLength(3);
+            expect(firstRow.input).toHaveLength(2);
+            expect(secondRow.deadlineAt.getTime(), "its own deadline").toBeGreaterThan(firstRow.deadlineAt.getTime());
+            const secondDeadline = await deadlineText(base, second);
+            const cutBefore = (await eventsOf(base, run.workflowSessionId)).filter(event => event.eventType === "workflow.branches_cancelled").length;
+            // The first visit's late branch end, timer, join and cleanup.
+            expect(await base.store.completeNode(at(first, 1, "hold"), elapsedResult({ seconds: 600, round: 1 }))).toMatchObject({ won: false });
+            expect(await base.store.elapseParallelNode(first)).toMatchObject({ result: "decided", node: { outcome: "joined" } });
+            expect(await base.store.decideParallelJoin({ nodeExecutionId: first, notStarted: [], joined: joinedValue })).toMatchObject({ result: "decided" });
+            await base.store.cancelBranchScopes({ runId: run.runId, scopeIds: [0, 1].map(index => branchScopeId(first, index)), reason: "timeout" });
+            // The second visit is as it was: pending, its waits pending, its deadline, no cut recorded for it.
+            expect(await base.store.readNodeExecution(second)).toMatchObject({ state: "pending" });
+            for (const index of [0, 1, 2]) expect(await base.store.readNodeExecution(at(second, index, "hold"))).toMatchObject({ state: "pending" });
+            expect(await deadlineText(base, second)).toBe(secondDeadline);
+            expect((await eventsOf(base, run.workflowSessionId)).filter(event => event.eventType === "workflow.branches_cancelled")).toHaveLength(cutBefore);
+            // Its own winner, then the second parallel state.
+            expect(await base.store.completeNode(at(second, 2, "hold"), elapsedResult({ seconds: 600, round: 2 }))).toMatchObject({ won: true });
+            const otherFan = nodeExecutionIdFor(run.runId, "root", "other", 1);
+            await persisted(base, [0, 1].map(index => nodeExecutionIdFor(run.runId, branchScopeId(otherFan, index), "ohold", 1)), "the other parallel state's waits pending");
+            expect(await base.store.readNodeExecution(second)).toMatchObject({ outcome: "joined", output: [{ index: 2, output: { seconds: 600, round: 2 } }] });
+            expect(await base.store.readNodeExecution(at(first, 0, "hold")), "the first visit's rows unchanged").toMatchObject({ outcome: "elapsed" });
+            expect(await base.store.completeNode(nodeExecutionIdFor(run.runId, branchScopeId(otherFan, 1), "ohold", 1), elapsedResult({ round: 3 })))
+                .toMatchObject({ won: true });
+            expect(await endOf(base, run.runId)).toMatchObject({ terminalNodeId: "finished", terminalOutput: [{ index: 1, output: { round: 3 } }] });
+            expect(await rootIdsOf(base, run.runId)).toEqual(["fan", "count", "fan", "count", "other", "finished"]);
+            const events = await eventsOf(base, run.workflowSessionId);
+            for (const fan of [first, second, otherFan]) expect(decisionsOf(events, fan), fan).toHaveLength(1);
+            // Each visit's cut named only its own branches.
+            const cuts = events.filter(event => event.eventType === "workflow.branches_cancelled").map(event => event.data.scopeIds);
+            expect(cuts).toEqual([[branchScopeId(first, 1)], [0, 1].map(index => branchScopeId(second, index)), [branchScopeId(otherFan, 0)]]);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+
+    it("JK-20 (HG-4): a real continue-as-new while a join of the first k waits keeps its deadline, its first winner and its branches; a time limit crossed in the new execution decides once", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const workers = [];
+        try {
+            // A 100 ms backstop: 50 idle waits (the continue-as-new bound) pass in seconds.
+            workers.push(await joinRuntimeOn(base, { wakeBackstopMs: 100 }));
+            const run = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3, timeoutSeconds: 120 }));
+            await persisted(base, [0, 1, 2].map(index => run.at(index, "hold")), "every wait pending");
+            const deadline = await deadlineText(base, run.fan);
+            expect(await base.store.completeNode(run.at(2, "hold"), elapsedResult({ seconds: 2 }))).toMatchObject({ won: true });
+            await persisted(base, [run.at(2, "done")], "the first winner's end", "completed");
+            const executionsBefore = (await executionsOf(base, run.controller)).length;
+            await until(async () => (await executionsOf(base, run.controller)).length > executionsBefore || null, "a continue-as-new after the first success", 60_000);
+            expect(await base.store.readNodeExecution(run.fan), "precondition: still waiting across it").toMatchObject({ state: "pending" });
+            expect(await base.store.completeNode(run.at(0, "hold"), elapsedResult({ seconds: 0 }))).toMatchObject({ won: true });
+            expect(await endOf(base, run.runId)).toMatchObject({ terminalNodeId: "finished",
+                terminalOutput: [{ index: 2, output: { seconds: 2 } }, { index: 0, output: { seconds: 0 } }] });
+            expect(await deadlineText(base, run.fan)).toBe(deadline);
+            for (const [index, ids] of [[0, ["work", "hold", "done"]], [1, ["work", "hold"]], [2, ["work", "hold", "done"]]]) {
+                expect((await branchRowsOf(base, run, index)).map(node => node.nodeId), `branch ${index + 1}, each state once`).toEqual(ids);
+            }
+            expect(await base.store.readNodeExecution(run.at(1, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+            expect(await rootIdsOf(base, run.runId)).toEqual(["fan", "finished"]);
+            expect(decisionsOf(await eventsOf(base, run.workflowSessionId), run.fan)).toHaveLength(1);
+
+            // The time limit crosses in a later execution: decided once, by the deadline set at entry.
+            const timed = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3, timeoutSeconds: 20 }));
+            await persisted(base, [0, 1, 2].map(index => timed.at(index, "hold")), "every wait pending");
+            const timedDeadline = await deadlineText(base, timed.fan);
+            const timedFan = await base.store.readNodeExecution(timed.fan);
+            expect(await base.store.completeNode(timed.at(2, "hold"), elapsedResult({ seconds: 2 }))).toMatchObject({ won: true });
+            const executionsAtStart = (await executionsOf(base, timed.controller)).length;
+            await until(async () => (await executionsOf(base, timed.controller)).length > executionsAtStart || null, "a continue-as-new before the deadline", 60_000);
+            expect(Date.now(), "VOID: the continue-as-new came after the deadline; run it again").toBeLessThan(timedFan.deadlineAt.getTime());
+            const late = await endOf(base, timed.runId);
+            expect(late).toMatchObject({ terminalNodeId: "late" });
+            const decided = await base.store.readNodeExecution(timed.fan);
+            expect(decided).toMatchObject({ outcome: "timed_out" });
+            expect(decided.error.details).toMatchObject({ timedOut: true, needed: 2, succeeded: 1 });
+            expect(decided.error.details.branches[2]).toMatchObject({ index: 2, ended: "terminal", outcome: "succeeded" });
+            expect(decided.completedAt.getTime()).toBeGreaterThanOrEqual(decided.deadlineAt.getTime());
+            expect(await deadlineText(base, timed.fan)).toBe(timedDeadline);
+            expect(decisionsOf(await eventsOf(base, timed.workflowSessionId), timed.fan)).toHaveLength(1);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+
+    it("JK-27: every wake lost: the backstop still joins, in commit order; duplicate and stray queue notices change nothing", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        let dropped = 0;
+        const drop = () => async () => { dropped += 1; return { woke: false }; };
+        const workers = [];
+        try {
+            workers.push(await joinRuntimeOn(base, { wrap: { [R.wake]: drop, "workflow.v2.wake": drop } }));
+            const run = await startJoin(base, joinDoc({ items: [{ ms: 200 }, { ms: 900 }, { seconds: 600 }], join: { first: 2 }, concurrency: 3, timeoutSeconds: 120 }));
+            await persisted(base, [run.fan], "the parallel state pending");
+            const deadline = await deadlineText(base, run.fan);
+            // Stray notices on the controller's queue: duplicate wakes, wakes of no state and of another run, and others.
+            for (let n = 0; n < 3; n += 1) {
+                for (const notice of [{ type: "workflow-wake", runId: run.runId, nodeExecutionId: run.at(0, "work") }, { type: "workflow-wake", runId: run.runId },
+                    { type: "workflow-wake", runId: randomUUID(), nodeExecutionId: randomUUID() }, { type: "note", text: "not for the workflow" }]) {
+                    await base.client.enqueueEvent(run.controller, "messages", JSON.stringify(notice));
+                }
+            }
+            const ended = await endOf(base, run.runId);
+            expect(dropped, "precondition: the scripts' wakes were sent and lost").toBeGreaterThan(0);
+            const works = [0, 1].map(index => run.at(index, "work"));
+            const order = (await commitOrder(base, works)).map(row => works.indexOf(row.id));
+            expect(ended).toMatchObject({ terminalNodeId: "finished" });
+            expect(ended.terminalOutput.map(item => item.index), "in commit order").toEqual(order);
+            expect(await deadlineText(base, run.fan)).toBe(deadline);
+            for (const index of [0, 1, 2]) {
+                expect((await branchRowsOf(base, run, index)).filter(node => node.nodeId === "work"), `branch ${index + 1} entered once`).toHaveLength(1);
+            }
+            expect(await base.store.readNodeExecution(run.at(2, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join" });
+            expect(decisionsOf(await eventsOf(base, run.workflowSessionId), run.fan)).toHaveLength(1);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+
+    it("JK-28: a cancel, a graceful stop and the run's own deadline against the join and the time limit keep their own end kind; nothing routes after the run ended", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const held = { runId: null, gate: gate() };
+        const workers = [];
+        const command = (run, body, operationId) => controlWorkflowV2Run(base.host, run.workflowSessionId, { runId: null, reason: "enough", ...body },
+            { actor: JOIN_ACTOR, operationId });
+        try {
+            workers.push(await joinRuntimeOn(base, { wrap: {
+                [R.join]: fn => async (ctx, input) => {
+                    if (input?.runId === held.runId) { held.gate.arrive(); await held.gate.wait(); }
+                    return fn(ctx, input);
+                },
+            } }));
+            // A cancel while the join is asked: whichever comes first, the end is a cancel or the join's route, never a timeout.
+            const cancelled = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: 120 }));
+            await persisted(base, [0, 1].map(index => cancelled.at(index, "hold")), "both waits pending");
+            held.runId = cancelled.runId;
+            expect(await base.store.completeNode(cancelled.at(0, "hold"), elapsedResult())).toMatchObject({ won: true });
+            await within(held.gate.reached, 30_000, "the join to reach the gate");
+            expect(await command(cancelled, { operation: "cancel" }, "cancel-1")).toMatchObject({ replayed: false });
+            expect(await command(cancelled, { operation: "cancel" }, "cancel-1"), "a repeat replays").toMatchObject({ replayed: true });
+            held.runId = null;
+            held.gate.open();
+            const cancelledEnd = await endOf(base, cancelled.runId);
+            const cancelledFan = await base.store.readNodeExecution(cancelled.fan);
+            expect(cancelledFan.outcome).not.toBe("timed_out");
+            if (cancelledEnd.status === "cancelled") {
+                expect(await rootIdsOf(base, cancelled.runId), "nothing routed after the cancel").toEqual(["fan"]);
+                expect(["joined", "cancelled"]).toContain(cancelledFan.outcome);
+            } else {
+                expect(cancelledEnd).toMatchObject({ status: "completed", terminalNodeId: "finished" });
+            }
+            expect(await base.store.readNodeExecution(cancelled.at(1, "hold")), "the other branch's work is ended").toMatchObject({ state: "completed" });
+
+            // A graceful stop: the run is stopped, the parallel state ended by the stop, not by a timeout; its deadline stays.
+            const stopped = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: 120 }));
+            await persisted(base, [0, 1].map(index => stopped.at(index, "hold")), "both waits pending");
+            const stopDeadline = await deadlineText(base, stopped.fan);
+            expect(await command(stopped, { operation: "stop", graceSeconds: 1 }, "stop-1")).toMatchObject({ replayed: false });
+            expect(await command(stopped, { operation: "stop", graceSeconds: 1 }, "stop-1")).toMatchObject({ replayed: true });
+            expect(await endOf(base, stopped.runId)).toMatchObject({ status: "stopped" });
+            const stoppedFan = await base.store.readNodeExecution(stopped.fan);
+            expect(stoppedFan.state).toBe("completed");
+            expect(stoppedFan.outcome).not.toBe("timed_out");
+            expect(await deadlineText(base, stopped.fan)).toBe(stopDeadline);
+            expect(await rootIdsOf(base, stopped.runId)).toEqual(["fan"]);
+
+            // The run's own deadline before the parallel time limit: the run fails timed_out; the parallel state is cancelled by
+            // the run's deadline, not timed out by its own.
+            const expiring = await startJoin(base, { ...joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, timeoutSeconds: 120 }),
+                limits: { timeoutSeconds: 6 } });
+            await persisted(base, [0, 1].map(index => expiring.at(index, "hold")), "both waits pending");
+            const expired = await endOf(base, expiring.runId);
+            expect(expired).toMatchObject({ status: "failed", terminalError: { code: "timed_out" } });
+            expect(await base.store.readNodeExecution(expiring.fan)).toMatchObject({ outcome: "cancelled", winner: "deadline" });
+            expect(await rootIdsOf(base, expiring.runId)).toEqual(["fan"]);
+        } finally {
+            held.gate.open();
             for (const worker of workers) await worker.stop();
             await base.close();
         }
