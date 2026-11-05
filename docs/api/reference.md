@@ -20,6 +20,61 @@ The contract's source of truth is the operations table in
 the portal server generates its routes from it, so this document cannot be
 more current than that file. The operation tables below are generated from it.
 
+## Bounded workspace uploads
+
+The session owner alone may use these routes, including when ownership
+enforcement is otherwise disabled. Admin and shared-write access do not grant
+file access. `listSessionWorkspaceFolders` advertises `upload.partBytes`,
+`upload.legacyMaxBytes` (65,536), and `folders[].uploads`.
+
+All paths below are relative to `/api/v1/management/sessions/:sessionId/workspace`.
+
+| Method | Path | Management method |
+|---|---|---|
+| POST | `/uploads` | `startSessionWorkspaceUpload(sessionId, {folder,path,size,sha256?,ifMatch?,createParents?})` |
+| PUT | `/uploads/:uploadId/parts/:part` | `putSessionWorkspaceUploadPart(sessionId, uploadId, part, Uint8Array)` |
+| GET | `/uploads/:uploadId` | `getSessionWorkspaceUpload(sessionId, uploadId)` |
+| POST | `/uploads/:uploadId/complete` | `completeSessionWorkspaceUpload(sessionId, uploadId)` |
+| DELETE | `/uploads/:uploadId` | `abortSessionWorkspaceUpload(sessionId, uploadId)` |
+
+Controls use ordinary JSON envelopes. PUT uses **raw**
+`application/octet-stream`, never JSON/base64, and rejects compressed bodies.
+The low-level client is `api.putSessionWorkspaceUploadPart(...)`; `api.call`
+also dispatches that operation as binary. Authenticate and admit before
+consuming the body; actual streamed bytes must match the part length even
+without Content-Length. Send parts sequentially from zero; exact replays return
+their original acknowledgement, different bytes at the same index conflict.
+An empty file has zero parts and completes directly.
+
+Start returns `{uploadId,state,size,partBytes,partCount,acceptedParts,expiresAt}`.
+Status also returns `result` once known. Completion returns
+`{etag,size,mtimeMs,created}` and optional `notificationFailed` /
+`receiptPersistenceFailed` warning flags after a known commit. Repeating
+completion returns that receipt without another write or event.
+`ifMatch:null` is create-only, a string guards replacement, omission preserves
+unconditional replacement. Version-check plus rename is not atomic content-CAS
+against unrelated shell/agent writers.
+
+Errors use `WORKSPACE_FILES_UPLOAD_` plus `INVALID`, `EXPIRED`, `INCOMPLETE`,
+`PART_CONFLICT`, `BUSY`, `QUOTA`, `UNSUPPORTED`, `INTEGRITY`, `IN_PROGRESS`,
+`COMMIT_UNKNOWN`, `CANCELLED`, or `CLEANUP`. Existing file `EXISTS` and `CONFLICT`
+errors preserve their etag. IN_PROGRESS means poll status rather than retry
+publication; COMMIT_UNKNOWN means refresh the destination before deciding to
+start again. Abort cannot roll back finalization. Handles are process-local,
+expire after 30 idle minutes/two hours total, and become unavailable on restart.
+An unavailable handle is not proof that publication did not happen.
+`BUSY` with status 503 is a pre-admission rejection and includes
+`Retry-After: 1`; `ApiError.retryAfterMs` preserves numeric delay headers.
+Bounded retry of the same operation is safe only for that explicit denial,
+including completion before publication was admitted. The Workspace pane
+allows five cancellable backoffs with jitter, never a server-side queue.
+Do not automatically retry `IN_PROGRESS`, `COMMIT_UNKNOWN`, network failures,
+or untyped proxy errors as if they were admission denials.
+
+Legacy file writes remain compatible; a failed binary upload never silently
+falls back to a large JSON body. Existing reads/previews/downloads remain
+whole-file operations with their existing proxy limits.
+
 ## Conventions
 
 - **Envelope:** every JSON operation responds `{ "ok": true, "result": … }` or

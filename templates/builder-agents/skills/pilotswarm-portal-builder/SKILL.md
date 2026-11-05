@@ -30,6 +30,23 @@ See `docs/user-guide/master-of-agents.md` for behavior and keyboard controls.
 
 ## Preferred Structure
 
+For session Workspace uploads, use the public management client/transport
+upload methods when `listSessionWorkspaceFolders` advertises upload support.
+Keep writes through 64 KiB on the legacy path; slice larger Files/Blobs into
+sequential advertised-size raw binary parts, including large editor saves.
+Capture the session/folder/path before awaiting, preserve version conditions,
+and never retry a failed transfer as whole-file base64. Show progress and
+Cancel; uncertain completion requires a target refresh, not automatic
+publication retry. Configure the private local transfer spool outside all
+workspace roots. This does not change legacy preview/conflict-read/download
+limits. See `docs/api/reference.md` and `docs/developer/building/workspace-providers.md`.
+For an explicit `WORKSPACE_FILES_UPLOAD_BUSY`/503 pre-admission denial, use
+bounded, cancellable backoff and honor numeric `Retry-After` without reading
+ahead or reallocating the part. The shipped pane permits five retries, shows
+`Waiting for upload capacity`, and leaves the server's two-operation limit
+unchanged. Never apply this retry policy to ambiguous publication or network
+failures, or use it to bypass quotas.
+
 ```text
 my-app/
 ├── plugin/

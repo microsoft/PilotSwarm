@@ -739,6 +739,16 @@ export class PortalRuntime {
                 return this.transport.listSessionWorkspaceFolders(safeParams.sessionId);
             case "sessionWorkspaceFiles":
                 return this.transport.sessionWorkspaceFiles(safeParams.sessionId, safeParams.call || {});
+            case "startSessionWorkspaceUpload":
+                return this.transport.startSessionWorkspaceUpload(safeParams.sessionId, safeParams.input || {}, owner);
+            case "getSessionWorkspaceUpload":
+                return this.transport.getSessionWorkspaceUpload(safeParams.sessionId, safeParams.uploadId, owner);
+            case "completeSessionWorkspaceUpload":
+                return this.transport.completeSessionWorkspaceUpload(safeParams.sessionId, safeParams.uploadId, owner);
+            case "abortSessionWorkspaceUpload":
+                return this.transport.abortSessionWorkspaceUpload(safeParams.sessionId, safeParams.uploadId, owner);
+            case "putSessionWorkspaceUploadPart":
+                return this.transport.putSessionWorkspaceUploadPart(safeParams.sessionId, safeParams.uploadId, safeParams.part, safeParams.bytes, { actor: owner });
             case "canvasWorkspace":
                 return this.transport.canvasWorkspace(safeParams.sessionId, safeParams.slot, safeParams.call || {});
             case "regenerateSession":

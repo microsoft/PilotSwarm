@@ -77,3 +77,34 @@ test("workspace files and canvas-ws: the session's owner only, admins included, 
         (error) => error.status === 404);
     assert.deepEqual(calls, [["folders", "s1"], ["files", "s1", "list"], ["canvas", "s1", 1, "info"]]);
 });
+
+test("all upload operations enforce owner-only access and derive the actor from authentication", async () => {
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.start = async () => {};
+    const owner = { provider: "dev", subject: "alice" }, calls = [];
+    runtime.transport = {
+        getSessionAccess: async (id, viewer) => id === "missing" ? null : ({
+            rootSessionId: id, isSystem: id === "system", visibility: "shared_write", owner,
+            viewerIsOwner: viewer.subject === owner.subject && viewer.provider === owner.provider,
+            viewerShareAccess: "write",
+        }),
+    };
+    const operations = ["startSessionWorkspaceUpload", "getSessionWorkspaceUpload", "putSessionWorkspaceUploadPart", "completeSessionWorkspaceUpload", "abortSessionWorkspaceUpload"];
+    for (const name of operations) {
+        runtime.transport[name] = async (...args) => { calls.push({ name, args }); return {}; };
+        const params = { sessionId: "shared", uploadId: "handle", input: { folder: "working", path: "file", size: 1 }, part: 0, bytes: new Uint8Array([1]), actor: { provider: "forged", subject: "forged" } };
+        for (const role of ["user", "admin"]) await assert.rejects(runtime.call(name, params, {
+            principal: { provider: "dev", subject: "bob" }, authorization: { role },
+        }), { status: 403 });
+        await assert.rejects(runtime.call(name, { ...params, sessionId: "missing" }, {
+            principal: owner, authorization: { role: "user" },
+        }), { status: 404 });
+        await assert.rejects(runtime.call(name, { ...params, sessionId: "system" }, {
+            principal: owner, authorization: { role: "user" },
+        }), { status: 403 });
+        await runtime.call(name, params, { principal: owner, authorization: { role: "user" } });
+        const last = calls.at(-1).args.at(-1);
+        assert.deepEqual(name === "putSessionWorkspaceUploadPart" ? last.actor : last, { ...owner, displayName: null, email: null });
+    }
+    assert.equal(calls.length, operations.length);
+});

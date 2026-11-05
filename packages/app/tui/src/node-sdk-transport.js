@@ -1132,6 +1132,12 @@ export class NodeSdkTransport {
         return this.mgmt.sessionWorkspaceFiles(sessionId, call);
     }
 
+    startSessionWorkspaceUpload(sessionId, input, actor) { return this.mgmt.startSessionWorkspaceUpload(sessionId, input, actor); }
+    getSessionWorkspaceUpload(sessionId, uploadId, actor) { return this.mgmt.getSessionWorkspaceUpload(sessionId, uploadId, actor); }
+    completeSessionWorkspaceUpload(sessionId, uploadId, actor) { return this.mgmt.completeSessionWorkspaceUpload(sessionId, uploadId, actor); }
+    abortSessionWorkspaceUpload(sessionId, uploadId, actor) { return this.mgmt.abortSessionWorkspaceUpload(sessionId, uploadId, actor); }
+    putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, options) { return this.mgmt.putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, options); }
+
     async canvasWorkspace(sessionId, slot, call = {}) {
         return this.mgmt.canvasWorkspace(sessionId, slot, call);
     }

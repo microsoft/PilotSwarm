@@ -34,8 +34,16 @@ async function readErrorEnvelope(response) {
         } else if (payload?.message) {
             message = payload.message;
         }
-    } catch {}
-    return new ApiError(message, { code, status: response.status, candidates, ...extra });
+    } catch {
+        extra.responseIsJson = false;
+        if (response.status === 413) message = "Upload request rejected (HTTP 413). Check the file size, advertised part size, and proxy request-body limit.";
+        else if (response.status === 403) message = "Request rejected (HTTP 403). A proxy or firewall may have rejected it.";
+    }
+    const retryAfter = response.headers?.get("retry-after") ?? null;
+    if (retryAfter !== null && /^[0-9]+(?:\.[0-9]+)?$/.test(retryAfter) && Number.isFinite(Number(retryAfter) * 1000)) {
+        extra.retryAfterMs = Number(retryAfter) * 1000;
+    }
+    return Object.assign(new ApiError(message, { code, status: response.status, candidates, ...extra }), extra);
 }
 
 /** Workspace files: a conflict's current etag (null: the file is gone) and a too-large file's size. */
@@ -102,17 +110,17 @@ export class ApiClient {
         return headers;
     }
 
-    async request(method, pathWithQuery, { body, headers, authProbe = false, signal } = {}) {
+    async request(method, pathWithQuery, { body, headers, authProbe = false, raw = false, signal } = {}) {
         const requestHeaders = await this.authHeaders(headers || {});
         signal?.throwIfAborted();
         if (body !== undefined && !requestHeaders["content-type"]) {
-            requestHeaders["content-type"] = "application/json";
+            requestHeaders["content-type"] = raw ? "application/octet-stream" : "application/json";
         }
         const response = await this.fetchImpl(`${this.apiUrl}${pathWithQuery}`, {
             method,
             headers: requestHeaders,
+            ...(body !== undefined ? { body: raw ? body : JSON.stringify(body) } : {}),
             ...(signal ? { signal } : {}),
-            ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         });
         if (response.status === 401) {
             this.onUnauthorized();
@@ -147,12 +155,23 @@ export class ApiClient {
 
     /** Invoke a protocol operation by name with rpc-shaped params. */
     async call(name, params = {}, { signal } = {}) {
+        if (name === "putSessionWorkspaceUploadPart") {
+            return this.putSessionWorkspaceUploadPart(
+                params.sessionId, params.uploadId, params.part, params.bytes, { signal },
+            );
+    }
         const { method, path, query, body } = buildOperationRequest(name, params);
         // Avoid URLSearchParams.prototype.size (absent on Safari 16 / iOS 16,
         // which the portal build targets); toString() is universally supported.
         const queryString = query.toString();
         const suffix = queryString ? `?${queryString}` : "";
         return this.request(method, `${path}${suffix}`, { ...(body !== null ? { body } : {}), ...(signal ? { signal } : {}) });
+    }
+
+    async putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, { signal } = {}) {
+        if (!(bytes instanceof Uint8Array) || bytes.byteLength > 524288) throw new ApiError("Upload parts must be Uint8Array values no larger than 512 KiB.", { code: "WORKSPACE_FILES_UPLOAD_INVALID", status: 400 });
+        const path = `${API_PREFIX}/management/sessions/${encodeURIComponent(sessionId)}/workspace/uploads/${encodeURIComponent(uploadId)}/parts/${encodeURIComponent(part)}`;
+        return this.request("PUT", path, { body: bytes, raw: true, signal });
     }
 
     // ── Bespoke (non-table) endpoints ───────────────────────────────────

@@ -124,9 +124,9 @@ const FOLDERS = [
     { id: "extra:shared", name: "shared", role: "extra", home: false, root: "shared", folder: "", available: false },
 ];
 
-async function routeWorkspace(page, folder, { enabled = true, folders = FOLDERS, workspaceTab = true, others = {}, writeDelayMs = 0 } = {}) {
+async function routeWorkspace(page, folder, { enabled = true, folders = FOLDERS, workspaceTab = true, others = {}, writeDelayMs = 0, upload } = {}) {
     await page.route("**/api/portal-config", (route) => route.fulfill({ json: { ok: true, portal: { branding: { title: "PilotSwarm", pageTitle: "PilotSwarm" }, workspaceFiles: workspaceTab } } }));
-    await page.route(`**/management/sessions/${sessionId}/workspace/folders`, (route) => route.fulfill({ json: { ok: true, result: { enabled, maxBytes: 20 * 1024 * 1024, folders } } }));
+    await page.route(`**/management/sessions/${sessionId}/workspace/folders`, (route) => route.fulfill({ json: { ok: true, result: { enabled, maxBytes: 20 * 1024 * 1024, folders, ...(upload ? { upload } : {}) } } }));
     await page.route(`**/management/sessions/${sessionId}/workspace/files`, async (route) => {
         const call = route.request().postDataJSON().call;
         const target = others[call.folder] ?? folder;
@@ -154,6 +154,174 @@ async function showWorkspaceTab(page) {
 const tree = (page) => page.getByRole("tree", { name: "Files in app" });
 const row = (page, name) => tree(page).getByRole("treeitem").filter({ has: page.locator(".ps-ws-row-name", { hasText: new RegExp(`^${name.replace(/[.()]/g, "\\$&")}$`) }) });
 const editor = (page) => page.locator(".ps-ws-viewer .cm-content");
+
+const UPLOAD_PART_BYTES = 524_288;
+const uploadGate = () => {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+};
+
+/** Raw upload fixture; legacy reads/editor-open deliberately stay unchanged. */
+async function routeUploads(page, folder, { onPart, onComplete, folders = FOLDERS, others = {} } = {}) {
+    await routeWorkspace(page, folder, {
+        folders: folders.map((entry) => ({ ...entry, uploads: true })), others,
+        upload: { partBytes: UPLOAD_PART_BYTES, legacyMaxBytes: 65_536 },
+    });
+    const records = [];
+    const uploads = new Map();
+    let next = 0;
+    await page.route(`**/management/sessions/${sessionId}/workspace/files`, (route) => {
+        if (route.request().postDataJSON().call.op === "write") records.push({ kind: "legacy" });
+        return route.fallback();
+    });
+    const fulfill = (route, result) => route.fulfill({ json: { ok: true, result } });
+    await page.route(`**/management/sessions/${sessionId}/workspace/uploads`, async (route) => {
+        const body = route.request().postDataJSON();
+        const input = body.input ?? body;
+        const uploadId = `upload-${++next}`;
+        uploads.set(uploadId, { ...input, parts: [] });
+        records.push({ kind: "start", uploadId, input });
+        await fulfill(route, { uploadId, partBytes: UPLOAD_PART_BYTES, partCount: Math.ceil(input.size / UPLOAD_PART_BYTES), expiresAt: Date.now() + 60_000 });
+    });
+    await page.route(`**/management/sessions/${sessionId}/workspace/uploads/**`, async (route) => {
+        const match = route.request().url().match(/\/uploads\/([^/]+)(?:\/(.*))?$/);
+        const uploadId = match[1];
+        const tail = match[2] ?? "";
+        const upload = uploads.get(uploadId);
+        if (tail.startsWith("parts/")) {
+            const part = Number(tail.slice(6));
+            const bytes = route.request().postDataBuffer();
+            expect(route.request().headers()["content-type"]).toContain("application/octet-stream");
+            expect(bytes.length).toBeLessThanOrEqual(UPLOAD_PART_BYTES);
+            records.push({ kind: "part", uploadId, part, bytes: bytes.length });
+            await onPart?.({ part, uploadId, upload, route });
+            upload.parts[part] = bytes;
+            return fulfill(route, { part, bytes: bytes.length, sha256: etagOf(bytes).slice(7) });
+        }
+        if (tail === "complete") {
+            records.push({ kind: "complete", uploadId });
+            if (await onComplete?.({ uploadId, upload, route })) return;
+            const target = others[upload.folder] ?? folder;
+            const { status, body } = target.handle({
+                op: "write", folder: upload.folder, path: upload.path, ifMatch: upload.ifMatch,
+                contentBase64: Buffer.concat(upload.parts).toString("base64"),
+            });
+            return route.fulfill({ status, json: body });
+        }
+        if (route.request().method() === "DELETE") {
+            records.push({ kind: "abort", uploadId });
+            return fulfill(route, { state: "aborted" });
+        }
+        throw new Error(`Unexpected upload request: ${route.request().method()} ${tail}`);
+    });
+    return records;
+}
+
+test("chunked upload shows byte progress and Replace starts a fresh matching upload", async ({ page }) => {
+    const folder = new Folder({ "large.bin": "original" });
+    const gate = uploadGate();
+    const records = await routeUploads(page, folder, { onPart: async ({ uploadId, part }) => {
+        if (uploadId === "upload-1" && part === 1) await gate.promise;
+    } });
+    await openWorkspace(page);
+    await page.evaluate(() => {
+        window.workspaceCommits = [];
+        window.addEventListener("pilotswarm:workspace-files-changed", (event) => window.workspaceCommits.push(event.detail));
+    });
+    const bytes = Buffer.alloc(UPLOAD_PART_BYTES + 1, 21);
+    await page.locator(".ps-ws-pane input[type=file]").setInputFiles({ name: "large.bin", mimeType: "application/octet-stream", buffer: bytes });
+    const progress = page.getByRole("progressbar", { name: "Upload large.bin" });
+    await expect(progress).toHaveAttribute("aria-valuenow", String(UPLOAD_PART_BYTES));
+    await expect(page.getByRole("button", { name: "Cancel upload", exact: true })).toBeEnabled();
+    expect(await page.evaluate(() => window.workspaceCommits.length)).toBe(0);
+    gate.resolve();
+    const clash = page.getByRole("dialog", { name: "File exists" });
+    await expect(clash).toBeVisible();
+    await clash.getByRole("button", { name: "Replace", exact: true }).click();
+    await expect.poll(() => folder.nodes.get("large.bin").bytes.equals(bytes)).toBe(true);
+    await expect(page.getByTestId("workspace-upload-progress")).toHaveCount(0);
+    expect(records.filter((entry) => entry.kind === "start").map((entry) => entry.input.ifMatch)).toEqual([null, etagOf(Buffer.from("original"))]);
+    expect(records.filter((entry) => entry.kind === "part").map((entry) => entry.bytes)).toEqual([UPLOAD_PART_BYTES, 1, UPLOAD_PART_BYTES, 1]);
+    expect(records.filter((entry) => entry.kind === "legacy")).toHaveLength(0);
+    await expect.poll(() => page.evaluate(() => window.workspaceCommits.length)).toBe(1);
+});
+
+test("large editor saves use upload parts and leave preview/editor-open reads legacy", async ({ page }) => {
+    const folder = new Folder({ "notes.txt": "original\n" });
+    const gate = uploadGate();
+    const records = await routeUploads(page, folder, { onPart: () => gate.promise });
+    await openWorkspace(page);
+    await row(page, "notes.txt").click();
+    await expect(editor(page)).toHaveText("original");
+    const text = `${`${"saved ".repeat(170)}\n`.repeat(70)}tail\n`;
+    await editor(page).click();
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.insertText(text);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("progressbar", { name: "Upload notes.txt" })).toBeVisible();
+    expect(folder.text("notes.txt")).toBe("original\n");
+    gate.resolve();
+    await expect.poll(() => folder.text("notes.txt")).toBe(text);
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+    expect(records.filter((entry) => entry.kind === "legacy")).toHaveLength(0);
+    expect(records.find((entry) => entry.kind === "start").input.ifMatch).toBe(etagOf(Buffer.from("original\n")));
+    expect(folder.calls.some((call) => call.op === "read" && call.path === "notes.txt")).toBe(true);
+});
+
+test("cancel stops upload, aborts staging and does not fall back or announce a commit", async ({ page }) => {
+    const folder = new Folder({});
+    const gate = uploadGate();
+    const records = await routeUploads(page, folder, { onPart: () => gate.promise });
+    await openWorkspace(page);
+    await page.locator(".ps-ws-pane input[type=file]").setInputFiles({ name: "cancel.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(UPLOAD_PART_BYTES + 1) });
+    await expect.poll(() => records.some((entry) => entry.kind === "part")).toBe(true);
+    await page.getByRole("button", { name: "Cancel upload", exact: true }).click();
+    gate.resolve();
+    await expect.poll(() => records.some((entry) => entry.kind === "abort")).toBe(true);
+    expect(records.some((entry) => ["complete", "legacy"].includes(entry.kind))).toBe(false);
+    expect(folder.nodes.has("cancel.bin")).toBe(false);
+    await expect(page.getByText("Upload cancelled.", { exact: true })).toBeVisible();
+});
+
+test("switching folders cannot redirect a pending upload or leak its notices", async ({ page }) => {
+    const folder = new Folder({});
+    const shared = new Folder({ "stay.txt": "shared" });
+    const gate = uploadGate();
+    const records = await routeUploads(page, folder, {
+        folders: TWO_FOLDERS, others: { "extra:shared": shared }, onPart: () => gate.promise,
+    });
+    await openWorkspace(page);
+    await page.locator(".ps-ws-pane input[type=file]").setInputFiles({ name: "old.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(UPLOAD_PART_BYTES + 1) });
+    await expect.poll(() => records.some((entry) => entry.kind === "part")).toBe(true);
+    await page.getByRole("tab", { name: /^shared/ }).click();
+    gate.resolve();
+    await expect.poll(() => records.some((entry) => entry.kind === "abort")).toBe(true);
+    await expect(page.getByRole("tree", { name: "Files in shared" })).toContainText("stay.txt");
+    await expect(page.getByTestId("workspace-upload-progress")).toHaveCount(0);
+    await expect(page.locator(".ps-ws-notice")).toHaveCount(0);
+    expect(shared.nodes.has("old.bin")).toBe(false);
+    expect(records.filter((entry) => entry.kind === "start").map((entry) => entry.input.folder)).toEqual(["working"]);
+});
+
+test("uncertain completion refreshes the target without announcing success or replaying publication", async ({ page }) => {
+    const folder = new Folder({});
+    const records = await routeUploads(page, folder, { onComplete: async ({ route }) => {
+        await route.fulfill({ status: 409, json: { ok: false, error: { code: "WORKSPACE_FILES_UPLOAD_COMMIT_UNKNOWN", message: "no receipt" } } });
+        return true;
+    } });
+    await openWorkspace(page);
+    await page.evaluate(() => {
+        window.workspaceCommits = 0;
+        window.addEventListener("pilotswarm:workspace-files-changed", () => window.workspaceCommits++);
+    });
+    await page.locator(".ps-ws-pane input[type=file]").setInputFiles({ name: "uncertain.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(UPLOAD_PART_BYTES) });
+    await expect(page.getByRole("alert")).toContainText("completion is uncertain");
+    expect(folder.calls.some((call) => call.op === "stat" && call.path === "uncertain.bin")).toBe(true);
+    expect(records.filter((entry) => entry.kind === "complete")).toHaveLength(1);
+    expect(records.some((entry) => ["legacy", "abort"].includes(entry.kind))).toBe(false);
+    expect(await page.evaluate(() => window.workspaceCommits)).toBe(0);
+});
 
 test("a running turn's folders show up within seconds, not at the next 10 s check", async ({ page }) => {
     // The session runs its first turn. Its folder is listed but not open, and
@@ -849,7 +1017,7 @@ test("a file that is not UTF-8 opens for download only, so a save cannot change 
 
 test("a save keeps CRLF line ends and a byte-order mark", async ({ page }) => {
     const folder = new Folder({ "win.txt": "one\r\ntwo\r\n", "bom.cs": Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from("class A {}\n")]) });
-    await routeWorkspace(page, folder);
+    await routeWorkspace(page, folder, { writeDelayMs: 150 });
     await openWorkspace(page);
     await row(page, "win.txt").click();
     await page.locator(".ps-ws-viewer .cm-line", { hasText: "two" }).click();
@@ -863,7 +1031,8 @@ test("a save keeps CRLF line ends and a byte-order mark", async ({ page }) => {
     await page.keyboard.press("End");
     await page.keyboard.type(" // b");
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect.poll(() => [...folder.nodes.get("bom.cs").bytes.subarray(0, 3)]).toEqual([0xEF, 0xBB, 0xBF]);
+    await expect.poll(() => folder.text("bom.cs")).toBe("\uFEFFclass A {} // b\n");
+    expect([...folder.nodes.get("bom.cs").bytes.subarray(0, 3)]).toEqual([0xEF, 0xBB, 0xBF]);
     expect(folder.nodes.get("bom.cs").bytes.subarray(3).toString("utf8")).toBe("class A {} // b\n");
 });
 

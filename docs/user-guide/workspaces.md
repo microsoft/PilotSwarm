@@ -211,6 +211,26 @@ What you can do:
 | New file, new folder | The buttons above the tree: inside the folder you picked, or next to the file you picked. A folder's row also has **New file here** |
 | Pick several | Ctrl/⌘-click, Shift-click, or **Select**. Then **Download**, **Delete**, or drag them |
 
+Uploads and large editor saves use bounded binary parts when the server
+advertises upload support. Progress shows accepted bytes; **Cancel** stops an
+open transfer without publishing a partial destination. The deployment's file
+size limit still applies. Replace and Keep both start a fresh upload with the
+chosen destination and version check.
+If the server's two data-operation slots are occupied, the pane shows
+**Waiting for upload capacity** and makes up to five delayed retries.
+You can cancel while it waits. Transfer-count and disk quotas still apply;
+a persistent capacity denial is reported rather than retried indefinitely.
+
+If finalization is in progress or its outcome is uncertain, refresh the target
+before deciding to retry: cancellation cannot undo an already published file.
+A saved-file warning about notification or receipt persistence means the file
+was committed, not that it needs uploading again. Upload handles expire after
+30 idle minutes or two hours total, and do not survive a portal restart.
+
+Older servers retain the whole-file upload path and its proxy limits. Opening,
+previewing, downloading, and reading conflict contents still use the existing
+whole-file path; bounded uploads do not make those operations proxy-safe.
+
 When the file changed after you opened it, for example because the agent
 edited it, **Save** asks what to do:
 

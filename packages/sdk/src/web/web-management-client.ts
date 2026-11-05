@@ -8,6 +8,7 @@ import { createManagementOps, type ManagementOps } from "./generated-op-methods.
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 import type { MotdCreateInput, MotdViewer } from "../motd-store.js";
 import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
+import type { WorkspaceUploadInput, WorkspaceUploadResult, WorkspaceUploadStatus } from "../workspace-transfers.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -359,6 +360,22 @@ export class WebPilotSwarmManagementClient {
     /** Workspace files: one call in one of the session's folders (the session's owner only). */
     async sessionWorkspaceFiles(sessionId: string, call: Record<string, unknown>): Promise<any> {
         return this._api.call("sessionWorkspaceFiles", { sessionId, call });
+    }
+
+    startSessionWorkspaceUpload(sessionId: string, input: WorkspaceUploadInput): Promise<WorkspaceUploadStatus> {
+        return this._api.call("startSessionWorkspaceUpload", { sessionId, input });
+    }
+    getSessionWorkspaceUpload(sessionId: string, uploadId: string): Promise<WorkspaceUploadStatus> {
+        return this._api.call("getSessionWorkspaceUpload", { sessionId, uploadId });
+    }
+    putSessionWorkspaceUploadPart(sessionId: string, uploadId: string, part: number, bytes: Uint8Array, options?: { signal?: AbortSignal }): Promise<{ part: number; bytes: number; sha256: string }> {
+        return this._api.putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, options);
+    }
+    completeSessionWorkspaceUpload(sessionId: string, uploadId: string): Promise<WorkspaceUploadResult> {
+        return this._api.call("completeSessionWorkspaceUpload", { sessionId, uploadId });
+    }
+    abortSessionWorkspaceUpload(sessionId: string, uploadId: string): Promise<{ state: string }> {
+        return this._api.call("abortSessionWorkspaceUpload", { sessionId, uploadId });
     }
 
     /** canvas-ws: one call from a canvas app, checked against its declared workspace block (the session's owner only). */

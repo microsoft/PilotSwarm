@@ -41,6 +41,10 @@ import type {
 import { validateWorkspaceText } from "./workspace-check.js";
 import { readDefaultsRecord } from "./workspace.js";
 import {
+    WorkspaceTransferCoordinator, acquireWorkspaceTransferCoordinator, workspaceUploadPartBytes, WORKSPACE_UPLOAD_LEGACY_MAX_BYTES,
+    type WorkspaceUploadInput, type WorkspaceUploadResult, type WorkspaceUploadStatus, type WorkspaceTransferContext,
+} from "./workspace-transfers.js";
+import {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,
     WORKSPACE_FILE_OPS,
@@ -827,6 +831,8 @@ export class PilotSwarmManagementClient {
     private _activeStatusWaitControllers = new Set<AbortController>();
     private _activeStatusWaitPromises = new Set<Promise<unknown>>();
     private _started = false;
+    private _workspaceTransfers?: WorkspaceTransferCoordinator;
+    private _releaseWorkspaceTransfers?: () => Promise<void>;
 
     constructor(options: PilotSwarmManagementClientOptions | PilotSwarmWebOptions) {
         assertUnambiguousProvider(options, "PilotSwarmManagementClient");
@@ -923,25 +929,31 @@ export class PilotSwarmManagementClient {
     }
 
     async stop(): Promise<void> {
-        for (const controller of [...this._activeStatusWaitControllers]) {
-            controller.abort(createAbortError("PilotSwarmManagementClient stopped"));
-        }
-        await Promise.allSettled([...this._activeStatusWaitPromises]);
+        try {
+            await this._releaseWorkspaceTransfers?.();
+            this._workspaceTransfers = undefined;
+            this._releaseWorkspaceTransfers = undefined;
+        } finally {
+            for (const controller of [...this._activeStatusWaitControllers]) {
+                controller.abort(createAbortError("PilotSwarmManagementClient stopped"));
+            }
+            await Promise.allSettled([...this._activeStatusWaitPromises]);
 
-        if (this._graphStore) {
-            try { await this._graphStore.close(); } catch {}
-            this._graphStore = null;
+            if (this._graphStore) {
+                try { await this._graphStore.close(); } catch {}
+                this._graphStore = null;
+            }
+            if (this._factStore) {
+                try { await this._factStore.close(); } catch {}
+                this._factStore = null;
+            }
+            if (this._catalog) {
+                try { await this._catalog.close(); } catch {}
+                this._catalog = null;
+            }
+            this._duroxideClient = null;
+            this._started = false;
         }
-        if (this._factStore) {
-            try { await this._factStore.close(); } catch {}
-            this._factStore = null;
-        }
-        if (this._catalog) {
-            try { await this._catalog.close(); } catch {}
-            this._catalog = null;
-        }
-        this._duroxideClient = null;
-        this._started = false;
     }
 
     private async _readJsonValue<T>(sessionId: string, key: string): Promise<T | null> {
@@ -1991,7 +2003,7 @@ export class PilotSwarmManagementClient {
      * names of the roots this process serves (the Set dialog lists them).
      * `enabled` is false when no `workspaceFiles` config was given.
      */
-    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; git: boolean; folders: WorkspaceFileFolder[]; roots: string[] }> {
+    async listSessionWorkspaceFolders(sessionId: string): Promise<{ enabled: boolean; maxBytes: number; git: boolean; folders: WorkspaceFileFolder[]; roots: string[]; upload?: { partBytes: number; legacyMaxBytes: number } }> {
         this._ensureStarted();
         const config = this.config.workspaceFiles ?? null;
         // Git info in the Workspace tab runs on the canvas commands' runner.
@@ -2000,9 +2012,74 @@ export class PilotSwarmManagementClient {
         const view = await this.getSessionWorkspace(sessionId);
         const folders = workspaceFileFolders(view, config).map((folder) => {
             if (!folder.available) return folder;
-            return { ...folder, base: resolveWorkspaceFileFolder([folder], folder.id, config).base };
+            return { ...folder, uploads: true, base: resolveWorkspaceFileFolder([folder], folder.id, config).base };
         });
-        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, git, folders, roots: config.roots.map((root) => root.name) };
+        return { enabled: true, maxBytes: config.maxBytes ?? DEFAULT_WORKSPACE_FILE_MAX_BYTES, git, folders, roots: config.roots.map((root) => root.name),
+            upload: { partBytes: workspaceUploadPartBytes(config), legacyMaxBytes: WORKSPACE_UPLOAD_LEGACY_MAX_BYTES } };
+    }
+
+    private _getWorkspaceTransfers(): WorkspaceTransferCoordinator {
+        this._ensureStarted();
+        if (!this.config.workspaceFiles) throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.DISABLED, "Workspace files are not configured.");
+        if (!this._workspaceTransfers) {
+            const lease = acquireWorkspaceTransferCoordinator(this.config.workspaceFiles);
+            this._workspaceTransfers = lease.coordinator;
+            this._releaseWorkspaceTransfers = lease.release;
+        }
+        return this._workspaceTransfers;
+    }
+
+    private async _workspaceTransferContext(sessionId: string, folderId: string, actor?: { provider: string; subject: string } | null): Promise<WorkspaceTransferContext> {
+        const config = this.config.workspaceFiles;
+        if (!config) throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.DISABLED, "Workspace files are not configured.");
+        const row = await this._catalog!.getSession(sessionId);
+        if (!row || row.deletedAt) throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.NOT_FOUND, "Session is missing or deleted.");
+        const access = await this.getSessionAccess(sessionId, actor ?? { provider: "anonymous", subject: "anonymous" });
+        if (!access || access.isSystem || (actor && !access.viewerIsOwner)) {
+            throw Object.assign(new Error("Workspace uploads are available only to the non-system session's owner."), { code: "FORBIDDEN", status: 403 });
+        }
+        const folders = workspaceFileFolders(await this.getSessionWorkspace(sessionId), config);
+        const resolved = resolveWorkspaceFileFolder(folders, folderId, config);
+        return {
+            sessionId, principal: JSON.stringify(access.owner ? [access.owner.provider, access.owner.subject] : ["anonymous", "anonymous"]),
+            folder: folderId, root: resolved.folder.root, base: resolved.base, rootPath: resolved.rootPath,
+        };
+    }
+
+    async startSessionWorkspaceUpload(sessionId: string, input: WorkspaceUploadInput, actor?: { provider: string; subject: string } | null): Promise<WorkspaceUploadStatus> {
+        const coordinator = this._getWorkspaceTransfers();
+        return coordinator.start(await this._workspaceTransferContext(sessionId, input?.folder, actor), input);
+    }
+
+    async getSessionWorkspaceUpload(sessionId: string, uploadId: string, actor?: { provider: string; subject: string } | null): Promise<WorkspaceUploadStatus> {
+        const coordinator = this._getWorkspaceTransfers();
+        return coordinator.status(await this._workspaceTransferContext(sessionId, coordinator.folder(sessionId, uploadId), actor), uploadId);
+    }
+
+    async putSessionWorkspaceUploadPart(sessionId: string, uploadId: string, part: number, bytes: Uint8Array | ((expectedBytes: number) => Promise<Uint8Array>), options: { signal?: AbortSignal; actor?: { provider: string; subject: string } | null } = {}): Promise<{ part: number; bytes: number; sha256: string }> {
+        const coordinator = this._getWorkspaceTransfers();
+        return coordinator.put(await this._workspaceTransferContext(sessionId, coordinator.folder(sessionId, uploadId), options.actor), uploadId, part, bytes, options.signal);
+    }
+
+    async completeSessionWorkspaceUpload(sessionId: string, uploadId: string, actor?: { provider: string; subject: string } | null): Promise<WorkspaceUploadResult> {
+        const coordinator = this._getWorkspaceTransfers();
+        const context = await this._workspaceTransferContext(sessionId, coordinator.folder(sessionId, uploadId), actor);
+        return coordinator.complete(context, uploadId, async (result) => {
+            const view = await this.getSessionWorkspace(sessionId);
+            const folder = workspaceFileFolders(view, this.config.workspaceFiles).find((f) => f.id === context.folder)!;
+            await this._catalog!.recordEvents(sessionId, [{
+                eventType: WORKSPACE_FILES_CHANGED_EVENT,
+                data: { op: "write", folder: folder.name, path: coordinator.filePath(sessionId, uploadId), created: result.created },
+            }]);
+        }, async () => {
+            const latest = await this._workspaceTransferContext(sessionId, context.folder, actor);
+            if (JSON.stringify(latest) !== JSON.stringify(context)) throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.CONFLICT, "The session or workspace binding changed before publication.");
+        });
+    }
+
+    async abortSessionWorkspaceUpload(sessionId: string, uploadId: string, actor?: { provider: string; subject: string } | null): Promise<{ state: string }> {
+        const coordinator = this._getWorkspaceTransfers();
+        return coordinator.abort(await this._workspaceTransferContext(sessionId, coordinator.folder(sessionId, uploadId), actor), uploadId);
     }
 
     /**
