@@ -60,3 +60,51 @@ test("other keys, Enter on the dialog itself, and modified keys are left to the 
     assert.equal(f.key("Tab", f.dialog, { defaultPrevented: true }).defaultPrevented, true);
     assert.deepEqual(f.focused, []);
 });
+
+// Owner decision on UI-7's known limit: a control inside a hidden, inert or undisplayed parent never takes focus and is
+// never pressed; nor is one that is invisible itself. (Computed styles come from the control's own window.)
+test("a control in a hidden, inert or undisplayed parent, or invisible itself, is skipped by Tab and never pressed", () => {
+    const focused = [];
+    const clicked = [];
+    const styles = new Map();
+    const view = { getComputedStyle: node => ({ display: styles.get(node)?.display ?? "block", visibility: styles.get(node)?.visibility ?? "visible" }) };
+    const dialog = { tagName: "DIV", focus() { focused.push("dialog"); } };
+    const element = (name, parent, extra = {}) => ({ name, tagName: "BUTTON", hidden: false, parentElement: parent, ownerDocument: { defaultView: view },
+        hasAttribute: () => false, focus() { focused.push(name); }, click() { clicked.push(name); }, ...extra });
+    const box = (extra = {}) => ({ tagName: "DIV", hidden: false, parentElement: dialog, hasAttribute: () => false, ...extra });
+    const hiddenParent = box({ hidden: true });
+    const inertParent = box({ hasAttribute: name => name === "inert" });
+    const undisplayed = box();
+    styles.set(undisplayed, { display: "none" });
+    const deep = box({ parentElement: undisplayed });
+    const invisible = element("Invisible", dialog);
+    styles.set(invisible, { visibility: "hidden" });
+    const buttons = [
+        element("Cancel", dialog),
+        element("In hidden parent", hiddenParent),
+        element("In inert parent", inertParent),
+        element("In undisplayed grandparent", deep),
+        invisible,
+        element("Stop Run", dialog),
+    ];
+    dialog.querySelectorAll = () => buttons;
+    dialog.contains = item => buttons.includes(item);
+    const key = (name, target, extra = {}) => {
+        const event = { key: name, target, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, defaultPrevented: false, ...extra,
+            preventDefault() { this.defaultPrevented = true; } };
+        dialogKey(event, dialog);
+        return event;
+    };
+    key("Tab", dialog);
+    key("Tab", buttons[0]);
+    key("Tab", buttons[5]);
+    key("Tab", buttons[0], { shiftKey: true });
+    assert.deepEqual(focused, ["Cancel", "Stop Run", "Cancel", "Stop Run"]);
+    // Enter or Space on one that is not usable presses nothing, and is still taken, so the portal does not confirm instead.
+    for (const target of buttons.slice(1, 5)) {
+        for (const name of ["Enter", " "]) assert.equal(key(name, target).defaultPrevented, true, `${target.name} ${name}`);
+    }
+    assert.deepEqual(clicked, []);
+    assert.equal(key("Enter", buttons[5]).defaultPrevented, true);
+    assert.deepEqual(clicked, ["Stop Run"]);
+});

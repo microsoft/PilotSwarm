@@ -29,15 +29,33 @@ export function ModalDialog({ className, titleId, messageId = null, children }) 
 const FOCUSABLE = "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
 /**
- * The dialog's own keys (adversarial review UI-7). Tab and Shift+Tab move focus among its controls and stay inside it
- * (from the dialog itself, Tab goes to its first control). Enter or Space on one of its buttons presses that button,
- * as a native dialog does (Enter on Cancel cancels). Each key it takes is marked handled, so the portal's modal key
- * handler leaves it alone; every other key (Escape, Enter elsewhere, y and n) still goes there.
+ * Whether a control of the dialog is shown and can be used (owner decision on UI-7's known limit): not disabled, not
+ * hidden, inert or not displayed itself or through any element between it and the dialog, and not invisible.
+ */
+function usableIn(element, dialog) {
+    if (!element || element.hidden || element.disabled) return false;
+    const view = element.ownerDocument?.defaultView ?? null;
+    const style = node => (view && typeof view.getComputedStyle === "function" ? view.getComputedStyle(node) : null);
+    for (let node = element; node && node !== dialog; node = node.parentElement ?? null) {
+        if (node.hidden || node.inert === true || node.hasAttribute?.("inert")) return false;
+        if (style(node)?.display === "none") return false;
+    }
+    // Visibility is inherited, and a child may turn it on again: the control's own computed value decides.
+    const own = style(element)?.visibility;
+    return own !== "hidden" && own !== "collapse";
+}
+
+/**
+ * The dialog's own keys (adversarial review UI-7). Tab and Shift+Tab move focus among its usable controls and stay
+ * inside it (from the dialog itself, Tab goes to its first control); a control that is disabled, or hidden, inert or
+ * not displayed through itself or a parent, is skipped. Enter or Space on one of its usable buttons presses that
+ * button, as a native dialog does (Enter on Cancel cancels). Each key it takes is marked handled, so the portal's modal
+ * key handler leaves it alone; every other key (Escape, Enter elsewhere, y and n) still goes there.
  */
 export function dialogKey(event, dialog) {
     if (!dialog || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === "Tab") {
-        const controls = [...dialog.querySelectorAll(FOCUSABLE)].filter(element => !element.hidden);
+        const controls = [...dialog.querySelectorAll(FOCUSABLE)].filter(element => usableIn(element, dialog));
         event.preventDefault();
         if (controls.length === 0) { dialog.focus({ preventScroll: true }); return; }
         const at = controls.indexOf(event.target);
@@ -48,6 +66,11 @@ export function dialogKey(event, dialog) {
     }
     const target = event.target;
     if ((event.key === "Enter" || event.key === " ") && target && target !== dialog && target.tagName === "BUTTON" && dialog.contains(target)) {
+        // A button that is not usable is never pressed; the key is still taken, so the portal does not confirm instead.
+        if (!usableIn(target, dialog)) {
+            event.preventDefault();
+            return;
+        }
         event.preventDefault();
         target.click();
     }

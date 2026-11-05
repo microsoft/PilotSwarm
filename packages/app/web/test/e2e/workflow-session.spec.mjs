@@ -2542,11 +2542,11 @@ test("M-17 (UI-6): a remembered view is where the graph starts again, and saved 
 // Owed M-17 (verification of UI-7): the run's confirm dialog through the portal's own key handling. Tab and Shift+Tab
 // stay inside it, go round its Close, Cancel and Stop Run in order and skip a disabled control and a hidden one; Enter
 // or Space on its Cancel button cancels (the portal's Enter does not confirm); Escape cancels; each time nothing is sent
-// and focus goes back to Stop; Enter on the dialog itself confirms, and exactly one stop is sent. (A control inside a
-// hidden parent is not covered: a known limit of the dialog's focus filter, which checks a control's own hidden flag.)
+// and focus goes back to Stop; Enter on the dialog itself confirms, and exactly one stop is sent. A control inside a
+// hidden, an inert or an undisplayed parent, or invisible itself, never takes focus (owner decision on UI-7's limit).
 // Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "M-17 \\(UI-7\\)" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-test("M-17 (UI-7): the confirm dialog keeps Tab inside, skips disabled and hidden controls, cancels on Enter on Cancel and on Escape, confirms on Enter", async ({ page }) => {
+test("M-17 (UI-7): the confirm dialog keeps Tab inside, skips disabled, hidden, inert and undisplayed controls, cancels on Enter on Cancel and on Escape, confirms on Enter", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -2565,15 +2565,21 @@ test("M-17 (UI-7): the confirm dialog keeps Tab inside, skips disabled and hidde
 
     await stop.click();
     await expect(dialog).toBeFocused();
-    // A disabled and a hidden control in the dialog: never focused.
+    // Controls in the dialog that are not usable: never focused. A disabled one, a hidden one, one in a hidden parent, one in
+    // an inert parent, one in a parent that is not displayed, and one that is invisible itself.
     await dialog.evaluate((box) => {
-        const disabled = document.createElement("button");
-        disabled.textContent = "Disabled extra";
-        disabled.disabled = true;
-        const hidden = document.createElement("button");
-        hidden.textContent = "Hidden extra";
-        hidden.hidden = true;
-        box.append(disabled, hidden);
+        const button = (text, extra = {}) => Object.assign(document.createElement("button"), { textContent: text, ...extra });
+        const parent = (child, setup) => { const div = document.createElement("div"); setup(div); div.append(child); return div; };
+        const invisible = button("Invisible extra");
+        invisible.style.visibility = "hidden";
+        box.append(
+            button("Disabled extra", { disabled: true }),
+            button("Hidden extra", { hidden: true }),
+            parent(button("In hidden parent"), div => { div.hidden = true; }),
+            parent(button("In inert parent"), div => { div.setAttribute("inert", ""); }),
+            parent(button("In undisplayed parent"), div => { div.style.display = "none"; }),
+            invisible,
+        );
     });
     const forward = [];
     for (let i = 0; i < 5; i += 1) {
@@ -2591,6 +2597,7 @@ test("M-17 (UI-7): the confirm dialog keeps Tab inside, skips disabled and hidde
     // Shift+Tab goes back, around from the first to the last.
     expect(back.every(item => item.inside)).toBe(true);
     expect(back.map(item => item.text)).toEqual(["Close", "Stop Run", "Cancel"]);
+    expect([...forward, ...back].some(item => /extra|parent/.test(item.text))).toBe(false);
 
     // Enter on Cancel cancels: nothing sent, focus back on Stop.
     await dialog.getByRole("button", { name: "Cancel", exact: true }).focus();
