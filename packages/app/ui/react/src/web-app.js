@@ -8,7 +8,10 @@ import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-navigation.js";
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
-import { WorkflowMainPane, WorkflowNodePane } from "./workflow-workspace.js";
+import { WorkflowMainPane } from "./workflow-workspace.js";
+import { WorkflowTab } from "./workflow-tab.js";
+import { WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowBadgeCount } from "../../core/src/workflow-owner.js";
+import { normalizeSidePaneTab } from "../../core/src/state.js";
 import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
 import { WorkflowInputWait, workflowInputWait } from "./workflow-input-wait.js";
 import { themeSoundPlayer } from "./theme-sound-player.js";
@@ -5155,7 +5158,7 @@ const SessionListRow = React.memo(function SessionListRow({
     return React.createElement("button", {
         type: "button",
         ref,
-        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${insertBefore ? " is-insert-before" : ""}${insertAfter ? " is-insert-after" : ""}${row.depth > 0 ? " is-nested" : ""}`,
+        className: `ps-list-button ps-session-list-button${row.active ? " is-selected" : ""}${row.chatOwner ? " is-chat-owner" : ""}${row.selected ? " is-multiselected" : ""}${row.pinned ? " is-pinned" : ""}${inDropZone ? " is-drop-zone" : ""}${isDropTarget ? " is-drop-target" : ""}${insertBefore ? " is-insert-before" : ""}${insertAfter ? " is-insert-after" : ""}${row.depth > 0 ? " is-nested" : ""}`,
         // Guide rails: one hairline per ancestor level, painted as background
         // images so each row covers its OWN full height and the levels join
         // into continuous lines down the branch. No wrapper element, so the
@@ -5295,9 +5298,18 @@ function OwnerAvatar({ badge, size = "sm" }) {
             : null);
 }
 
-/** Drop the TUI-only text chip; the portal draws OwnerAvatar instead. */
+/**
+ * Drop the TUI-only text chips: the portal draws OwnerAvatar instead of the owner chip, and a chip for a Workflow's state
+ * (WorkflowStateChip) instead of its words (Workflow Simplified, S2).
+ */
 function withoutOwnerChip(runs) {
-    return Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip) : runs;
+    return Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip && run?.role !== "workflowState") : runs;
+}
+
+/** A Workflow row's own state (S2, 05), as a chip at the row's end. */
+function WorkflowStateChip({ state }) {
+    if (!state?.label) return null;
+    return React.createElement("span", { className: `ps-wf-state is-${state.tone} ps-session-row-workflow-state`, "data-state": state.key }, state.label);
 }
 function SessionRowContent({ row, theme, structured = false, showInlineDetail = false, onToggleChildren = null }) {
     // Sub-agent chevron (phone slide-over). It takes the place of the row's
@@ -5330,7 +5342,8 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
             React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
             React.createElement("span", { className: "ps-session-row-title__text" },
-                React.createElement(Runs, { runs: plain.rest, theme })));
+                React.createElement(Runs, { runs: plain.rest, theme })),
+            React.createElement(WorkflowStateChip, { state: row.chrome?.workflowState }));
     }
 
     // Dense row: the title takes one line (clamped by CSS) and the context %
@@ -5367,6 +5380,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
                 // the title (measured: 225.8px → 210.8px).
                 React.createElement("span", { className: "ps-session-row-title__text" },
                     React.createElement(Runs, { runs: title.rest, theme }))),
+            React.createElement(WorkflowStateChip, { state: row.chrome?.workflowState }),
             hasBadge
                 ? React.createElement("div", { className: "ps-session-row-badge" },
                     React.createElement(Runs, { runs: badgeRuns, theme }))
@@ -5554,12 +5568,16 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // three sessions stopped for three different reasons all read
         // "waiting".
         budgetPaused: state.budget?.paused,
+        // Workflow Simplified (S2, S4): the selected Workflow row takes the highlight, and a Workflow row reads its
+        // state from its read model. Same trap again: omit them and every row computes as if neither existed.
+        workflowRowId: state.sessions.workflowRowId ?? null,
+        workflowViews: state.ui.workflowViews,
     }), shallowEqualObject);
     // Picker state is local React state, not controller state. Reading these
     // props inside the subscription selector delays changes until the next
     // unrelated store notification (sometimes seconds later).
     const viewState = selection ? { ...controllerViewState,
-        activeSessionId: selection.sessionId, filterQuery: selection.query || "",
+        activeSessionId: selection.sessionId, workflowRowId: null, filterQuery: selection.query || "",
         selectedIds: EMPTY_PICKER_SELECTION, selectMode: false, focused: true,
         listDeselected: !selection.sessionId,
     } : controllerViewState;
@@ -5577,7 +5595,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             selectedIds: viewState.selectedIds,
             selectMode: viewState.selectMode,
             listDeselected: viewState.listDeselected,
+            workflowRowId: viewState.workflowRowId,
         },
+        ui: { workflowViews: viewState.workflowViews },
         auth: viewState.auth,
         connection: {
             mode: viewState.connectionMode,
@@ -5592,7 +5612,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             prefs: viewState.canvasPrefs,
         },
         budget: { paused: viewState.budgetPaused },
-    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+    }), [viewState.activeSessionId, viewState.workflowRowId, viewState.workflowViews, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
@@ -5650,8 +5670,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const searchMatchCount = viewState.filterQuery
         ? rows.reduce((count, row) => count + (row.searchMatch ? 1 : 0), 0)
         : 0;
-    const activeSession = viewState.activeSessionId
-        ? viewState.sessionsById[viewState.activeSessionId] || null
+    // The session the list's buttons act on: the highlighted row, which is a selected Workflow row when there is one
+    // (Workflow Simplified, S9), else the active session.
+    const highlightedId = viewState.workflowRowId && viewState.sessionsById[viewState.workflowRowId]?.parentSessionId === viewState.activeSessionId
+        ? viewState.workflowRowId : viewState.activeSessionId;
+    const activeSession = highlightedId
+        ? viewState.sessionsById[highlightedId] || null
         : null;
     // The row carries the computed child badge; the raw session does not.
     const activeRow = viewState.activeSessionId
@@ -6335,7 +6359,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     ? (activeGroupCanDelete ? "Delete this empty group" : "This group cannot be deleted yet")
                     : activeSession?.isSystem
                         ? "Restart this system session (complete, terminate, or hard delete)"
-                        : "Terminate — mark completed, cancel, or delete this session",
+                        : activeSession?.sessionKind === "workflow"
+                            ? "Terminate — stop, cancel or delete this Workflow"
+                            : "Terminate — mark completed, cancel, or delete this session",
         }),
         actions);
 
@@ -7420,21 +7446,32 @@ function ChatReadingControl({ reading, onChange }) {
             : null);
 }
 
-/** Whether the active session is a workflow: it has no zen and no full screen (batch 6, f-02). */
+/**
+ * Whether a workflow is on screen in the right block: the Workflow tab is showing, or (a Workflow whose session is not
+ * loaded) a workflow is the active session. Neither has zen or full screen (batch 6, f-02).
+ */
 function activeSessionIsWorkflow(state) {
-    return state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow";
+    return state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow"
+        || (state?.ui?.canvasOpen === true && state?.ui?.sidePaneTab === WORKFLOW_SIDE_TAB);
 }
 
+/**
+ * The middle column (Workflow Simplified, 06): always a chat. A Workflow row selects the chat of the session that owns it
+ * (its Workflow shows in the right block's Workflow tab), so the active session is a workflow only when that session is
+ * not loaded; the Workflow tab then shows it here. A Master of Agents panel keeps its workflow screen, which hands its
+ * panels to the workspace (UI-2).
+ */
 function ChatPane(props) {
     const workflow = useControllerSelector(props.controller, state =>
         state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
-    // A workflow's main pane holds its header and its graph or YAML only; its step log opens in the side pane (batch 6, r-3).
-    return workflow
-        ? React.createElement(WorkflowMainPane, {
+    if (!workflow) return React.createElement(ChatTranscriptPane, props);
+    if (props.onWorkflowOpenSide || props.onWorkflowNodeSelected) {
+        return React.createElement(WorkflowMainPane, {
             controller: props.controller, icon: React.createElement(WorkflowGlyph, { decorative: true }),
             onNodeSelected: props.onWorkflowNodeSelected, mobile: Boolean(props.mobile), onOpenSide: props.onWorkflowOpenSide ?? null,
-        })
-        : React.createElement(ChatTranscriptPane, props);
+        });
+    }
+    return React.createElement(WorkflowTab, { controller: props.controller, mobile: Boolean(props.mobile) });
 }
 
 function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false, readingColumn = false, workflowLog = false }) {
@@ -8920,7 +8957,7 @@ const CANVAS_SNAPSHOT_SETTLE_MS = 160;
 // files). The choice is a pane setting like the others: it roams with the
 // profile (desktopPanes.sideTab), saved from a desktop.
 function useSidePaneMode(controller) {
-    const mode = useControllerSelector(controller, (state) => (state.ui.sidePaneTab === "workspace" ? "workspace" : "canvas"));
+    const mode = useControllerSelector(controller, (state) => normalizeSidePaneTab(state.ui.sidePaneTab));
     const choose = React.useCallback((next) => controller?.dispatch({ type: "ui/sidePaneTab", tab: next }), [controller]);
     return [mode, choose];
 }
@@ -8945,11 +8982,13 @@ function SidePaneTabs({ mode, onChange, compact = false }) {
 
 function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote = false, maximized = false, onToggleMaximized = null }) {
     const view = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
-    const isWorkflow = useControllerSelector(controller, state =>
-        state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
     const [paneMode, setPaneMode] = useSidePaneMode(controller);
     const workspaceTab = portalWorkspaceFiles;
-    const onCanvas = !workspaceTab || paneMode === "canvas";
+    // Workflow Simplified (L1): the right block shows the canvas, the Workspace or the Workflow tab, one at a time. The
+    // Workflow tab carries its own header (L4); the toolbar's Canvas and Workflow buttons switch between them.
+    const onWorkflow = paneMode === WORKFLOW_SIDE_TAB;
+    const isWorkflow = onWorkflow;
+    const onCanvas = !onWorkflow && (!workspaceTab || paneMode === "canvas");
     const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
     const setZoom = React.useCallback((next) => {
         controller.dispatch({ type: "files/htmlZoom", zoom: next });
@@ -9016,8 +9055,8 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     //
     // With a Workspace tab the strip always renders: it holds the Canvas |
     // Workspace switch, the only way to reach the Workspace on a phone.
-    const showRevStrip = mobile && (workspaceTab || isWorkflow || view.exists || maximized);
-    const header = mobile
+    const showRevStrip = mobile && !onWorkflow && (workspaceTab || view.exists || maximized);
+    const header = onWorkflow ? null : mobile
         ? (showRevStrip
             ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip" },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
@@ -9129,12 +9168,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // note on .ps-canvas-pane .ps-html-preview-frame).
     React.createElement("div", { className: "ps-artifact-pane-body ps-side-pane-body" },
         React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas },
-            // A workflow's side pane: Step details, or the panel its header chose, the step log among them (batch 6,
-            // r-3). The log has no mobile zen entry: a workflow has no zen (f-02).
-            isWorkflow
-                ? React.createElement(WorkflowNodePane, { controller,
-                    log: React.createElement(ChatTranscriptPane, { controller, mobile, fullWidth: true, showComposer: false, workflowLog: true }) })
-                : view.exists
+            view.exists
                 ? React.createElement(CanvasFrame, {
                     key: `slot:${view.slot}`,
                     controller,
@@ -9153,8 +9187,13 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                     React.createElement("p", null,
                         "Ask the agent to draw — a dashboard, a chart, a diagram — or it will draw when it has something worth showing."))),
         workspaceTab
-            ? React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? " is-parked" : ""}`, inert: onCanvas },
-                React.createElement(WorkspacePane, { key: view.sessionId || "none", controller, sessionId: view.sessionId, visible: visible && !onCanvas }))
+            ? React.createElement("div", { className: `ps-side-pane-layer${onCanvas || onWorkflow ? " is-parked" : ""}`, inert: onCanvas || onWorkflow },
+                React.createElement(WorkspacePane, { key: view.sessionId || "none", controller, sessionId: view.sessionId, visible: visible && !onCanvas && !onWorkflow }))
+            : null,
+        // The Workflow tab (06): mounted while it shows; its state lives in the store.
+        onWorkflow
+            ? React.createElement("div", { className: "ps-side-pane-layer ps-wf-layer" },
+                React.createElement(WorkflowTab, { controller, mobile }))
             : null),
         shareOpen && view.exists
             ? React.createElement(CanvasShareDialog, {
@@ -10891,7 +10930,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
+function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, onToggleWorkflowPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -10928,6 +10967,14 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     // surface on screen is NOT the canvas, so the canvas toggle must not
     // read as active (its next press still shows the canvas).
     const artifactReaderOpen = useControllerSelector(controller, selectArtifactPaneShown);
+    // Workflow Simplified (L1, L2): the right block shows the Workflow tab instead of the canvas, and the Workflow button
+    // counts the Workflows that need the person (O6).
+    const workflowSide = useControllerSelector(controller, (s) => s?.ui?.sidePaneTab === WORKFLOW_SIDE_TAB);
+    const workflowTabOpen = workflowSide && (mobile ? canvasPaneOpen : canvasView.mode === "canvas" && !artifactReaderOpen);
+    const workflowCount = useControllerSelector(controller, (s) => {
+        const ownerId = selectWorkflowTabContext(s).ownerId;
+        return ownerId ? workflowBadgeCount(s.sessions.byId, ownerId, s.ui.workflowViews, s.ui.workflowSeen) : 0;
+    });
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
@@ -10973,10 +11020,15 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         {
             key: "canvas",
             icon: React.createElement(CanvasGlyph),
-            label: (mobile ? canvasPaneOpen : (canvasView.mode === "canvas" && !artifactReaderOpen))
+            label: (mobile ? canvasPaneOpen && !workflowSide : (canvasView.mode === "canvas" && !artifactReaderOpen && !workflowSide))
                 ? "Hide the canvas"
                 : "Show canvas",
             onClick: () => {
+                // The Workflow tab and the canvas share the right block (L1): from the Workflow tab, Canvas shows the canvas.
+                if (workflowSide) {
+                    controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
+                    if (workflowTabOpen) return;
+                }
                 if (mobile) {
                     if (onToggleCanvasPane) onToggleCanvasPane();
                     return;
@@ -10990,7 +11042,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
                     manual: true,
                 });
             },
-            active: mobile ? canvasPaneOpen : (canvasView.mode === "canvas" && !artifactReaderOpen),
+            active: mobile ? canvasPaneOpen && !workflowSide : (canvasView.mode === "canvas" && !artifactReaderOpen && !workflowSide),
             badge: mobile
                 ? (canvasView.exists
                     && (canvasView.latestRev > (canvasView.lastViewedRev || 0)
@@ -11000,6 +11052,27 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             // Three states: plain outline (empty), green dot bottom-left
             // (loaded), green + yellow (loaded with unseen changes).
             loadedDot: canvasView.exists,
+        },
+        // The Workflow tab (L1), between Canvas and Diagnostics, on every session (L2). It and the canvas switch each
+        // other off; its count is the Workflows waiting for input and the failed ones not yet opened (O6).
+        {
+            key: "workflow",
+            icon: React.createElement(WorkflowGlyph, { decorative: true }),
+            label: workflowTabOpen ? "Hide the Workflow tab" : "Workflow",
+            onClick: () => {
+                if (mobile) {
+                    if (onToggleWorkflowPane) onToggleWorkflowPane();
+                    return;
+                }
+                if (workflowTabOpen) {
+                    controller.dispatch({ type: "ui/canvasOpen", open: false, sessionId: canvasView.sessionId });
+                    return;
+                }
+                controller.dispatch({ type: "ui/sidePaneTab", tab: WORKFLOW_SIDE_TAB });
+                if (canvasView.mode !== "canvas") controller.dispatch({ type: "ui/canvasOpen", open: true, sessionId: canvasView.sessionId });
+            },
+            active: workflowTabOpen,
+            count: workflowCount,
         },
         // Providers & Budgets. Both device classes: what a turn costs, and
         // what stopped a session, are answers a person needs wherever they
@@ -11071,6 +11144,18 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     });
 
     const renderButton = (def) => {
+        // A count on the button (the Workflow button, O6), said in its name too.
+        if (def.count) {
+            return React.createElement("span", { key: def.key, className: "ps-canvas-toggle ps-toolbar-counted" },
+                React.createElement(IconButton, {
+                    icon: def.icon,
+                    label: `${def.label} — ${def.count} ${def.count === 1 ? "needs" : "need"} you`,
+                    onClick: def.onClick,
+                    disabled: Boolean(def.disabled),
+                    active: Boolean(def.active),
+                }),
+                React.createElement("span", { className: "ps-toolbar-count", "aria-hidden": "true" }, def.count > 99 ? "99+" : String(def.count)));
+        }
         const button = React.createElement(IconButton, {
             key: def.badge ? undefined : def.key,
             icon: def.icon,
@@ -11134,7 +11219,8 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     const mode = moa?.active ? "moa" : adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
     const ACTIONS = ["new", "filter"];
     const HISTORY = ["back", "forward"];
-    const PANELS = ["canvas", "diagnostics"];
+    // Workflow Simplified (L1): the Workflow button sits between Canvas and Diagnostics.
+    const PANELS = ["canvas", "workflow", "diagnostics"];
     const MODES = ["workspace", "moa", "budget", "admin"];
 
     // While the canvas is full screen, ANY other button first drops full
@@ -14263,6 +14349,29 @@ function ModalLayer({ controller }) {
                     }, modalState.sessionWorkspace.confirmLabel)),
             ));
     }
+    // Workflow Simplified (S9, O7): a Workflow row's Terminate menu: let started nodes finish, cancel now, or delete.
+    if (modal.type === "terminatePicker" && modal.workflow) {
+        const pick = (action) => () => {
+            controller.pickTerminateAction(action).catch(() => {});
+        };
+        const ended = Boolean(modal.workflow.ended);
+        const item = (action, label, note, disabled = false, className = "ps-modal-button") => React.createElement("button", {
+            type: "button", className, disabled, "data-action": action,
+            style: { width: "100%", justifyContent: "space-between", display: "flex", gap: 8 },
+            onClick: pick(action),
+        }, React.createElement("span", null, label), note ? React.createElement("span", { style: { color: "#94a3b8" } }, note) : null);
+        return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+            React.createElement("div", { className: "ps-modal is-narrow", role: "dialog", "aria-label": modal.title || "Workflow", onClick: (event) => event.stopPropagation() },
+                React.createElement("div", { className: "ps-modal-header" },
+                    React.createElement("div", { className: "ps-modal-title" }, modal.title || "Workflow"),
+                    React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕")),
+                React.createElement("div", { className: "ps-modal-body", style: { padding: "10px 16px 16px", display: "flex", flexDirection: "column", gap: 8 } },
+                    item("stop", "Let started nodes finish", ended ? "it has ended" : "Stop…", ended),
+                    item("cancel", "Cancel now", ended ? "it has ended" : "started nodes are interrupted", ended),
+                    item("delete", "Delete", ended ? null : "after it ends", !ended, "ps-modal-button is-danger")),
+                React.createElement("div", { className: "ps-modal-footer" },
+                    React.createElement("button", { type: "button", className: "ps-modal-button", onClick: close }, ended ? "Close" : "Keep running"))));
+    }
     if (modal.type === "terminatePicker") {
         const isBulk = Number(modal.bulkCount) > 1;
         const isSystemRestart = Boolean(modal.systemRestart);
@@ -16666,6 +16775,22 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         if (mobileCanvasOpen) { closeMobileCanvas(); return; }
         openMobileCanvas();
     }, [mobileCanvasOpen, closeMobileCanvas, openMobileCanvas]);
+    // Workflow Simplified (12): the Workflow pane replaces the chat, as the canvas does. The canvas layer shows it while the
+    // side pane is on its Workflow tab; the Workflow button opens it there, or closes it when it shows.
+    const toggleMobileWorkflow = React.useCallback(() => {
+        const onWorkflowTab = controller.getState().ui.sidePaneTab === WORKFLOW_SIDE_TAB;
+        if (mobileCanvasOpen && onWorkflowTab) { closeMobileCanvas(); return; }
+        controller.dispatch({ type: "ui/sidePaneTab", tab: WORKFLOW_SIDE_TAB });
+        if (!mobileCanvasOpen) openMobileCanvas();
+    }, [controller, mobileCanvasOpen, closeMobileCanvas, openMobileCanvas]);
+    // A Workflow row picked from the session list brings the Workflow pane up (S4).
+    const workflowOpenSeq = useControllerSelector(controller, (s) => Number(s?.ui?.workflowOpenSeq) || 0);
+    const workflowOpenSeqRef = React.useRef(workflowOpenSeq);
+    React.useEffect(() => {
+        if (workflowOpenSeq === workflowOpenSeqRef.current) return;
+        workflowOpenSeqRef.current = workflowOpenSeq;
+        if (mobile && !state.adminVisible) openMobileCanvas();
+    }, [workflowOpenSeq, mobile, state.adminVisible, openMobileCanvas]);
 
     // gridViewport used to be PUBLISHED here via controller.setViewport — a
     // second writer to ui.layout that derived columns from the hard-coded
@@ -17288,6 +17413,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
             mobile,
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
+            onToggleWorkflowPane: toggleMobileWorkflow,
             mobilePane,
             mobileSessionsOpen: mobileSessionsOpen && mobilePane === "workspace" && !state.budgetOpen && !state.adminVisible,
             onToggleMobileSessions: () => {

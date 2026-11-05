@@ -12365,9 +12365,10 @@ textarea.ps-link-input {
   .portal-header-user .portal-header-version { display: none; }
 }
 
-/* Phone toolbar: all eight buttons on one row at any phone width. Each one
-   gives up a few pixels (never under 34px) instead of the last action sliding
-   under the view-mode group, where only a sideways swipe found it. */
+/* Phone toolbar: all nine buttons on one row at any phone width (Workflow
+   Simplified added the Workflow button beside Canvas). Each one gives up a
+   few pixels (never under 34px) instead of the last action sliding under the
+   view-mode group, where only a sideways swipe found it. */
 @media (max-width: 420px) {
   .ps-toolbar.is-mobile .ps-toolbar-row { gap: 6px; }
   .ps-toolbar.is-mobile .ps-toolbar-row-actions { gap: 4px; }
@@ -12375,7 +12376,7 @@ textarea.ps-link-input {
   .ps-toolbar.is-mobile .ps-toolbar-row-actions .ps-icon-button {
     flex: 0 0 auto;
     box-sizing: border-box;
-    width: clamp(34px, calc((100vw - 62px) / 8), 44px);
+    width: clamp(34px, calc((100vw - 62px) / 9), 44px);
     min-width: 0;
     padding-left: 0;
     padding-right: 0;
@@ -12593,3 +12594,247 @@ textarea.ps-link-input {
   .ps-motd-history-row > .ps-motd-status { grid-column: 1; grid-row: 3; }
   .ps-motd-history-row > .ps-motd-history-actions { grid-column: 1; grid-row: 4; }
 }
+
+
+/* ── Workflow Simplified, stage 1 (spec draft 3) ───────────────────────────
+   The Workflow tab shares the right block with the canvas (L1): a header row
+   (definition picker, Definition | Workflows), the graph or the list, and a
+   bottom panel that is closed by default (L5). The graph keeps 150px. */
+.ps-toolbar-counted { position: relative; display: inline-flex; }
+.ps-toolbar-count {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: var(--ps-warning);
+  color: var(--ps-background);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--ps-surface);
+}
+
+.ps-wf-layer { display: flex; flex-direction: column; min-height: 0; }
+.ps-wf-tab {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  background: var(--ps-background);
+  color: var(--ps-foreground);
+  font-size: var(--ps-font-size-dense, 13px);
+}
+.ps-wf-tab-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-wf-picker { display: inline-flex; min-width: 0; }
+.ps-wf-picker-select { max-width: 100%; min-width: 0; }
+.ps-wf-switch {
+  display: inline-flex;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  overflow: hidden;
+}
+.ps-wf-switch button,
+.ps-wf-panel-tabs button,
+.ps-wf-node-tabs button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.ps-wf-switch button.is-on,
+.ps-wf-panel-tabs button.is-on,
+.ps-wf-node-tabs button.is-on {
+  background: var(--ps-selection-background, var(--ps-highlight-background));
+  color: var(--ps-foreground);
+}
+.ps-wf-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.ps-wf-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-wf-bar.is-foot { border-bottom: 0; border-top: 1px solid var(--ps-border); }
+.ps-wf-bar-text { color: var(--ps-muted); min-width: 0; overflow-wrap: anywhere; }
+.ps-wf-bar-actions { display: inline-flex; gap: 6px; margin-left: auto; }
+.ps-wf-line { margin: 0; padding: 6px 10px; border-bottom: 1px solid var(--ps-border); overflow-wrap: anywhere; }
+.ps-wf-line.is-error {
+  color: var(--ps-danger);
+  background: color-mix(in srgb, var(--ps-danger) 10%, transparent);
+}
+.ps-wf-line.is-quiet { color: var(--ps-muted); }
+.ps-wf-main { position: relative; display: flex; flex: 1 1 auto; min-height: 150px; }
+.ps-wf-main[hidden] { display: none; }
+.ps-wf-main > * { flex: 1 1 auto; min-width: 0; }
+.ps-wf-yaml { overflow: auto; flex-direction: column; }
+.ps-wf-muted { margin: 0; padding: 8px 10px; color: var(--ps-muted); }
+.ps-wf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  padding: 24px;
+  text-align: center;
+  color: var(--ps-muted);
+}
+.ps-wf-empty p { margin: 0; }
+.ps-wf-empty-title { color: var(--ps-foreground); font-size: 1.05em; }
+.ps-mini-button.is-primary { border-color: var(--ps-success); color: var(--ps-success); }
+.ps-mini-button.is-danger { border-color: var(--ps-danger); color: var(--ps-danger); }
+.ps-link-button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ps-accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* A Workflow's state (05): in the tab, the list and the session rows. */
+.ps-wf-state {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.92em;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.ps-wf-state.is-running { color: var(--ps-accent); }
+.ps-wf-state.is-waiting { color: var(--ps-warning); }
+.ps-wf-state.is-paused,
+.ps-wf-state.is-canceling,
+.ps-wf-state.is-canceled { color: var(--ps-muted); }
+.ps-wf-state.is-failed { color: var(--ps-danger); }
+.ps-wf-state.is-completed { color: var(--ps-success); }
+.ps-session-row-workflow-state { margin-left: auto; flex: none; font-size: 0.85em; }
+.ps-session-row-content.is-chat-owner,
+.ps-session-list-button.is-chat-owner {
+  box-shadow: inset 2px 0 0 var(--ps-warning);
+}
+
+/* The Workflows list (W1). */
+.ps-wf-list { display: flex; flex-direction: column; overflow: auto; flex: 1 1 auto; min-height: 0; }
+.ps-wf-list-row {
+  display: grid;
+  grid-template-columns: 3.5em minmax(8em, 2fr) 5em minmax(6em, 1fr) 4.5em;
+  align-items: start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--ps-border);
+  background: transparent;
+  color: var(--ps-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ps-wf-list-row.is-head { cursor: default; color: var(--ps-muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
+button.ps-wf-list-row:hover,
+button.ps-wf-list-row:focus-visible { background: var(--ps-highlight-background); }
+.ps-wf-list-number { font-weight: 700; }
+.ps-wf-list-state { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.ps-wf-list-reason { color: var(--ps-danger); font-size: 0.9em; overflow-wrap: anywhere; }
+
+/* The bottom panel (L5): closed is one strip of panel tabs. */
+.ps-wf-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  max-height: 45%;
+  min-height: 0;
+  border-top: 1px solid var(--ps-border);
+  background: var(--ps-surface);
+}
+.ps-wf-panel.is-closed { flex-direction: row; align-items: center; padding: 2px 6px; }
+.ps-wf-panel-bar { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid var(--ps-border); }
+.ps-wf-panel-tabs { display: inline-flex; gap: 2px; }
+.ps-wf-panel-close {
+  margin-left: auto;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.ps-wf-panel-body { overflow: auto; min-height: 0; padding: 8px 10px; }
+.ps-wf-facts { display: grid; gap: 4px; }
+.ps-wf-fact { display: grid; grid-template-columns: 8em 1fr; gap: 8px; }
+.ps-wf-fact > span { color: var(--ps-muted); }
+.ps-wf-fact > strong { font-weight: 500; overflow-wrap: anywhere; }
+.ps-wf-node { display: grid; gap: 6px; }
+.ps-wf-node-head { margin: 0; overflow-wrap: anywhere; }
+.ps-wf-node-tabs { display: inline-flex; gap: 2px; }
+.ps-wf-log { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ps-wf-log li { display: grid; grid-template-columns: auto 1fr; gap: 8px; overflow-wrap: anywhere; }
+.ps-wf-log li[data-level="error"] { color: var(--ps-danger); }
+.ps-wf-log li[data-level="warning"] { color: var(--ps-warning); }
+.ps-wf-log time { color: var(--ps-muted); white-space: nowrap; }
+
+/* The phone's node sheet (12): over the graph, with a visible way back. */
+.ps-wf-tab.is-mobile .ps-wf-panel.is-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 70%;
+  z-index: 5;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+}
+.ps-wf-tab.is-mobile { position: relative; }
+.ps-wf-back { min-height: 44px; }
+.ps-wf-tab.is-mobile .ps-workflow-input { font-size: 16px; }
+
+/* Dialogs: Start (11) and Stop (W9). */
+.ps-wf-dialog-body { display: grid; gap: 12px; padding: 12px 20px; }
+.ps-wf-dialog-sub { padding: 0; }
+.ps-wf-dialog-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 20px 16px; }
+.ps-wf-dialog-foot .ps-wf-muted { padding: 0; margin-left: auto; }
+.ps-wf-field { display: grid; gap: 4px; }
+.ps-wf-field > label,
+.ps-wf-label { color: var(--ps-muted); font-size: 0.92em; }
+.ps-wf-field > p { margin: 0; }
+.ps-wf-field-actions { display: flex; justify-content: flex-end; }
+.ps-wf-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ps-wf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+}
+.ps-wf-chip button { appearance: none; border: 0; background: transparent; color: var(--ps-muted); cursor: pointer; padding: 0; font: inherit; }
+.ps-wf-chip-input { width: 8em; }
+.ps-wf-choices { display: grid; gap: 10px; }
+.ps-wf-choice { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; cursor: pointer; }
+.ps-wf-choice > span { display: grid; gap: 2px; }
+.ps-wf-choice small { color: var(--ps-muted); }
+.ps-wf-choice.is-disabled { opacity: 0.55; cursor: default; }
