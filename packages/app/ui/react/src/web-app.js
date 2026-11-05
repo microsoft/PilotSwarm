@@ -53,6 +53,7 @@ import {
     selectOutboxOverlayBlocks,
     selectCanvasView,
     selectFileBrowserItems,
+    selectArtifactPaneShown,
     selectFilesFilterModal,
     selectFilesScope,
     selectFilesView,
@@ -110,6 +111,7 @@ const PORTAL_WORKSPACE_GAP_PX = 8;
 const PORTAL_MIN_CHAT_COLUMN_PX = 224;
 const PORTAL_SESSION_COMPACT_COLUMN_PX = 190;
 const PORTAL_SESSION_HIDDEN_COLUMN_PX = 48;
+const COMPOSER_NARROW_PX = 480;
 const SCROLL_ROW_HEIGHT = 16;
 const HISTORY_SCROLL_GESTURE_GAP_MS = 200;
 const SCROLL_BOTTOM_EPSILON_PX = 0.5;
@@ -774,29 +776,31 @@ const PORTAL_CANVAS_COL_DEFAULT_PX = 640;
 const PORTAL_DIAG_COL_DEFAULT_PX = 320;
 
 
-function portalSessionColumnBounds(width) {
-    const safeWidth = Math.max(0, Number(width) || 0);
-    const availableWidth = Math.max(
-        0,
-        safeWidth - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2),
-    );
-    const baseWidth = availableWidth * PORTAL_SESSION_COLUMN_RATIO;
-    const maxSessionWidth = Math.max(0, availableWidth - PORTAL_MIN_CHAT_COLUMN_PX);
+function portalSessionAvailableWidth(width) {
+    return Math.max(0, (Math.max(0, Number(width) || 0)) - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2));
+}
+
+/**
+ * The session list's width comes from the WHOLE workspace (sessions, chat and
+ * any canvas or diagnostics column), not from the share left beside those
+ * columns. A session with its canvas open used to shrink the list, so flipping
+ * between sessions made it jump. Now an open column takes its width from chat;
+ * the list gives way only where chat would fall below its floor.
+ * `mainWidth` is the sessions + chat grid; `workspaceWidth` defaults to it.
+ */
+function portalSessionColumnBounds(mainWidth, workspaceWidth = mainWidth) {
+    const baseWidth = portalSessionAvailableWidth(workspaceWidth || mainWidth) * PORTAL_SESSION_COLUMN_RATIO;
+    const maxSessionWidth = Math.max(0, portalSessionAvailableWidth(mainWidth) - PORTAL_MIN_CHAT_COLUMN_PX);
     return {
+        baseWidth,
         minAdjust: -baseWidth,
         maxAdjust: maxSessionWidth - baseWidth,
     };
 }
 
-function portalSessionColumnWidth(width, adjust) {
-    const bounds = portalSessionColumnBounds(width);
-    const safeWidth = Math.max(0, Number(width) || 0);
-    const availableWidth = Math.max(
-        0,
-        safeWidth - PORTAL_SESSION_CHAT_DIVIDER_PX - (PORTAL_WORKSPACE_GAP_PX * 2),
-    );
-    const baseWidth = availableWidth * PORTAL_SESSION_COLUMN_RATIO;
-    return clampNumber(baseWidth + (Number(adjust) || 0), 0, baseWidth + bounds.maxAdjust);
+function portalSessionColumnWidth(mainWidth, adjust, workspaceWidth = mainWidth) {
+    const bounds = portalSessionColumnBounds(mainWidth, workspaceWidth);
+    return clampNumber(bounds.baseWidth + (Number(adjust) || 0), 0, bounds.baseWidth + bounds.maxAdjust);
 }
 
 function portalSessionColumnMode(width) {
@@ -1118,10 +1122,16 @@ function applyDocumentTheme(themeId) {
 
 function useMeasuredViewport(ref, suspended = false) {
     const [viewport, setViewport] = React.useState({ width: 0, height: 0 });
+    // The measured element can be replaced: the Admin Console swaps the whole
+    // workspace out and back in. Follow ref.current, or the observer stays on
+    // the removed node and these numbers go stale until a reload.
+    const [element, setElement] = React.useState(null);
+    React.useLayoutEffect(() => {
+        if (ref.current !== element) setElement(ref.current);
+    });
 
     React.useLayoutEffect(() => {
         if (suspended) return undefined;
-        const element = ref.current;
         if (!element) return undefined;
 
         const update = () => {
@@ -1139,7 +1149,7 @@ function useMeasuredViewport(ref, suspended = false) {
             observer.disconnect();
             window.removeEventListener("resize", update);
         };
-    }, [ref, suspended]);
+    }, [element, suspended]);
 
     return viewport;
 }
@@ -4939,7 +4949,7 @@ function railNodeInsetPx(depth) {
 }
 
 const SessionListRow = React.memo(function SessionListRow({
-    row, theme, structuredRows, mobile, onRowClick, setRef, drag,
+    row, theme, structuredRows, mobile, onRowClick, onToggleChildren = null, setRef, drag,
 }) {
     const depth = Math.max(0, row.depth);
     const railStyle = React.useMemo(() => {
@@ -5040,6 +5050,7 @@ const SessionListRow = React.memo(function SessionListRow({
         },
             React.createElement(SessionRowContent, {
                 row, theme, structured: structuredRows, showInlineDetail: mobile,
+                onToggleChildren: row.hasChildren && !row.isGroup ? onToggleChildren : null,
             })));
 });
 
@@ -5134,13 +5145,34 @@ function OwnerAvatar({ badge, size = "sm" }) {
 function withoutOwnerChip(runs) {
     return Array.isArray(runs) ? runs.filter((run) => !run?.ownerChip) : runs;
 }
-function SessionRowContent({ row, theme, structured = false, showInlineDetail = false }) {
+function SessionRowContent({ row, theme, structured = false, showInlineDetail = false, onToggleChildren = null }) {
+    // Sub-agent chevron (phone slide-over). It takes the place of the row's
+    // status mark, in the mark's own colour and box, so a parent's title
+    // starts where its siblings' do and its mark stays on the guide rail.
+    // A span, not a button: the row itself is a <button>. It handles its own
+    // tap (a target larger than it looks), so the row does not select or close.
+    const mark = (statusColor) => (onToggleChildren
+        ? React.createElement("span", {
+            className: `ps-session-row-disclosure${row.collapsed ? "" : " is-open"}${row.depth > 0 ? " is-node" : ""}`,
+            style: statusColor ? { color: statusColor } : undefined,
+            role: "button",
+            tabIndex: -1,
+            "aria-label": row.collapsed ? "Show sub-agents" : "Hide sub-agents",
+            "aria-expanded": row.collapsed ? "false" : "true",
+            onPointerDown: (event) => event.stopPropagation(),
+            onClick: (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onToggleChildren(row);
+            },
+        }, React.createElement(ChevronGlyph))
+        : (statusColor ? React.createElement(StatusDot, { color: statusColor, node: row.depth > 0 }) : null));
     const hasStructuredRuns = structured && Array.isArray(row.titleRuns);
     if (!hasStructuredRuns) {
         if (!Array.isArray(row.runs)) return row.text;
         const plain = portalRowRuns(withoutOwnerChip(row.runs), theme);
         return React.createElement(React.Fragment, null,
-            plain.statusColor ? React.createElement(StatusDot, { color: plain.statusColor, node: row.depth > 0 }) : null,
+            mark(plain.statusColor),
             React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
             React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
             React.createElement("span", { className: "ps-session-row-title__text" },
@@ -5171,7 +5203,7 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     return React.createElement(React.Fragment, null,
         React.createElement("div", { className: "ps-session-row-line" },
             React.createElement("div", { className: "ps-session-row-title" },
-                title.statusColor ? React.createElement(StatusDot, { color: title.statusColor, node: row.depth > 0 }) : null,
+                mark(title.statusColor),
                 React.createElement(OwnerAvatar, { badge: row.ownerBadge }),
                 React.createElement(SessionCanvasMark, { mark: row.canvasMark }),
                 // Runs wrapped in ONE element: the title is a flex row so the
@@ -5188,7 +5220,8 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))
-                : null),
+                : null,
+),
         hasDetail
             ? React.createElement("div", { className: "ps-session-row-detail" },
                 React.createElement(Runs, { runs: detailRuns, theme }))
@@ -5223,178 +5256,6 @@ function useStableValue(value) {
         ref.current = value;
     }
     return ref.current;
-}
-
-/**
- * One axis per gesture: a touch drag scrolls the session list up/down OR
- * left/right, never both.
- *
- * The session list has `width: max-content` rows, so it overflows sideways
- * whenever a title is long. With both axes on offer a swipe is never perfectly
- * vertical, so scrolling down kept sliding the list sideways too.
- *
- * This used to hand the vertical case back to the browser (`touch-action:
- * pan-y`) and only drive horizontal itself. That relied on the browser to
- * refuse the sideways component, and it has two problems:
- *
- *   - What counts as "vertical enough" for `pan-y` is the browser's call, not
- *     ours, and engines disagree. The guarantee was only as good as whichever
- *     one the reader happened to be using.
- *   - A drag near 45° fell in the gap: we committed it to vertical and stepped
- *     aside, and the browser then declined to pan it at all. The list simply
- *     did not move, which reads as broken rather than as a locked axis.
- *
- * So both axes are driven here. Every gesture past the slop threshold commits
- * to exactly one axis and always moves it — no dead zone, and no engine gets a
- * vote on the diagonal. Vertical stays the default: sideways has to be asked
- * for, by a drag that beats vertical by PAN_HORIZONTAL_RATIO.
- *
- * The list tracks the finger and stops on release: no inertial fling. Chat
- * and canvas scrolling are independent and keep their native behavior.
- * CSS keeps `touch-action: pan-y` as a floor: if these
- * listeners ever fail to attach, the list still scrolls vertically the native
- * way rather than becoming inert.
- */
-const PAN_COMMIT_PX = 10;      // ignore the first few px — every swipe starts noisy
-const PAN_HORIZONTAL_RATIO = 1.6;   // |dx| must beat |dy| by this much to go sideways
-
-/**
- * Which axis does this gesture own? Pure, and exported so the rule can be
- * tested without a browser — the bug it replaces was a gesture that matched
- * NEITHER branch and therefore scrolled nothing.
- *
- * Returns null while the drag is still inside the slop radius, then "x" or
- * "y" — never null again, and never both. Every gesture that gets past the
- * threshold moves something.
- */
-export function commitPanAxis(dx, dy) {
-    if (Math.abs(dx) < PAN_COMMIT_PX && Math.abs(dy) < PAN_COMMIT_PX) return null;
-    // Ties, and anything close to a tie, go to vertical. Vertical is the
-    // primary axis; sideways has to be asked for.
-    return Math.abs(dx) > Math.abs(dy) * PAN_HORIZONTAL_RATIO ? "x" : "y";
-}
-
-function useAxisLockedPan(ref, enabled = true) {
-    React.useEffect(() => {
-        const el = ref.current;
-        // Coarse pointers only. On a touchscreen LAPTOP the pointer is fine,
-        // so drag-to-reorder is armed on the same rows — and because this hook
-        // prevents native scrolling, the browser never fires the pointercancel
-        // that would otherwise end that drag. Both would then own one finger:
-        // a ghost row appears, the list pans under it, and the drop resolves
-        // against a list that moved. Mirrors the gate reorder uses the other
-        // way round; a fine pointer scrolls natively under the pan-y CSS.
-        if (!el || !enabled) return undefined;
-
-        let startX = 0;
-        let startY = 0;
-        let lastX = 0;
-        let lastY = 0;
-        let axis = null;    // null = undecided, "x" | "y" = committed, "done" = not ours
-        let swallowClick = false;
-        const canScroll = (which) => (which === "x"
-            ? el.scrollWidth > el.clientWidth + 1
-            : el.scrollHeight > el.clientHeight + 1);
-
-        const onTouchStart = (event) => {
-            swallowClick = false;
-            // targetTouches, not touches: a thumb resting elsewhere on the page
-            // is not part of this gesture. Two fingers HERE is a pinch.
-            if (event.targetTouches.length !== 1) { axis = "done"; return; }
-            const touch = event.targetTouches[0];
-            startX = lastX = touch.clientX;
-            startY = lastY = touch.clientY;
-            axis = null;
-        };
-
-        const onTouchMove = (event) => {
-            if (axis === "done" || event.targetTouches.length !== 1) return;
-            const touch = event.targetTouches[0];
-            const dx = touch.clientX - startX;
-            const dy = touch.clientY - startY;
-
-            if (axis === null) {
-                // Decide BEFORE preventing. Preventing a touchmove prevents
-                // scrolling for every later move of that touch, so a hand-off
-                // after the commit cannot hand anything back — the browser has
-                // already been told no.
-                //
-                // Vertical is the browser's own axis here (touch-action:
-                // pan-y), and it has to be claimed from the FIRST move or not
-                // at all: the browser's slop is smaller than ours (5-8px
-                // against 10), so an un-prevented move past it starts a native
-                // pan-y scroll and marks the rest of the gesture
-                // non-cancelable — our preventDefault then no-ops while
-                // scrollTop -= step still runs, and vertical moved at double
-                // speed with two flings on release. So a list with vertical
-                // overflow is claimed now, inside the slop.
-                //
-                // A list WITHOUT vertical overflow leaves the early moves
-                // alone. The browser only ever takes the vertical under pan-y,
-                // so a sideways commit can still claim the gesture for the
-                // list's horizontal overflow (a short list of long titles),
-                // and a vertical commit hands the pane its scroll untouched.
-                const ownsVertical = canScroll("y");
-                if (!ownsVertical && !canScroll("x")) { axis = "done"; return; }
-                if (ownsVertical && event.cancelable) event.preventDefault();
-                axis = commitPanAxis(dx, dy);
-                if (axis === null) return;
-                // A list that cannot scroll on the committed axis is not ours
-                // to pan; and if the browser has already begun its own scroll
-                // (the event is no longer cancelable), the gesture is its.
-                if (!canScroll(axis) || !event.cancelable) { axis = "done"; return; }
-                // Measure from here, so the slop we ignored is not also applied.
-                lastX = touch.clientX;
-                lastY = touch.clientY;
-                // A drag must not select whichever row ends up under the thumb.
-                swallowClick = true;
-            }
-
-            // Ours: stop the browser doing it as well. A repeat of the
-            // first-move prevent for a list that owns vertical; the first
-            // prevent of the gesture for a sideways pan on a short list.
-            if (event.cancelable) event.preventDefault();
-
-            const stepX = touch.clientX - lastX;
-            const stepY = touch.clientY - lastY;
-
-            if (axis === "x") el.scrollLeft -= stepX;
-            else el.scrollTop -= stepY;
-
-            lastX = touch.clientX;
-            lastY = touch.clientY;
-        };
-
-        const onTouchEnd = (event) => {
-            // Lifting ONE finger of a pinch does not hand the survivor a pan:
-            // its start point belongs to a different gesture, and the commit
-            // would land on a large bogus delta. Stay out until all lift.
-            if (event.targetTouches.length > 0) { axis = "done"; return; }
-            axis = null;
-        };
-
-        const onTouchCancel = () => { axis = "done"; };
-
-        const onClickCapture = (event) => {
-            if (!swallowClick || event.detail === 0) return;
-            swallowClick = false;
-            event.preventDefault();
-            event.stopPropagation();
-        };
-
-        el.addEventListener("touchstart", onTouchStart, { passive: true });
-        el.addEventListener("touchmove", onTouchMove, { passive: false });
-        el.addEventListener("touchend", onTouchEnd, { passive: true });
-        el.addEventListener("touchcancel", onTouchCancel, { passive: true });
-        el.addEventListener("click", onClickCapture, true);
-        return () => {
-            el.removeEventListener("touchstart", onTouchStart);
-            el.removeEventListener("touchmove", onTouchMove);
-            el.removeEventListener("touchend", onTouchEnd);
-            el.removeEventListener("touchcancel", onTouchCancel);
-            el.removeEventListener("click", onClickCapture, true);
-        };
-    }, [ref, enabled]);
 }
 
 const SessionSearchControl = React.memo(function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = false, expanded = false, onOpen, onClose, triggerRef, listRef = null }) {
@@ -5478,7 +5339,7 @@ const SessionSearchControl = React.memo(function SessionSearchControl({ query = 
 
 const EMPTY_PICKER_SELECTION = Object.freeze([]);
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null, rowDisclosure = false }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -5489,7 +5350,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const searchOverlay = compactSearch && searchOpen;
     const searchDialogRef = React.useRef(null);
     const searchTriggerRef = React.useRef(null);
-    // Vertical is the primary scroll axis; sideways takes a deliberate swipe.
+    // On a touch screen the list scrolls natively: the system's own momentum,
+    // at the display's refresh rate, on the compositor.
     const sessionListRef = React.useRef(null);
     // Selection reverts to plain taps wherever the primary input is a finger:
     // the mobile pane, and the chat-focus overlay's list on a phone. Matches
@@ -5499,7 +5361,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // waiting for panelClassName to change under a mounted pane.
     const coarsePointer = useCoarsePointer();
     const touchInput = isMobilePane || coarsePointer;
-    useAxisLockedPan(sessionListRef, touchInput);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const detailCollapsed = useControllerSelector(
@@ -6152,6 +6013,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }
     }, []);
 
+    // The phone slide-over shows sub-agents through a chevron on the row: a
+    // tap on the row itself picks the session and closes the list.
+    const toggleRowChildren = React.useCallback((row) => {
+        controller.dispatch({ type: row.collapsed ? "sessions/expand" : "sessions/collapse", sessionId: row.sessionId });
+    }, [controller]);
+
     const setSessionButtonRef = React.useCallback((sessionId, node) => {
         if (!sessionId) return;
         if (node) {
@@ -6378,18 +6245,29 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "${viewState.filterQuery}".`
                 : "No sessions yet.")
-            : rows.map((row) => React.createElement(SessionListRow, {
+            : (rowNodes => isMobilePane && !selection
+                // On a phone, long rows pan sideways in a track of their own
+                // nested in the vertical list: two native scrollers, one axis
+                // each, so the system keeps every swipe on one axis. Not in a
+                // picker: rows sized to their content make every keystroke of
+                // the picker's search lay out every row (2.3 s against 0.3 s
+                // for 1,500 sessions), and the picker's footer already shows
+                // the selected session's full title.
+                ? React.createElement("div", { className: "ps-session-list-track" },
+                    React.createElement("div", { className: "ps-session-list-track-rows" }, rowNodes))
+                : rowNodes)(rows.map((row) => React.createElement(SessionListRow, {
                 key: row.sessionId,
                 row,
                 theme,
                 structuredRows,
                 mobile: isMobilePane,
                 onRowClick: handleRowClick,
+                onToggleChildren: rowDisclosure ? toggleRowChildren : null,
                 setRef: setSessionButtonRef,
                 // Drag-to-folder is a fine-pointer gesture: arming it on
                 // touch hijacks the finger that should be scrolling the list.
                 drag: selection || touchInput || viewState.sortMode !== "saved" ? null : dragHandlers,
-            }))),
+            })))),
     React.createElement("div", {
         className: "ps-session-find-controls",
         onPointerDown: (event) => {
@@ -6557,6 +6435,20 @@ function SearchGlyph() {
 
 // Back to the transcript. Replaces the 💬 emoji, which iOS force-renders in
 // colour against an otherwise monochrome row (see the note on the tab table).
+
+/** A right-pointing chevron; rotated by CSS when its row is open. */
+function ChevronGlyph() {
+    return React.createElement("svg", { viewBox: "0 0 16 16", width: 14, height: 14, "aria-hidden": "true" },
+        React.createElement("path", { d: "M6 3.5 10.5 8 6 12.5", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }));
+}
+
+/** Three bars: the phone's session list, which slides over the chat. */
+function SessionListGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("line", { x1: "4", y1: "6", x2: "20", y2: "6" }),
+    React.createElement("line", { x1: "4", y1: "12", x2: "20", y2: "12" }),
+    React.createElement("line", { x1: "4", y1: "18", x2: "20", y2: "18" }));
+}
 
 function PlusGlyph() {
     return React.createElement(Glyph, null,
@@ -7874,28 +7766,60 @@ function useKeyboardTakeover(enabled, focusSelector = ".ps-prompt-input") {
  * detail sub-panel). This replaced chat-focus mode, which was a second way to
  * say "chat only" with its own chrome and its own exit.
  */
-function MobileWorkspace({ controller, layout = "split", onEnterZen }) {
-    const sessionPane = React.createElement(SessionPane, {
-        controller,
-        panelClassName: "ps-mobile-session-pane",
+/**
+ * The phone's Main pane: the chat takes the whole height, and the session list
+ * slides over it from the left when the toolbar's list button opens it.
+ *
+ * The list stays mounted while closed, so it keeps its scroll position and
+ * search between openings. Picking a session closes it; a folder row only
+ * opens or closes the folder, and multi-select taps only select.
+ */
+function MobileWorkspace({ controller, onEnterZen, sessionsOpen = false, onCloseSessions = null }) {
+    const close = () => { if (onCloseSessions) onCloseSessions(); };
+    React.useEffect(() => {
+        if (!sessionsOpen) return undefined;
+        const onKey = (event) => {
+            // A search box or dialog inside the list answers Escape first.
+            if (event.key !== "Escape" || event.defaultPrevented) return;
+            if (event.target instanceof Element && event.target.closest("input, textarea, dialog")) return;
+            close();
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
     });
-    if (layout === "chat") {
-        return React.createElement("div", { className: "ps-mobile-workspace is-chat-only" },
-            React.createElement("div", { className: "ps-mobile-chat-pane" },
-                React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
-    }
-    if (layout === "sessions") {
-        return React.createElement("div", { className: "ps-mobile-workspace is-sessions-only" },
+    return React.createElement("div", { className: "ps-mobile-workspace is-chat-only has-session-slideover" },
+        React.createElement("div", { className: "ps-mobile-chat-pane", ...(sessionsOpen ? { inert: true } : {}) },
+            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })),
+        React.createElement("div", {
+            className: `ps-mobile-session-backdrop${sessionsOpen ? " is-open" : ""}`,
+            "aria-hidden": "true",
+            onClick: close,
+        }),
+        React.createElement("div", {
+            className: `ps-mobile-session-slideover${sessionsOpen ? " is-open" : ""}`,
+            ...(sessionsOpen ? {} : { inert: true, "aria-hidden": "true" }),
+            onClick: (event) => {
+                const row = event.target instanceof Element && event.target.closest(".ps-session-list-button[data-session-id]");
+                if (!row || row.dataset.groupRow === "1") return;
+                if (controller.getState().sessions?.selectMode) return;
+                // A tap on the already-open parent folds its sub-agents (the
+                // list's own behaviour); that is not a pick.
+                if (row.getAttribute("aria-selected") === "true" && row.querySelector(".ps-session-row-disclosure")) return;
+                close();
+            },
+        },
             React.createElement(SessionPane, {
                 controller,
                 panelClassName: "ps-mobile-session-pane",
                 showDetailBox: true,
-            }));
-    }
-    return React.createElement("div", { className: "ps-mobile-workspace" },
-        sessionPane,
-        React.createElement("div", { className: "ps-mobile-chat-pane" },
-            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
+                rowDisclosure: true,
+                actions: React.createElement(IconButton, {
+                    className: "ps-mini-button",
+                    icon: React.createElement(FunnelGlyph),
+                    label: "Filter sessions",
+                    onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}),
+                }),
+            })));
 }
 
 /** Frame-and-easel glyph for the Canvas toggle. */
@@ -10072,14 +9996,29 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         };
     }, shallowEqualObject);
     const inputRef = React.useRef(null);
+    const shellRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
+    // A narrow composer (the zen rail) takes the phone's layout: no "you"
+    // label and the short hint. Beside a label and three buttons, the input
+    // was ~140px wide and the long hint wrapped it to four lines. Measured
+    // on the shell, whose width the label does not change.
+    const [narrow, setNarrow] = React.useState(false);
+    React.useLayoutEffect(() => {
+        const node = shellRef.current;
+        if (!node || typeof ResizeObserver === "undefined") return undefined;
+        const update = () => setNarrow(node.clientWidth > 0 && node.clientWidth < COMPOSER_NARROW_PX);
+        update();
+        const observer = new ResizeObserver(update);
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, []);
     const phone = useMediaQuery(PHONE_MEDIA_QUERY);
     const touchKeyboard = useMediaQuery(TOUCH_KEYBOARD_MEDIA_QUERY);
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
     const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     const selectedReadOnly = selectedQueued || selectedCancelling;
-    const placeholder = mobile && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
+    const placeholder = (mobile || narrow) && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
         ? "Type an answer and press Enter"
         : promptState.editingPending
             ? selectedCancelling
@@ -10114,7 +10053,9 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const length = String(promptState.value || "").length;
         // Equal length can still drop a wrapped line (a selection replaced by
         // as many characters), so only strict growth takes the cheap path.
-        const mayHaveShrunk = length <= lastPromptLengthRef.current;
+        // The first character also replaces the placeholder, which may have
+        // wrapped to more lines than the text needs.
+        const mayHaveShrunk = length <= lastPromptLengthRef.current || lastPromptLengthRef.current === 0;
         lastPromptLengthRef.current = length;
         growInput(mayHaveShrunk || length === 0);
         // Empty textareas measure their placeholder too. Send briefly shows
@@ -10275,7 +10216,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             : "❯";
 
     return React.createElement("div", {
-        className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
+        ref: shellRef,
+        className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${narrow && !compact && !mobile ? " is-narrow" : ""}${dragOver ? " is-drag-over" : ""}`,
         // Scopes the composer's turn-control selectors to this session (MoA
         // panels each have their own composer).
         "data-session-id": promptState.sessionId || undefined,
@@ -10689,7 +10631,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
+function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -10714,17 +10656,30 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     ));
     const consoleName = isAdminUser ? "admin console" : "settings";
     const budgetOpen = useControllerSelector(controller, (state) => Boolean(state.ui?.budgetOpen));
+    // A session asking a question waits on the user; the phone's list button
+    // carries the same corner dot the canvas button uses for unseen changes.
+    const sessionWaiting = useControllerSelector(controller, (state) => Boolean(mobile
+        && Object.values(state.sessions?.byId || {}).some((session) => session?.pendingQuestion?.question)));
     const canvasView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const diagnosticsOpen = useControllerSelector(controller, (s) => s?.ui?.diagnosticsOpen === true);
     const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true);
     // The artifact reader takes over the right side; while it is up, the
     // surface on screen is NOT the canvas, so the canvas toggle must not
     // read as active (its next press still shows the canvas).
-    const artifactReaderOpen = useControllerSelector(controller, (s) => Boolean(s?.files?.paneOpen && s?.files?.selectedArtifactId));
+    const artifactReaderOpen = useControllerSelector(controller, selectArtifactPaneShown);
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
     const buttonDefs = [
+        // Phone only, and leftmost: the session list slides over the chat.
+        ...(mobile ? [{
+            key: "sessions",
+            icon: React.createElement(SessionListGlyph),
+            label: mobileSessionsOpen ? "Hide the session list" : "Sessions",
+            onClick: () => { if (onToggleMobileSessions) onToggleMobileSessions(); },
+            active: mobileSessionsOpen,
+            badge: sessionWaiting && !mobileSessionsOpen,
+        }] : []),
         // ONE new-session button, and it opens the chooser. The plain "＋"
         // (default model, generic agent) and "＋⚙" (choose model, then agent)
         // were two buttons for one intent, and the pair cost a slot the phone
@@ -10735,12 +10690,14 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             label: "New session — choose model and agent",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {}),
         },
-        {
+        // On a phone the filter lives in the session list's own header, so
+        // the list button costs the toolbar no width.
+        ...(mobile ? [] : [{
             key: "filter",
             icon: React.createElement(FunnelGlyph),
             label: "Filter sessions",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}),
-        },
+        }]),
         {
             key: "theme",
             icon: React.createElement(ContrastGlyph),
@@ -10872,35 +10829,26 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     };
 
     if (mobile) {
-        // One row, two groups: actions left, the three VIEW MODES right —
-        // they used to be word tabs pinned to the bottom of the screen, and
-        // folding them up here hands that whole strip back to the chat pane.
-        // The Main button is a CYCLE once you are already on Main: split →
-        // chat only → sessions only. ONE glyph for all three states (a
-        // layout/panes mark) — a shape-shifting icon reads as three different
-        // buttons; only the tooltip names what the next tap gives you.
-        const mainLabels = {
-            split: "Sessions — list and chat (tap for chat only)",
-            chat: "Sessions — chat only (tap for list only)",
-            sessions: "Sessions — list only (tap for both)",
-        };
-        // Two tabs, not three: the row was out of space, and Inspector +
-        // Activity are one idea on the desktop already (Diagnostics, the
-        // bug). The bug button opens the inspector; tapping it again while
-        // inside diagnostics flips inspector <-> activity; the main button is
-        // always the way back.
+        // One row, two groups: actions left, the VIEW MODES right — they used
+        // to be word tabs pinned to the bottom of the screen, and folding them
+        // up here hands that whole strip back to the chat pane. Main is the
+        // chat; the session list is the slide-over behind the leftmost button.
+        // There is no Chat button: the chat is where every other surface
+        // returns to. Inspector + Activity are one idea on the desktop already
+        // (Diagnostics, the bug), so one button walks chat -> inspector ->
+        // activity -> chat. The list button and the canvas toggle also lead
+        // back to the chat.
         const onDiagnostics = mobilePane === "inspector" || mobilePane === "activity";
-        const nextDiagnosticsPane = mobilePane === "inspector" ? "activity" : "inspector";
+        const nextDiagnosticsPane = mobilePane === "inspector" ? "activity" : (mobilePane === "activity" ? "workspace" : "inspector");
         const paneDefs = [
-            { id: "workspace", icon: MainLayoutGlyph, label: mainLabels[mobileMainLayout] || mainLabels.split, focus: "chat" },
             {
                 id: nextDiagnosticsPane,
                 icon: DiagnosticsGlyph,
                 active: onDiagnostics,
                 label: onDiagnostics
-                    ? (mobilePane === "inspector" ? "Diagnostics — inspector (tap for activity)" : "Diagnostics — activity (tap for inspector)")
+                    ? (mobilePane === "inspector" ? "Diagnostics — inspector (tap for activity)" : "Diagnostics — activity (tap to return to the chat)")
                     : "Diagnostics — inspector and activity",
-                focus: nextDiagnosticsPane,
+                focus: nextDiagnosticsPane === "workspace" ? "chat" : nextDiagnosticsPane,
             },
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
@@ -10909,10 +10857,10 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
                 React.createElement("div", { className: "ps-toolbar-row-actions is-panes" },
                     ...buttonDefs.filter(def => def.key === "moa").map(renderButton),
                     paneDefs.map((def) => React.createElement(IconButton, {
-                        key: def.id === "workspace" ? "workspace" : "diagnostics",
+                        key: "diagnostics",
                         icon: React.createElement(def.icon),
                         label: def.label,
-                        active: def.active ?? (mobilePane === def.id),
+                        active: def.active ?? (mobilePane === def.id && !mobileSessionsOpen),
                         onClick: () => {
                             if (onSelectMobilePane) onSelectMobilePane(def.id, def.focus);
                         },
@@ -11217,7 +11165,8 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
             event.preventDefault();
             capturePointerForDrag(event);
             const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
-            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
+            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width,
+                gridNode?.closest?.(".ps-workspace-grid")?.getBoundingClientRect?.().width);
             dragStateRef.current = {
                 startX: event.clientX,
                 startAdjust: Number(portalSessionColumnAdjust) || 0,
@@ -11232,7 +11181,8 @@ function SessionColumnResizeHandle({ controller, portalSessionColumnAdjust = 0 }
         },
         onKeyDown: (event) => {
             const gridNode = event.currentTarget.closest(".ps-workspace-main-grid");
-            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width);
+            const bounds = portalSessionColumnBounds(gridNode?.getBoundingClientRect?.().width,
+                gridNode?.closest?.(".ps-workspace-grid")?.getBoundingClientRect?.().width);
             const adjustBy = (delta) => {
                 const nextAdjust = clampNumber(
                     (Number(portalSessionColumnAdjust) || 0) + delta,
@@ -11478,7 +11428,8 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
             // How far the right block may still grow: exactly what chat can
             // give before it reaches its floor. Measured at drag start from
             // the chat slot (the main grid's last column), the same element
-            // the grid template protects with its own minimum.
+            // the grid template protects with its own minimum. The session
+            // list never gives way to the right block; see the grid template.
             const chatSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child");
             const chatWidth = chatSlot ? chatSlot.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
             const startAdjust = Number(adjust) || 0;
@@ -14224,6 +14175,32 @@ function ScopedModalLayer({ controller }) {
     return React.createElement(ModalLayer, { controller });
 }
 
+/**
+ * Keep the session row a keyboard move selected on screen.
+ *
+ * Selection from elsewhere (a refresh, a deep link, MoA) never moves the list;
+ * see the active-row reveal in SessionPane. An arrow or page key IN the list is
+ * the user moving through it, so the row they land on must stay visible:
+ * "nearest" scrolls only when the row is off screen, and only as far as needed.
+ */
+function revealKeyboardSessionRow(controller) {
+    let frames = 0;
+    const step = () => {
+        const sessionId = controller.getState().sessions.activeSessionId;
+        const row = sessionId
+            ? [...document.querySelectorAll(".ps-session-list-button[data-session-id]")]
+                .find((node) => node.dataset.sessionId === sessionId && node.offsetParent && !node.closest(".ps-modal"))
+            : null;
+        if (row) {
+            row.scrollIntoView({ block: "nearest", inline: "nearest" });
+            return;
+        }
+        // The new selection renders on the next frame or two.
+        if (++frames < 4) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+
 function useKeyboardShortcuts(controller, mobile, suspended = false) {
     React.useEffect(() => {
         if (suspended) return undefined;
@@ -14482,12 +14459,14 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             }
             if (focusRegion === "sessions" && (event.key === "ArrowUp" || event.key === "k")) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_UP)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && (event.key === "ArrowDown" || event.key === "j")) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.MOVE_SESSION_DOWN)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && event.ctrlKey && event.key.toLowerCase() === "g" && !event.metaKey && !event.altKey) {
@@ -14497,12 +14476,14 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             }
             if (focusRegion === "sessions" && (event.key === "PageUp" || (event.ctrlKey && event.key.toLowerCase() === "u"))) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.PAGE_UP).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.PAGE_UP)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && (event.key === "PageDown" || (event.ctrlKey && event.key.toLowerCase() === "d"))) {
                 event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.PAGE_DOWN).catch(() => {});
+                controller.handleCommand(UI_COMMANDS.PAGE_DOWN)
+                    .then(() => revealKeyboardSessionRow(controller)).catch(() => {});
                 return;
             }
             if (focusRegion === "sessions" && event.key === "t" && isPlainShortcut) {
@@ -14667,6 +14648,20 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
     const themeSoundMobile = useControllerSelector(controller, (state) => state.ui.themeSoundMobile);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, state => state.ui.touchScale);
+    // Phone only: which people's sessions the list shows. The phone toolbar
+    // has no room for the funnel the desktop keeps beside New session.
+    const ownerFilterSummary = useControllerSelector(controller, (state) => {
+        const filter = state.sessions?.ownerFilter;
+        if (!filter || filter.all) return "Everyone";
+        const parts = [];
+        if (filter.includeMe) parts.push("Me");
+        if (filter.includeShared) parts.push("Shared");
+        const others = Array.isArray(filter.ownerKeys) ? filter.ownerKeys.length : 0;
+        if (others) parts.push(`${others} ${others === 1 ? "person" : "people"}`);
+        if (filter.includeSystem) parts.push("System");
+        if (filter.includeUnowned) parts.push("Unowned");
+        return parts.length ? parts.join(", ") : "Nobody";
+    });
     if (mobile) return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
         React.createElement("h3", null, "Appearance"),
         React.createElement("label", { className: "ps-mobile-setting-row" },
@@ -14676,6 +14671,11 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
         React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
             onClick: () => controller.openThemePicker() },
             React.createElement("span", null, "Theme"), React.createElement("span", null, getTheme(themeId)?.label || themeId, " ›")),
+        React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
+            "aria-label": "Filter sessions",
+            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}) },
+            React.createElement("span", null, "Show sessions from"),
+            React.createElement("span", null, ownerFilterSummary, " ›")),
         React.createElement(MobileThemeSoundRows, {
             setting: themeSoundMobile,
             theme: getTheme(themeId),
@@ -16105,6 +16105,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef, suspended);
     const mainGridViewport = useMeasuredViewport(mainGridRef, suspended);
+    const workspaceGridRef = React.useRef(null);
+    const workspaceGridViewport = useMeasuredViewport(workspaceGridRef, suspended);
     const gridViewport = computeGridViewport(viewport);
 
     // Publish the real viewport in character cells. Without this the ui-core
@@ -16164,7 +16166,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     }, [controller]);
     // The phone's Main layout: split | chat | sessions (cycled by the Main
     // toolbar button). Desktop has real columns and needs no such cycle.
-    const [mobileMainLayout, setMobileMainLayout] = React.useState("split");
+    const [mobileSessionsOpen, setMobileSessionsOpen] = React.useState(false);
     const state = useControllerSelector(controller, (rootState) => ({
         moa: rootState.ui.moa,
         themeId: rootState.ui.themeId,
@@ -16213,7 +16215,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         inspectorTab: rootState.ui.inspectorTab,
         filesFullscreen: Boolean(rootState.files.fullscreen),
         selectedArtifactId: rootState.files.selectedArtifactId || null,
-        artifactPaneOpen: Boolean(rootState.files.paneOpen),
+        artifactPaneOpen: selectArtifactPaneShown(rootState),
         adminVisible: Boolean(rootState.admin?.visible),
         // Providers & Budgets takes the workspace, like the admin console. The
         // reducer keeps the two apart — opening either closes the other — so
@@ -16246,6 +16248,10 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // Match the CSS and MoA breakpoint. The padded shell is narrower than
     // the browser and otherwise flips to mobile while the header is desktop.
     const mobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
+    // The slide-over belongs to Main on a phone; leaving either closes it.
+    React.useEffect(() => {
+        if (!mobile || mobilePane !== "workspace") setMobileSessionsOpen(false);
+    }, [mobile, mobilePane]);
     const mobileAdminNavigation = useMobileAdminNavigation(controller, mobile, state.adminVisible);
     useMobileAdminOverlay(mobileAdminNavigation, mobile && state.adminVisible, Boolean(state.modalType),
         "modal", () => controller.closeModal());
@@ -16265,7 +16271,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         if (!state.revealedCreatedSessionId || state.activeSessionId !== state.revealedCreatedSessionId) return;
         if (mobile) {
             setMobilePane("workspace");
-            setMobileMainLayout("chat");
+            setMobileSessionsOpen(false);
         }
         // Creation opens the ordinary session workspace, without modifying
         // any of the user's saved Master of Agents panels.
@@ -16723,13 +16729,34 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     const estimatedMainGridWidth = Math.max(0, (viewport.width || 0) * 0.68);
     const measuredMainGridWidth = mainGridViewport.width || estimatedMainGridWidth;
-    const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust);
+    const measuredWorkspaceWidth = workspaceGridViewport.width
+        || (measuredMainGridWidth + (rightSideActive ? PORTAL_SESSION_CHAT_DIVIDER_PX + rightSidePx : 0));
+    const sessionColumnWidth = portalSessionColumnWidth(measuredMainGridWidth, state.portalSessionColumnAdjust, measuredWorkspaceWidth);
     const sessionColumnMode = zenActive ? "hidden" : portalSessionColumnMode(sessionColumnWidth);
+    const sessionColumnBase = portalSessionColumnBounds(measuredMainGridWidth, measuredWorkspaceWidth).baseWidth;
+    // What the main grid must keep beside the right block: the list at its
+    // width, plus the 32px the list track's own clamp (below) leaves beside
+    // chat's floor.
+    const sessionColumnReservePx = (sessionColumnMode === "hidden"
+        ? 0
+        : Math.max(0, Math.round(sessionColumnBase + (Number(state.portalSessionColumnAdjust) || 0))) + 32)
+        + PORTAL_MIN_CHAT_COLUMN_PX;
+    // With no side column the main grid IS the workspace, so the list's share
+    // is plain CSS and needs no measurement. Pixels from a measurement land a
+    // frame after the first paint; that late width change made chat re-pin
+    // itself to the bottom under a reader who had just scrolled up. Only with
+    // a canvas, reader or diagnostics column open does the share come from the
+    // (measured) workspace, so the list keeps its width beside the column.
+    const sessionColumnAdjustPx = Number(state.portalSessionColumnAdjust) || 0;
+    const sessionColumnPreferred = rightSideActive
+        ? `${Math.round(sessionColumnBase + sessionColumnAdjustPx)}px`
+        : `calc((100% - ${PORTAL_SESSION_CHAT_DIVIDER_PX + PORTAL_WORKSPACE_GAP_PX * 2}px) * ${PORTAL_SESSION_COLUMN_RATIO} + ${sessionColumnAdjustPx}px)`;
     const sessionColumnTrack = sessionColumnMode === "hidden"
         ? "0px"
-        : `clamp(0px, calc(${PORTAL_SESSION_COLUMN_RATIO * 100}% + ${Number(state.portalSessionColumnAdjust) || 0}px), max(0px, calc(100% - 14rem - 32px)))`;
+        : `clamp(0px, ${sessionColumnPreferred}, max(0px, calc(100% - ${PORTAL_MIN_CHAT_COLUMN_PX}px - 32px)))`;
 
     const desktopWorkspace = React.createElement("div", {
+        ref: workspaceGridRef,
         className: `ps-workspace-grid${rightSideActive ? "" : " is-right-hidden"}`,
         style: {
             // With both optional columns off there is no right side and no
@@ -16759,7 +16786,14 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                         // fixed pixels and the diagnostics column, the flex
                         // one, gave them up — so the chat↔canvas seam moved
                         // the canvas↔diagnostics seam instead.
-                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, calc(100% - var(--ps-resizer-track, 16px) - ${PORTAL_MIN_CHAT_COLUMN_PX}px))`
+                        //
+                        // The block also stops short of the session list. A
+                        // canvas width is remembered per session, and some are
+                        // wider than the window can give; the list used to
+                        // pay for them, so flipping to such a session squeezed
+                        // it, even to nothing. Now the canvas shows narrower
+                        // (its remembered width is kept) and the list holds.
+                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, max(0px, calc(100% - var(--ps-resizer-track, 16px) - ${sessionColumnReservePx}px)))`
                         : "minmax(0, 1fr)")),
         },
     },
@@ -16767,7 +16801,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         ref: mainGridRef,
         className: `ps-workspace-main-grid is-session-${sessionColumnMode}`,
         style: {
-            gridTemplateColumns: `${sessionColumnTrack} var(--ps-resizer-track, 16px) minmax(14rem, 1fr)`,
+            gridTemplateColumns: `${sessionColumnTrack} var(--ps-resizer-track, 16px) minmax(${PORTAL_MIN_CHAT_COLUMN_PX}px, 1fr)`,
         },
     },
     sessionColumnMode !== "hidden" ? React.createElement("div", {
@@ -16787,7 +16821,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         className: "ps-workspace-pane-slot",
         style: { gridColumn: "3" },
     },
-        React.createElement(ChatPane, { controller, readingColumn: true }))),
+        // Zen makes chat a narrow rail beside the canvas: the reading column
+        // and its inset are for a wide chat, so the rail ignores them.
+        React.createElement(ChatPane, { controller, readingColumn: !zenActive }))),
     rightSideActive
         ? (artifactPaneActive
             ? React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust })
@@ -16911,7 +16947,10 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // it — the layer below is a SIBLING of this content and covers it. Drawing
     // a pane here would only be invisible work.
     else if (mobilePane === "canvas") mobileContent = null;
-    else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout, onEnterZen: moa?.openMobileZen });
+    else mobileContent = React.createElement(MobileWorkspace, {
+        controller, onEnterZen: moa?.openMobileZen,
+        sessionsOpen: mobileSessionsOpen, onCloseSessions: () => setMobileSessionsOpen(false),
+    });
 
     // The phone's canvas layer: a sibling of the content region's pane, NOT a
     // child of any pane. That is deliberate — panes mount and unmount as the
@@ -16932,25 +16971,31 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         React.createElement(MotdOverlay, { controller, mobile }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
-        // The phone's toolbar carries its NAVIGATION (the three view modes,
-        // plus the Main layout cycle), so it renders on every pane — hiding it
-        // anywhere would trap the user with no way back.
+        // The phone's toolbar carries its NAVIGATION (the session list, the
+        // diagnostics cycle and the canvas), so it renders on every pane —
+        // hiding it anywhere would trap the user with no way back.
         React.createElement(Toolbar, {
             controller, moa, viewNavigation,
             mobile,
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
             mobilePane,
-            mobileMainLayout,
-            onSelectMobilePane: (paneId, focus) => {
-                // Tapping Main while already on Main cycles its layout; from
-                // another pane (the canvas included) it just returns you to
-                // Main, unchanged.
-                if (paneId === "workspace" && mobilePane === "workspace") {
-                    setMobileMainLayout((current) => (
-                        current === "split" ? "chat" : current === "chat" ? "sessions" : "split"
-                    ));
+            mobileSessionsOpen: mobileSessionsOpen && mobilePane === "workspace" && !state.budgetOpen && !state.adminVisible,
+            onToggleMobileSessions: () => {
+                // From any other surface (canvas, diagnostics, budget), the
+                // list button goes to Main and opens the list there.
+                const onMain = mobilePane === "workspace" && !state.budgetOpen && !state.adminVisible;
+                if (!onMain) {
+                    controller.closeBudget();
+                    controller.closeAdminConsole();
+                    setMobilePane("workspace");
+                    setMobileSessionsOpen(true);
+                    return;
                 }
+                setMobileSessionsOpen((open) => !open);
+            },
+            onSelectMobilePane: (paneId, focus) => {
+                setMobileSessionsOpen(false);
                 // The budget surface REPLACES the workspace, so a pane the
                 // phone switches to would render behind it and the tap would
                 // look dead. Picking a pane puts it away. Already closed, the

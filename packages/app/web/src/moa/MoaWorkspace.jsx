@@ -298,7 +298,9 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
     const session = state.sessions.byId[selected];
     const canvases = [1, 2, 3, 4, 5].map(slot => ({ slot, ...state.canvas?.bySessionId?.[canvasKey(selected, slot)] })).filter(c => c.latestRev > 0 && c.sizeBytes !== 0);
     return <Modal title="Sessions" onClose={onClose} hideHeader>
-        <SessionPane controller={controller} structuredRows showDetailBox panelClassName="ps-moa-session-picker" actions={<><button className="ps-mini-button" aria-label="Close dialog" onClick={onClose}>×</button></>} selection={{ onCreate, sessionId: selected, query, onQuery: setQuery, onSelect: id => { setSelected(id); setKind("chat"); } }} />
+        {/* The picker's list is the phone slide-over's list, on every screen:
+            the same rows and sub-agent chevrons. */}
+        <SessionPane controller={controller} showDetailBox rowDisclosure panelClassName="ps-moa-session-picker ps-mobile-session-pane is-phone-picker" actions={<><button className="ps-mini-button" aria-label="Close dialog" onClick={onClose}>×</button></>} selection={{ onCreate, sessionId: selected, query, onQuery: setQuery, onSelect: id => { setSelected(id); setKind("chat"); } }} />
         <footer className="ps-moa-picker-detail"><div>{session?.title || (selected ? selected : "Select a session")}</div>
             <div className="ps-moa-row"><label htmlFor="moa-content-kind">Show</label><select id="moa-content-kind" value={kind} onChange={e => setKind(e.target.value)} disabled={!selected}>
                 <option value="chat">Session chat</option>{canvases.map(c => <option key={c.slot} value={c.slot}>Canvas {c.slot}{c.name ? ` · ${c.name}` : ""}</option>)}

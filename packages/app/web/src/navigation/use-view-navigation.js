@@ -1,11 +1,11 @@
 import React from "react";
 import { useControllerSelector } from "pilotswarm/ui-react";
-import { activeMoaDashboard, normalizeMoa, moaLeaves, updateMoaDashboard } from "pilotswarm/ui-core";
+import { activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, updateMoaDashboard } from "pilotswarm/ui-core";
 import { cleanView, createViewHistory, navigationShortcut, viewKey } from "./view-history.js";
 
 function capture(controller, moa) {
     const s = controller.getState(), dashboard = activeMoaDashboard(normalizeMoa(s.ui.moa));
-    const artifact = s.files.paneOpen ? s.files.selectedArtifactId : null;
+    const artifact = selectArtifactPaneShown(s) ? s.files.selectedArtifactId : null;
     const separator = artifact?.indexOf("/") ?? -1;
     return cleanView({
         mode: moa.active ? "moa" : s.admin.visible ? "admin" : s.ui.budgetOpen ? "budget" : "workspace",

@@ -56,6 +56,7 @@ test("MoA picker search updates without waiting for background controller ticks"
 test("mobile keeps search compact until requested", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(base);
+    await page.getByRole("button", { name: "Sessions", exact: true }).click();
     const pane = page.locator(".ps-mobile-session-pane");
     const trigger = pane.getByRole("button", { name: "Search sessions" });
     const search = pane.getByRole("textbox", { name: "Find a session" });

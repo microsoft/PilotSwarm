@@ -41,11 +41,13 @@ test('composer keyboard leaves no ghost session row and follows Safari pan, then
     await move(page,844,0);await fits(page,844,0);
     await expect(page.locator('body')).not.toHaveClass(/ps-kb-takeover/);
     await expect(page.locator('.portal-header')).toBeVisible();
-    await expect(page.locator('.ps-mobile-session-pane')).toBeVisible();
+    // The list is a slide-over now: closed at rest, its button back in reach.
+    await expect(page.getByRole('button',{name:'Sessions',exact:true})).toBeVisible();
     await expect(input).toHaveValue('preserve my reply');
 });
 test('session search stays visible and focused while the keyboard pans the viewport',async({page})=>{
     await open(page);
+    await page.getByRole('button',{name:'Sessions',exact:true}).click();
     const pane=page.locator('.ps-mobile-session-pane');
     await pane.getByRole('button',{name:'Search sessions'}).click();
     const input=pane.getByRole('textbox',{name:'Find a session'});
