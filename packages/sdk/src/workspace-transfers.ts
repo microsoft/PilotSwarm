@@ -303,7 +303,7 @@ export class WorkspaceTransferCoordinator {
         return this.statusOf(t);
     }
 
-    async put(context: WorkspaceTransferContext, id: string, part: number, input: Uint8Array | (() => Promise<Uint8Array>), signal?: AbortSignal): Promise<{ part: number; bytes: number; sha256: string }> {
+    async put(context: WorkspaceTransferContext, id: string, part: number, input: Uint8Array | ((expectedBytes: number) => Promise<Uint8Array>), signal?: AbortSignal): Promise<{ part: number; bytes: number; sha256: string }> {
         const t = this.row(context, id);
         if (t.state !== "open") throw uploadError("IN_PROGRESS", `Upload is ${t.state}; no further parts can be accepted.`);
         if (t.busy) throw uploadError("BUSY", "Another operation is using this upload.", 503);
@@ -317,7 +317,7 @@ export class WorkspaceTransferCoordinator {
             const attempt = path.join(t.spool, "part-" + randomUUID());
             try {
                 await this.helper(t, "validate", {}, t.abort.signal);
-                const bytes = direct ?? await (input as () => Promise<Uint8Array>)();
+                const bytes = direct ?? await (input as (expectedBytes: number) => Promise<Uint8Array>)(expected);
                 if (!(bytes instanceof Uint8Array) || bytes.byteLength !== expected) throw uploadError("INCOMPLETE", `Part ${part} must contain exactly ${expected} bytes.`, 400);
                 const digest = createHash("sha256").update(bytes).digest("hex");
                 const previous = t.accepted[part];

@@ -230,6 +230,13 @@ receipt, `IN_PROGRESS` or `COMMIT_UNKNOWN` requires a target refresh and an
 uncertainty notice: never retry publication, infer success from target bytes,
 count it as uploaded/saved, or announce a workspace change. Only known commits
 announce once; parts announce nothing.
+Only typed `WORKSPACE_FILES_UPLOAD_BUSY` with status 503 is retried: it
+explicitly rejects admission before any part work or publication. Use at most
+five retries per start/part/complete operation, exponential backoff with jitter
+and numeric `Retry-After` (maximum eight seconds per delay); reuse the same part
+bytes and handle without reading ahead. Show `Waiting for upload capacity` and
+keep Cancel available while waiting. Never retry quota, proxy, network or
+ambiguous completion failures, or silently fall back to JSON.
 Known receipts with `notificationFailed` or `receiptPersistenceFailed` still
 count as committed and announce once. Keep their inline warning separate from
 transient completion status until dismissal or view change; never turn those

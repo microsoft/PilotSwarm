@@ -10,7 +10,7 @@ import { createApiRouter } from "../api/router.js";
 import { installJsonBodyLimits } from "../server.js";
 
 const owner = { provider: "dev", subject: "upload-owner" };
-export async function uploadHttpFixture() {
+export async function uploadHttpFixture({ sessionOwners = { session: owner } } = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ps-upload-http-"));
     const spool = await fs.mkdtemp(path.join(os.tmpdir(), "ps-upload-spool-"));
     await fs.writeFile(path.join(root, ".pilotswarm-export"), "");
@@ -23,10 +23,10 @@ export async function uploadHttpFixture() {
     mgmt._started = true;
     mgmt.getSessionWorkspace = async () => ({ workspace: { schema: 1, root: "fixture", folder: "" }, path: root });
     mgmt._catalog = {
-        getSession: async (id) => id === "session" ? { deletedAt: null } : null,
-        getSessionAccess: async (id, viewer) => id === "session" ? {
-            rootSessionId: id, isSystem: false, visibility: "shared_write", owner,
-            viewerIsOwner: viewer.provider === owner.provider && viewer.subject === owner.subject,
+        getSession: async (id) => sessionOwners[id] ? { deletedAt: null } : null,
+        getSessionAccess: async (id, viewer) => sessionOwners[id] ? {
+            rootSessionId: id, isSystem: false, visibility: "shared_write", owner: sessionOwners[id],
+            viewerIsOwner: viewer.provider === sessionOwners[id].provider && viewer.subject === sessionOwners[id].subject,
             viewerShareAccess: null,
         } : null,
         recordEvents: async (_id, rows) => events.push(...rows),
@@ -41,7 +41,7 @@ export async function uploadHttpFixture() {
     app.use("/api/v1", createApiRouter({
         runtime,
         requireAuth: (req, _res, next) => {
-            req.auth = { principal: req.headers["x-other-user"] ? { provider: "dev", subject: "other" } : owner, authorization: { allowed: true, role: req.headers["x-admin"] ? "admin" : "user" } };
+            req.auth = { principal: req.headers["x-other-user"] ? { provider: "dev", subject: "other" } : req.headers["x-upload-owner"] ? { provider: "dev", subject: req.headers["x-upload-owner"] } : owner, authorization: { allowed: true, role: req.headers["x-admin"] ? "admin" : "user" } };
             next();
         },
     }));

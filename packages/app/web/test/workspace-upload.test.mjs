@@ -4,6 +4,7 @@ import { uploadWorkspaceBlob, workspaceUploadReceiptWarning } from "../../ui/rea
 import { workspaceErrorText } from "../../ui/react/src/workspace-pane.js";
 
 const P = 524_288;
+const busy = () => Object.assign(new Error("capacity busy"), { code: "WORKSPACE_FILES_UPLOAD_BUSY", status: 503 });
 const RESULT = { etag: "sha256:new", size: P + 1, mtimeMs: 42, created: true };
 const deferred = () => {
     let resolve, reject;
@@ -104,6 +105,80 @@ test("smaller negotiated parts are sliced at that size", async () => {
     });
     await f.run();
     assert.deepEqual(f.reads, [[0, P / 2], [P / 2, P], [P, P + 1]]);
+});
+
+for (const phase of ["start", "part", "complete"]) {
+    test(`explicit BUSY ${phase} rejection backs off without rereading bytes or changing the target`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const waiting = deferred();
+        let attempts = 0, originalBytes;
+        const f = fixture(P + 1);
+        const method = { start: "startSessionWorkspaceUpload", part: "putSessionWorkspaceUploadPart", complete: "completeSessionWorkspaceUpload" }[phase];
+        const original = f.transport[method];
+        f.transport[method] = async (...args) => {
+            attempts++;
+            if (phase === "part" && args[2] === 0) {
+                if (!originalBytes) originalBytes = args[3];
+                assert.equal(args[3], originalBytes);
+            }
+            if (attempts === 1) throw Object.assign(busy(), { retryAfterMs: 2000 });
+            return original(...args);
+        };
+        const pending = f.run({ onProgress: (value) => { f.progress.push(value); if (value.phase === "waiting") waiting.resolve(); } });
+        await waiting.promise;
+        t.mock.timers.tick(1999);
+        assert.equal(attempts, 1, "honor the server's minimum delay");
+        t.mock.timers.tick(8000);
+        assert.equal(await pending, RESULT);
+        assert.deepEqual(f.reads, [[0, P], [P, P + 1]]);
+        assert.equal(f.calls.filter(([kind]) => kind === "start").length, 1);
+        assert.equal(f.calls.filter(([kind]) => kind === "complete").length, 1);
+    });
+}
+
+test("persistent BUSY has exactly five backoffs then aborts once and reports the denial", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let attempts = 0, waiting = deferred();
+    const error = busy();
+    const f = fixture(P, { putSessionWorkspaceUploadPart: async () => { attempts++; throw error; } });
+    const pending = f.run({ onProgress: (value) => { if (value.phase === "waiting") waiting.resolve(); } });
+    const rejected = assert.rejects(pending, (caught) => caught === error && caught.uploadPart === 0);
+    for (let retry = 0; retry < 5; retry++) {
+        await waiting.promise;
+        waiting = deferred();
+        t.mock.timers.tick(8000);
+    }
+    await rejected;
+    assert.equal(attempts, 6);
+    assert.deepEqual(f.reads, [[0, P]]);
+    assert.deepEqual(f.calls.map(([kind]) => kind), ["start", "abort"]);
+});
+
+for (const phase of ["part", "complete"]) {
+    test(`Cancel during BUSY ${phase} backoff cancels the timer and cleans up the original upload`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const controller = new AbortController(), waiting = deferred();
+        let attempts = 0;
+        const method = phase === "part" ? "putSessionWorkspaceUploadPart" : "completeSessionWorkspaceUpload";
+        const f = fixture(P, { [method]: async () => { attempts++; throw busy(); } });
+        const pending = f.run({ signal: controller.signal, onProgress: (value) => { if (value.phase === "waiting") waiting.resolve(); } });
+        await waiting.promise;
+        controller.abort();
+        await assert.rejects(pending, (error) => error.name === "AbortError" && !error.completionUncertain);
+        t.mock.timers.tick(8000);
+        assert.equal(attempts, 1);
+        assert.equal(f.calls.filter(([kind]) => kind === "abort").length, 1);
+        assert.equal(f.calls.filter(([kind]) => kind === "complete").length, 0);
+    });
+}
+
+test("untyped 503 and BUSY with another status are not retried", async () => {
+    for (const error of [Object.assign(new Error("proxy unavailable"), { status: 503 }), Object.assign(busy(), { status: 409 })]) {
+        let attempts = 0;
+        const f = fixture(P, { completeSessionWorkspaceUpload: async () => { attempts++; throw error; } });
+        await assert.rejects(f.run(), (caught) => caught === error);
+        assert.equal(attempts, 1);
+    }
 });
 
 for (const error of [

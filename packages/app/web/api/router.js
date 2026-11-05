@@ -64,6 +64,7 @@ function statusForError(error) {
 function sendError(res, error, fallbackStatus) {
     const status = fallbackStatus || statusForError(error);
     const code = error?.code || (status === 404 ? "NOT_FOUND" : status === 400 ? "INVALID_REQUEST" : status === 413 ? "PAYLOAD_TOO_LARGE" : "INTERNAL_ERROR");
+    if (code === "WORKSPACE_FILES_UPLOAD_BUSY" && status === 503) res.setHeader("retry-after", "1");
     // 5xx messages stay on the server unless exposed; 4xx keep their
     // message and the fields a client acts on (error-detail.js).
     res.status(status).json({ ok: false, error: errorDetail(error, status, code) });
@@ -204,34 +205,32 @@ export function createApiRouter({ runtime, requireAuth }) {
             if (!SAFE_ID.test(sessionId) || !SAFE_ID.test(uploadId) || !/^(0|[1-9][0-9]*)$/.test(rawPart)) throw fail("Invalid upload handle or part index.");
             const part = Number(rawPart);
             if (!Number.isSafeInteger(part)) throw fail("Invalid upload part index.");
-            const status = await runtime.call("getSessionWorkspaceUpload", { sessionId, uploadId }, req.auth);
-            if (status.state !== "open") throw fail(`Upload is ${status.state}.`, 409);
             if (req.headers["content-encoding"] && req.headers["content-encoding"] !== "identity") throw fail("Compressed upload parts are not supported.", 415);
             if (String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase() !== "application/octet-stream") throw fail("Upload parts require application/octet-stream.", 415);
-            const cap = Math.min(status.partBytes, 524288);
-            if (!Number.isSafeInteger(cap) || cap < 1) throw fail("Invalid upload part capacity.");
-            if (part >= status.partCount) throw fail("Upload part index is outside the declared file.");
-            const expected = Math.min(cap, status.size - part * cap);
             const length = req.headers["content-length"];
-            if (length !== undefined && (!/^[0-9]+$/.test(length) || Number(length) !== expected)) throw fail(`Part must contain exactly ${expected} bytes.`, Number(length) > cap ? 413 : 400);
+            if (length !== undefined && (!/^[0-9]+$/.test(length) || Number(length) > 524288)) throw fail("Upload parts must be at most 524288 bytes.", Number(length) > 524288 ? 413 : 400);
             // The coordinator admits this attempt before this reader allocates or consumes bytes.
-            const read = () => new Promise((resolve, reject) => {
-                const bytes = Buffer.allocUnsafe(expected);
-                let received = 0;
-                const clean = () => {
-                    req.removeListener("data", data); req.removeListener("end", end);
-                    req.removeListener("error", aborted); req.removeListener("aborted", aborted);
-                    clearTimeout(timer);
-                };
-                const aborted = () => { controller.abort(); clean(); reject(fail("Upload part was interrupted.")); };
-                const data = (chunk) => {
-                    if (received + chunk.length > expected) { req.pause(); clean(); reject(fail(`Part exceeds its ${expected}-byte bound.`, 413)); return; }
-                    bytes.set(chunk, received); received += chunk.length;
-                };
-                const end = () => { clean(); received === expected ? resolve(bytes) : reject(fail("Upload part was truncated.")); };
-                req.on("data", data); req.once("end", end); req.once("error", aborted); req.once("aborted", aborted);
-                timer = setTimeout(() => { req.pause(); clean(); reject(fail("Upload part body deadline exceeded.", 408)); }, 30_000);
-            });
+            const read = (expected) => {
+                if (!Number.isSafeInteger(expected) || expected < 1 || expected > 524288) throw fail("Invalid upload part capacity.");
+                if (length !== undefined && Number(length) !== expected) throw fail(`Part must contain exactly ${expected} bytes.`, Number(length) > expected ? 413 : 400);
+                return new Promise((resolve, reject) => {
+                    const bytes = Buffer.allocUnsafe(expected);
+                    let received = 0;
+                    const clean = () => {
+                        req.removeListener("data", data); req.removeListener("end", end);
+                        req.removeListener("error", aborted); req.removeListener("aborted", aborted);
+                        clearTimeout(timer);
+                    };
+                    const aborted = () => { controller.abort(); clean(); reject(fail("Upload part was interrupted.")); };
+                    const data = (chunk) => {
+                        if (received + chunk.length > expected) { req.pause(); clean(); reject(fail(`Part exceeds its ${expected}-byte bound.`, 413)); return; }
+                        bytes.set(chunk, received); received += chunk.length;
+                    };
+                    const end = () => { clean(); received === expected ? resolve(bytes) : reject(fail("Upload part was truncated.")); };
+                    req.on("data", data); req.once("end", end); req.once("error", aborted); req.once("aborted", aborted);
+                    timer = setTimeout(() => { req.pause(); clean(); reject(fail("Upload part body deadline exceeded.", 408)); }, 30_000);
+                });
+            };
             const result = await runtime.call("putSessionWorkspaceUploadPart", { sessionId, uploadId, part, bytes: read }, req.auth);
             res.json({ ok: true, result });
         } catch (error) {

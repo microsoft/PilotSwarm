@@ -1017,7 +1017,7 @@ test("a file that is not UTF-8 opens for download only, so a save cannot change 
 
 test("a save keeps CRLF line ends and a byte-order mark", async ({ page }) => {
     const folder = new Folder({ "win.txt": "one\r\ntwo\r\n", "bom.cs": Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from("class A {}\n")]) });
-    await routeWorkspace(page, folder);
+    await routeWorkspace(page, folder, { writeDelayMs: 150 });
     await openWorkspace(page);
     await row(page, "win.txt").click();
     await page.locator(".ps-ws-viewer .cm-line", { hasText: "two" }).click();
@@ -1031,7 +1031,8 @@ test("a save keeps CRLF line ends and a byte-order mark", async ({ page }) => {
     await page.keyboard.press("End");
     await page.keyboard.type(" // b");
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await expect.poll(() => [...folder.nodes.get("bom.cs").bytes.subarray(0, 3)]).toEqual([0xEF, 0xBB, 0xBF]);
+    await expect.poll(() => folder.text("bom.cs")).toBe("\uFEFFclass A {} // b\n");
+    expect([...folder.nodes.get("bom.cs").bytes.subarray(0, 3)]).toEqual([0xEF, 0xBB, 0xBF]);
     expect(folder.nodes.get("bom.cs").bytes.subarray(3).toString("utf8")).toBe("class A {} // b\n");
 });
 

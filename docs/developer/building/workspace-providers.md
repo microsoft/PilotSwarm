@@ -310,6 +310,20 @@ path aliases). Terminal receipts are retained for 30 minutes.
 Listing workspace folders validates and reports the upload part size without
 acquiring the coordinator. Transfer operations acquire it lazily; management
 clients must call `stop()` to release their coordinator lease.
+If transfer cleanup fails during shutdown, status waits and the other stores
+still close; `stop()` propagates that error and retains the transfer lease for
+a later cleanup attempt.
+
+Excess data operations receive `WORKSPACE_FILES_UPLOAD_BUSY` (503) with
+`Retry-After: 1`; the server does not queue or consume their part bodies.
+The Workspace pane retries only this explicit pre-admission denial, at most
+five times per operation, with cancellable exponential backoff and jitter
+(at most eight seconds per delay). A part retry reuses the same bounded bytes,
+upload handle and part index. A `BUSY` completion retry is safe because the
+coordinator restores the open state without starting publication. Other
+completion failures, especially missing receipts, `IN_PROGRESS` and
+`COMMIT_UNKNOWN`, are never automatically replayed. Quota denials remain
+errors; backoff does not increase the transfer or storage limits.
 
 Every part/control re-resolves session ownership and folder binding. Assembly
 uses 64 KiB buffers in a deadline-bounded child and a private destination-side
@@ -318,6 +332,19 @@ atomic same-filesystem rename. Thus a local spool on another filesystem never
 requires copying over the visible target. Targets must support these
 primitives. Reserved `.pilotswarm-transfer-*` staging paths are hidden and
 refused by workspace reads, traversal and canvas file calls.
+The raw part reader receives its exact byte bound from the admitted coordinator
+operation; one helper validates filesystem binding before that reader runs.
+A separate status-helper validation is not needed on each PUT. The upload
+start probes both hard-link and rename support and rejects unsupported storage;
+supported mounts still need deployment-specific qualification.
+
+The Linux RSS gate measures the isolated portal and its helper tree at both
+one and two concurrent operations. It warms the full 20 MiB workload, collects
+three fixed 1/5/20 MiB trials with alternating order and a GC baseline before
+each sample, and retains every raw baseline and peak. The median paired
+incremental 5-to-20 MiB growth must stay within 8 MiB. This reduces allocator
+and helper-startup noise without removing the file-size scaling check or
+retrying failed test executions.
 
 A bounded HTTP deadline is not proof that a helper exited. Claims remain held
 until resource promises settle and identity-checked cleanup succeeds; failures

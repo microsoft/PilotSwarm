@@ -22,7 +22,7 @@ function createHarness({ callImpl, role = "user" } = {}) {
             calls.push({ name, params, authContext });
             if (callImpl) return callImpl(name, params);
             if (name === "getSessionWorkspaceUpload") return { state: "open", partBytes: 524288, size: 1, partCount: 1 };
-            if (name === "putSessionWorkspaceUploadPart") return { bytes: (await params.bytes()).length };
+            if (name === "putSessionWorkspaceUploadPart") return { bytes: (await params.bytes(1)).length };
             return { echoed: name };
         },
     };

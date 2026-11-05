@@ -39,6 +39,10 @@ async function readErrorEnvelope(response) {
         if (response.status === 413) message = "Upload request rejected (HTTP 413). Check the file size, advertised part size, and proxy request-body limit.";
         else if (response.status === 403) message = "Request rejected (HTTP 403). A proxy or firewall may have rejected it.";
     }
+    const retryAfter = response.headers?.get("retry-after") ?? null;
+    if (retryAfter !== null && /^[0-9]+(?:\.[0-9]+)?$/.test(retryAfter) && Number.isFinite(Number(retryAfter) * 1000)) {
+        extra.retryAfterMs = Number(retryAfter) * 1000;
+    }
     return Object.assign(new ApiError(message, { code, status: response.status, candidates, ...extra }), extra);
 }
 

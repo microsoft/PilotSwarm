@@ -21,6 +21,56 @@ async function fixture(fn, { partBytes = 16384, maxBytes = 20971520, targetParen
     finally { await c.stop(); await fs.rm(root, { recursive: true }); await fs.rm(spool, { recursive: true }); }
 }
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+test("management shutdown closes stores and status waits even when transfer cleanup fails, retaining the lease for retry", async () => {
+    const client = new PilotSwarmManagementClient({ store: "postgres://unused" });
+    const failure = Object.assign(new Error("quarantined upload"), { code: "WORKSPACE_FILES_UPLOAD_CLEANUP" });
+    const coordinator = {};
+    const closed = [];
+    let releases = 0;
+    client._started = true;
+    client._workspaceTransfers = coordinator;
+    client._releaseWorkspaceTransfers = async () => { if (++releases === 1) throw failure; };
+    const release = client._releaseWorkspaceTransfers;
+    for (const field of ["_graphStore", "_factStore", "_catalog"]) {
+        client[field] = { close: async () => { closed.push(field); } };
+    }
+    const wait = new AbortController();
+    client._activeStatusWaitControllers.add(wait);
+    const settled = new Promise((resolve) => wait.signal.addEventListener("abort", resolve, { once: true }));
+    client._activeStatusWaitPromises.add(settled);
+    await assert.rejects(client.stop(), (error) => error === failure);
+    assert.deepEqual(closed, ["_graphStore", "_factStore", "_catalog"]);
+    assert.equal(wait.signal.aborted, true);
+    assert.equal(client._started, false);
+    assert.equal(client._workspaceTransfers, coordinator);
+    assert.equal(client._releaseWorkspaceTransfers, release);
+    await client.stop();
+    assert.equal(releases, 2);
+    assert.equal(client._workspaceTransfers, undefined);
+    assert.equal(client._releaseWorkspaceTransfers, undefined);
+    assert.equal(closed.length, 3, "closed stores are not closed again on a cleanup retry");
+});
+
+test("admitted readers receive the exact configured part bound; busy lanes never invoke a reader", async () => fixture(async (c, ctx) => {
+    const started = await c.start(ctx, { folder: "working", path: "lazy.bin", size: 16385 });
+    let finish;
+    const held = new Promise((resolve) => { finish = resolve; });
+    const lanes = [c.runData(() => held), c.runData(() => held)];
+    let reads = 0;
+    const read = async (expected) => { reads++; assert.equal(expected, 16384); return new Uint8Array(expected); };
+    try {
+        await assert.rejects(c.put(ctx, started.uploadId, 0, read), { code: "WORKSPACE_FILES_UPLOAD_BUSY" });
+        assert.equal(reads, 0);
+    } finally { finish(); await Promise.all(lanes); }
+    await c.put(ctx, started.uploadId, 0, read);
+    await c.put(ctx, started.uploadId, 1, async (expected) => {
+        assert.equal(expected, 1);
+        return new Uint8Array(expected);
+    });
+    assert.equal(reads, 1);
+    await c.abort(ctx, started.uploadId);
+}));
+
 test("folder capabilities validate part sizes without acquiring a transfer coordinator", async () => {
     const lease = acquireWorkspaceTransferCoordinator({ roots: [] });
     const clients = [];

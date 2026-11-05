@@ -3130,7 +3130,7 @@ export function WorkspacePane({ controller, sessionId, visible = true }) {
                 "aria-valuemax": transfer.size,
                 "aria-valuenow": transfer.bytes,
                 "aria-valuetext": `${transfer.bytes} of ${transfer.size} bytes`,
-            }, `${transfer.phase === "completing" ? "Finishing" : transfer.phase === "legacy" ? "Sending whole-file JSON" : "Uploading"} ${transfer.path}: ${formatBytes(transfer.bytes)} / ${formatBytes(transfer.size)}`),
+            }, `${transfer.phase === "waiting" ? "Waiting for upload capacity" : transfer.phase === "completing" ? "Finishing" : transfer.phase === "legacy" ? "Sending whole-file JSON" : "Uploading"} ${transfer.path}: ${formatBytes(transfer.bytes)} / ${formatBytes(transfer.size)}`),
             h("button", {
                 type: "button",
                 className: "ps-ws-btn",

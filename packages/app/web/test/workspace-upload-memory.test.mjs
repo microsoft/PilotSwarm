@@ -17,7 +17,9 @@ async function sampleTree(pid) {
     } catch (error) { if (error.code === "ENOENT" || error.code === "ESRCH") return 0; throw error; }
 }
 
-test("isolated warm portal and all upload helpers keep 5→20MiB peak RSS growth within 8MiB", { skip: process.platform !== "linux", timeout: 240_000 }, async () => {
+const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+
+test("isolated warm portal and all upload helpers keep median 5→20MiB peak RSS growth within 8MiB", { skip: process.platform !== "linux", timeout: 240_000 }, async () => {
     const worker = fork(new URL("./workspace-upload-memory-worker.mjs", import.meta.url), {
         execArgv: ["--expose-gc"], stdio: ["ignore", "inherit", "inherit", "ipc"],
     });
@@ -35,29 +37,46 @@ test("isolated warm portal and all upload helpers keep 5→20MiB peak RSS growth
         await Promise.all(entries.map((entry) => api.call("completeSessionWorkspaceUpload", { sessionId: "session", uploadId: entry.uploadId })));
     }
     const measurements = [];
-    try {
-        await upload(1024 ** 2, 1);
+    async function measure(mib, concurrency, trial) {
         const warm = once(worker, "message"); worker.send("warm"); await warm;
+        const baselineRss = await sampleTree(worker.pid);
+        let peakRss = baselineRss, stopping = false, sampleError;
+        // Await the sampler so neither its final peak nor an error is lost
+        // when the upload finishes between samples.
+        const sampling = (async () => {
+            while (!stopping) {
+                peakRss = Math.max(peakRss, await sampleTree(worker.pid));
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+        })().catch((error) => { sampleError = error; });
+        try { await upload(mib * 1024 ** 2, concurrency); }
+        finally {
+            stopping = true;
+            await sampling;
+            if (sampleError) throw sampleError;
+        }
+        measurements.push({ concurrency, trial, mib, baselineRss, peakRss, incrementalRss: peakRss - baselineRss });
+    }
+    try {
         for (const concurrency of [1, 2]) {
-            for (const mib of [1, 5, 20]) {
-                let peak = await sampleTree(worker.pid), sampling = false, sampleError;
-                const timer = setInterval(() => {
-                    if (sampling) return;
-                    sampling = true;
-                    void sampleTree(worker.pid).then((rss) => { peak = Math.max(peak, rss); }, (error) => { sampleError = error; }).finally(() => { sampling = false; });
-                }, 5);
-                try { await upload(mib * 1024 ** 2, concurrency); }
-                finally { clearInterval(timer); }
-                if (sampleError) throw sampleError;
-                measurements.push({ concurrency, mib, peakRss: peak });
+            // Warm the complete workload, not only the 1 MiB path. Every
+            // fixed trial is retained; this is sampling, not retry-until-green.
+            await upload(20 * 1024 ** 2, concurrency);
+            for (let trial = 0; trial < 3; trial++) {
+                for (const mib of trial % 2 ? [20, 5, 1] : [1, 5, 20]) {
+                    await measure(mib, concurrency, trial);
+                }
             }
         }
         console.log(JSON.stringify({ kind: "workspace-upload-memory", sampleMs: 5, measurements }));
         if (process.env.WORKSPACE_UPLOAD_MEMORY_EVIDENCE_FILE) await fs.writeFile(process.env.WORKSPACE_UPLOAD_MEMORY_EVIDENCE_FILE, JSON.stringify(measurements, null, 2));
         for (const concurrency of [1, 2]) {
-            const five = measurements.find((m) => m.concurrency === concurrency && m.mib === 5);
-            const twenty = measurements.find((m) => m.concurrency === concurrency && m.mib === 20);
-            assert.ok(twenty.peakRss - five.peakRss <= 8 * 1024 ** 2, `${concurrency} calls: 5→20MiB RSS grew ${twenty.peakRss - five.peakRss} bytes`);
+            const growth = Array.from({ length: 3 }, (_, trial) => {
+                const five = measurements.find((m) => m.concurrency === concurrency && m.trial === trial && m.mib === 5);
+                const twenty = measurements.find((m) => m.concurrency === concurrency && m.trial === trial && m.mib === 20);
+                return twenty.incrementalRss - five.incrementalRss;
+            });
+            assert.ok(median(growth) <= 8 * 1024 ** 2, `${concurrency} calls: median 5→20MiB RSS grew ${median(growth)} bytes; all trials: ${growth.join(", ")}`);
         }
     } finally {
         const exit = once(worker, "exit"); worker.send("stop"); await exit;

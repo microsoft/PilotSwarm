@@ -33,6 +33,34 @@ test("apiUrl trailing slashes are stripped", () => {
     assert.equal(client.apiUrl, "https://portal.example.com");
 });
 
+test("numeric Retry-After is preserved on typed BUSY errors without changing admission hooks", async () => {
+    let admissionCalls = 0;
+    const { client } = createClient({
+        responses: [new Response(JSON.stringify({ ok: false, error: { code: "WORKSPACE_FILES_UPLOAD_BUSY", message: "Two operations are running." } }), {
+            status: 503, headers: { "content-type": "application/json", "retry-after": "2" },
+        })],
+        onUnauthorized: () => admissionCalls++, onForbidden: () => admissionCalls++,
+    });
+    await assert.rejects(client.putSessionWorkspaceUploadPart("session", "upload", 0, new Uint8Array([1])), (error) => {
+        assert.equal(error.code, "WORKSPACE_FILES_UPLOAD_BUSY");
+        assert.equal(error.status, 503);
+        assert.equal(error.retryAfterMs, 2000);
+        return true;
+    });
+    assert.equal(admissionCalls, 0);
+});
+
+test("invalid Retry-After headers do not replace the original API error", async () => {
+    for (const retryAfter of ["-1", "NaN", "Infinity", "unparseable"]) {
+        const { client } = createClient({
+            responses: [new Response(JSON.stringify({ ok: false, error: { code: "WORKSPACE_FILES_UPLOAD_BUSY", message: "Busy" } }), {
+                status: 503, headers: { "retry-after": retryAfter },
+            })],
+        });
+        await assert.rejects(client.call("listSessions"), (error) => error.code === "WORKSPACE_FILES_UPLOAD_BUSY" && error.retryAfterMs === undefined);
+    }
+});
+
 test("upload parts use binary bodies, preserve structured conflicts and do not trigger signout", async () => {
     let signedOut = 0;
     const { client, calls } = createClient({

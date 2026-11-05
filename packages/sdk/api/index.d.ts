@@ -43,6 +43,8 @@ export declare class ApiError extends Error {
     size?: number;
     /** False for non-JSON proxy/firewall failures; never changes admission state. */
     responseIsJson?: boolean;
+    /** Server minimum delay from a numeric Retry-After header. */
+    retryAfterMs?: number;
     constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[]; etag?: string | null; size?: number });
 }
 

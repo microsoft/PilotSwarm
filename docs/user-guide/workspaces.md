@@ -216,6 +216,10 @@ advertises upload support. Progress shows accepted bytes; **Cancel** stops an
 open transfer without publishing a partial destination. The deployment's file
 size limit still applies. Replace and Keep both start a fresh upload with the
 chosen destination and version check.
+If the server's two data-operation slots are occupied, the pane shows
+**Waiting for upload capacity** and makes up to five delayed retries.
+You can cancel while it waits. Transfer-count and disk quotas still apply;
+a persistent capacity denial is reported rather than retried indefinitely.
 
 If finalization is in progress or its outcome is uncertain, refresh the target
 before deciding to retry: cancellation cannot undo an already published file.

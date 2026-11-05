@@ -1,7 +1,39 @@
 // Shared Workspace upload policy. Transport owns HTTP/authentication; this
-// helper owns bounded Blob reads, with no retry or fallback after a failure.
+// helper owns bounded Blob reads and finite backoff for explicit admission denials.
 const LEGACY_MAX_BYTES = 65_536;
 const PREFIX = "WORKSPACE_FILES_UPLOAD_";
+const BUSY_RETRIES = 5;
+
+function waitForCapacity(ms, signal) {
+    checkCancelled(signal);
+    return new Promise((resolve, reject) => {
+        const clean = () => signal?.removeEventListener("abort", abort);
+        const abort = () => {
+            clearTimeout(timer);
+            clean();
+            reject(Object.assign(new Error("Upload cancelled."), { name: "AbortError" }));
+        };
+        const timer = setTimeout(() => { clean(); resolve(); }, ms);
+        signal?.addEventListener("abort", abort, { once: true });
+    });
+}
+
+async function withCapacityBackoff(operation, signal, onWaiting) {
+    for (let attempt = 0; ; attempt++) {
+        checkCancelled(signal);
+        try { return await operation(); }
+        catch (error) {
+            // BUSY/503 is an explicit rejection before admission, even for
+            // complete. Never replay a network error or uncertain publication.
+            if (error.code !== `${PREFIX}BUSY` || error.status !== 503 || attempt === BUSY_RETRIES) throw error;
+            const minimum = Math.max(250 * 2 ** attempt, error.retryAfterMs ?? 0);
+            if (!Number.isFinite(minimum) || minimum > 8000) throw error;
+            const delay = Math.min(8000, minimum * (1 + Math.random() * 0.25));
+            onWaiting(attempt + 1);
+            await waitForCapacity(delay, signal);
+        }
+    }
+}
 
 function uploadError(code, message) {
     return Object.assign(new Error(message), { code: `${PREFIX}${code}` });
@@ -77,9 +109,18 @@ export async function uploadWorkspaceBlob({
     }
     let uploadId;
     let completing = false;
+    let acknowledgedBytes = 0;
+    const run = (phase, operation) => withCapacityBackoff(() => {
+        onProgress({ phase, bytes: acknowledgedBytes, size: blob.size, path });
+        checkCancelled(signal);
+        if (phase === "completing") completing = true;
+        return operation();
+    }, signal, (attempt) => {
+        if (phase === "completing") completing = false;
+        onProgress({ phase: "waiting", bytes: acknowledgedBytes, size: blob.size, path, attempt });
+    });
     try {
-        onProgress({ phase: "starting", bytes: 0, size: blob.size, path });
-        const started = await transport.startSessionWorkspaceUpload(sessionId, target);
+        const started = await run("starting", () => transport.startSessionWorkspaceUpload(sessionId, target));
         uploadId = started.uploadId;
         checkCancelled(signal);
         const partBytes = started.partBytes;
@@ -93,18 +134,17 @@ export async function uploadWorkspaceBlob({
             const bytes = new Uint8Array(await blob.slice(offset, Math.min(offset + partBytes, blob.size)).arrayBuffer());
             checkCancelled(signal);
             try {
-                await transport.putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, { signal });
+                await run("uploading", () => transport.putSessionWorkspaceUploadPart(sessionId, uploadId, part, bytes, { signal }));
             } catch (error) {
                 error.uploadPath = path;
                 error.uploadPart = part;
                 throw error;
             }
-            onProgress({ phase: "uploading", bytes: offset + bytes.length, size: blob.size, path, part });
+            acknowledgedBytes = offset + bytes.length;
+            onProgress({ phase: "uploading", bytes: acknowledgedBytes, size: blob.size, path, part });
         }
         checkCancelled(signal);
-        onProgress({ phase: "completing", bytes: blob.size, size: blob.size, path });
-        completing = true;
-        const result = await transport.completeSessionWorkspaceUpload(sessionId, uploadId);
+        const result = await run("completing", () => transport.completeSessionWorkspaceUpload(sessionId, uploadId));
         onProgress({ phase: "completed", bytes: blob.size, size: blob.size, path });
         return result;
     } catch (error) {

@@ -60,6 +60,7 @@ test.before(async () => {
                         },
                         putSessionWorkspaceUploadPart: async (sid, id, part, bytes, { signal }) => {
                             calls.push(["part", sid, id, part, bytes.length]);
+                            if (window.busyParts) throw Object.assign(new Error("capacity busy"), { code: "WORKSPACE_FILES_UPLOAD_BUSY", status: 503, retryAfterMs: 2000 });
                             if (window.holdParts) await new Promise((resolve, reject) => {
                                 release = resolve;
                                 signal.addEventListener("abort", () => reject(Object.assign(new Error("cancel"), { name: "AbortError" })), { once: true });
@@ -69,6 +70,7 @@ test.before(async () => {
                         },
                         completeSessionWorkspaceUpload: async (sid, id) => {
                             calls.push(["complete", sid, id]);
+                            if (window.busyComplete) throw Object.assign(new Error("capacity busy"), { code: "WORKSPACE_FILES_UPLOAD_BUSY", status: 503, retryAfterMs: 2000 });
                             if (window.uncertain) throw Object.assign(new Error("no receipt"), { code: "WORKSPACE_FILES_UPLOAD_COMMIT_UNKNOWN" });
                             const upload = transfers.get(id);
                             if (window.existing && upload.input.path === "large.bin" && upload.input.ifMatch === null) {
@@ -110,6 +112,21 @@ async function setup(t) {
     await page.addScriptTag({ content: script });
     await page.waitForSelector(".ps-ws-pane input[type=file]", { state: "attached" });
     return page;
+}
+
+for (const phase of ["part", "complete"]) {
+    test(`a busy ${phase} shows capacity waiting and remains cancellable without publication`, async (t) => {
+        const page = await setup(t);
+        await page.evaluate((phase) => { window[phase === "part" ? "busyParts" : "busyComplete"] = true; }, phase);
+        await page.locator(".ps-ws-pane input[type=file]").setInputFiles({ name: "busy.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(524288) });
+        await page.getByTestId("workspace-upload-progress").filter({ hasText: "Waiting for upload capacity" }).waitFor();
+        await page.getByRole("button", { name: "Cancel upload", exact: true }).click();
+        await page.waitForFunction(() => window.calls.some(([kind]) => kind === "abort"));
+        assert.equal(await page.evaluate(() => window.calls.filter(([kind]) => kind === "complete").length), phase === "complete" ? 1 : 0);
+        assert.equal(await page.evaluate(() => window.files.size), 0);
+        assert.equal(await page.evaluate(() => window.changes.length), 0);
+        assert.doesNotMatch(await page.locator("body").innerText(), /completion is uncertain/i);
+    });
 }
 
 async function startHeld(page) {

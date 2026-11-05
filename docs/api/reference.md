@@ -63,6 +63,13 @@ publication; COMMIT_UNKNOWN means refresh the destination before deciding to
 start again. Abort cannot roll back finalization. Handles are process-local,
 expire after 30 idle minutes/two hours total, and become unavailable on restart.
 An unavailable handle is not proof that publication did not happen.
+`BUSY` with status 503 is a pre-admission rejection and includes
+`Retry-After: 1`; `ApiError.retryAfterMs` preserves numeric delay headers.
+Bounded retry of the same operation is safe only for that explicit denial,
+including completion before publication was admitted. The Workspace pane
+allows five cancellable backoffs with jitter, never a server-side queue.
+Do not automatically retry `IN_PROGRESS`, `COMMIT_UNKNOWN`, network failures,
+or untyped proxy errors as if they were admission denials.
 
 Legacy file writes remain compatible; a failed binary upload never silently
 falls back to a large JSON body. Existing reads/previews/downloads remain

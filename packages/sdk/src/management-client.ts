@@ -929,28 +929,31 @@ export class PilotSwarmManagementClient {
     }
 
     async stop(): Promise<void> {
-        await this._releaseWorkspaceTransfers?.();
-        this._workspaceTransfers = undefined;
-        this._releaseWorkspaceTransfers = undefined;
-        for (const controller of [...this._activeStatusWaitControllers]) {
-            controller.abort(createAbortError("PilotSwarmManagementClient stopped"));
-        }
-        await Promise.allSettled([...this._activeStatusWaitPromises]);
+        try {
+            await this._releaseWorkspaceTransfers?.();
+            this._workspaceTransfers = undefined;
+            this._releaseWorkspaceTransfers = undefined;
+        } finally {
+            for (const controller of [...this._activeStatusWaitControllers]) {
+                controller.abort(createAbortError("PilotSwarmManagementClient stopped"));
+            }
+            await Promise.allSettled([...this._activeStatusWaitPromises]);
 
-        if (this._graphStore) {
-            try { await this._graphStore.close(); } catch {}
-            this._graphStore = null;
+            if (this._graphStore) {
+                try { await this._graphStore.close(); } catch {}
+                this._graphStore = null;
+            }
+            if (this._factStore) {
+                try { await this._factStore.close(); } catch {}
+                this._factStore = null;
+            }
+            if (this._catalog) {
+                try { await this._catalog.close(); } catch {}
+                this._catalog = null;
+            }
+            this._duroxideClient = null;
+            this._started = false;
         }
-        if (this._factStore) {
-            try { await this._factStore.close(); } catch {}
-            this._factStore = null;
-        }
-        if (this._catalog) {
-            try { await this._catalog.close(); } catch {}
-            this._catalog = null;
-        }
-        this._duroxideClient = null;
-        this._started = false;
     }
 
     private async _readJsonValue<T>(sessionId: string, key: string): Promise<T | null> {
@@ -2053,7 +2056,7 @@ export class PilotSwarmManagementClient {
         return coordinator.status(await this._workspaceTransferContext(sessionId, coordinator.folder(sessionId, uploadId), actor), uploadId);
     }
 
-    async putSessionWorkspaceUploadPart(sessionId: string, uploadId: string, part: number, bytes: Uint8Array | (() => Promise<Uint8Array>), options: { signal?: AbortSignal; actor?: { provider: string; subject: string } | null } = {}): Promise<{ part: number; bytes: number; sha256: string }> {
+    async putSessionWorkspaceUploadPart(sessionId: string, uploadId: string, part: number, bytes: Uint8Array | ((expectedBytes: number) => Promise<Uint8Array>), options: { signal?: AbortSignal; actor?: { provider: string; subject: string } | null } = {}): Promise<{ part: number; bytes: number; sha256: string }> {
         const coordinator = this._getWorkspaceTransfers();
         return coordinator.put(await this._workspaceTransferContext(sessionId, coordinator.folder(sessionId, uploadId), options.actor), uploadId, part, bytes, options.signal);
     }
