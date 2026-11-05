@@ -26,7 +26,7 @@ jobs:
       AZURE_CORE_OUTPUT: none
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Select immutable release source when requested
@@ -61,12 +61,12 @@ jobs:
             echo "Deploying published release $RELEASE_TAG at $(git rev-parse HEAD)"
           fi
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.22.1"
           cache: npm
       - name: Azure login with OIDC
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
