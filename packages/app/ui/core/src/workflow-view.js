@@ -329,14 +329,17 @@ export function workflowViewSnapshotEqual(a, b) {
  * - `loading`: the live run was chosen and its read has not come back (a read of another run may still be held);
  * - `none`: the read came back, and there is no live run (a draft with only test runs);
  * - `failed`: the read failed (`error`);
- * - `all`: a version 1 workflow, or nothing known yet about its runs (its log is not filtered).
- * In `loading`, `none` and `failed` the log shows only the session's own notices, never any run's entries. Pure.
+ * - `all`: a version 1 workflow (its definition is known and is not v2), or nothing at all known yet about the workflow
+ *   (its log is not filtered).
+ * A known v2 definition makes the log a v2 one from the first open (re-check RC-2): before its first read comes back it
+ * is `loading`, never `all`. In `loading`, `none` and `failed` the log shows only the session's own notices, never any
+ * run's entries. Pure.
  */
 export function workflowStepLogScope(view) {
     if (!view || typeof view !== "object") return { kind: "all" };
     if (view.definition != null && view.definition.shape !== "v2") return { kind: "all" };
     if (typeof view.selectedRunId === "string" && view.selectedRunId) return { kind: "run", runId: view.selectedRunId };
-    const v2 = view.readModel != null || view.readModelAttempt != null || Object.hasOwn(view, "selectedRunId");
+    const v2 = view.definition?.shape === "v2" || view.readModel != null || view.readModelAttempt != null || Object.hasOwn(view, "selectedRunId");
     if (!v2) return { kind: "all" };
     const read = workflowReadModelView(view);
     if (read.readModel) {

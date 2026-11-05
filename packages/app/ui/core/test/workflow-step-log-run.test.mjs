@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildHistoryModel } from "../src/history.js";
-import { workflowStepLogHistory, workflowStepLogRunId, workflowStepLogScope } from "../src/workflow-view.js";
+import { workflowDefinition, workflowStepLogHistory, workflowStepLogRunId, workflowStepLogScope } from "../src/workflow-view.js";
 
 const SID = "wf-log";
 let seq = 0;
@@ -84,4 +84,27 @@ test("R2-UI-3: switching to the live run never shows another run's entries: load
     assert.deepEqual(workflowStepLogScope({ definition: { states: [] } }), { kind: "all" });
     assert.deepEqual(workflowStepLogScope({}), { kind: "all" });
     assert.equal(workflowStepLogHistory(history, { kind: "all" }), history);
+});
+
+// Re-check RC-2: the first open of a v2 workflow whose history already holds test runs. The definition comes from its start
+// event before the first read of the run comes back (the controller dispatches it first, then the read): the log is a v2
+// one from that moment, so it shows no test run's entries under the live run while it waits.
+test("RC-2: a first open with a known v2 definition and its first read on its way shows no run's entries", () => {
+    const history = buildHistoryModel([...runEvents("test-a", "{\"v\":\"a\"}"), event("workflow.recovered", { action: "none" })]);
+    const definition = workflowDefinition({ irSha256: "f".repeat(64), name: "w", version: "1.0.0", initial: "work",
+        states: [{ id: "work", type: "script", runtime: "node", outcomes: ["ok"], next: { ok: "done" } }, { id: "done", type: "terminal", outcome: "succeeded" }] });
+    assert.equal(definition.shape, "v2");
+    // As the controller sets it at the first open: the definition, nothing read yet, no run chosen.
+    const first = { definition, loading: false, error: null };
+    assert.deepEqual(workflowStepLogScope(first), { kind: "loading" });
+    const shown = workflowStepLogHistory(history, workflowStepLogScope(first));
+    assert.deepEqual(shown.chat.filter(item => item.workflowRunId), []);
+    assert.deepEqual(shown.chat.filter(item => item.workflowStepLogNotice).map(item => item.text), ["Loading the live run's log…"]);
+    // The read comes back with no live run: none; with a live run: only its entries.
+    assert.deepEqual(workflowStepLogScope({ ...first, readModel: { run: null, runs: [{ runId: "test-a" }] }, readModelRunId: null }), { kind: "none" });
+    assert.deepEqual(workflowStepLogScope({ ...first, readModel: { run: { runId: "live-1" }, runs: [] }, readModelRunId: null }), { kind: "run", runId: "live-1" });
+    // A version 1 definition is still not filtered.
+    const legacy = workflowDefinition({ name: "w", version: "1", initial: "a", states: [{ id: "a", type: "script", next: { ok: "b" } }, { id: "b", type: "terminal" }] });
+    assert.notEqual(legacy.shape, "v2");
+    assert.deepEqual(workflowStepLogScope({ definition: legacy }), { kind: "all" });
 });

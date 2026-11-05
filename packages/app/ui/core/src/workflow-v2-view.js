@@ -619,8 +619,27 @@ function mergeExecution(prev, next) {
     return { ...merged, status: completed ? "completed" : "pending" };
 }
 
+/**
+ * A branch's scope ("<the parallel visit's node execution>#<index>", as the runtime names it) as the read model's `branch`
+ * ({ parallelNodeExecutionId, index }); undefined for the root or anything else. Pure.
+ */
+function branchOfScope(scopeId) {
+    if (typeof scopeId !== "string") return undefined;
+    const at = scopeId.lastIndexOf("#");
+    const digits = at > 0 ? scopeId.slice(at + 1) : "";
+    if (!/^\d{1,6}$/.test(digits)) return undefined;
+    return { parallelNodeExecutionId: scopeId.slice(0, at), index: Number(digits) };
+}
+
+/**
+ * A visit as a state event tells it. Re-check RC-3: an event that names its scope keeps it, and a branch scope gives the
+ * visit its branch as a read row would, so a visit known only from live events is grouped with its own branch; a
+ * completion that names none takes its start's (they are one visit: collectExecutions merges them by node execution).
+ */
 function executionFromEvent(type, data) {
-    const base = { id: data.nodeExecutionId, stateId: data.stateId, ordinal: Number.isSafeInteger(data.step) ? data.step : undefined };
+    const scopeId = text(data.scopeId);
+    const base = { id: data.nodeExecutionId, stateId: data.stateId, ordinal: Number.isSafeInteger(data.step) ? data.step : undefined,
+        scopeId, branch: branchOfScope(scopeId) };
     if (type === "workflow.state_started") {
         return { ...base, status: "pending", catchAll: data.catchAll === true ? true : undefined, immediateOutcome: text(data.immediateOutcome) };
     }

@@ -3,13 +3,13 @@
  * visit), never across branches. The graph says a branch step's state from its branches in the parallel step's shown
  * visit (running while any of them runs it), and never takes another branch's later visit number as a reason to call a
  * running visit stale. The step log keys a poll summary by run, scope and step, so two branches' visits of one loop are
- * never merged or dropped.
+ * never merged or dropped; while both run, one branch's start or end never ends the other's summary (re-check RC-4).
  *
  * Run: node --test test/workflow-v2-branch-scopes.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildHistoryModel } from "../src/history.js";
+import { appendEventToHistory, buildHistoryModel } from "../src/history.js";
 import { projectWorkflowV2, workflowV2VisitScope } from "../src/workflow-v2-view.js";
 import { done, readModel, row } from "./workflow-v2-fixtures.mjs";
 
@@ -64,6 +64,39 @@ test("a second visit of the parallel step: its branches decide the step, not the
     assert.deepEqual(poll.branches.choices.map(choice => choice.execution.id), ["nx-poll-b-1"], "the picker is of the shown visit");
 });
 
+// Re-check RC-3: a visit known only from live events (the next read is late or failed) keeps the branch its start names,
+// as a read row would, and its completion (which names none) is the same visit; so a branch that started after the read
+// is not taken for the root, and the step runs while it runs.
+test("RC-3: a branch visit known only from its live start keeps its branch: the step runs while it runs; its end is the same visit", () => {
+    const rows = [row("fan", 1, "pending", { nodeExecutionId: "nx-fan-1", branches: 2 })];
+    for (let visit = 1; visit <= 5; visit++) {
+        rows.push(done("poll", visit, visit === 5 ? "changed" : "unchanged", { nodeExecutionId: `nx-poll-b0-${visit}`, ...branch("nx-fan-1", 0) }));
+    }
+    const run = "run-1";
+    const begin = { eventType: "workflow.state_started", data: { runId: run, nodeExecutionId: "nx-poll-b1-1", stateId: "poll", scopeId: "nx-fan-1#1",
+        ordinal: 1, type: "script", step: 1, kvRevision: 1 } };
+    const model = readModel({ graph, nodeExecutions: rows });
+    let poll = byId(projectWorkflowV2({ readModel: model, events: [begin] }), "poll");
+    assert.equal(poll.state, "running", JSON.stringify([poll.state, poll.stateLabel]));
+    assert.equal(poll.pending?.id, "nx-poll-b1-1");
+    assert.deepEqual(poll.pending?.branch, { parallelNodeExecutionId: "nx-fan-1", index: 1 });
+    assert.deepEqual(poll.branches.choices.map(choice => [choice.index, choice.status.stateLabel]), [[0, "Done · changed"], [1, "Running"]]);
+    // Its completion names no scope: it is the same visit, still branch 2's.
+    const end = { eventType: "workflow.state_completed", data: { runId: run, nodeExecutionId: "nx-poll-b1-1", stateId: "poll", step: 1, outcome: "unchanged",
+        resultKind: "business", outputPreview: "{}" } };
+    poll = byId(projectWorkflowV2({ readModel: model, events: [begin, end] }), "poll");
+    const visit = poll.executions.find(execution => execution.id === "nx-poll-b1-1");
+    assert.equal(visit.status, "completed");
+    assert.equal(workflowV2VisitScope(visit), "nx-fan-1#1");
+    assert.equal(poll.runs, 6);
+    // The root keeps its own scope; an odd scope is not taken for a branch.
+    const root = { eventType: "workflow.state_started", data: { runId: run, nodeExecutionId: "nx-x", stateId: "poll", scopeId: "root", step: 1 } };
+    const oddScope = { eventType: "workflow.state_started", data: { runId: run, nodeExecutionId: "nx-y", stateId: "poll", scopeId: "nx-fan-1#one", step: 1 } };
+    const odd = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [] }), events: [root, oddScope] }), "poll");
+    assert.equal(workflowV2VisitScope(odd.executions.find(execution => execution.id === "nx-x")), "root");
+    assert.equal(odd.executions.find(execution => execution.id === "nx-y").branch, undefined);
+});
+
 test("a visit's scope: its branch, else the scope it names, else the root", () => {
     assert.equal(workflowV2VisitScope({ branch: { parallelNodeExecutionId: "nx-f", index: 2 }, scopeId: "nx-f#2" }), "nx-f#2");
     assert.equal(workflowV2VisitScope({ branch: { parallelNodeExecutionId: "nx-f", index: 0 } }), "nx-f#0");
@@ -95,6 +128,44 @@ test("the step log keys a poll summary by run, scope and step: two branches' vis
     // One branch alone still compacts its loop: start and end of each visit are matched by its node execution.
     const single = buildHistoryModel([started(), begin(0, 1), complete(0, 1), begin(0, 2), complete(0, 2), begin(0, 3), complete(0, 3)]);
     assert.deepEqual(single.chat.filter(item => item.workflowProgress).map(item => item.workflowProgress.count), [3]);
+});
+
+// Re-check RC-4: while both branches run, a start or an end in one branch never finishes or splits the other's summary;
+// a completion that names no scope finds its branch by its visit's start; the run's end finishes every branch's summary.
+test("RC-4: each branch keeps its own summary while both are pending; the run's end finishes all of them", () => {
+    const groups = history => history.chat.filter(item => item.workflowProgress);
+    const byBranch = (history, scope) => groups(history).find(item => item.workflowProgress.scopeId === `nx-fan-1#${scope}`);
+    // Branch 0 checked once and checks again; then branch 1 starts its first check.
+    const events = [started(), begin(0, 1), complete(0, 1), begin(0, 2), begin(1, 1)];
+    let history = buildHistoryModel(events);
+    assert.equal(groups(history).length, 2, JSON.stringify(groups(history).map(item => item.workflowProgress)));
+    let zero = byBranch(history, 0);
+    assert.equal(zero.workflowProgress.pending, true, "branch 1's start does not end branch 0's summary");
+    assert.equal(zero.workflowProgress.count, 1);
+    assert.match(zero.text, /^\*\*poll\*\*: Checking · 1 check/);
+    assert.equal(byBranch(history, 1).workflowProgress.pending, true);
+    // Branch 0's second check ends (no scope named): it joins branch 0's summary, not branch 1's.
+    events.push(complete(0, 2));
+    history = buildHistoryModel(events);
+    zero = byBranch(history, 0);
+    assert.deepEqual(zero.workflowProgress.entries.map(entry => entry.outputPreview), ['{"b":0,"v":1}', '{"b":0,"v":2}']);
+    assert.equal(byBranch(history, 1).workflowProgress.pending, true, "and branch 1 still checks");
+    // Branch 1 leaves the loop: its own summary ends; branch 0's is untouched.
+    events.push(begin(0, 3), complete(1, 1, "changed"));
+    history = buildHistoryModel(events);
+    assert.equal(byBranch(history, 0).workflowProgress.pending, true);
+    assert.equal(byBranch(history, 1), undefined, "branch 1's start-only summary is replaced by its own line");
+    // The run is stopped: every summary of it still checking ends.
+    events.push(event("workflow.stopped", { runId: "run-a", reason: "enough" }));
+    history = buildHistoryModel(events);
+    zero = byBranch(history, 0);
+    assert.equal(zero.workflowProgress.pending, false);
+    assert.equal(zero.workflowProgress.waiting, false);
+    assert.match(zero.text, /Polling ended/);
+    assert.ok(groups(history).every(item => !item.workflowProgress.pending && !item.workflowProgress.waiting));
+    // Live appends give the same transcript as a whole build.
+    const live = events.reduce(appendEventToHistory, buildHistoryModel());
+    assert.deepEqual(groups(live).map(item => item.text), groups(history).map(item => item.text));
 });
 
 // Adversarial review R2-UI-7: with more executions than one read returns, the branch box does not call branches it has
