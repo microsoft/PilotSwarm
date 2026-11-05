@@ -423,3 +423,73 @@ test("a form whose run the view no longer shows sends nothing; Esc goes back; an
     assert.equal(statusOf(plain.store), before);
     assert.deepEqual(plain.sent(), []);
 });
+
+// Re-check UI-RC3-2: an answer belongs to the edit it was sent from (the form's generation), not to its text. A removal is
+// confirmed and in flight; the person types into Remove and takes it back meanwhile, to the text it had when sent. The
+// answer keeps that newer edit and says the earlier change was saved; Keep and Load are newer edits too, moving is not.
+test("UI-RC3-2: a batch edit that comes back to the same text while its removal is in flight is kept, and the form says the earlier change was saved", async () => {
+    const pending = [];
+    const later = () => new Promise(resolve => pending.push(() => resolve({ kvRevision: 4 })));
+    const h = await opened(model(), [later]);
+    const view = modalOf(h.store);
+    await open(h);
+    assert.equal(modalOf(h.store).generation, 0);
+    h.controller.editWorkflowVariableBatchField({ type: "switch" });
+    assert.equal(modalOf(h.store).generation, 0, "switching fields is not an edit");
+    type(h, '["a"]');
+    assert.equal(modalOf(h.store).generation, 1);
+    await send(h);
+    assert.equal(modalOf(h.store).type, "confirm");
+    const removing = h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    assert.equal(pending.length, 1, "precondition: the removal is in flight");
+    assert.equal(modalOf(h.store).type, "workflowVariableBatch", "precondition: the confirm went back to the form");
+    // Remove, edited meanwhile and taken back: the same text again, at a newer edit. Moving the cursor is not an edit.
+    h.controller.editWorkflowVariableBatchField({ type: "edge", edge: "end" });
+    assert.equal(modalOf(h.store).generation, 1);
+    type(h, " ");
+    assert.deepEqual([modalOf(h.store).remove, modalOf(h.store).generation], ['["a"] ', 2]);
+    h.controller.editWorkflowVariableBatchField({ type: "backspace" });
+    assert.deepEqual([modalOf(h.store).set, modalOf(h.store).remove, modalOf(h.store).generation], ["", '["a"]', 3]);
+    pending.shift()();
+    await removing;
+    await settle();
+    let modal = modalOf(h.store);
+    assert.equal(modal.type, "workflowVariableBatch", "the form stays open with the newer edit");
+    assert.deepEqual([modal.set, modal.remove, modal.generation], ["", '["a"]', 3]);
+    assert.equal(statusOf(h.store), "Your earlier change was saved. Your newer edit is kept; it is not saved yet.");
+    assert.ok(joined(batch(h.store).lines).includes("Your earlier change was saved. Your newer edit is kept; it is not saved yet."));
+    assert.equal(h.sent().length, 1);
+    // A set sent from this edit, accepted, closes the form as before.
+    h.controller.editWorkflowVariableBatchField({ type: "backspace" });
+    h.controller.editWorkflowVariableBatchField({ type: "backspace" });
+    h.controller.editWorkflowVariableBatchField({ type: "backspace" });
+    h.controller.editWorkflowVariableBatchField({ type: "backspace" });
+    h.controller.editWorkflowVariableBatchField({ type: "backspace" });
+    h.controller.editWorkflowVariableBatchField({ type: "switch" });
+    type(h, '{"a": 7}');
+    modal = modalOf(h.store);
+    assert.deepEqual([modal.set, modal.remove, modal.generation], ['{"a": 7}', "", 9]);
+    await send(h);
+    assert.deepEqual(withoutId(h.sent()[1]), { operation: "set_vars", run_id: RUN, set: { a: 7 }, expected_kv_revision: 3 });
+    assert.deepEqual(modalOf(h.store), view, "accepted: back to the workflow view");
+    await settle();
+
+    // Keep (ctrl-k) and Load (ctrl-l, which starts over) each make a newer edit. The workflow is read at the newer revisions
+    // too, so a read that lands late shows the same.
+    await open(h);
+    type(h, '{"b": 1}');
+    const typed = modalOf(h.store).generation;
+    assert.equal(typed, 1);
+    const refresh = revision => {
+        const next = model({ vars: { a: revision, "b c": "x" }, revision });
+        h.serve(next);
+        h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: next, readModelRunId: null } });
+    };
+    refresh(5);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP);
+    assert.deepEqual([modalOf(h.store).baseRevision, modalOf(h.store).generation], [5, typed + 1]);
+    refresh(6);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD);
+    assert.deepEqual([modalOf(h.store).baseRevision, modalOf(h.store).set, modalOf(h.store).generation], [6, "", typed + 2]);
+});

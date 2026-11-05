@@ -424,6 +424,69 @@ test("UI-RC2-6: a late accepted save keeps a newer edit and says so; after the f
     assert.equal(h.sent().length, 2);
 });
 
+// Re-check UI-RC3-2: an answer belongs to the edit it was sent from (the form's generation), not to its text. A removal is
+// confirmed and in flight; the person edits the value 1 -> 12 -> 1 meanwhile, the text it had when sent. The answer keeps
+// that newer edit and says the removal was saved; copying, Keep and Load are newer edits too, moving the cursor is not.
+test("UI-RC3-2: an edit that comes back to the same text while a removal is in flight is kept, and the form says the earlier change was saved", async () => {
+    const pending = [];
+    const later = () => new Promise(resolve => pending.push(() => resolve({ kvRevision: 4 })));
+    const h = await opened(model(), [later]);
+    const view = h.store.getState().ui.modal;
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    assert.equal(h.store.getState().ui.modal.generation, 0);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    let modal = h.store.getState().ui.modal;
+    assert.deepEqual([modal.name, modal.value, modal.generation], ["a", "1", 1], "copying a listed variable is an edit");
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_REMOVE);
+    assert.equal(h.store.getState().ui.modal.type, "confirm");
+    const removing = h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    assert.equal(pending.length, 1, "precondition: the removal is in flight");
+    assert.equal(h.store.getState().ui.modal.type, "workflowVariable", "precondition: the confirm went back to the form");
+    // The value, edited meanwhile: 1 -> 12 -> 1. Moving the cursor and switching fields are not edits.
+    h.controller.switchWorkflowVariableField();
+    h.controller.moveWorkflowVariableCursorToBoundary("end");
+    assert.equal(h.store.getState().ui.modal.generation, 1);
+    type(h, "2");
+    assert.deepEqual([h.store.getState().ui.modal.value, h.store.getState().ui.modal.generation], ["12", 2]);
+    h.controller.deleteWorkflowVariableChar();
+    modal = h.store.getState().ui.modal;
+    assert.deepEqual([modal.name, modal.value, modal.generation], ["a", "1", 3], "the same text again, at a newer edit");
+    pending.shift()();
+    await removing;
+    await settle();
+    modal = h.store.getState().ui.modal;
+    assert.equal(modal.type, "workflowVariable", "the form stays open with the newer edit");
+    assert.deepEqual([modal.name, modal.value, modal.generation], ["a", "1", 3]);
+    assert.equal(statusOf(h.store), "Your earlier change was saved. Your newer edit is kept; it is not saved yet.");
+    assert.ok(joined(form(h.store).lines).includes("Your earlier change was saved. Your newer edit is kept; it is not saved yet."));
+    assert.equal(h.sent().length, 1);
+    // That kept edit, sent at its own edit, closes the form when accepted, as before.
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    const { operation_id: _id, ...wire } = h.sent()[1];
+    assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, set: { a: 1 }, expected_kv_revision: 3 });
+    assert.deepEqual(h.store.getState().ui.modal, view, "accepted: back to the workflow view");
+    await settle();
+
+    // Keep (ctrl-k) and Load (ctrl-l) each make a newer edit. The workflow is read at the newer revisions too, so a read
+    // that lands late shows the same.
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    type(h, "a");
+    const typed = h.store.getState().ui.modal.generation;
+    assert.equal(typed, 1);
+    const refresh = revision => {
+        const next = model({ vars: { a: revision, "b c": "x" }, revision });
+        h.serve(next);
+        h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: next, readModelRunId: null } });
+    };
+    refresh(5);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP);
+    assert.deepEqual([h.store.getState().ui.modal.baseRevision, h.store.getState().ui.modal.generation], [5, typed + 1]);
+    refresh(6);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_RELOAD);
+    assert.deepEqual([h.store.getState().ui.modal.baseRevision, h.store.getState().ui.modal.value, h.store.getState().ui.modal.generation], [6, "6", typed + 2]);
+});
+
 test("a form whose run the view no longer shows sends nothing; Esc goes back to the view", async () => {
     const h = await opened(model());
     const view = h.store.getState().ui.modal;
