@@ -20,7 +20,9 @@ import { canonicalJson, jsonbSafeText, type JsonValue } from "./json.js";
  * It never adds or removes anything else, so a message without secrets is unchanged. Pure.
  *
  * Text is redacted whole before it is clipped (redactThenClip, redactErrorThenClip; R3-SF-2), so a cut never keeps part of
- * a secret; the clipped-credential rules are for text that was clipped before (rows and events stored earlier).
+ * a secret; the clipped-credential rules are for text that was clipped before (rows and events stored earlier). A process
+ * output tail that was cut at its front (a script's stderr) loses its partial first line before it is redacted
+ * (workflowOutputTail; S7-DX).
  */
 
 // Bounded on both sides, so a long run of word characters costs linear time (no catastrophic backtracking).
@@ -74,6 +76,18 @@ export function redactWorkflowSecrets(text: string): string {
 }
 
 const SECRET_NAME_EXACT = new RegExp(`^(?:${SECRET_NAME})$`, "i");
+
+/**
+ * The kept tail of a process's output, made safe to redact (S7-DX stderr guard): when the tail was cut at its front
+ * (`cutAtFront`), its first line is only the end of a line, which can hold the value of a secret whose name was cut off and
+ * that no rule can recognize. That partial line is dropped, and "…" marks the cut; output kept whole is returned as it is.
+ * Redact the result (redactWorkflowSecrets) before it is stored or shown.
+ */
+export function workflowOutputTail(text: string, cutAtFront: boolean): string {
+    if (!cutAtFront || typeof text !== "string") return text;
+    const newline = text.indexOf("\n");
+    return newline < 0 ? "…" : `…${text.slice(newline)}`;
+}
 
 /** `text` with its secrets hidden, then cut to `max` characters (jsonbSafeText): no part of a secret survives the cut (R3-SF-2). */
 export function redactThenClip(text: string, max: number): string {

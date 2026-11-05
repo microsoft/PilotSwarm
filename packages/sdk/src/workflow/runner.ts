@@ -82,6 +82,8 @@ export interface RunScriptNodeResult {
     durationMs: number;
     stdoutTail: string;
     stderrTail: string;
+    /** The script wrote more stderr than is kept, so stderrTail lost its front (it may begin inside a line). Absent: kept whole. */
+    stderrCut?: boolean;
     toolCalls: ScriptToolCallRecord[];
     /** Why the reported result is not plain JSON (resultSource "invalid"). */
     problem?: string;
@@ -303,9 +305,11 @@ function defaultExecutable(runtime: ScriptRuntime): string {
 class StreamTail {
     private chunks: Buffer[] = [];
     private size = 0;
+    private total = 0;
     push(chunk: Buffer): void {
         this.chunks.push(chunk);
         this.size += chunk.length;
+        this.total += chunk.length;
         while (this.size > STREAM_TAIL_BYTES && this.chunks.length > 1) {
             this.size -= this.chunks.shift()!.length;
         }
@@ -313,6 +317,10 @@ class StreamTail {
     text(): string {
         const all = Buffer.concat(this.chunks);
         return all.subarray(Math.max(0, all.length - STREAM_TAIL_BYTES)).toString("utf8");
+    }
+    /** Whether more was written than text() keeps, so its text lost its front. */
+    get cut(): boolean {
+        return this.total > STREAM_TAIL_BYTES;
     }
 }
 
@@ -657,6 +665,7 @@ export async function runScriptNode(
             durationMs: Date.now() - startedAt,
             stdoutTail,
             stderrTail,
+            ...(stderr.cut ? { stderrCut: true } : {}),
             toolCalls,
         };
         if (cancelled) {

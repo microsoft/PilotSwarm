@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets,
+    workflowOutputTail,
 } from "../../dist/workflow/v2/redact.js";
 import { canonicalJson } from "../../dist/workflow/v2/json.js";
 import { sanitizeWorkflowErrorText, workflowAdapterFailure, workflowStoreFailure } from "../../dist/workflow/v2/failure.js";
@@ -399,4 +400,21 @@ test("R2-SF-4: a problem's message names no value of a const or an enum; its oth
     assert.deepEqual(problems.map(problem => problem.message), ["must be equal to constant", "must be equal to one of the allowed values"]);
     assert.ok(!JSON.stringify(problems).includes(SENTINEL));
     assert.deepEqual(set.validate("N", 1).map(problem => problem.message), ["must be >= 3 {\"comparison\":\">=\",\"limit\":3}"]);
+});
+
+// S7-DX stderr guard: a process output tail cut at its front begins inside a line, so a secret's value can be there without
+// its name and no rule recognizes it. Its partial first line is dropped before redaction, and "…" marks the cut.
+test("S7-DX: a process output tail cut at its front loses its partial first line before redaction", () => {
+    const whole = `Error: boom\ntoken=${SENTINEL}\n`;
+    assert.equal(workflowOutputTail(whole, false), whole, "output kept whole is unchanged");
+    // The kept tail begins inside "token=<value>": only the value is left, with nothing that names it.
+    const tail = `${SENTINEL}abcdef0123456789\nError: boom\n    at main (script.mjs:3:9)\n`;
+    assert.equal(redactWorkflowSecrets(tail).includes(SENTINEL), true, "precondition: no rule recognizes a bare value");
+    const guarded = workflowOutputTail(tail, true);
+    assert.equal(guarded, "…\nError: boom\n    at main (script.mjs:3:9)\n");
+    assert.equal(redactWorkflowSecrets(guarded).includes(SENTINEL), false);
+    // One line only, cut: nothing of it is kept.
+    assert.equal(workflowOutputTail(`${SENTINEL}${"x".repeat(100)}`, true), "…");
+    // A tail cut right at a line's start loses nothing but that empty part.
+    assert.equal(workflowOutputTail("\nnext line", true), "…\nnext line");
 });

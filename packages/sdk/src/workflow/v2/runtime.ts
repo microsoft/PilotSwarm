@@ -7,7 +7,7 @@ import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../activities.js";
 import { admittedWorkflowToolGrant, validateWorkflowToolArguments, type WorkflowToolBinding } from "../tool-policy.js";
 import type { WorkflowToolExecutor } from "../tool-executor.js";
 import { bindingWithDefaultShown, evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
-import { redactErrorThenClip, redactThenClip, redactWorkflowSecrets } from "./redact.js";
+import { redactErrorThenClip, redactThenClip, redactWorkflowSecrets, workflowOutputTail } from "./redact.js";
 import { TYPED_INPUT_REFUSALS } from "./authority.js";
 import {
     FAILURE_ROUTE,
@@ -5052,7 +5052,8 @@ function scriptResult(node: WorkflowIRScript, run: WorkflowRunRow, ir: WorkflowI
     }
     if (result.resultSource === "exit" && result.exitCode !== 0) {
         return runtimeError("execution_failed", `The script exited with code ${String(result.exitCode)}.`,
-            { exitCode: result.exitCode, stderr: jsonbSafeText(redactWorkflowSecrets(result.stderrTail).trim().slice(-4_096)) });
+            // S7-DX: a stderr tail cut at its front loses its partial first line before it is redacted (workflowOutputTail).
+            { exitCode: result.exitCode, stderr: jsonbSafeText(redactWorkflowSecrets(workflowOutputTail(result.stderrTail, result.stderrCut === true)).trim().slice(-4_096)) });
     }
     if (!node.outcomes.includes(result.outcome)) {
         return runtimeError("invalid_output", `The script reported undeclared outcome '${redactThenClip(result.outcome, 100)}' (declared: ${node.outcomes.join(", ")}).`);

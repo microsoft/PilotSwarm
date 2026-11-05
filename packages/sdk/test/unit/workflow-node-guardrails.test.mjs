@@ -63,3 +63,18 @@ test("the documented previous-output binding works and bare input fails explicit
     assert.equal(bad.resultSource, "exit");
     assert.match(bad.stderrTail, /ReferenceError: input is not defined/);
 });
+
+// S7-DX stderr guard: the runner keeps the last 16 KiB of a script's stderr, and says when it kept less than was written,
+// so a reader that redacts the tail knows its first line may be only the end of a line.
+test("the runner says when it kept only the end of a script's stderr", async () => {
+    const small = await runScriptNode(request("process.stderr.write('short line\\n'); process.exit(2);"));
+    assert.equal(small.exitCode, 2);
+    assert.equal(Object.hasOwn(small, "stderrCut"), false);
+    const large = await runScriptNode(request(
+        "process.stderr.write('token=' + 'x'.repeat(20000) + '\\nlast line\\n', () => process.exit(2));"));
+    assert.equal(large.exitCode, 2);
+    assert.equal(large.stderrCut, true);
+    assert.ok(large.stderrTail.length <= 16 * 1024, String(large.stderrTail.length));
+    assert.ok(!large.stderrTail.includes("token="), "the line's start is gone: the tail begins inside the long line");
+    assert.match(large.stderrTail, /last line\n$/);
+});
