@@ -500,8 +500,8 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
         "data-execution": execution.id, "aria-pressed": shown.chosen && shown.executionId === execution.id,
         // Re-check RC-6: the choice keeps the parallel visit and the branch it was made in; a later change of either ends it.
         onClick: () => {
-            onSelectExecution(execution.id, selected.branches || selected.where
-                ? { parallelExecutionId: selected.branches?.parallelExecutionId ?? null, branchIndex: branchChoice?.index ?? null } : undefined);
+            onSelectExecution(execution.id, typeof selected.parallel === "string"
+                ? { parallelExecutionId: selected.parallelVisitId ?? null, branchIndex: branchChoice?.index ?? null } : undefined);
             onTab?.("output");
         } }, "Result")) : null;
     const table = items => h("table", null,

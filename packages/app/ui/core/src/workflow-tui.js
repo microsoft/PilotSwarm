@@ -1476,7 +1476,7 @@ export function workflowViewExecutionStep(selection, delta) {
     if (typeof execution?.id !== "string" || !execution.id) return { ok: false, selection: null, status: "That visit has no identity in the loaded history" };
     // Re-check RC-6: a branch step's choice keeps the parallel visit current now; a new one ends it. RC-7: the status names
     // the visit's branch and parallel visit.
-    const bound = node.branches || node.where ? { parallelExecutionId: node.branches?.parallelExecutionId ?? null } : {};
+    const bound = typeof node.parallel === "string" ? { parallelExecutionId: node.parallelVisitId ?? null } : {};
     return { ok: true, selection: { runId, stateId: node.id, executionId: execution.id, ...bound },
         status: `Showing the result of visit ${Number.isSafeInteger(execution.ordinal) ? execution.ordinal : "—"}${visitPlace(node, execution)}` };
 }

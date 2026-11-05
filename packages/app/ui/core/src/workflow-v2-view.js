@@ -1018,6 +1018,8 @@ function nodeView(node, executions, context) {
         outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined), resultKind,
         result, pending: pending || null, current: pending || latestDone || null, executions: history,
         ...(notReachedView ? { notReached: notReachedView } : {}),
+        // Re-check UI-RC2-4: a branch step's parallel visit now, known also before a branch of it reaches the step.
+        ...(typeof node.parallel === "string" ? { parallelVisitId: typeof parallelVisit?.id === "string" ? parallelVisit.id : null } : {}),
         description: [...describeWorkflowV2Execution(node, pending || latestDone), ...branchProgressLines(node, pending || latestDone, context),
             ...(notReachedView ? [workflowV2NotReachedText(notReachedView)] : [])],
         ...(node.type === "parallel" ? { evidence: workflowV2BranchEvidence(context.executions, context.states, pending || latestDone, context.complete, node) } : {}),
@@ -1180,13 +1182,26 @@ export function compactWorkflowV2Executions(executions) {
 }
 
 /**
+ * Re-check UI-RC2-3: the History choice to keep when a person picks another branch of step `stateId` in Details: none, when
+ * the choice was for that step (so going back to its branch shows the branch's latest result, not the old choice); the
+ * same choice otherwise. Pure.
+ */
+export function workflowV2SelectionAfterBranchChange(selection, stateId) {
+    return isRecord(selection) && selection.stateId === stateId ? null : selection ?? null;
+}
+
+/**
  * Re-check RC-6: whether a saved History choice (`selection`) still applies to a branch step as it is shown now. A choice
- * records the parallel step's visit that was current (`parallelExecutionId`) and, in the portal, the branch chosen in
- * Details (`branchIndex`) when it was made; a new parallel visit, or another branch chosen in Details since, ends it, and
- * the step shows that branch's latest result again. A choice without these fields (made before them) is kept. Pure.
+ * records the parallel step's visit that was current (`parallelExecutionId`, the node view's `parallelVisitId`, known
+ * also while the step is not reached in it: re-check UI-RC2-4) and, in the portal, the branch chosen in Details
+ * (`branchIndex`) when it was made; a new parallel visit, or another branch chosen in Details since, ends it, and the step
+ * shows that branch's latest result again. A branch change in Details also clears the choice (re-check UI-RC2-3), so a
+ * round trip back to its branch does not bring it back. A choice without these fields (made before them) is kept. Pure.
  */
 function selectionStillApplies(node, selection, branch) {
-    if (Object.hasOwn(selection, "parallelExecutionId") && (selection.parallelExecutionId ?? null) !== (node?.branches?.parallelExecutionId ?? null)) return false;
+    // Re-check UI-RC2-4: compared with the parallel step's visit now, also while no branch of it has reached the step.
+    const parallelNow = node?.parallelVisitId !== undefined ? node.parallelVisitId : node?.branches?.parallelExecutionId ?? null;
+    if (Object.hasOwn(selection, "parallelExecutionId") && (selection.parallelExecutionId ?? null) !== (parallelNow ?? null)) return false;
     if (Object.hasOwn(selection, "branchIndex") && isRecord(branch) && Number.isSafeInteger(branch.index)
         && (selection.branchIndex ?? null) !== branch.index) return false;
     return true;

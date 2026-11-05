@@ -3,6 +3,7 @@ import { useControllerSelector } from "./use-controller-state.js";
 import { selectWorkflowViewSnapshot, workflowNodeViews, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
 import {
     projectWorkflowV2, workflowV2Activity, workflowV2BranchPickKey, workflowV2DraftInProgress, workflowV2NoticeBadge, workflowV2OpenCalls, workflowV2ShownNotices,
+    workflowV2SelectionAfterBranchChange,
 } from "../../core/src/workflow-v2-view.js";
 import {
     workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
@@ -349,7 +350,13 @@ export function WorkflowNodePane({ controller, log = null }) {
                     onLoadOlder: restart => { controller.loadOlderWorkflowHistory(sessionId, { restart }).catch(() => {}); },
                     // A branch step's details show the branch chosen by its picker (owner batch 7, H2).
                     branchIndex: branchPick?.key === workflowV2BranchPickKey(sessionId, v2?.runId ?? null, selected) ? branchPick.index : null,
-                    onBranch: index => setBranchPick({ key: workflowV2BranchPickKey(sessionId, v2?.runId ?? null, selected), index }),
+                    // Re-check UI-RC2-3: another branch ends a result chosen in History for this step, so coming back does not revive it.
+                    onBranch: index => {
+                        setBranchPick({ key: workflowV2BranchPickKey(sessionId, v2?.runId ?? null, selected), index });
+                        if (workflowV2SelectionAfterBranchChange(view.selectedExecution ?? null, selected.id) === null && view.selectedExecution) {
+                            controller.selectWorkflowExecution(sessionId, null);
+                        }
+                    },
                     // The variables the current visit applied and the accepted ones, compared on request (mock M15).
                     kv: v2?.bound && v2?.runId ? {
                         accepted: v2.readModel?.run?.kvRevision ?? null, snapshots: view.kvRevisions ?? null, compare: view.kvCompare ?? null,

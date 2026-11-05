@@ -10,7 +10,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { compactWorkflowV2Executions, projectWorkflowV2, workflowV2ShownExecution, workflowV2VisitPlaces } from "../src/workflow-v2-view.js";
+import {
+    compactWorkflowV2Executions, projectWorkflowV2, workflowV2SelectionAfterBranchChange, workflowV2ShownExecution, workflowV2VisitPlaces,
+} from "../src/workflow-v2-view.js";
 import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
 import { done, readModel, row } from "./workflow-v2-fixtures.mjs";
 
@@ -176,4 +178,72 @@ test("RC-6: a History choice ends when another branch is chosen in Details or a 
     button.props.onClick();
     assert.deepEqual(recorded, [["nx-prepare-b1", { parallelExecutionId: "nx-fan-1", branchIndex: 1 }]]);
     assert.deepEqual(tabs, ["output"]);
+});
+
+// Re-check UI-RC2-3: a branch change in Details clears a History choice made for the step, so a round trip back to its
+// branch shows that branch's latest result, not the old choice; a choice for another step is kept.
+test("UI-RC2-3: a branch round trip 1 -> 2 -> 1 does not bring back a History choice; Output and its whole value follow the branch", () => {
+    // Branch 1 has two visits of prepare; its first is chosen in History.
+    const rows = [
+        row("fan", 1, "pending", { nodeExecutionId: "nx-fan-1", branches: 2 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-b0-1", outputPreview: '{"v":"old"}', ...at("nx-fan-1", 0) }),
+        done("prepare", 2, "ready", { nodeExecutionId: "nx-prepare-b0-2", outputPreview: '{"v":"new"}', ...at("nx-fan-1", 0) }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-b1-1", outputPreview: '{"v":"b"}', ...at("nx-fan-1", 1) }),
+    ];
+    const node = prepare(rows);
+    let selection = { runId: "run-1", stateId: "prepare", executionId: "nx-prepare-b0-1", parallelExecutionId: "nx-fan-1", branchIndex: 0 };
+    assert.equal(workflowV2ShownExecution(node, "run-1", selection, node.branches.choices[0]).execution.id, "nx-prepare-b0-1");
+    // Branch 2 chosen: the choice is cleared.
+    selection = workflowV2SelectionAfterBranchChange(selection, "prepare");
+    assert.equal(selection, null);
+    // Back to branch 1: its latest result, and its whole value, not the old choice.
+    const back = plain(render(node, "output", { branchIndex: 0, selection, onReadWholeValue: () => {} }));
+    assert.ok(back.includes("Latest result of branch 1") && back.includes('"v": "new"') && !back.includes('"v": "old"'), back);
+    assert.match(back, /data-action="whole-value"[^>]*data-execution="nx-prepare-b0-2"/);
+    // A choice for another step is not cleared by this step's branch change.
+    const other = { runId: "run-1", stateId: "reviewed", executionId: "nx-x" };
+    assert.equal(workflowV2SelectionAfterBranchChange(other, "prepare"), other);
+    assert.equal(workflowV2SelectionAfterBranchChange(null, "prepare"), null);
+});
+
+// Re-check UI-RC2-4: a History choice made while the step is not reached in the parallel step's current visit is bound to
+// that visit (not to none): another visit that does not reach the step either ends it, and the step's first reach within
+// the same visit keeps it.
+test("UI-RC2-4: a choice made while the step is unreached binds to the current parallel visit, ends with another one, and survives the first reach", () => {
+    const visit1 = [
+        done("fan", 1, "joined", { nodeExecutionId: "nx-fan-1", branches: 1 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-1b0", ...at("nx-fan-1", 0) }),
+        done("reviewed", 1, "succeeded", { nodeExecutionId: "nx-reviewed-1b0", outputPreview: '{"who":"old"}', ...at("nx-fan-1", 0) }),
+    ];
+    const reviewedOf = list => projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: list }) }).nodes.find(node => node.id === "reviewed");
+    // Visit 2 runs, and has not reached reviewed: the choice of visit 1's result is bound to visit 2.
+    const unreached = reviewedOf([...visit1, row("fan", 2, "pending", { nodeExecutionId: "nx-fan-2", branches: 1 }),
+        row("prepare", 1, "pending", { nodeExecutionId: "nx-prepare-2b0", ...at("nx-fan-2", 0) })]);
+    assert.equal(unreached.branches, null);
+    assert.equal(unreached.parallelVisitId, "nx-fan-2");
+    const recorded = [];
+    const tree = WorkflowV2NodeContent({ tab: "history", selected: unreached, nodes: [], select: () => {}, runOutput: null, runError: null, runId: "run-1",
+        onSelectExecution: (id, bound) => recorded.push([id, bound]), onTab: () => {} });
+    const find = (element, match) => {
+        if (Array.isArray(element)) return element.map(item => find(item, match)).find(Boolean) ?? null;
+        if (!element || typeof element !== "object" || !element.props) return null;
+        if (match(element.props)) return element;
+        return find(element.props.children, match);
+    };
+    find(tree, props => props["data-action"] === "show-result" && props["data-execution"] === "nx-reviewed-1b0").props.onClick();
+    assert.deepEqual(recorded, [["nx-reviewed-1b0", { parallelExecutionId: "nx-fan-2", branchIndex: null }]]);
+    const selection = { runId: "run-1", stateId: "reviewed", executionId: "nx-reviewed-1b0", ...recorded[0][1] };
+    assert.equal(workflowV2ShownExecution(unreached, "run-1", selection).execution.id, "nx-reviewed-1b0");
+    // The first reach within visit 2: the choice stays.
+    const reached = reviewedOf([...visit1, row("fan", 2, "pending", { nodeExecutionId: "nx-fan-2", branches: 1 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-2b0", ...at("nx-fan-2", 0) }),
+        row("reviewed", 1, "pending", { nodeExecutionId: "nx-reviewed-2b0", ...at("nx-fan-2", 0) })]);
+    assert.equal(reached.parallelVisitId, "nx-fan-2");
+    assert.equal(workflowV2ShownExecution(reached, "run-1", selection, null).chosen, true);
+    // Visit 3, again not reaching reviewed: the choice ends.
+    const third = reviewedOf([...visit1, done("fan", 2, "joined", { nodeExecutionId: "nx-fan-2", branches: 1 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-2b0", ...at("nx-fan-2", 0) }),
+        row("fan", 3, "pending", { nodeExecutionId: "nx-fan-3", branches: 1 })]);
+    assert.equal(third.parallelVisitId, "nx-fan-3");
+    assert.equal(workflowV2ShownExecution(third, "run-1", selection).chosen, false);
 });
