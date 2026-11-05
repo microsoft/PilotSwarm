@@ -669,3 +669,114 @@ test("E1c-R2: a close after the native call returned and before its tasks were l
     assert.equal(f.running("other-bg"), true, "the other owner's task runs on");
     await second.close();
 });
+
+// Verification E1b-T3 and the case E1d left untested: a close whose own call does not end after its abort within the
+// cleanup deadline (10 s) does not report the call stopped. The share is quarantined (its barrier refuses new openings
+// and calls); when the call ends later, the task it started belongs to an owner already disposed and is cancelled at once;
+// nothing proves the native work stopped, so the barrier stays after the last owner's teardown, until a new worker
+// generation starts with no work of the earlier one pending.
+test("E1b-T3, E1d: a call that does not end after its abort quarantines the share; its late task is cancelled at once; the barrier stays until a new generation", async () => {
+    const held = gate();
+    const f = shareFixture();
+    const first = await f.open(1);
+    const second = await f.open(2);
+    const third = await f.open(3);
+    const calling = first.call("echo", { label: "stuck-bg", background: true, hold: held.opened });
+    calling.catch(() => undefined);
+    await until(() => f.calls.includes("execute:1:stuck-bg"), "the native call");
+    // Waiting for its turn behind the call that does not end.
+    const blocked = second.call("echo", { label: "blocked" });
+    blocked.catch(() => undefined);
+    const closedAt = Date.now();
+    await assert.rejects(first.close(), /Workflow tool cleanup timed out/);
+    assert.ok(Date.now() - closedAt >= 9_000, "the close waited for the call within its cleanup deadline");
+    assert.ok(f.calls.includes("abort:1"), "the call was aborted");
+    assert.equal(f.running("stuck-bg"), true, "the call is not reported stopped");
+    assert.equal(f.barrier()?.size, 1);
+    assert.match([...f.barrier()][0].error.message, /A workflow tool call did not end after it was aborted/);
+    await assert.rejects(f.open(4), /requires recovery: A workflow tool call did not end after it was aborted/);
+    // The call ends: its task is the closed owner's, and is cancelled at once; the waiting call is refused.
+    held.open();
+    await calling.catch(() => undefined);
+    await until(() => f.running("stuck-bg") === false, "the late task to be cancelled");
+    assert.ok(f.calls.includes("cancel-own:1"));
+    await assert.rejects(blocked, /requires recovery/);
+    assert.equal(f.calls.includes("execute:1:blocked"), false);
+    // The last owners close: the teardown runs, and the barrier stays.
+    await second.close();
+    await third.close();
+    assert.equal(f.owners(), 0);
+    assert.ok(f.calls.includes("disconnect:1"));
+    assert.equal(f.barrier()?.size, 1, "nothing proves the native work stopped");
+    await assert.rejects(f.open(5), /requires recovery/);
+    // A new worker generation: the earlier generation has no work pending, so its barrier is lifted.
+    await f.manager.shutdown();
+    f.manager.startWorkflowTools();
+    assert.equal(f.barrier(), null);
+    const next = await f.open(6);
+    assert.equal(await next.call("echo", { label: "after-restart" }), "done after-restart on 2");
+    await next.close();
+});
+
+// Verification E1b-T4: a task's owner by its start time, when no listing names it (listing fails): each call's window is
+// half open, [its start, its end). A task that starts exactly when one call ends and the next begins is the next call's
+// only; a task whose start time is coarse (rounded down to the second, before every window) or not a time is nobody's,
+// and is stopped only by the last owner's teardown. No owner's close stops another's task.
+test("E1b-T4: at a window's exact boundary a task is the next call's only; a coarse or invalid start time is nobody's until the teardown", async () => {
+    const realNow = Date.now;
+    const clock = { t: 1_000_000 };
+    Date.now = () => clock.t;
+    try {
+        const f = shareFixture({ listFails: true });
+        const first = await f.open(1);
+        const second = await f.open(2);
+        const third = await f.open(3);
+        // The first's call starts at 1,000,000 and ends at 1,002,000; its task starts with it.
+        const firstGate = gate();
+        const firstCall = first.call("echo", { label: "edge", background: true, hold: firstGate.opened });
+        await until(() => f.calls.includes("execute:1:edge"), "the first call");
+        clock.t = 1_002_000;
+        firstGate.open();
+        await firstCall;
+        // The second's call starts at 1,002,000 and moves that task's start to its own start, the first's end; it ends at
+        // 1,004,000.
+        const secondGate = gate();
+        const secondCall = second.call("echo", { label: "second", moveTask: "edge", hold: secondGate.opened });
+        await until(() => f.calls.includes("execute:1:second"), "the second call");
+        clock.t = 1_004_000;
+        secondGate.open();
+        await secondCall;
+        // The third's calls, at 1,004,500 (the clock stands still, so their own windows are empty): a task whose start
+        // time reads coarse (rounded down to the second, 1,004,000: after the second's window, which excludes its end) and
+        // one whose start time is not a time.
+        clock.t = 1_004_500;
+        await third.call("echo", { label: "coarse", background: true });
+        await third.call("echo", { label: "invalid", background: true });
+        const task = label => f.sessions.flatMap(session => session.tasks).find(item => item.label === label);
+        assert.equal(task("edge").startedAt, 1_002_000);
+        task("coarse").startedAt = new Date(Math.floor(1_004_500 / 1_000) * 1_000).toISOString();
+        task("invalid").startedAt = "not a time";
+        // The first's close: the task at its end is not its own.
+        await first.close();
+        assert.equal(task("edge").running, true, "the first call's window ends before the task's start");
+        // The second's close: the task at its start is its own, and is stopped while the third keeps the session.
+        await second.close();
+        assert.equal(task("edge").running, false, "the second call's window starts at the task's start");
+        assert.ok(f.calls.includes("cancel-own:1"));
+        assert.equal(f.calls.includes("cancel:1"), false, "no teardown yet");
+        assert.deepEqual([task("coarse").running, task("invalid").running], [true, true], "neither is anyone's by its start time");
+        // The third's close is the last: its teardown stops them.
+        await third.close();
+        assert.deepEqual([task("coarse").running, task("invalid").running], [false, false]);
+        assert.ok(f.calls.includes("cancel:1"));
+    } finally {
+        Date.now = realNow;
+    }
+});
+
+// Verification E1b-T9 (the defaults; the shortened deadlines' behavior is in E1-T2, E1b-T7 and E1-T5 above): a
+// workflow tool setup and its tool catalog check each have 60 s.
+test("E1b-T9: the setup and catalog check deadline is 60 s by default", () => {
+    const manager = new SessionManager(undefined, null, {});
+    assert.equal(manager.workflowToolSetupDeadlineMs, 60_000);
+});
