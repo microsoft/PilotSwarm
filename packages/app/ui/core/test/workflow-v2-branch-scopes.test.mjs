@@ -4,15 +4,17 @@
  * visit (running while any of them runs it), and never takes another branch's later visit number as a reason to call a
  * running visit stale. The step log keys a poll summary by run, scope and step, so two branches' visits of one loop are
  * never merged or dropped; while both run, one branch's start or end never ends the other's summary (re-check RC-4).
- * A visit's end known only from its event is ordered by the event's time among the ends a read gives (R3-UI-1).
+ * Ended visits are ordered by completedAt, the store's completion clock, from their rows or their end events, never by an
+ * event's own time (R3-UI-1 and its verification, S6-UI2).
  *
  * Run: node --test test/workflow-v2-branch-scopes.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { appendEventToHistory, buildHistoryModel } from "../src/history.js";
+import { PilotSwarmUiController, UI_COMMANDS, appReducer, createInitialState, createStore } from "../src/index.js";
 import { workflowSessionProjection } from "../src/workflow-tui.js";
-import { projectWorkflowV2, workflowV2BranchChoice, workflowV2ShownExecution, workflowV2VisitScope } from "../src/workflow-v2-view.js";
+import { projectWorkflowV2, workflowV2BranchChoice, workflowV2VisitScope } from "../src/workflow-v2-view.js";
 import { done, readModel, row } from "./workflow-v2-fixtures.mjs";
 
 const states = [
@@ -293,41 +295,95 @@ test("UI-RC2-5: in partial history a branch between steps is unknown, not runnin
     assert.deepEqual(whole.joinBar.group.counts, { running: 2, queued: 0, done: 1 });
 });
 
-// Adversarial review R3-UI-1: a visit's end known only from its event (the read that would list it is older) has the
-// event's time, so it is ordered among the ends the read gives, never below all of them. The step's result (the graph and
-// Output), the TUI's whole-value target (f) and the branch picker's default agree, before and after the read lists it.
-test("R3-UI-1: an end known only from its event is ordered by the event's time: the step's result, the TUI's f target and the default branch agree", () => {
-    const T0 = Date.UTC(2026, 10, 4, 12, 0, 0);
+const settle = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)); };
+
+/** The execution the TUI's f (its actual handler) reads for poll, with `model` read and `events` loaded; null when none. */
+async function tuiWholeValue(model, events) {
+    const reads = [];
+    const transport = {
+        getSessionEventsBefore: async () => [],
+        readWorkflow: async (sessionId, options) => {
+            if (!options?.executionId) return model;
+            reads.push(options.executionId);
+            return { workflowId: "wf-1", runId: options.runId, execution: { nodeExecutionId: options.executionId,
+                result: { kind: "output", bytes: 2, whole: true, value: {} } } };
+        },
+    };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: fan-loop", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel(events) });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model, readModelRunId: null } });
+    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    await settle();
+    store.dispatch({ type: "ui/modal", modal: { ...store.getState().ui.modal, selectedNodeId: "poll" } });
+    await controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_WHOLE_VALUE);
+    await settle();
+    return reads.at(-1) ?? null;
+}
+
+// Adversarial review R3-UI-1 and its verification (S6-UI2): a visit's end is ordered by its completedAt, the store's
+// completion clock read after the session lock, whether its read row or its end event gives it (every end event carries
+// its row's completed_at). An event's own time is its transaction's start, which is not the completion order, and is never
+// used: an end event from before that field is ordered by the old rules. The step's result (graph and Output), the TUI's
+// whole value (f, its actual handler) and the branch picker's default agree, with or without the events.
+test("R3-UI-1: ends are ordered by completedAt from rows or end events, never by an event's own time; result, TUI f and default branch agree", async () => {
+    const T0 = Date.UTC(2026, 10, 5, 0, 0, 0);
     const iso = seconds => new Date(T0 + seconds * 1000).toISOString();
     const fan = row("fan", 1, "pending", { nodeExecutionId: "nx-fan-1", branches: 2 });
-    const first = done("poll", 1, "changed", { nodeExecutionId: "nx-poll-b0-1", completedAt: iso(0), outputPreview: '{"b":0}', ...branch("nx-fan-1", 0) });
     const error = JSON.stringify({ code: "crashed", message: "exit code 1" });
-    const at = (eventType, seconds, data) => ({ sessionId: "wf", seq: 100 + seconds, eventType, createdAt: new Date(T0 + seconds * 1000),
-        data: { runId: "run-1", ...data } });
-    const events = [
-        at("workflow.state_started", 5, { nodeExecutionId: "nx-poll-b1-1", stateId: "poll", scopeId: "nx-fan-1#1", type: "script", step: 1 }),
-        at("workflow.state_failed", 6, { nodeExecutionId: "nx-poll-b1-1", stateId: "poll", step: 1, outcome: "crashed", error }),
+    /** Branch `index`'s visit `id` of poll as a read row, ended at `seconds` (a runtime error when `failed`). */
+    const ended = (id, index, seconds, failed = false) => (failed
+        ? row("poll", 1, "completed", { nodeExecutionId: id, outcome: "crashed", resultKind: "runtime_error", winner: "controller",
+            completedAt: typeof seconds === "string" ? seconds : iso(seconds), errorPreview: error, ...branch("nx-fan-1", index) })
+        : done("poll", 1, "changed", { nodeExecutionId: id, completedAt: typeof seconds === "string" ? seconds : iso(seconds), outputPreview: '{"v":1}',
+            ...branch("nx-fan-1", index) }));
+    /** Its start and end events: `begun`, the end's transaction start (the events' own time); `completedAt`, its row's (null: an event from before). */
+    const eventsOf = (id, index, begun, completedAt, failed = false) => [
+        { sessionId: "wf", seq: 100 + 2 * index, eventType: "workflow.state_started", createdAt: iso(begun - 1),
+            data: { runId: "run-1", nodeExecutionId: id, stateId: "poll", scopeId: `nx-fan-1#${index}`, type: "script", step: 1 } },
+        { sessionId: "wf", seq: 101 + 2 * index, eventType: failed ? "workflow.state_failed" : "workflow.state_completed", createdAt: iso(begun),
+            data: { runId: "run-1", nodeExecutionId: id, stateId: "poll", step: 1, outcome: failed ? "crashed" : "changed",
+                ...(failed ? { error } : { resultKind: "business", outputPreview: '{"v":1}' }),
+                ...(completedAt === null ? {} : { completedAt: typeof completedAt === "string" ? completedAt : iso(completedAt) }) } },
     ];
-    const agree = (projection, expected, label) => {
-        const poll = byId(projection, "poll");
+    const agree = async (rows, events, expected, label) => {
+        const model = readModel({ graph, nodeExecutions: [fan, ...rows] });
+        const poll = byId(projectWorkflowV2({ readModel: model, events }), "poll");
         assert.equal(poll.result?.id, expected, `${label}: the step's result`);
-        assert.equal(workflowV2ShownExecution(poll, "run-1", null).executionId, expected, `${label}: the TUI's f`);
         assert.equal(workflowV2BranchChoice(poll.branches).ended?.id, expected, `${label}: the default branch's Output`);
+        assert.equal(await tuiWholeValue(model, events), expected, `${label}: the TUI's f`);
         return poll;
     };
-    // The read lists branch 1's end only; branch 2 failed 6 s after it, as its events tell.
-    const stale = readModel({ graph, nodeExecutions: [fan, first] });
-    const poll = agree(projectWorkflowV2({ readModel: stale, events }), "nx-poll-b1-1", "stale read");
-    assert.deepEqual([poll.state, poll.outcome, poll.resultKind], ["failed", "crashed", "runtime_error"]);
-    // The TUI's projection of the same session says the same.
-    const tui = workflowSessionProjection({ events, view: { readModel: stale, readModelRunId: null } });
-    assert.equal(tui.nodes.find(node => node.id === "poll").result?.id, "nx-poll-b1-1");
-    // The read that lists branch 2's end arrives: the same result, with or without the events.
-    const second = row("poll", 1, "completed", { nodeExecutionId: "nx-poll-b1-1", outcome: "crashed", resultKind: "runtime_error", winner: "controller",
-        completedAt: iso(6), errorPreview: error, ...branch("nx-fan-1", 1) });
-    agree(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [fan, first, second] }), events }), "nx-poll-b1-1", "fresh read");
-    agree(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [fan, first, second] }) }), "nx-poll-b1-1", "fresh read, no events");
+
+    // The reviewer's stale mixed-source sequence: the read lists branch 1's end (00:00:03); branch 2 failed later
+    // (00:00:04) in a transaction that began earlier (its event's own time, 00:00:01). The later end is the result.
+    const staleEvents = eventsOf("new", 1, 1, 4, true);
+    let poll = await agree([ended("old", 0, 3)], staleEvents, "new", "stale read with the newer end's event");
+    assert.deepEqual([poll.state, poll.outcome], ["failed", "crashed"]);
+    assert.equal(workflowSessionProjection({ events: staleEvents, view: { readModel: readModel({ graph, nodeExecutions: [fan, ended("old", 0, 3)] }),
+        readModelRunId: null } }).nodes.find(node => node.id === "poll").result?.id, "new", "the TUI's projection");
+    await agree([ended("old", 0, 3), ended("new", 1, 4, true)], staleEvents, "new", "its row arrives, events kept");
+    await agree([ended("old", 0, 3), ended("new", 1, 4, true)], [], "new", "its row arrives, no events");
+
+    // The reviewer's identical final rows: the earlier commit's transaction began later (00:00:02) than the later
+    // commit's (00:00:01). With or without the events, the rows' completion times decide: the later commit.
+    const finalRows = [ended("earlier-commit", 0, 3), ended("later-commit", 1, 4)];
+    const finalEvents = [...eventsOf("later-commit", 1, 1, 4), ...eventsOf("earlier-commit", 0, 2, 3)];
+    await agree(finalRows, finalEvents, "later-commit", "identical final rows with events");
+    await agree(finalRows, [], "later-commit", "identical final rows without events");
+    await agree([finalRows[0]], eventsOf("later-commit", 1, 1, 4), "later-commit", "the later commit known only from its event");
+
     // An end the events tell is not the latest for that alone: a read end recorded after it stays the latest.
-    agree(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [fan, { ...first, completedAt: iso(10) }] }), events }), "nx-poll-b0-1",
-        "an older event");
+    await agree([ended("old", 0, 10)], eventsOf("new", 1, 5, 6, true), "old", "an older event");
+    // Times with another offset compare as instants: 16:00:03-08:00 is 00:00:03Z, after the read's 00:00:01Z.
+    await agree([ended("old", 0, 1)], eventsOf("new", 1, 0.5, "2026-11-04T16:00:03-08:00", true), "new", "an offset time");
+    // Equal end times: the old tie rules, whatever the events' own times (here both pick branch 2: the later listed, the
+    // higher branch).
+    await agree([ended("first", 0, 5), ended("second", 1, 5)], [...eventsOf("second", 1, 1, 5), ...eventsOf("first", 0, 4, 5)], "second", "equal times");
+    await agree([ended("first", 0, 5), ended("second", 1, 5)], [], "second", "equal times, no events");
+    // An end event from before completedAt was carried: its own time is never taken for the end, however late; the end the
+    // read gives a time stays the latest, as before.
+    await agree([ended("old", 0, 3)], eventsOf("new", 1, 100, null, true), "old", "an event without completedAt");
 });

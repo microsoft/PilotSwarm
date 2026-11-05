@@ -2018,6 +2018,7 @@ export class WorkflowStore {
         if (!projection) return;
         // SF-6: the secrets in an event's error fields are hidden before it is stored.
         const events = (projection.events ?? []).map(event => ({ eventType: event.eventType, data: jsonbSafeValue(redactWorkflowEventData(event.data)) }));
+        await this.withCompletedAt(client, events);
         if (events.length > 0) {
             await client.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [projection.sessionId, JSON.stringify(events), null]);
         }
@@ -2038,6 +2039,34 @@ export class WorkflowStore {
             if (Object.keys(updates).length > 0) {
                 await client.query(`SELECT ${this.t.updateSession}($1, $2)`, [projection.sessionId, JSON.stringify(updates)]);
             }
+        }
+    }
+
+    /**
+     * Adversarial review R3-UI-1 (S6-UI2): each state's end event (workflow.state_completed, workflow.state_failed) carries
+     * `completedAt`, its node's completed_at as stored in this transaction: the completion clock read after the session
+     * lock, which orders ends as the read model's rows do. The event's own time is its transaction's start, which is not
+     * that order, so a reader orders an end it knows only from its event by this field. Every writer of these events
+     * projects them here (completion, elapse, the parallel decision, cancellation, delivery, a test answer or advance), so
+     * none is missed; an event that gives its own, or whose node has no end recorded, is left as it is. In place.
+     */
+    private async withCompletedAt(client: PoolClient, events: Array<{ eventType: string; data: JsonValue }>): Promise<void> {
+        const ended: Array<{ event: { eventType: string; data: JsonValue }; data: { [key: string]: JsonValue }; id: string }> = [];
+        for (const event of events) {
+            if (event.eventType !== "workflow.state_completed" && event.eventType !== "workflow.state_failed") continue;
+            const data = event.data;
+            if (!isJsonObject(data) || typeof data.nodeExecutionId !== "string" || data.completedAt !== undefined) continue;
+            ended.push({ event, data, id: data.nodeExecutionId });
+        }
+        if (ended.length === 0) return;
+        const { rows } = await client.query(
+            `SELECT node_execution_id, completed_at FROM ${this.t.nodes} WHERE node_execution_id = ANY($1::text[]) AND completed_at IS NOT NULL`,
+            [[...new Set(ended.map(item => item.id))]]);
+        const at = new Map<string, string>();
+        for (const row of rows as Row[]) at.set(str(row, "node_execution_id"), date(row, "completed_at").toISOString());
+        for (const item of ended) {
+            const completedAt = at.get(item.id);
+            if (completedAt !== undefined) item.event.data = { ...item.data, completedAt };
         }
     }
 

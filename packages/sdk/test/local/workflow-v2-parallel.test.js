@@ -23,7 +23,8 @@
  *   stored keeps its list (stored events are not rewritten); a binding's
  *   list default the same way (R3-SF-1).
  * - A timed_out report keeps its finished branches' business outputs as the
- *   blocked report does (R3-SF-3).
+ *   blocked report does (R3-SF-3). Each state's end event carries its node's
+ *   completed_at (S6-UI2).
  *
  * Branch scripts run as real script processes. The failFast case relies on
  * a timing margin: the failing branch waits 5 seconds before it fails, and
@@ -897,6 +898,15 @@ describe("workflow v2 parallel states: a timed_out report keeps business outputs
             const whole = await readWorkflowV2View(h.store, timed.workflowSessionId, { executionId: timed.fan });
             expect(whole.execution.result).toMatchObject({ whole: true });
             expect(whole.execution.result.value.details.branches.find(item => item.index === 0).output).toEqual(output);
+            // R3-UI-1 (S6-UI2): each end event carries its node's completed_at, the completion clock the read rows give (the
+            // parallel decision's time limit and a branch's elapsed wait), never the event's own time.
+            const endEvents = await h.catalog.getSessionEvents(timed.workflowSessionId, 0, 500, ["workflow.state_completed", "workflow.state_failed"]);
+            for (const id of [timed.fan, timed.at(0, "hold")]) {
+                const stored = await h.store.readNodeExecution(id);
+                const event = endEvents.find(item => item.data.nodeExecutionId === id);
+                expect(event, id).toBeTruthy();
+                expect(event.data.completedAt).toBe(stored.completedAt.toISOString());
+            }
 
             const blocked = await started(h, doc(0));
             expect(await ended(h, blocked.runId)).toMatchObject({ status: "completed", terminalNodeId: "stuck" });

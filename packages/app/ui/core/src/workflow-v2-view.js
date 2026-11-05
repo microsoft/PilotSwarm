@@ -660,7 +660,9 @@ function executionFromEvent(type, data) {
     if (type === "workflow.state_started") {
         return { ...base, status: "pending", catchAll: data.catchAll === true ? true : undefined, immediateOutcome: text(data.immediateOutcome) };
     }
-    const common = { ...base, status: "completed", outcome: text(data.outcome), messageId: text(data.messageId), contract: text(data.contract),
+    // R3-UI-1 (S6-UI2): an end event carries its node's completed_at (the store's completion clock), so an end known only
+    // from its event is ordered as a read row is. An event from before that has none; its own time is not the end's.
+    const common = { ...base, status: "completed", completedAt: text(data.completedAt), outcome: text(data.outcome), messageId: text(data.messageId), contract: text(data.contract),
         senderSessionId: text(data.senderSessionId), exchangeId: text(data.exchangeId), recipientSessionId: text(data.recipientSessionId),
         recipientKind: text(data.recipientKind), responderSessionId: text(data.responderSessionId), inputMessageId: text(data.inputMessageId),
         attempts: Number.isSafeInteger(data.attempts) ? data.attempts : undefined };
@@ -670,15 +672,6 @@ function executionFromEvent(type, data) {
     }
     return { ...common, resultKind: data.resultKind === "business" || data.resultKind === "runtime_error" ? data.resultKind : undefined,
         outputPreview: data.outputPreview };
-}
-
-/** When an event was recorded (its envelope's createdAt, else its timestamp), in milliseconds; undefined when it says none. */
-function eventTime(event) {
-    for (const value of [event?.createdAt, event?.timestamp]) {
-        const ms = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
-        if (Number.isFinite(ms)) return ms;
-    }
-    return undefined;
 }
 
 function collectExecutions(events, runId, run, overlay) {
@@ -715,12 +708,7 @@ function collectExecutions(events, runId, run, overlay) {
                 ignoredEvents++;
                 continue;
             }
-            if (data.runId !== runId) continue;
-            const execution = executionFromEvent(event.eventType, data);
-            // Adversarial review R3-UI-1: a visit's end known from its event has that event's time, so it is ordered among
-            // the ends a read gives (latestEnded), never ranked below all of them.
-            if (execution.status === "completed") execution.observedAt = eventTime(event);
-            add(execution, "event");
+            if (data.runId === runId) add(executionFromEvent(event.eventType, data), "event");
         }
     } else if (!runId) {
         // Only events that name no run are unreadable; an event of a run that was left out belongs to that run.
@@ -941,26 +929,23 @@ export function workflowV2VisitScope(execution) {
     return text(execution?.scopeId) ?? "root";
 }
 
-const timeOf = value => {
-    const ms = typeof value === "string" ? Date.parse(value) : typeof value === "number" ? value : NaN;
-    return Number.isFinite(ms) ? ms : null;
+/**
+ * When a visit ended, to order ended visits across scopes: its completedAt, the store's completion clock, from its read
+ * row or (R3-UI-1, S6-UI2) from its end event, which carries the same; -Infinity when neither gives it (an event from
+ * before that). An event's own time is its transaction's start, never taken for the end.
+ */
+const endedAt = item => {
+    const time = typeof item?.completedAt === "string" ? Date.parse(item.completedAt) : NaN;
+    return Number.isFinite(time) ? time : -Infinity;
 };
 
 /**
- * Which of two ended visits ended later (> 0: `a`; 0 when the times do not tell), to order ended visits across scopes
- * (adversarial review R3-UI-1): by the times both have, first when the events that ended both were recorded
- * (observedAt), else when the read model says both ended (completedAt), else whichever end time each has. A visit known
- * only from its event has its event's time, so a stale read's older end never outranks it. No time: earliest.
+ * Which of two ended visits ended later (> 0: `a`; 0 when their end times do not tell): by completedAt (endedAt), so two
+ * visits with a recorded end are always ordered by it, whether it came from their rows or their events.
  */
 function compareEnded(a, b) {
-    const seenA = timeOf(a?.observedAt);
-    const seenB = timeOf(b?.observedAt);
-    if (seenA !== null && seenB !== null) return seenA - seenB;
-    const doneA = timeOf(a?.completedAt);
-    const doneB = timeOf(b?.completedAt);
-    if (doneA !== null && doneB !== null) return doneA - doneB;
-    const atA = doneA ?? seenA ?? -Infinity;
-    const atB = doneB ?? seenB ?? -Infinity;
+    const atA = endedAt(a);
+    const atB = endedAt(b);
     return atA === atB ? 0 : atA > atB ? 1 : -1;
 }
 
