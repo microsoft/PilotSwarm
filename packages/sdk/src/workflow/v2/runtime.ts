@@ -211,6 +211,13 @@ function settledWithin<T>(promise: Promise<T>, ms: number): Promise<T | null> {
 /** A command read before an admission waits at most this long when the queue is empty (the session orchestration's idiom). */
 export const WORKFLOW_V2_COMMAND_POLL_MS = 10;
 /**
+ * The most messages one read of the command queue takes in a row (duroxide review DX-2): each one already queued is
+ * taken at once, in the same turn, and duroxide 0.1.32 fails a turn whose orchestration resolves more than 100 of them in
+ * a row (MAX_QUIESCENCE_ITERATIONS, replay_engine.rs). A read that reaches this many returns without a command, and a
+ * durable step (a store activity, or a short timer before continue-as-new) comes before the next read.
+ */
+export const WORKFLOW_V2_COMMAND_READ_BATCH = 32;
+/**
  * Attempts of a run-ending write (the finish and the parent notification).
  * Each attempt runs the activity with the store retry policy; attempts are
  * separated by these durable delays, so a store outage of about half an hour
@@ -306,6 +313,15 @@ type WorkflowV2ActivityKey = keyof typeof WORKFLOW_V2_ACTIVITIES;
 // it replaced the 30 s per-attempt timeout; duroxide has no total timeout.
 export const WORKFLOW_V2_STORE_RETRY = { maxAttempts: 5, timeoutMs: 30_000 } as const;
 const STORE_RETRY = WORKFLOW_V2_STORE_RETRY;
+/**
+ * The retry policy of the 1.8.0 effect orchestration's last two activities, recordEffectResult and wake (duroxide review
+ * DX-RECORD): STORE_RETRY's attempts, each retried after an error, and no attempt timeout. A timed-out attempt is not
+ * stopped: its JavaScript can still commit the script's result after the orchestration ended failed, while the
+ * controller's collection, finding the effect ended, decides the state execution_failed first, and its compare-and-swap
+ * then refuses the real result. With the 30 s attempt timeout (21993700; it was 180 s) that became practical. Without
+ * one, the orchestration ends only after the result is stored or every attempt failed with an error.
+ */
+export const WORKFLOW_V2_EFFECT_RECORD_RETRY = { maxAttempts: WORKFLOW_V2_STORE_RETRY.maxAttempts } as const;
 
 export function workflowLiveControllerInstanceId(workflowSessionId: string): string {
     return `session-${workflowSessionId}`;
@@ -965,22 +981,51 @@ function* controlWithFailure(ctx: OrchestrationContext, rawInput: unknown, profi
     }
 }
 
+type WorkflowCommand = NonNullable<ReturnType<typeof parseWorkflowCommand>>;
+
 /**
- * Read every message already queued, without waiting for more: the first
- * lifecycle command, or null when the queue is empty. Wakes ahead of a
- * command are only hints and are dropped, so they never hide it.
+ * Read the messages already queued, without waiting for more, at most WORKFLOW_V2_COMMAND_READ_BATCH of them (review
+ * DX-2): the first lifecycle command; else `empty` when the 10 ms poll found the queue empty, or not when the batch ended
+ * first. Wakes ahead of a command are only hints and are dropped, so they never hide it.
  */
-function* takeQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask, NonNullable<ReturnType<typeof parseWorkflowCommand>> | null, unknown> {
-    for (;;) {
+function* readQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask, { command: WorkflowCommand | null; empty: boolean }, unknown> {
+    for (let read = 0; read < WORKFLOW_V2_COMMAND_READ_BATCH; read += 1) {
         const polled = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(WORKFLOW_V2_COMMAND_POLL_MS)));
-        if (polled.index === 1) return null;
+        if (polled.index === 1) return { command: null, empty: true };
         const command = parseWorkflowCommand(polled.value);
-        if (command) return command;
+        if (command) return { command, empty: false };
+    }
+    return { command: null, empty: false };
+}
+
+/**
+ * The lifecycle command already queued, or null: read before an admission (readQueuedCommand). Null also when a full batch
+ * held no command (review DX-2): the pass goes on to its store activities, and the next pass reads on. A command behind
+ * more wakes than that is read a pass or more later.
+ */
+function* takeQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask, WorkflowCommand | null, unknown> {
+    return (yield* readQueuedCommand(ctx)).command;
+}
+
+/**
+ * Before a controller continues as new (review DX-1): every message queued is read, batch by batch, each batch followed by
+ * a short durable timer (a turn of its own, so no turn reads more than a batch), until a poll finds the queue empty. It
+ * returns the first lifecycle command, which the controller applies instead of continuing as new, or null. duroxide 0.1.32
+ * carries at most 100 unread messages into the next execution and drops the newer ones (MAX_CARRY_FORWARD_EVENTS,
+ * execution.rs), so a command behind 100 wakes would be lost there. After this, only messages that arrive in the very turn
+ * that continues as new, after the empty poll, are carried. Wakes are only hints: the next execution collects the stored
+ * results anyway.
+ */
+function* commandBeforeContinueAsNew(ctx: OrchestrationContext): Generator<ScheduledTask, WorkflowCommand | null, unknown> {
+    for (;;) {
+        const read = yield* readQueuedCommand(ctx);
+        if (read.command !== null || read.empty) return read.command;
+        yield ctx.scheduleTimer(WORKFLOW_V2_COMMAND_POLL_MS);
     }
 }
 
 /** Apply one lifecycle command (cancel, done or delete) and end the controller. */
-function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, command: NonNullable<ReturnType<typeof parseWorkflowCommand>>,
+function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, command: WorkflowCommand,
     profile: ControllerProfile = LEGACY_PROFILE): Generator<ScheduledTask, ControllerResult, unknown> {
     const ended = parseResult(yield* profile.persist(ctx, "cancel", {
         runId: input.runId, command: command.cmd, reason: command.reason ?? null, requestedBy: command.requestedBy ?? null,
@@ -1010,7 +1055,10 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     const plan = parsePlan(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.plan, { runId: input.runId, irSha256: state.irSha256 }, STORE_RETRY));
     let admittedThisExecution = 0;
     let idleWaits = 0;
-    const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
+    const continueAsNew = function* (): Generator<ScheduledTask, ControllerResult | null, unknown> {
+        // Review DX-1: no lifecycle command is left behind in the queue (changed in place: never activated).
+        const command = yield* commandBeforeContinueAsNew(ctx);
+        if (command) return yield* applyCommand(ctx, input, command);
         // 1.8.0 is frozen: it continues as new at itself, whatever version new runs start at.
         yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
             "1.8.0");
@@ -1018,11 +1066,16 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     };
 
     for (;;) {
-        // 0. Commands first. A command queued before this read ends the run
-        // before anything else is admitted, however quickly states complete;
-        // one that arrives later is read here or while waiting. Whichever
-        // run-ending transaction commits first (finish, cancel or deletion)
-        // decides the run; a command read after that changes nothing.
+        // 0. Commands first. A command queued before this read's 10 ms poll
+        // is due is read here, before anything else is admitted, unless more
+        // than WORKFLOW_V2_COMMAND_READ_BATCH messages are ahead of it (review
+        // DX-2). One that arrives later, also one that arrives in the turn
+        // that finds the poll's timer due (duroxide orders that turn's
+        // messages by when they became visible, so the timer comes first:
+        // review DX-POLL), is read at a later pass or while waiting, so one
+        // more state can be admitted first; the run's end then cancels it.
+        // Whichever run-ending transaction commits first (finish, cancel or
+        // deletion) decides the run; a command read after that changes nothing.
         if (state.cursors.some(cursor => cursor.pending === null)) {
             const command = yield* takeQueuedCommand(ctx);
             if (command) return yield* applyCommand(ctx, input, command);
@@ -1293,7 +1346,10 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
         return yield* reportEnded(ctx, input.runId, expiry.result, REQUEST_PROFILE);
     };
-    const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
+    const continueAsNew = function* (): Generator<ScheduledTask, ControllerResult | null, unknown> {
+        // Review DX-1: no lifecycle command is left behind in the queue.
+        const command = yield* commandBeforeContinueAsNew(ctx);
+        if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
         yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
             WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
         return null;
@@ -1961,8 +2017,10 @@ export function* workflowV2Effect(ctx: OrchestrationContext, rawInput: unknown):
     } catch (error) {
         result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
     }
-    yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.recordEffectResult, { ...input, outcome: result }, STORE_RETRY);
-    yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.wake, input, STORE_RETRY);
+    // Review DX-RECORD: no attempt timeout, so the orchestration does not end while an attempt can still store the result
+    // (changed in place: never activated, and every hot patch requires no run in flight).
+    yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.recordEffectResult, { ...input, outcome: result }, WORKFLOW_V2_EFFECT_RECORD_RETRY);
+    yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.wake, input, WORKFLOW_V2_EFFECT_RECORD_RETRY);
     return null;
 }
 
@@ -2758,7 +2816,8 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
  * How long the run-end notice waits for the run's deliveries to the parent still in flight, how often it looks, and how
  * recent a delivery attempt must be to be waited for (adversarial review WFO-1). Each look has its own statement
  * timeout. Under controller 1.8.0 the wait keeps an attempt inside its 30-second attempt timeout
- * (WORKFLOW_V2_STORE_RETRY); a 1.9.0 attempt (a tagged activity) has no attempt timeout, and these waits bound it.
+ * (WORKFLOW_V2_STORE_RETRY); a 1.9.0 attempt (a tagged activity) has no attempt timeout. These waits are bounded; the
+ * attempt is not (review DX-5): getting a connection, the SQL calls and the send have no time limit of their own.
  */
 export const WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS = 15_000;
 const WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS = 200;
@@ -2767,8 +2826,9 @@ const WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS = 2_000;
 /**
  * How long an attempt waits for the run's notice lock that another attempt holds, how often it tries it, and the part of
  * an attempt's 30 s that the wait for deliveries and the wait for the lock may use together (E3-R1). The 30 s is the
- * attempt timeout of controller 1.8.0's store activities (WORKFLOW_V2_STORE_RETRY); 1.9.0's tagged activities have none,
- * and the same budget bounds their waits.
+ * attempt timeout of controller 1.8.0's store activities (WORKFLOW_V2_STORE_RETRY); 1.9.0's tagged activities have none.
+ * The budget bounds only these two voluntary waits, not the attempt (review DX-5): a holder that hangs in a connection,
+ * a SQL call or the send keeps the lock; the other attempts wait, fail, and run out, and recover sends the notice.
  */
 export const WORKFLOW_V2_NOTICE_LOCK_WAIT_MS = 20_000;
 const WORKFLOW_V2_NOTICE_LOCK_POLL_MS = 500;
@@ -3705,8 +3765,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     };
 
     register("notifyParent", async (_actx, rawInput) => {
-        // The attempt's budget (27 s of the 30 s attempt timeout of 1.8.0's store activities; 1.9.0's tagged activities have
-        // no attempt timeout) bounds the waits below together.
+        // The budget of the attempt's voluntary waits (27 s of the 30 s attempt timeout of 1.8.0's store activities; 1.9.0's
+        // tagged activities have no attempt timeout) bounds the wait for deliveries and the wait for the lock together; the
+        // connection, the SQL calls and the send are not timed (review DX-5).
         const attemptStarted = Date.now();
         const input = record(rawInput, "notify input");
         const run = await runOf(text(input.runId, "runId"));

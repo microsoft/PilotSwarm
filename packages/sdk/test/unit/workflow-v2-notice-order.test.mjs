@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS, WORKFLOW_V2_STORE_RETRY } from "../../dist/workflow/v2/runtime.js";
+import {
+    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_COMMAND_READ_BATCH, WORKFLOW_V2_EFFECT_RECORD_RETRY, WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS,
+    WORKFLOW_V2_STORE_RETRY,
+} from "../../dist/workflow/v2/runtime.js";
 
 // Adversarial review WFO-1 (TLC parent.late-message, parent.late-request): a send's message or a request to the parent
 // whose delivery attempt began before the run ended is queued before the run's end notice. The notifier activity waits
@@ -234,7 +237,9 @@ test("E3-R1: a lock held by an attempt that records the notice: this attempt wai
     assert.equal(h.log.filter(entry => entry[0] === "notify").length, 0);
 });
 
-test("E3-R1: the waits for deliveries and for the lock stay inside the attempt's budget", async () => {
+// Review DX-5: the 27 s budget bounds the attempt's voluntary waits (deliveries in flight, then the lock), not the attempt:
+// getting a connection, the SQL calls and the send are not timed.
+test("E3-R1, DX-5: the voluntary waits (deliveries in flight, the held lock) end within their budget", async () => {
     // A lock that stays held: the attempt fails within its own wait, not later.
     const h = harness({ lock: heldElsewhere({ holds: true }), lockWaitMs: 200 });
     const started = Date.now();
@@ -250,4 +255,15 @@ test("the store activities' retry policy times each attempt out at 30 s and sets
     assert.equal(WORKFLOW_V2_STORE_RETRY.timeoutMs, 30_000);
     assert.equal(Object.hasOwn(WORKFLOW_V2_STORE_RETRY, "totalTimeoutMs"), false);
     assert.ok(WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS < WORKFLOW_V2_STORE_RETRY.timeoutMs);
+});
+
+// Duroxide review DX-RECORD: the 1.8.0 effect orchestration stores the script's result and wakes its controller with no
+// attempt timeout (errors are still retried, as often as the store activities'), so it never ends while an attempt that
+// timed out could still store the result. DX-2: a read of the command queue takes fewer messages in a row than duroxide's
+// 100 per turn.
+test("DX-RECORD, DX-2: the effect's record and wake have no attempt timeout; a command read takes at most 32 messages in a row", () => {
+    assert.deepEqual(WORKFLOW_V2_EFFECT_RECORD_RETRY, { maxAttempts: WORKFLOW_V2_STORE_RETRY.maxAttempts });
+    assert.equal(Object.hasOwn(WORKFLOW_V2_EFFECT_RECORD_RETRY, "timeoutMs"), false);
+    assert.equal(Object.hasOwn(WORKFLOW_V2_EFFECT_RECORD_RETRY, "totalTimeoutMs"), false);
+    assert.equal(WORKFLOW_V2_COMMAND_READ_BATCH, 32);
 });

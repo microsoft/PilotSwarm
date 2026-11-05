@@ -305,9 +305,12 @@ the holder recorded; if the lock is still held, the attempt fails and is tried
 again. If the holder dies, the run still owes its notice and `recover`
 finishes it. Under controller 1.8.0 each attempt of a store activity, the
 notice included, is timed out after 30 seconds and tried again. Under 1.9.0 an
-attempt has no time limit of its own; the notice's waits are still bounded (at
-most 15 seconds for deliveries in flight, and for the lock at most 20 seconds,
-no more than 27 seconds in all). A retry after an attempt that may have queued the
+attempt has no time limit of its own. Only the notice's own waits are bounded:
+at most 15 seconds for deliveries in flight and at most 20 seconds for the lock,
+no more than 27 seconds in all. Getting a database connection, the SQL calls
+and the send itself have no time limit. An attempt that hangs there keeps the
+lock: the later attempts wait for it and fail, and when every attempt has
+failed, `recover` finishes the notice. A retry after an attempt that may have queued the
 notice queues it again with the same client message id when the parent may be
 told; when it finds a known refusal it records the skip with
 `earlierAttempt: true`, and Run activity adds "An earlier attempt may have
@@ -344,9 +347,16 @@ started), the run ends as **cancelled** without reaching a terminal state
 is told unless it asked. Delete also removes the session.
 
 The kill reaches the worker when the running script state next renews its
-activity lock, so it takes up to about half of
-`PILOTSWARM_WORKER_LOCK_TIMEOUT_MS` (5 seconds by default). A command sent
-between two states stops the next one.
+activity lock. The lock times out after `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`
+(10 seconds by default) and is renewed about every 5 seconds, so the worker
+can take up to about 5 seconds to see the cancellation. It then kills the
+script's process tree within about 250 milliseconds. The activity's
+JavaScript is not aborted: it returns when the killed script ends. The
+worker's activity slot stays held until that task ends, or at most for a
+10-second grace. A command sent between two states stops the next one. In a
+version 2 workflow, a command that arrives while the controller admits the
+next step, or that waits behind many wake messages, can let one more step
+start; the run's end then cancels that step.
 
 ## Running workflows (operators)
 
@@ -425,6 +435,38 @@ cancelled branch's script or agent chat cannot be stopped at once, the
 controller goes on and tries again at most once per wake period, also while
 the run is busy with other steps and after it continues as new; the run's
 end ends any agent chat still owed.
+
+A version 2 run's controller is one duroxide orchestration, and these
+duroxide limits shape it:
+
+- It waits by racing its command queue against a durable timer. When a
+  message wins, duroxide drops the timer from the race but does not remove
+  it: the timer still fires later and adds a turn and a history entry. The
+  controller continues as new after 25 admitted steps, or after 50 waits
+  (a wait counts when its timer found nothing, and every wait counts while
+  the run is paused). These counts bound the work that one execution
+  repeats. They do not bound its history: wake messages, the timers that lost
+  their races and the timers of retried store activities add entries that no
+  count includes.
+- duroxide carries at most 100 unread queue messages into the next
+  execution, and drops the newer ones. Before the controller continues as
+  new, it reads the whole queue, at most 32 messages per turn. If it finds a
+  cancel, complete or delete, it applies it instead of continuing as new.
+  Only the messages that arrive in the turn that continues as new, after the
+  last empty read, are carried. A command is dropped only when more than 100
+  messages arrive in that one turn ahead of it.
+- duroxide fails a turn that takes more than 100 queued messages in a row.
+  The controller's read of the queue before an admission takes at most 32, so
+  a command behind more wake messages is read one or more passes later.
+- duroxide fixes how a race between a queue read and a timer resolves when
+  an execution starts, by the duroxide version that started it (the
+  corrected behavior came in 0.1.31). An upgrade does not change an
+  execution that an older version started; its next execution after a
+  continue-as-new gets the current behavior. Version 2 workflows were added
+  after PilotSwarm moved to duroxide 0.1.32 (duroxide-node 0.2.4), so no
+  version 2 execution started with the older behavior. Executions of other
+  orchestrations, such as version 1 workflows and agent sessions, that an
+  older duroxide started keep the older behavior.
 
 Isolation, in this version:
 
