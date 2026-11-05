@@ -184,7 +184,8 @@ async function queueWakes(h, controller, runId, count) {
  * `sent()` counts only the wakes the queue accepted (review N-4). A failed enqueue ends the pump. It is expected only when
  * the run's status, read then, proves the run ended (its controller completed); otherwise, also when that status read
  * fails, the enqueue's error is kept, with the failed status read on it as `statusReadError`, and stop() throws it.
- * halt() stops the pump without throwing, for a test's finally.
+ * The failure is kept also when it settles after stop() was called (review N-4-stop-inflight): stop() first waits for every
+ * enqueue in flight, then throws. halt() stops the pump without throwing, for a test's finally; it is the only quiet cleanup.
  */
 function pumpWakes(h, controller, runId, producers = 1) {
     let on = true;
@@ -203,7 +204,8 @@ function pumpWakes(h, controller, runId, producers = 1) {
                 } catch (statusReadError) {
                     if (error !== null && typeof error === "object") error.statusReadError = statusReadError;
                 }
-                if (on && !ended) failure ??= error;
+                // Not gated on `on`: stop() sets it before it waits for this enqueue, which may still reject.
+                if (!ended) failure ??= error;
                 on = false;
             }
             await pause(2);
@@ -707,5 +709,14 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
         await expect(pumpWakes(failing("running"), "session-x", "run-x").stop()).rejects.toThrow("queue unavailable");
         await expect(pumpWakes(failing(null), "session-x", "run-x").stop()).rejects.toThrow("queue unavailable");
         await expect(pumpWakes(failing("cancelled"), "session-x", "run-x").stop()).resolves.toBeUndefined();
+        // N-4-stop-inflight: the enqueue rejects only after stop() was called; stop() still throws it.
+        let rejectLate = null;
+        const late = pumpWakes({
+            client: { enqueueEvent: () => new Promise((_, reject) => { rejectLate = reject; }) },
+            store: { readRun: async () => ({ runId: "run-x", status: "running" }) },
+        }, "session-x", "run-x");
+        const stopping = late.stop();
+        rejectLate(new Error("queue closed late"));
+        await expect(stopping).rejects.toThrow("queue closed late");
     });
 });
