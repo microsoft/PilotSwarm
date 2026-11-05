@@ -48,6 +48,12 @@
  * - JK-07: a forked worker (built code) dies (exit 137) right after the join, a branch's end or the time limit was stored,
  *   before the activity's acknowledgement; another worker process takes over: the decision stays as stored, one decision
  *   and one route, nothing started again, the cut still made. Needs a built SDK (dist/).
+ * Part 8, reads and the views of real results (JK-29):
+ * - JK-29: decided parallel states of real runs (joined of the first k and of every branch, blocked under failFast, timed
+ *   out with a branch never started) read the same through the store's view, the management client, the parent's
+ *   read_workflow tool, the whole value of one execution and small pages; the portal's projection of that same read model
+ *   shows the join's state, each branch's end with its cause (indexes from 0 in the data, branches from 1 for people), and
+ *   the time limit that passed.
  * Part 6, store transactions (JK-08):
  * - JK-08: a failure before the decision's COMMIT rolls back the decision, its cut and its event as one; a COMMIT whose
  *   answer is lost leaves the decision stored, and the retry finds it (same winner, one event); no lock outlives either.
@@ -89,6 +95,9 @@ import {
 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { controlWorkflowV2Run } from "../../src/workflow/v2/service.ts";
+import { readWorkflowFromTool, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
+import { createManagementClient } from "../helpers/local-workers.js";
+import { projectWorkflowV2, workflowV2BranchNumber } from "../../../app/ui/core/src/workflow-v2-view.js";
 import {
     BRANCH_ROUTE, branchScopeId, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_ACTIVITIES, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
     workflowEffectInstanceId, workflowLiveControllerInstanceId,
@@ -1873,6 +1882,95 @@ describe("J3 robust joins, part 7: a worker process killed between a store write
             for (const index of [0, 1]) expect(await base.store.readNodeExecution(timed.run.at(index, "hold"))).toMatchObject({ outcome: "cancelled", winner: "join_timeout" });
         } finally {
             for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+});
+
+// ─── Part 8: reads and the views of real results (JK-29) ────
+
+describe("J3 robust joins, part 8: reads and the portal's projection of real results (controller 1.9.0, test-only)", () => {
+    it("JK-29: decided parallel states read the same through every adapter, whole and in pages, and the portal's projection shows their ends and causes", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const base = await joinBaseOf(env);
+        const mgmt = await createManagementClient(env);
+        const workers = [];
+        try {
+            workers.push(await joinRuntimeOn(base));
+            const holdsOf = (run, n) => Array.from({ length: n }, (_, index) => run.at(index, "hold"));
+            // Joined, the first 1 of 2: branch 2 wins, branch 1 is cut for the join.
+            const first = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2 }));
+            await persisted(base, holdsOf(first, 2), "the first run's waits pending");
+            await base.store.completeNode(first.at(1, "hold"), elapsedResult({ v: 1 }));
+            // Joined, every branch: both succeed, in item order.
+            const all = await startJoin(base, joinDoc({ items: WAITS(2), concurrency: 2 }));
+            await persisted(base, holdsOf(all, 2), "the second run's waits pending");
+            for (const index of [1, 0]) await base.store.completeNode(all.at(index, "hold"), elapsedResult({ v: index }));
+            // Blocked, the first 2 of 2 under failFast: branch 1 fails, branch 2 is cut by failFast.
+            const blocked = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 2 }, failFast: true, concurrency: 2 }));
+            await persisted(base, holdsOf(blocked, 2), "the third run's waits pending");
+            await base.store.completeNode(blocked.at(0, "hold"), failedHold);
+            // Timed out, the first 1 of 3, two at a time, 6 s: both running branches cut at the time limit, the third never starts.
+            const timed = await startJoin(base, joinDoc({ items: WAITS(3), join: { first: 1 }, concurrency: 2, timeoutSeconds: 6 }));
+            await persisted(base, holdsOf(timed, 2), "the fourth run's waits pending");
+            const cases = { first, all, blocked, timed };
+            for (const run of Object.values(cases)) await endOf(base, run.runId);
+
+            for (const [name, run] of Object.entries(cases)) {
+                const direct = await readWorkflowV2View(base.store, run.workflowSessionId);
+                const fanOf = view => view.run.nodeExecutions.find(node => node.nodeExecutionId === run.fan);
+                const fan = fanOf(direct);
+                const row = await base.store.readNodeExecution(run.fan);
+                // The same read through the management client and the parent's tool.
+                expect(await mgmt.readWorkflow(run.workflowSessionId), name).toEqual(direct);
+                const tool = JSON.parse(await readWorkflowFromTool({ workflow_id: run.workflowSessionId }, { callerSessionId: run.parent, host: base.host }));
+                expect(tool.ok, name).toBe(true);
+                expect(fanOf(tool), name).toEqual(fan);
+                expect(tool.run.status, name).toBe(direct.run.status);
+                // The whole value of the parallel state's execution is the stored result.
+                const whole = await readWorkflowV2View(base.store, run.workflowSessionId, { executionId: run.fan });
+                expect(whole.execution, name).toMatchObject({ nodeExecutionId: run.fan, outcome: row.outcome, resultKind: row.resultKind,
+                    result: { whole: true, value: row.output ?? row.error } });
+                // Small pages hold every execution of the run once.
+                const paged = await readWorkflowV2View(base.store, run.workflowSessionId, { limit: 2 });
+                const seen = [...paged.run.nodeExecutions.map(node => node.nodeExecutionId)];
+                let next = paged.run.pages.executions.nextCursor;
+                while (next !== null) {
+                    const page = await readWorkflowV2View(base.store, run.workflowSessionId, { cursor: next, limit: 2 });
+                    seen.push(...page.items.map(node => node.nodeExecutionId));
+                    next = page.nextCursor;
+                }
+                const every = (await base.store.listNodeExecutions(run.runId)).map(node => node.nodeExecutionId);
+                expect(new Set(seen).size, `${name}: no execution twice`).toBe(seen.length);
+                expect([...seen].sort(), `${name}: every execution once`).toEqual([...every].sort());
+            }
+
+            // The portal's projection of the same read models.
+            const project = async run => projectWorkflowV2({ readModel: await readWorkflowV2View(base.store, run.workflowSessionId) }).nodes.find(node => node.id === "fan");
+            const firstFan = await project(first);
+            expect(firstFan.joinBar).toMatchObject({ state: "joined", rule: "first success" });
+            expect(firstFan.evidence).toMatchObject({ total: 2, needed: 1, succeeded: 1, timedOut: false });
+            expect(firstFan.evidence.rows.map(item => [item.index, item.status])).toEqual([[0, "cancelled after the join"], [1, "succeeded"]]);
+            const allFan = await project(all);
+            expect(allFan.joinBar.state).toBe("joined");
+            expect(allFan.evidence.rows.map(item => item.status)).toEqual(["succeeded", "succeeded"]);
+            const blockedFan = await project(blocked);
+            expect(blockedFan.joinBar.state).toBe("blocked");
+            expect(blockedFan.evidence).toMatchObject({ blocked: true, needed: 2, succeeded: 0 });
+            expect(blockedFan.evidence.rows.map(item => [item.index, item.status])).toEqual([[0, "failed"], [1, "cancelled"]]);
+            const timedFan = await project(timed);
+            expect(timedFan.joinBar.state).toBe("timed_out");
+            expect(timedFan.joinBar.limit.text).toBe("time limit 6 s");
+            expect(timedFan.joinBar.limit.title).toMatch(/^The time limit is 6 s from the step's start\. It passed before the join, at /);
+            expect(timedFan.evidence).toMatchObject({ total: 3, needed: 1, succeeded: 0, timedOut: true });
+            expect(timedFan.evidence.rows.map(item => [item.index, item.status])).toEqual([[0, "cancelled at time limit"], [1, "cancelled at time limit"], [2, "not started"]]);
+            // The data counts branches from 0; people read them from 1.
+            expect(timedFan.evidence.rows.map(item => workflowV2BranchNumber(item.index))).toEqual([1, 2, 3]);
+            // A decided parallel state has no running branch count.
+            for (const fan of [firstFan, allFan, blockedFan, timedFan]) expect(fan.joinBar.group.counts).toBeNull();
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await mgmt.stop();
             await base.close();
         }
     });
