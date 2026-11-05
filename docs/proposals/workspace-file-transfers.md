@@ -380,7 +380,7 @@ Names are proposed public method names, not existing methods.
 | `POST /uploads` | `startSessionWorkspaceUpload` | `{ folder, path, size, sha256?, ifMatch?, createParents? }` -> `{ uploadId, partBytes, partCount, expiresAt }`. |
 | `PUT /uploads/:uploadId/parts/:part` | `putSessionWorkspaceUploadPart` | `application/octet-stream`, exact expected length -> accepted part number, byte count, SHA-256. |
 | `GET /uploads/:uploadId` | `getSessionWorkspaceUpload` | State, accepted contiguous parts, expiry, and saved completion result when known. |
-| `POST /uploads/:uploadId/complete` | `completeSessionWorkspaceUpload` | Verify, assemble and publish -> the existing write result shape: `{ etag, size, mtimeMs, created }`. |
+| `POST /uploads/:uploadId/complete` | `completeSessionWorkspaceUpload` | Verify, assemble and publish -> `{ etag, size, mtimeMs, created, notificationFailed?, receiptPersistenceFailed? }`; optional warning flags describe a known commit, not permission to republish. |
 | `DELETE /uploads/:uploadId` | `abortSessionWorkspaceUpload` | Abort an open upload; repeat abort is idempotent while its receipt remains. |
 | `POST /downloads` | `startSessionWorkspaceDownload` | `{ folder, path }` -> `{ downloadId, size, etag, partBytes, expiresAt }` after creating a snapshot. |
 | `GET /downloads/:downloadId/content` | `readSessionWorkspaceDownloadPart` | A single bounded HTTP byte range -> raw bytes and range metadata. |
@@ -399,6 +399,13 @@ protocol path helpers, client methods, and typed declarations. Do not JSON-wrap
 raw bytes or route them through `/api/rpc`. Both HTTP and node transports
 delegate through the public management API. The portal uses `PortalRuntime`,
 never imports file-operation internals.
+
+Folder listing validates configured part size without acquiring the global
+transfer pool; transfer methods acquire it lazily. Metadata reads must not
+reserve a transfer lease. Management shutdown closes status waits and remaining
+stores even if transfer cleanup fails, then propagates the original cleanup
+error. Retain the quarantined transfer lease for cleanup retry rather than
+releasing capacity while resources may still be active.
 
 `listSessionWorkspaceFolders` gains per-folder transfer capability, including
 separate create-only and replacement-publication support, plus common
@@ -434,6 +441,9 @@ lengths immediately. The raw route must bypass JSON parsing and use bounded
 backpressure-aware pipes to the child. Configure finite request/header/idle
 timeouts and stop the specific child on disconnect or deadline. Do not read
 mounted filesystem paths synchronously on the portal event loop.
+Each accepted PUT uses one filesystem-validation helper, not a status helper
+followed by a second equivalent validation. Authorization, folder binding, and
+the exact body-size bound remain checked before consuming its body.
 
 The process-wide data-plane admission limit covers upload-part writes,
 upload assembly/publication, download snapshot creation, and download-range
@@ -449,9 +459,22 @@ same unexpired immutable snapshot and etag. A snapshot-creation request rejected
 at admission may be retried because it created no snapshot; an ambiguous
 creation timeout is not equivalent to an admission rejection and must not
 automatically create another snapshot. Background expiry cleans up any abandoned
-snapshot. Do not automatically retry completion or an ambiguous publication
-result. Upload and download UI paths show the busy state and allow a later user
-retry; neither may retry indefinitely. Direct SDK callers receive the same
+snapshot. Completion may be automatically retried only after the narrow typed
+`WORKSPACE_FILES_UPLOAD_BUSY` / HTTP `503` admission rejection, which guarantees
+that publication did not start and restores the upload to open. Never
+automatically retry network errors, proxy/untyped errors, quota errors,
+`IN_PROGRESS`, `WORKSPACE_FILES_UPLOAD_COMMIT_UNKNOWN`, or other ambiguous
+publication outcomes.
+
+For upload start, part, and complete operations, the UI permits at most five
+retries per operation, using cancellable exponential backoff with jitter and
+numeric `Retry-After` (the server sends one second). Each delay is at most eight
+seconds; if the server's minimum exceeds that bound, surface the error rather
+than retrying early. Reuse accepted handles and the same part bytes/index;
+do not restart the transfer to evade admission. Cancel during a completion
+wait caused by a known admission denial cleans staging because publication
+has not started; this is not an uncertain-commit result. Upload and download
+UI paths show busy errors and never retry indefinitely. Direct SDK callers receive the same
 typed busy outcome without an internal queue.
 
 ## Durable destination-candidate cleanup (increment 3)
@@ -609,12 +632,17 @@ change before the final check; they must not claim to prove atomic CAS.
 
 **Crash boundary:** publishing a file and recording a receipt/event cannot be
 one filesystem/database transaction. If a process dies in that window, return
-an explicit `WORKSPACE_FILES_COMMIT_UNKNOWN` outcome after the completing
+an explicit `WORKSPACE_FILES_UPLOAD_COMMIT_UNKNOWN` outcome after the completing
 deadline, never infer success from matching target contents and never replay
 publication. The user refreshes/re-reads the target before deciding to retry.
 Receipt-backed repeat completion returns the original result without another
 write or another event. Event recording failure is logged and surfaced as
 notification failure, not misreported as an uncommitted file.
+If publication is known to have succeeded, expose `notificationFailed` and
+`receiptPersistenceFailed` as known-commit warnings for notification and receipt
+failures respectively. Neither flag authorizes another publication. A receipt
+failure may prevent a later request from recovering the known result; it must
+not turn a repeat request into a second write.
 
 Abort wins only while the upload is open. The coordinator marks it aborted,
 rejects further operations, stops any active part-writing child, waits for exit,
@@ -756,6 +784,17 @@ Existing suites use Node's test runner for unit/API/web tests, Vitest for SDK
 local integration, and Playwright for browser behavior. Extend those surfaces;
 proxy and memory evidence must use real HTTP/filesystem paths, not page mocks.
 
+G1 must additionally prove that typed BUSY completion restores open state
+without publication, can retry the exact operation, and does not change the
+two-running-operation limit or transfer/storage quotas. U1/U2 must cover five
+retries per start/part/complete operation, exponential backoff/jitter with
+numeric `Retry-After`, the eight-second delay cap, and cancellation during
+backoff. Assert reused handles/part bytes/index, no early retry when the server
+minimum exceeds the cap, and no automatic retry for network/proxy/untyped,
+quota, in-progress, or unknown-commit errors. Cancel after a known completion
+admission denial must clean staging without reporting an uncertain commit.
+Known-commit warning flags must never trigger republication.
+
 | ID | Coverage and exact assertion | Location |
 | --- | --- | --- |
 | G1 | One coordinator handles concurrent requests: immutable same-part acceptance, conflicting retry, one assembler and at most one publisher, abort/complete race, expiry without deleting active files, and restart invalidating old IDs. Saturate the shared data-plane limit with mixed upload-part, assembly/publication, snapshot-creation, and range-read calls; excess calls receive `503` with `Retry-After` without queuing, buffering their payload, allocating new transfer resources, starting a child, or sending range-response bytes. Verify safe part/range retries, rejected snapshot creation allocating nothing, and ambiguous creation not automatically retried. Verify child shutdown/orphan handling; an orphaned assembler has no publication path. Inject pauses at lifecycle boundaries; no arbitrary sleeps. | SDK local-coordinator and child-process fixtures plus real HTTP admission tests. |
@@ -881,6 +920,43 @@ capability is implemented.
 The historical unit baseline above only covers existing behavior, not the
 new transfer implementation. Complete memory, lifecycle/recovery, and
 target-storage qualification must be established by the applicable gates.
+
+The upload implementation comparison at reference
+`c1d79b49cd6a7d49cf5772c2043f6e8839e54cd7` reports the following evidence and
+remaining obligations. This is not a claim of merge, rollout, or complete
+qualification:
+
+- **Admission and lifecycle:** typed BUSY retries, lazy resource-free folder
+  metadata, shutdown error propagation with retained quarantined leases, and
+  one filesystem-validation helper per accepted PUT are implemented. Real HTTP
+  coverage includes three/four simultaneous distinct-owner uploads; this does
+  not imply unlimited same-owner admission or change transfer/storage quotas.
+- **G2 remains an upload implementation gap:** metadata currently advertises
+  one `uploads:true` flag, and preparation probes/requires both hard link and
+  rename. Separate create-only and replacement capabilities, rename-only
+  targets, capability changes, and nested-target coverage remain required.
+  The design requirement is not satisfied by the combined flag.
+- **G5 remains unqualified:** the harness warms full workloads, uses
+  per-measurement GC baselines, and runs three fixed 1/5/20 MiB trials at
+  concurrency one/two. Its current new-file-only assertion uses the median
+  of paired 20-minus-5 differences, not the required difference of per-size
+  medians. The 16 MiB warmed absolute delta, live byte-buffer high-water
+  accounting, replacement/stale-conflict paths, and required calculation
+  remain outstanding. Define fixed-runtime/child-startup attribution and
+  publish raw aggregate portal-plus-child RSS alongside attributed deltas.
+  Reported helper startup alone contributes approximately 55 MiB at concurrency
+  one and 110 MiB at two: the 16 MiB transfer delta cannot silently mean
+  unadjusted total RSS. The exact attribution method remains an unresolved
+  qualification gate; neither threshold is relaxed.
+- **Early-increment restart cleanup remains pending:** the implementation
+  sweeps in-memory records of its running generation, not prior-generation
+  manifests. Current-process cancel/expiry/shutdown cleanup is not startup
+  orphan recovery. Verified inactive-generation inventory/cleanup remains an
+  early-increment obligation; it is not deferred to increment 3. Durable
+  destination discovery after lost inventory or session deletion remains
+  increment 3, with no inferred helper death, broad hidden-directory deletion,
+  or success inferred from target hash.
+
 Each increment must provide its assigned evidence before claiming completion;
 the full matrix is not a prerequisite for the documentation-only PR.
 Uncertainty at the filesystem/database commit boundary remains an explicitly
