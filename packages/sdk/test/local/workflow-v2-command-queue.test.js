@@ -8,7 +8,8 @@
  * the cancelled effects, ends agent children, tells the parent, publishes its status). A command read from the queue (also
  * one an older build queued) is still applied to the run as it is.
  *
- * - V-3: a terminal-first workflow with 33 wakes and then a cancel: no state is admitted after the acceptance, and the run
+ * - V-3: the shortest valid workflow (a first state that completes at once, then its terminal), with 33 wakes and then a
+ *   cancel accepted while its plan is held: no state is admitted after the acceptance, and the run
  *   ends cancelled (1.8.0 and 1.9.0).
  * - V-2: wakes queued all the time (counted only when the queue accepted them, N-4) do not hold back a graceful stop or
  *   the run deadline, and a paused run continues as new under them, the condition the old pre-rollover drain met (1.9.0).
@@ -66,8 +67,18 @@ const HOLD = ({ limits } = {}) => ({
         failed: { type: "terminal", outcome: "failed" },
     },
 });
-/** A workflow whose first state is its terminal. */
-const TERMINAL_FIRST = { ...head("terminal-first"), initial: "done", states: { done: { type: "terminal", outcome: "succeeded" } } };
+/**
+ * The shortest valid workflow (initial must not be a terminal, compiler WORKFLOW_INITIAL_INVALID): a first state that
+ * completes at once, then the terminal. Before S7-DX2, 32 wakes ahead of a cancel let it be admitted and the run complete.
+ */
+const QUICK_FIRST = {
+    ...head("quick-first"),
+    initial: "step",
+    states: {
+        step: { type: "script", source: "await setResult(\"ok\", {});\n", transition: { next: { ok: "done" } } },
+        done: { type: "terminal", outcome: "succeeded" },
+    },
+};
 /**
  * A script that sleeps 90 s, with no route for a runtime error (no failure route, no catch-all): its effect is still
  * running when the run ends, and only an explicit stop ends it early when the script's own liveness check is slow.
@@ -170,9 +181,10 @@ async function queueWakes(h, controller, runId, count) {
 
 /**
  * Queue wakes from `producers` loops, each every few milliseconds, until stopped: the queue is never empty for long.
- * `sent()` counts only the wakes the queue accepted (review N-4). A failure while the run is active is unexpected: the
- * pump stops, and stop() throws it; a failure after the run ended (its controller completed) ends the pump quietly.
- * halt() stops it without throwing, for a test's finally.
+ * `sent()` counts only the wakes the queue accepted (review N-4). A failed enqueue ends the pump. It is expected only when
+ * the run's status, read then, proves the run ended (its controller completed); otherwise, also when that status read
+ * fails, the enqueue's error is kept, with the failed status read on it as `statusReadError`, and stop() throws it.
+ * halt() stops the pump without throwing, for a test's finally.
  */
 function pumpWakes(h, controller, runId, producers = 1) {
     let on = true;
@@ -184,8 +196,14 @@ function pumpWakes(h, controller, runId, producers = 1) {
                 await h.client.enqueueEvent(controller, "messages", wake(runId, sent));
                 sent += 1;
             } catch (error) {
-                const run = await h.store.readRun(runId).catch(() => null);
-                if (on && run !== null && ["admitted", "running", "paused"].includes(run.status)) failure ??= error;
+                let ended = false;
+                try {
+                    const run = await h.store.readRun(runId);
+                    ended = run !== null && ["completed", "failed", "cancelled", "stopped"].includes(run.status);
+                } catch (statusReadError) {
+                    if (error !== null && typeof error === "object") error.statusReadError = statusReadError;
+                }
+                if (on && !ended) failure ??= error;
                 on = false;
             }
             await pause(2);
@@ -233,7 +251,7 @@ const VERSIONS = [["1.8.0", false, WORKFLOW_V2_ACTIVITIES], ["1.9.0", true, WORK
 describe("workflow v2 lifecycle commands as store state (duroxide races review S7-DX2; 1.9.0 test-only)", () => {
     for (const [version, requests, R] of VERSIONS) {
         // V-3: before S7-DX2 a full read of 32 wakes returned no command, the terminal was admitted and the run completed.
-        it(`V-3 (${version}): a terminal-first run with 33 wakes and then an accepted cancel admits no state and ends cancelled`, { timeout: TIMEOUT }, async () => {
+        it(`V-3 (${version}): a run whose first state completes at once, with 33 wakes and then an accepted cancel, admits no state and ends cancelled`, { timeout: TIMEOUT }, async () => {
             const plan = gate();
             let planned = false;
             const h = await harness(getEnv(), { requests, wrap: {
@@ -243,7 +261,7 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
                 },
             } });
             try {
-                const { workflowSessionId, runId, controller } = await started(h, TERMINAL_FIRST);
+                const { workflowSessionId, runId, controller } = await started(h, QUICK_FIRST);
                 const diagnose = diagnosis(h, controller);
                 // The run has begun (its plan comes after its begin): the cancel ends it in the store as it is accepted.
                 await plan.reached;
@@ -668,5 +686,26 @@ describe("workflow v2 lifecycle commands as store state (duroxide races review S
             plan.open();
             await h.stop();
         }
+    });
+
+    // Review N-4 residual: the pump keeps a failed enqueue unless the run's status proves it ended; a failed status read is
+    // kept on the error, never taken for an end. (No database: the client and the store fail as given.)
+    it("N-4: the wake pump's stop rejects when an enqueue fails and the status read fails too; only a proven end is quiet", async () => {
+        const failing = (status) => ({
+            client: { enqueueEvent: async () => { throw new Error("queue unavailable"); } },
+            store: { readRun: async () => {
+                if (status instanceof Error) throw status;
+                return status === null ? null : { runId: "run-x", status };
+            } },
+        });
+        const unread = pumpWakes(failing(new Error("store unavailable")), "session-x", "run-x");
+        const error = await unread.stop().then(() => null, thrown => thrown);
+        expect(error?.message).toBe("queue unavailable");
+        expect(error?.statusReadError?.message).toBe("store unavailable");
+        expect(unread.sent()).toBe(0);
+        // Active, or not found: the failure is kept. Ended: the pump ends quietly.
+        await expect(pumpWakes(failing("running"), "session-x", "run-x").stop()).rejects.toThrow("queue unavailable");
+        await expect(pumpWakes(failing(null), "session-x", "run-x").stop()).rejects.toThrow("queue unavailable");
+        await expect(pumpWakes(failing("cancelled"), "session-x", "run-x").stop()).resolves.toBeUndefined();
     });
 });
