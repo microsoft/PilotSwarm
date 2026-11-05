@@ -51,6 +51,28 @@ async function rawOf(env) {
     return { q, client: new Client(provider), close: () => pool.end() };
 }
 
+/**
+ * The status the controller orchestration `instanceId` ends with, waited for at most `ms` (it reports the run's end after
+ * the store recorded it, so the run row ends first). When it has not completed by then, its status and the last events of
+ * its latest execution's history are printed, and the status is returned for the check to fail on.
+ */
+async function controllerEnd(base, instanceId, ms = 30_000) {
+    let status;
+    try {
+        status = (await base.client.waitForOrchestration(instanceId, ms))?.status ?? null;
+    } catch (error) {
+        status = `not ended within ${ms} ms (${error?.message ?? error})`;
+    }
+    if (status !== "Completed") {
+        const current = await base.client.getStatus(instanceId).catch(error => ({ unread: String(error?.message ?? error) }));
+        const executions = await base.client.listExecutions(instanceId).catch(() => []);
+        const history = executions.length ? await base.client.readExecutionHistory(instanceId, executions.at(-1)).catch(() => []) : [];
+        console.log(`[JK-21] controller ${instanceId}: status ${JSON.stringify(current)}; executions ${JSON.stringify(executions)}; `
+            + `last history events ${JSON.stringify(history.slice(-12))}`);
+    }
+    return status;
+}
+
 /** A parallel state over `items` whose body is a wait of the item's seconds, then a succeeded end (IR 8 unless `join`). */
 const waitsDoc = ({ items, concurrency = 1, failFast = false, join, timeoutSeconds } = {}) => ({
     apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "join-compat", version: "1.0.0" },
@@ -134,7 +156,7 @@ describe("J3 JK-21 and JK-23: the build before the join of the first k (8d568890
             for (const run of runs) {
                 // The stored IR is the old one, unchanged; the controller's same instance replayed and finished.
                 expect(await runRow(run)).toEqual(run.before);
-                expect((await base.client.getStatus(run.before.controller_instance_id)).status).toBe("Completed");
+                expect(await controllerEnd(base, run.before.controller_instance_id), "the controller's end").toBe("Completed");
                 // An IR 8 parallel state has no time limit: no elapse of it was ever asked.
                 const elapsed = await scheduledInputs(base, run.before.controller_instance_id, R.elapse);
                 expect(elapsed.flatMap(input => input.nodeExecutionIds ?? []), "no time limit asked").not.toContain(run.fan);

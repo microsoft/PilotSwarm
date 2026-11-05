@@ -432,11 +432,23 @@ describe("workflow v2 real-agent test runs: controller 1.9.0 (inactive, test-onl
             await until(async () => (await h.client.getStatus(controllerInstanceId)).status === "Failed" || null, "the controller to end");
             expect((await h.store.readRun(runId)).status).toBe("running");
 
+            // The end commands the child double has taken (it records one only after it took it from its queue): waited for,
+            // bounded; after a settle where none more should come.
+            const commandsSent = count => until(async () => {
+                const sent = (await childMessages(h, child)).filter(message => message?.type === "cmd");
+                return sent.length >= count ? sent : null;
+            }, `${count} end command(s) at the child`, 10_000);
+            const commandsSettled = async () => {
+                await pause(1_500);
+                return (await childMessages(h, child)).filter(message => message?.type === "cmd");
+            };
+
             // The recover ends the run, but the child's queue cannot be reached.
             const unreachable = { ...h.host, duroxideClient: failingFor(h.client, child) };
             await expect(recoverWorkflowV2Run(unreachable, runId, { requestedBy: null, operationId: "recover-1" })).rejects.toThrow(/were not ended yet/);
             expect(await h.store.readRun(runId)).toMatchObject({ mode: "test", status: "failed", terminalError: { code: "controller_ended" } });
             expect(await h.store.readAgentInvocation(review)).toMatchObject({ endRequested: "cancel", endSentAt: null });
+            expect(await commandsSettled()).toEqual([]);
 
             // Its repeat sends the end, and the record of it is lost once; the next repeat sends it again with the same id.
             const markAgentEndSent = h.store.markAgentEndSent.bind(h.store);
@@ -452,14 +464,13 @@ describe("workflow v2 real-agent test runs: controller 1.9.0 (inactive, test-onl
             expect(await recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-1" }))
                 .toMatchObject({ replayed: true, receipt: { action: "ended", status: "failed" } });
             const command = { type: "cmd", cmd: "cancel", id: `workflow-agent-end:${review}`, requestedBy: workflow.workflowSessionId };
-            expect((await childMessages(h, child)).filter(message => message?.type === "cmd"))
-                .toEqual([expect.objectContaining(command), expect.objectContaining(command)]);
+            expect(await commandsSent(2)).toEqual([expect.objectContaining(command), expect.objectContaining(command)]);
             expect(await h.store.readAgentInvocation(review)).toMatchObject({ endSentAt: expect.any(Date), endChildStatus: "Running" });
 
             // A new recover finds nothing owed. No child was created again, and no parent was told of a test run's end.
             expect(await recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-2" }))
                 .toMatchObject({ replayed: false, receipt: { action: "none", status: "failed" } });
-            expect((await childMessages(h, child)).filter(message => message?.type === "cmd")).toHaveLength(2);
+            expect(await commandsSettled()).toHaveLength(2);
             expect(h.children).toHaveLength(1);
             expect(await h.store.readAgentInvocation(review)).toMatchObject({ spawnAttempts: 1 });
             expect((await h.client.getStatus(workflowNotifyInstanceId(runId))).status).toBe("NotFound");

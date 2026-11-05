@@ -1877,22 +1877,35 @@ describe("J3 robust joins, part 7: a worker process killed between a store write
         const env = getEnv();
         const base = await joinBaseOf(env);
         const workers = [];
+        // The takeover worker of the case before: stopped before the next case starts, so in each case only that case's
+        // dying worker can run the activity with the fault point (a healthy worker left alive could run it first).
+        let takeover = null;
         try {
             /** One case: a worker that dies at `point`, the run `doc`, `act` after its waits are pending; then another worker. */
             const killedAt = async (point, doc, act) => {
+                if (takeover) {
+                    await takeover.stop();
+                    takeover = null;
+                }
                 const dying = await forkJoinWorker(env, { faultInject: point });
                 workers.push(dying);
                 await dying.ready;
                 const run = await startJoin(base, doc);
                 await persisted(base, [run.at(0, "hold"), run.at(1, "hold")], "both waits pending", "pending", 60_000);
                 await act(run);
-                const death = await within(dying.exited, 60_000, `the worker to die at ${point}`);
+                const death = await within(dying.exited, 60_000, `the worker to die at ${point}`).catch(error => {
+                    console.log(`[JK-07] ${point}: dying pid ${dying.pid} did not die; its last lines: ${dying.logs.slice(-20).join(" | ")}`);
+                    throw error;
+                });
                 expect(death, `precondition: it died at ${point}, not otherwise`).toEqual({ code: 137, signal: null });
-                expect(dying.logs.join("\n")).toContain(`[fault-injection] hit point=${point}`);
+                const faultLine = dying.logs.find(line => line.includes("[fault-injection] hit point=")) ?? "(no fault line)";
+                expect(faultLine).toContain(`[fault-injection] hit point=${point}`);
                 const before = { fan: await base.store.readNodeExecution(run.fan), root: await rootIdsOf(base, run.runId) };
                 const next = await forkJoinWorker(env);
                 workers.push(next);
+                takeover = next;
                 expect(await next.ready, "another process").not.toBe(dying.pid);
+                console.log(`[JK-07] ${point}: dying pid ${dying.pid}, takeover pid ${next.pid}; ${faultLine}`);
                 return { run, before, ended: await endOf(base, run.runId, 90_000) };
             };
             const waits = (extra = {}) => joinDoc({ items: WAITS(2), join: { first: 1 }, concurrency: 2, ...extra });

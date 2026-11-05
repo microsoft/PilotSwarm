@@ -1646,13 +1646,25 @@ describe("workflow v2 recover ends a dead controller's agent children (verificat
             await until(async () => (await h.client.getStatus(controller)).status === "Failed" || null, "the controller to end");
             expect((await h.store.readRun(runId)).status).toBe("running");
 
+            // The end commands the child double has taken. It records a message only after it took it from its queue, so a
+            // command sent just now is waited for (bounded); a command that never comes fails the check.
+            const commandsSent = count => until(async () => {
+                const sent = (await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd");
+                return sent.length >= count ? sent : null;
+            }, `${count} end command(s) at the child`, 10_000);
+            /** The commands after a settle, where none more should come. */
+            const commandsSettled = async () => {
+                await pause(1_500);
+                return (await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd");
+            };
+
             // Crash after finish, before child cleanup: the recover ends the run, but the child's queue cannot be reached.
             const unreachable = { ...h.host, duroxideClient: failingFor(h.client, spawn.childSessionId) };
             await expect(recoverWorkflowV2Run(unreachable, runId, { requestedBy: null, operationId: "recover-1" })).rejects.toThrow(/were not ended yet/);
             expect(await h.store.readRun(runId)).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
             expect(await h.store.readNodeExecution(spawn.nodeExecutionId)).toMatchObject({ state: "completed", winner: "controller" });
             expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ endRequested: "cancel", endSentAt: null });
-            expect((await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd")).toEqual([]);
+            expect(await commandsSettled()).toEqual([]);
 
             // Crash after enqueue, before mark: the repeat of that recover sends the end, and its record is lost once.
             const markAgentEndSent = h.store.markAgentEndSent.bind(h.store);
@@ -1666,20 +1678,19 @@ describe("workflow v2 recover ends a dead controller's agent children (verificat
             };
             await expect(recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-1" })).rejects.toThrow(/were not ended yet/);
             const command = { type: "cmd", cmd: "cancel", id: `workflow-agent-end:${spawn.nodeExecutionId}`, requestedBy: workflowSessionId };
-            expect((await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd")).toEqual([expect.objectContaining(command)]);
+            expect(await commandsSent(1)).toEqual([expect.objectContaining(command)]);
             expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ endSentAt: null });
 
             // The same recover again: the end is sent again with the same id (the child takes one id once) and recorded.
             expect(await recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-1" }))
                 .toMatchObject({ replayed: true, receipt: { action: "ended", status: "failed" } });
-            expect((await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd"))
-                .toEqual([expect.objectContaining(command), expect.objectContaining(command)]);
+            expect(await commandsSent(2)).toEqual([expect.objectContaining(command), expect.objectContaining(command)]);
             expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ endSentAt: expect.any(Date), endChildStatus: "Running" });
 
             // A new recover finds nothing owed: nothing is sent, and no child is created.
             expect(await recoverWorkflowV2Run(h.host, runId, { requestedBy: null, operationId: "recover-2" }))
                 .toMatchObject({ replayed: false, receipt: { action: "none", status: "failed" } });
-            expect((await childMessages(h, spawn.childSessionId)).filter(message => message?.type === "cmd")).toHaveLength(2);
+            expect(await commandsSettled()).toHaveLength(2);
             expect(h.spawns).toHaveLength(1);
             expect(await h.store.readAgentInvocation(spawn.nodeExecutionId)).toMatchObject({ spawnAttempts: 1 });
             const events = await h.catalog.getSessionEvents(workflowSessionId, 0, 500);
