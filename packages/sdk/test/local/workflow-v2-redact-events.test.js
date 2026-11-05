@@ -8,6 +8,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { WORKFLOW_V2_STOP_CONTROLLER_VERSIONS } from "../../src/workflow/v2/runtime.ts";
+import { readWorkflowFromTool, readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import pg from "pg";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -120,6 +121,17 @@ describe("workflow v2 event redaction", () => {
                 const session = await db.query(`SELECT last_error FROM "${env.cmsSchema}".sessions WHERE session_id = $1`, [id]);
                 expect(String(session.rows[0].last_error)).not.toContain(SENTINEL);
             }
+            // Verification E2bH-T6: every read shows them hidden: the workflow view (what the REST and MCP reads return) and the
+            // parent agent's read_workflow; and the replay of the cancel (its operation id again) returns its receipt without them.
+            for (const id of [cancelled.id, stopped.id]) {
+                expect(JSON.stringify(await readWorkflowV2View(store, id))).not.toContain(SENTINEL);
+                const read = await readWorkflowFromTool({ workflow_id: id }, { callerSessionId: parent, host });
+                expect(read).not.toContain(SENTINEL);
+                expect(JSON.parse(read)).toMatchObject({ ok: true });
+            }
+            const replay = await controlWorkflowV2Run(host, cancelled.id, { operation: "cancel", runId: null, reason }, { actor, operationId: "cancel-1" });
+            expect(replay).toMatchObject({ replayed: true });
+            expect(JSON.stringify(replay)).not.toContain(SENTINEL);
         } finally {
             await db.end();
             await catalog.close();
