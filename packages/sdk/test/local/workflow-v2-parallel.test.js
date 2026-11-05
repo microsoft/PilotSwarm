@@ -17,6 +17,10 @@
  *   branch; failFast; empty and invalid manifests; the join's outputSchema;
  *   a stop during a parallel state; a worker restart while every branch
  *   waits (each joined once, each wait's deadline kept).
+ * - A literal forEach list (verification of SF-3, M-03): the new started
+ *   event and a reader's view of the graph show it only as its count and
+ *   digest; the owner's YAML keeps it; a started event an earlier build
+ *   stored keeps its list (stored events are not rewritten).
  *
  * Branch scripts run as real script processes. The failFast case relies on
  * a timing margin: the failing branch waits 5 seconds before it fails, and
@@ -34,7 +38,7 @@ import {
 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
+import { readWorkflowV2View, workflowV2ReaderView } from "../../src/workflow/v2/tools.ts";
 import {
     BRANCH_ROUTE, branchScopeId, describeWorkflowV2State, describeWorkflowV2States, parseBranchScope, registerWorkflowV2, sessionQueueTransport,
     WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, WORKFLOW_V2_STOP_CONTROLLER_VERSIONS, workflowLiveControllerInstanceId,
@@ -731,3 +735,71 @@ describe("workflow v2 parallel states: a worker restart while every branch waits
         }
     });
 });
+
+// Verification of SF-3 (M-03): a parallel state's literal list (here with sentinel values) is shown in the graph and in the
+// workflow.started event as how many items it has and its digest, to everyone; the owner's YAML keeps the list exactly. The
+// run's own execution data (a branch's item, its inputs) is another surface, shown as the run is. A started event that an
+// earlier build stored with the list is not rewritten: it stays as stored.
+describe("workflow v2 parallel states: a literal list is shown as its count and digest (verification of SF-3, M-03)", () => {
+    it("M-03: the new started event and a reader's graph omit the list's values; the owner's YAML keeps them; an earlier stored event stays as it was", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const SENTINELS = ["m03-SENTINEL-alpha-7c1e", "m03-SENTINEL-beta-2f9d"];
+            const doc = {
+                ...head("literal-list"), initial: "fan",
+                states: {
+                    fan: {
+                        type: "parallel", forEach: SENTINELS,
+                        body: {
+                            initial: "hold",
+                            states: {
+                                hold: { type: "wait", seconds: 600, transition: { next: { elapsed: "done" } } },
+                                done: { type: "terminal", outcome: "succeeded" },
+                            },
+                        },
+                        transition: { next: { joined: "finished", blocked: "stuck", failure: "failed" } },
+                    },
+                    ...OUTER,
+                },
+            };
+            const { workflowSessionId, runId } = await started(h, doc);
+            const hasSentinel = value => SENTINELS.some(sentinel => JSON.stringify(value).includes(sentinel));
+
+            // The newly stored started event: the list's count and digest, not its values.
+            const [startedEvent] = await until(async () => {
+                const events = await h.catalog.getSessionEvents(workflowSessionId, 0, 100, ["workflow.started"]);
+                return events.length ? events : null;
+            }, "the started event");
+            const fan = startedEvent.data.states.find(state => state.id === "fan");
+            expect(fan.forEach).toEqual({ count: 2, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+            expect(hasSentinel(startedEvent.data)).toBe(false);
+
+            // A reader's view of the workflow (the portal's, for a person who cannot change it): its graph, revision and
+            // definition show no value of the list. The owner's view shows the same graph.
+            const view = await readWorkflowV2View(h.store, workflowSessionId);
+            const reader = workflowV2ReaderView(view);
+            for (const shown of [view, reader]) {
+                expect(shown.graph.states.find(state => state.id === "fan").forEach).toEqual(fan.forEach);
+                expect(hasSentinel({ graph: shown.graph, revision: shown.revision, definition: shown.definition })).toBe(false);
+            }
+            // The owner's YAML keeps the list exactly.
+            const withYaml = await readWorkflowV2View(h.store, workflowSessionId, { includeYaml: true });
+            expect(JSON.parse(withYaml.revision.yaml).states.fan.forEach).toEqual(SENTINELS);
+
+            // A started event an earlier build stored with the list's values: stored events are not rewritten, so it keeps
+            // them; the graph a reader gets is still built from the revision, with the count and digest.
+            await h.store.recordSessionEvents(workflowSessionId, [{ eventType: "workflow.started", data: {
+                runId: "earlier-run", states: [{ id: "fan", type: "parallel", forEach: SENTINELS }] } }]);
+            const stored = (await h.catalog.getSessionEvents(workflowSessionId, 0, 100, ["workflow.started"]))
+                .find(event => event.data?.runId === "earlier-run");
+            expect(stored.data.states[0].forEach).toEqual(SENTINELS);
+            expect((await readWorkflowV2View(h.store, workflowSessionId)).graph.states.find(state => state.id === "fan").forEach).toEqual(fan.forEach);
+
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "done" }, { actor: ACTOR, operationId: "cancel-1" });
+            expect(await ended(h, runId)).toMatchObject({ status: "cancelled" });
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
