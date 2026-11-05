@@ -9,7 +9,25 @@
 //
 // No I/O; no import of common.mjs (it imports this).
 
-export const WORKER_ENV_DEFAULTS = Object.freeze({ PILOTSWARM_NATIVE_SUBAGENTS: "off" });
+export const WORKER_ENV_DEFAULTS = Object.freeze({
+  PILOTSWARM_NATIVE_SUBAGENTS: "off",
+  OTEL_EXPORTER_OTLP_ENDPOINT: "",
+  OTEL_SDK_DISABLED: "false",
+  OTEL_METRICS_EXPORTER: "otlp",
+  OTEL_TRACES_EXPORTER: "none",
+  OTEL_LOGS_EXPORTER: "none",
+  OTEL_SERVICE_NAME: "pilotswarm-worker",
+  OTEL_RESOURCE_ATTRIBUTES: "",
+  OTEL_METRIC_EXPORT_INTERVAL: "30000",
+  OTEL_METRIC_EXPORT_TIMEOUT: "5000",
+  OTEL_EXPORTER_OTLP_TIMEOUT: "5000",
+  PILOTSWARM_OTEL_HISTOGRAMS: "false",
+});
+
+export function workerTelemetryOmittedKeys(env) {
+  return ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_RESOURCE_ATTRIBUTES"]
+    .filter(key => !env[key]);
+}
 
 export function nativeSubagentsSetting(env) {
   const raw = env?.PILOTSWARM_NATIVE_SUBAGENTS;

@@ -1,90 +1,76 @@
-import { diag, DiagConsoleLogger, DiagLogLevel, trace } from "@opentelemetry/api";
-import { NodeSDK } from "@opentelemetry/sdk-node";
-import { metrics as sdkMetrics } from "@opentelemetry/sdk-node";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
-import {
-    getNodeAutoInstrumentations,
-    getResourceDetectors,
-} from "@opentelemetry/auto-instrumentations-node";
+import { telemetryConfig } from "./config.mjs";
+import { createTelemetryShutdown } from "./shutdown.mjs";
 
-const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-const headers = process.env.OTEL_EXPORTER_OTLP_HEADERS;
-const serviceName = process.env.OTEL_SERVICE_NAME || "pilotswarm-service";
-const logLevel = (process.env.OTEL_LOG_LEVEL || "").trim().toLowerCase();
-const metricExportIntervalMs = Number.parseInt(process.env.OTEL_METRIC_EXPORT_INTERVAL || "", 10);
+const config = telemetryConfig();
+const providers = [];
+let shuttingDown = false;
+let shutdownExportFailed = false;
+const shutdownProviders = createTelemetryShutdown(providers, () => shutdownExportFailed);
 
-function parseHeaderString(headerString) {
-    return Object.fromEntries(
-        headerString
-            .split(",")
-            .map(entry => entry.trim())
-            .filter(Boolean)
-            .map(entry => {
-                const [key, ...rest] = entry.split("=");
-                return [key.trim(), rest.join("=").trim()];
-            }),
-    );
-}
+export const telemetryEnabled = Boolean(config && (config.metrics === "otlp" || config.traces === "otlp"));
 
-function withOtlpPath(baseUrl, path) {
-    return `${baseUrl.replace(/\/+$/, "")}${path}`;
-}
-
-if (logLevel === "debug") {
-    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG);
-}
-
-if (!endpoint || !headers) {
-    console.warn(
-        "[otel] Skipping OpenTelemetry bootstrap: OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_HEADERS is missing.",
-    );
-} else {
-    const traceExporter = new OTLPTraceExporter({
-        url: withOtlpPath(endpoint, "/v1/traces"),
-        headers: parseHeaderString(headers),
-    });
-    const metricExporter = new OTLPMetricExporter({
-        url: withOtlpPath(endpoint, "/v1/metrics"),
-        headers: parseHeaderString(headers),
-    });
-    const metricReader = new sdkMetrics.PeriodicExportingMetricReader({
-        exporter: metricExporter,
-        exportIntervalMillis: Number.isFinite(metricExportIntervalMs) && metricExportIntervalMs > 0
-            ? metricExportIntervalMs
-            : 30_000,
+if (telemetryEnabled) {
+    const { diag, DiagLogLevel, metrics, trace } = await import("@opentelemetry/api");
+    const { metrics: sdkMetrics, tracing: sdkTracing } = await import("@opentelemetry/sdk-node");
+    const { envDetector, resourceFromAttributes } = await import("@opentelemetry/resources");
+    // Exporter diagnostics can contain URLs and headers. Never print their arguments.
+    diag.setLogger({
+        error: () => {
+            if (shuttingDown) shutdownExportFailed = true;
+            console.error("[otel] Telemetry export failed.");
+        },
+        warn: () => console.warn("[otel] Telemetry warning."),
+        info() {}, debug() {}, verbose() {},
+    }, DiagLogLevel.WARN);
+    const attributes = envDetector.detect().attributes;
+    const resource = resourceFromAttributes({
+        "service.name": "pilotswarm-worker",
+        ...(process.env.POD_NAME ? { "service.instance.id": process.env.POD_NAME } : {}),
+        ...attributes,
     });
 
-    const sdk = new NodeSDK({
-        instrumentations: getNodeAutoInstrumentations(),
-        resourceDetectors: getResourceDetectors(),
-        metricReaders: [metricReader],
-        traceExporter,
-        serviceName,
-    });
-
-    try {
-        sdk.start();
-        console.log(
-            `[otel] OpenTelemetry started for ${serviceName} -> ${withOtlpPath(endpoint, "/v1/traces")}`,
-        );
-        const tracer = trace.getTracer("pilotswarm-bootstrap");
-        const span = tracer.startSpan("worker.bootstrap");
-        span.setAttribute("service.name", serviceName);
-        span.setAttribute("telemetry.bootstrap", true);
-        span.end();
-    } catch (error) {
-        console.error("[otel] Failed to start OpenTelemetry SDK", error);
+    if (config.metrics === "otlp") {
+        const { OTLPMetricExporter } = await import("@opentelemetry/exporter-metrics-otlp-http");
+        const provider = new sdkMetrics.MeterProvider({
+            resource,
+            readers: [new sdkMetrics.PeriodicExportingMetricReader({
+                exporter: new OTLPMetricExporter({
+                    url: `${config.endpoint}/v1/metrics`,
+                    headers: config.headers,
+                    timeoutMillis: config.timeout,
+                }),
+                exportIntervalMillis: config.interval,
+                exportTimeoutMillis: config.metricTimeout,
+            })],
+        });
+        if (!metrics.setGlobalMeterProvider(provider)) throw new Error("[otel] Meter provider already registered.");
+        providers.push(provider);
     }
-
-    async function shutdown() {
-        try {
-            await sdk.shutdown();
-        } catch (error) {
-            console.error("[otel] Failed to shut down OpenTelemetry SDK", error);
-        }
+    if (config.traces === "otlp") {
+        const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
+        const provider = new sdkTracing.BasicTracerProvider({
+            resource,
+            spanProcessors: [new sdkTracing.BatchSpanProcessor(new OTLPTraceExporter({
+                url: `${config.endpoint}/v1/traces`,
+                headers: config.headers,
+                timeoutMillis: config.timeout,
+            }), { exportTimeoutMillis: config.timeout })],
+        });
+        if (!trace.setGlobalTracerProvider(provider)) throw new Error("[otel] Tracer provider already registered.");
+        providers.push(provider);
     }
+    console.info("[otel] Worker telemetry enabled.");
+    process.once("beforeExit", () => {
+        void shutdownTelemetry().catch(() => {
+            console.error("[otel] Telemetry shutdown failed.");
+            process.exitCode = 1;
+        });
+    });
+}
 
-    process.on("SIGTERM", shutdown);
-    process.once("beforeExit", shutdown);
+/** Call after draining the worker, before process.exit. Repeated calls share the same flush. */
+export function shutdownTelemetry() {
+    shuttingDown = true;
+    // The periodic reader reports export failures through diagnostics, not rejection.
+    return shutdownProviders();
 }

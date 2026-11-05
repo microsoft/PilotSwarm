@@ -61,6 +61,7 @@ COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/app/package.json ./packages/app/
 COPY packages/horizon-store/package.json ./packages/horizon-store/
 COPY --from=build /app/node_modules/ ./node_modules/
+COPY scripts/otel/ ./scripts/otel/
 
 # Copy built SDK dist + bundled plugins, worker script, and app plugins
 COPY --from=build /app/packages/sdk/dist/ ./packages/sdk/dist/
@@ -92,4 +93,4 @@ COPY deploy/config/model_providers.ghcp.json ./.model_providers.json
 # Run as the built-in node user (non-root)
 USER node
 
-ENTRYPOINT ["node", "packages/sdk/examples/worker.js"]
+ENTRYPOINT ["node", "--import", "./scripts/otel/register.mjs", "packages/sdk/examples/worker.js"]

@@ -31,10 +31,11 @@
  *                                     before start (for example a session workspace provider)
  *
  * Usage:
- *   node --env-file=.env.remote examples/worker.js
- *   # Or in Docker: ENTRYPOINT ["node", "examples/worker.js"]
+ *   node --env-file=.env.remote --import ./scripts/otel/register.mjs packages/sdk/examples/worker.js
+ *   # Production containers preload the same bootstrap before application imports.
  */
 
+import { shutdownTelemetry } from "../../../scripts/otel/register.mjs";
 import os from "node:os";
 import fs from "node:fs";
 import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
@@ -167,9 +168,23 @@ if (mcpNames.length > 0) {
 // turns finish and commit within the drain budget, release warm sessions,
 // then exit. PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS sets the budget (60s
 // default); the pod's terminationGracePeriodSeconds must exceed it.
-async function shutdown(signal) {
+let shutdownPromise;
+function shutdown(signal) {
+    shutdownPromise ??= drainAndExit(signal).catch(() => {
+        console.error("[worker] Shutdown failed after drain and telemetry flush.");
+        process.exitCode = 1;
+        process.exit(1);
+    });
+    return shutdownPromise;
+}
+
+async function drainAndExit(signal) {
     console.log(`[worker] ${signal} received, draining...`);
-    await worker.gracefulShutdown();
+    try {
+        await worker.gracefulShutdown();
+    } finally {
+        await shutdownTelemetry();
+    }
     process.exit(0);
 }
 

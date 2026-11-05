@@ -59,6 +59,7 @@ import {
 import { REGEN_DISTILLER_SERVICE_KIND } from "./distiller-tools.js";
 import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
+import { measureLifecycle, runtimeMetrics, type RuntimeMetricUsage } from "./runtime-metrics.js";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
@@ -1468,6 +1469,7 @@ export function registerActivities(
             /** 1.0.81 (runTurnV4): steers carried from an earlier turn. Used from phase A4 on. */
             carriedSteers?: import("./types.js").LateSteer[];
         },
+        turnUsage: RuntimeMetricUsage,
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
         // showed turns whose ActivityScheduled input carried refs executing
@@ -1479,11 +1481,7 @@ export function registerActivities(
             : activityCtx.traceInfo(message);
 
         const modelSummary = await sessionManager.getModelSummary(input.sessionId);
-        const turnTelemetry = {
-            tokensInput: 0,
-            tokensOutput: 0,
-            tokensCacheRead: 0,
-            tokensCacheWrite: 0,
+        const turnTelemetry = Object.assign(turnUsage, {
             toolCalls: 0,
             toolErrors: 0,
             toolNames: new Set<string>(),
@@ -1494,7 +1492,7 @@ export function registerActivities(
             // default leaves it undefined, which is why turn_completed used to
             // report model: null and the portal rendered "Mod: unknown".
             observedModel: null as string | null,
-        };
+        });
         const turnStartedAt = new Date();
         const turnSpan = otelTrace.getTracer("pilotswarm-turns").startSpan("session.turn", {
             attributes: {
@@ -2303,11 +2301,11 @@ export function registerActivities(
                     );
                 }
                 try {
-                    session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
+                    session = await measureLifecycle("hydration", () => sessionManager.getOrCreate(input.sessionId, runConfig, {
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
-                    });
+                    }), () => "lossy_handoff");
                 } catch (recoveryErr: any) {
                     const recoveryMessage = recoveryErr?.message || String(recoveryErr);
                     const fatalMessage = isMissingSessionStateErrorMessage(recoveryMessage)
@@ -4065,7 +4063,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     error => activityCtx.traceInfo(`[runTurn.nativeTasks] publish failed for ${input.sessionId}: ${(error as any)?.message ?? error}`),
                 )
                 : null;
-            const onEvent = catalog
+            const persistEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
                     if (event.eventType === "assistant.live_tick") {
                         if (liveTurnPublisher) liveTurnPublisher.enqueue(event.data as LiveTurnPayload);
@@ -4113,26 +4111,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             turnTelemetry.observedModel = eventModel;
                         }
                     }
-                    if (event.eventType === "assistant.usage") {
-                        const usageUpsert = buildUsageSummaryUpsert(event.data);
-                        if (usageUpsert) {
-                            turnTelemetry.tokensInput += usageUpsert.tokensInputIncrement ?? 0;
-                            turnTelemetry.tokensOutput += usageUpsert.tokensOutputIncrement ?? 0;
-                            turnTelemetry.tokensCacheRead += usageUpsert.tokensCacheReadIncrement ?? 0;
-                            turnTelemetry.tokensCacheWrite += usageUpsert.tokensCacheWriteIncrement ?? 0;
-                        }
-                    } else if (event.eventType === "tool.execution_start") {
-                        turnTelemetry.toolCalls += 1;
-                        const eventData = normalizeEventData(event.data as Record<string, unknown> | undefined);
-                        const toolName = typeof eventData?.toolName === "string"
-                            ? eventData.toolName
-                            : typeof eventData?.name === "string"
-                                ? eventData.name
-                                : undefined;
-                        if (toolName) turnTelemetry.toolNames.add(toolName);
-                    } else if (event.eventType === "tool.execution_complete" && isFailureToolCompletion(event.data)) {
-                        turnTelemetry.toolErrors += 1;
-                    }
                     // Best-effort with one transient retry. trackEventWrite tracks
                     // the wrapped promise so the post-turn barrier waits for the
                     // retry to settle before emitting turn_completed.
@@ -4147,6 +4125,29 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (event.eventType !== "native.task_updated") trackEventWrite(writePromise);
                 }
                 : undefined;
+            // Observe once per SDK event, independent of CMS availability or write retries.
+            const onEvent = (event: { eventType: string; data: unknown }) => {
+                if (event.eventType === "assistant.usage") {
+                    const usageUpsert = buildUsageSummaryUpsert(event.data);
+                    if (usageUpsert) {
+                        turnTelemetry.tokensInput += usageUpsert.tokensInputIncrement ?? 0;
+                        turnTelemetry.tokensOutput += usageUpsert.tokensOutputIncrement ?? 0;
+                        turnTelemetry.tokensCacheRead += usageUpsert.tokensCacheReadIncrement ?? 0;
+                        turnTelemetry.tokensCacheWrite += usageUpsert.tokensCacheWriteIncrement ?? 0;
+                    }
+                } else if (event.eventType === "tool.execution_start") {
+                    turnTelemetry.toolCalls += 1;
+                    const eventData = normalizeEventData(event.data as Record<string, unknown> | undefined);
+                    const toolName = typeof eventData?.toolName === "string" ? eventData.toolName
+                        : typeof eventData?.name === "string" ? eventData.name : undefined;
+                    if (toolName) turnTelemetry.toolNames.add(toolName);
+                } else if (event.eventType === "tool.execution_complete") {
+                    const failed = isFailureToolCompletion(event.data);
+                    if (failed) turnTelemetry.toolErrors += 1;
+                    runtimeMetrics().toolCall(failed ? "error" : "success");
+                }
+                persistEvent?.(event);
+            };
 
             // Record the user prompt as a CMS event before running the turn.
             // Skip internal timer continuation prompts — they're system-generated, not user input.
@@ -4594,11 +4595,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
 
                 try {
-                    session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
+                    session = await measureLifecycle("hydration", () => sessionManager.getOrCreate(input.sessionId, runConfig, {
                         turnIndex: 0,
                         trace,
                         lockHeld: true,
-                    });
+                    }), () => "lossy_handoff");
                 } catch (err: any) {
                     const recoveryMessage = err?.message || String(err);
                     const fatalMessage =
@@ -4979,8 +4980,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
-    const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(false, activityCtx, input);
-    const runTurnV4Handler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(true, activityCtx, input);
+    const observeRunTurn = async (turnControlPath: boolean, activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => {
+        const usage: RuntimeMetricUsage = { tokensInput: 0, tokensOutput: 0, tokensCacheRead: 0, tokensCacheWrite: 0 };
+        const finish = runtimeMetrics().startTurn();
+        let result: TurnResult | null = null;
+        try {
+            result = await runTurnImpl(turnControlPath, activityCtx, input, usage);
+            return result;
+        } finally {
+            finish(result, usage, result === null && Boolean(activityCtx.isCancelled?.()));
+        }
+    };
+    const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => observeRunTurn(false, activityCtx, input);
+    const runTurnV4Handler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => observeRunTurn(true, activityCtx, input);
     registerHandoffActivity(runtime, "runTurn", runTurnHandler);
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
@@ -5037,6 +5049,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const reason = input.reason ?? "unknown";
         const eventData = normalizeEventData(input.eventData);
         const trace = activityTrace(activityCtx, "dehydrateSession");
+        const finishDehydrationMetrics = runtimeMetrics().startLifecycle("dehydration");
+        let dehydrationResult: "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" = "error";
+        let checkpointFallback = false;
         const dehydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.dehydration", {
             attributes: {
                 "pilotswarm.session_id": input.sessionId,
@@ -5048,7 +5063,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         try {
             try {
-                await sessionManager.dehydrate(input.sessionId, reason, { trace });
+                await sessionManager.dehydrate(input.sessionId, reason, {
+                    trace,
+                    onCheckpointFallback: () => { checkpointFallback = true; },
+                });
             } catch (err: any) {
                 const message = err?.message || String(err);
                 if (isMissingDehydrateSnapshotErrorMessage(message)) {
@@ -5070,6 +5088,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...(typeof err?.sessionStoreError === "string" ? { sessionStoreError: err.sessionStoreError } : {}),
                     };
                     trace(`session=${input.sessionId} lossy handoff reason=${reason} error=${message}`);
+                    dehydrationResult = "lossy_handoff";
                     dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "lossy_handoff");
                     dehydrationSpan.setAttribute("pilotswarm.lossy_handoff", true);
                     dehydrationSpan.setStatus({ code: SpanStatusCode.ERROR, message });
@@ -5111,6 +5130,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
 
             trace(`session=${input.sessionId} complete reason=${reason}`);
+            dehydrationResult = checkpointFallback ? "checkpoint_fallback" : "completed";
 
             dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "completed");
             if (catalog) {
@@ -5136,6 +5156,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 });
             }
         } finally {
+            finishDehydrationMetrics(dehydrationResult);
             dehydrationSpan.end();
         }
     });
@@ -5162,6 +5183,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: { sessionId: string },
     ): Promise<void> => {
         const trace = activityTrace(activityCtx, "hydrateSession");
+        const finishHydrationMetrics = runtimeMetrics().startLifecycle("hydration");
+        let hydrationResult: "completed" | "error" = "error";
         const hydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.hydration", {
             attributes: {
                 "pilotswarm.session_id": input.sessionId,
@@ -5180,6 +5203,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 throw error;
             }
             trace(`session=${input.sessionId} complete`);
+            hydrationResult = "completed";
             hydrationSpan.setAttribute("pilotswarm.hydration_result", "completed");
             if (catalog) {
                 // Best-effort: metric summary and the session.hydrated event are
@@ -5202,6 +5226,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 );
             }
         } finally {
+            finishHydrationMetrics(hydrationResult);
             hydrationSpan.end();
         }
     });
