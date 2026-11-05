@@ -39,6 +39,21 @@ function consumerLock(source, manifest, archive, integrity) {
     return { name: "native-consumer", version: "1.0.0", lockfileVersion: 3, requires: true, packages };
 }
 
+async function installedDependencyManifest(directory, definition) {
+    try { return JSON.parse(await fs.readFile(path.join(directory, "package.json"), "utf8")); }
+    catch (error) {
+        if (definition.optional && error.code === "ENOENT") return undefined;
+        throw error;
+    }
+}
+
+test("absent optional platform packages remain npm's responsibility; required inputs fail explicitly", async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ps-consumer-optional-"));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    assert.equal(await installedDependencyManifest(path.join(root, "uninstalled-platform"), { optional: true }), undefined);
+    await assert.rejects(installedDependencyManifest(path.join(root, "missing-required"), {}), { code: "ENOENT" });
+});
+
 test("a fresh tarball installation uses only shipped public exports, types and host CLI", { timeout: 300_000 }, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ps-public-native-"));
     const children = [];
@@ -107,7 +122,8 @@ test("a fresh tarball installation uses only shipped public exports, types and h
         const source = target.startsWith("node_modules/pilotswarm-sdk/node_modules/")
             ? "packages/sdk/" + target.slice("node_modules/pilotswarm-sdk/".length) : target;
         const directory = path.resolve(sdk, "..", "..", ...source.split("/"));
-        const installedManifest = JSON.parse(await fs.readFile(path.join(directory, "package.json"), "utf8"));
+        const installedManifest = await installedDependencyManifest(directory, definition);
+        if (!installedManifest) continue;
         assert.equal(installedManifest.version, definition.version, "Local dependency restoration must retain the locked version");
         const destination = path.join(root, "dependency-tarballs", String(locallyRestored.length));
         await fs.mkdir(destination, { recursive: true });
