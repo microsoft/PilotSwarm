@@ -2679,11 +2679,19 @@ test("M-18 (UI-8): the step log shows the chosen run's results only, through liv
     const main = page.locator(".ps-workflow-main");
     const picker = main.getByRole("combobox", { name: "Workflow run" });
     const log = page.locator('.ps-workflow-side-panel[data-panel="log"] .ps-workflow-log').filter({ visible: true });
-    /** The log shows exactly the values of `shown` (and none of `hidden`), and the session's notice. */
+    /**
+     * The log shows exactly the values of `shown` (and none of `hidden`), and the session's notice. Its rows are collapsed
+     * (<details>): a step's output is in a row's body, rendered only once the row is open, so every closed row is opened
+     * first (again on each try: a live append or a re-render brings closed rows) and only then is the text read.
+     */
     const expectLog = async (shown, hidden) => {
-        for (const value of shown) await expect(log).toContainText(value);
-        for (const value of hidden) await expect(log).not.toContainText(value);
-        await expect(log).toContainText(/recovery requested/i);
+        await expect.poll(async () => {
+            const closed = log.locator("details:not([open]) > summary");
+            for (let left = await closed.count(); left > 0; left--) await closed.first().click().catch(() => {});
+            const text = await log.innerText();
+            return { missing: shown.filter(value => !text.includes(value)), unexpected: hidden.filter(value => text.includes(value)),
+                notice: /recovery requested/i.test(text) };
+        }, { timeout: 10_000 }).toEqual({ missing: [], unexpected: [], notice: true });
     };
     const open = async () => {
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);

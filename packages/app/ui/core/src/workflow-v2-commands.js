@@ -294,6 +294,19 @@ export function workflowV2VariableEditBehind(base, revision) {
     return { base, revision, text: `The variables changed since you started editing (revision ${base}, now ${revision}).` };
 }
 
+/**
+ * Adversarial review R3-UI-2: whether a variables update (`input`: { expectedKvRevision, set?, delete? }, as the TUI's
+ * forms send it) is exactly the unconfirmed set_vars command it would retry (`command`, the view's last run command): the
+ * same run, the same revision and the same set and delete, as sendWorkflowRunCommand compares them (it then reuses that
+ * command's operation id). Only such a retry may go out at a revision the view has moved past; any other edit keeps the
+ * "behind" check (Keep or Load first). Pure.
+ */
+export function workflowV2VariableExactRetry(command, runId, input) {
+    if (!isRecord(command) || command.phase !== "unconfirmed" || command.operation !== "set_vars" || (command.runId ?? null) !== (runId ?? null)) return false;
+    const checked = workflowV2RunCommandArgs("set_vars", input);
+    return checked.ok && JSON.stringify(command.args ?? null) === JSON.stringify(checked.args);
+}
+
 /** The portal's variables form when nothing is typed: no name, no value, no revision of its own (R2-UI-1). */
 export const WORKFLOW_V2_VARIABLE_EDIT_EMPTY = Object.freeze({ key: "", value: "", base: null, listed: null, notice: null, generation: 0 });
 

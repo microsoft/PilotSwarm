@@ -10,17 +10,31 @@ import {
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
-    workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2VariableEditBehind, workflowV2RevisionCompare, workflowV2AnswerSourceText,
+    workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2VariableDraft, workflowV2VariableEditBehind, workflowV2VariableExactRetry,
+    workflowV2VariableRemoval, workflowV2RevisionCompare, workflowV2AnswerSourceText,
 } from "./workflow-v2-commands.js";
 
 /**
  * R2-UI-1: a variables form's edit that started at an older revision than the view shows (null otherwise, and while
- * nothing is typed, or for an update whose answer never came: Enter sends it again as itself), with what to do about it.
+ * nothing is typed, or for exactly the update whose answer never came: Enter sends it again as itself), with what to do
+ * about it. R3-UI-2: only that exact update (`exactRetry`) is let through; an edited one is behind like any other.
  */
-function variablesBehind(modal, variables, dirty, notice) {
-    if (!dirty || (notice?.retry === true)) return null;
+function variablesBehind(modal, variables, dirty, exactRetry) {
+    if (!dirty || exactRetry) return null;
     const behind = workflowV2VariableEditBehind(modal.baseRevision, variables?.revision);
     return behind ? { ...behind, help: `${behind.text} ctrl-l loads the new values; ctrl-k keeps your edit to save it over them.` } : null;
+}
+
+/**
+ * Adversarial review R3-UI-2: which of a variables form's updates (`payloads`, each { set } or { delete } or both, as the
+ * controller sends them) is exactly the set_vars update whose answer never came (the view's run command): the same run,
+ * the same revision (the form's own, else the view's, as the controller sends it) and the same set and delete. Null when
+ * none is. Pure.
+ */
+function variableRetryOf(projection, modal, variables, payloads) {
+    const revision = Number.isSafeInteger(modal.baseRevision) ? modal.baseRevision : variables?.revision;
+    return payloads.find(payload => payload !== null
+        && workflowV2VariableExactRetry(projection.runCommand, modal.runId, { expectedKvRevision: revision, ...payload })) ?? null;
 }
 
 /**
@@ -148,7 +162,8 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     // The shown test run's answers and clock, from that run's own read model only, as the portal's answer form and clock.
     const testResponder = v2 ? workflowV2TestResponder(readModel, runCommand) : null;
     return {
-        definition, nodes, v2, status, live, runPicker, runControls, runNotice, runVariables, runReadModel: v2 ? readModel ?? null : null,
+        definition, nodes, v2, status, live, runPicker, runControls, runCommand: v2 ? runCommand : null, runNotice, runVariables,
+        runReadModel: v2 ? readModel ?? null : null,
         draftEditor, draftBuffer, draftEdit, publication, testControls, testResponder, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
         // The execution whose own result a person chose ({ runId, stateId, executionId }; it applies only to that run and state).
         selectedExecution: isPlainRecord(safeView.selectedExecution) ? safeView.selectedExecution : null,
@@ -450,11 +465,20 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
         if (variables.pending) add("Saving…", "yellow");
     }
     const notice = projection.runNotice?.operation === "set_vars" ? projection.runNotice : null;
+    // R3-UI-2: what the form holds now is the update whose answer never came only when it is that exact update (Enter's
+    // set, or ctrl-r's removal); anything else is a new update, behind when the view has moved past its revision.
+    const setDraft = workflowV2VariableDraft(modal.name, modal.value);
+    const removal = workflowV2VariableRemoval(modal.name);
+    const retry = sameRun && notice?.retry ? variableRetryOf(projection, modal, variables,
+        [setDraft.ok ? { set: setDraft.set } : null, removal.ok ? { delete: removal.delete } : null]) : null;
+    const dirty = Boolean(String(modal.name ?? "") || String(modal.value ?? ""));
+    const behind = sameRun ? variablesBehind(modal, variables, dirty, retry !== null) : null;
     if (notice) {
         addWrapped(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
-        if (notice.retry) addWrapped("Enter (or ctrl-r) sends the same update again; the server applies it once.", "gray", "  ");
+        if (retry?.set) addWrapped("Enter sends the same update again; the server applies it once.", "gray", "  ");
+        else if (retry?.delete) addWrapped("ctrl-r sends the same removal again (it asks first); the server applies it once.", "gray", "  ");
+        else if (notice.retry && dirty && !behind) addWrapped("The form no longer holds that update, so Enter sends a new one.", "gray", "  ");
     }
-    const behind = sameRun ? variablesBehind(modal, variables, Boolean(String(modal.name ?? "") || String(modal.value ?? "")), notice) : null;
     if (behind) addWrapped(behind.help, "yellow");
     // What the last ctrl-l did when it could not simply load the value (re-check RC-1), and an earlier save accepted after
     // the person typed on (re-check UI-RC2-6).
@@ -512,11 +536,15 @@ export function selectWorkflowVariableBatchModal(state, maxWidth = 100, viewport
         if (variables.pending) add("Saving…", "yellow");
     }
     const notice = projection.runNotice?.operation === "set_vars" ? projection.runNotice : null;
+    // R3-UI-2: only the exact update whose answer never came goes out again past a newer revision; an edited one is new.
+    const typed = setText.trim() || removeText.trim() ? workflowV2VariableBatchDraft(setText, removeText) : null;
+    const retry = sameRun && notice?.retry && typed?.ok ? variableRetryOf(projection, modal, variables, [{ set: typed.set, delete: typed.delete }]) : null;
+    const behind = sameRun ? variablesBehind(modal, variables, typed !== null, retry !== null) : null;
     if (notice) {
         addWrapped(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
-        if (notice.retry) addWrapped("Enter sends the same update again; the server applies it once.", "gray", "  ");
+        if (retry) addWrapped("Enter sends the same update again; the server applies it once.", "gray", "  ");
+        else if (notice.retry && typed !== null && !behind) addWrapped("The form no longer holds that update, so Enter sends a new one.", "gray", "  ");
     }
-    const behind = sameRun ? variablesBehind(modal, variables, Boolean(setText.trim() || removeText.trim()), notice) : null;
     if (behind) addWrapped(behind.help.replace("ctrl-l loads the new values", "ctrl-l starts over at the new revision"), "yellow");
     if (typeof modal.saveNotice === "string" && modal.saveNotice) addWrapped(modal.saveNotice, "yellow");
     if (typeof modal.error === "string" && modal.error) addWrapped(modal.error, "red");

@@ -378,6 +378,57 @@ test("a changed revision is refused and read again; the edit stays at its own re
     assert.equal(modalOf(h.store).type, "workflowView", "accepted: back to the view");
 });
 
+// Adversarial review R3-UI-2: only the exact update whose answer never came goes out again past a newer revision; any
+// other batch is behind like every other (ctrl-k or ctrl-l first).
+test("R3-UI-2: after an unanswered update and a refresh to a newer revision, a changed batch sends nothing until ctrl-k; the unchanged one is sent again as itself", async () => {
+    const lost = async () => { throw Object.assign(new Error("upstream unavailable"), { status: 503 }); };
+    const h = await opened(model(), [lost, lost]);
+    await open(h);
+    fill(h, '{"a": 5}', "");
+    await send(h);
+    await settle();
+    const [first] = h.sent();
+    assert.equal(first.expected_kv_revision, 3);
+    assert.equal(modalOf(h.store).type, "workflowVariableBatch", "no answer: the form stays");
+    // The same run is read again at revision 4.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model({ vars: { a: 5, "b c": "x" }, revision: 4 }), readModelRunId: null } });
+    assert.ok(joined(batch(h.store).lines).includes("Enter sends the same update again; the server applies it once."), joined(batch(h.store).lines));
+    assert.ok(texts(h.store).includes("Enter sends one update at revision 3:"), "the same update, at its own revision");
+
+    // Changed (b added, or a removal added): a new update over revision 3's values, so it is behind. Enter sends nothing.
+    const behind = "The variables changed since you started editing (revision 3, now 4).";
+    for (const [set, remove] of [['{"a": 5, "b": 1}', ""], ['{"a": 5}', '["b c"]']]) {
+        fill(h, set, remove);
+        const shown = batch(h.store);
+        assert.ok(joined(shown.lines).includes(`${behind} ctrl-l starts over at the new revision; ctrl-k keeps your edit to save it over them.`), joined(shown.lines));
+        assert.ok(!joined(shown.lines).includes("sends the same update again"));
+        await send(h);
+        assert.equal(modalOf(h.store).type, "workflowVariableBatch", "no confirm dialog either");
+        assert.equal(modalOf(h.store).error, `${behind} Nothing was sent: ctrl-l loads the new values, or ctrl-k keeps your edit to save it over them.`);
+    }
+    assert.equal(h.sent().length, 1, "nothing was sent");
+
+    // Back to exactly the unanswered update: Enter sends it again as itself, with its operation id and revision 3.
+    fill(h, '{"a": 5}', "");
+    await send(h);
+    await settle();
+    assert.deepEqual(h.sent()[1], first);
+
+    // Its answer never came again. ctrl-k keeps a changed batch: a new update at revision 4, with a new operation id.
+    fill(h, '{"a": 6}', "");
+    assert.ok(joined(batch(h.store).lines).includes(behind));
+    await send(h);
+    assert.equal(h.sent().length, 2, "behind: nothing was sent");
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP);
+    assert.ok(joined(batch(h.store).lines).includes("The form no longer holds that update, so Enter sends a new one."), joined(batch(h.store).lines));
+    assert.ok(texts(h.store).includes("Enter sends one update at revision 4:"));
+    await send(h);
+    const third = h.sent()[2];
+    assert.notEqual(third.operation_id, first.operation_id);
+    assert.deepEqual(withoutId(third), { operation: "set_vars", run_id: RUN, set: { a: 6 }, expected_kv_revision: 4 });
+    assert.equal(modalOf(h.store).type, "workflowView", "accepted: back to the view");
+});
+
 // Adversarial review R2-UI-1: the several-variables form keeps the revision its edit started from across a refresh of the run.
 test("R2-UI-1: a refresh to a newer revision keeps the batch at its own revision; ctrl-l starts over at the new one", async () => {
     const h = await opened(model());

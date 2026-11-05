@@ -672,6 +672,15 @@ function executionFromEvent(type, data) {
         outputPreview: data.outputPreview };
 }
 
+/** When an event was recorded (its envelope's createdAt, else its timestamp), in milliseconds; undefined when it says none. */
+function eventTime(event) {
+    for (const value of [event?.createdAt, event?.timestamp]) {
+        const ms = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
+        if (Number.isFinite(ms)) return ms;
+    }
+    return undefined;
+}
+
 function collectExecutions(events, runId, run, overlay) {
     const executions = new Map();
     let ignoredEvents = 0;
@@ -706,7 +715,12 @@ function collectExecutions(events, runId, run, overlay) {
                 ignoredEvents++;
                 continue;
             }
-            if (data.runId === runId) add(executionFromEvent(event.eventType, data), "event");
+            if (data.runId !== runId) continue;
+            const execution = executionFromEvent(event.eventType, data);
+            // Adversarial review R3-UI-1: a visit's end known from its event has that event's time, so it is ordered among
+            // the ends a read gives (latestEnded), never ranked below all of them.
+            if (execution.status === "completed") execution.observedAt = eventTime(event);
+            add(execution, "event");
         }
     } else if (!runId) {
         // Only events that name no run are unreadable; an event of a run that was left out belongs to that run.
@@ -927,11 +941,42 @@ export function workflowV2VisitScope(execution) {
     return text(execution?.scopeId) ?? "root";
 }
 
-/** When a visit ended, to order ended visits across scopes (the read model's completedAt); -Infinity when not known. */
-const endedAt = item => {
-    const time = typeof item?.completedAt === "string" ? Date.parse(item.completedAt) : NaN;
-    return Number.isFinite(time) ? time : -Infinity;
+const timeOf = value => {
+    const ms = typeof value === "string" ? Date.parse(value) : typeof value === "number" ? value : NaN;
+    return Number.isFinite(ms) ? ms : null;
 };
+
+/**
+ * Which of two ended visits ended later (> 0: `a`; 0 when the times do not tell), to order ended visits across scopes
+ * (adversarial review R3-UI-1): by the times both have, first when the events that ended both were recorded
+ * (observedAt), else when the read model says both ended (completedAt), else whichever end time each has. A visit known
+ * only from its event has its event's time, so a stale read's older end never outranks it. No time: earliest.
+ */
+function compareEnded(a, b) {
+    const seenA = timeOf(a?.observedAt);
+    const seenB = timeOf(b?.observedAt);
+    if (seenA !== null && seenB !== null) return seenA - seenB;
+    const doneA = timeOf(a?.completedAt);
+    const doneB = timeOf(b?.completedAt);
+    if (doneA !== null && doneB !== null) return doneA - doneB;
+    const atA = doneA ?? seenA ?? -Infinity;
+    const atB = doneB ?? seenB ?? -Infinity;
+    return atA === atB ? 0 : atA > atB ? 1 : -1;
+}
+
+/**
+ * The latest of ended visits (R3-UI-1: one end-time order for a step's result, which the graph, Output and the TUI's f
+ * show, and for its branch picker's default ended branch): the one that ended last (compareEnded). Only when no end time
+ * tells does each keep its own earlier rule: the step's result the higher visit number, then the one listed last
+ * (`byNumber`); the branch picker the one listed last (its highest-numbered branch, review UI7-6). Null when none. Pure.
+ */
+function latestEnded(items, { byNumber = true } = {}) {
+    return items.filter(Boolean).reduce((latest, item) => {
+        if (!latest) return item;
+        const order = compareEnded(item, latest);
+        return order > 0 || (order === 0 && (!byNumber || (item.ordinal ?? 0) >= (latest.ordinal ?? 0))) ? item : latest;
+    }, null);
+}
 
 /**
  * Re-check RC-5: what a branch step not reached yet in its parallel step's current visit says instead of a result:
@@ -977,9 +1022,7 @@ function nodeView(node, executions, context) {
     const byBranch = (a, b) => (a.index ?? Infinity) - (b.index ?? Infinity);
     const running = current.filter(scope => scope.pending).sort(byBranch);
     const pending = running[0]?.pending;
-    const latestDone = current.map(scope => scope.latestDone).filter(Boolean)
-        .reduce((latest, item) => (!latest || endedAt(item) > endedAt(latest) || (endedAt(item) === endedAt(latest) && (item.ordinal ?? 0) >= (latest.ordinal ?? 0)) ? item : latest), null)
-        ?? undefined;
+    const latestDone = latestEnded(current.map(scope => scope.latestDone)) ?? undefined;
     // A pending execution older than a completed one of its own scope lost its completion from the loaded history.
     const stalePending = scopes.some(scope => scope.items.some(item => item.status === "pending" && item !== scope.pending));
     const reachedByRun = node.type === "terminal" && context.terminalState === node.id;
@@ -1194,12 +1237,13 @@ export function workflowV2SelectionAfterBranchChange(selection, stateId) {
  * Re-check RC-6: whether a saved History choice (`selection`) still applies to a branch step as it is shown now. A choice
  * records the parallel step's visit that was current (`parallelExecutionId`, the node view's `parallelVisitId`, known
  * also while the step is not reached in it: re-check UI-RC2-4) and, in the portal, the branch chosen in Details
- * (`branchIndex`) when it was made; a new parallel visit, or another branch chosen in Details since, ends it, and the step
+ * (`branchIndex`) when it was made: only one a person chose there, never the default branch (adversarial review R3-UI-3,
+ * null then); a new parallel visit, or another branch chosen in Details since, ends it, and the step
  * shows that branch's latest result again. A branch change in Details also clears the choice (re-check UI-RC2-3), so a
  * round trip back to its branch does not bring it back. A choice without these fields (made before them) is kept. A
- * choice made while the step had no branch to choose (`branchIndex` null: not reached yet in that parallel visit) is not
- * ended by the default branch its first reach brings (re-check UI-RC3-1); only a branch chosen in Details, which clears
- * it, or another parallel visit ends it. Pure.
+ * choice made while no branch was chosen in Details (`branchIndex` null: the default branch was shown, or the step was not
+ * reached yet in that parallel visit) is not ended when the default branch moves (re-check UI-RC3-1, R3-UI-3); only a
+ * branch chosen in Details, which clears it, or another parallel visit ends it. Pure.
  */
 function selectionStillApplies(node, selection, branch) {
     // Re-check UI-RC2-4: compared with the parallel step's visit now, also while no branch of it has reached the step.
@@ -1596,7 +1640,8 @@ export function workflowV2BranchCounts(total, progress, context) {
  * the step (`node`) and the run's status (`run`), `status` (that visit's state, as the step's own is said) and
  * `lastOutcome` (the latest ended visit in that branch: its outcome and result kind), so the details say the chosen
  * branch's status and outcome, never another branch's (review UI7-3). The default is the first branch where the step
- * runs; else, as the read model records no end time (visit numbers count within a branch, not across branches), the
+ * runs; else the branch whose visit ended last, by the end time its read row or its event gives (R3-UI-1, the order
+ * of the step's own result); when none tells (visit numbers count within a branch, not across branches), the
  * highest-numbered branch where it ended (review UI7-6). Null when the parallel step has no shown visit or no branch
  * reached the step. Pure.
  */
@@ -1628,7 +1673,10 @@ export function workflowV2BranchChoices(executions, parallelVisit, { node = null
         };
     });
     const running = choices.find(choice => choice.execution.status === "pending");
-    const ended = choices.filter(choice => choice.execution.status === "completed").at(-1);
+    // R3-UI-1: the branch whose visit ended last, in the step's own end-time order (latestEnded); the highest-numbered
+    // when no end time tells.
+    const last = latestEnded(choices.filter(choice => choice.execution.status === "completed").map(choice => choice.execution), { byNumber: false });
+    const ended = last ? choices.find(choice => choice.execution === last) : undefined;
     return { parallelExecutionId: parallelVisit.id, choices, defaultIndex: (running ?? ended ?? choices[0]).index };
 }
 

@@ -12,8 +12,8 @@ import {
 import {
     workflowV2CommandNamesRun, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm,
     workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2ScenarioDraft, workflowV2VariableBatchDraft,
-    workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2VariableEditBehind, workflowV2VariableListed, workflowV2VariableLoad,
-    WORKFLOW_V2_VARIABLE_EARLIER_SAVED,
+    workflowV2VariableDraft, workflowV2VariableRemoval, workflowV2VariableEditBehind, workflowV2VariableExactRetry, workflowV2VariableListed,
+    workflowV2VariableLoad, WORKFLOW_V2_VARIABLE_EARLIER_SAVED,
     workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
     workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId, workflowV2StepInputKey, workflowV2StepQuestion,
 } from "./workflow-v2-commands.js";
@@ -7246,7 +7246,7 @@ export class PilotSwarmUiController {
         if (variables.busy) return refuse("Another command for this workflow is being sent.");
         const draft = remove ? workflowV2VariableRemoval(modal.name) : workflowV2VariableDraft(modal.name, modal.value);
         if (!draft.ok) return refuse(draft.error);
-        const base = this.workflowVariableBase(modal, variables);
+        const base = this.workflowVariableBase(modal, variables, remove ? { delete: draft.delete } : { set: draft.set });
         if (base.behind) return refuse(`${base.behind.text} Nothing was sent: ctrl-l loads the new values, or ctrl-k keeps your edit to save it over them.`);
         this.updateWorkflowVariableForm({ error: null });
         const result = await this.sendWorkflowRunCommand(modal.sessionId, { operation: "set_vars", runId: modal.runId,
@@ -7258,12 +7258,13 @@ export class PilotSwarmUiController {
     /**
      * R2-UI-1: the revision a variables form sends its update at (the one its edit started from; the view's for a form
      * opened before that was kept), and whether its edit is behind the view's. An update whose answer never came is sent
-     * again as itself, at its own revision, whatever the view shows now (its operation id lets the server apply it once).
+     * again as itself, at its own revision, whatever the view shows now (its operation id lets the server apply it once);
+     * only that exact update (R3-UI-2: the same run, revision, set and delete, `payload` here): an edited one is behind.
      */
-    workflowVariableBase(modal, variables) {
+    workflowVariableBase(modal, variables, payload = null) {
         const revision = Number.isSafeInteger(modal.baseRevision) ? modal.baseRevision : variables.revision;
-        const notice = workflowViewProjectionFor(this.getState(), modal.sessionId).runNotice;
-        const retrying = notice?.operation === "set_vars" && notice.retry === true;
+        const command = this.getState().ui.workflowViews?.[modal.sessionId]?.runCommand ?? null;
+        const retrying = payload !== null && workflowV2VariableExactRetry(command, modal.runId, { expectedKvRevision: revision, ...payload });
         return { revision, behind: retrying ? null : workflowV2VariableEditBehind(revision, variables.revision) };
     }
 
@@ -7381,7 +7382,7 @@ export class PilotSwarmUiController {
         if (variables.busy) return refuse("Another command for this workflow is being sent.");
         const draft = workflowV2VariableBatchDraft(modal.set, modal.remove);
         if (!draft.ok) return refuse(draft.error);
-        const base = this.workflowVariableBase(modal, variables);
+        const base = this.workflowVariableBase(modal, variables, { set: draft.set, delete: draft.delete });
         if (base.behind) return refuse(`${base.behind.text} Nothing was sent: ctrl-l loads the new values, or ctrl-k keeps your edit to save it over them.`);
         this.updateWorkflowModal("workflowVariableBatch", { error: null });
         const result = await this.sendWorkflowRunCommand(modal.sessionId, { operation: "set_vars", runId: modal.runId,

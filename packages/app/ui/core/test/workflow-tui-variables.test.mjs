@@ -288,10 +288,66 @@ test("a changed revision is refused and read again; the edit stays at its own re
     await sending;
     const lost = `The variables update for run ${RUN} may not have reached the workflow: upstream unavailable. Retry sends the same command again.`;
     assert.equal(statusOf(h.store), lost);
-    assert.ok(joined(form(h.store).lines).includes("Enter (or ctrl-r) sends the same update again; the server applies it once."));
+    assert.ok(joined(form(h.store).lines).includes("Enter sends the same update again; the server applies it once."));
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     const [, second, third] = h.sent();
     assert.deepEqual(third, second);
+    assert.equal(h.store.getState().ui.modal.type, "workflowView", "accepted: back to the view");
+});
+
+// Adversarial review R3-UI-2: only the exact update whose answer never came goes out again past a newer revision; any
+// other edit is behind like every other (ctrl-k or ctrl-l first).
+test("R3-UI-2: after an unanswered update and a refresh to a newer revision, a changed edit sends nothing; the unchanged update is sent again as itself", async () => {
+    const lost = async () => { throw Object.assign(new Error("upstream unavailable"), { status: 503 }); };
+    const h = await opened(model(), [lost, lost]);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    type(h, "a");
+    h.controller.switchWorkflowVariableField();
+    type(h, "5");
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    const [first] = h.sent();
+    assert.equal(first.expected_kv_revision, 3);
+    assert.equal(h.store.getState().ui.modal.type, "workflowVariable", "no answer: the form stays");
+    // The same run is read again at revision 4 (the lost update may have been applied, or someone else changed a).
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model({ vars: { a: 5, "b c": "x" }, revision: 4 }), readModelRunId: null } });
+    let shown = form(h.store);
+    assert.equal(shown.title, `Variables · run ${RUN} · revision 4`);
+    assert.ok(joined(shown.lines).includes("Enter sends the same update again; the server applies it once."), joined(shown.lines));
+    assert.ok(!joined(shown.lines).includes("changed since you started editing"), "the same update is not behind");
+
+    // Changed (a = 50): a new update over revision 3's values, so it is behind. Neither Enter nor ctrl-r sends anything.
+    type(h, "0");
+    shown = form(h.store);
+    const behind = "The variables changed since you started editing (revision 3, now 4).";
+    assert.ok(joined(shown.lines).includes(`${behind} ctrl-l loads the new values; ctrl-k keeps your edit to save it over them.`), joined(shown.lines));
+    assert.ok(!joined(shown.lines).includes("sends the same update again"));
+    assert.equal(shown.hint, "ctrl-l load the new values · ctrl-k keep your edit · Esc back to the view");
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(h.store.getState().ui.modal.error, `${behind} Nothing was sent: ctrl-l loads the new values, or ctrl-k keeps your edit to save it over them.`);
+    await h.controller.submitWorkflowVariable({ remove: true });
+    assert.equal(h.store.getState().ui.modal.type, "workflowVariable", "a removal of a is a new update too: no confirm dialog");
+    assert.equal(h.sent().length, 1, "nothing was sent");
+
+    // Back to exactly the unanswered update (a = 5 at revision 3): Enter sends it again as itself, with its operation id.
+    h.controller.deleteWorkflowVariableChar();
+    assert.deepEqual([form(h.store).name, form(h.store).value], ["a", "5"]);
+    assert.ok(joined(form(h.store).lines).includes("Enter sends the same update again; the server applies it once."));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    assert.deepEqual(h.sent()[1], first, "the same operation id, at revision 3");
+
+    // Its answer never came again. ctrl-k keeps a changed edit: a new update at revision 4, with a new operation id.
+    type(h, "1");
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_KEEP);
+    shown = form(h.store);
+    assert.ok(joined(shown.lines).includes("The form no longer holds that update, so Enter sends a new one."), joined(shown.lines));
+    assert.ok(!joined(shown.lines).includes("sends the same update again"));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    const third = h.sent()[2];
+    assert.notEqual(third.operation_id, first.operation_id);
+    const { operation_id: _id, ...wire } = third;
+    assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, set: { a: 51 }, expected_kv_revision: 4 });
     assert.equal(h.store.getState().ui.modal.type, "workflowView", "accepted: back to the view");
 });
 

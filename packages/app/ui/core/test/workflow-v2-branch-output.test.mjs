@@ -2,7 +2,8 @@
  * Adversarial review R2-UI-5: a branch step's Output and History follow the branch its details show, and say which
  * branch (and which visit of the parallel step) each visit was in; visits of different branches are never combined.
  * Its re-check: a step not reached yet in the current parallel visit shows no earlier visit's result as its own (RC-5),
- * and a History choice ends when another branch is chosen in Details or a new parallel visit starts (RC-6).
+ * and a History choice ends when another branch is chosen in Details or a new parallel visit starts (RC-6). History
+ * records a branch only when one was chosen in Details, so the default branch moving never ends a choice (R3-UI-3).
  *
  * Run: node --test test/workflow-v2-branch-output.test.mjs
  */
@@ -312,4 +313,57 @@ test("UI-RC3-1: a choice made before the step had a branch survives the default 
         done("reviewed", 1, "succeeded", { nodeExecutionId: "nx-reviewed-3b0", ...at("nx-fan-3", 0) })]);
     assert.equal(third.parallelVisitId, "nx-fan-3");
     assert.equal(workflowV2ShownExecution(third, "run-1", selection, workflowV2BranchChoice(third.branches, null)).chosen, false);
+});
+
+// Adversarial review R3-UI-3: History records a branch only when one was chosen in Details. A choice made while the panel
+// showed the default branch survives the default moving (branch 1 ends, so branch 2, still running, becomes the default),
+// through the real History and Output handlers: the whole value is still the chosen visit's, never the new default's
+// earlier one. A branch chosen in Details still clears the choice, and a choice made with one records it.
+test("R3-UI-3: a History choice made with the default branch shown survives the default moving; the whole value stays the chosen visit's", () => {
+    const find = (element, match) => {
+        if (Array.isArray(element)) return element.map(item => find(item, match)).find(Boolean) ?? null;
+        if (!element || typeof element !== "object" || !element.props) return null;
+        if (match(element.props)) return element;
+        return find(element.props.children, match);
+    };
+    // Branch 2 ended its first visit and runs its second; branch 3 ended.
+    const base = [
+        row("fan", 1, "pending", { nodeExecutionId: "nx-fan-1", branches: 3 }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-b1-1", outputPreview: '{"who":"b1"}', ...at("nx-fan-1", 1) }),
+        row("prepare", 2, "pending", { nodeExecutionId: "nx-prepare-b1-2", ...at("nx-fan-1", 1) }),
+        done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-b2", outputPreview: '{"who":"b2"}', ...at("nx-fan-1", 2) }),
+    ];
+    const props = { nodes: [], select: () => {}, runOutput: null, runError: null, runId: "run-1" };
+    // Branch 1 runs too: it is the default.
+    const before = prepare([...base, row("prepare", 1, "pending", { nodeExecutionId: "nx-prepare-b0", ...at("nx-fan-1", 0) })]);
+    assert.equal(before.branches.defaultIndex, 0, "the first branch where it runs");
+    // Branch 3's Result in History's list of every visit, with no branch chosen in Details, pressed as a click would.
+    const recorded = [];
+    const history = WorkflowV2NodeContent({ ...props, tab: "history", selected: before, branchIndex: null,
+        onSelectExecution: (id, bound) => recorded.push([id, bound]), onTab: () => {} });
+    find(history, item => item["data-action"] === "show-result" && item["data-execution"] === "nx-prepare-b2").props.onClick();
+    assert.deepEqual(recorded, [["nx-prepare-b2", { parallelExecutionId: "nx-fan-1", branchIndex: null }]], "the default branch is not recorded as chosen");
+    const selection = { runId: "run-1", stateId: "prepare", executionId: "nx-prepare-b2", ...recorded[0][1] };
+    // Branch 1 ends: the default moves to branch 2.
+    const after = prepare([...base, done("prepare", 1, "ready", { nodeExecutionId: "nx-prepare-b0", outputPreview: '{"who":"b0"}', ...at("nx-fan-1", 0) })]);
+    assert.equal(after.branches.defaultIndex, 1);
+    const reads = [];
+    const output = WorkflowV2NodeContent({ ...props, tab: "output", selected: after, selection, branchIndex: null, onSelectExecution: () => {},
+        onReadWholeValue: id => reads.push(id) });
+    const whole = find(output, item => item["data-action"] === "whole-value");
+    assert.ok(whole, "the whole-value control");
+    assert.equal(whole.props["data-execution"], "nx-prepare-b2");
+    whole.props.onClick();
+    assert.deepEqual(reads, ["nx-prepare-b2"], "the chosen visit's whole value, not branch 2's earlier one");
+    const shown = plain(render(after, "output", { selection, onReadWholeValue: () => {} }));
+    assert.ok(shown.includes("Result of visit 1 in branch 3, chosen in History.") && shown.includes('"who": "b2"') && !shown.includes('"who": "b1"'), shown);
+    // A branch chosen in Details clears the choice (the portal's onBranch); Output follows that branch again.
+    assert.equal(workflowV2SelectionAfterBranchChange(selection, "prepare"), null);
+    assert.equal(workflowV2ShownExecution(after, "run-1", null, workflowV2BranchChoice(after.branches, 1)).execution.id, "nx-prepare-b1-1");
+    // A choice made with a branch chosen in Details records that branch.
+    const picked = [];
+    const explicit = WorkflowV2NodeContent({ ...props, tab: "history", selected: before, branchIndex: 2,
+        onSelectExecution: (id, bound) => picked.push([id, bound]), onTab: () => {} });
+    find(explicit, item => item["data-action"] === "show-result" && item["data-execution"] === "nx-prepare-b2").props.onClick();
+    assert.deepEqual(picked, [["nx-prepare-b2", { parallelExecutionId: "nx-fan-1", branchIndex: 2 }]]);
 });

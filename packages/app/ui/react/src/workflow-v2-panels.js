@@ -499,9 +499,12 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
     const choose = onSelectExecution ? (execution => h("button", { type: "button", className: "ps-mini-button", "data-action": "show-result",
         "data-execution": execution.id, "aria-pressed": shown.chosen && shown.executionId === execution.id,
         // Re-check RC-6: the choice keeps the parallel visit and the branch it was made in; a later change of either ends it.
+        // Adversarial review R3-UI-3: only a branch chosen in Details is kept. The default branch is not a choice: it moves
+        // as branches run and end, and that must not end a result chosen here (a Details change still clears it).
         onClick: () => {
+            const picked = Number.isSafeInteger(branchIndex) && branchChoice?.index === branchIndex ? branchIndex : null;
             onSelectExecution(execution.id, typeof selected.parallel === "string"
-                ? { parallelExecutionId: selected.parallelVisitId ?? null, branchIndex: branchChoice?.index ?? null } : undefined);
+                ? { parallelExecutionId: selected.parallelVisitId ?? null, branchIndex: picked } : undefined);
             onTab?.("output");
         } }, "Result")) : null;
     const table = items => h("table", null,
