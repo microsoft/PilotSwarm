@@ -2709,3 +2709,124 @@ test("M-18 (UI-8): the step log shows the chosen run's results only, through liv
     expect(errors).toEqual([]);
 });
 
+// ------------------------------------------------------------------------------------------------------------
+// The parallel fixture: a v2 workflow with a parallel step (a join of the first 2 of 3, a 30 s time limit) mounted in
+// React Flow. Its branch box holds its body steps, its join bar says the rule and the time limit, its edges are drawn,
+// and the graph is worked with the keyboard: each step card and the join bar are reached with Tab, Enter or Space
+// selects (the join bar selects the parallel step), a body step's details pick its branch, and the view's buttons zoom.
+// At 390 px the same graph mounts. Branch 1 succeeded, branch 2 runs its first step, branch 3 has not started.
+// Selector: npx playwright test test/e2e/workflow-session.spec.mjs -g "parallel fixture" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const PARALLEL_STATES = [
+    { id: "fan", type: "parallel", forEach: { count: 3, sha256: "a".repeat(64) }, concurrency: 2, join: { first: 2 }, failFast: false, timeoutSeconds: 30,
+        body: { initial: "prepare", states: ["prepare", "reviewed"] }, outcomes: ["joined", "blocked"],
+        next: { joined: "done", blocked: "stuck", timed_out: "late" } },
+    { id: "prepare", type: "script", runtime: "node", timeoutSeconds: 60, outcomes: ["ready"], next: { ready: "reviewed" }, parallel: "fan" },
+    { id: "reviewed", type: "terminal", outcome: "succeeded", parallel: "fan" },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+    { id: "stuck", type: "terminal", outcome: "blocked" },
+    { id: "late", type: "terminal", outcome: "blocked" },
+];
+const PARALLEL_EVENTS = [{ ...V2_EVENTS[0], data: { ...V2_EVENTS[0].data, name: "review-fan", initial: "fan", states: PARALLEL_STATES } }];
+const branchRow = (stateId, index, state, extra = {}) => ({ nodeExecutionId: `nx-${stateId}-b${index}`, stateId, ordinal: 1, state,
+    outcome: null, resultKind: null, winner: null, attempts: 0, kvRevision: 1, scopeId: `nx-fan-1#${index}`,
+    branch: { parallelNodeExecutionId: "nx-fan-1", index }, ...extra });
+const PARALLEL_MODEL = {
+    ...V2_READ_MODEL,
+    revision: { ...V2_READ_MODEL.revision, name: "review-fan" },
+    graph: { revision: 1, initial: "fan", states: PARALLEL_STATES },
+    run: { ...V2_READ_MODEL.run, nodeExecutions: [
+        { nodeExecutionId: "nx-fan-1", stateId: "fan", ordinal: 1, state: "pending", outcome: null, resultKind: null, winner: null, attempts: 0, kvRevision: 1,
+            scopeId: "root", branches: 3 },
+        branchRow("prepare", 0, "completed", { outcome: "ready", resultKind: "business", winner: "controller", outputPreview: "{\"ok\":true}" }),
+        branchRow("reviewed", 0, "completed", { outcome: "succeeded", resultKind: "business", winner: "controller", outputPreview: "null" }),
+        branchRow("prepare", 1, "pending"),
+    ] },
+};
+
+test("parallel fixture: a parallel step mounts in React Flow with its branch box, join bar and edges, and is worked with the keyboard", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { events: PARALLEL_EVENTS, readModel: () => PARALLEL_MODEL, onCommand: (route, command) => accept(route, command) });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const graph = page.locator(".ps-workflow-main").getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    // Mounted: six step cards, the branch box around the body steps, the join bar with its rule and its time limit.
+    await expect(graph.locator(".ps-workflow-node")).toHaveCount(6);
+    const group = graph.getByRole("group", { name: /^Each branch of fan/ });
+    await expect(group).toBeVisible();
+    const join = graph.getByRole("button", { name: /^Join of fan: join · first 2 of 3/ });
+    await expect(join).toBeVisible();
+    await expect(join).toContainText("first 2 of 3");
+    await expect(join).toContainText("time limit");
+    const groupBox = await group.boundingBox();
+    for (const id of ["prepare", "reviewed"]) {
+        const box = await graph.getByRole("button", { name: `Inspect ${id}`, exact: true }).boundingBox();
+        expect(box.x).toBeGreaterThanOrEqual(groupBox.x - 1);
+        expect(box.y).toBeGreaterThanOrEqual(groupBox.y - 1);
+        expect(box.x + box.width).toBeLessThanOrEqual(groupBox.x + groupBox.width + 1);
+        expect(box.y + box.height).toBeLessThanOrEqual(groupBox.y + groupBox.height + 1);
+    }
+    const edges = await graph.locator(".ps-workflow-edge").count();
+    expect(edges).toBeGreaterThan(0);
+    await expectEdgesDrawn(graph, edges);
+    await settledView(graph);
+    await expectFitted(graph);
+
+    // The keyboard: Enter on a body step selects it; its details pick its branch.
+    const prepare = graph.getByRole("button", { name: "Inspect prepare", exact: true });
+    await prepare.focus();
+    await page.keyboard.press("Enter");
+    await expect(prepare).toHaveAttribute("aria-pressed", "true");
+    const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
+    await expect(details.locator("h2")).toHaveText("prepare");
+    const branchPicker = details.locator('select[data-field="branch"]');
+    await expect(branchPicker.locator("option")).toHaveText(["Branch 1 · ended 'ready'", "Branch 2 · running"]);
+    // Tab moves on to another card of the graph, and Shift+Tab back.
+    await prepare.focus();
+    await page.keyboard.press("Tab");
+    const next = await page.evaluate(() => {
+        const active = document.activeElement;
+        return { inGraph: Boolean(active?.closest('[aria-label="Workflow graph"]')), card: Boolean(active?.matches(".ps-workflow-node, .ps-workflow-join")),
+            label: active?.getAttribute("aria-label") ?? "" };
+    });
+    expect(next).toMatchObject({ inGraph: true, card: true });
+    expect(next.label).not.toBe("Inspect prepare");
+    await page.keyboard.press("Shift+Tab");
+    await expect(prepare).toBeFocused();
+    // Space on the join bar selects the parallel step.
+    await join.focus();
+    await page.keyboard.press(" ");
+    await expect(join).toHaveAttribute("aria-pressed", "true");
+    await expect(details.locator("h2")).toHaveText("fan");
+    // The view's buttons work from the keyboard.
+    const before = await settledView(graph);
+    await graph.getByRole("button", { name: "Zoom in", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await viewOf(graph)).scale).toBeGreaterThan(before.scale * 1.05);
+    await shot(page, "parallel-fixture-1440");
+    expect(errors).toEqual([]);
+});
+
+test("parallel fixture: the same graph mounts on a phone, its join bar selects the parallel step", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { events: PARALLEL_EVENTS, readModel: () => PARALLEL_MODEL, onCommand: (route, command) => accept(route, command) });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await expect(graph.locator(".ps-workflow-node")).toHaveCount(6);
+    await expect(graph.getByRole("group", { name: /^Each branch of fan/ })).toBeVisible();
+    const join = graph.getByRole("button", { name: /^Join of fan: join · first 2 of 3/ });
+    await settledView(graph);
+    await join.click();
+    await expect(join).toHaveAttribute("aria-pressed", "true");
+    // On a phone a tap only selects; Step details opens it (flow-04).
+    await main.getByRole("button", { name: "Step details", exact: true }).click();
+    await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("fan");
+    await shot(page, "parallel-fixture-390");
+    expect(errors).toEqual([]);
+});
