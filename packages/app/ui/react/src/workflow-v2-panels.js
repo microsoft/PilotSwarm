@@ -15,6 +15,7 @@ import {
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
     workflowV2VariableEdit, workflowV2VariableEditState, WORKFLOW_V2_VARIABLE_EDIT_EMPTY,
     workflowV2AnswerSourceText, WORKFLOW_V2_ASK_PARENT_KINDS, workflowV2AskParentSent, workflowV2InputsBoxEmpty, workflowV2SampleInputs,
+    workflowV2TestRunsShown,
 } from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
@@ -553,7 +554,8 @@ export function selectWorkflowV2Run(controller, sessionId, runId) {
  * shown (batch 5, g-07); a run that is selected by its id stays shown, listed or not.
  */
 export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, selectedRunId, ownModelLoaded, error }) {
-    const model = workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded, error });
+    // Test runs only while the server's test mode is on (Workflow Simplified, spec 16).
+    const model = workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded, error, tests: workflowV2TestRunsShown(workflowModel) });
     const noteId = `wf-run-note-${React.useId().replace(/:/g, "")}`;
     if (model.runCount === 0 && model.selection === null && model.malformed === 0) return null;
     return h("div", { className: "ps-workflow-run-picker", style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, maxWidth: "100%", fontSize: "0.75rem" } },

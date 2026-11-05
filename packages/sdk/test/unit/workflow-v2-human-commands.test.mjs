@@ -115,13 +115,16 @@ test("advertises the workflow support the host was configured with: a person's c
     assert.deepEqual(workflowCapabilities({ read: true, commands: undefined }), off);
     // Without a workflow store, reads are not advertised.
     assert.equal(workflowCapabilities({ read: false, commands: null }).v2.read, false);
-    // On: the production controller and the operations every host takes; the 1.9.0 host's adds stop and the test operations.
+    // On: the production controller and the operations every host takes; the 1.9.0 host's adds stop and, with workflow test
+    // mode on, the test operations (Workflow Simplified, spec 16: test mode is hidden unless it is on).
     assert.deepEqual(workflowCapabilities({ read: true, commands: {} }).v2.commands,
         { available: true, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, operations: [...WORKFLOW_HUMAN_OPERATIONS] });
     assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: false } }).v2.commands.controllerVersion, "1.8.0");
-    const milestone = workflowCapabilities({ read: true, commands: { requests: true } }).v2.commands;
+    const milestone = workflowCapabilities({ read: true, commands: { requests: true, testMode: true } }).v2.commands;
     assert.deepEqual(milestone, { available: true, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
         operations: [...WORKFLOW_HUMAN_OPERATIONS, ...WORKFLOW_HUMAN_MILESTONE_OPERATIONS] });
+    assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: true, testMode: false } }).v2.commands.operations,
+        [...WORKFLOW_HUMAN_OPERATIONS, "stop"]);
     assert.equal(milestone.controllerVersion, "1.9.0");
     // recover stays the agent's: never advertised to a person.
     assert.ok(!milestone.operations.includes("recover"));

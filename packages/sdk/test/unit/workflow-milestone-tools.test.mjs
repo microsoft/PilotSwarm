@@ -13,6 +13,10 @@ import {
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "../../dist/workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/v2/agent-node-service.js";
 
+// Workflow test mode is hidden unless PILOTSWARM_WORKFLOW_TEST_MODE=on (Workflow Simplified, spec 16). These tests describe
+// the 1.9.0 tools with it on; workflow-test-mode-switch.test.mjs covers it off. Read when a declaration or command is made.
+process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
+
 /**
  * The workflow tools on a turn of a worker that runs controller 1.9.0 (R26,
  * T125; INACTIVE: only tests register one): their descriptions and

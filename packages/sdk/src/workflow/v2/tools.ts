@@ -18,6 +18,7 @@ import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtim
 import { workflowStoreFailure } from "./failure.js";
 import { redactWorkflowErrorValue } from "./redact.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
+import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OFF_TEXT } from "./test-mode-switch.js";
 import {
     advanceWorkflowV2Test,
     compileWorkflowV2ForHost,
@@ -229,6 +230,62 @@ export const READ_WORKFLOW_MILESTONE_TOOL_SPEC = {
     },
 } as const;
 
+/**
+ * update_workflow on a 1.9.0 turn while workflow test mode is off (test-mode-switch.ts; spec 16, E1/O2): the milestone
+ * declaration with stop only. No test operation, argument or sentence is declared.
+ */
+export const UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
+    description: UPDATE_WORKFLOW_TOOL_SPEC.description
+        + " This host also takes: stop (run_id optional, reason, grace_seconds 0 to 3600, default 60: no new step starts; work already "
+        + "started may finish until the grace ends, then the run ends stopped).",
+    parameters: {
+        type: "object",
+        properties: {
+            ...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties,
+            operation: { type: "string", enum: [...UPDATE_WORKFLOW_TOOL_SPEC.parameters.properties.operation.enum, "stop"] },
+            reason: { type: "string", description: "pause/resume/cancel/stop: an optional short reason." },
+            run_id: { type: "string", description: "set_vars/pause/resume/cancel/recover/stop: the run; default the live run." },
+            grace_seconds: { type: "integer", description: "stop: how long work already started may finish, 0 to 3600. Default 60." },
+        },
+        required: ["workflow_id", "operation", "operation_id"],
+    },
+} as const;
+
+/**
+ * read_workflow on a 1.9.0 turn while workflow test mode is off: the milestone declaration without a test run's
+ * fields (stored test runs are kept, not shown).
+ */
+export const READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC = {
+    description: READ_WORKFLOW_TOOL_SPEC.description
+        + " On this host a run also shows its stop (requestedAt, deadline, graceSeconds, reason and, while it runs, settled), each agent "
+        + "step's chat (agent.childSessionId) and its lifecycle, and each parallel branch (scopeId, branch). "
+        + "definition.publishedAgentPins shows the agent versions a publication locked."
+        + " Each section of a run (nodeExecutions, inbox, outbox) holds its newest rows, oldest first; rows still "
+        + "open are listed apart, however old (openExecutions, openInbox, openOutbox). run.pages gives each "
+        + "section's nextCursor: give it back as cursor for that section's next, older page (null: none is older); limit sets the rows per "
+        + "page. execution_id, kv_revision (with kv_key), agent_versions, definition_revision and step_input are separate reads: each "
+        + "argument says what it returns.",
+    parameters: {
+        ...READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters,
+        properties: {
+            ...READ_WORKFLOW_MILESTONE_TOOL_SPEC.parameters.properties,
+            limit: { type: "integer", description: `Rows per page of each section, 1 to ${WORKFLOW_READ_PAGE_MAX}. Default: 200 executions, 50 inputs, 50 sent messages.` },
+        },
+    },
+} as const;
+
+/** The update_workflow declaration of a turn: production, the 1.9.0 one, or the 1.9.0 one without test operations. */
+export function updateWorkflowToolSpec(options: { milestone: boolean; testMode: boolean }) {
+    if (!options.milestone) return UPDATE_WORKFLOW_TOOL_SPEC;
+    return options.testMode ? UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC : UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
+}
+
+/** The read_workflow declaration of a turn, chosen as updateWorkflowToolSpec chooses. */
+export function readWorkflowToolSpec(options: { milestone: boolean; testMode: boolean }) {
+    if (!options.milestone) return READ_WORKFLOW_TOOL_SPEC;
+    return options.testMode ? READ_WORKFLOW_MILESTONE_TOOL_SPEC : READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC;
+}
+
 export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {
     description:
         "Give a run of a version 2 workflow one typed input for its receive steps (messaging mode: receive). "
@@ -378,7 +435,7 @@ function notifyOnCompletionArg(args: Record<string, unknown>, operation: unknown
 }
 
 /** Parse update_workflow arguments into a typed command. */
-export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: { milestone?: boolean } = {})
+export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: { milestone?: boolean; testing?: boolean } = {})
     : { workflowSessionId: string; operationId: string; command: WorkflowV2Command } {
     const workflowSessionId = requiredString(args, "workflow_id");
     const operationId = requiredString(args, "operation_id");
@@ -397,12 +454,22 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: 
     } else if (operation === "start") {
         command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args), ...(vars !== null ? { vars } : {}), notifyParent };
     } else {
-        // A host that takes the milestone operations names them too, as its tool description does.
-        const { definition, run, agent, milestone } = UPDATE_WORKFLOW_OPERATIONS;
-        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
-            `operation must be ${operationWords([...definition, ...run, ...agent, ...(options.milestone === true ? milestone : [])])}.`);
+        throw unknownOperationError(operation, options);
     }
     return { workflowSessionId, operationId, command };
+}
+
+/**
+ * The refusal of an operation this host does not take. A host that takes the milestone operations names them too, as
+ * its tool description does: stop, and the test operations only while workflow test mode is on (test-mode-switch.ts);
+ * a test operation while it is off is refused in words.
+ */
+function unknownOperationError(operation: unknown, options: { milestone?: boolean; testing?: boolean }): WorkflowStoreError {
+    const { definition, run, agent, milestone } = UPDATE_WORKFLOW_OPERATIONS;
+    const extra = options.milestone !== true ? [] : options.testing === false ? milestone.filter(item => !TEST_OPERATIONS.has(item)) : milestone;
+    const off = options.milestone === true && options.testing === false && typeof operation === "string" && TEST_OPERATIONS.has(operation);
+    return new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+        `${off ? `${WORKFLOW_TEST_MODE_OFF_TEXT} ` : ""}operation must be ${operationWords([...definition, ...run, ...agent, ...extra])}.`);
 }
 
 const RUN_COMMANDS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.run);
@@ -413,10 +480,20 @@ const RUN_COMMANDS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.run
  * intercepted effect by its interception id) and test_advance (move a test
  * run's virtual clock). Taken, like a graceful stop (operation stop), only by
  * a host that starts runs at controller 1.9.0 (WorkflowV2Host.requests;
- * INACTIVE, test hosts only); elsewhere they are refused exactly as before.
- * The tool's published description and operation enum are unchanged.
+ * INACTIVE, test hosts only), and there only while workflow test mode is on
+ * (test-mode-switch.ts; hidden by default, spec 16); elsewhere they are
+ * refused. The tool's published description and operation enum are unchanged.
  */
 const TEST_OPERATIONS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.milestone.filter(operation => operation !== "stop"));
+
+/**
+ * The refusal of a test operation on a host that runs controller 1.9.0 while workflow test mode is off (spec 16;
+ * test-mode-switch.ts), in words, before any workflow is read; null for every other operation and host.
+ */
+export function workflowTestModeRefusal(operation: unknown, host: Pick<WorkflowToolHost, "requests" | "testMode">): WorkflowStoreError | null {
+    if (host.requests !== true || typeof operation !== "string" || !TEST_OPERATIONS.has(operation) || resolveWorkflowTestMode(host.testMode)) return null;
+    return unknownOperationError(operation, { milestone: true, testing: false });
+}
 
 async function testOperation(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor, authorize: (workflowSessionId: string) => Promise<void>)
     : Promise<{ [key: string]: JsonValue }> {
@@ -536,9 +613,13 @@ async function recoverWorkflowFromTool(args: Record<string, unknown>, context: {
  */
 export async function runUpdateWorkflowCommand(args: Record<string, unknown>, host: WorkflowToolHost, actor: WorkflowActor,
     authorize: (workflowSessionId: string) => Promise<void>): Promise<{ [key: string]: JsonValue }> {
-    // A host that starts runs at controller 1.9.0 (WorkflowV2Host.requests) also takes stop and the test operations.
+    // A host that starts runs at controller 1.9.0 (WorkflowV2Host.requests) also takes stop, and the test operations while
+    // workflow test mode is on (WorkflowV2Host.testMode, or else the deployment flag; test-mode-switch.ts).
     const milestone = host.requests === true;
-    if (typeof args.operation === "string" && TEST_OPERATIONS.has(args.operation) && milestone) {
+    const testing = milestone && resolveWorkflowTestMode(host.testMode);
+    const refusal = workflowTestModeRefusal(args.operation, host);
+    if (refusal) throw refusal;
+    if (typeof args.operation === "string" && TEST_OPERATIONS.has(args.operation) && testing) {
         return await testOperation(args, host, actor, authorize);
     }
     if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || (milestone && args.operation === "stop"))) {
@@ -547,7 +628,7 @@ export async function runUpdateWorkflowCommand(args: Record<string, unknown>, ho
         const stored = await controlWorkflowV2Run(host, workflowSessionId, command, { actor, operationId });
         return runCommandJson(stored.receipt, stored.replayed);
     }
-    const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone });
+    const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone, testing });
     await authorize(workflowSessionId);
     const stored = await updateWorkflowV2(host, workflowSessionId, command, { actor, operationId });
     return receiptJson(stored.receipt, stored.replayed);

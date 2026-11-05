@@ -7,7 +7,7 @@ import {
 } from "../../core/src/workflow-v2-view.js";
 import {
     workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
-    workflowV2TestControls, workflowV2TestResponder,
+    workflowV2TestControls, workflowV2TestResponder, workflowV2TestRunsShown,
 } from "../../core/src/workflow-v2-commands.js";
 import {
     WorkflowV2Banners, WorkflowV2DefinitionPanel, WorkflowV2DraftEditor, WorkflowV2DraftTools, WorkflowV2NoGraph, WorkflowV2NodeContent,
@@ -106,7 +106,8 @@ function useWorkflowView(controller) {
     // Owner batch 7 (H1): while the parent agent is still writing the latest revision, its errors are said calmly and not counted.
     const drafting = v2 ? workflowV2DraftInProgress(v2, parentWorking) : null;
     const notices = workflowV2ShownNotices(v2?.banners, { draftInProgress: drafting });
-    const test = v2?.readModel?.run?.test ?? null;
+    // A test run's calls only while the server's test mode is on (Workflow Simplified, spec 16).
+    const test = workflowV2TestRunsShown(v2?.readModel) ? v2?.readModel?.run?.test ?? null : null;
     const offered = { definition: Boolean(publication?.controls.length), test: Boolean(testControls), calls: Boolean(test),
         variables: Boolean(variables), draft: Boolean(draftEditor), activity: Boolean(activity), notices: Boolean(notices.length || readError), log: true };
     const sidePanel = typeof view.sidePanel === "string" && offered[view.sidePanel] === true ? view.sidePanel : null;

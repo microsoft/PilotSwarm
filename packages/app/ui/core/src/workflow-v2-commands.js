@@ -65,7 +65,7 @@ const YAML_MAX_BYTES = 256 * 1024;
 const KV_KEY_MAX = 128;
 /** The longest value shown in the variables list; editing uses the whole value. */
 const VALUE_DISPLAY_LIMIT = 300;
-const PENDING_LABELS = { pause: "Pausing…", resume: "Resuming…", stop: "Stopping…", cancel: "Cancelling…" };
+const PENDING_LABELS = { pause: "Pausing…", resume: "Resuming…", stop: "Stopping…", cancel: "Canceling…" };
 const TITLES = {
     pause: "Pause the run: no new step starts; work already started finishes and its result is kept.",
     resume: "Resume the run: steps start again from where it was paused.",
@@ -718,6 +718,19 @@ function agentVersionText(pin) {
     const revision = text(pin.revision) ? ` (revision ${pin.revision.slice(0, 12)})` : "";
     const matched = isRecord(pin.interface) && text(pin.interface.name) ? ` · interface ${pin.interface.name}@${pin.interface.version}` : "";
     return `${where}${revision}${matched}`;
+}
+
+/**
+ * Whether a screen shows test runs of this workflow (Workflow Simplified, spec 16: test mode is hidden unless the
+ * deployment turns it on). The server lists a test operation in `personCommands.operations` only while its test mode
+ * is on. A read model without `personCommands` (a deployment that takes no person's commands, where no test run can
+ * start), or of a workflow in an agent step's subtree (it takes only brakes from people, so the list cannot tell),
+ * keeps showing what it lists. Never throws.
+ */
+export function workflowV2TestRunsShown(model) {
+    if (!isRecord(model) || !isRecord(model.personCommands) || isRecord(model.personCommands.restriction)) return true;
+    const operations = Array.isArray(model.personCommands.operations) ? model.personCommands.operations : [];
+    return operations.some(operation => operation === "test" || operation === "test_respond" || operation === "test_advance");
 }
 
 /**

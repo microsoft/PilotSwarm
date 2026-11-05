@@ -81,6 +81,7 @@ import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflow
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
 import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
+import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
 import { spawnNesting } from "./workflow/v2/input-policy.js";
 import { applyOperatorCommandToWorkflowV2, applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
@@ -2581,6 +2582,8 @@ export function registerActivities(
                 catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient(),
                 ...(workflowRequestTurn ? {
                     requests: true,
+                    // The test operations only while workflow test mode is on (spec 16; off by default).
+                    testMode: workflowTestModeFromEnv(),
                     resolveAgent: createWorkflowAgentResolver({
                         catalog,
                         deploymentAgents: () => ({ userAgents: [...(unpinnedAgents(userAgents) ?? [])], systemAgents: [...(systemAgents ?? [])] }),

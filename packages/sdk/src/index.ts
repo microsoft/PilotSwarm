@@ -80,6 +80,10 @@ export {
     WORKFLOW_V2_TEST_ENVIRONMENT_ENABLED, WORKFLOW_V2_TEST_ENVIRONMENT_VARIABLE, workerOptionsForWorkflowV2TestEnvironment, workflowV2TestEnvironmentFromEnv,
     workflowV2TestEnvironmentNotice, type WorkflowV2TestEnvironment,
 } from "./workflow/v2/test-environment.js";
+// Workflow test mode, hidden unless PILOTSWARM_WORKFLOW_TEST_MODE=on (Workflow Simplified, spec 16).
+export {
+    WORKFLOW_TEST_MODE_ENABLED, WORKFLOW_TEST_MODE_OPERATIONS, WORKFLOW_TEST_MODE_VARIABLE, workflowTestModeFromEnv, workflowTestModeNotice,
+} from "./workflow/v2/test-mode-switch.js";
 // Workflow v2: the view of a person who may read a workflow but not change it (adversarial review R2-SF-2).
 export { workflowV2ReaderView } from "./workflow/v2/tools.js";
 export type { HorizonEnvConfig } from "./horizon-env.js";

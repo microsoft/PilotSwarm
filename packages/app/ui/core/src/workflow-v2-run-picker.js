@@ -55,8 +55,9 @@ function runTitle(run) {
  * What the picker shows, from the workflow's last read model (any selection's: the run list is workflow-wide), the
  * selection, whether the selection's own model is loaded, and its read error. Pure; never throws. Entries that are not
  * a run are counted and left out. A selected id that is not in the list is kept as its own option, never replaced.
+ * `tests: false` leaves test runs out (Workflow Simplified, spec 16: test mode hidden; workflowV2TestRunsShown).
  */
-export function workflowV2RunPickerModel({ workflowModel = null, selectedRunId = null, ownModelLoaded = false, error = null } = {}) {
+export function workflowV2RunPickerModel({ workflowModel = null, selectedRunId = null, ownModelLoaded = false, error = null, tests = true } = {}) {
     const selection = typeof selectedRunId === "string" && selectedRunId !== "" ? selectedRunId : null;
     const projected = workflowModel ? projectWorkflowV2ReadModel(workflowModel) : null;
     const list = projected?.ok ? projected.runs : null;
@@ -69,6 +70,7 @@ export function workflowV2RunPickerModel({ workflowModel = null, selectedRunId =
             malformed += 1;
             continue;
         }
+        if (tests === false && runFacts(item).mode === "test") continue;
         seen.add(id);
         runs.push(item);
     }

@@ -57,7 +57,7 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
         + "The workflow is your child: stop it with cancel_agent or delete_agent; it takes no messages.\n"
         + "Version 2 (apiVersion: pilotswarm.dev/v2-draft) adds review before execution: spawn_workflow saves a DRAFT that runs nothing "
         + "(state: published publishes revision 1; add start: true to also start its one live run). Drafts may be invalid and come back with diagnostics. "
-        + "Keep the default draft unless the person asks to run the workflow now: a draft is what they can read, edit, test and give step inputs to, "
+        + "Keep the default draft unless the person asks to run the workflow now: a draft is what they can read, edit and give step inputs to, "
         + "and a published revision never changes again. When they do ask to run it now, pass state: published with start: true. "
         + "Use update_workflow to replace the draft, publish the exact reviewed definitionHash, start, set_vars (the run's open KV, read as context.kv), "
         + "pause, resume or cancel the run, or recover a run that read_workflow shows as needsRecovery; "

@@ -9,6 +9,10 @@ import {
     WORKFLOW_AUTHORING_POINTER, WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, workflowAuthoringSkillLoaded,
 } from "../../dist/workflow/guidance.js";
 
+// The base's workflow guidance mentions testing only with workflow test mode on (Workflow Simplified, spec 16); these
+// tests compare the prompt with the guidance as it is with test mode on. workflow-test-mode-switch.test.mjs covers it off.
+process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
+
 /**
  * The workflow-authoring skills (design 04; R24, T124; INACTIVE): loaded on
  * demand, kept out of every production worker tier, with complete examples

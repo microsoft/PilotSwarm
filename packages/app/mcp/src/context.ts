@@ -91,6 +91,11 @@ interface ServerContextBase {
      */
     workflowCommands?: boolean;
     /**
+     * Workflow test mode (spec 16): whether update_workflow names the test operations. Absent: this process's flag
+     * PILOTSWARM_WORKFLOW_TEST_MODE, off unless it is exactly `on`. A command is decided again where it runs.
+     */
+    workflowTestMode?: boolean;
+    /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
      * from /auth/me and /bootstrap; direct mode is privileged (`admin`) with

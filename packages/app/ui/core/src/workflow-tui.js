@@ -10,7 +10,7 @@ import {
 import {
     WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2DefinitionControls, workflowV2DraftEdit, workflowV2DraftEditor, workflowV2DraftMarks,
     workflowV2PublicationEvidenceRows, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables, workflowV2TestControls,
-    workflowV2TestResponder, workflowV2VariableBatchDraft, workflowV2VariableDraft, workflowV2VariableEditBehind, workflowV2VariableExactRetry,
+    workflowV2TestResponder, workflowV2TestRunsShown, workflowV2VariableBatchDraft, workflowV2VariableDraft, workflowV2VariableEditBehind, workflowV2VariableExactRetry,
     workflowV2VariableRemoval, workflowV2RevisionCompare, workflowV2AnswerSourceText,
 } from "./workflow-v2-commands.js";
 
@@ -139,8 +139,10 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const terminal = list.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
     const status = v2 ? v2.status.label : terminal?.eventType.slice("workflow.".length)
         || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "Starting");
-    // The runs a person can choose (v2): the portal's run picker model, from the workflow's last read model.
-    const runPicker = v2 ? workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error }) : null;
+    // The runs a person can choose (v2): the portal's run picker model, from the workflow's last read model. Test runs only
+    // while the server's test mode is on (Workflow Simplified, spec 16).
+    const runPicker = v2 ? workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error,
+        tests: workflowV2TestRunsShown(readModel ?? workflowModel) }) : null;
     // A person's run controls for the shown run, and the notice about the last one: the portal's, from the selection's own
     // read model only (its run is the one shown), and only when it says which commands the workflow takes from people.
     const runCommand = safeView.runCommand ?? null;

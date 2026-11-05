@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { workflowTestModeFromEnv } from "pilotswarm-sdk";
 import { sessionIdShape } from "../session-id.js";
 import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../util/respond.js";
@@ -67,16 +68,23 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
 
     if (ctx.workflowCommands !== true) return;
 
+    // Workflow test mode is hidden unless this process's deployment flag is on (spec 16): the tool then names stop only.
+    const testMode = ctx.workflowTestMode ?? workflowTestModeFromEnv();
+    const operations = testMode
+        ? "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel; stop, test, test_respond "
+            + "and test_advance when the workers run controller 1.9.0), operation_id (repeat it to retry the same command) and the "
+            + "operation's arguments (expected_revision, definition_hash, yaml, inputs, vars, notify_on_completion, set, delete, "
+            + "expected_kv_revision, run_id, reason, grace_seconds, agent_mode, fixtures, scenario, interception_id, response, seconds). "
+        : "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel; stop when the workers run "
+            + "controller 1.9.0), operation_id (repeat it to retry the same command) and the operation's arguments (expected_revision, "
+            + "definition_hash, yaml, inputs, vars, notify_on_completion, set, delete, expected_kv_revision, run_id, reason, grace_seconds). ";
     server.registerTool(
         "update_workflow",
         {
             title: "Update Workflow",
             description:
                 "Send one command to a version 2 workflow session, as a person. command is the update_workflow agent tool's command: "
-                + "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel; stop, test, test_respond "
-                + "and test_advance when the workers run controller 1.9.0), operation_id (repeat it to retry the same command) and the "
-                + "operation's arguments (expected_revision, definition_hash, yaml, inputs, vars, notify_on_completion, set, delete, "
-                + "expected_kv_revision, run_id, reason, grace_seconds, agent_mode, fixtures, scenario, interception_id, response, seconds). "
+                + operations
                 + "A live start (publish_and_start, start) tells the workflow's parent agent the result when the run ends unless "
                 + "notify_on_completion is false. Answers the command's receipt. "
                 + "A workflow started under another workflow's agent step takes only pause, stop and cancel; read a workflow with read_workflow "

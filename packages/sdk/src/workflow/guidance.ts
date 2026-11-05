@@ -24,6 +24,16 @@ A workflow's message to you starts with one header line, \`[WORKFLOW_UPDATE from
 
 A person's "Ask the parent agent" note arrives as that person's message, naming the workflow, its step and its run.`;
 
+const TEST_WAITING_GUIDANCE_LINE = "\n- `test_waiting`: a test run's held call. Answer it with `update_workflow` operation `test_respond`.";
+
+/**
+ * The runtime base guidance as workflow test mode decides it (Workflow Simplified, spec 16): with test mode on,
+ * WORKFLOW_SESSION_GUIDANCE; off (the default), the same text without the test notice's line.
+ */
+export function workflowSessionGuidance(testMode: boolean): string {
+    return testMode ? WORKFLOW_SESSION_GUIDANCE : WORKFLOW_SESSION_GUIDANCE.replace(TEST_WAITING_GUIDANCE_LINE, "");
+}
+
 
 /**
  * The workflow-authoring skills (design 04; R24): `workflow-authoring` (the
@@ -44,6 +54,15 @@ export const WORKFLOW_AUTHORING_POINTER = "When an authorized task is a finite p
     + "consider a workflow child instead of repeated parent model turns. Before you create, edit or test a version 2 workflow definition, "
     + "load the `workflow-authoring` skill. Create a draft for user review when the user asks for review; a draft or a mocked test run "
     + "is not a live run. Use the workflow controls and typed results, and keep every existing permission.";
+
+/** The authoring pointer as workflow test mode decides it (spec 16): off (the default), it does not mention testing. */
+export function workflowAuthoringPointer(testMode: boolean): string {
+    if (testMode) return WORKFLOW_AUTHORING_POINTER;
+    return "When an authorized task is a finite procedure with explicit steps, branches, waits or repeated checks, "
+        + "consider a workflow child instead of repeated parent model turns. Before you create or edit a version 2 workflow definition, "
+        + "load the `workflow-authoring` skill. Create a draft for user review when the user asks for review; a draft "
+        + "is not a live run. Use the workflow controls and typed results, and keep every existing permission.";
+}
 
 /** Whether a worker's loadable skills include the authoring skill from WORKFLOW_V2_SKILLS_DIR (a same-named skill elsewhere does not count). */
 export function workflowAuthoringSkillLoaded(skills: ReadonlyArray<{ name: string; dir?: string }> | undefined): boolean {

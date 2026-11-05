@@ -86,6 +86,12 @@ export interface WorkflowV2Host {
      */
     requests?: boolean;
     /**
+     * Workflow test mode (spec 16; test-mode-switch.ts): whether this host takes the test operations (test,
+     * test_respond, test_advance) beside requests. Absent: the deployment flag PILOTSWARM_WORKFLOW_TEST_MODE, off
+     * unless it is exactly `on`. Off, each is refused in words and stop stays.
+     */
+    testMode?: boolean;
+    /**
      * Resolve a named agent as an agent state's child would be bound to it
      * (INACTIVE; design 03 package agents): the definition the caller's
      * owner sees by that name, among the agents of `packageName` when the

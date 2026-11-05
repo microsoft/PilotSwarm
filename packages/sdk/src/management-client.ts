@@ -170,6 +170,7 @@ import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2, workflowV2ExclusiveRead } from "./workflow/v2/tools.js";
 import { WORKFLOW_READ_STATUS } from "./workflow/v2/read-pages.js";
 import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
+import { resolveWorkflowTestMode } from "./workflow/v2/test-mode-switch.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
 import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
@@ -833,9 +834,12 @@ export interface PilotSwarmManagementClientOptions {
      * its named agents: package agents only, at the agent registry's exact
      * revision (a deployment agent's name is refused AGENT_UNAVAILABLE here).
      * Unset: updateWorkflow answers WORKFLOW_COMMANDS_UNAVAILABLE (501) and
-     * changes nothing.
+     * changes nothing. `testMode`: whether those commands take the test
+     * operations (test, test_respond, test_advance) beside `requests`;
+     * absent, the deployment flag PILOTSWARM_WORKFLOW_TEST_MODE decides, off
+     * unless it is exactly `on` (spec 16: test mode hidden by default).
      */
-    workflowCommands?: { requests?: boolean } | null;
+    workflowCommands?: { requests?: boolean; testMode?: boolean } | null;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -1986,7 +1990,8 @@ export class PilotSwarmManagementClient {
         const definition = view.definition as { state?: unknown; currentRevision?: unknown } | null | undefined;
         const draftRevision = definition?.state === "draft" && typeof definition.currentRevision === "number" ? definition.currentRevision : null;
         return { ...view, personCommands: await workflowCommandsForPerson(store, sessionId,
-            { requests: enabled.requests === true, runId: shown, draftRevision, published: definition?.state === "published" }) };
+            { requests: enabled.requests === true, runId: shown, draftRevision, published: definition?.state === "published",
+                testMode: resolveWorkflowTestMode(enabled.testMode) }) };
     }
 
     /**
@@ -2038,7 +2043,8 @@ export class PilotSwarmManagementClient {
         // this client knows the agent registry, not a worker's deployment agents, so it pins package agents only.
         const host: WorkflowV2Host = {
             catalog: this._catalog!, store, duroxideClient: this._duroxideClient,
-            ...(enabled.requests === true ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
+            ...(enabled.requests === true ? { requests: true, testMode: resolveWorkflowTestMode(enabled.testMode),
+                resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
         };
         try {
             return await updateWorkflowForPerson(command, { host, workflowSessionId: sessionId, actor });

@@ -94,26 +94,62 @@ test("a deployment as configured today advertises version 2 reads and a person's
 });
 
 test("with the test-only option, it advertises the controller version and the operations a person may send", async () => {
-    for (const [config, controllerVersion, operations] of [
-        [{ workflowCommands: {} }, "1.8.0", EVERY_HOST],
-        [{ workflowCommands: { requests: false } }, "1.8.0", EVERY_HOST],
-        [{ workflowCommands: { requests: true } }, "1.9.0", [...EVERY_HOST, ...MILESTONE]],
-    ]) {
-        const h = await bootstrapHarness({ config });
+    // Workflow test mode is off by default (Workflow Simplified, spec 16): the test operations are listed only with it on.
+    const flag = process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
+    delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
+    try {
+        for (const [config, controllerVersion, operations] of [
+            [{ workflowCommands: {} }, "1.8.0", EVERY_HOST],
+            [{ workflowCommands: { requests: false } }, "1.8.0", EVERY_HOST],
+            [{ workflowCommands: { requests: true } }, "1.9.0", [...EVERY_HOST, "stop"]],
+            [{ workflowCommands: { requests: true, testMode: false } }, "1.9.0", [...EVERY_HOST, "stop"]],
+            [{ workflowCommands: { requests: true, testMode: true } }, "1.9.0", [...EVERY_HOST, ...MILESTONE]],
+        ]) {
+            const h = await bootstrapHarness({ config });
+            try {
+                const { workflows } = await h.bootstrap();
+                assert.deepEqual(workflows.v2.commands, { available: true, controllerVersion, operations }, JSON.stringify(config));
+                assert.equal(workflows.v2.read, true);
+                assert.ok(!workflows.v2.commands.operations.includes("recover"), "recover stays the agent's");
+                assert.deepEqual(workflows.legacyCreate, { workflowVersion: 1, draft: false });
+            } finally {
+                await h.close();
+            }
+        }
+        // The deployment flag, exactly `on`, lists them too; any other value does not.
+        for (const [value, listed] of [["on", true], ["1", false], ["ON", false], ["true", false]]) {
+            process.env.PILOTSWARM_WORKFLOW_TEST_MODE = value;
+            const h = await bootstrapHarness({ config: { workflowCommands: { requests: true } } });
+            try {
+                const { workflows } = await h.bootstrap();
+                assert.deepEqual(workflows.v2.commands.operations, listed ? [...EVERY_HOST, ...MILESTONE] : [...EVERY_HOST, "stop"], value);
+            } finally {
+                await h.close();
+            }
+        }
+        // A test operation sent anyway is refused in words while test mode is off, before the workflow is read.
+        delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
+        const h = await bootstrapHarness({ config: { workflowCommands: { requests: true } } });
         try {
-            const { workflows } = await h.bootstrap();
-            assert.deepEqual(workflows.v2.commands, { available: true, controllerVersion, operations }, JSON.stringify(config));
-            assert.equal(workflows.v2.read, true);
-            assert.ok(!workflows.v2.commands.operations.includes("recover"), "recover stays the agent's");
-            assert.deepEqual(workflows.legacyCreate, { workflowVersion: 1, draft: false });
+            for (const operation of ["test", "test_respond", "test_advance"]) {
+                await assert.rejects(h.mgmt.updateWorkflow("wf1", { operation, operation_id: "t-1", run_id: "run-1" }, { principal: null }), (error) => {
+                    assert.equal(error.code, "WORKFLOW_COMMAND_INVALID", operation);
+                    assert.equal(error.status, 400, operation);
+                    assert.match(error.message, /^Testing workflows is turned off on this server\. operation must be .* or stop\.$/, operation);
+                    return true;
+                });
+            }
         } finally {
             await h.close();
         }
+    } finally {
+        if (flag === undefined) delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
+        else process.env.PILOTSWARM_WORKFLOW_TEST_MODE = flag;
     }
 });
 
 test("both HTTP-backed clients read the advertisement back, and an older host advertises none", async () => {
-    const h = await bootstrapHarness({ config: { workflowCommands: { requests: true } } });
+    const h = await bootstrapHarness({ config: { workflowCommands: { requests: true, testMode: true } } });
     try {
         const advertised = (await h.bootstrap()).workflows;
         const api = () => new ApiClient({ apiUrl: h.origin });

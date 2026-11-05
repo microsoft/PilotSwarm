@@ -306,3 +306,30 @@ for (const value of [undefined, "", "1", "true", "on", "ISOLATED-TEST-ONLY", " i
 assert.deepEqual(workflowContextOptionsFromEnv({ PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT: "isolated-test-only" }),
     { workflowCommands: { requests: true }, sessionStartVersion: "1.0.83" });
 console.log("✅ the Workflow V2 test environment switch: off for every value but the exact enabling one");
+
+// 9. Workflow test mode is hidden (Workflow Simplified, spec 16): update_workflow names stop and no test operation or
+//    argument unless test mode is on (the context's own value, or this process's PILOTSWARM_WORKFLOW_TEST_MODE=on).
+{
+    const descriptions = ctx => {
+        const specs = new Map();
+        registerWorkflowTools({ registerTool: (name, spec) => { specs.set(name, spec); } }, ctx);
+        return specs.get("update_workflow").description;
+    };
+    const flag = process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
+    delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
+    try {
+        for (const off of [descriptions({ workflowCommands: true, mgmt: {} }), descriptions({ workflowCommands: true, workflowTestMode: false, mgmt: {} })]) {
+            for (const word of ["test_respond", "test_advance", "agent_mode", "fixtures", "interception_id", " test,"]) assert.ok(!off.includes(word), word);
+            assert.ok(off.includes("stop when the workers run controller 1.9.0"));
+            assert.ok(off.includes("grace_seconds"));
+        }
+        const on = descriptions({ workflowCommands: true, workflowTestMode: true, mgmt: {} });
+        for (const word of ["test_respond", "test_advance", "agent_mode", "interception_id"]) assert.ok(on.includes(word), word);
+        process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
+        assert.ok(descriptions({ workflowCommands: true, mgmt: {} }).includes("test_respond"), "the flag turns it on");
+    } finally {
+        if (flag === undefined) delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
+        else process.env.PILOTSWARM_WORKFLOW_TEST_MODE = flag;
+    }
+}
+console.log("✅ update_workflow names the test operations only with workflow test mode on");

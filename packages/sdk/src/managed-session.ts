@@ -24,9 +24,9 @@ import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
 import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 import {
-    READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, SEND_WORKFLOW_INPUT_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC,
-    workflowToolErrorPayload,
+    readWorkflowToolSpec, SEND_WORKFLOW_INPUT_TOOL_SPEC, updateWorkflowToolSpec, workflowToolErrorPayload,
 } from "./workflow/v2/tools.js";
+import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC, workflowRespondFailure } from "./workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
 import { sanitizeWorkflowErrorText } from "./workflow/v2/failure.js";
@@ -1452,14 +1452,16 @@ export class ManagedSession {
         // workflow tools' milestone descriptions and respond_session_request, and, for an agent state's own child,
         // complete_workflow_node. Every other session's declarations are unchanged.
         const workflowMilestone = opts?.workflowMilestone === true;
+        // Workflow test mode is hidden unless the deployment flag is on (spec 16): the 1.9.0 declarations then name stop only.
+        const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };
         const spawnWorkflowTool = defineTool("spawn_workflow", {
             ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC), handler: async () => "stub",
         });
         const updateWorkflowTool = defineTool("update_workflow", {
-            ...(workflowMilestone ? UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC : UPDATE_WORKFLOW_TOOL_SPEC), handler: async () => "stub",
+            ...updateWorkflowToolSpec(workflowSpecs), handler: async () => "stub",
         });
         const readWorkflowTool = defineTool("read_workflow", {
-            ...(workflowMilestone ? READ_WORKFLOW_MILESTONE_TOOL_SPEC : READ_WORKFLOW_TOOL_SPEC), handler: async () => "stub",
+            ...readWorkflowToolSpec(workflowSpecs), handler: async () => "stub",
         });
         const sendWorkflowInputTool = defineTool("send_workflow_input", { ...SEND_WORKFLOW_INPUT_TOOL_SPEC, handler: async () => "stub" });
         const respondSessionRequestTools = workflowMilestone
@@ -3181,6 +3183,8 @@ export class ManagedSession {
         // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests), the workflow tools describe what their host
         // takes there (R26); every other turn keeps the production descriptions byte for byte.
         const workflowMilestone = controlBridge?.workflowMilestone === true;
+        // Workflow test mode is hidden unless the deployment flag is on (spec 16): the 1.9.0 tools then describe stop only.
+        const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };
         const spawnWorkflowTool = defineTool("spawn_workflow", {
             ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC),
             handler: async (args: SpawnWorkflowToolArgs, invocation?: { toolCallId?: string }) => {
@@ -3196,7 +3200,7 @@ export class ManagedSession {
 
         // update_workflow / read_workflow (workflow v2) also run inline through the bridge.
         const updateWorkflowTool = defineTool("update_workflow", {
-            ...(workflowMilestone ? UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC : UPDATE_WORKFLOW_TOOL_SPEC),
+            ...updateWorkflowToolSpec(workflowSpecs),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_workflow");
                 if (!controlBridge?.updateWorkflow) return "Error: update_workflow is not available in this session.";
@@ -3205,7 +3209,7 @@ export class ManagedSession {
             },
         });
         const readWorkflowTool = defineTool("read_workflow", {
-            ...(workflowMilestone ? READ_WORKFLOW_MILESTONE_TOOL_SPEC : READ_WORKFLOW_TOOL_SPEC),
+            ...readWorkflowToolSpec(workflowSpecs),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_workflow");
                 if (!controlBridge?.readWorkflow) return "Error: read_workflow is not available in this session.";
