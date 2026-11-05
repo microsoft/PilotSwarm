@@ -287,11 +287,13 @@ export async function scheduledInputs(base, instanceId, name) {
 }
 
 /**
- * HG-2: fork a separate worker process (workflow-v2-join-worker-process.js, built code) on the test's database, armed to
- * die at `faultInject` (PILOTSWARM_FAULT_INJECT, for that process only). Returns its `pid`, `ready` (its runtime runs),
- * `exited` ({ code, signal }), its `logs`, and `stop()`.
+ * HG-2: fork a separate worker process (workflow-v2-join-worker-process.js) on the test's database, from this build or
+ * another one (`dist`, an absolute path to a built packages/sdk/dist), armed to die at `faultInject`
+ * (PILOTSWARM_FAULT_INJECT, for that process only). Returns its `pid`, `ready` (its runtime runs), `exited`
+ * ({ code, signal }), its `logs`, `create(yaml)` (a workflow with a started live run made by that build's service: its
+ * ids, or `refused` with the error), and `stop()`.
  */
-export async function forkJoinWorker(env, { faultInject = null } = {}) {
+export async function forkJoinWorker(env, { faultInject = null, dist = null, wakeBackstopMs = 500 } = {}) {
     const { fork } = await import("node:child_process");
     const { fileURLToPath } = await import("node:url");
     const script = fileURLToPath(new URL("./workflow-v2-join-worker-process.js", import.meta.url));
@@ -302,17 +304,28 @@ export async function forkJoinWorker(env, { faultInject = null } = {}) {
     const logs = [];
     for (const stream of [child.stdout, child.stderr]) stream.on("data", data => logs.push(...String(data).split("\n").filter(Boolean)));
     const exited = new Promise(resolve => child.on("exit", (code, signal) => resolve({ code, signal })));
+    const waiting = new Map();
     const ready = new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`the worker process did not start in 45 s: ${logs.join("\n")}`)), 45_000);
         child.on("message", message => {
             if (message?.type === "ready") { clearTimeout(timer); resolve(message.pid); }
             if (message?.type === "error") { clearTimeout(timer); reject(new Error(`the worker process failed: ${message.error}`)); }
+            if (message?.type === "created" && waiting.has(message.requestId)) {
+                waiting.get(message.requestId)(message);
+                waiting.delete(message.requestId);
+            }
         });
         child.on("error", error => { clearTimeout(timer); reject(error); });
     });
-    child.send({ type: "start", store: env.store, cmsSchema: env.cmsSchema, duroxideSchema: env.duroxideSchema });
+    child.send({ type: "start", store: env.store, cmsSchema: env.cmsSchema, duroxideSchema: env.duroxideSchema, ...(dist ? { dist } : {}), wakeBackstopMs });
     return {
         pid: child.pid, ready, exited, logs,
+        create(yaml) {
+            const requestId = randomUUID();
+            const answer = new Promise(resolve => waiting.set(requestId, resolve));
+            child.send({ type: "create", requestId, yaml });
+            return within(answer, 30_000, "the worker process to create the workflow");
+        },
         async stop() {
             if (child.exitCode !== null || child.signalCode !== null) return;
             child.send({ type: "stop" });
