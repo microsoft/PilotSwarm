@@ -84,7 +84,16 @@ test("poll counts never merge across runs or revisions", () => {
     ]);
     assert.deepEqual(counts(both), [2, 2]);
     assert.deepEqual(progress(both).map(item => item.workflowProgress.runId), ["run-a", "run-b"]);
-    assert.match(progress(both)[0].workflowNotice.title, /Polling ended/, "the earlier run's summary is closed when the next run starts");
+    // Re-check UI-RC2-1: runs can run at the same time (test runs beside each other and the live run), so another run's start
+    // does not end a summary; its own run's end does.
+    assert.match(progress(both)[0].workflowNotice.title, /Waiting for changes/, "the earlier run's summary goes on when another run starts");
+    const bothEnded = buildHistoryModel([
+        started("run-a", 1), begin(1), done(1), begin(2), done(2),
+        started("run-b", 2, next2), begin(1, "run-b"), done(1, "unchanged", "run-b"),
+        event("workflow.completed", { runId: "run-a", outcome: "succeeded", stateId: "end" }),
+    ]);
+    assert.match(progress(bothEnded)[0].workflowNotice.title, /Polling ended/, "its own run's end closes it");
+    assert.match(progress(bothEnded)[1].workflowNotice.title, /Waiting for changes/, "and not the other run's");
 
     // The next run's start is not among the loaded events: its steps are shown singly, never added to the earlier run.
     const unbound = buildHistoryModel([started("run-a", 1), begin(1), done(1), begin(2), done(2), begin(1, "run-b"), done(1, "unchanged", "run-b")]);
@@ -92,6 +101,18 @@ test("poll counts never merge across runs or revisions", () => {
     assert.equal(unbound.chat.length, 4);
     assert.ok(unbound.chat.slice(2).every(item => !item.workflowProgress));
 
+    // Re-check UI-RC2-1: two test runs at the same time, their steps interleaved: each run keeps its own summary; one run's
+    // steps never end the other's, and each takes its own run's definition.
+    const together = buildHistoryModel([
+        started("run-a", 1), begin(1), started("run-b", 2, next2), done(1), begin(1, "run-b"), begin(2),
+        done(1, "retry", "run-b"), done(2), begin(2, "run-b"), done(2, "retry", "run-b"),
+    ]);
+    assert.deepEqual(progress(together).map(item => [item.workflowProgress.runId, item.workflowProgress.count, item.workflowProgress.outcome]),
+        [["run-a", 2, "unchanged"], ["run-b", 2, "retry"]]);
+    assert.ok(progress(together).every(item => /Waiting for changes/.test(item.workflowNotice.title)), "both still poll");
+    const live = [started("run-a", 1), begin(1), started("run-b", 2, next2), done(1), begin(1, "run-b"), begin(2),
+        done(1, "retry", "run-b"), done(2), begin(2, "run-b"), done(2, "retry", "run-b")].reduce(appendEventToHistory, buildHistoryModel());
+    assert.deepEqual(progress(live).map(item => item.text), progress(together).map(item => item.text));
     // The same state of another run with the same step numbers is not dropped as a duplicate.
     const again = buildHistoryModel([started("run-a"), begin(1), done(1), begin(1, "run-b"), done(1, "unchanged", "run-b")]);
     assert.deepEqual(counts(again), [1]);

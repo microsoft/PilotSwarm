@@ -38,19 +38,17 @@ function scopeOf(chat, sessionId, data) {
 }
 
 /**
- * The step row an event continues (re-check RC-4): for a branch, the latest row of that run's same branch, so another
- * branch's start or end never finishes or splits its summary; otherwise the latest step row outside every branch, as
- * before (the root, a version 1 run, or a visit whose start is not loaded). -1 when there is none.
+ * The step row an event continues (re-check RC-4 and UI-RC2-1): the latest row of the same run (runs run at the same time:
+ * test runs beside each other and the live run), and in it of the same branch, so another run's or another branch's start
+ * or end never finishes or splits its summary; outside the branches, the latest row of the run outside every branch (the
+ * root, a version 1 run, whose rows name no run, or a visit whose start is not loaded). -1 when there is none.
  */
 function laneIndex(chat, sessionId, runId, scopeId) {
     for (let i = chat.length - 1; i >= 0; i--) {
         if (!isStepRow(chat[i], sessionId)) continue;
         const lane = laneOf(chat[i]);
-        if (branchScope(scopeId)) {
-            if (lane && (lane.runId ?? null) === runId && lane.scopeId === scopeId) return i;
-        } else if (!branchScope(lane?.scopeId)) {
-            return i;
-        }
+        if ((lane?.runId ?? null) !== runId) continue;
+        if (branchScope(scopeId) ? lane?.scopeId === scopeId : !branchScope(lane?.scopeId)) return i;
     }
     return -1;
 }
@@ -130,8 +128,8 @@ export function appendWorkflowProgress(chat, event, message) {
     const runId = runIdOf(data);
     const sessionId = message.sessionId;
     if (event.eventType === "workflow.started") {
-        // A v2 run names itself. Every summary of an earlier run ends here, and nothing later merges into it.
-        if (runId) finishGroups(chat, sessionId, () => true);
+        // A v2 run names itself, and its rows never merge into another run's. Another run's summaries go on (re-check
+        // UI-RC2-1: test runs run beside each other and the live run); each ends with its own run.
         chat.push({ ...message, workflowDefinition: Array.isArray(data.states) ? data.states : [], workflowRunId: runId });
         return;
     }
@@ -158,12 +156,15 @@ export function appendWorkflowProgress(chat, event, message) {
     }
     const started = event.eventType === "workflow.state_started";
     let definition;
+    let anyDefinition = false;
     for (let i = chat.length - 1; i >= 0; i--) {
         const item = chat[i];
-        if (item?.sessionId === message.sessionId && item.workflowDefinition) {
-            // The latest definition describes only its own run. Another run's step is not matched against it, so a
-            // run on another revision is never read through this one's transitions.
-            if ((item.workflowRunId ?? null) === runId) definition = item.workflowDefinition.find(node => node?.id === data.stateId);
+        if (item?.sessionId !== message.sessionId || !item.workflowDefinition) continue;
+        anyDefinition = true;
+        // The definition of this event's own run (re-check UI-RC2-1): another run's, started later, is passed over, and a run
+        // on another revision is never read through its transitions.
+        if ((item.workflowRunId ?? null) === runId) {
+            definition = item.workflowDefinition.find(node => node?.id === data.stateId);
             break;
         }
     }
@@ -183,9 +184,11 @@ export function appendWorkflowProgress(chat, event, message) {
         && completedCleanly
         && !(Array.isArray(data.toolCalls) ? data.toolCalls : []).some(call => call?.ok === false)
         && !data.stderrTail);
-    // A paged transcript without its definition can still group loaded
+    // A paged transcript without any definition can still group loaded
     // attempts, but must not claim a lifetime count or hide failed output.
-    const partialStart = !definition && !prior && started;
+    // A run whose own start is not loaded while another run's is shows its
+    // steps singly.
+    const partialStart = !definition && !anyDefinition && !prior && started;
     if (!eligible && !partialStart) {
         finishGroup(chat, index, previous);
         chat.push(laned(message, runId, scopeId, data));
