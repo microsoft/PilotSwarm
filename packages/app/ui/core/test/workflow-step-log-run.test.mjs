@@ -7,7 +7,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildHistoryModel } from "../src/history.js";
-import { workflowDefinition, workflowStepLogHistory, workflowStepLogRunId, workflowStepLogScope } from "../src/workflow-view.js";
+import { workflowDefinition, workflowStepLogHistory, workflowStepLogNotice, workflowStepLogRunId, workflowStepLogScope } from "../src/workflow-view.js";
+import { workflowStepLogLines, WORKFLOW_STEP_LOG_EMPTY_TEXT } from "../src/workflow-sessions.js";
 
 const SID = "wf-log";
 let seq = 0;
@@ -103,8 +104,47 @@ test("RC-2: a first open with a known v2 definition and its first read on its wa
     // The read comes back with no live run: none; with a live run: only its entries.
     assert.deepEqual(workflowStepLogScope({ ...first, readModel: { run: null, runs: [{ runId: "test-a" }] }, readModelRunId: null }), { kind: "none" });
     assert.deepEqual(workflowStepLogScope({ ...first, readModel: { run: { runId: "live-1" }, runs: [] }, readModelRunId: null }), { kind: "run", runId: "live-1" });
+    // With no run at all: empty (S8-UI).
+    assert.deepEqual(workflowStepLogScope({ ...first, readModel: { run: null, runs: [] }, readModelRunId: null }), { kind: "empty" });
     // A version 1 definition is still not filtered.
     const legacy = workflowDefinition({ name: "w", version: "1", initial: "a", states: [{ id: "a", type: "script", next: { ok: "b" } }, { id: "b", type: "terminal" }] });
     assert.notEqual(legacy.shape, "v2");
     assert.deepEqual(workflowStepLogScope({ definition: legacy }), { kind: "all" });
+});
+
+// S8-UI (browser suite g-06/g-07 at 28217174): a workflow with no run at all has no test run to choose, so its step log
+// adds no line telling the person to choose one; an empty log says "No step output yet." as before R2-UI-3. A draft with
+// only test runs keeps that line. In both, the log shows only the session's own notices, never a run's entries.
+test("S8-UI: with no run at all the step log adds no notice and says 'No step output yet.'; with only test runs it keeps the notice", () => {
+    const runEntries = log => log.chat.filter(item => item.workflowRunId);
+    const notices = log => log.chat.filter(item => item.workflowStepLogNotice).map(item => item.text);
+    const noRuns = { selectedRunId: null, readModel: { run: null, runs: [] }, readModelRunId: null };
+    assert.deepEqual(workflowStepLogScope(noRuns), { kind: "empty" });
+    assert.equal(workflowStepLogRunId(noRuns), null);
+    assert.equal(workflowStepLogNotice({ kind: "empty" }), null);
+
+    // No events at all (the browser case): the same empty history, and the empty log's own words.
+    const blank = buildHistoryModel([]);
+    const blankLog = workflowStepLogHistory(blank, workflowStepLogScope(noRuns));
+    assert.deepEqual(blankLog.chat, []);
+    assert.deepEqual(workflowStepLogLines([], blankLog), [{ text: WORKFLOW_STEP_LOG_EMPTY_TEXT, color: "gray" }]);
+
+    // Entries of a run the read does not list (for example a removed test run): never shown; the session's own notice stays.
+    const history = buildHistoryModel([...runEvents("gone", "{\"v\":\"gone\"}"), event("workflow.recovered", { action: "none" })]);
+    const shown = workflowStepLogHistory(history, workflowStepLogScope(noRuns));
+    assert.deepEqual(runEntries(shown), []);
+    assert.deepEqual(notices(shown), []);
+    assert.ok(shown.chat.length > 0 && shown.chat.every(item => !item.workflowRunId), "only the session's own notices");
+    // Only run entries: nothing is left, so the empty log's words show.
+    const onlyRun = workflowStepLogHistory(buildHistoryModel(runEvents("gone", "{\"v\":\"gone\"}")), workflowStepLogScope(noRuns));
+    assert.deepEqual(onlyRun.chat, []);
+    assert.deepEqual(workflowStepLogLines([], onlyRun), [{ text: WORKFLOW_STEP_LOG_EMPTY_TEXT, color: "gray" }]);
+
+    // Only test runs, no live run: the notice stays, and no run's entries.
+    const onlyTests = { selectedRunId: null, readModel: { run: null, runs: [{ runId: "gone" }] }, readModelRunId: null };
+    assert.deepEqual(workflowStepLogScope(onlyTests), { kind: "none" });
+    const tests = workflowStepLogHistory(history, workflowStepLogScope(onlyTests));
+    assert.deepEqual(runEntries(tests), []);
+    assert.deepEqual(notices(tests), ["No live run yet. Choose a test run to see its log."]);
+    assert.notDeepEqual(workflowStepLogLines([], tests), [{ text: WORKFLOW_STEP_LOG_EMPTY_TEXT, color: "gray" }]);
 });

@@ -327,13 +327,14 @@ export function workflowViewSnapshotEqual(a, b) {
  * the graph uses (workflowReadModelView), never a read of another selection:
  * - `run`: the run the person chose, else the live run the read of that selection names (`runId`);
  * - `loading`: the live run was chosen and its read has not come back (a read of another run may still be held);
- * - `none`: the read came back, and there is no live run (a draft with only test runs);
+ * - `none`: the read came back, and there is no live run, but test runs exist (a draft with only test runs);
+ * - `empty`: the read came back, and the workflow has no run at all (its runs list is empty): there is no run to choose;
  * - `failed`: the read failed (`error`);
  * - `all`: a version 1 workflow (its definition is known and is not v2), or nothing at all known yet about the workflow
  *   (its log is not filtered).
  * A known v2 definition makes the log a v2 one from the first open (re-check RC-2): before its first read comes back it
- * is `loading`, never `all`. In `loading`, `none` and `failed` the log shows only the session's own notices, never any
- * run's entries. Pure.
+ * is `loading`, never `all`. In `loading`, `none`, `empty` and `failed` the log shows only the session's own notices,
+ * never any run's entries; `empty` adds no line of its own, so a log with no notices says "No step output yet." (g-06). Pure.
  */
 export function workflowStepLogScope(view) {
     if (!view || typeof view !== "object") return { kind: "all" };
@@ -344,7 +345,9 @@ export function workflowStepLogScope(view) {
     const read = workflowReadModelView(view);
     if (read.readModel) {
         const runId = read.readModel.run?.runId;
-        return typeof runId === "string" && runId ? { kind: "run", runId } : { kind: "none" };
+        if (typeof runId === "string" && runId) return { kind: "run", runId };
+        const runs = Array.isArray(read.readModel.runs) ? read.readModel.runs.filter(run => run && typeof run === "object") : [];
+        return runs.length ? { kind: "none" } : { kind: "empty" };
     }
     if (read.error) return { kind: "failed", error: read.error };
     return { kind: "loading" };
@@ -356,7 +359,10 @@ export function workflowStepLogRunId(view) {
     return scope.kind === "run" ? scope.runId : null;
 }
 
-/** The line a step log shows in place of a run's entries, for a scope that has none (R2-UI-3). */
+/**
+ * The line a step log shows in place of a run's entries, for a scope that has none (R2-UI-3). None for `empty`: with no
+ * run at all there is nothing to choose, and the empty log's own words say there is no output (S8-UI).
+ */
 export function workflowStepLogNotice(scope) {
     if (scope?.kind === "loading") return "Loading the live run's log…";
     if (scope?.kind === "none") return "No live run yet. Choose a test run to see its log.";
