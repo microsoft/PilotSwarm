@@ -39,13 +39,19 @@ export function workflowSessionGuidance(testMode: boolean): string {
 
 /**
  * The workflow-authoring skills (design 04; R24): `workflow-authoring` (the
- * core), `workflow-reference` and `workflow-testing`, in the SDK package's
- * plugins/workflow-v2/skills. INACTIVE: no worker tier loads this directory;
- * a test passes it as a skill directory, beside the workers that run
+ * core) and `workflow-reference`, in the SDK package's
+ * plugins/workflow-v2/skills (`workflow-testing` is apart, hidden with test
+ * mode: WORKFLOW_V2_TEST_MODE_SKILLS_DIR). INACTIVE: no worker tier loads this
+ * directory; a test passes it as a skill directory, beside the workers that run
  * controller 1.9.0.
  */
 export const WORKFLOW_V2_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow-v2/skills", import.meta.url));
 export const WORKFLOW_AUTHORING_SKILL = "workflow-authoring";
+/**
+ * The workflow-testing skill, hidden with test mode (Workflow Simplified, spec 16): kept apart from the authoring skills,
+ * so an agent reads it only where a worker passes this directory as well, with PILOTSWARM_WORKFLOW_TEST_MODE=on.
+ */
+export const WORKFLOW_V2_TEST_MODE_SKILLS_DIR = fileURLToPath(new URL("../../plugins/workflow-v2/test-mode-skills", import.meta.url));
 
 /**
  * The standard base's short discovery pointer to the authoring skill (design

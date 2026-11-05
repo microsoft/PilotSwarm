@@ -5,6 +5,10 @@ description: Load before you test a version 2 workflow with mocked effects — t
 
 # Workflow testing
 
+> **Hidden (Workflow Simplified, spec 16).** Test mode is off unless the deployment sets
+> `PILOTSWARM_WORKFLOW_TEST_MODE=on`. This guide is kept beside the authoring skills, not with them, so an agent
+> reads it only where test mode is on.
+
 A test run executes the exact current revision of one of your workflow
 children while it is a **draft**. A published workflow is not tested: `test`
 refuses it with `TEST_NEEDS_DRAFT`; test a change as a new draft. (A test run

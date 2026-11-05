@@ -7,8 +7,8 @@ import { ManagedSession } from "../../dist/managed-session.js";
 import { SessionManager } from "../../dist/session-manager.js";
 import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/tool-spec.js";
 import {
-    READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_OPERATIONS, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC,
-    UPDATE_WORKFLOW_TOOL_SPEC, updateWorkflowFromTool,
+    READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_OPERATIONS,
+    UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC, updateWorkflowFromTool,
 } from "../../dist/workflow/v2/tools.js";
 import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "../../dist/workflow/v2/request-service.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/v2/agent-node-service.js";
@@ -233,10 +233,10 @@ test("the milestone operations keep the production authorization: only the agent
     }
 });
 
-test("the reference skill's update_workflow table names exactly the operations a 1.9.0 host takes", () => {
+test("the reference skill's update_workflow table names exactly the operations a 1.9.0 host takes with test mode hidden (spec 16)", () => {
     const text = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-reference/SKILL.md", import.meta.url), "utf8");
     const table = text.slice(text.indexOf("| Operation | Arguments | Effect |"), text.indexOf("`read_workflow`:"));
     const named = table.split("\n").slice(2).filter(line => line.startsWith("| `"))
         .flatMap(line => line.split("|")[1].split(",").map(cell => cell.trim().replace(/`/g, "")));
-    assert.deepEqual(named.sort(), [...UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.parameters.properties.operation.enum].sort());
+    assert.deepEqual(named.sort(), [...UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC.parameters.properties.operation.enum].sort());
 });

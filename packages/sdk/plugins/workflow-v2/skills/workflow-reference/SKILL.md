@@ -142,8 +142,8 @@ invalid completions), `unavailable`, `forbidden` and `cancelled`.
 workflow interface its package agent exports. `ps_list_agents` lists it as
 the entry's `workflowInterface` (`ref`, `outcomes`, `inputSchema`,
 `outputSchema`, `digest`); set `package` to the entry's `namespace`. The
-state must declare `outputSchema`. At publication and at a real-agent test
-start, the state's outcomes and `outputSchema` must equal the interface's,
+state must declare `outputSchema`. At publication and at start,
+the state's outcomes and `outputSchema` must equal the interface's,
 and `inputSchema` too when the interface has one. Copy each interface
 schema into `schemas` unchanged, and refer to it from the state; add no
 `$ref` inside the copy. A stricter or looser schema does not match. A
@@ -179,9 +179,8 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   success saved after the time limit. A report too large to store drops
   every `output` and `error` and adds `truncated: true`.
 - With `timeoutSeconds`: a success counts only when it was saved at or
-  before the time limit. In a live run, a branch step whose own deadline
-  equals the time limit ends just after it, so it does not count; in a test
-  run, at the same virtual instant, it counts. When the time limit passes with k such successes,
+  before the time limit. A branch step whose own deadline
+  equals the time limit ends just after it, so it does not count. When the time limit passes with k such successes,
   the state still joins. With fewer, it ends with the runtime error
   `timed_out`, whose `details` is the same report with `timedOut: true`;
   if k could already no longer happen then, it is `blocked` with
@@ -238,9 +237,6 @@ and the route `timeout`, and text around a binding.
 | `pause`, `resume`, `cancel` | `reason?`, `run_id?` | Run control. |
 | `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; then the run ends `stopped`. |
 | `recover` | `run_id?` | Ends or starts a run that `read_workflow` shows as `needsRecovery`. |
-| `test` | `expected_revision`, `definition_hash`, `inputs`, `vars?`, `agent_mode?`, `fixtures?`, `scenario?` | Starts a mocked test run of a draft (`workflow-testing`); a published workflow is refused with `TEST_NEEDS_DRAFT`. |
-| `test_respond` | `run_id`, `interception_id`, `response` | Answers one intercepted effect. |
-| `test_advance` | `run_id`, `seconds` | Moves a test run's virtual clock. |
 
 A live start (`publish_and_start`, `start`) tells you the run's result
 when it ends, even if `spawn_workflow` had `notify_on_completion: false`,
@@ -251,7 +247,7 @@ shows it as `definition.notifyOnCompletion`.
 `include_yaml?`, `limit?`, `cursor?` (a `run.pages` nextCursor: older
 rows), `execution_id?` (its whole result). Shows the graph, runs, a
 run's newest rows (open ones apart), KV, stop, `agent.childSessionId`,
-branches, tests. It is how you follow a run (`workflow-authoring`, Follow
+branches. It is how you follow a run (`workflow-authoring`, Follow
 a run): use it, not `list_sessions`, for a workflow's status.
 
 `send_workflow_input`: `workflow_id`, `contract`, `payload`,

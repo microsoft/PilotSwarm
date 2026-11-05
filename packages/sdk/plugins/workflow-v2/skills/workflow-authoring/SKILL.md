@@ -1,6 +1,6 @@
 ---
 name: workflow-authoring
-description: Load before you create, edit, test, publish or run a version 2 workflow (pilotswarm.dev/v2-draft) — choosing states, bounded graphs, bindings, typed contracts, agent and parallel states, the lifecycle and failure diagnosis.
+description: Load before you create, edit, publish or run a version 2 workflow (pilotswarm.dev/v2-draft) — choosing states, bounded graphs, bindings, typed contracts, agent and parallel states, the lifecycle and failure diagnosis.
 ---
 
 # Workflow authoring
@@ -8,13 +8,11 @@ description: Load before you create, edit, test, publish or run a version 2 work
 A version 2 workflow is a child session of yours that runs a state graph
 without model turns. Its controller runs scripts, timers, typed messages,
 agent children and fan-out exactly as the definition declares. You write it
-as YAML, keep it as a draft for review, test it with mocked framework
-effects, publish the exact revision that was reviewed, and only then start
-its live run.
+as YAML, keep it as a draft for review, publish the exact revision that was
+reviewed, and only then start its live run.
 
 Load `workflow-reference` for every field of every state and every tool
-operation. Load `workflow-testing` before you start a test run. Load them
-only when you need them.
+operation. Load it only when you need it.
 
 If the compiler answers `WORKFLOW_NODE_TYPE_UNSUPPORTED` or
 `WORKFLOW_FEATURE_UNSUPPORTED`, or `update_workflow` refuses an operation
@@ -29,8 +27,8 @@ ordinary sub-agent for open-ended work. A workflow does not expand
 permissions: its scripts use the tools your session may use, and its agent
 children are ordinary agents with their normal capabilities.
 
-Create a draft for review when the user asks for review. A draft, and a
-mocked test run, run nothing live. Do not describe either as a live result.
+Create a draft for review when the user asks for review. A draft runs
+nothing live. Do not describe it as a live result.
 
 ## 2. Choose the state type
 
@@ -124,9 +122,6 @@ await setResult(status.state === "running" ? "running" : "finished", { status, l
 - A script that exits non-zero without a result fails with
   `execution_failed`. A script past its `timeoutSeconds` (default 300, at most
   3,600) fails with `timed_out`.
-- `context.mode` is `test` in a test run. The script's own effects (network,
-  files, processes, time, randomness) are real in a test run too; only its
-  tool calls are mocked.
 - A worker failure can run a script again (`context.attempt` is then greater
   than 1). Make tool calls safe to repeat, or check before you change
   something.
@@ -223,14 +218,12 @@ the branches.
 2. Show the user the draft, its graph (`read_workflow`) and its diagnostics.
    Revise with `update_workflow` `replace_definition` and the
    `expected_revision` you reviewed.
-3. Test the exact revision with mocked effects while it is still a draft
-   (`workflow-testing`); a published workflow is not tested.
-4. Publish the exact reviewed revision: `publish` with `expected_revision`
+3. Publish the exact reviewed revision: `publish` with `expected_revision`
    and its `definition_hash`. A published definition never changes; a new
    version needs a new workflow child.
-5. Start the live run explicitly: `start` (or `publish_and_start`) with
+4. Start the live run explicitly: `start` (or `publish_and_start`) with
    `inputs` and optional `vars`. A workflow child has one live run.
-6. Control the run: `pause` and `resume`; `stop` with `grace_seconds` (admit
+5. Control the run: `pause` and `resume`; `stop` with `grace_seconds` (admit
    nothing new, let admitted work settle, then end `stopped`); `cancel`;
    `set_vars` with `expected_kv_revision`. If `read_workflow` shows
    `needsRecovery`, use `recover`.
@@ -289,7 +282,6 @@ graph:
   (for a failure, its step and cause) and start no other run unless asked.
   `message`: use or relay it as the user asked. `request`: answer once
   with `respond_session_request` before its deadline, never in chat.
-  `test_waiting`: answer with `update_workflow` `test_respond`.
 - For a status question, use `read_workflow` for that workflow (its run),
   not `list_sessions`.
 - If notifications are off (`definition.notifyOnCompletion` is false),

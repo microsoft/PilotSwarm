@@ -2,14 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
-import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR } from "../../dist/workflow/guidance.js";
+import { WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR } from "../../dist/workflow/guidance.js";
 
 // Batch 7: how to follow a run (n-4), input is a YAML value (s-3) and messages from workflow children (w-3), in the
 // base guidance and the workflow skills.
 
 const flat = text => text.replace(/\s+/g, " ");
 const skill = name => {
-    const found = loadSkillsSync(WORKFLOW_V2_SKILLS_DIR).find(item => item.name === name);
+    // workflow-testing is hidden with test mode (Workflow Simplified, spec 16): it lives apart from the guides agents read.
+    const found = [...loadSkillsSync(WORKFLOW_V2_SKILLS_DIR), ...loadSkillsSync(WORKFLOW_V2_TEST_MODE_SKILLS_DIR)].find(item => item.name === name);
     assert.ok(found, name);
     return found;
 };
@@ -33,7 +34,6 @@ test("the authoring skill says how to follow a run (n-4) and how a workflow's me
         "The sentence names only ids and codes; the workflow's name, its result and a failure's cause are in the data.",
         "`ended`: the run ended; tell the user the result in one or two sentences (for a failure, its step and cause)",
         "`request`: answer once with `respond_session_request` before its deadline, never in chat",
-        "`test_waiting`: answer with `update_workflow` `test_respond`",
         "use `read_workflow` for that workflow (its run), not `list_sessions`",
         "If notifications are off (`definition.notifyOnCompletion` is false), nothing will arrive",
         "quote the actual error (its code and message) and try once more",
@@ -44,6 +44,8 @@ test("the authoring skill says how to follow a run (n-4) and how a workflow's me
     }
     // The run-end notice is a WORKFLOW_UPDATE now; the skill no longer teaches the old system line.
     assert.ok(!section.includes("[SYSTEM: A child workflow ended"));
+    // Test mode is hidden (spec 16): the authoring guide does not teach the test notice.
+    assert.ok(!section.includes("test_waiting"));
 });
 
 test("the skills teach input as a YAML value, not JSON in quotes, and name the checks (s-3)", () => {

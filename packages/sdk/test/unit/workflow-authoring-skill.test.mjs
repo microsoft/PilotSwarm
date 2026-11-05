@@ -6,7 +6,8 @@ import { SessionManager } from "../../dist/session-manager.js";
 import { loadSkillsSync } from "../../dist/skills.js";
 import { compileWorkflowV2 } from "../../dist/workflow/v2/compiler.js";
 import {
-    WORKFLOW_AUTHORING_POINTER, WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, workflowAuthoringSkillLoaded,
+    WORKFLOW_AUTHORING_POINTER, WORKFLOW_AUTHORING_SKILL, WORKFLOW_SESSION_GUIDANCE, WORKFLOW_V2_SKILLS_DIR, WORKFLOW_V2_TEST_MODE_SKILLS_DIR,
+    workflowAuthoringSkillLoaded,
 } from "../../dist/workflow/guidance.js";
 
 // The base's workflow guidance mentions testing only with workflow test mode on (Workflow Simplified, spec 16); these
@@ -22,11 +23,15 @@ process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
 const PLUGINS = fileURLToPath(new URL("../../plugins", import.meta.url));
 const MILESTONE = { enableRequests: true, enableAgents: true, enableParallel: true };
 const skills = () => loadSkillsSync(WORKFLOW_V2_SKILLS_DIR);
+// The testing guide is hidden with test mode (Workflow Simplified, spec 16): apart from the guides agents read.
+const testModeSkills = () => loadSkillsSync(WORKFLOW_V2_TEST_MODE_SKILLS_DIR);
 
 test("the workflow skills load from their own plugin directory, which no worker tier loads", () => {
     assert.equal(path.resolve(WORKFLOW_V2_SKILLS_DIR), path.join(PLUGINS, "workflow-v2", "skills"));
-    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-reference", "workflow-testing"]);
-    for (const skill of skills()) {
+    assert.deepEqual(skills().map(skill => skill.name).sort(), ["workflow-authoring", "workflow-reference"]);
+    assert.equal(path.resolve(WORKFLOW_V2_TEST_MODE_SKILLS_DIR), path.join(PLUGINS, "workflow-v2", "test-mode-skills"));
+    assert.deepEqual(testModeSkills().map(skill => skill.name), ["workflow-testing"]);
+    for (const skill of [...skills(), ...testModeSkills()]) {
         // The skills index clips a description at 240 characters; each body stays small enough to load on demand.
         assert.ok(skill.description.length >= 80 && skill.description.length <= 240, `${skill.name} description: ${skill.description.length}`);
         assert.ok(Buffer.byteLength(skill.prompt, "utf8") <= 20 * 1024, `${skill.name} body: ${Buffer.byteLength(skill.prompt, "utf8")} bytes`);
@@ -36,10 +41,17 @@ test("the workflow skills load from their own plugin directory, which no worker 
         assert.equal(loadSkillsSync(path.join(PLUGINS, tier, "skills")).filter(skill => skill.name.startsWith("workflow-")).length, 0, tier);
     }
     const core = skills().find(skill => skill.name === WORKFLOW_AUTHORING_SKILL);
-    for (const phrase of ["workflow-reference", "workflow-testing", "complete_workflow_node", "needs_input", "all_required",
-        "expected_revision", "definition_hash", "own effects", "does not run that feature", "Bound every loop"]) {
+    for (const phrase of ["workflow-reference", "complete_workflow_node", "needs_input", "all_required",
+        "expected_revision", "definition_hash", "does not run that feature", "Bound every loop"]) {
         assert.ok(core.prompt.includes(phrase), `the core skill covers: ${phrase}`);
     }
+    // The guides agents read do not teach test mode (spec 16): no test operation, test run or testing guide.
+    for (const skill of skills()) {
+        for (const word of ["workflow-testing", "test_respond", "test_advance", "test run", "test_waiting", "TEST_NEEDS_DRAFT"]) {
+            assert.ok(!skill.prompt.includes(word), `${skill.name} does not mention ${word}`);
+        }
+    }
+    assert.match(testModeSkills()[0].prompt, /Hidden \(Workflow Simplified, spec 16\)/);
 });
 
 test("the base names the authoring skill only with workflows enabled and only on a worker that loaded it from its directory", () => {
@@ -69,7 +81,7 @@ test("the base names the authoring skill only with workflows enabled and only on
 
 test("every complete example in the workflow skills compiles as written, with no diagnostics, and together they use every state type", () => {
     const examples = [];
-    for (const skill of skills()) {
+    for (const skill of [...skills(), ...testModeSkills()]) {
         for (const match of skill.prompt.matchAll(/```yaml\n([\s\S]*?)```/g)) {
             if (match[1].startsWith("# example: ")) examples.push({ skill: skill.name, name: match[1].split("\n")[0].slice("# example: ".length), yaml: match[1] });
         }

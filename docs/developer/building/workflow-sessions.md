@@ -17,6 +17,57 @@ Other state types of the workflow language (`agent`, `question`, `action`,
 document that uses one is refused with "not supported yet" before any session
 is created.
 
+## Sessions own their Workflows (Workflow Simplified, stage 1)
+
+A session (a chat) owns its **Workflow Definitions** and its **Workflows**.
+A Workflow is one execution of one revision of a definition; underneath, it is
+still the workflow child session described here, and the engine is unchanged.
+The screens use one word per idea: **Session**, **Workflow Definition**,
+**Revision**, **Workflow**, **Node**, **Agent node**, **Item**, **Time limit**
+and **Start**. A Workflow that was canceled reads **Canceled**; the stored
+value stays `cancelled`.
+
+- **Session list.** A Workflow is a row under its session, like a sub-agent
+  (same listing, collapse and order), titled by its definition and number
+  (`check-items #3`) with its state. A definition that never started has no
+  row. An agent node's chat is a row under its Workflow (`summarize · agent`)
+  and is read-only: `Read-only. To change this, message <the session>.`
+- **Selecting a Workflow row keeps the chat.** The session's chat stays in
+  the middle, and the right block switches to its **Workflow** tab on that
+  Workflow. Selecting an agent node's chat shows that chat and its Workflow
+  with the node selected. A link to a Workflow opens the same way.
+- **The Workflow tab** sits beside the Canvas in the right block (the
+  **Workflow** button in the toolbar, between Canvas and Diagnostics; one of
+  the two shows at a time). Its count says how many Workflows wait for input
+  or failed and were not opened yet. It toggles between **Definition** (the
+  graph or the YAML of the newest revision, **Compare** for older ones,
+  **Start…**) and **Workflows** (each Workflow's number, state, revision,
+  start time and duration; select one to see its graph with **Node**,
+  **Log** and **Variables** in a bottom panel). A failed Workflow shows its
+  failure first. **Stop…** opens one dialog: **Let started nodes finish** or
+  **Cancel now**; its close button says **Keep running**.
+- **Nodes** show their type by icon, the start node, end rings, unreached
+  nodes dimmed, For each counts with nouns (`2 ok · 1 failed`), failures in
+  red and `ran 3 times` where a node repeated.
+- **Removed:** the Notices bell and the Publish review. Each notice moved to
+  where it applies (the revision line, one line over the graph, the Workflow
+  state, the Log) or went away.
+- **Phone (390 px):** the Workflow tab opens as a sheet over the chat; in a
+  panel, **← Graph** returns to the graph.
+- **Terminal UI:** the same model. `w` opens the Workflow pane for the chat
+  (its selected Workflow, an agent node chat's own Workflow at that node, else
+  its newest Workflow); Esc goes back to the chat.
+- **Inside a Workflow** (an agent node's chat and its sub-agents), sessions
+  get no definition tools: `spawn_workflow` and `update_workflow` are not
+  declared, and the server refuses them (`WORKFLOW_DEFINITION_TOOLS_REFUSED`).
+  Any other session may hand prescriptive work to a Workflow; the base
+  guidance says so. Sessions inside a Workflow stop at level 3 below the
+  top-level chat, and each refusal says so in words.
+- **Test mode is hidden** (see [Test mode (hidden)](#test-mode-hidden)).
+
+The rest of this page describes the workflow child underneath, its graph and
+the workflow screen a Master of Agents panel still shows.
+
 A workflow session is a sibling of an agent session: it has a row in the
 session list (a connected-steps icon in the portal, `◇` in the terminal), an owner,
 sharing, and a transcript. In the portal, the session details under the list
@@ -371,6 +422,26 @@ worker's activity slot stays held until that task ends, or at most for a
 
 ## Running workflows (operators)
 
+### Test mode (hidden)
+
+Testing a workflow (a test run with mocked effects, its held calls and its
+virtual clock) is hidden from every surface people and agents use. Its code
+and its tests stay. One deployment flag shows it again:
+
+| Setting | Effect |
+|---|---|
+| `PILOTSWARM_WORKFLOW_TEST_MODE=on` (exactly `on`; off by default) | The `update_workflow` operations `test`, `test_respond` and `test_advance` are declared to agents and taken from them; a person's workflow commands (Web API, MCP) take them and the bootstrap lists them, so the portal and the terminal UI show test controls and test runs. The base guidance mentions the test notice. |
+
+Off, each test operation is refused in words ("Testing workflows is turned
+off on this server."), the portal and the terminal UI show no test control or
+test run, and stored test runs are kept but not shown. The flag is separate
+from `PILOTSWARM_WORKFLOW_V2_TEST_ENVIRONMENT` and changes nothing else; test
+operations still need workers that run controller 1.9.0. The `workflow-testing`
+guide is kept apart from the authoring skills, in
+`packages/sdk/plugins/workflow-v2/test-mode-skills`, so an agent reads it only
+where test mode is on. The SDK's local tests run with the flag on.
+
+### Scripts
 Scripts run as child processes **on the worker**, so script states are
 **off** until an operator turns them on:
 
