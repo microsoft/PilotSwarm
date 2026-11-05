@@ -474,6 +474,9 @@ describe("workflow v2 test runs: controller 1.9.0 (inactive, test-only registrat
             expect(await draft.respond(runId, agent.interceptionId, { kind: "error", value: forged }, "f-1"))
                 .toMatchObject({ ok: true, node: { stateId: "review", outcome: "timed_out" } });
             const hidden = { token: "<hidden>", key: "<hidden>", note: "kept" };
+            // The answer is stored as the error it decided (its secrets hidden); a repeat of the same answer is still that answer.
+            expect((await h.store.readInterception(agent.interceptionId)).response.value.details.branches[0].output).toEqual(hidden);
+            expect(await draft.respond(runId, agent.interceptionId, { kind: "error", value: forged }, "f-1")).toMatchObject({ ok: true, replayed: true });
             const node = await h.store.readNodeExecution(id("review"));
             expect(node).toMatchObject({ resultKind: "runtime_error", outcome: "timed_out" });
             expect(node.error.details.branches[0].output).toEqual(hidden);

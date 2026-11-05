@@ -6776,12 +6776,17 @@ export class WorkflowStore {
                 if (!completed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${record.nodeExecutionId} changed under its lock.`);
                 decided = nodeFrom(completed[0]);
             }
+            // S6-SF2 verification: an error answer that decides the state's runtime error is stored as that error is, with
+            // its secrets hidden (unvouched: never a parallel report's exemption). Its sha256 stays the given answer's, so a
+            // repeat of it is still recognized. A tool call's answer is what its script receives, and is stored as given.
+            const storedResponse = input.kind === "error" && input.decide?.resultKind === "runtime_error"
+                ? redactWorkflowErrorText(input.valueText, canonicalJson) : input.valueText;
             const { rows } = await client.query(
                 `UPDATE ${this.t.testInterceptions}
                     SET state = 'responded', response_kind = $2, response = $3, response_sha256 = $4, disposition = $5,
                         response_operation_id = $6, responded_by = $7, responded_at = clock_timestamp()
                   WHERE interception_id = $1 AND state = 'awaiting_parent' RETURNING *`,
-                [input.interceptionId, input.kind, input.valueText, responseSha256, input.disposition, input.operationId,
+                [input.interceptionId, input.kind, storedResponse, responseSha256, input.disposition, input.operationId,
                     input.actor === null ? null : canonicalJson(input.actor)]);
             if (!rows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Interception ${input.interceptionId} changed under its lock.`);
             const answered = interceptionFrom(rows[0]);
