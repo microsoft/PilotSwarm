@@ -1358,8 +1358,10 @@ export function workflowV2KvCompare(before, after) {
  * Re-check RC-8: a branch is ended only by a recorded end, as its evidence row says (workflowV2BranchEvidence): its last
  * step (the end of its chain, branchLast) is a terminal, was cancelled (the join, the time limit, failFast), or ended
  * with a result no route takes. A step whose result takes a route (a loop's next check, an error with a recovery route)
- * leaves its branch between two steps: still at work, not ended, while its next step is not admitted yet. From the
- * executions loaded only: older history not loaded may hold more (the caller says so). Pure.
+ * leaves its branch between two steps: still at work, not ended, while its next step is not admitted yet. Re-check
+ * UI-RC2-5: `pending` counts the branches with a step at work now (definite: an open row), `between` those inferred at
+ * work from a routed result, and `active` both. From the executions loaded only: older history not loaded may hold more
+ * (the caller says so). Pure.
  */
 export function workflowV2BranchProgress(executions, states = []) {
     const byId = new Map((Array.isArray(states) ? states : []).filter(isRecord).map(state => [state.id, state]));
@@ -1374,10 +1376,10 @@ export function workflowV2BranchProgress(executions, states = []) {
     }
     const progress = new Map();
     for (const [id, branches] of byParallel) {
-        let active = 0, succeeded = 0;
+        let pending = 0, between = 0, succeeded = 0;
         for (const list of branches.values()) {
             const sorted = list.slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
-            if (sorted.some(item => item.status === "pending")) { active++; continue; }
+            if (sorted.some(item => item.status === "pending")) { pending++; continue; }
             const last = branchLast(sorted);
             const state = byId.get(last.stateId);
             if (state?.type === "terminal") {
@@ -1388,9 +1390,9 @@ export function workflowV2BranchProgress(executions, states = []) {
             const next = isRecord(state?.next) ? state.next : null;
             const routed = next !== null && typeof last.outcome === "string"
                 && (Object.hasOwn(next, last.outcome) || (last.resultKind === "runtime_error" && Object.hasOwn(next, "failure")));
-            if (routed) active++;
+            if (routed) between++;
         }
-        progress.set(id, { started: branches.size, active, succeeded });
+        progress.set(id, { started: branches.size, active: pending + between, pending, between, succeeded });
     }
     return progress;
 }
@@ -1404,7 +1406,7 @@ function branchProgressLines(node, execution, context) {
         const counts = workflowV2BranchCounts(execution.branches, progress, context);
         return [counts.partial
             ? `Branches now${note}: ${counts.runningExact ? "" : "at least "}${counts.running} active, at least ${counts.done} ended, `
-                + `${counts.unknown} not in the loaded history (queued, or ended earlier).`
+                + `${counts.unknown} not known from the loaded history (queued, between two steps, or ended earlier).`
             : `Branches now: ${counts.running} active, ${counts.queued} queued, ${counts.done} ended.`];
     }
     if (execution.outcome === "blocked") {
@@ -1570,16 +1572,18 @@ export function workflowV2JoinView(view, context) {
 /**
  * A running parallel visit's branches now (adversarial review R2-UI-7), from the loaded executions (`progress`,
  * workflowV2BranchProgress) and its `total`. With every execution of the run loaded the counts are exact: { running,
- * queued, done }. Without, a branch with no loaded row may have ended in the older history as well as not started:
- * { running, done (at least), unknown, partial: true, runningExact } and no queued count; running is exact while every
- * open row is listed (the read lists them all). Pure.
+ * queued, done }, a branch between two steps counted running. Without (re-check UI-RC2-5): running counts only branches
+ * with a step at work now (an open row), exact while every open row is listed (the read lists them all); done counts the
+ * recorded ends loaded (at least); every other branch is unknown, since it may be queued, between two steps or ended in
+ * history not loaded: { running, done, unknown, partial: true, runningExact } and no queued count. Pure.
  */
 export function workflowV2BranchCounts(total, progress, context) {
     const started = Math.max(0, progress?.started ?? 0);
-    const running = Math.max(0, progress?.active ?? 0);
-    const done = Math.max(0, started - running);
-    if (context?.complete) return { running, queued: Math.max(0, total - started), done };
-    return { running, done, unknown: Math.max(0, total - started), partial: true, runningExact: context?.openComplete === true };
+    const active = Math.max(0, progress?.active ?? 0);
+    const done = Math.max(0, started - active);
+    if (context?.complete) return { running: active, queued: Math.max(0, total - started), done };
+    const running = Math.max(0, progress?.pending ?? active);
+    return { running, done, unknown: Math.max(0, total - running - done), partial: true, runningExact: context?.openComplete === true };
 }
 
 /**

@@ -170,7 +170,8 @@ test("RC-4: each branch keeps its own summary while both are pending; the run's 
 
 // Adversarial review R2-UI-7: with more executions than one read returns, the branch box does not call branches it has
 // not seen queued: done is at least what is loaded, and the rest is unknown (queued, or ended in the older history). Its
-// re-check RC-8 corrects this case: branches between two checks are running, not done.
+// re-check RC-8 corrects this case: branches between two checks are running, not done (with every row loaded; with a part
+// loaded they are unknown: UI-RC2-5).
 test("R2-UI-7: a long run's branch counts are marked partial: at least N done, the unseen ones unknown, never queued", () => {
     const rows = [row("fan", 1, "pending", { nodeExecutionId: "nx-fan-1", branches: 64 })];
     // The newest 200 rows: branches 41 to 62 looped nine times each and are between steps (re-check RC-8: still at work, not
@@ -186,14 +187,16 @@ test("R2-UI-7: a long run's branch counts are marked partial: at least N done, t
     const cursor = { v: 1, workflowId: "wf-1", runId: "run-1", section: "executions", order: "newest_first", after: { seq: "1" } };
     const partial = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
         run: { pages: { executions: { nextCursor: cursor, openComplete: true } } } }) }), "fan");
-    assert.deepEqual(partial.joinBar.group.counts, { running: 24, done: 0, unknown: 40, partial: true, runningExact: true });
-    assert.equal(partial.joinBar.group.text, "24 running · at least 0 done · 40 unknown");
-    assert.ok(partial.description.includes(
-        "Branches now (in the loaded history): 24 active, at least 0 ended, 40 not in the loaded history (queued, or ended earlier)."), partial.description.join("\n"));
+    // Re-check UI-RC2-5: with history not all loaded, only branches with a step at work now count as running; the 22 between
+    // two checks may have gone on in rows not loaded, so they are unknown with the 40 not seen.
+    assert.deepEqual(partial.joinBar.group.counts, { running: 2, done: 0, unknown: 62, partial: true, runningExact: true });
+    assert.equal(partial.joinBar.group.text, "2 running · at least 0 done · 62 unknown");
+    assert.ok(partial.description.includes("Branches now (in the loaded history): 2 active, at least 0 ended, "
+        + "62 not known from the loaded history (queued, between two steps, or ended earlier)."), partial.description.join("\n"));
     // Open rows not all listed: the running count is a lower bound too.
     const unlisted = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
         run: { pages: { executions: { nextCursor: cursor, openComplete: false } } } }) }), "fan");
-    assert.equal(unlisted.joinBar.group.text, "at least 24 running · at least 0 done · 40 unknown");
+    assert.equal(unlisted.joinBar.group.text, "at least 2 running · at least 0 done · 62 unknown");
     // Every execution loaded (no older page): the counts are exact, and the branches not seen are queued.
     const whole = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
         run: { pages: { executions: { openComplete: true } } } }) }), "fan");
@@ -265,4 +268,25 @@ test("RC-9: an older row left out as changed makes the history incomplete: parti
     const again = projectWorkflowV2({ readModel: model, olderHistory: whole });
     assert.equal(again.readModel.run.history.complete, true);
     assert.deepEqual(byId(again, "fan").joinBar.group.counts, { running: 1, queued: 0, done: 2 });
+});
+
+// Re-check UI-RC2-5: with history not all loaded, a branch between two steps (its routed result loaded, its next step not)
+// may have gone on in rows not loaded, or its terminal may have been left out: it is unknown, never counted running. Only a
+// branch with a step at work now is running; with every row loaded the same branch counts running.
+test("UI-RC2-5: in partial history a branch between steps is unknown, not running; running is the branches at work now", () => {
+    const rows = [
+        row("fan", 1, "pending", { nodeExecutionId: "nx-fan-1", branches: 3 }),
+        done("poll", 1, "unchanged", { nodeExecutionId: "nx-poll-0-1", ...branch("nx-fan-1", 0) }),
+        row("poll", 1, "pending", { nodeExecutionId: "nx-poll-1-1", ...branch("nx-fan-1", 1) }),
+        done("poll", 1, "changed", { nodeExecutionId: "nx-poll-2-1", ...branch("nx-fan-1", 2) }),
+        done("branch_done", 1, "succeeded", { nodeExecutionId: "nx-done-2-1", predecessorId: "nx-poll-2-1", ...branch("nx-fan-1", 2) }),
+    ];
+    const cursor = { v: 1, workflowId: "wf-1", runId: "run-1", section: "executions", order: "newest_first", after: { seq: "1" } };
+    const partial = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
+        run: { pages: { executions: { nextCursor: cursor, openComplete: true } } } }) }), "fan");
+    assert.deepEqual(partial.joinBar.group.counts, { running: 1, done: 1, unknown: 1, partial: true, runningExact: true });
+    assert.equal(partial.joinBar.group.text, "1 running · at least 1 done · 1 unknown");
+    const whole = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
+        run: { pages: { executions: { openComplete: true } } } }) }), "fan");
+    assert.deepEqual(whole.joinBar.group.counts, { running: 2, queued: 0, done: 1 });
 });
