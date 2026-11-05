@@ -729,7 +729,16 @@ function agentVersionText(pin) {
  */
 export function workflowV2TestRunsShown(model) {
     if (!isRecord(model) || !isRecord(model.personCommands) || isRecord(model.personCommands.restriction)) return true;
-    const operations = Array.isArray(model.personCommands.operations) ? model.personCommands.operations : [];
+    return workflowV2TestModeListed(model);
+}
+
+/**
+ * Whether the server lists a test operation for this workflow (its test mode is on and the workflow takes tests from
+ * people): only then does the terminal UI take its test keys (t, a, +); otherwise they do nothing (spec 16). Never throws.
+ */
+export function workflowV2TestModeListed(model) {
+    const operations = isRecord(model) && isRecord(model.personCommands) && Array.isArray(model.personCommands.operations)
+        ? model.personCommands.operations : [];
     return operations.some(operation => operation === "test" || operation === "test_respond" || operation === "test_advance");
 }
 

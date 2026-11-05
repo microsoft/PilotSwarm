@@ -245,10 +245,20 @@ test("neither form is offered for a live run, a run that ended, a viewer the por
     const ended = await both(workflow({ status: "completed" }), "Test run test-r…0001 has ended (completed); its calls stay unanswered.");
     assert.ok(details(ended.store).includes("  Test run test-r…0001 has ended (completed); its calls stay unanswered."));
     await both(workflow({ viewer: { allowed: false, reason: "You may read this workflow but not command it." } }), "You may read this workflow but not command it.");
-    await both(workflow({ operations: ["pause", "stop", "cancel"], restriction: { reason: SUBTREE, workflowSessionId: "outer", controllingSessionId: "parent-1" } }),
-        `${SUBTREE} Its controlling agent is session parent-1.`);
     await both(workflow({ operations: ALL.slice(0, 10) }), "This workflow takes no test answers or clock advances from people.");
-    await both(workflow({ commands: false }), "This deployment takes no workflow commands from people.");
+    // Test mode hidden (spec 16): where the server lists no test operation (an agent state's subtree, a deployment that takes
+    // no person's commands), a and + do nothing and say nothing about tests.
+    for (const hidden of [workflow({ operations: ["pause", "stop", "cancel"], restriction: { reason: SUBTREE, workflowSessionId: "outer", controllingSessionId: "parent-1" } }),
+        workflow({ commands: false })]) {
+        const h = await opened(hidden);
+        const before = statusOf(h.store);
+        for (const command of [UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER, UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK]) {
+            await h.controller.handleCommand(command);
+            assert.equal(modalOf(h.store).type, "workflowView");
+            assert.equal(statusOf(h.store), before);
+        }
+        assert.deepEqual(h.sent(), []);
+    }
     const quiet = await both(workflow({ interceptions: effects({ agent: answeredBy("parent", "null") }).slice(0, 2) }),
         "No call of this test run waits for an answer.", null);
     assert.ok(details(quiet.store).some(line => line.startsWith("Test run test-r…0001 — no call waits for an answer · + advances its virtual clock")));

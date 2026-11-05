@@ -16,6 +16,7 @@ import {
     workflowV2VariableLoad, WORKFLOW_V2_VARIABLE_EARLIER_SAVED,
     workflowV2AdvanceDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft,
     workflowV2RevisionCompare, workflowV2AskParentSent, workflowV2HeldCallQuestion, workflowV2ParentSessionId, workflowV2StepInputKey, workflowV2StepQuestion,
+    workflowV2TestModeListed,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -77,7 +78,7 @@ import {
     selectVisibleSessionRows,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
-import { workflowActiveChildIds, workflowHighlightedSessionId, workflowRowTitle, workflowSelectionTarget, workflowStateOf } from "./workflow-owner.js";
+import { workflowActiveChildIds, workflowHighlightedSessionId, workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStateOf } from "./workflow-owner.js";
 import { getTheme, listThemes } from "./themes/index.js";
 
 function preserveNativeTaskProgress(history, current, sessionId) {
@@ -7780,6 +7781,8 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const selection = selectWorkflowViewSelection(state);
         if (!selection) return;
+        // Test mode hidden (spec 16): t does nothing unless the server lists a test operation for this workflow.
+        if (!workflowV2TestModeListed(selection.projection?.definitionModel)) return;
         const refusal = workflowViewTestRefusal(selection);
         if (refusal) {
             this.dispatch({ type: "ui/status", text: refusal });
@@ -7918,6 +7921,8 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const selection = selectWorkflowViewSelection(state);
         if (!selection) return;
+        // Test mode hidden (spec 16): a does nothing unless the server lists a test operation for this workflow.
+        if (!workflowV2TestModeListed(selection.projection?.definitionModel)) return;
         const refusal = workflowViewTestAnswerRefusal(selection);
         if (refusal) {
             this.dispatch({ type: "ui/status", text: refusal });
@@ -8126,6 +8131,8 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const selection = selectWorkflowViewSelection(state);
         if (!selection) return;
+        // Test mode hidden (spec 16): + does nothing unless the server lists a test operation for this workflow.
+        if (!workflowV2TestModeListed(selection.projection?.definitionModel)) return;
         const refusal = workflowViewTestClockRefusal(selection);
         if (refusal) {
             this.dispatch({ type: "ui/status", text: refusal });
@@ -9912,20 +9919,34 @@ export class PilotSwarmUiController {
      */
     openWorkflowViewModal() {
         const state = this.getState();
-        const sessionId = state.sessions.activeSessionId;
-        if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow") {
-            this.dispatch({ type: "ui/status", text: "The workflow view is for workflow sessions" });
+        // Workflow Simplified (18): the terminal UI keeps the chat and opens a Workflow pane for it, as the portal's Workflow
+        // tab does: the Workflow the chat's tab would show (a selected Workflow row of this chat, an agent node chat's own
+        // Workflow with that node selected), else the chat's newest Workflow. A workflow that is active itself opens itself.
+        const target = workflowPaneTarget(state);
+        if (!target) {
+            this.dispatch({ type: "ui/status", text: state.sessions.activeSessionId ? "This chat has no Workflows yet" : "No session is selected" });
             return;
         }
+        const sessionId = target.workflowId;
+        // A Workflow that is not the active session is kept live while its pane is open (released when it closes).
+        this.releaseWorkflowPaneWatch();
+        if (sessionId !== state.sessions.activeSessionId) this.workflowPaneWatch = this.watchWorkflow(sessionId);
         // A definition already in the loaded history is applied at once; the read model arrives later.
         this.ensureWorkflowDefinition(sessionId).catch(() => {});
         const projection = workflowViewProjectionFor(this.getState(), sessionId);
-        const selectedNodeId = workflowViewDefaultNode(projection, workflowViewNodes(projection));
+        const selectedNodeId = target.nodeStateId ?? workflowViewDefaultNode(projection, workflowViewNodes(projection));
         this.dispatch({
             type: "ui/modal",
             modal: { type: "workflowView", sessionId, selectedNodeId, occurrenceIndex: 0, previousFocus: state.ui.focusRegion },
         });
-        this.dispatch({ type: "ui/status", text: "Workflow view — ↑↓ step · ←→ run · PgUp/PgDn details · Tab agent chat · Enter open · Esc close" });
+        this.dispatch({ type: "ui/status", text: "Workflow — ↑↓ node · PgUp/PgDn details · Tab agent chat · Enter open · Esc back to the chat" });
+    }
+
+    /** Stop keeping the Workflow pane's Workflow live (openWorkflowViewModal), if it was. */
+    releaseWorkflowPaneWatch() {
+        const release = this.workflowPaneWatch;
+        this.workflowPaneWatch = null;
+        if (typeof release === "function") release();
     }
 
     /** The workflow view: select the state `delta` rows away, in graph order (clamped), and its newest agent chat. */
@@ -10138,6 +10159,7 @@ export class PilotSwarmUiController {
             return;
         }
         this.dispatch({ type: "ui/modal", modal: null });
+        this.releaseWorkflowPaneWatch();
         if (selection.modal.previousFocus) this.setFocus(selection.modal.previousFocus);
         this.dispatch({ type: "ui/status", text: `Opened the agent chat of ${selection.selected.id}`
             + `${occurrence.ordinal === null ? "" : ` (visit ${occurrence.ordinal})`}: people can read it; the server refuses their input to it` });
@@ -11388,6 +11410,8 @@ export class PilotSwarmUiController {
             return;
         }
         this.dispatch({ type: "ui/modal", modal: null });
+        // The Workflow pane kept its Workflow live while it was open (openWorkflowViewModal).
+        if (modal.type === "workflowView") this.releaseWorkflowPaneWatch();
         if (modal.type === "themePicker" && modal.currentThemeId) {
             this.dispatch({ type: "ui/theme", themeId: modal.currentThemeId });
         }

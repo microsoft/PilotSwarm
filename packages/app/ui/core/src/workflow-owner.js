@@ -339,6 +339,24 @@ export function workflowTabContextEqual(a, b) {
 }
 
 /**
+ * What the terminal UI's Workflow pane opens (18: the chat plus a Workflow pane toggle, the portal's model): the
+ * Workflow the active session's Workflow tab shows (selectWorkflowTabContext: a selected Workflow row of this chat, the
+ * one its tab last showed, an agent node chat's own Workflow with that node, or a workflow child that is active itself),
+ * else this chat's newest started Workflow, else its newest definition. { workflowId, nodeStateId } or null when the
+ * chat has none. Pure.
+ */
+export function workflowPaneTarget(state) {
+    const context = selectWorkflowTabContext(state);
+    if (context.workflowId) return { workflowId: context.workflowId, nodeStateId: context.nodeStateId };
+    if (!context.ownerId) return null;
+    const byId = state?.sessions?.byId || {};
+    const views = state?.ui?.workflowViews || {};
+    const children = workflowChildrenOf(byId, context.ownerId);
+    const newest = children.filter(session => workflowStarted(session, views[session.sessionId] ?? null)).at(-1) ?? children.at(-1) ?? null;
+    return newest ? { workflowId: newest.sessionId, nodeStateId: null } : null;
+}
+
+/**
  * The Workflow button's badge (L2, O6): how many of a session's Workflows need the person: those waiting for input,
  * and failed ones not yet opened (`seen`: ui.workflowSeen). 0 for none.
  */

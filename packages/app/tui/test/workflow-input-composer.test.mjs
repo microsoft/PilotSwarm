@@ -48,7 +48,7 @@ test("an agent state's child has a read-only composer with the server's reason a
     const pending = controller.ensureWorkflowInputPolicy("c1");
     assert.equal(render(controller), '<span data-kind="readonly">Checking whether you can send messages here…</span>');
     await pending;
-    assert.equal(render(controller), `<span data-kind="readonly">${REASON.replace(/'/g, "&#x27;")} Its controlling agent is session r1.</span>`);
+    assert.equal(render(controller), '<span data-kind="readonly">Read-only. To change this, message Root.</span>');
     assert.deepEqual(asked, ["c1"]);
 });
 

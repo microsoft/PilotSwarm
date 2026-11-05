@@ -180,13 +180,16 @@ function inputHarness({ policies = { c1: DENIED, g1: DENIED, o1: ALLOWED }, apiM
     return { controller, store, calls };
 }
 
-const NOTE = `${REASON} Its controlling agent is session r1.`;
+const NOTE = "Read-only. To change this, message Root.";
 
 test("the read-only note: the server's reason, else one short fallback; the controlling agent by its 8-character id (ui-07)", () => {
     assert.equal(WORKFLOW_INPUT_DENIED_TEXT, "This session runs a step of a workflow. People cannot send it prompts, answers or instructions. Message the parent agent instead.");
     assert.equal(workflowInputNoteText(null, "fb6e5d1e-d82d-4f3a-bf95-ca578b222530"), `${WORKFLOW_INPUT_DENIED_TEXT} Its controlling agent is session fb6e5d1e.`);
     assert.equal(workflowInputNoteText(REASON, null), REASON);
     assert.equal(workflowInputNoteText("", ""), WORKFLOW_INPUT_DENIED_TEXT);
+    // Workflow Simplified (spec 14 mock, 03 words): with the owning chat loaded, one plain line naming it.
+    assert.equal(workflowInputNoteText(REASON, "r1", "Stock check"), "Read-only. To change this, message Stock check.");
+    assert.equal(workflowInputNoteText(REASON, "r1", "  "), `${REASON} Its controlling agent is session r1.`);
 });
 
 test("only a session that may be in an agent state's subtree, by its loaded ancestry, is asked about, once", async () => {

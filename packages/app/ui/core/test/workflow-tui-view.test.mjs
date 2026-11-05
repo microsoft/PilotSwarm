@@ -226,7 +226,8 @@ test("a state without an agent chat keeps the view open; another kind of session
     store.dispatch({ type: "sessions/selected", sessionId: "a1" });
     await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     assert.equal(store.getState().ui.modal, null);
-    assert.equal(store.getState().ui.statusText, "The workflow view is for workflow sessions");
+    // Workflow Simplified (18): w opens the chat's Workflow pane; a chat with no Workflows says so.
+    assert.equal(store.getState().ui.statusText, "This chat has no Workflows yet");
 });
 
 test("an agent state whose child is not listed yet says so; a read failure and an empty view are reported, not hidden", async () => {
@@ -245,7 +246,7 @@ test("an agent state whose child is not listed yet says so; a read failure and a
     await empty.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
     await settle();
     const view = selectWorkflowViewModal(empty.store.getState(), 110);
-    assert.equal(view.rows.map(rowText).join(""), "No steps to show.");
+    assert.equal(view.rows.map(rowText).join(""), "No nodes to show.");
     assert.ok(view.detailsLines.length >= 1);
 });
 

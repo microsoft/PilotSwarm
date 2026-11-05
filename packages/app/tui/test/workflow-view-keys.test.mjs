@@ -86,22 +86,23 @@ test("the shared Ink app draws the view: the states, the selected one's details 
     assert.match(html, /data-title="Workflow: review-once · Running"/);
     assert.match(html, /▶ ● review\s+Agent · code-reviewer\s+Agent working · waiting for its typed result/);
     assert.match(html, /○ done\s+End · succeeded/);
-    assert.match(html, /data-title="Step review — ↑↓ step · ←→ run · Tab agent chat · Enter open · Esc close"/);
+    assert.match(html, /data-title="Node review — ↑↓ node · Tab agent chat · Enter open · Esc back to the chat"/);
     assert.match(html, /  accepted → done/);
     assert.match(html, /▸ visit 1 · working · child-1/);
     assert.match(html, /People can read these chats; the server refuses their prompts, answers and instructions\./);
     assert.deepEqual(calls.map(call => call[0]), ["readWorkflow"], "it reads the workflow and nothing else");
 });
 
-test("the help lists the workflow view", async () => {
+test("the help lists the Workflow pane, and no test keys (test mode hidden, spec 16)", async () => {
     const { controller, store } = harness();
     // selectHelpModal answers only while the help is open (the r2 run at 02ae7510 read it closed, so it was null).
     await controller.handleCommand(UI_COMMANDS.OPEN_HELP);
     const help = selectHelpModal(store.getState(), 120);
     assert.ok(help, "the help is open");
     const text = JSON.stringify(help);
-    assert.match(text, /workflow session: workflow view/);
-    assert.match(text, /←→ run/);
+    assert.match(text, /Workflow pane for this chat: its selected Workflow, else its newest/);
+    assert.match(text, /↑↓ node/);
+    assert.match(text, /Esc back to the chat/);
     assert.match(text, /PgUp\/PgDn details/);
     assert.match(text, /p r s c  d/);
     assert.match(text, /workflow view: pause \/ resume \/ stop \/ cancel the shown run/);
@@ -114,11 +115,8 @@ test("the help lists the workflow view", async () => {
     assert.match(text, /workflow view: publication review of the exact revision and hash shown/);
     assert.match(text, /ctrl-p publish only · ctrl-r publish and start/);
     assert.match(text, /each asks first/);
-    assert.match(text, /workflow view: test review of the current revision and hash, not a sandbox/);
-    assert.match(text, /ctrl-a agents mocked\/real, real ones spend model tokens/);
-    assert.match(text, /workflow view, a test run shown: a answers a call that waits/);
-    assert.match(text, /\+ advances its virtual clock by whole seconds \(script clocks are real\)/);
-    assert.match(text, /workflow view: the selected step's own result of an older \/ newer visit of the shown run/);
+    assert.doesNotMatch(text, /test review|a test run shown|virtual clock|agents mocked\/real/);
+    assert.match(text, /workflow view: the selected node's own result of an older \/ newer visit of the shown run/);
     assert.match(text, /workflow view: o reads the shown run.s older history/);
     assert.match(text, /f reads the whole output or error of the visit the details show/);
     assert.match(text, /i compares the variables that visit applied with the run.s accepted ones/);

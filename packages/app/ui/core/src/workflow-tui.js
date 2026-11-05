@@ -1733,7 +1733,7 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
     const idWidth = Math.min(20, Math.max(4, ...selection.nodes.map(entry => entry.id.length)));
     const labelWidth = Math.min(24, Math.max(6, ...selection.nodes.map(entry => entry.label.length)));
     const { rows: nodeRows, rowOf } = listRows(selection.nodes, selection.selectedIndex, idWidth, labelWidth, contentWidth);
-    const rows = nodeRows.length ? nodeRows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No steps to show.", color: "gray" }]];
+    const rows = nodeRows.length ? nodeRows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No nodes to show.", color: "gray" }]];
     const detailsLines = detailLines(selection, contentWidth);
     // The details scroll (PgUp/PgDn) within what its panel can show: never past its last line.
     const { listHeight, detailsHeight } = panelHeights(viewportHeight ?? state?.ui?.layout?.viewportHeight ?? 40, rows.length);
@@ -1742,8 +1742,9 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
         title: bounded(`Workflow: ${selection.projection.name} · ${selection.projection.status}`, contentWidth),
         rows,
         selectedRowIndex: rowOf[selection.selectedIndex] ?? 0,
+        // Workflow Simplified words (03): a node, not a step; Esc goes back to the chat the pane belongs to.
         detailsTitle: selection.selected
-            ? `Step ${bounded(selection.selected.id, 30)} — ↑↓ step · ←→ run · Tab agent chat · Enter open · Esc close` : "Workflow",
+            ? `Node ${bounded(selection.selected.id, 30)} — ↑↓ node · Tab agent chat · Enter open · Esc back to the chat` : "Workflow",
         detailsLines,
         listHeight,
         detailsHeight,
@@ -1761,10 +1762,14 @@ export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = 
 export const WORKFLOW_INPUT_DENIED_TEXT = "This session runs a step of a workflow. People cannot send it prompts, answers or instructions. Message the parent agent instead.";
 
 /**
- * The read-only composer's note, in the portal and the terminal alike: the server's reason (else
- * WORKFLOW_INPUT_DENIED_TEXT) and the controlling agent's session, by its short id. Pure.
+ * The read-only composer's note, in the portal and the terminal alike. With the title of the chat that owns the
+ * Workflow known (Workflow Simplified, spec 14 mock and 03 words): `Read-only. To change this, message <that chat>.`
+ * Otherwise the server's reason (else WORKFLOW_INPUT_DENIED_TEXT) and the controlling agent's session, by its short id.
+ * Pure.
  */
-export function workflowInputNoteText(reason, controllingSessionId) {
+export function workflowInputNoteText(reason, controllingSessionId, ownerTitle = null) {
+    const title = typeof ownerTitle === "string" && ownerTitle.trim() ? ownerTitle.trim() : null;
+    if (title) return `Read-only. To change this, message ${bounded(title, 60)}.`;
     const note = typeof reason === "string" && reason ? reason : WORKFLOW_INPUT_DENIED_TEXT;
     return typeof controllingSessionId === "string" && controllingSessionId
         ? `${note} Its controlling agent is session ${shortSessionId(controllingSessionId)}.` : note;
@@ -1817,7 +1822,8 @@ export function workflowInputPolicyApplies(state, sessionId) {
 export function selectWorkflowInputNote(state, sessionId) {
     const policy = sessionId ? state?.ui?.workflowInputPolicies?.[sessionId] : null;
     if (!policy || policy.canSendPrompt !== false) return null;
-    return workflowInputNoteText(policy.reason, policy.controllingSessionId);
+    const owner = policy.controllingSessionId ? state?.sessions?.byId?.[policy.controllingSessionId] ?? null : null;
+    return workflowInputNoteText(policy.reason, policy.controllingSessionId, owner?.title ?? null);
 }
 
 /**

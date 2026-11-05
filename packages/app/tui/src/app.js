@@ -1295,8 +1295,9 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.OPEN_HELP).catch(() => {});
             return;
         }
-        // Workflow sessions: w opens the workflow view (states, details, an agent state's child chats; read-only but for the
-        // run controls a deployment that takes a person's workflow commands offers).
+        // Workflow Simplified (18): w opens the Workflow pane for the chat (its selected Workflow row, an agent node chat's own
+        // Workflow, else its newest Workflow): nodes, details, an agent node's chats; read-only but for the run controls a
+        // deployment that takes a person's workflow commands offers. Esc goes back to the chat.
         if (plainShortcut && input === "w") {
             controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW).catch(() => {});
             return;

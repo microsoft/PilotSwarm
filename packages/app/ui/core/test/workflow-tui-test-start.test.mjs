@@ -256,19 +256,21 @@ test("a start not available now is not sent and the review says why: compile err
     for (const h of [broken, denied, busy]) assert.deepEqual(h.sent(), []);
 });
 
-test("the review is not offered in an agent state's subtree, by a host that takes no test from people, or without person commands", async () => {
-    const refusedWith = async (initial, reason) => {
+test("the review is not offered in an agent state's subtree, by a host that takes no test from people, or without person commands: t does nothing and says nothing about tests (test mode hidden, spec 16)", async () => {
+    const silent = async (initial) => {
         const h = await opened(initial);
+        const before = statusOf(h.store);
         await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW);
         assert.equal(modalOf(h.store).type, "workflowView");
-        assert.equal(statusOf(h.store), `A test cannot be started here. ${reason}`);
-        assert.ok(!details(h.store).some(line => line.startsWith("Test:")), reason);
+        assert.equal(statusOf(h.store), before);
+        assert.ok(!/test/i.test(statusOf(h.store) ?? ""));
+        assert.ok(!details(h.store).some(line => line.startsWith("Test:")));
         assert.deepEqual(h.sent(), []);
     };
-    await refusedWith(workflow({ operations: ["pause", "stop", "cancel"],
-        restriction: { reason: SUBTREE, workflowSessionId: "outer", controllingSessionId: "parent-1" } }), `${SUBTREE} Its controlling agent is session parent-1.`);
-    await refusedWith(workflow({ operations: ALL.slice(0, 8) }), "This workflow takes no test from people.");
-    await refusedWith(workflow({ commands: false }), "This deployment takes no workflow commands from people.");
+    await silent(workflow({ operations: ["pause", "stop", "cancel"],
+        restriction: { reason: SUBTREE, workflowSessionId: "outer", controllingSessionId: "parent-1" } }));
+    await silent(workflow({ operations: ALL.slice(0, 8) }));
+    await silent(workflow({ commands: false }));
 });
 
 test("a stale revision is refused and read again: the review says it changed and sends nothing for it; ctrl-l reviews the new one, keeping what was typed", async () => {
