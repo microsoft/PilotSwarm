@@ -296,8 +296,14 @@ type WorkflowV2ActivityKey = keyof typeof WORKFLOW_V2_ACTIVITIES;
  * Retry policy for store-backed activities, with the runtime's default
  * backoff. duroxide-node deserializes `backoff` as a strategy name; a number
  * (which its type declaration allows) fails the orchestration at the schedule.
+ * Each attempt is timed out at 30 s; a timed-out attempt is not retried by
+ * duroxide, so `persistently` tries it again on its own timers. Untagged
+ * activities only (controller 1.8.0); tagged ones (1.9.0) have no attempt
+ * timeout (TAGGED_STORE_RETRY_DELAYS_MS).
  */
-export const WORKFLOW_V2_STORE_RETRY = { maxAttempts: 5, timeoutMs: 30_000, totalTimeoutMs: 180_000 } as const;
+// No totalTimeoutMs: duroxide 0.1.32's RetryPolicy::with_total_timeout is an alias of with_timeout, applied after it, so
+// it replaced the 30 s per-attempt timeout; duroxide has no total timeout.
+export const WORKFLOW_V2_STORE_RETRY = { maxAttempts: 5, timeoutMs: 30_000 } as const;
 const STORE_RETRY = WORKFLOW_V2_STORE_RETRY;
 
 export function workflowLiveControllerInstanceId(workflowSessionId: string): string {
@@ -2723,8 +2729,9 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
 
 /**
  * How long the run-end notice waits for the run's deliveries to the parent still in flight, how often it looks, and how
- * recent a delivery attempt must be to be waited for (adversarial review WFO-1). The wait keeps the notifier inside its
- * activity's 30-second attempt budget (WORKFLOW_V2_STORE_RETRY), and each look has its own statement timeout.
+ * recent a delivery attempt must be to be waited for (adversarial review WFO-1). Each look has its own statement
+ * timeout. Under controller 1.8.0 the wait keeps an attempt inside its 30-second attempt timeout
+ * (WORKFLOW_V2_STORE_RETRY); a 1.9.0 attempt (a tagged activity) has no attempt timeout, and these waits bound it.
  */
 export const WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS = 15_000;
 const WORKFLOW_V2_NOTICE_DELIVERY_POLL_MS = 200;
@@ -2732,7 +2739,9 @@ const WORKFLOW_V2_NOTICE_DELIVERY_RECENT_SECONDS = 60;
 const WORKFLOW_V2_NOTICE_DELIVERY_QUERY_MS = 2_000;
 /**
  * How long an attempt waits for the run's notice lock that another attempt holds, how often it tries it, and the part of
- * the activity's 30-second attempt budget that the wait for deliveries and the wait for the lock may use together (E3-R1).
+ * an attempt's 30 s that the wait for deliveries and the wait for the lock may use together (E3-R1). The 30 s is the
+ * attempt timeout of controller 1.8.0's store activities (WORKFLOW_V2_STORE_RETRY); 1.9.0's tagged activities have none,
+ * and the same budget bounds their waits.
  */
 export const WORKFLOW_V2_NOTICE_LOCK_WAIT_MS = 20_000;
 const WORKFLOW_V2_NOTICE_LOCK_POLL_MS = 500;
@@ -3669,7 +3678,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     };
 
     register("notifyParent", async (_actx, rawInput) => {
-        // The attempt's budget (WORKFLOW_V2_STORE_RETRY's 30 s per attempt) bounds the waits below together.
+        // The attempt's budget (27 s of the 30 s attempt timeout of 1.8.0's store activities; 1.9.0's tagged activities have
+        // no attempt timeout) bounds the waits below together.
         const attemptStarted = Date.now();
         const input = record(rawInput, "notify input");
         const run = await runOf(text(input.runId, "runId"));

@@ -300,8 +300,14 @@ notice (`parent is gone`). One attempt at a time tells the parent of a run's
 end: it holds the run's notice lock (a PostgreSQL advisory lock) while it
 reads, records `workflow.parent_notifying` just before it queues the notice,
 queues it and records the result. Another attempt that finds the lock held
-records nothing; if the holder dies, the run still owes its notice and
-`recover` finishes it. A retry after an attempt that may have queued the
+waits for it (up to 20 seconds) and reads again, so it records nothing when
+the holder recorded; if the lock is still held, the attempt fails and is tried
+again. If the holder dies, the run still owes its notice and `recover`
+finishes it. Under controller 1.8.0 each attempt of a store activity, the
+notice included, is timed out after 30 seconds and tried again. Under 1.9.0 an
+attempt has no time limit of its own; the notice's waits are still bounded (at
+most 15 seconds for deliveries in flight, and for the lock at most 20 seconds,
+no more than 27 seconds in all). A retry after an attempt that may have queued the
 notice queues it again with the same client message id when the parent may be
 told; when it finds a known refusal it records the skip with
 `earlierAttempt: true`, and Run activity adds "An earlier attempt may have

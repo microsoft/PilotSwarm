@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS } from "../../dist/workflow/v2/runtime.js";
+import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS, WORKFLOW_V2_STORE_RETRY } from "../../dist/workflow/v2/runtime.js";
 
 // Adversarial review WFO-1 (TLC parent.late-message, parent.late-request): a send's message or a request to the parent
 // whose delivery attempt began before the run ended is queued before the run's end notice. The notifier activity waits
@@ -240,4 +240,14 @@ test("E3-R1: the waits for deliveries and for the lock stay inside the attempt's
     const started = Date.now();
     await assert.rejects(h.notify(), /another attempt/);
     assert.ok(Date.now() - started < 2_000);
+});
+
+// Owed D-T9's finding (parent decision store-retry-timeout): duroxide 0.1.32's with_total_timeout is an alias of
+// with_timeout, and duroxide-node 0.2.4 applies it after timeoutMs, so a totalTimeoutMs replaced the 30 s per-attempt
+// timeout of the store activities. The policy has none: each 1.8.0 attempt is timed out at 30 s, and the notice's waits
+// fit in that.
+test("the store activities' retry policy times each attempt out at 30 s and sets no total timeout (a duroxide alias of it)", () => {
+    assert.equal(WORKFLOW_V2_STORE_RETRY.timeoutMs, 30_000);
+    assert.equal(Object.hasOwn(WORKFLOW_V2_STORE_RETRY, "totalTimeoutMs"), false);
+    assert.ok(WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS < WORKFLOW_V2_STORE_RETRY.timeoutMs);
 });
