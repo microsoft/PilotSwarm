@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets } from "../../dist/workflow/v2/redact.js";
+import {
+    redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets,
+} from "../../dist/workflow/v2/redact.js";
+import { canonicalJson } from "../../dist/workflow/v2/json.js";
 import { sanitizeWorkflowErrorText, workflowAdapterFailure, workflowStoreFailure } from "../../dist/workflow/v2/failure.js";
 import { WorkflowStoreError } from "../../dist/workflow/v2/store.js";
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "../../dist/workflow/v2/agent-node-service.js";
@@ -243,6 +246,67 @@ test("E2bH-T5: quoted and JSON Authorization values, a scheme word alone, an opa
     for (const prose of ["A basic idea.", "the bearer of this message", "Basic plan", "https://example.com/pa…"]) {
         assert.equal(redactWorkflowSecrets(prose), prose);
     }
+});
+
+// Adversarial review R3-SF-2: text is redacted whole before it is cut, so a credential longer than the cut leaves no part;
+// text that was cut before (rows stored earlier) still has a cut URL's user and password hidden, however long, in linear
+// time. R3-SF-4: a host and a port of digits only, cut after the port, is not taken for a user and a password.
+test("R3-SF-2, R3-SF-4: a URL password longer than the cut leaves no part, cut after or before redaction; a cut host:port stays", () => {
+    const LONG = "p".repeat(600);
+    const text = `stop it: postgres://admin:${LONG}${SENTINEL}@db.example.com/app and more`;
+    for (const out of [redactThenClip(text, 500), redactWorkflowSecrets(jsonbSafeText(text, 500)), redactErrorThenClip(text, 500)]) {
+        assert.equal(out.includes("pppppppp"), false, out.slice(0, 120));
+        assert.equal(out.includes(SENTINEL), false);
+        assert.ok(out.startsWith("stop it: postgres://<hidden>"), out.slice(0, 60));
+    }
+    // A long user before the cut, no password yet: hidden too.
+    assert.equal(redactWorkflowSecrets(`postgres://${"u".repeat(400)}:…`), "postgres://<hidden>…");
+    // A host and its port, cut after the port: kept; with any other password, hidden.
+    for (const kept of ["see https://api.example.com:443…", "https://10.0.0.1:5432…", "https://api.example.com:443/v1/items…"]) {
+        assert.equal(redactWorkflowSecrets(kept), kept);
+    }
+    assert.equal(redactWorkflowSecrets("https://admin:Zq9…"), "https://<hidden>…");
+    assert.equal(redactWorkflowSecrets("https://admin:44x…"), "https://<hidden>…");
+    // Linear time on long and hostile cut-URL shapes.
+    for (const hostile of [`x://${"a".repeat(200_000)}:${"b".repeat(200_000)}`, `x://${"a:".repeat(100_000)}`, `${"x://".repeat(50_000)}a:b`,
+        `x://${"1".repeat(200_000)}:${"2".repeat(200_000)}`]) {
+        const started = process.hrtime.bigint();
+        redactWorkflowSecrets(hostile);
+        assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 1_000, `${hostile.slice(0, 8)}… took too long`);
+    }
+});
+
+// Adversarial review R3-SF-3: a parallel state's timed_out report keeps its finished branches' business outputs exactly, as
+// the blocked report does; its envelope, its other details and each branch's error have their secrets hidden.
+test("R3-SF-3: a timed_out report keeps branch outputs as they are; its message, details and branch errors are redacted", () => {
+    const output = { key: "ordinary-value", token: "an-ordinary-field", nested: { password: "a-business-field" } };
+    const report = {
+        joined: false, timedOut: true, total: 2, needed: 2, succeeded: 1, failFast: false,
+        branches: [
+            { index: 0, ended: "terminal", nodeExecutionId: "nx-a", outcome: "succeeded", resultKind: "business", output },
+            { index: 1, ended: "cancelled", nodeExecutionId: "nx-b", outcome: "cancelled", resultKind: "runtime_error",
+                error: { code: "cancelled", message: `token=${SENTINEL}`, details: { key: SENTINEL } }, cancelledBy: "timeout" },
+        ],
+    };
+    const envelope = { code: "timed_out", message: `limit passed; password=${SENTINEL}`, details: report };
+    const out = redactWorkflowErrorValue(envelope);
+    assert.deepEqual(out.details.branches[0].output, output, "the business output exactly");
+    assert.deepEqual(out.details.branches[0], report.branches[0]);
+    assert.equal(JSON.stringify(out).includes(SENTINEL), false);
+    assert.equal(out.message, "limit passed; password=<hidden>");
+    assert.deepEqual(out.details.branches[1].error.details, { key: "<hidden>" });
+    // The same as the blocked report's branch (a business output, never redacted), and as stored and read back.
+    const blocked = { ...report, timedOut: false };
+    assert.deepEqual(out.details.branches[0], blocked.branches[0]);
+    const stored = redactWorkflowErrorText(canonicalJson(envelope), canonicalJson);
+    assert.deepEqual(JSON.parse(stored).details.branches[0].output, output);
+    // A report without secrets is stored as it was written.
+    const clean = canonicalJson({ code: "timed_out", message: "limit passed", details: { ...report, branches: [report.branches[0]] } });
+    assert.equal(redactWorkflowErrorText(clean, canonicalJson), clean);
+    // Any other error, timed_out included, keeps hiding a member named for a secret.
+    assert.deepEqual(redactWorkflowErrorValue({ code: "timed_out", message: "x", details: { output: { key: "v" } } }).details, { output: { key: "<hidden>" } });
+    assert.deepEqual(redactWorkflowErrorValue({ code: "timed_out", message: "x", details: { joined: false, timedOut: false, branches: [{ output: { key: "v" } }] } })
+        .details.branches[0].output, { key: "<hidden>" });
 });
 
 // Adversarial review R2-SF-4 (with R2-RT-3): the agent's completion tool and the request answer tool answer every failure

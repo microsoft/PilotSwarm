@@ -86,6 +86,22 @@ function scanExpressionBody(body: string): { defaultAt: number; nestedAt: number
     return { defaultAt, nestedAt };
 }
 
+/**
+ * An expression string as a reader is shown it (adversarial review R3-SF-1): its path as written, and its default
+ * literal replaced by `project(default)` (as JSON) when that gives a value; any other string, an expression without a
+ * default, or text that does not parse, as it is.
+ */
+export function bindingWithDefaultShown(text: string, project: (value: JsonValue) => JsonValue | undefined): string {
+    let parsed: BindingExpression | null;
+    try { parsed = parseBindingExpression(text, "binding"); } catch { return text; }
+    if (!parsed?.hasDefault) return text;
+    const shown = project(parsed.defaultValue);
+    if (shown === undefined) return text;
+    const inner = text.trim().slice(2, -1);
+    const { defaultAt } = scanExpressionBody(inner);
+    return `\${${inner.slice(0, defaultAt).trim()} ?? ${JSON.stringify(shown)}}`;
+}
+
 /** Parse `text` when it is an expression string; null for a plain string. */
 export function parseBindingExpression(text: string, path: string): BindingExpression | null {
     const trimmed = text.trim();

@@ -8,7 +8,7 @@ import {
     utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue,
 } from "./json.js";
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
-import { redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets } from "./redact.js";
+import { redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets } from "./redact.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -442,7 +442,8 @@ function stopOf(row: Row): WorkflowRunStop | null {
     const { operationId, reason, actor, graceSeconds } = request;
     if (typeof operationId !== "string" || (reason !== null && typeof reason !== "string") || !isJsonObject(actor)
         || typeof graceSeconds !== "number" || !Number.isSafeInteger(graceSeconds) || graceSeconds < 0) throw corrupt();
-    return { requestedAt, deadlineAt, operationId, reason, actor, graceSeconds };
+    // R3-SF-2: read with its secrets hidden, a reason stored before they were hidden ahead of its cut included.
+    return { requestedAt, deadlineAt, operationId, reason: reason === null ? null : redactWorkflowSecrets(reason), actor, graceSeconds };
 }
 
 function pausedFromOf(row: Row): "admitted" | "running" | null {
@@ -2560,7 +2561,7 @@ export class WorkflowStore {
             const updated = runFrom(rows[0]);
             await this.project(client, { sessionId: input.workflowSessionId, events: [{
                 eventType: input.pause ? "workflow.paused" : "workflow.resumed",
-                data: { runId: run.runId, actor: actorJson(input.actor), ...(input.reason ? { reason: jsonbSafeText(input.reason, 500) } : {}) },
+                data: { runId: run.runId, actor: actorJson(input.actor), ...(input.reason ? { reason: redactThenClip(input.reason, 500) } : {}) },
             }], update: { state: updated.status === "paused" ? "waiting" : updated.status === "admitted" ? "pending" : "running", touch: true } }, run);
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: kind, runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
@@ -2618,8 +2619,8 @@ export class WorkflowStore {
                 throw new WorkflowStoreError("RUN_ALREADY_STOPPING", `Run ${run.runId} is already stopping, until ${run.stop.deadlineAt.toISOString()}.`,
                     { deadlineAt: run.stop.deadlineAt.toISOString() });
             }
-            // SF-6 verification: the stop's reason is kept with its secrets hidden.
-            const request = canonicalJson({ operationId: input.operationId, reason: input.reason === null ? null : redactWorkflowSecrets(jsonbSafeText(input.reason, 500)),
+            // SF-6 verification: the stop's reason is kept with its secrets hidden, hidden before it is cut (R3-SF-2).
+            const request = canonicalJson({ operationId: input.operationId, reason: input.reason === null ? null : redactThenClip(input.reason, 500),
                 actor: actorJson(input.actor), graceSeconds: input.graceSeconds });
             // One reading of the store's clock is the stop's time; its deadline counts the grace from it.
             const { rows } = await client.query(
@@ -2632,7 +2633,7 @@ export class WorkflowStore {
             const updated = runFrom(rows[0]);
             await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.stop_requested", data: {
                 runId: run.runId, actor: actorJson(input.actor), graceSeconds: input.graceSeconds, deadlineAt: updated.stop!.deadlineAt.toISOString(),
-                ...(input.reason ? { reason: jsonbSafeText(input.reason, 500) } : {}),
+                ...(input.reason ? { reason: redactThenClip(input.reason, 500) } : {}),
             } }], update: { touch: true } });
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "stop", runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "stop", input.requestSha256, receipt);
@@ -2707,7 +2708,7 @@ export class WorkflowStore {
                     paused_from = NULL, updated_at = now(), finished_at = now()
               WHERE run_id = $1 RETURNING *`,
             // SF-6 verification: the reason is a person's or an agent's text; its secrets are hidden before it is stored.
-            [run.runId, redactWorkflowErrorText(canonicalJson({ code: "cancelled", message: jsonbSafeText(input.reason, 4_000), details: {
+            [run.runId, redactWorkflowErrorText(canonicalJson({ code: "cancelled", message: redactThenClip(input.reason, 4_000), details: {
                 command, requestedBy: input.requestedBy, ...marks,
             } }), canonicalJson)]);
         // No node execution exists before begin; one that did would lose to the cancel, as when the controller cancels.
@@ -2718,8 +2719,8 @@ export class WorkflowStore {
               WHERE run_id = $1 AND state = 'pending'`,
             [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." })]);
         await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
-            runId: run.runId, reason: jsonbSafeText(input.reason, 500), command, ...marks,
-        } }], update: { state: "cancelled", lastError: jsonbSafeText(input.reason, 500), touch: true } }, run);
+            runId: run.runId, reason: redactThenClip(input.reason, 500), command, ...marks,
+        } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } }, run);
         return runFrom(rows[0]);
     }
 
@@ -5981,7 +5982,7 @@ export class WorkflowStore {
                 await bind("invalid", { code: "OUTPUT_ATTEMPTS_EXHAUSTED", problems: fields });
                 await this.project(client, { sessionId: run.workflowSessionId, update: { touch: true }, events: [{ eventType: "workflow.state_failed", data: {
                     runId: run.runId, nodeExecutionId, stateId: node.nodeId, step: node.ordinal, outcome: "invalid_output", resultKind: "runtime_error",
-                    childSessionId: invocation.childSessionId, error: jsonbSafeText(errorText, 2_000),
+                    childSessionId: invocation.childSessionId, error: redactErrorThenClip(errorText, 2_000),
                 } }] });
                 return { ...refused("OUTPUT_ATTEMPTS_EXHAUSTED", false, fields, 0),
                     state: { status: "completed" as const, outcome: "invalid_output", winner: "agent" } };
@@ -6133,7 +6134,7 @@ export class WorkflowStore {
             }
             const stop = run.stop;
             // SF-6 verification: the stop's reason is stored with its secrets hidden.
-            const errorText = redactWorkflowErrorText(canonicalJson({ code: "stopped", message: jsonbSafeText(stop.reason ?? "Stopped", 4_000), details: {
+            const errorText = redactWorkflowErrorText(canonicalJson({ code: "stopped", message: redactThenClip(stop.reason ?? "Stopped", 4_000), details: {
                 operationId: stop.operationId, actor: stop.actor, graceSeconds: stop.graceSeconds,
                 requestedAt: stop.requestedAt.toISOString(), deadlineAt: stop.deadlineAt.toISOString(),
                 graceExpired, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 100),

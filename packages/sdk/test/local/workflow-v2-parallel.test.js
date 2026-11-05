@@ -20,7 +20,10 @@
  * - A literal forEach list (verification of SF-3, M-03): the new started
  *   event and a reader's view of the graph show it only as its count and
  *   digest; the owner's YAML keeps it; a started event an earlier build
- *   stored keeps its list (stored events are not rewritten).
+ *   stored keeps its list (stored events are not rewritten); a binding's
+ *   list default the same way (R3-SF-1).
+ * - A timed_out report keeps its finished branches' business outputs as the
+ *   blocked report does (R3-SF-3).
  *
  * Branch scripts run as real script processes. The failFast case relies on
  * a timing margin: the failing branch waits 5 seconds before it fails, and
@@ -801,5 +804,109 @@ describe("workflow v2 parallel states: a literal list is shown as its count and 
             await h.stop();
         }
     });
+
+    // Adversarial review R3-SF-1: the same list as a binding's default (here unused: the run's input has the items). The
+    // graph (the owner's and a reader's) and the workflow.started event show the binding's path with the default as its
+    // count and digest; the owner's YAML keeps it exactly. (The REST view and the web-backed MCP read apply
+    // workflowV2ReaderView to this same view for a reader who cannot change the workflow.)
+    it("R3-SF-1: a forEach binding's list default is shown as its count and digest in the graph and the started event, never its values", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const MARKER = "r3sf1-private-marker-9c2e";
+            const forEach = `\${input.items ?? [{"note":"${MARKER}"}]}`;
+            const doc = {
+                ...head("binding-default"), initialInput: { items: [1] }, initial: "fan",
+                states: {
+                    fan: {
+                        type: "parallel", forEach,
+                        body: {
+                            initial: "hold",
+                            states: {
+                                hold: { type: "wait", seconds: 600, transition: { next: { elapsed: "done" } } },
+                                done: { type: "terminal", outcome: "succeeded" },
+                            },
+                        },
+                        transition: { next: { joined: "finished", blocked: "stuck", failure: "failed" } },
+                    },
+                    ...OUTER,
+                },
+            };
+            const { workflowSessionId, runId } = await started(h, doc);
+            const [startedEvent] = await until(async () => {
+                const events = await h.catalog.getSessionEvents(workflowSessionId, 0, 100, ["workflow.started"]);
+                return events.length ? events : null;
+            }, "the started event");
+            const shown = startedEvent.data.states.find(state => state.id === "fan").forEach;
+            expect(shown).toMatch(/^\$\{input\.items \?\? \{"count":1,"sha256":"[0-9a-f]{64}"\}\}$/);
+            expect(JSON.stringify(startedEvent.data)).not.toContain(MARKER);
+            const view = await readWorkflowV2View(h.store, workflowSessionId);
+            for (const read of [view, workflowV2ReaderView(view)]) {
+                expect(read.graph.states.find(state => state.id === "fan").forEach).toBe(shown);
+                expect(JSON.stringify(read)).not.toContain(MARKER);
+            }
+            expect(JSON.stringify(await h.catalog.getSessionEvents(workflowSessionId, 0, 500))).not.toContain(MARKER);
+            // The owner's YAML keeps the default exactly.
+            const withYaml = await readWorkflowV2View(h.store, workflowSessionId, { includeYaml: true });
+            expect(JSON.parse(withYaml.revision.yaml).states.fan.forEach).toBe(forEach);
+            await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "done" }, { actor: ACTOR, operationId: "cancel-1" });
+            expect(await ended(h, runId)).toMatchObject({ status: "cancelled" });
+        } finally {
+            await h.stop();
+        }
+    });
 });
 
+// Adversarial review R3-SF-3: a parallel state whose time limit passes before its join (IR 9) records its report as its
+// error; a finished branch's business output in it stays exactly as the branch stored it, as the blocked report keeps it.
+// Branch 1 ends at once with { key, token } (ordinary business fields); branch 2 waits 600 s (the time limit, 3 s, passes)
+// or is refused at once (0 s: the join of both can no longer happen, so it is blocked).
+describe("workflow v2 parallel states: a timed_out report keeps business outputs (adversarial review R3-SF-3; controller 1.9.0, test-only)", () => {
+    it("R3-SF-3: a timed_out report's finished branch output equals the branch's own and the blocked report's", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const doc = second => ({
+                ...head("report-outputs"), initialInput: { items: [{ seconds: 1, n: 0 }, { seconds: second, n: 1 }] }, initial: "fan",
+                states: {
+                    fan: {
+                        type: "parallel", forEach: "${input.items}", concurrency: 2, join: { first: 2 }, timeoutSeconds: 3,
+                        body: {
+                            initial: "hold",
+                            states: {
+                                hold: { type: "wait", seconds: "${branch.item.seconds}", input: { key: "ordinary-value", token: "an-ordinary-field", n: "${branch.item.n}" },
+                                    transition: { next: { elapsed: "done" } } },
+                                done: { type: "terminal", outcome: "succeeded", output: "${input}" },
+                            },
+                        },
+                        transition: { next: { joined: "finished", blocked: "stuck", timed_out: "late", failure: "failed" } },
+                    },
+                    ...OUTER,
+                    late: { type: "terminal", outcome: "blocked", output: "${input}" },
+                },
+            });
+            const output = { key: "ordinary-value", token: "an-ordinary-field", n: 0 };
+
+            const timed = await started(h, doc(600));
+            expect(await ended(h, timed.runId)).toMatchObject({ status: "completed", terminalNodeId: "late" });
+            const fan = await h.store.readNodeExecution(timed.fan);
+            expect(fan).toMatchObject({ outcome: "timed_out", resultKind: "runtime_error" });
+            const branch = await h.store.readNodeExecution(timed.at(0, "done"));
+            expect(branch.output).toEqual(output);
+            const timedEntry = fan.error.details.branches.find(item => item.index === 0);
+            expect(timedEntry.output).toEqual(branch.output);
+            // The whole value read shows it the same (the execution read of the parallel state).
+            const whole = await readWorkflowV2View(h.store, timed.workflowSessionId, { executionId: timed.fan });
+            expect(whole.execution.result).toMatchObject({ whole: true });
+            expect(whole.execution.result.value.details.branches.find(item => item.index === 0).output).toEqual(output);
+
+            const blocked = await started(h, doc(0));
+            expect(await ended(h, blocked.runId)).toMatchObject({ status: "completed", terminalNodeId: "stuck" });
+            const blockedFan = await h.store.readNodeExecution(blocked.fan);
+            expect(blockedFan).toMatchObject({ outcome: "blocked", resultKind: "business" });
+            const blockedEntry = blockedFan.output.branches.find(item => item.index === 0);
+            expect(blockedEntry.output).toEqual(output);
+            expect(timedEntry.output).toEqual(blockedEntry.output);
+        } finally {
+            await h.stop();
+        }
+    });
+});

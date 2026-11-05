@@ -8,7 +8,7 @@ import {
 } from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
-import { redactWorkflowSecrets } from "./redact.js";
+import { redactThenClip, redactWorkflowSecrets } from "./redact.js";
 import { schemaSetFor, WorkflowSchemaError, type WorkflowSchemaSet } from "./schema.js";
 import {
     correlationTextOf,
@@ -1325,7 +1325,7 @@ async function retainTestRuns(host: Pick<WorkflowV2Host, "store" | "duroxideClie
         }
     } catch (error) {
         await host.store.recordSessionEvents(workflowSessionId, [{ eventType: "workflow.test_retention_failed", data: {
-            error: jsonbSafeText(error instanceof Error ? error.message : String(error), 1_000),
+            error: redactThenClip(error instanceof Error ? error.message : String(error), 1_000),
         } }]).catch(() => undefined);
     }
 }

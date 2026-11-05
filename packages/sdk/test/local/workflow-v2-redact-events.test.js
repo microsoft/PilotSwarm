@@ -137,4 +137,78 @@ describe("workflow v2 event redaction", () => {
             await catalog.close();
         }
     });
+
+    // Adversarial review R3-SF-2: a reason holding a URL whose user and password are longer than the 500-character cut is
+    // redacted whole before it is cut, so no part of the password is stored or read: the pause event, the stop request and
+    // its event, the run read, the stopped run's error, the cancel before begin and the session row. A stop request stored
+    // before this fix (cut first) is hidden when it is read.
+    it("R3-SF-2: a credential longer than the cut leaves no part in any stored or read reason", { timeout: 60_000 }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const db = new pg.Pool({ connectionString: env.store, max: 1 });
+        try {
+            const store = catalog.workflowStore();
+            const parent = randomUUID();
+            await catalog.createSession(parent, {});
+            const host = { catalog, store, requests: true,
+                duroxideClient: { startOrchestrationVersioned: async () => {}, getStatus: async () => ({ status: "NotFound" }), enqueueEvent: async () => {} } };
+            const yaml = [
+                "apiVersion: pilotswarm.dev/v2-draft", "kind: Workflow", "metadata: { name: redact, version: \"1.0.0\" }", "initial: pause", "states:",
+                "  pause: { type: wait, seconds: 600, transition: { next: { elapsed: done } } }", "  done: { type: terminal, outcome: succeeded }",
+            ].join("\n");
+            const actor = { kind: "system", name: "redact-test" };
+            const started = async () => {
+                const id = randomUUID();
+                const created = await createWorkflowV2(host, { workflowSessionId: id, parentSessionId: parent, yaml, actor, operationId: "create", start: { inputs: {} } });
+                return { id, runId: created.receipt.run.runId };
+            };
+            const PART = "pppppppp";
+            const reason = `stop it: postgres://admin:${"p".repeat(600)}${SENTINEL}@db.example.com/app`;
+            const clean = text => {
+                expect(text).not.toContain(PART);
+                expect(text).not.toContain(SENTINEL);
+            };
+            const row = async runId => (await db.query(
+                `SELECT terminal_error, stop_request FROM "${env.cmsSchema}".workflow_runs WHERE run_id = $1`, [runId])).rows[0];
+
+            // A pause and a resume with the reason, then a cancel before the run began.
+            const cancelled = await started();
+            await controlWorkflowV2Run(host, cancelled.id, { operation: "pause", runId: null, reason }, { actor, operationId: "pause-1" });
+            await controlWorkflowV2Run(host, cancelled.id, { operation: "resume", runId: null, reason }, { actor, operationId: "resume-1" });
+            await controlWorkflowV2Run(host, cancelled.id, { operation: "cancel", runId: null, reason }, { actor, operationId: "cancel-1" });
+            clean(String((await row(cancelled.runId)).terminal_error));
+
+            // A stop: its request, its event, the run read while it stops, and the stopped run's error.
+            const stopped = await started();
+            await store.requestRunStop({ workflowSessionId: stopped.id, runId: stopped.runId, operationId: "stop-1", requestSha256: "stop", actor, reason,
+                graceSeconds: 600, stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS });
+            clean(String((await row(stopped.runId)).stop_request));
+            const stopping = await readWorkflowV2View(store, stopped.id);
+            expect(stopping.run.stop.reason).toContain("postgres://<hidden>");
+            clean(JSON.stringify(stopping));
+            const ended = await store.finishStoppedRun({ runId: stopped.runId,
+                projection: ({ run }) => ({ sessionId: run.workflowSessionId, update: { state: "cancelled", touch: true } }) });
+            expect(ended).toMatchObject({ result: "ended" });
+            clean(String((await row(stopped.runId)).terminal_error));
+
+            // Every event and session row of both, and the parent's read_workflow.
+            for (const id of [cancelled.id, stopped.id]) {
+                clean(JSON.stringify(await catalog.getSessionEvents(id, 0, 100)));
+                clean(String((await db.query(`SELECT last_error FROM "${env.cmsSchema}".sessions WHERE session_id = $1`, [id])).rows[0].last_error));
+                clean(await readWorkflowFromTool({ workflow_id: id }, { callerSessionId: parent, host }));
+            }
+
+            // A stop request stored before this fix, cut first: the cut URL is hidden when it is read.
+            const legacy = JSON.parse((await row(stopped.runId)).stop_request);
+            legacy.reason = `stop it: postgres://admin:${"p".repeat(480)}…`;
+            await db.query(`UPDATE "${env.cmsSchema}".workflow_runs SET stop_request = $2 WHERE run_id = $1`, [stopped.runId, JSON.stringify(legacy)]);
+            const read = await readWorkflowV2View(store, stopped.id);
+            expect(read.run.stop.reason).toBe("stop it: postgres://<hidden>…");
+        } finally {
+            await db.end();
+            await catalog.close();
+        }
+    });
 });
+

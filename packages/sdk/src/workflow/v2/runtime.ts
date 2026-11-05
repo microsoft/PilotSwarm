@@ -6,7 +6,8 @@ import { WORKFLOW_COMMAND_QUEUE, parseWorkflowCommand, workflowErrorMessage } fr
 import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../activities.js";
 import { admittedWorkflowToolGrant, validateWorkflowToolArguments, type WorkflowToolBinding } from "../tool-policy.js";
 import type { WorkflowToolExecutor } from "../tool-executor.js";
-import { evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
+import { bindingWithDefaultShown, evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
+import { redactErrorThenClip, redactThenClip, redactWorkflowSecrets } from "./redact.js";
 import { TYPED_INPUT_REFUSALS } from "./authority.js";
 import {
     FAILURE_ROUTE,
@@ -1958,7 +1959,7 @@ export function* workflowV2Effect(ctx: OrchestrationContext, rawInput: unknown):
     try {
         result = yield ctx.scheduleActivityTyped(WORKFLOW_V2_ACTIVITIES.runScript, input);
     } catch (error) {
-        result = { kind: "result", result: runtimeError("execution_failed", workflowErrorMessage(error)) };
+        result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
     }
     yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.recordEffectResult, { ...input, outcome: result }, STORE_RETRY);
     yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.wake, input, STORE_RETRY);
@@ -2003,7 +2004,7 @@ export function* workflowV2EffectTagged(ctx: OrchestrationContext, rawInput: unk
     try {
         result = yield taggedActivity(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.runScript, input);
     } catch (error) {
-        result = { kind: "result", result: runtimeError("execution_failed", workflowErrorMessage(error)) };
+        result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
     }
     yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
     yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.wake, input);
@@ -2326,8 +2327,9 @@ interface ErrorEnvelope {
     details?: JsonValue;
 }
 
+/** A runtime error's envelope as text: its message has its secrets hidden before it is cut (R3-SF-2); its details are hidden when it is stored. */
 function envelopeText(envelope: ErrorEnvelope): string {
-    return canonicalJson({ code: envelope.code, message: jsonbSafeText(envelope.message, 4_000), ...(envelope.details !== undefined ? { details: envelope.details } : {}) });
+    return canonicalJson({ code: envelope.code, message: redactThenClip(envelope.message, 4_000), ...(envelope.details !== undefined ? { details: envelope.details } : {}) });
 }
 
 /** What a receive state accepts, resolved when it is entered (store.enterNode). */
@@ -2371,7 +2373,7 @@ function waitSeconds(seconds: number | string, scope: BindingScope, path: string
         }
     }
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > WAIT_MAX_SECONDS) {
-        return runtimeError("invalid_input", `${path} must be an integer from 1 to ${WAIT_MAX_SECONDS}; got ${jsonbSafeText(canonicalJson(value), 200)}.`,
+        return runtimeError("invalid_input", `${path} must be an integer from 1 to ${WAIT_MAX_SECONDS}; got ${redactThenClip(canonicalJson(value), 200)}.`,
             { seconds: value });
     }
     return value;
@@ -2408,6 +2410,15 @@ function cancelRequester(run: WorkflowRunRow): string | null {
 
 function runtimeError(code: RuntimeErrorCode, message: string, details?: JsonValue): NodeResultInput {
     return { outcome: code, resultKind: "runtime_error", valueText: envelopeText({ code, message, ...(details !== undefined ? { details } : {}) }), winner: "effect" };
+}
+
+/**
+ * runtimeError as the effect orchestrations build it in their own code, byte for byte as before R3-SF-2: its text is
+ * an activity's input, which a replay compares. Its message is cut before its secrets are hidden (when it is stored), so
+ * a secret at the cut of an activity failure message over 4,000 characters can leave a part (a known limit).
+ */
+function generatorRuntimeError(code: RuntimeErrorCode, message: string): NodeResultInput {
+    return { outcome: code, resultKind: "runtime_error", valueText: canonicalJson({ code, message: jsonbSafeText(message, 4_000) }), winner: "effect" };
 }
 
 /** The runtime error a send state records when it may not send to its recipient (store.recipientRefusal). */
@@ -2474,7 +2485,7 @@ function sendFailedProjection(workflowSessionId: string, executed: WorkflowNodeE
         sessionId: workflowSessionId,
         events: [{ eventType: "workflow.state_failed", data: {
             runId: executed.runId, nodeExecutionId: executed.nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal,
-            outcome: result.outcome, resultKind: result.resultKind, error: jsonbSafeText(result.valueText, 2_000),
+            outcome: result.outcome, resultKind: result.resultKind, error: redactErrorThenClip(result.valueText, 2_000),
         } }],
         update: { touch: true },
     };
@@ -2494,7 +2505,7 @@ function parallelDecidedProjection(run: WorkflowRunRow, executed: WorkflowNodeEx
             resultKind: result.resultKind, branches: decided.total, succeeded: decided.succeeded,
             ...(result.resultKind === "business"
                 ? { outputPreview: jsonbSafeText(result.valueText, 1_000) }
-                : { error: jsonbSafeText(result.valueText, 2_000) }),
+                : { error: redactErrorThenClip(result.valueText, 2_000) }),
         } }],
         update: { touch: true },
     };
@@ -2567,25 +2578,25 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
     if (node.type === "script") {
         return { id: node.id, type: "script", runtime: "node", timeoutSeconds: node.timeoutSeconds, outcomes: node.outcomes, next: node.next };
     }
-    if (node.type === "wait") return { id: node.id, type: "wait", seconds: node.seconds, outcomes: [WAIT_ELAPSED], next: node.next };
+    if (node.type === "wait") return { id: node.id, type: "wait", seconds: workflowV2BindingView(node.seconds), outcomes: [WAIT_ELAPSED], next: node.next };
     if (node.type === "messaging") {
         if (node.mode === "send") {
             return {
                 id: node.id, type: "messaging", mode: "send", contract: node.contract,
-                recipient: "parent" in node.recipient ? "parent" : node.recipient.sessionId, outcomes: [MESSAGE_SENT], next: node.next,
+                recipient: "parent" in node.recipient ? "parent" : workflowV2BindingView(node.recipient.sessionId), outcomes: [MESSAGE_SENT], next: node.next,
             };
         }
         if (node.mode === "request") {
             return {
                 id: node.id, type: "messaging", mode: "request", contract: node.contract,
-                recipient: "parent" in node.recipient ? "parent" : node.recipient.sessionId, timeoutSeconds: node.timeoutSeconds,
+                recipient: "parent" in node.recipient ? "parent" : workflowV2BindingView(node.recipient.sessionId), timeoutSeconds: workflowV2BindingView(node.timeoutSeconds),
                 outcomes: [REQUEST_RESPONDED, REQUEST_DECLINED], next: node.next,
             };
         }
         return {
             id: node.id, type: "messaging", mode: node.mode, contract: node.contract,
-            from: node.from === null ? null : "parent" in node.from ? "parent" : node.from.sessionId,
-            ...(node.waitSeconds !== null ? { waitSeconds: node.waitSeconds } : {}),
+            from: node.from === null ? null : "parent" in node.from ? "parent" : workflowV2BindingView(node.from.sessionId),
+            ...(node.waitSeconds !== null ? { waitSeconds: workflowV2BindingView(node.waitSeconds) } : {}),
             outcomes: node.waitSeconds !== null ? [RECEIVE_RECEIVED, WAIT_ELAPSED] : [RECEIVE_RECEIVED], next: node.next,
         };
     }
@@ -2593,7 +2604,7 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
         // IR 9: its join of the first k ({ first: k }) and its own time limit, only when it has them (an IR 8 state reads as before).
         return {
             id: node.id, type: "parallel", forEach: workflowV2ForEachView(node.forEach), concurrency: node.concurrency, join: node.join, failFast: node.failFast,
-            ...(node.timeoutSeconds !== undefined ? { timeoutSeconds: node.timeoutSeconds } : {}),
+            ...(node.timeoutSeconds !== undefined ? { timeoutSeconds: workflowV2BindingView(node.timeoutSeconds) } : {}),
             body: { initial: node.body.initial, states: node.body.states }, outcomes: [PARALLEL_JOINED, PARALLEL_BLOCKED], next: node.next,
         };
     }
@@ -2604,7 +2615,7 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
                 : { source: "agent", name: node.invoke.agent.name, package: node.invoke.agent.package, version: node.invoke.agent.version,
                     ...(node.invoke.agent.interface !== undefined
                         ? { interface: `${node.invoke.agent.interface.name}@${node.invoke.agent.interface.version}` } : {}) },
-            timeoutSeconds: node.timeoutSeconds, outcomes: node.outcomes, next: node.next,
+            timeoutSeconds: workflowV2BindingView(node.timeoutSeconds), outcomes: node.outcomes, next: node.next,
         };
     }
     return { id: node.id, type: "terminal", outcome: node.outcome };
@@ -2612,12 +2623,26 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
 
 /**
  * A parallel state's forEach as the graph and the workflow.started event show it (adversarial review SF-3): a binding
- * as its text; a literal list only as how many items it has and its digest, never its values, which a reader of the
- * session may not be allowed to see (the definition's YAML is for those who may change the workflow).
+ * as its text, with a list or object default shown only as its count and digest (R3-SF-1: workflowV2BindingView); a
+ * literal list only as how many items it has and its digest, never its values, which a reader of the session may not
+ * be allowed to see (the definition's YAML is for those who may change the workflow).
  */
 export function workflowV2ForEachView(forEach: JsonValue): JsonValue {
-    if (typeof forEach === "string") return forEach;
+    if (typeof forEach === "string") return workflowV2BindingView(forEach);
     return { count: Array.isArray(forEach) ? forEach.length : null, sha256: jsonSha256(forEach) };
+}
+
+/**
+ * A field the graph and the workflow.started event show that may be one binding (forEach, a wait's or a time limit's
+ * seconds, a recipient's or a sender's session id), as readers are shown it (adversarial review R3-SF-1): its path as
+ * written; a default that is a list or an object as `{ count, sha256 }` (its number of items or members, and its digest),
+ * never its values; a scalar default as written. Anything that is not a binding is shown as it is.
+ */
+export function workflowV2BindingView<T extends JsonValue | undefined>(value: T): T {
+    if (typeof value !== "string") return value;
+    return bindingWithDefaultShown(value, fallback => (fallback !== null && typeof fallback === "object"
+        ? { count: Array.isArray(fallback) ? fallback.length : Object.keys(fallback).length, sha256: jsonSha256(fallback) }
+        : undefined)) as T;
 }
 
 export function describeWorkflowV2States(ir: WorkflowIR): Array<{ [key: string]: JsonValue }> {
@@ -2714,7 +2739,7 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
                 failed.push(invocation.nodeExecutionId);
                 await store.recordSessionEvents(invocation.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
                     runId, nodeExecutionId: invocation.nodeExecutionId, childSessionId: invocation.childSessionId,
-                    error: jsonbSafeText(workflowErrorMessage(error), 1_000),
+                    error: redactThenClip(workflowErrorMessage(error), 1_000),
                 } }]);
             }
         }
@@ -2870,7 +2895,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 workflowRuntimeSender("test_waiting"), `workflow-test:${interception.interceptionId}`);
         } catch (error) {
             await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.test_notice_failed", data: {
-                runId: run.runId, interceptionId: interception.interceptionId, error: jsonbSafeText(workflowErrorMessage(error), 1_000),
+                runId: run.runId, interceptionId: interception.interceptionId, error: redactThenClip(workflowErrorMessage(error), 1_000),
             } }]);
         }
     };
@@ -3411,7 +3436,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                             ...runtimeError("delivery_failed", `The delivery of this request ended (${delivering.status}) without recording it; `
                                 + `${message.attempts} delivery attempts had begun${message.attempts > 0 ? ", so the responder may have received the request" : ""}.`,
                             { deliveryStatus: delivering.status, attempts: message.attempts,
-                                deliveryError: delivering.error === undefined ? null : jsonbSafeText(delivering.error, 2_000) }),
+                                deliveryError: delivering.error === undefined ? null : redactThenClip(delivering.error, 2_000) }),
                             winner: "controller",
                         };
                         const stored = await store.failRequestDelivery(nodeExecutionId, result, sendFailedProjection(message.workflowSessionId, executed, result));
@@ -3431,7 +3456,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     const result: NodeResultInput = {
                         ...runtimeError("delivery_failed", `The send of this state ended (${sending.status}) without recording a delivery; `
                             + `${message.attempts} delivery attempts had begun${message.attempts > 0 ? ", so the recipient may have received the message" : ""}.`,
-                        { sendStatus: sending.status, attempts: message.attempts, sendError: sending.error === undefined ? null : jsonbSafeText(sending.error, 2_000) }),
+                        { sendStatus: sending.status, attempts: message.attempts, sendError: sending.error === undefined ? null : redactThenClip(sending.error, 2_000) }),
                         winner: "controller",
                     };
                     const stored = await store.failDelivery(nodeExecutionId, result, sendFailedProjection(message.workflowSessionId, executed, result),
@@ -3445,7 +3470,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 const run = await runOf(runId);
                 const stored = await store.completeNode(nodeExecutionId, {
                     ...runtimeError("execution_failed", `The script's effect ended (${effect.status}) without storing a result.`,
-                        { effectStatus: effect.status, effectError: effect.error === undefined ? null : jsonbSafeText(effect.error, 2_000) }),
+                        { effectStatus: effect.status, effectError: effect.error === undefined ? null : redactThenClip(effect.error, 2_000) }),
                     winner: "controller",
                 }, {
                     sessionId: run.workflowSessionId,
@@ -3552,7 +3577,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                         events: [{ eventType: "workflow.state_failed", data: {
                             runId: run.runId, nodeExecutionId: executed.nodeExecutionId, stateId: node.id, step: executed.ordinal,
                             outcome: terminalNode.result.outcome, resultKind: "runtime_error",
-                            error: jsonbSafeText(terminalNode.result.valueText, 2_000), catchAll: ir.catchAll,
+                            error: redactErrorThenClip(terminalNode.result.valueText, 2_000), catchAll: ir.catchAll,
                         } }],
                         update: { touch: true },
                     });
@@ -3582,9 +3607,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     runId: run.runId, name: label?.name ?? null, stateId: terminalNodeId, outcome: terminalOutcome,
                     ...(summary ? { summary } : {}),
                     ...(outputText !== null ? { outputPreview: jsonbSafeText(outputText, 1_000) } : {}),
-                    ...(errorText !== null ? { error: jsonbSafeText(errorText, 2_000) } : {}),
+                    ...(errorText !== null ? { error: redactErrorThenClip(errorText, 2_000) } : {}),
                 } }],
-                update: { state: status, lastError: status === "failed" ? jsonbSafeText(errorText ?? "Workflow failed", 2_000) : null, touch: true },
+                update: { state: status, lastError: status === "failed" ? redactErrorThenClip(errorText ?? "Workflow failed", 2_000) : null, touch: true },
             },
         });
         return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome };
@@ -3602,8 +3627,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             endPending: { winner: "cancel", message: "The workflow run was cancelled." },
             projection: {
                 sessionId: run.workflowSessionId,
-                events: [{ eventType: "workflow.cancelled", data: { runId: run.runId, reason: jsonbSafeText(reason, 500), command, ...(command === "delete" ? { deleted: true } : {}) } }],
-                update: { state: "cancelled", lastError: jsonbSafeText(reason, 500), touch: true },
+                events: [{ eventType: "workflow.cancelled", data: { runId: run.runId, reason: redactThenClip(reason, 500), command, ...(command === "delete" ? { deleted: true } : {}) } }],
+                update: { state: "cancelled", lastError: redactThenClip(reason, 500), touch: true },
             },
         });
         // Ask the effect of every node whose stored result is this cancellation
@@ -3999,7 +4024,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 outcome: result.outcome, resultKind: result.resultKind,
                 ...(result.resultKind === "business"
                     ? { outputPreview: jsonbSafeText(result.valueText, 1_000) }
-                    : { error: jsonbSafeText(result.valueText, 2_000) }),
+                    : { error: redactErrorThenClip(result.valueText, 2_000) }),
             } }],
             update: { touch: true },
         });
@@ -4143,7 +4168,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const result: NodeResultInput = {
             ...runtimeError("delivery_failed", `Every delivery attempt of this message failed (${message.attempts} attempts began`
                 + `${message.recipientKind === "agent" ? "; one whose queue call failed may still have queued it" : ""}). `
-                + `The last failure: ${jsonbSafeText(cause, 2_000)}`,
+                + `The last failure: ${redactThenClip(cause, 2_000)}`,
             { attempts: message.attempts, recipientSessionId: message.recipientSessionId }),
             winner: "delivery",
         };
@@ -4194,7 +4219,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 sessionId: run.workflowSessionId,
                 events: [{ eventType: "workflow.state_failed", data: {
                     runId: run.runId, nodeExecutionId: input.nodeExecutionId, stateId: begun.node.nodeId, step: begun.node.ordinal,
-                    outcome: result.outcome, resultKind: "runtime_error", error: jsonbSafeText(result.valueText, 2_000),
+                    outcome: result.outcome, resultKind: "runtime_error", error: redactErrorThenClip(result.valueText, 2_000),
                 } }],
                 update: { touch: true },
             });
@@ -4249,13 +4274,13 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         const run = await runOf(input.runId);
         const result: NodeResultInput = {
-            ...runtimeError("unavailable", `The agent session of this state could not be created: ${jsonbSafeText(cause, 1_000)}`), winner: "controller",
+            ...runtimeError("unavailable", `The agent session of this state could not be created: ${redactThenClip(cause, 1_000)}`), winner: "controller",
         };
         await store.completeNode(input.nodeExecutionId, result, {
             sessionId: run.workflowSessionId,
             events: [{ eventType: "workflow.state_failed", data: {
                 runId: run.runId, nodeExecutionId: input.nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal, outcome: "unavailable",
-                resultKind: "runtime_error", error: jsonbSafeText(result.valueText, 2_000),
+                resultKind: "runtime_error", error: redactErrorThenClip(result.valueText, 2_000),
             } }],
             update: { touch: true },
         });
@@ -4271,7 +4296,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 // A later run-end cleanup (endRunAgents) sends it again.
                 await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
                     runId: run.runId, nodeExecutionId: input.nodeExecutionId, childSessionId: invocation.childSessionId,
-                    error: jsonbSafeText(workflowErrorMessage(error), 1_000),
+                    error: redactThenClip(workflowErrorMessage(error), 1_000),
                 } }]).catch(() => undefined);
             }
         }
@@ -4347,7 +4372,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     branch: branch?.index ?? null, branchEnded: true, outcome: result.outcome, resultKind: result.resultKind,
                     ...(result.resultKind === "business"
                         ? { outputPreview: jsonbSafeText(result.valueText, 1_000) }
-                        : { error: jsonbSafeText(result.valueText, 2_000) }),
+                        : { error: redactErrorThenClip(result.valueText, 2_000) }),
                 } }],
                 update: { touch: true },
             })).node;
@@ -4425,7 +4450,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 } catch (error) {
                     owed.push(item.nodeExecutionId);
                     await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
-                        runId: run.runId, nodeExecutionId: item.nodeExecutionId, error: jsonbSafeText(workflowErrorMessage(error), 1_000),
+                        runId: run.runId, nodeExecutionId: item.nodeExecutionId, error: redactThenClip(workflowErrorMessage(error), 1_000),
                     } }]);
                 }
             }
@@ -4551,7 +4576,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 resultKind: result.resultKind, branches: total, succeeded,
                 ...(result.resultKind === "business"
                     ? { outputPreview: jsonbSafeText(result.valueText, 1_000) }
-                    : { error: jsonbSafeText(result.valueText, 2_000) }),
+                    : { error: redactErrorThenClip(result.valueText, 2_000) }),
             } }],
             update: { touch: true },
         });
@@ -4597,7 +4622,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             } catch (error) {
                 if (!(error instanceof WorkflowStoreError) || !["TEST_RESPONSE_INVALID", "NODE_CLOSED", "RUN_ENDED"].includes(error.code)) throw error;
                 await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.test_fixture_refused", data: {
-                    runId: run.runId, interceptionId, code: error.code, message: jsonbSafeText(error.message, 1_000),
+                    runId: run.runId, interceptionId, code: error.code, message: redactThenClip(error.message, 1_000),
                 } }]);
                 if (error.code !== "TEST_RESPONSE_INVALID") return { decided: false };
             }
@@ -4634,9 +4659,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     events: [{ eventType: "workflow.failed", data: {
                         runId, name: label?.name ?? null, stateId: null, outcome: null, deadline: true, timeoutSeconds,
                         cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 50),
-                        ...(errorText !== null ? { error: jsonbSafeText(errorText, 2_000) } : {}),
+                        ...(errorText !== null ? { error: redactErrorThenClip(errorText, 2_000) } : {}),
                     } }],
-                    update: { state: "failed", lastError: jsonbSafeText(errorText ?? "The run reached its deadline.", 2_000), touch: true },
+                    update: { state: "failed", lastError: redactErrorThenClip(errorText ?? "The run reached its deadline.", 2_000), touch: true },
                 };
             },
         });
@@ -4689,10 +4714,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     sessionId: ended.workflowSessionId,
                     events: [{ eventType: "workflow.stopped", data: {
                         runId, name: label?.name ?? null, graceExpired, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 50),
-                        ...(reason ? { reason: jsonbSafeText(reason, 500) } : {}),
+                        ...(reason ? { reason: redactThenClip(reason, 500) } : {}),
                     } }],
                     // The session statuses have no "stopped"; read_workflow shows the run's status.
-                    update: { state: "cancelled", lastError: jsonbSafeText(reason ? `Stopped: ${reason}` : "Stopped", 500), touch: true },
+                    update: { state: "cancelled", lastError: redactThenClip(reason ? `Stopped: ${reason}` : "Stopped", 500), touch: true },
                 };
             },
         });
@@ -4847,7 +4872,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!executed) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${input.nodeExecutionId} is missing.`);
         const result: NodeResultInput = {
             ...runtimeError("delivery_failed", `Every delivery attempt of this request failed (${message.attempts} attempts began; `
-                + `one whose queue call failed may still have queued it). The last failure: ${jsonbSafeText(cause, 2_000)}`,
+                + `one whose queue call failed may still have queued it). The last failure: ${redactThenClip(cause, 2_000)}`,
             { attempts: message.attempts, recipientSessionId: message.recipientSessionId }),
             winner: "delivery",
         };
@@ -4964,10 +4989,10 @@ function scriptResult(node: WorkflowIRScript, run: WorkflowRunRow, ir: WorkflowI
     }
     if (result.resultSource === "exit" && result.exitCode !== 0) {
         return runtimeError("execution_failed", `The script exited with code ${String(result.exitCode)}.`,
-            { exitCode: result.exitCode, stderr: jsonbSafeText(result.stderrTail.trim().slice(-4_096)) });
+            { exitCode: result.exitCode, stderr: jsonbSafeText(redactWorkflowSecrets(result.stderrTail).trim().slice(-4_096)) });
     }
     if (!node.outcomes.includes(result.outcome)) {
-        return runtimeError("invalid_output", `The script reported undeclared outcome '${jsonbSafeText(result.outcome, 100)}' (declared: ${node.outcomes.join(", ")}).`);
+        return runtimeError("invalid_output", `The script reported undeclared outcome '${redactThenClip(result.outcome, 100)}' (declared: ${node.outcomes.join(", ")}).`);
     }
     let output: JsonValue;
     try {
