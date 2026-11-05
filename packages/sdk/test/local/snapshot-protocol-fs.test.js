@@ -2,7 +2,7 @@
  * Versioned CAS conformance — FilesystemSessionStore backend
  * (session-lifecycle-protocol §4.1).
  */
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,7 +50,7 @@ describe("mixed-codec chain (gzip legacy → brotli commit)", () => {
         // Seed a GENUINE gzip legacy snapshot the way an old binary wrote it:
         // a real `.tar.gz` (gzip) + meta.json with NO codec/version field.
         const gzipTar = path.join(storeDir, `${sessionId}.tar.gz`);
-        execSync(`tar -czf "${gzipTar}" -C "${sessionStateDir}" "${sessionId}"`);
+        fs.writeFileSync(gzipTar, execFileSync("tar", ["-czf", "-", "--", sessionId], { cwd: sessionStateDir }));
         fs.writeFileSync(
             path.join(storeDir, `${sessionId}.meta.json`),
             JSON.stringify({ sessionId, sizeBytes: fs.statSync(gzipTar).size, worker: "old", dehydratedAt: new Date().toISOString() }),
@@ -108,7 +108,7 @@ describe("archive stream completion", () => {
         const id = `padding-${randomUUID()}`;
         const dir = makeSessionLayout(sessionStateDir, id, "padded-content");
         const raw = path.join(storeDir, "raw.tar");
-        execSync(`tar -cf "${raw}" -C "${sessionStateDir}" "${id}"`);
+        fs.writeFileSync(raw, execFileSync("tar", ["-cf", "-", "--", id], { cwd: sessionStateDir }));
         // More padding than a pipe can buffer forces the reader to consume
         // EOF rather than exit as soon as it sees the first zero block.
         const compressed = gzipSync(Buffer.concat([fs.readFileSync(raw), Buffer.alloc(8 * 1024 * 1024)]));

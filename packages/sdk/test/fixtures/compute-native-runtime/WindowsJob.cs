@@ -40,6 +40,7 @@ internal static class Program
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int handle);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetShortPathName(string path, StringBuilder result, uint length);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcess(
         string application, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit,
         uint flags, IntPtr environment, string directory, ref Startup startup, out ProcessInfo info);
@@ -107,6 +108,14 @@ internal static class Program
         foreach (int descriptor in new[] { -10, -11, -12 }) {
             var handle = GetStdHandle(descriptor);
             if (handle != IntPtr.Zero && handle != new IntPtr(-1)) Check(SetHandleInformation(handle, 1, 0));
+        }
+        if (args.Length != 0 && args[0] == "--short-path") {
+            var result = new StringBuilder(32768);
+            uint length = GetShortPathName(args[1], result, (uint)result.Capacity);
+            if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (length >= result.Capacity) throw new InvalidOperationException("Short-path result exceeded its owned buffer");
+            Console.WriteLine(result);
+            return 0;
         }
         if (args.Length != 0 && args[0] == "--writer") {
             for (int i = 0; i < 2400; i++) { File.AppendAllText(args[1], $"{i}\n"); Thread.Sleep(25); }

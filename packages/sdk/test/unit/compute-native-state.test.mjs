@@ -20,7 +20,7 @@ async function captureFixture(host, current = identity()) {
     return host.exportState(current, barrier.barrierId);
 }
 
-async function fixture(t) {
+async function fixture(t, { aliasDirectory = directory => directory } = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "ps-native-"));
     const cleanup = [];
     t.after(async () => { for (const dispose of cleanup) await dispose(); await fs.rm(root, { recursive: true, force: true }); });
@@ -30,7 +30,7 @@ async function fixture(t) {
     const options = {
         sessionId: "session",
         profile: { id: "fixture-v1", sdkVersion: "fixture-sdk", runtimeVersion: "fixture-runtime",
-            roots: [{ name: "session", directory: home, requiredFiles: ["workspace.yaml"] }], unsupportedFeatures: [] },
+            roots: [{ name: "session", directory: aliasDirectory(home), requiredFiles: ["workspace.yaml"] }], unsupportedFeatures: [] },
         supervisor: {
             prepare: async () => {
                 await fs.writeFile(path.join(home, "workspace.yaml"), "fixture");
@@ -270,6 +270,51 @@ test("native artifact access is identity-bound, bounded, and closed during captu
     await h.host.beginCheckpoint(identity());
     await assert.rejects(h.host.readArtifact(identity(), "nested/result.bin"), /closed/);
     await assert.rejects(h.host.writeArtifact(identity(), "late", body.toString("base64"), hash), /closed/);
+});
+
+test("Windows spelling aliases preserve native artifact access without relaxing file identity", { skip: process.platform !== "win32" }, async t => {
+    const h = await fixture(t, { aliasDirectory: directory => directory.toUpperCase() });
+    const configured = path.join(h.options.profile.roots[0].directory, "files");
+    assert.notEqual(await fs.realpath(configured), configured, "The fixture must exercise a real canonical spelling difference");
+    const body = Buffer.from([0, 255, 13, 10]), hash = createHash("sha256").update(body).digest("hex");
+    await h.host.writeArtifact(identity(), "alias.bin", body.toString("base64"), hash);
+    assert.deepEqual(Buffer.from((await h.host.readArtifact(identity(), "alias.bin")).data, "base64"), body);
+    await fs.link(path.join(h.home, "files", "alias.bin"), path.join(h.home, "files", "second-link"));
+    await assert.rejects(h.host.readArtifact(identity(), "alias.bin"), /unlinked file|changed or escaped/);
+});
+
+test("native artifact roots cannot escape through a linked session ancestor", async t => {
+    const h = await fixture(t);
+    const linked = path.join(h.root, "linked-session");
+    await fs.symlink(h.home, linked, process.platform === "win32" ? "junction" : "dir");
+    h.options.profile.roots[0].directory = linked;
+    await assert.rejects(h.host.readArtifact(identity(), "binary"), /link|changed or escaped/);
+    const body = Buffer.from("not allowed"), hash = createHash("sha256").update(body).digest("hex");
+    await assert.rejects(h.host.writeArtifact(identity(), "rejected", body.toString("base64"), hash), /link|changed or escaped/);
+    await assert.rejects(fs.stat(path.join(h.home, "files", "rejected")), { code: "ENOENT" });
+});
+
+test("native artifact descriptors cannot be substituted between open and validation", async t => {
+    for (const writing of [false, true]) await t.test(writing ? "write" : "read", async st => {
+        const h = await fixture(st);
+        const file = path.join(h.home, "files", "binary");
+        const before = await fs.readFile(file);
+        const original = fs.open;
+        st.mock.method(fs, "open", async (...args) => {
+            const handle = await original(...args);
+            if (args[0] === file) {
+                await fs.rename(file, file + ".previous");
+                await fs.writeFile(file, "replacement");
+            }
+            return handle;
+        });
+        const body = Buffer.from("must not write");
+        await assert.rejects(writing
+            ? h.host.writeArtifact(identity(), "binary", body.toString("base64"), createHash("sha256").update(body).digest("hex"))
+            : h.host.readArtifact(identity(), "binary"), /changed or escaped/);
+        assert.deepEqual(await fs.readFile(file + ".previous"), before);
+        assert.equal(await fs.readFile(file, "utf8"), "replacement");
+    });
 });
 
 test("manifest limits are enforced at exact byte and entry thresholds", async t => {

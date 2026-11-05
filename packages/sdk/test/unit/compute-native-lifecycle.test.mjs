@@ -335,21 +335,6 @@ test("management and tuner diagnostics expose the same durable unknown authority
         _catalog: catalog, _ensureStarted() {},
     });
 
-    test("actual artifact tools transfer native binaries without worker-local file access", async t => {
-        const h = await fixture(t, { artifacts: true });
-        await h.turn();
-        assert.equal(h.bodyCalls(), 1);
-        assert.equal(h.completions.size, 1);
-    });
-
-    test("actual connected-runtime version drift is refused before SDK session creation or model work", async t => {
-        const h = await fixture(t, { runtimeDrift: true });
-        await assert.rejects(h.turn(), /runtime version/i);
-        assert.equal(h.configs.length, 0);
-        assert.equal(h.bodyCalls(), 0);
-        assert.equal(h.completions.size, 0);
-        assert.equal((await h.store.probeSnapshot(h.sessionId)).exists, false);
-    });
     assert.deepEqual(await management.getSessionComputeExecution("session"), status);
     await management.reconcileSessionComputeExecution("session");
     assert.deepEqual(requests, ["session"]);
@@ -360,4 +345,20 @@ test("management and tuner diagnostics expose the same durable unknown authority
     assert.ok(tool);
     assert.deepEqual(await tool.handler({ session_id: "session" }, {}), { sessionId: "session", execution: status });
     assert.equal(createInspectTools({ ...options, agentIdentity: "ordinary" }).some(entry => entry.name === tool.name), false);
+});
+
+test("actual artifact tools transfer native binaries without worker-local file access", async t => {
+    const h = await fixture(t, { artifacts: true });
+    await h.turn();
+    assert.equal(h.bodyCalls(), 1);
+    assert.equal(h.completions.size, 1);
+});
+
+test("actual connected-runtime version drift is refused before SDK session creation or model work", async t => {
+    const h = await fixture(t, { runtimeDrift: true });
+    await assert.rejects(h.turn(), /runtime version/i);
+    assert.equal(h.configs.length, 0);
+    assert.equal(h.bodyCalls(), 0);
+    assert.equal(h.completions.size, 0);
+    assert.equal((await h.store.probeSnapshot(h.sessionId)).exists, false);
 });

@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { CopilotClient, CopilotRequestHandler, RuntimeConnection, approveAll } from "@github/copilot-sdk";
@@ -84,6 +84,8 @@ test("real SDK1.0.13/CLI1.0.83 native capture and cold resume under an enforced 
     assert.equal(await new Promise((resolve, reject) => { build.once("exit", resolve); build.once("error", reject); }), 0, buildOutput);
     assert.doesNotMatch(buildOutput, /Installed an ASP\.NET Core HTTPS|added.*(?:PATH|path)/);
     const dll = path.join(tools, "bin", "WindowsJob.dll");
+    const shortHome = execFileSync(dotnet, [dll, "--short-path", home], { cwd: work, env: environment, encoding: "utf8" }).trim();
+    assert.equal(await fs.realpath(shortHome), await fs.realpath(home), "The short spelling must name the same owned native home");
     broker = spawn(dotnet, [dll], { cwd: work, env: environment, stdio: ["pipe", "pipe", "pipe"] });
     children.push(broker);
     let brokerError = "";
@@ -138,8 +140,8 @@ test("real SDK1.0.13/CLI1.0.83 native capture and cold resume under an enforced 
     }
     const profile = { id: "sdk-1.0.13-cli-1.0.83-windows-job-v1", sdkVersion: "1.0.13", runtimeVersion: "1.0.83",
         roots: [
-            { name: "session", directory: sessionDirectory, requiredFiles: ["workspace.yaml", "events.jsonl"] },
-            { name: "global", directory: home, requiredFiles: ["session-store.db", "config.json"],
+            { name: "session", directory: path.join(shortHome, "session-state", sessionId), requiredFiles: ["workspace.yaml", "events.jsonl"] },
+            { name: "global", directory: shortHome, requiredFiles: ["session-store.db", "config.json"],
                 includeFiles: ["config.json", "session-store.db", "session-store.db-wal", "session-store.db-shm"], databases: ["session-store.db"] },
         ], unsupportedFeatures: ["same-process SDK task agents", "warm process continuity", "background-process continuity", "hostile host containment"] };
     let sdkDirectory = path.dirname(require.resolve("@github/copilot-sdk")), sdkVersion;
@@ -196,6 +198,9 @@ test("real SDK1.0.13/CLI1.0.83 native capture and cold resume under an enforced 
     await host.prepare(first);
     currentSession = await currentClient.createSession(config);
     await fs.mkdir(path.dirname(writerFile), { recursive: true });
+    const artifact = Buffer.from([0, 255, 13, 10]);
+    await host.writeArtifact(first, "path-alias.bin", artifact.toString("base64"), createHash("sha256").update(artifact).digest("hex"));
+    assert.deepEqual(Buffer.from((await host.readArtifact(first, "path-alias.bin")).data, "base64"), artifact);
     await fs.writeFile(path.join(work, "independent-edit"), "must survive");
     await fs.mkdir(path.join(home, "unselected-host-state"));
     await fs.writeFile(path.join(home, "unselected-host-state", "sentinel"), "leave untouched");
@@ -296,5 +301,6 @@ test("real SDK1.0.13/CLI1.0.83 native capture and cold resume under an enforced 
         globalSessionRows: rows.length, hookReasons: hooks, runtimeGenerations: generation, coldRestores: 2,
         writerBoundary: "kernel job empty; ordinary descendants included; breakaway denied",
         firstCaptureMembers: barrier.evidence.membersBefore, modelRequests: requests.length, sqliteIntegrity: "ok",
+        nativeHomeUsesShortAlias: shortHome !== await fs.realpath(home),
         limits: profile.unsupportedFeatures }));
 });

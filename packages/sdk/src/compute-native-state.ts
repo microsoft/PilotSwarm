@@ -424,16 +424,8 @@ export class ComputeNativeStateHost {
         const root = path.join(this.options.profile.roots.find(entry => entry.name === "session")!.directory, "files");
         const relative = path.relative(root, path.resolve(root, candidate));
         nativeStatePath(relative.split(path.sep).join("/"));
-        let current = root;
-        const parts = relative.split(path.sep);
-        for (let index = 0; index < parts.length; index++) {
-            const info = await fs.lstat(current).catch(error => {
-                if (writing && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
-                throw error;
-            });
-            if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error("Native artifact path crosses a link");
-            current = path.join(current, parts[index]);
-        }
+        const current = path.join(root, ...relative.split(path.sep));
+        await this.assertArtifactDirectories(path.dirname(current), writing);
         try {
             const info = await fs.lstat(current);
             if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error("Native artifact is not a regular unlinked file");
@@ -441,11 +433,24 @@ export class ComputeNativeStateHost {
         return current;
     }
 
+    private async assertArtifactDirectories(directory: string, allowMissing: boolean): Promise<void> {
+        for (let current = directory; ; current = path.dirname(current)) {
+            const info = await fs.lstat(current).catch(error => {
+                if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
+                throw error;
+            });
+            if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error("Native artifact path crosses a link or non-directory");
+            if (path.dirname(current) === current) return;
+        }
+    }
+
     async readArtifact(identity: ComputeExecutionIdentity, candidate: string): Promise<{ path: string; data: string; sha256: string }> {
         const file = await this.artifactPath(identity, candidate, false);
+        const root = path.join(this.options.profile.roots.find(entry => entry.name === "session")!.directory, "files");
+        const rootIdentity = await fs.lstat(root, { bigint: true });
         const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         try {
-            const info = await this.checkArtifactHandle(file, handle);
+            const info = await this.checkArtifactHandle(file, handle, rootIdentity);
             if (info.size > (this.options.maxBytes ?? COMPUTE_NATIVE_STATE_MAX_BYTES)) throw new Error("Native artifact exceeds its byte budget");
             const body = await handle.readFile();
             if (body.length > (this.options.maxBytes ?? COMPUTE_NATIVE_STATE_MAX_BYTES)) throw new Error("Native artifact grew beyond its byte budget");
@@ -473,21 +478,34 @@ export class ComputeNativeStateHost {
         if (body.toString("base64") !== data || body.length > (this.options.maxBytes ?? COMPUTE_NATIVE_STATE_MAX_BYTES) || digest(body) !== sha256) throw new Error("Invalid native artifact payload");
         const file = await this.artifactPath(identity, candidate, true);
         await fs.mkdir(path.dirname(file), { recursive: true });
+        await this.assertArtifactDirectories(path.dirname(file), false);
+        const root = path.join(this.options.profile.roots.find(entry => entry.name === "session")!.directory, "files");
+        const rootIdentity = await fs.lstat(root, { bigint: true });
         const handle = await fs.open(file, constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0), 0o600);
         try {
-            await this.checkArtifactHandle(file, handle);
+            await this.checkArtifactHandle(file, handle, rootIdentity);
             await handle.truncate(0);
             await handle.writeFile(body);
         } finally { await handle.close(); }
         return { path: file };
     }
 
-    private async checkArtifactHandle(file: string, handle: fs.FileHandle): Promise<import("node:fs").Stats> {
+    private async checkArtifactHandle(file: string, handle: fs.FileHandle, expectedRoot: import("node:fs").BigIntStats): Promise<import("node:fs").Stats> {
         const root = path.join(this.options.profile.roots.find(entry => entry.name === "session")!.directory, "files");
+        await this.assertArtifactDirectories(path.dirname(file), false);
         const realRoot = await fs.realpath(root), real = await fs.realpath(file);
-        const info = await handle.stat(), current = await fs.stat(real);
-        if (realRoot !== root || !real.startsWith(realRoot + path.sep) || !info.isFile() || info.nlink !== 1
-            || info.dev !== current.dev || info.ino !== current.ino) throw new Error("Native artifact path changed or escaped its root");
+        const relative = path.relative(realRoot, real);
+        const info = await handle.stat(), identity = await handle.stat({ bigint: true });
+        const current = await fs.lstat(file, { bigint: true }), rootIdentity = await fs.lstat(root, { bigint: true });
+        const canonicalRoot = await fs.stat(realRoot, { bigint: true });
+        // Case and 8.3 spellings may differ without changing directory identity.
+        if (!relative || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)
+            || !identity.isFile() || identity.nlink !== 1n || !current.isFile() || current.isSymbolicLink() || current.nlink !== 1n
+            || !rootIdentity.isDirectory() || rootIdentity.isSymbolicLink()
+            || expectedRoot.ino === 0n || identity.ino === 0n
+            || expectedRoot.dev !== rootIdentity.dev || expectedRoot.ino !== rootIdentity.ino
+            || canonicalRoot.dev !== rootIdentity.dev || canonicalRoot.ino !== rootIdentity.ino
+            || identity.dev !== current.dev || identity.ino !== current.ino) throw new Error("Native artifact path changed or escaped its root");
         return info;
     }
 }

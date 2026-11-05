@@ -211,8 +211,13 @@ at a shared deployment. Run privacy after staging and check diff whitespace.
 Use native path separators on Windows.
 
 Windows validation needs actual Git Bash tools for the POSIX-oriented unit
-fixtures while native Windows `tar` must handle Windows paths. Set this only
-in the test process; do not edit the machine PATH. Some Linux deployment-policy
+fixtures. Archive helpers pass the directory as the child process working
+directory, not an absolute `tar -C` argument; native Windows and Git Bash tar
+both round-trip Windows directory spellings. Native artifact access compares
+canonical containment and exact filesystem identities rather than rejecting
+legitimate case/8.3 spelling differences. Linked ancestors, hardlinks, file
+substitution and unavailable filesystem identity still fail closed.
+Set tool paths only in the test process; do not edit the machine PATH. Some Linux deployment-policy
 fixtures assert Unix modes and script behavior and are not qualified by running
 them under Windows. Linux CI and each target OS/supervisor remain explicit gates.
 The Windows Job Object result must not be presented as qualification of another
