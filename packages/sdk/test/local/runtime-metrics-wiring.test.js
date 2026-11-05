@@ -14,6 +14,7 @@ vi.mock("@opentelemetry/api", async importOriginal => {
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
 import { runTurnPreamble, runTurnCommit } from "../../src/session-lifecycle.ts";
 import { SnapshotConflictError, writeTurnCommitFile } from "../../src/snapshot-protocol.ts";
+import { SESSION_STATE_MISSING_PREFIX } from "../../src/types.ts";
 
 const records = name => observed.records.filter(record => record.name === name);
 const context = { traceInfo() {}, traceWarn() {} };
@@ -72,13 +73,35 @@ describe("actual runTurn metric wiring", () => {
         await h.runTurn();
         expect(records("pilotswarm.tokens").find(record => record.attributes.direction === "input").value).toBe(9);
     });
+
+    it("counts actual recovery model usage without duplicating the logical turn", async () => {
+        let attempt = 0;
+        const h = makeRunTurnHarness({ turn: async opts => {
+            attempt++;
+            opts.onEvent({ eventType: "assistant.usage", data: { inputTokens: attempt * 10, outputTokens: 1 } });
+            return attempt === 1 ? { type: "error", message: "Session not found" } : { type: "completed", content: "ok" };
+        } });
+        expect((await h.runTurn()).type).toBe("completed");
+        expect(h.session.runTurn).toHaveBeenCalledTimes(2);
+        expect(records("pilotswarm.turns")).toHaveLength(1);
+        expect(records("pilotswarm.tokens").find(record => record.attributes.direction === "input").value).toBe(30);
+    });
+
+    it("marks fresh recreation after lost resumable state as lossy hydration", async () => {
+        const h = makeRunTurnHarness();
+        h.sessionManager.getOrCreate.mockRejectedValueOnce(new Error(`${SESSION_STATE_MISSING_PREFIX} missing test state`));
+        expect((await h.runTurn("test-session", { turnIndex: 7 })).type).toBe("completed");
+        expect(records("pilotswarm.lifecycle.operations").map(record => record.attributes))
+            .toEqual([{ operation: "hydration", result: "lossy_handoff" }]);
+    });
 });
 
 describe("legacy lifecycle activity metric wiring", () => {
-    it.each(["completed", "error", "lossy_handoff"])("dehydrate records %s rather than false success", async result => {
-        const h = makeRunTurnHarness({ managerExtras: { dehydrate: async () => {
+    it.each(["completed", "error", "lossy_handoff", "checkpoint_fallback"])("dehydrate records %s rather than false success", async result => {
+        const h = makeRunTurnHarness({ managerExtras: { dehydrate: async (_id, _reason, options) => {
             if (result === "error") throw new Error("test store failure");
             if (result === "lossy_handoff") throw new Error("Session state directory not ready during dehydrate");
+            if (result === "checkpoint_fallback") options.onCheckpointFallback();
         } } });
         const call = h.handlers.dehydrateSession(context, { sessionId: "private-id", reason: "private-reason" });
         if (result === "error") await expect(call).rejects.toThrow("test store failure");
@@ -147,5 +170,21 @@ describe("modern snapshot lifecycle metric wiring", () => {
         expect(records("pilotswarm.tokens")).toEqual([]);
         expect(records("pilotswarm.lifecycle.operations").map(record => record.attributes))
             .toEqual([{ operation: "hydration", result: "completed" }]);
+    });
+    it("counts transient commit retries as one logical dehydration and reports exhausted failure", async () => {
+        await snapshot(async ctx => {
+            let attempt = 0;
+            ctx.store.commitSnapshot = async () => {
+                if (++attempt < 3) throw new Error("transient test failure");
+                return { version: 2, contentHash: "next-hash", alreadyCommitted: false };
+            };
+            await runTurnCommit(ctx, 1, { type: "completed" });
+            expect(attempt).toBe(3);
+            ctx.store.commitSnapshot = async () => { throw new Error("persistent test failure"); };
+            await expect(runTurnCommit(ctx, 2, { type: "completed" })).rejects.toThrow("persistent test failure");
+        });
+        expect(records("pilotswarm.lifecycle.operations").map(record => record.attributes)).toEqual([
+            { operation: "dehydration", result: "completed" }, { operation: "dehydration", result: "error" },
+        ]);
     });
 });

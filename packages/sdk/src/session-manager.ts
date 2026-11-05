@@ -2976,7 +2976,7 @@ export class SessionManager {
      *   4. If the post-disconnect snapshot is missing (which would indicate
      *      a future SDK regression), fall back to the pre-destroy checkpoint.
      */
-    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; lockHeld?: boolean }): Promise<void> {
+    async dehydrate(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; lockHeld?: boolean; onCheckpointFallback?: () => void }): Promise<void> {
         if (!options?.lockHeld) {
             return this._withSessionLock(
                 sessionId,
@@ -2988,7 +2988,7 @@ export class SessionManager {
         return this._dehydrateUnlocked(sessionId, reason, options);
     }
 
-    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter }): Promise<void> {
+    private async _dehydrateUnlocked(sessionId: string, reason: string, options?: { trace?: SessionTraceWriter; onCheckpointFallback?: () => void }): Promise<void> {
         const DESTROY_MAX_RETRIES = 3;
         const trace = options?.trace;
         let lastDestroyError: Error | undefined;
@@ -3128,6 +3128,7 @@ export class SessionManager {
                         `[SessionManager] session-store dehydrate snapshot missing after destroy for ${sessionId}; ` +
                         `using the pre-destroy checkpoint as the durable fallback.`,
                     );
+                    options?.onCheckpointFallback?.();
                     try {
                         fs.rmSync(sessionDir, { recursive: true, force: true });
                     } catch {}

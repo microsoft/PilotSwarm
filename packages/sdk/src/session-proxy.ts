@@ -5047,7 +5047,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const eventData = normalizeEventData(input.eventData);
         const trace = activityTrace(activityCtx, "dehydrateSession");
         const finishDehydrationMetrics = runtimeMetrics().startLifecycle("dehydration");
-        let dehydrationResult: "completed" | "error" | "lossy_handoff" = "error";
+        let dehydrationResult: "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" = "error";
+        let checkpointFallback = false;
         const dehydrationSpan = otelTrace.getTracer("pilotswarm-lifecycle").startSpan("session.dehydration", {
             attributes: {
                 "pilotswarm.session_id": input.sessionId,
@@ -5059,7 +5060,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         try {
             try {
-                await sessionManager.dehydrate(input.sessionId, reason, { trace });
+                await sessionManager.dehydrate(input.sessionId, reason, {
+                    trace,
+                    onCheckpointFallback: () => { checkpointFallback = true; },
+                });
             } catch (err: any) {
                 const message = err?.message || String(err);
                 if (isMissingDehydrateSnapshotErrorMessage(message)) {
@@ -5123,7 +5127,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
 
             trace(`session=${input.sessionId} complete reason=${reason}`);
-            dehydrationResult = "completed";
+            dehydrationResult = checkpointFallback ? "checkpoint_fallback" : "completed";
 
             dehydrationSpan.setAttribute("pilotswarm.dehydration_result", "completed");
             if (catalog) {

@@ -3,6 +3,8 @@ import { telemetryConfig } from "./config.mjs";
 const config = telemetryConfig();
 const providers = [];
 let shutdownPromise;
+let shuttingDown = false;
+let shutdownExportFailed = false;
 
 export const telemetryEnabled = Boolean(config && (config.metrics === "otlp" || config.traces === "otlp"));
 
@@ -12,7 +14,10 @@ if (telemetryEnabled) {
     const { envDetector, resourceFromAttributes } = await import("@opentelemetry/resources");
     // Exporter diagnostics can contain URLs and headers. Never print their arguments.
     diag.setLogger({
-        error: () => console.error("[otel] Telemetry export failed."),
+        error: () => {
+            if (shuttingDown) shutdownExportFailed = true;
+            console.error("[otel] Telemetry export failed.");
+        },
         warn: () => console.warn("[otel] Telemetry warning."),
         info() {}, debug() {}, verbose() {},
     }, DiagLogLevel.WARN);
@@ -64,8 +69,12 @@ if (telemetryEnabled) {
 
 /** Call after draining the worker, before process.exit. Repeated calls share the same flush. */
 export function shutdownTelemetry() {
+    shuttingDown = true;
     shutdownPromise ??= Promise.all(providers.map(provider => provider.shutdown())).then(
-        () => undefined,
+        () => {
+            // The periodic reader reports export failures through diagnostics, not rejection.
+            if (shutdownExportFailed) throw new Error("[otel] Telemetry shutdown failed.");
+        },
         () => { throw new Error("[otel] Telemetry shutdown failed."); },
     );
     return shutdownPromise;

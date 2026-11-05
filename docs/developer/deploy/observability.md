@@ -53,7 +53,7 @@ before deployment.
 | `pilotswarm.turns` | Counter | `result=completed,error,cancelled,stopped,yielded` | Finished activity attempts, including errors and retries. Actions such as wait or input requests are yields, not failures. |
 | `pilotswarm.tokens` | Counter | `direction=input,output,cache_read,cache_write` | Usage increments observed during a turn, added once when the attempt finishes. Partial usage from a failed/cancelled attempt is included. |
 | `pilotswarm.tool.calls` | Counter | `result=success,error` | Observed tool completions. An unfinished tool start is not falsely counted as success. |
-| `pilotswarm.lifecycle.operations` | Counter | `operation=hydration,dehydration`; `result=completed,error,lossy_handoff,superseded,cancelled` | Legacy hydrate/dehydrate activities and actual modern snapshot restore/commit operations, including lossy recreation. |
+| `pilotswarm.lifecycle.operations` | Counter | `operation=hydration,dehydration`; `result=completed,error,lossy_handoff,checkpoint_fallback,superseded,cancelled` | Legacy hydrate/dehydrate activities and actual modern snapshot restore/commit operations, including lossy recreation. |
 | `pilotswarm.turn.duration` | Histogram, seconds | Same `result` as turns | Monotonic wall duration of the activity attempt, including lock wait, tools, persistence and other runtime work. Explicit opt-in only. |
 | `pilotswarm.lifecycle.duration` | Histogram, seconds | Same lifecycle labels | Monotonic wall duration of the instrumented lifecycle operation. Explicit opt-in only. |
 
@@ -69,6 +69,8 @@ one logical dehydration operation. A stopped turn does not attempt a snapshot
 commit and adds no dehydration operation. A superseded snapshot commit is
 not a successful dehydration. The counters are process observations, not
 exactly-once durable business totals across crashes or duplicate deliveries.
+Legacy pre-destroy checkpoint fallback is distinct from a successful
+post-disconnect snapshot and is reported as `checkpoint_fallback`.
 
 There are no session IDs, owner emails, arbitrary agent names, model labels,
 tool names, arguments, outputs, or error strings in metric labels. Turn duration

@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import type { TurnResult } from "./types.js";
 
 type Result = "completed" | "error" | "cancelled" | "stopped" | "yielded";
-type LifecycleResult = "completed" | "error" | "lossy_handoff" | "superseded" | "cancelled";
+type LifecycleResult = "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" | "superseded" | "cancelled";
 type Operation = "hydration" | "dehydration";
 type Usage = { tokensInput: number; tokensOutput: number; tokensCacheRead: number; tokensCacheWrite: number };
 

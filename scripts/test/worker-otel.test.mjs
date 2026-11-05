@@ -66,14 +66,14 @@ test("invalid configured values fail without echoing endpoint credentials or hea
     }
 });
 
-async function collector(t) {
+async function collector(t, status = 200) {
     const requests = [];
     const server = http.createServer((request, response) => {
         const chunks = [];
         request.on("data", chunk => chunks.push(chunk));
         request.on("end", () => {
             requests.push({ path: request.url, body: JSON.parse(Buffer.concat(chunks).toString()) });
-            response.writeHead(200, { "content-type": "application/json" });
+            response.writeHead(status, { "content-type": "application/json" });
             response.end("{}");
         });
     });
@@ -135,4 +135,23 @@ test("explicit trace opt-in exports existing manual spans without library instru
     `);
     assert.ok(requests.some(request => request.path === "/v1/traces"));
     assert.ok(requests.every(request => request.path === "/v1/traces"));
+});
+
+test("shutdown rejects export failure with bounded timeout and no sensitive diagnostics", async t => {
+    const { url } = await collector(t, 503);
+    await assert.rejects(run({
+        OTEL_EXPORTER_OTLP_ENDPOINT: url,
+        OTEL_EXPORTER_OTLP_HEADERS: "authorization=PRIVATE_HEADER",
+        OTEL_EXPORTER_OTLP_TIMEOUT: "100",
+        OTEL_METRIC_EXPORT_TIMEOUT: "100",
+    }, `
+        import { shutdownTelemetry } from ${JSON.stringify(register)};
+        import { metrics } from "@opentelemetry/api";
+        metrics.getMeter("test").createCounter("test.counter").add(1);
+        await shutdownTelemetry();
+    `), error => {
+        assert.match(error.stderr, /Telemetry shutdown failed/);
+        assert.doesNotMatch(error.stderr, /PRIVATE_HEADER|127\\.0\\.0\\.1|authorization/);
+        return true;
+    });
 });
