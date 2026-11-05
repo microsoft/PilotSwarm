@@ -37,6 +37,16 @@
  *   claims in them never become successes; valid calls still work.
  * - J1b-T4: a winner whose terminal fails after the time limit gives way to the next success committed in time.
  * - J1cd-T5: a branch's last state is found through its chain when its terminal's id sorts first and the times are equal.
+ * Part 5, the compiler and stored IR (no database):
+ * - JK-01: every shape of `join` that is not all, all_required or { first: k } with k a safe integer from 1 to 64 is
+ *   refused at its own path, never read as another; the accepted ones compile to their exact IR.
+ * - JK-02: every bad time limit is refused (null is not "absent"); with one, a timed_out route is required even with a
+ *   catchAll; without one it is refused; a timed_out route into a branch body is an unknown target; valid IR round-trips.
+ * - JK-03: literal lists of 0, 1, 2 and 64 items against k = n, n + 1 and every branch; equal items stay separate; more
+ *   than 64 items are refused; stored IR with a malformed join, time limit, concurrency or body is refused.
+ * - JK-22: the stored IR version boundary: IR 9 read as at most IR 8 is refused (also with its header set to 8); an unknown
+ *   later version is refused; a valid IR 8 reads back as IR 8. (A stand-in for an older worker: the current reader with
+ *   maxIrVersion 8, not the 8d568890 build itself.)
  * Part 4 (J1b-T5):
  * - JK-14: a binding with fewer items than k blocks at once with every branch not started and nothing run, failFast or
  *   not; an empty join of every branch joins []; k = n joins in commit order with the wrapper, a join of every branch in
@@ -60,7 +70,9 @@ import {
     commitOrder, elapsedResult, endOf, eventsOf, executionsOf, gate, joinBaseOf, joinDoc, joinRuntimeOn, pause, persisted, startJoin, until, within, yamlOf,
     branchRowsOf, JOIN_ACTOR, WORK,
 } from "../helpers/workflow-v2-join-harness.js";
-import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
+import {
+    compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_AGENT_IR_VERSION, WORKFLOW_V2_JOIN_IR_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_PARALLEL_MAX_ITEMS,
+} from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { controlWorkflowV2Run } from "../../src/workflow/v2/service.ts";
 import {
@@ -1411,6 +1423,140 @@ describe("J3 robust joins, part 4: schemas and success on a native runtime (cont
         } finally {
             for (const worker of workers) await worker.stop();
             await base.close();
+        }
+    });
+});
+
+// ─── Part 5: the compiler and stored IR ─────────────────────
+
+const errorsOf = result => result.diagnostics.filter(item => item.severity === "error");
+const LITERAL = [{ seconds: 1 }, { seconds: 2 }, { seconds: 3 }];
+/** A join of the first 2 over a literal list of 3, with a 10-second time limit; `change(fan, doc)` edits it first. */
+const compiledWith = (change = () => {}) => {
+    const doc = joinDoc({ items: LITERAL, join: { first: 2 }, timeoutSeconds: 10 });
+    doc.states.fan.forEach = structuredClone(LITERAL);
+    change(doc.states.fan, doc);
+    return compileWorkflowV2(yamlOf(doc), PARALLEL);
+};
+const readStored = (ir, maxIrVersion = WORKFLOW_V2_MILESTONE_IR_VERSION) => parseWorkflowIr(JSON.parse(canonicalJson(ir)), { maxIrVersion });
+
+describe("J3 robust joins, part 5: the compiler and stored IR", () => {
+    it("JK-01: every join shape but all, all_required and { first: k } (k a safe integer, 1 to 64) is refused at its own path; the accepted ones compile exactly", () => {
+        const valid = compiledWith();
+        expect(valid.valid, JSON.stringify(valid.diagnostics)).toBe(true);
+        expect(valid.ir.irVersion).toBe(WORKFLOW_V2_JOIN_IR_VERSION);
+        expect(valid.ir.nodes.fan).toMatchObject({ join: { first: 2 }, timeoutSeconds: 10 });
+        for (const join of [null, {}, { first: null }, { first: true }, { first: "2" }, { first: 1.5 }, { first: 0 }, { first: -1 }, { first: 2, extra: 1 },
+            { first: "${input.k}" }, { first: 2 ** 53 }, { first: WORKFLOW_V2_PARALLEL_MAX_ITEMS + 1 }, { first: { k: 2 } }, "first", "any", ["all"], 2]) {
+            const label = JSON.stringify(join);
+            const result = compiledWith(fan => { fan.join = join; });
+            expect(result.valid, label).toBe(false);
+            const at = errorsOf(result).filter(item => item.path === "states.fan.join" || item.path === "states.fan.join.first");
+            expect(at.length, `${label}: an error at the join`).toBeGreaterThan(0);
+            expect(at.every(item => item.code === "WORKFLOW_FIELD_INVALID"), label).toBe(true);
+        }
+        // Omitted, all and all_required: a join of every branch.
+        for (const join of [undefined, "all", "all_required"]) {
+            const result = compiledWith(fan => { if (join === undefined) delete fan.join; else fan.join = join; });
+            expect(result.valid, String(join)).toBe(true);
+            expect(result.ir.nodes.fan.join).toBe("all_required");
+        }
+    });
+
+    it("JK-02: every bad time limit is refused; with one a timed_out route is required even with a catchAll; a timed_out route into a body is unknown; valid IR round-trips", () => {
+        for (const timeout of [null, 0, -1, 1.5, true, "10", "soon", 86_401]) {
+            const result = compiledWith(fan => { fan.timeoutSeconds = timeout; });
+            expect(result.valid, JSON.stringify(timeout)).toBe(false);
+            expect(errorsOf(result).map(item => item.path), JSON.stringify(timeout)).toContain("states.fan.timeoutSeconds");
+        }
+        // A binding, read when the state starts.
+        const bound = compiledWith((fan, doc) => { fan.timeoutSeconds = "${input.limit}"; doc.initialInput.limit = 5; });
+        expect(bound.valid, JSON.stringify(bound.diagnostics)).toBe(true);
+        expect(bound.ir.nodes.fan.timeoutSeconds).toBe("${input.limit}");
+        // With a time limit and no timed_out route: refused, also when the workflow has a catchAll.
+        const caught = compiledWith((fan, doc) => { delete fan.transition.next.timed_out; doc.catchAll = "failed"; });
+        expect(caught.valid).toBe(false);
+        expect(errorsOf(caught).map(item => [item.code, item.path])).toContainEqual(["WORKFLOW_ROUTE_MISSING", "states.fan.transition.next"]);
+        // Without one, a timed_out route is refused.
+        const untimed = compiledWith(fan => { delete fan.timeoutSeconds; });
+        expect(untimed.valid).toBe(false);
+        expect(errorsOf(untimed).map(item => [item.code, item.path])).toContainEqual(["WORKFLOW_ROUTE_INVALID", "states.fan.transition.next.timed_out"]);
+        // A timed_out route into the branch body is no root state.
+        const inside = compiledWith(fan => { fan.transition.next.timed_out = "done"; });
+        expect(inside.valid).toBe(false);
+        expect(errorsOf(inside).map(item => [item.code, item.path])).toContainEqual(["WORKFLOW_TARGET_UNKNOWN", "states.fan.transition.next.timed_out"]);
+        // The accepted forms read back as compiled; the route leads to the root's late terminal only.
+        for (const result of [compiledWith(), bound]) {
+            expect(readStored(result.ir)).toEqual(result.ir);
+            expect(result.ir.nodes.fan.next.timed_out).toBe("late");
+        }
+    });
+
+    it("JK-03: literal lists against k = n, n + 1 and every branch; equal items stay separate; more than 64 refused; malformed stored IR refused", () => {
+        for (const n of [0, 1, 2, WORKFLOW_V2_PARALLEL_MAX_ITEMS]) {
+            const items = Array.from({ length: n }, (_, index) => ({ seconds: 1 + (index % 3) }));
+            const literal = join => compiledWith(fan => { fan.forEach = items; if (join === undefined) delete fan.join; else fan.join = join; });
+            if (n > 0) {
+                const exact = literal({ first: n });
+                expect(exact.valid, `k = n = ${n}`).toBe(true);
+                expect(exact.ir.nodes.fan.join).toEqual({ first: n });
+            }
+            const over = literal({ first: n + 1 });
+            expect(over.valid, `k = ${n + 1} over ${n} items`).toBe(false);
+            expect(errorsOf(over).map(item => item.path).some(path => path === "states.fan.join.first" || path === "states.fan.join"), `n ${n}`).toBe(true);
+            expect(literal(undefined).valid, `every branch of ${n}`).toBe(true);
+        }
+        // Equal items are separate branches.
+        const equal = compiledWith(fan => { fan.forEach = [{ seconds: 1 }, { seconds: 1 }]; });
+        expect(equal.valid, JSON.stringify(equal.diagnostics)).toBe(true);
+        expect(equal.ir.nodes.fan.forEach).toEqual([{ seconds: 1 }, { seconds: 1 }]);
+        // More than 64 items.
+        const many = compiledWith(fan => { fan.forEach = Array.from({ length: WORKFLOW_V2_PARALLEL_MAX_ITEMS + 1 }, () => ({ seconds: 1 })); delete fan.join; });
+        expect(many.valid).toBe(false);
+        expect(errorsOf(many).map(item => item.path)).toContain("states.fan.forEach");
+
+        // Stored IR: a malformed join, time limit, concurrency or body is refused; the valid one reads back.
+        const stored = JSON.parse(canonicalJson(compiledWith().ir));
+        expect(readStored(stored)).toEqual(compiledWith().ir);
+        const withFan = change => ({ ...stored, nodes: { ...stored.nodes, fan: { ...stored.nodes.fan, ...change } } });
+        for (const [label, broken] of [
+            ["k negative", withFan({ join: { first: -1 } })],
+            ["k missing", withFan({ join: {} })],
+            ["k not an integer", withFan({ join: { first: 1.5 } })],
+            ["k above 64", withFan({ join: { first: WORKFLOW_V2_PARALLEL_MAX_ITEMS + 1 } })],
+            ["k with another field", withFan({ join: { first: 1, of: 3 } })],
+            ["k an object", withFan({ join: { first: {} } })],
+            ["a join word", withFan({ join: "any" })],
+            ["time limit 0", withFan({ timeoutSeconds: 0 })],
+            ["time limit over a day", withFan({ timeoutSeconds: 86_401 })],
+            ["time limit true", withFan({ timeoutSeconds: true })],
+            ["concurrency 0", withFan({ concurrency: 0 })],
+            ["a body without its initial state", withFan({ body: { initial: stored.nodes.fan.body.initial, states: stored.nodes.fan.body.states.filter(id => id !== stored.nodes.fan.body.initial) } })],
+            ["failFast missing", withFan({ failFast: undefined })],
+        ]) {
+            expect(() => readStored(JSON.parse(JSON.stringify(broken))), label).toThrow(/stored IR/);
+        }
+    });
+
+    it("JK-22: IR 9 read as at most IR 8 is refused (also with its header set to 8); an unknown later version is refused; a valid IR 8 reads back as IR 8", () => {
+        const ir9 = JSON.parse(canonicalJson(compiledWith().ir));
+        expect(ir9.irVersion).toBe(WORKFLOW_V2_JOIN_IR_VERSION);
+        expect(() => readStored(ir9, WORKFLOW_V2_AGENT_IR_VERSION)).toThrow(/stored IR version 9 is not supported/);
+        // The header set to 8 with the first k and the time limit kept: refused, never read as a join of every branch.
+        expect(() => readStored({ ...ir9, irVersion: WORKFLOW_V2_AGENT_IR_VERSION })).toThrow(/stored IR parallel state fan is invalid/);
+        const headerOnlyJoin = { ...ir9, irVersion: WORKFLOW_V2_AGENT_IR_VERSION, nodes: { ...ir9.nodes, fan: { ...ir9.nodes.fan, timeoutSeconds: undefined } } };
+        expect(() => readStored(JSON.parse(JSON.stringify(headerOnlyJoin)))).toThrow(/stored IR parallel state fan is invalid/);
+        // A later version than this worker reads.
+        expect(() => readStored({ ...ir9, irVersion: WORKFLOW_V2_MILESTONE_IR_VERSION + 1 })).toThrow(new RegExp(`stored IR version ${WORKFLOW_V2_MILESTONE_IR_VERSION + 1} is not supported`));
+        // A valid IR 8 (a join of every branch, no time limit) reads back as IR 8, by both readers.
+        const ir8 = compileWorkflowV2(yamlOf(joinDoc({ items: LITERAL })), PARALLEL).ir;
+        expect(ir8.irVersion).toBe(WORKFLOW_V2_AGENT_IR_VERSION);
+        for (const max of [WORKFLOW_V2_AGENT_IR_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION]) {
+            const read = readStored(ir8, max);
+            expect(read).toEqual(ir8);
+            expect(read.irVersion).toBe(WORKFLOW_V2_AGENT_IR_VERSION);
+            expect(read.nodes.fan.join).toBe("all_required");
+            expect(read.nodes.fan.timeoutSeconds).toBeUndefined();
         }
     });
 });
