@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    appendEventToHistory, buildHistoryModel, describeWorkflowEvent, formatWorkflowEventText, isWorkflowEvent,
+    appendEventToHistory, buildHistoryModel, describeWorkflowEvent, formatLocalTime, formatWorkflowEventText, isWorkflowEvent,
     CHAT_HISTORY_EVENT_TYPES, WORKFLOW_CONTROL_EVENT_TYPES, WORKFLOW_EVENT_TYPES,
 } from "../src/index.js";
 
@@ -103,16 +103,21 @@ test("poll counts never merge across runs or revisions", () => {
 
     // Re-check UI-RC2-1: two test runs at the same time, their steps interleaved: each run keeps its own summary; one run's
     // steps never end the other's, and each takes its own run's definition.
-    const together = buildHistoryModel([
+    // The live append reads the very same events (their times included) as the rebuild it is compared with.
+    const interleaved = [
         started("run-a", 1), begin(1), started("run-b", 2, next2), done(1), begin(1, "run-b"), begin(2),
         done(1, "retry", "run-b"), done(2), begin(2, "run-b"), done(2, "retry", "run-b"),
-    ]);
+    ];
+    const together = buildHistoryModel(interleaved);
     assert.deepEqual(progress(together).map(item => [item.workflowProgress.runId, item.workflowProgress.count, item.workflowProgress.outcome]),
         [["run-a", 2, "unchanged"], ["run-b", 2, "retry"]]);
     assert.ok(progress(together).every(item => /Waiting for changes/.test(item.workflowNotice.title)), "both still poll");
-    const live = [started("run-a", 1), begin(1), started("run-b", 2, next2), done(1), begin(1, "run-b"), begin(2),
-        done(1, "retry", "run-b"), done(2), begin(2, "run-b"), done(2, "retry", "run-b")].reduce(appendEventToHistory, buildHistoryModel());
+    // Each summary's last check is its own run's latest completion: run-a's step 2 (the 8th event), run-b's step 2 (the 10th).
+    assert.deepEqual(progress(together).map(item => item.workflowProgress.entries.at(-1).checkedAt),
+        [interleaved[7], interleaved[9]].map(row => formatLocalTime(row.createdAt, { clock: true })));
+    const live = interleaved.reduce((history, row) => appendEventToHistory(history, row), buildHistoryModel());
     assert.deepEqual(progress(live).map(item => item.text), progress(together).map(item => item.text));
+    assert.deepEqual(progress(live).map(item => item.workflowProgress), progress(together).map(item => item.workflowProgress));
     // The same state of another run with the same step numbers is not dropped as a duplicate.
     const again = buildHistoryModel([started("run-a"), begin(1), done(1), begin(1, "run-b"), done(1, "unchanged", "run-b")]);
     assert.deepEqual(counts(again), [1]);
@@ -215,10 +220,16 @@ test("pause, resume, recovery and a cancel request are rows of their own that do
     assert.equal(progress(cancelled)[0].workflowProgress.pending, false);
     assert.deepEqual(cancelled.chat.map(item => item.workflowEvent).slice(-2), ["workflow.cancelled", "workflow.cancel_requested"]);
     assert.match(cancelled.chat.at(-1).text, /Asked 1 running action to stop/);
-    // The next run's start still closes the earlier summary when a control row sits between them.
-    const nextRun = buildHistoryModel([started(), begin(1), done(1), event("workflow.paused", { runId: "run-a" }), started("run-b", 2), begin(1, "run-b"), done(1, "unchanged", "run-b")]);
+    // Re-check UI-RC2-1: the next run's start does not close the earlier summary, with a control row between them or not; the
+    // earlier run's own end still closes it, past the control row and the other run's rows, and leaves the other run's open.
+    const nextRunRows = [started(), begin(1), done(1), event("workflow.paused", { runId: "run-a" }), started("run-b", 2), begin(1, "run-b"), done(1, "unchanged", "run-b")];
+    const nextRun = buildHistoryModel(nextRunRows);
     assert.deepEqual(counts(nextRun), [1, 1]);
-    assert.match(progress(nextRun)[0].workflowNotice.title, /Polling ended/);
+    assert.match(progress(nextRun)[0].workflowNotice.title, /Waiting for changes/);
+    const earlierEnded = buildHistoryModel([...nextRunRows, event("workflow.cancelled", { runId: "run-a", reason: "Stopped", command: "done" })]);
+    assert.deepEqual(counts(earlierEnded), [1, 1]);
+    assert.match(progress(earlierEnded)[0].workflowNotice.title, /Polling ended/);
+    assert.match(progress(earlierEnded)[1].workflowNotice.title, /Waiting for changes/);
 });
 
 // Adversarial review R2-UI-6: a graceful stop's request and the run's stopped end are in the step log, in the first
