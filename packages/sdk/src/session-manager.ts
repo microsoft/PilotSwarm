@@ -2099,7 +2099,7 @@ export class SessionManager {
         // attach result the stored config still holds from an earlier turn
         // must not survive a clear.
         if (!effectiveSerializableConfig.workspace) delete config.workspace;
-        for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared", "workflowMilestoneTurn", "workflowAgentChild"] as const) {
+        for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared", "workflowMilestoneTurn", "workflowAgentChild", "workflowInsideWorkflow"] as const) {
             if (!(effectiveSerializableConfig as ManagedSessionConfig)[key]) delete config[key];
         }
         // Section 4.11: with no record, a turn still attaches the deployment's
@@ -2343,10 +2343,12 @@ export class SessionManager {
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         // Workflow v2 (INACTIVE): a turn of a worker that runs controller 1.9.0 is declared the milestone's workflow tools and
         // respond_session_request, and an agent state's own child complete_workflow_node, as the turn's handlers take them.
+        // A session inside a Workflow is declared no definition tools (Workflow Simplified A1).
         const subAgentTools = ManagedSession.subAgentToolDefs({
             ...(workspaceTools ? { workspaceTools: true } : {}),
             ...(config.workflowMilestoneTurn === true ? { workflowMilestone: true } : {}),
             ...(config.workflowAgentChild === true ? { workflowAgentChild: true } : {}),
+            ...(config.workflowInsideWorkflow === true ? { workflowInsideWorkflow: true } : {}),
         })
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name))
             // Declared only where it can work: a worker with workflow scripts

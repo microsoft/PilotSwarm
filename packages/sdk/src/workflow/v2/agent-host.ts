@@ -138,8 +138,10 @@ export function createWorkflowAgentNodeHost(deps: WorkflowAgentHostDeps): Workfl
             }
             const level = workflowLevel + 1;
             if (level > WORKFLOW_V2_MAX_DESCENDANT_LEVEL) {
-                return { refused: { code: "forbidden" as const, message: `An agent state's session would be at level ${level}; `
-                    + `a workflow's descendants stop at level ${WORKFLOW_V2_MAX_DESCENDANT_LEVEL}.` } };
+                // Spec 14 (stage 1 keeps the limit and says each refusal in words).
+                return { refused: { code: "forbidden" as const, message: `Node ${request.stateId} cannot start its agent: its chat would be at `
+                    + `level ${level} (the top-level chat is level 0), and sessions inside a Workflow stop at level ${WORKFLOW_V2_MAX_DESCENDANT_LEVEL}. `
+                    + "Start this Workflow from a session nearer the top." } };
             }
             const owner = await resolveEffectiveSpawnOwner(id => deps.getSession(id), request.workflowSessionId);
             const controlling = request.controllingSessionId ? await deps.getSession(request.controllingSessionId) : null;

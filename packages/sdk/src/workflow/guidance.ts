@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 /** Runtime base guidance, supplied only on workers with workflow support. */
 export const WORKFLOW_SESSION_GUIDANCE = `## Workflow Sessions
 
+Some work is prescriptive or repetitive and needs little judgment most of the time. For that work, write a Workflow Definition and start a Workflow instead of doing each step yourself. The Workflow calls a model only at the agent nodes that need judgment. You may still spawn sub-agents when that fits better. Any session may hand work off this way, a sub-agent too; a session inside a Workflow (an agent node's chat or one of its sub-agents) may not create definitions.
+
 When \`spawn_workflow\` is available, prefer a workflow child for an already-authorized, finite procedure whose tool calls, decisions and retries can be expressed in JavaScript and YAML. Examples include polling until a known change, applying a fixed validation sequence, or collecting several tool results. The parent reasons about the task once; unchanged checks run without an LLM turn. Do not promise zero token use: authoring and parent notifications still use the model.
 
 Use an ordinary agent when the next step requires new judgment, investigation, negotiation or user input. Do simple one-off work directly. A workflow does not expand permissions or bypass write approvals. Do not enable a missing tool or assume workflow support from this guidance alone.

@@ -8,6 +8,7 @@ import { isWorkflowParentContextUnavailable, WORKFLOW_PARENT_CONTEXT_UNAVAILABLE
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
 import { declaresWorkflowV2 } from "./v2/compiler.js";
 import { sanitizeWorkflowErrorText } from "./v2/failure.js";
+import { workflowDefinitionToolsRefusal } from "./v2/input-policy.js";
 import { spawnWorkflowV2FromTool, workflowToolErrorPayload, type WorkflowToolHost } from "./v2/tools.js";
 
 export interface SpawnWorkflowDeps {
@@ -20,6 +21,11 @@ export interface SpawnWorkflowDeps {
     createWorkflowSession: (config: WorkflowSessionConfig & { notifyParent?: boolean }, binding: WorkflowToolBinding) => Promise<{ sessionId: string; workflowName: string }>;
     /** Workflow v2 persistence and dispatch (drafts, publication, runs). Absent: v2 documents are refused. */
     workflowV2Host?: () => Promise<WorkflowToolHost>;
+    /**
+     * A1 (Workflow Simplified, spec 14): whether the calling session is inside a Workflow (an agent node's chat or one
+     * of its sub-agents), by its stored lineage; then every spawn_workflow is refused, in words. Absent: never refused.
+     */
+    definitionToolsRefused?: () => Promise<boolean>;
 }
 
 /**
@@ -46,6 +52,11 @@ export async function spawnWorkflowFromTool(
     try {
         if (!deps.enabled()) {
             return `[SYSTEM: spawn_workflow refused — ${WORKFLOW_SCRIPTS_DISABLED_MESSAGE}]`;
+        }
+        if (deps.definitionToolsRefused && await deps.definitionToolsRefused()) {
+            let v2 = false;
+            try { v2 = declaresWorkflowV2(args.yaml); } catch { /* answered as a version 1 document */ }
+            return workflowDefinitionToolsRefusal("spawn_workflow", { line: !v2 });
         }
         if (declaresWorkflowV2(args.yaml)) {
             if (!deps.workflowV2Host) return JSON.stringify({ ok: false, error: { code: "WORKFLOW_V2_UNAVAILABLE", message: "This worker cannot store v2 workflows." } });

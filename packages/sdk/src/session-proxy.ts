@@ -83,7 +83,7 @@ import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
 import { authorizeWorkflowTestNotice, workflowTestAgentScope, workflowTestAgentToolCall } from "./workflow/v2/test-agent-tools.js";
-import { spawnNesting } from "./workflow/v2/input-policy.js";
+import { sessionInsideWorkflow, spawnNesting, spawnNestingRefusal, workflowDefinitionToolsRefusal, workflowDefinitionToolsRefused } from "./workflow/v2/input-policy.js";
 import { applyOperatorCommandToWorkflowV2, applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
 import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/v2/intake-admission.js";
@@ -2407,6 +2407,9 @@ export function registerActivities(
             : null;
         const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
         if (workflowAgentChild) (runConfig as ManagedSessionConfig).workflowAgentChild = true;
+        // A1 (Workflow Simplified, spec 14): a session inside a Workflow (an agent node's chat or one of its sub-agents) is
+        // declared no definition tools (spawn_workflow, update_workflow); the bridge below refuses them too.
+        if (workflowDefinitionToolsRefused(workflowLineage)) (runConfig as ManagedSessionConfig).workflowInsideWorkflow = true;
         const workflowTestScope = workflowLineage?.agentRoot && catalog?.workflowStore
             ? await workflowTestAgentScope(catalog.workflowStore(), workflowLineage)
             : null;
@@ -2590,6 +2593,14 @@ export function registerActivities(
                     }),
                 } : {}),
             };
+        };
+        // A1 (Workflow Simplified, spec 14; E4): a session inside a Workflow (an agent node's chat or one of its sub-agents)
+        // may not create or change workflow definitions. The server decides by the stored lineage, whatever this worker runs
+        // and whatever the session was declared; a lineage that cannot be read refuses the call (it throws).
+        const definitionToolsRefused = async (): Promise<boolean> => {
+            if (workflowLineage) return workflowDefinitionToolsRefused(workflowLineage);
+            if (!catalog?.workflowStore) return false;
+            return await sessionInsideWorkflow(catalog.workflowStore(), input.sessionId);
         };
         // The request and agent-state bridges (INACTIVE) need only the workflow store and a duroxide client to wake the
         // controller: on this worker's own provider, as notifyParent does, with no inline PilotSwarmClient (so no storeUrl).
@@ -2953,6 +2964,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => spawnWorkflowFromTool(args, call, {
                 parentSessionId: input.sessionId,
                 enabled: () => sessionManager.workflowScriptsEnabled,
+                definitionToolsRefused,
                 getSession: async (id) => catalog ? catalog.getSession(id) : null,
                 resolveOwner: async () => catalog
                     ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
@@ -2968,6 +2980,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
              * never as a failed tool call.
              */
             updateWorkflow: async (args: Record<string, unknown>) => {
+                // A1: refused inside a Workflow, before anything else is read.
+                try { if (await definitionToolsRefused()) return workflowDefinitionToolsRefusal("update_workflow"); } catch (error) { return workflowToolErrorPayload(error); }
                 let host: WorkflowToolHost;
                 try { host = await workflowV2Host(); } catch (error) { return workflowToolErrorPayload(error); }
                 return updateWorkflowFromTool(args, { callerSessionId: input.sessionId, host });
@@ -3185,8 +3199,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // level 3 (an agent state's child at level 2 may spawn one level). Elsewhere the ordinary limit applies.
                     const { childNestingLevel, maxNestingLevel } = spawnNesting(input.nestingLevel ?? 0, MAX_NESTING_LEVEL, workflowLineage);
                     if (childNestingLevel > maxNestingLevel) {
-                        return `[SYSTEM: spawn_agent failed — you are already at nesting level ${childNestingLevel - 1} (max ${maxNestingLevel}). ` +
-                            `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`;
+                        // Spec 14: inside a Workflow the refusal says so, with the levels, in words.
+                        return spawnNestingRefusal(childNestingLevel - 1, maxNestingLevel, workflowDefinitionToolsRefused(workflowLineage));
                     }
 
                     const existingChildren = (await loadDirectChildSessions()).filter(child => !child.isSystem);

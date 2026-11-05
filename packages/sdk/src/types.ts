@@ -848,6 +848,14 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workflowAgentChild?: boolean;
     /**
+     * Workflow Simplified A1 (spec 14; E4): this turn's session is inside a
+     * Workflow (an agent node's chat or one of its sub-agents, by its stored
+     * lineage), so it is declared no definition tools (spawn_workflow,
+     * update_workflow); its handlers and the turn's bridge refuse them too.
+     * Set by the runTurn activity. Runtime-only.
+     */
+    workflowInsideWorkflow?: boolean;
+    /**
      * Session workspaces: this turn's attach result, set by the runTurn
      * activity after the attach and the path check pass. Runtime-only;
      * never serialized, never stored across turns.

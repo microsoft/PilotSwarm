@@ -46,6 +46,52 @@ const ACTION_WORDS: Record<WorkflowHumanInputAction, string> = {
 /** The deepest level of a workflow agent state's subtree: parent 0, workflow 1, node agent 2 and its child 3 (R16, D02). */
 export const WORKFLOW_V2_MAX_DESCENDANT_LEVEL = 3;
 
+/**
+ * A1 (Workflow Simplified, spec 14; owner decision E4): sessions inside a Workflow (an agent node's chat and its
+ * sub-agents: any session in an agent state's subtree) get no definition tools, and the server refuses the calls too.
+ * Ordinary sub-agents outside every Workflow keep them (O3). The tools that create or change a definition:
+ */
+export const WORKFLOW_DEFINITION_TOOLS: readonly string[] = ["spawn_workflow", "update_workflow"];
+
+/** The code of the A1 refusal. */
+export const WORKFLOW_DEFINITION_TOOLS_REFUSED = "WORKFLOW_DEFINITION_TOOLS_REFUSED";
+
+/** The A1 refusal, in words (spec 14 mock: "Sessions inside a Workflow cannot create definitions."). */
+export const WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT = "Sessions inside a Workflow cannot create or change workflow definitions. "
+    + "Do this work with your other tools; the chat that owns the Workflow changes its definition.";
+
+/** Whether a session, by its stored lineage, is inside a Workflow and so gets no definition tools (A1). */
+export function workflowDefinitionToolsRefused(lineage: WorkflowLineage | null | undefined): boolean {
+    return Boolean(lineage?.agentRoot);
+}
+
+/** A1 by the store: whether `sessionId` is inside a Workflow, read from its stored lineage. Throws when it cannot be read. */
+export async function sessionInsideWorkflow(store: Pick<WorkflowStore, "readWorkflowLineage">, sessionId: string): Promise<boolean> {
+    return workflowDefinitionToolsRefused(await store.readWorkflowLineage(sessionId));
+}
+
+/**
+ * The A1 refusal as the tool answers it: a version 1 spawn_workflow's `[SYSTEM: ...]` line, otherwise the workflow
+ * tools' JSON refusal with its code.
+ */
+export function workflowDefinitionToolsRefusal(tool: string, options: { line?: boolean } = {}): string {
+    return options.line === true
+        ? `[SYSTEM: ${tool} refused — ${WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT}]`
+        : JSON.stringify({ ok: false, error: { code: WORKFLOW_DEFINITION_TOOLS_REFUSED, message: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT } });
+}
+
+/**
+ * The nesting refusal of spawn_agent in words (spec 14: stage 1 keeps WORKFLOW_V2_MAX_DESCENDANT_LEVEL and says each
+ * refusal plainly). `level` is the calling session's level; `max` the deepest a session may be.
+ */
+export function spawnNestingRefusal(level: number, max: number, insideWorkflow: boolean): string {
+    return insideWorkflow
+        ? `[SYSTEM: spawn_agent failed — this session runs inside a Workflow at level ${level} (the top-level chat is level 0), `
+            + `and sessions inside a Workflow stop at level ${max}. A sub-agent would be at level ${level + 1}. Do this work yourself.]`
+        : `[SYSTEM: spawn_agent failed — you are already at nesting level ${level} (max ${max}). `
+            + `Sub-agents at this depth cannot spawn further sub-agents. Handle the task directly instead.]`;
+}
+
 /** The refusal of human input to a session in an agent state's subtree: 403, with the workflow and its controlling agent. */
 export function workflowHumanInputError(sessionId: string, action: WorkflowHumanInputAction, lineage: WorkflowLineage): Error & { code: string; status: number; details: unknown } {
     const root = lineage.agentRoot!;

@@ -31,7 +31,7 @@ import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC, workfl
 import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
 import { sanitizeWorkflowErrorText } from "./workflow/v2/failure.js";
 import { answerAsksParent, turnAskedForAnswer, turnScheduleEffect, workflowAgentReminderText } from "./workflow/v2/agent-reminder.js";
-import { WORKFLOW_ASK_USER_REFUSAL } from "./workflow/v2/input-policy.js";
+import { WORKFLOW_ASK_USER_REFUSAL, workflowDefinitionToolsRefusal } from "./workflow/v2/input-policy.js";
 import { interceptWorkflowTestTools } from "./workflow/v2/test-agent-tools.js";
 
 /**
@@ -1307,7 +1307,7 @@ export class ManagedSession {
      * These are the LLM-visible tools for spawning and managing sub-agents.
      * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
      */
-    static subAgentToolDefs(opts?: { workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean }): Tool<any>[] {
+    static subAgentToolDefs(opts?: { workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean; workflowInsideWorkflow?: boolean }): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
             description: DURABLE_SPAWN_DESCRIPTION,
             parameters: {
@@ -1468,8 +1468,11 @@ export class ManagedSession {
             ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, { ...RESPOND_SESSION_REQUEST_TOOL_SPEC, handler: async () => "stub" })] : [];
         const completeWorkflowNodeTools = opts?.workflowAgentChild === true
             ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, { ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC, handler: async () => "stub" })] : [];
+        // A1 (Workflow Simplified, spec 14): a session inside a Workflow is declared no definition tools; A5: every other
+        // tool stays.
+        const definitionTools = opts?.workflowInsideWorkflow === true ? [] : [spawnWorkflowTool, updateWorkflowTool];
 
-        return [spawnAgentTool, spawnWorkflowTool, updateWorkflowTool, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools,
+        return [spawnAgentTool, ...definitionTools, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools,
             ...completeWorkflowNodeTools, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
@@ -3185,10 +3188,14 @@ export class ManagedSession {
         const workflowMilestone = controlBridge?.workflowMilestone === true;
         // Workflow test mode is hidden unless the deployment flag is on (spec 16): the 1.9.0 tools then describe stop only.
         const workflowSpecs = { milestone: workflowMilestone, testMode: workflowTestModeFromEnv() };
+        // A1 (Workflow Simplified, spec 14): a session inside a Workflow is declared no definition tools; a stale declaration
+        // still gets an answer here, the refusal in words, before the bridge (which refuses them too).
+        const insideWorkflow = this.config.workflowInsideWorkflow === true;
         const spawnWorkflowTool = defineTool("spawn_workflow", {
             ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC),
             handler: async (args: SpawnWorkflowToolArgs, invocation?: { toolCallId?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
+                if (insideWorkflow) return workflowDefinitionToolsRefusal("spawn_workflow");
                 if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
                 if (args.inputs !== undefined && (args.inputs === null || typeof args.inputs !== "object" || Array.isArray(args.inputs))) {
                     return "Error: inputs must be a JSON object.";
@@ -3203,6 +3210,7 @@ export class ManagedSession {
             ...updateWorkflowToolSpec(workflowSpecs),
             handler: async (args: Record<string, unknown>) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_workflow");
+                if (insideWorkflow) return workflowDefinitionToolsRefusal("update_workflow");
                 if (!controlBridge?.updateWorkflow) return "Error: update_workflow is not available in this session.";
                 // A failure the bridge did not answer is still answered with its code and reason (batch 7, n-3).
                 try { return await controlBridge.updateWorkflow(args ?? {}); } catch (error) { return workflowToolErrorPayload(error); }
