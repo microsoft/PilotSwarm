@@ -5,7 +5,7 @@ import type { TurnResult } from "./types.js";
 type Result = "completed" | "error" | "cancelled" | "stopped" | "yielded";
 type LifecycleResult = "completed" | "error" | "lossy_handoff" | "checkpoint_fallback" | "superseded" | "cancelled";
 type Operation = "hydration" | "dehydration";
-type Usage = { tokensInput: number; tokensOutput: number; tokensCacheRead: number; tokensCacheWrite: number };
+export type RuntimeMetricUsage = { tokensInput: number; tokensOutput: number; tokensCacheRead: number; tokensCacheWrite: number };
 
 export function turnMetricResult(result: TurnResult | null, cancelled = false): Result {
     if (cancelled || result?.type === "cancelled") return "cancelled";
@@ -32,7 +32,7 @@ export function createRuntimeMetrics(
         startTurn() {
             const started = now();
             let finished = false;
-            return (result: TurnResult | null, usage: Usage, cancelled = false) => {
+            return (result: TurnResult | null, usage: RuntimeMetricUsage, cancelled = false) => {
                 if (finished) return;
                 finished = true;
                 if (!enabled()) return;

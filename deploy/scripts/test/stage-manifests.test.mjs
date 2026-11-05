@@ -442,28 +442,29 @@ test("stageManifests(worker): PILOTSWARM_NATIVE_SUBAGENTS reaches the worker-env
         stagingDir,
       });
 
-      test("stageManifests(worker): telemetry is omitted when unset and configured only in the worker overlay", t => {
-        for (const endpoint of ["", "http://collector.example:4318"]) {
-          const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-telemetry-"));
-          t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
-          const env = makePortalEnv({
-            AZURE_STORAGE_CONTAINER: "copilot-sessions", PILOTSWARM_TURN_TIMEOUT_MS: "1", PILOTSWARM_LIVE_TURN: "0",
-            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
-            OTEL_EXPORTER_OTLP_HEADERS: "secret-example-not-for-configmaps",
-          });
-          const root = stageManifests({ service: "worker", envName: "testenv", env, stagingDir });
-          const text = readFileSync(join(root, "overlays", "default", ".env"), "utf8");
-          if (endpoint) assert.match(text, /^OTEL_EXPORTER_OTLP_ENDPOINT=http:\/\/collector\.example:4318$/m);
-          else assert.doesNotMatch(text, /^OTEL_EXPORTER_OTLP_ENDPOINT=/m);
-          assert.match(text, /^OTEL_TRACES_EXPORTER=none$/m);
-          assert.match(text, /^PILOTSWARM_OTEL_HISTOGRAMS=false$/m);
-          assert.ok(!allFileText(root).includes("secret-example-not-for-configmaps"));
-        }
-      });
       const text = readFileSync(join(root, "overlays", "default", ".env"), "utf8");
       assert.match(text, new RegExp(`^PILOTSWARM_NATIVE_SUBAGENTS=${expected}$`, "m"));
     } finally {
       rmSync(stagingDir, { recursive: true, force: true });
     }
+  }
+});
+
+test("stageManifests(worker): telemetry is omitted when unset and configured only in the worker overlay", t => {
+  for (const endpoint of ["", "http://collector.example:4318"]) {
+    const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-telemetry-"));
+    t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+    const env = makePortalEnv({
+      AZURE_STORAGE_CONTAINER: "copilot-sessions", PILOTSWARM_TURN_TIMEOUT_MS: "1", PILOTSWARM_LIVE_TURN: "0",
+      OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+      OTEL_EXPORTER_OTLP_HEADERS: "secret-example-not-for-configmaps",
+    });
+    const root = stageManifests({ service: "worker", envName: "testenv", env, stagingDir });
+    const text = readFileSync(join(root, "overlays", "default", ".env"), "utf8");
+    if (endpoint) assert.match(text, /^OTEL_EXPORTER_OTLP_ENDPOINT=http:\/\/collector\.example:4318$/m);
+    else assert.doesNotMatch(text, /^OTEL_EXPORTER_OTLP_ENDPOINT=/m);
+    assert.match(text, /^OTEL_TRACES_EXPORTER=none$/m);
+    assert.match(text, /^PILOTSWARM_OTEL_HISTOGRAMS=false$/m);
+    assert.ok(!allFileText(root).includes("secret-example-not-for-configmaps"));
   }
 });

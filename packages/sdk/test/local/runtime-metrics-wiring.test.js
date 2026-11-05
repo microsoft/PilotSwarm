@@ -61,6 +61,13 @@ describe("actual runTurn metric wiring", () => {
         expect(records("pilotswarm.tokens").find(record => record.attributes.direction === "input").value).toBe(17);
     });
 
+    it("records failures before lock acquisition without inventing token usage", async () => {
+        const h = makeRunTurnHarness({ managerExtras: { getModelSummary: () => { throw new Error("test preamble failure"); } } });
+        await expect(h.runTurn()).rejects.toThrow("test preamble failure");
+        expect(records("pilotswarm.turns").map(record => record.attributes)).toEqual([{ result: "error" }]);
+        expect(records("pilotswarm.tokens")).toEqual([]);
+    });
+
     it("does not duplicate tokens when CMS writes retry", async () => {
         const recordEvents = vi.fn().mockRejectedValueOnce(new Error("transient")).mockResolvedValue(undefined);
         const h = makeRunTurnHarness({

@@ -59,7 +59,7 @@ import {
 import { REGEN_DISTILLER_SERVICE_KIND } from "./distiller-tools.js";
 import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
-import { measureLifecycle, runtimeMetrics } from "./runtime-metrics.js";
+import { measureLifecycle, runtimeMetrics, type RuntimeMetricUsage } from "./runtime-metrics.js";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
@@ -1469,6 +1469,7 @@ export function registerActivities(
             /** 1.0.81 (runTurnV4): steers carried from an earlier turn. Used from phase A4 on. */
             carriedSteers?: import("./types.js").LateSteer[];
         },
+        turnUsage: RuntimeMetricUsage,
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
         // showed turns whose ActivityScheduled input carried refs executing
@@ -1480,11 +1481,7 @@ export function registerActivities(
             : activityCtx.traceInfo(message);
 
         const modelSummary = await sessionManager.getModelSummary(input.sessionId);
-        const turnTelemetry = {
-            tokensInput: 0,
-            tokensOutput: 0,
-            tokensCacheRead: 0,
-            tokensCacheWrite: 0,
+        const turnTelemetry = Object.assign(turnUsage, {
             toolCalls: 0,
             toolErrors: 0,
             toolNames: new Set<string>(),
@@ -1495,7 +1492,7 @@ export function registerActivities(
             // default leaves it undefined, which is why turn_completed used to
             // report model: null and the portal rendered "Mod: unknown".
             observedModel: null as string | null,
-        };
+        });
         const turnStartedAt = new Date();
         const turnSpan = otelTrace.getTracer("pilotswarm-turns").startSpan("session.turn", {
             attributes: {
@@ -1707,8 +1704,6 @@ export function registerActivities(
             return out;
         };
 
-        const finishTurnMetrics = runtimeMetrics().startTurn();
-        let turnThrew = false;
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
@@ -4948,11 +4943,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
             turnSpan.recordException(err);
             turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
-            turnThrew = true;
             throw err;
         } finally {
-            finishTurnMetrics(turnThrew ? null : finalTurnResult, turnTelemetry,
-                turnThrew && Boolean(activityCtx.isCancelled?.()));
             if (tc?.live) {
                 tc.live.retire();
                 sessionManager.getTurnControlHub?.()?.unregister(tc.live);
@@ -4988,8 +4980,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
-    const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(false, activityCtx, input);
-    const runTurnV4Handler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(true, activityCtx, input);
+    const observeRunTurn = async (turnControlPath: boolean, activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => {
+        const usage: RuntimeMetricUsage = { tokensInput: 0, tokensOutput: 0, tokensCacheRead: 0, tokensCacheWrite: 0 };
+        const finish = runtimeMetrics().startTurn();
+        let result: TurnResult | null = null;
+        try {
+            result = await runTurnImpl(turnControlPath, activityCtx, input, usage);
+            return result;
+        } finally {
+            finish(result, usage, result === null && Boolean(activityCtx.isCancelled?.()));
+        }
+    };
+    const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => observeRunTurn(false, activityCtx, input);
+    const runTurnV4Handler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => observeRunTurn(true, activityCtx, input);
     registerHandoffActivity(runtime, "runTurn", runTurnHandler);
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
