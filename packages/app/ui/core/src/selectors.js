@@ -2,7 +2,7 @@ import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
-import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
+import { buildSessionTree, isManuallyOrderableSession, isUnstartedWorkflowChild } from "./session-tree.js";
 import {
     buildSessionSearchDocument,
     parseSessionSearchQuery,
@@ -38,6 +38,7 @@ import {
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { isWorkflowSession, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
+import { isWorkflowChild, workflowHighlightedSessionId, workflowNodeChatTitle, workflowRowTitle, workflowStateOf } from "./workflow-owner.js";
 import { selectWorkflowInputNote } from "./workflow-tui.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
@@ -850,6 +851,8 @@ function buildChildMaps(byId) {
     for (const session of Object.values(byId || {})) {
         const parentId = session?.parentSessionId;
         if (!parentId) continue;
+        // A workflow child that has not started has no row (Workflow Simplified), so it is not counted either.
+        if (isUnstartedWorkflowChild(session)) continue;
         parentMap.set(session.sessionId, parentId);
         if (!childMap.has(parentId)) childMap.set(parentId, []);
         childMap.get(parentId).push(session.sessionId);
@@ -1009,6 +1012,11 @@ function buildSelectedSessionMetaRuns(session, mode) {
     return runs;
 }
 
+/** The colour of a Workflow's state in terminal runs (the portal styles the chip by its tone). */
+const WORKFLOW_STATE_COLORS = Object.freeze({
+    running: "cyan", waiting: "yellow", paused: "gray", canceling: "gray", canceled: "gray", failed: "red", completed: "green",
+});
+
 function buildSessionRowView(entry, session, state, totalDescendantCounts, visibleDescendantCounts) {
     const prefixRuns = [];
     const mode = state.connection?.mode || "local";
@@ -1104,9 +1112,14 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     // "(guid)" — an empty, ugly line. For those, pull the meta (id · age ·
     // model) UP onto the main line so it carries information. Titled rows keep
     // the title on the line and expand id·age·model·ctx only when selected.
+    // Workflow Simplified (S2, S3): a Workflow reads `check-items #3`, an agent node's chat `summarize · agent`.
+    const workflowViews = state.ui?.workflowViews || {};
+    const workflowRow = isWorkflowChild(session);
     const rawTitle = session?.isSystem
         ? canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")
-        : buildSessionDisplayTitle(session);
+        : workflowRow ? workflowRowTitle(state.sessions?.byId || {}, session, workflowViews)
+            : workflowNodeChatTitle(state.sessions?.byId || {}, session) ?? buildSessionDisplayTitle(session);
+    const workflowState = workflowRow ? workflowStateOf(session, workflowViews[session.sessionId] ?? null) : null;
     const hasRealTitle = Boolean(session?.isSystem || session?.isGroup || (rawTitle && rawTitle.trim()));
 
     const titleRuns = [...prefixRuns];
@@ -1125,6 +1138,8 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     }
     if (hasRealTitle) {
         titleRuns.push({ text: rawTitle, color: mainColor, bold: Boolean(session?.isSystem || session?.isGroup) });
+        // A Workflow's own state, in words (S2, 05). Tagged so the portal draws it as a chip; the TUI prints it.
+        if (workflowState) titleRuns.push({ text: ` ${workflowState.label}`, color: WORKFLOW_STATE_COLORS[workflowState.tone] || "gray", role: "workflowState" });
     } else {
         // Untitled → id · age · model on one line (no wasted title line).
         titleRuns.push({ text: shortId, color: mainColor });
@@ -1298,6 +1313,8 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             model: modelLabel || null,
             shortId,
             ctx: ctxRuns.length > 0 ? { text: ctxRuns[0].text, color: ctxRuns[0].color } : null,
+            // A Workflow's own state (S2, 05): { key, label, tone }, drawn as a chip; null on any other row.
+            workflowState: workflowState ? { key: workflowState.key, label: workflowState.label, tone: workflowState.tone } : null,
         },
     };
 }
@@ -1508,6 +1525,7 @@ export function selectSessionRows(state) {
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
     const filterExceptionIds = collectFilterExceptionIds(state.sessions);
+    const highlightedId = workflowHighlightedSessionId(state.sessions);
 
     let memo = sessionRowMemo.get(sessionFlat);
     if (!memo) {
@@ -1523,14 +1541,21 @@ export function selectSessionRows(state) {
         const session = state.sessions.byId[entry.sessionId] || entry.standIn;
         // The LIST highlight can be cleared (click empty space) without
         // detaching the session — the chat and inspector panes keep it.
-        const active = entry.sessionId === state.sessions.activeSessionId
+        // A selected Workflow row takes the highlight; its session's row is
+        // marked as the chat on screen (Workflow Simplified, S4).
+        const active = entry.sessionId === highlightedId
+            && !state.sessions.listDeselected;
+        const chatOwner = highlightedId !== state.sessions.activeSessionId && entry.sessionId === state.sessions.activeSessionId
             && !state.sessions.listDeselected;
         const pinned = pinnedSet.has(entry.sessionId);
         const selected = selectedSet.has(entry.sessionId);
         // Every input the row below is derived from. Identity comparison is
         // enough: the reducer replaces these objects rather than mutating them.
         const deps = [
-            entry, session, active, pinned, selected, query, ownerFilter, auth,
+            entry, session, active, chatOwner, pinned, selected, query, ownerFilter, auth,
+            // A Workflow row reads its number from its siblings and its state from its read model (S2).
+            isWorkflowChild(session) ? state.sessions.byId : null,
+            isWorkflowChild(session) ? state.ui?.workflowViews?.[entry.sessionId] : null,
             state.connection?.mode, state.sessions.selectMode,
             totalDescendantCounts, visibleDescendantCounts,
             // The root system row renders as the branding title, and this
@@ -1567,6 +1592,7 @@ export function selectSessionRows(state) {
             status: session?.status,
             statusColor: sessionStatusColor(session, state.connection?.mode || "local"),
             active,
+            chatOwner,
             // The RAW group id (rows are keyed "group:<uuid>"); the placement
             // API and drag hit-testing both need the bare id.
             groupId: session?.groupId || entry?.groupId || null,
@@ -1631,7 +1657,8 @@ export function selectVisibleSessionRows(state, maxRows = 8) {
     const flat = (Array.isArray(state.sessions?.flat) ? state.sessions.flat : [])
         .filter((entry) => filteredSessionIds.has(entry.sessionId));
 
-    const activeIndexRaw = flat.findIndex((entry) => entry.sessionId === state.sessions.activeSessionId);
+    const highlightedId = workflowHighlightedSessionId(state.sessions);
+    const activeIndexRaw = flat.findIndex((entry) => entry.sessionId === highlightedId);
     const activeIndex = Math.max(0, activeIndexRaw);
     if (flat.length <= maxRows) {
         return rows;

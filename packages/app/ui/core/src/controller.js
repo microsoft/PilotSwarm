@@ -77,6 +77,7 @@ import {
     selectVisibleSessionRows,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
+import { workflowActiveChildIds, workflowHighlightedSessionId, workflowRowTitle, workflowSelectionTarget, workflowStateOf } from "./workflow-owner.js";
 import { getTheme, listThemes } from "./themes/index.js";
 
 function preserveNativeTaskProgress(history, current, sessionId) {
@@ -6228,22 +6229,30 @@ export class PilotSwarmUiController {
         }
     }
 
-    async loadSession(sessionId) {
-        if (!sessionId) return;
+    async loadSession(requestedId) {
+        if (!requestedId) return;
         const navigationGeneration = this.navigationGeneration = (this.navigationGeneration || 0) + 1;
         // MoA panel controllers run no catalog loop: a panel reads the
         // viewer's steering decision when it loads its session.
         void this.refreshSteeringFeature();
-        const active = this.getState().sessions.activeSessionId;
-        if (active !== sessionId) {
-            if (this.getState().ui.promptEdit) {
+        // Workflow Simplified (S4): a Workflow row loads the chat of the session that owns it; the reducer maps the
+        // selection (the Workflow shows in that session's Workflow tab). Choosing the session itself again clears the row.
+        const before = this.getState().sessions;
+        const target = workflowSelectionTarget(before.byId, requestedId);
+        const sessionId = target ? target.ownerId : requestedId;
+        const active = before.activeSessionId;
+        const rowChanged = target ? before.workflowRowId !== requestedId : Boolean(before.workflowRowId);
+        if (active !== sessionId || rowChanged) {
+            if (active !== sessionId && this.getState().ui.promptEdit) {
                 this.exitPendingPromptEdit({ restoreDraft: true });
             }
-            this.dispatch({ type: "sessions/selected", sessionId });
-            // Sequence-tab turn selection/expansion is per-session; clear it on
-            // switch so a stale turn index doesn't carry into another session.
-            this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
-            this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
+            this.dispatch({ type: "sessions/selected", sessionId: requestedId });
+            if (active !== sessionId) {
+                // Sequence-tab turn selection/expansion is per-session; clear it on
+                // switch so a stale turn index doesn't carry into another session.
+                this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
+                this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
+            }
         }
         if (this.getState().sessions.byId[sessionId]?.isGroup) {
             this.detachActiveSession();
@@ -6258,6 +6267,8 @@ export class PilotSwarmUiController {
             || this.getState().sessions.activeSessionId !== sessionId) return;
         this.attachActiveSession(sessionId);
         this.ensureInspectorData().catch(() => {});
+        // The Workflow badge (O6) counts Workflows waiting for input: their read models say so.
+        this.ensureWorkflowChildModels(sessionId);
         // Canvas snapshot rides the selection burst. Invalidate-then-fetch on
         // every selection, deliberately: the live event stream only covers the
         // ATTACHED session, so a session's canvas knowledge goes stale the
@@ -6473,6 +6484,56 @@ export class PilotSwarmUiController {
         if (state.canvas.prefs[canvasPrefKey(sessionId, 1)]?.optedOut) return;
         if (state.ui.rightPaneMode === "canvas" && state.ui.canvasOpen && (state.ui.canvasSlot || 1) === 1) return;
         this.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
+    }
+
+    /**
+     * Workflow Simplified: keep a Workflow live while a Workflow tab shows it and its session's chat is the active session
+     * (the active session alone has a live subscription). Loads its history and merges its live events, as the active
+     * session's subscription does; its own events, when it is the active session itself, come from that subscription.
+     * Counted per Workflow; returns the function that stops this watch. Never throws.
+     */
+    watchWorkflow(sessionId) {
+        if (!sessionId) return () => {};
+        if (!this.workflowWatches) this.workflowWatches = new Map();
+        let entry = this.workflowWatches.get(sessionId);
+        if (!entry) {
+            entry = { count: 0, unsubscribe: null };
+            this.workflowWatches.set(sessionId, entry);
+            this.ensureSessionHistory(sessionId).catch(() => {});
+            if (typeof this.transport?.subscribeSession === "function") {
+                try {
+                    entry.unsubscribe = this.transport.subscribeSession(sessionId, (event) => {
+                        if (this.activeSessionSubscriptionId === sessionId) return;
+                        this.mergeSessionEvent(sessionId, event);
+                    }, () => {
+                        this.syncSessionEvents(sessionId).catch(() => {});
+                    });
+                } catch {
+                    entry.unsubscribe = null;
+                }
+            }
+        }
+        entry.count += 1;
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            entry.count -= 1;
+            if (entry.count > 0) return;
+            this.workflowWatches.delete(sessionId);
+            try { entry.unsubscribe?.(); } catch {}
+        };
+    }
+
+    /**
+     * Workflow Simplified: read the read models of a session's Workflows that have not ended (at most 10, newest first),
+     * so its Workflow badge (O6) and the Workflow rows say which wait for input. Each read is the shared, deduplicated
+     * read of that Workflow (ensureWorkflowReadModel); nothing is awaited. `ids` reads those Workflows instead.
+     */
+    ensureWorkflowChildModels(ownerId, ids = null) {
+        if (!ownerId) return;
+        const list = Array.isArray(ids) ? ids : workflowActiveChildIds(this.getState().sessions.byId, ownerId);
+        for (const id of list) this.ensureWorkflowReadModel(id).catch(() => {});
     }
 
     async ensureWorkflowDefinition(sessionId, { retry = false } = {}) {
@@ -10783,6 +10844,24 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Choose what to do with the selected sessions" });
             return;
         }
+        // Workflow Simplified (S9): a selected Workflow row is stopped, canceled or deleted as a Workflow.
+        const highlighted = workflowHighlightedSessionId(state.sessions);
+        if (highlighted && highlighted !== state.sessions.activeSessionId && state.sessions.byId[highlighted]?.sessionKind === "workflow") {
+            const row = state.sessions.byId[highlighted];
+            const workflowState = workflowStateOf(row, state.ui.workflowViews?.[highlighted] ?? null);
+            this.ensureWorkflowReadModel(highlighted).catch(() => {});
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "terminatePicker",
+                    title: workflowRowTitle(state.sessions.byId, row, state.ui.workflowViews),
+                    sessionId: highlighted,
+                    previousFocus: state.ui.focusRegion,
+                    workflow: { ended: ["completed", "failed", "canceled"].includes(workflowState?.key) },
+                },
+            });
+            return;
+        }
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) {
             this.dispatch({ type: "ui/status", text: "No session selected" });
@@ -10842,6 +10921,10 @@ export class PilotSwarmUiController {
         const previousFocus = modal.previousFocus;
         this.dispatch({ type: "ui/modal", modal: null });
         if (previousFocus) this.setFocus(previousFocus);
+        if (modal.workflow && modal.sessionId) {
+            await this.terminateWorkflowRow(modal.sessionId, action, modal.title);
+            return;
+        }
         if (action === "complete") {
             await this.completeActiveSession();
         } else if (action === "cancel") {
@@ -10851,6 +10934,54 @@ export class PilotSwarmUiController {
         } else if (action === "regenerate") {
             await this.regenerateActiveSession();
         }
+    }
+
+    /**
+     * Workflow Simplified (S9, O7): a Workflow row's Terminate menu. "stop" lets started nodes finish (a graceful stop),
+     * "cancel" interrupts them now, each sent for the Workflow's live run as its Stop dialog sends it; "delete" asks
+     * once, then deletes the Workflow (the server ends a run that has not ended). The server decides each one.
+     */
+    async terminateWorkflowRow(sessionId, action, title = null) {
+        const state = this.getState();
+        const name = title || "this Workflow";
+        if (action === "delete") {
+            this.dispatch({
+                type: "ui/modal",
+                modal: {
+                    type: "confirm",
+                    title: "Delete Workflow",
+                    message: `Delete ${name}? Its graph, its log and its agent chats are removed. This cannot be undone.`,
+                    confirmLabel: "Delete",
+                    action: "deleteWorkflow",
+                    sessionId,
+                    previousFocus: state.ui.focusRegion,
+                },
+            });
+            return;
+        }
+        if (action !== "stop" && action !== "cancel") return;
+        const model = state.ui.workflowViews?.[sessionId]?.readModel ?? null;
+        const live = model?.run && model.run.mode !== "test" ? model.run.runId
+            : Array.isArray(model?.runs) ? model.runs.find((run) => run?.mode === "live")?.runId : null;
+        if (typeof live !== "string" || !live) {
+            this.dispatch({ type: "ui/status", text: `${name} is not read yet. Try again in a moment.` });
+            this.ensureWorkflowReadModel(sessionId, { force: true }).catch(() => {});
+            return;
+        }
+        await this.sendWorkflowRunCommand(sessionId, { operation: action, runId: live, confirmed: true });
+    }
+
+    /** Delete one Workflow (S9), confirmed: its session goes, and with it its run (the server ends it when it has not ended). */
+    async deleteWorkflowSession(sessionId) {
+        if (!sessionId || typeof this.transport?.deleteSession !== "function") return;
+        try {
+            await this.transport.deleteSession(sessionId);
+            this.handleSessionGone(sessionId);
+            this.dispatch({ type: "ui/status", text: "The Workflow was deleted." });
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `The Workflow was not deleted: ${error?.message || String(error)}` });
+        }
+        await this.refreshSessions().catch(() => {});
     }
 
     getBulkSelectedSessionActions(state = this.getState()) {
@@ -11479,6 +11610,8 @@ export class PilotSwarmUiController {
                 await this.completeActiveSession("Completed by user", { confirmed: true });
             } else if (modal.action === "deleteSession") {
                 await this.deleteActiveSession({ confirmed: true });
+            } else if (modal.action === "deleteWorkflow") {
+                await this.deleteWorkflowSession(modal.sessionId);
             } else if (modal.action === "removeSystemSession") {
                 await this.removeOrphanedSystemSession(modal.sessionId);
             } else if (modal.action === "regenerateSession") {
@@ -12312,7 +12445,8 @@ export class PilotSwarmUiController {
         const state = this.getState();
         const rows = selectSessionRows(state);
         if (rows.length === 0) return;
-        const currentId = state.sessions.activeSessionId || rows[0].sessionId;
+        // The highlighted row: a selected Workflow row, else the active session (S4).
+        const currentId = workflowHighlightedSessionId(state.sessions) || rows[0].sessionId;
         const currentIndex = Math.max(0, rows.findIndex((row) => row.sessionId === currentId));
         const nextIndex = Math.max(0, Math.min(rows.length - 1, currentIndex + delta));
         const nextId = rows[nextIndex].sessionId;
@@ -12334,12 +12468,19 @@ export class PilotSwarmUiController {
      */
     navigateToSession(sessionId) {
         if (!sessionId) return;
-        if (this.getState().sessions.activeSessionId !== sessionId) {
+        // A Workflow row selects its session's chat (S4): the reducer maps it; choosing the session again clears the row.
+        const sessions = this.getState().sessions;
+        const target = workflowSelectionTarget(sessions.byId, sessionId);
+        const chatId = target ? target.ownerId : sessionId;
+        const rowChanged = target ? sessions.workflowRowId !== sessionId : Boolean(sessions.workflowRowId);
+        if (sessions.activeSessionId !== chatId || rowChanged) {
             this.dispatch({ type: "sessions/selected", sessionId });
-            // Same per-session reset loadSession does, so the sequence tab does
-            // not show another session's turn while the fetch is pending.
-            this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
-            this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
+            if (sessions.activeSessionId !== chatId) {
+                // Same per-session reset loadSession does, so the sequence tab does
+                // not show another session's turn while the fetch is pending.
+                this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
+                this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
+            }
         }
         if (this.sessionNavSettleTimer) clearTimeout(this.sessionNavSettleTimer);
         this.sessionNavSettleTimer = setTimeout(() => {

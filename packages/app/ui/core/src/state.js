@@ -259,6 +259,11 @@ export function normalizeStoredSessionViews(value) {
     return out;
 }
 
+/** The side pane's tab (canvas, Workspace or, for Workflow Simplified, the Workflow tab); anything else is the canvas. */
+export function normalizeSidePaneTab(value) {
+    return value === "workspace" || value === "workflow" ? value : "canvas";
+}
+
 export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
     const candidate = value && typeof value === "object" ? value : null;
     if (candidate && (typeof candidate.canvasOpen === "boolean" || typeof candidate.diagnosticsOpen === "boolean")) {
@@ -268,8 +273,8 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
             // Zen: chat as a narrow rail, canvas as the workbench. Only
             // meaningful with the canvas open.
             zen: candidate.zen === true && candidate.canvasOpen === true,
-            // The side pane's tab: the session's canvas, or its Workspace.
-            sideTab: candidate.sideTab === "workspace" ? "workspace" : "canvas",
+            // The side pane's tab: the session's canvas, its Workspace or its Workflow tab.
+            sideTab: normalizeSidePaneTab(candidate.sideTab),
         };
     }
     return {
@@ -440,6 +445,13 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // chat and no session list would read as a broken app.
             canvasMaximized: false,
             workflowViews: {},
+            // Workflow Simplified: each session's Workflow tab (its definition, Definition | Workflows view, the Workflow it
+            // shows and its bottom panel), keyed by the session that owns the workflows. Not persisted.
+            workflowTabs: {},
+            // Failed Workflows a person has opened (O6: the badge counts failed ones not yet opened). Not persisted.
+            workflowSeen: {},
+            // Ticks when a Workflow row is selected, so the phone brings its Workflow pane up (as canvas/flip does for a canvas).
+            workflowOpenSeq: 0,
             // What a person may send to a session in a workflow agent state's subtree, as the server reported it
             // (normalizeWorkflowInputPolicy; read by the TUI's composer). Per session; absent until read.
             workflowInputPolicies: {},
@@ -548,6 +560,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Clicking empty space in the list clears the LIST highlight while
             // the chat/inspector panes keep showing the session.
             listDeselected: false,
+            // Workflow Simplified (S4): the Workflow row selected in the list. The active session is then the session that
+            // owns it (its chat stays in the middle), and the list highlights this row.
+            workflowRowId: null,
             orderById: {},
             nextOrderOrdinal: 0,
             filterQuery: "",

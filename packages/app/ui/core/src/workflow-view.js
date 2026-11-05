@@ -302,8 +302,16 @@ export function workflowParentWorking(parent) {
  * could start with the previous one's YAML). Pure.
  */
 export function selectWorkflowViewSnapshot(state) {
-    const sessionId = state?.sessions?.activeSessionId ?? null;
-    const session = sessionId ? state.sessions.byId?.[sessionId] : undefined;
+    return selectWorkflowViewSnapshotFor(state, state?.sessions?.activeSessionId ?? null);
+}
+
+/**
+ * The same parts for one workflow session, active or not (Workflow Simplified: a session's Workflow tab shows its
+ * Workflows while the session's own chat is the active session). Pure.
+ */
+export function selectWorkflowViewSnapshotFor(state, workflowSessionId) {
+    const sessionId = typeof workflowSessionId === "string" && workflowSessionId ? workflowSessionId : null;
+    const session = sessionId ? state?.sessions?.byId?.[sessionId] : undefined;
     const parentId = typeof session?.parentSessionId === "string" && session.parentSessionId ? session.parentSessionId : null;
     return {
         sessionId,

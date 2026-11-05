@@ -10,6 +10,7 @@ import { getPromptInputRows } from "./layout.js";
 import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
+import { WORKFLOW_SIDE_TAB, workflowDefinitionName, workflowSelectionTarget } from "./workflow-owner.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
@@ -20,6 +21,7 @@ import {
     parseCanvasKey,
     normalizeStoredCollapsedSessionIds,
     normalizeStoredDesktopPanes,
+    normalizeSidePaneTab,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
@@ -724,9 +726,12 @@ function applyVisibleSessionSelection(state, nextSessions) {
         ? intent.sessionId
         : null;
     if (intentTargetId) {
+        // A link to a Workflow opens its session's chat with the Workflow in its tab (S8).
+        const mapped = workflowSelectionTarget(sessions.byId, intentTargetId);
         sessions = {
             ...sessions,
-            activeSessionId: intentTargetId,
+            activeSessionId: mapped ? mapped.ownerId : intentTargetId,
+            workflowRowId: mapped ? intentTargetId : null,
             listDeselected: false,
             navigationIntent: intent.status === "resolved"
                 ? intent
@@ -737,7 +742,9 @@ function applyVisibleSessionSelection(state, nextSessions) {
     // Expand ancestors BEFORE resolving visibility: a selected session inside
     // a collapsed group/parent is absent from the flat tree, so resolving
     // first would drop the selection instead of revealing it.
-    const selectionCandidateId = sessions.activeSessionId || null;
+    // A selected Workflow row is revealed the same way (its session and their ancestors).
+    const selectionCandidateId = (sessions.workflowRowId && sessions.byId?.[sessions.workflowRowId] ? sessions.workflowRowId : null)
+        || sessions.activeSessionId || null;
     if (selectionCandidateId && sessions.byId?.[selectionCandidateId]) {
         const expandedCollapsedIds = reconcileCollapsedIdsForActiveSession(sessions.collapsedIds, sessions.byId, selectionCandidateId);
         if (!setsEqual(expandedCollapsedIds, sessions.collapsedIds)) {
@@ -863,9 +870,27 @@ export function appReducer(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
     const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
-    const next = baseReducer(state, action);
+    // Workflow Simplified (S4, S8): selecting a Workflow row selects the chat of the session that owns it and shows the
+    // Workflow in that session's Workflow tab. Every way of selecting (a click, the keyboard, a deep link) arrives here.
+    const workflowTarget = action.type === "sessions/selected" && !action.workflowRowId
+        ? workflowSelectionTarget(state.sessions?.byId, action.sessionId) : null;
+    const effective = workflowTarget ? { ...action, sessionId: workflowTarget.ownerId, workflowRowId: workflowTarget.workflowId } : action;
+    const next = baseReducer(state, effective);
     if (next === state) return next;
-    return reconcileSessionView(state, reconcileSessionSort(state, next, action), action);
+    const reconciled = reconcileSessionView(state, reconcileSessionSort(state, next, effective), effective);
+    return workflowTarget ? openWorkflowTab(reconciled) : reconciled;
+}
+
+// The right block shows the Workflow tab (L1, S4): the canvas column, on its Workflow side, recorded as the session's own
+// view as a person's toggle is. `workflowOpenSeq` ticks so the phone brings its Workflow pane up.
+function openWorkflowTab(state) {
+    const ui = state.ui;
+    const next = {
+        ...state,
+        ui: { ...ui, canvasOpen: true, rightPaneMode: "canvas", sidePaneTab: WORKFLOW_SIDE_TAB, canvasMaximized: false,
+            workflowOpenSeq: (Number(ui.workflowOpenSeq) || 0) + 1 },
+    };
+    return reconcileSessionView(state, next, { type: "ui/workflowTabOpened" });
 }
 
 // Per-session desktop views, kept in step with the ui slice.
@@ -1219,7 +1244,7 @@ function baseReducer(state, action) {
                         : selection.ui.workflowLayouts,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
-                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: nextDesktopPanes.sideTab === "workspace" ? "workspace" : "canvas" }
+                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: normalizeSidePaneTab(nextDesktopPanes.sideTab) }
                         : {}),
                     layout: nextLayout,
                     sessionViews: nextSessionViews,
@@ -2041,19 +2066,28 @@ function baseReducer(state, action) {
             // latch and its transient filter exception.
             const releasesNavigationLatch = Boolean(
                 state.sessions.navigationIntent
-                && state.sessions.navigationIntent.sessionId !== action.sessionId,
+                && state.sessions.navigationIntent.sessionId !== (action.workflowRowId ?? action.sessionId),
             );
+            // Workflow Simplified (S4): the Workflow row chosen, and the session's Workflow tab on it.
+            const workflowRowId = typeof action.workflowRowId === "string" && action.workflowRowId ? action.workflowRowId : null;
+            const workflowTabs = workflowRowId && action.sessionId
+                ? { ...(state.ui.workflowTabs || {}), [action.sessionId]: { ...(state.ui.workflowTabs?.[action.sessionId] || {}), view: "workflows",
+                    workflowId: workflowRowId,
+                    definition: workflowDefinitionName(state.sessions.byId?.[workflowRowId], state.ui.workflowViews?.[workflowRowId]) } }
+                : state.ui.workflowTabs;
             return {
                 ...state,
                 sessions: {
                     ...state.sessions,
                     activeSessionId: action.sessionId,
+                    workflowRowId,
                     ...(releasesNavigationLatch
                         ? { navigationIntent: null, filterExceptionId: null, ownerFilterAutoAdmitted: null }
                         : {}),
                 },
                 ui: {
                     ...state.ui,
+                    workflowTabs,
                     chatScrollBySession: savedChatScroll,
                     chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
@@ -3678,9 +3712,25 @@ function baseReducer(state, action) {
         // Turning it on opens the canvas; it means nothing without one.
         // The side pane's tab: the session's canvas, or its Workspace.
         case "ui/sidePaneTab": {
-            const tab = action.tab === "workspace" ? "workspace" : "canvas";
-            if (tab === (state.ui.sidePaneTab === "workspace" ? "workspace" : "canvas")) return state;
+            const tab = normalizeSidePaneTab(action.tab);
+            if (tab === normalizeSidePaneTab(state.ui.sidePaneTab)) return state;
             return { ...state, ui: { ...state.ui, sidePaneTab: tab } };
+        }
+
+        // Workflow Simplified: one session's Workflow tab (its definition, view, shown Workflow and bottom panel).
+        case "ui/workflowTab": {
+            const ownerId = typeof action.ownerId === "string" && action.ownerId ? action.ownerId : null;
+            if (!ownerId || !action.patch || typeof action.patch !== "object") return state;
+            const previous = state.ui.workflowTabs?.[ownerId] || {};
+            if (Object.entries(action.patch).every(([key, value]) => previous[key] === value)) return state;
+            return { ...state, ui: { ...state.ui, workflowTabs: { ...(state.ui.workflowTabs || {}), [ownerId]: { ...previous, ...action.patch } } } };
+        }
+
+        // A failed Workflow the person opened (O6): the Workflow badge stops counting it.
+        case "ui/workflowSeen": {
+            const id = action.sessionId;
+            if (!id || state.ui.workflowSeen?.[id]) return state;
+            return { ...state, ui: { ...state.ui, workflowSeen: { ...(state.ui.workflowSeen || {}), [id]: true } } };
         }
 
         case "ui/canvasZen": {
