@@ -37,6 +37,17 @@
  *   claims in them never become successes; valid calls still work.
  * - J1b-T4: a winner whose terminal fails after the time limit gives way to the next success committed in time.
  * - J1cd-T5: a branch's last state is found through its chain when its terminal's id sorts first and the times are equal.
+ * Part 4 (J1b-T5):
+ * - JK-14: a binding with fewer items than k blocks at once with every branch not started and nothing run, failFast or
+ *   not; an empty join of every branch joins []; k = n joins in commit order with the wrapper, a join of every branch in
+ *   item order without it.
+ * - JK-24: the parallel state's outputSchema checks the joined output in its actual shape (the wrapper for the first k,
+ *   the outputs for every branch); an invalid joined output is invalid_output and takes the failure route once, no other
+ *   winner chosen; a report is never checked against it.
+ * - JK-25: finished results stay exact in a report (Unicode, null); a report over the payload limit keeps every branch's
+ *   index, end and cause and says truncated; a joined output over it is invalid_output, routed once.
+ * - JK-26: only a succeeded terminal counts: a blocked terminal after a successful script, and a terminal that fails its
+ *   output check, are failures; failFast at exactly n - k such failures still joins with the two true successes.
  *
  * Every timing or fault case first proves its stored precondition and that its hook was reached (O7); a missed window
  * fails as VOID, never as a pass. Branch scripts run as real script processes. No model runs.
@@ -1174,6 +1185,230 @@ describe("J3 robust joins, part 2: controller 1.9.0 (test-only)", () => {
             expect(await rootIdsOf(base, expiring.runId)).toEqual(["fan"]);
         } finally {
             held.gate.open();
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+});
+
+// ─── Part 4: schemas, reports and payload sizes ─────────────
+
+/** A value of about `bytes` bytes with a marker, null and Unicode in it. */
+const bulky = (marker, bytes) => ({ marker, nothing: null, unicode: "üñï €𝄞 日本語", text: "x".repeat(bytes) });
+/** Admit branch `index`'s terminal of `run` (storedRun) and decide it succeeded with `value` as its output. */
+const confirmWith = async (h, run, index, value) => {
+    expect(await h.store.enterNode({
+        runId: run.runId, nodeExecutionId: run.at(index, "done"), scopeId: branchScopeId(run.fan, index), nodeId: "done", ordinal: 1, nodeType: "terminal",
+        predecessorId: run.at(index, "hold"), arrivalRoute: "elapsed", inputText: canonicalJson(value), kvRevision: 1, waitSeconds: null, immediate: null,
+    })).toMatchObject({ admitted: true });
+    return h.store.completeNode(run.at(index, "done"), { outcome: "succeeded", resultKind: "business", valueText: canonicalJson(value), winner: "controller" });
+};
+/** A doc with the parallel state's outputSchema set. */
+const withSchema = (doc, schema) => { doc.states.fan.outputSchema = schema; return doc; };
+
+describe("J3 robust joins, part 4: reports and payload sizes in the store", () => {
+    it("JK-25 (J1b-T5): finished results stay exact in a report; over the payload limit a report keeps every branch's index, end and cause and says truncated", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            /** A join of the first k of n: branches 1 to n - 1 succeed with `bytes`-sized outputs, the last fails; blocked. */
+            const blockedWith = async (n, bytes) => {
+                const run = await storedRun(h, joinDoc({ items: WAITS(n), join: { first: n } }));
+                await run.enterFan(WAITS(n), null);
+                for (let index = 0; index < n; index += 1) await run.hold(index);
+                const values = [];
+                for (let index = 0; index < n - 1; index += 1) {
+                    await run.succeed(index);
+                    values.push(bulky(`jk25-${n}-${index}`, bytes));
+                    await confirmWith(h, run, index, values[index]);
+                }
+                await h.store.completeNode(run.at(n - 1, "hold"), failedHold);
+                const decided = await run.join([]);
+                expect(decided).toMatchObject({ result: "won", node: { outcome: "blocked", resultKind: "business" } });
+                return { run, values, report: decided.node.output };
+            };
+            // Under the limit (two outputs of about 100 KB): every finished result exactly as stored.
+            const under = await blockedWith(3, 100_000);
+            expect(under.report).toMatchObject({ joined: false, timedOut: false, total: 3, needed: 3, succeeded: 2 });
+            expect(under.report.truncated).toBeUndefined();
+            expect(under.report.branches.map(branch => [branch.index, branch.ended, branch.outcome])).toEqual([
+                [0, "terminal", "succeeded"], [1, "terminal", "succeeded"], [2, "error", "execution_failed"]]);
+            for (const index of [0, 1]) expect(under.report.branches[index].output).toEqual(under.values[index]);
+            expect(under.report.branches[2].error).toMatchObject({ code: "execution_failed" });
+            // Over it (three of about 100 KB): every branch's index, end, cause and the counts; no output, and truncated.
+            const over = await blockedWith(4, 100_000);
+            expect(over.report).toMatchObject({ joined: false, timedOut: false, total: 4, needed: 4, succeeded: 3, truncated: true });
+            expect(over.report.branches.map(branch => [branch.index, branch.ended, branch.outcome, branch.nodeExecutionId])).toEqual([
+                [0, "terminal", "succeeded", over.run.at(0, "done")], [1, "terminal", "succeeded", over.run.at(1, "done")],
+                [2, "terminal", "succeeded", over.run.at(2, "done")], [3, "error", "execution_failed", over.run.at(3, "hold")]]);
+            for (const branch of over.report.branches) expect(branch.output === undefined && branch.error === undefined, `branch ${branch.index}`).toBe(true);
+            // The stored report is whole JSON under the limit.
+            const [stored] = await h.q(`SELECT octet_length(output::text) AS bytes FROM SCHEMA.workflow_node_executions WHERE node_execution_id = $1`, [over.run.fan]);
+            expect(Number(stored.bytes)).toBeLessThan(256 * 1024);
+
+            // A timed-out report over its limit: truncated too, with each branch's cause.
+            const timed = await storedRun(h, joinDoc({ items: WAITS(4), join: { first: 4 }, timeoutSeconds: 3 }));
+            await timed.enterFan(WAITS(4), 3);
+            for (let index = 0; index < 4; index += 1) await timed.hold(index);
+            for (let index = 0; index < 3; index += 1) {
+                await timed.succeed(index);
+                await confirmWith(h, timed, index, bulky(`jk25-timed-${index}`, 100_000));
+            }
+            const { deadlineAt } = await h.store.readNodeExecution(timed.fan);
+            await until(async () => Date.now() > deadlineAt.getTime() + 300 || null, "the time limit to pass", 10_000);
+            const elapsed = await h.store.elapseParallelNode(timed.fan);
+            expect(elapsed).toMatchObject({ result: "elapsed", node: { outcome: "timed_out" } });
+            const details = elapsed.node.error.details;
+            expect(details).toMatchObject({ timedOut: true, total: 4, needed: 4, succeeded: 3, truncated: true });
+            expect(details.branches.map(branch => [branch.index, branch.ended, branch.cancelledBy ?? null])).toEqual([
+                [0, "terminal", null], [1, "terminal", null], [2, "terminal", null], [3, "cancelled", "timeout"]]);
+        } finally {
+            await h.stop();
+        }
+    });
+});
+
+describe("J3 robust joins, part 4: schemas and success on a native runtime (controller 1.9.0, test-only)", () => {
+    it("JK-14: fewer items than k block at once with nothing run; an empty join of every branch joins []; k = n joins in commit order with the wrapper, a join of every branch in item order", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const workers = [];
+        try {
+            workers.push(await joinRuntimeOn(base));
+            // A binding of 0, 1 and 2 items for a join of the first 3, with failFast and without: blocked at once.
+            for (const failFast of [false, true]) {
+                for (const n of [0, 1, 2]) {
+                    const run = await startJoin(base, joinDoc({ items: WAITS(n), join: { first: 3 }, failFast }));
+                    const ended = await endOf(base, run.runId);
+                    expect(ended, `n ${n}, failFast ${failFast}`).toMatchObject({ terminalNodeId: "stuck" });
+                    expect(ended.terminalOutput).toMatchObject({ joined: false, timedOut: false, total: n, needed: 3, succeeded: 0, failFast });
+                    expect(ended.terminalOutput.branches).toEqual(Array.from({ length: n }, (_, index) => ({
+                        index, ended: "not_started", nodeExecutionId: null, outcome: null, resultKind: null })));
+                    const rows = await base.store.listNodeExecutions(run.runId);
+                    expect(rows.filter(node => node.scopeId !== "root"), "nothing ran").toEqual([]);
+                    expect(rows.map(node => node.nodeId)).toEqual(["fan", "stuck"]);
+                }
+            }
+            // An empty join of every branch joins []; its outputSchema still checks it.
+            expect(await endOf(base, (await startJoin(base, joinDoc({ items: [] }))).runId)).toMatchObject({ terminalNodeId: "finished", terminalOutput: [] });
+            const emptyChecked = await startJoin(base, withSchema(joinDoc({ items: [] }), { type: "array", minItems: 1 }));
+            expect(await endOf(base, emptyChecked.runId)).toMatchObject({ terminalNodeId: "failed" });
+            expect(await base.store.readNodeExecution(emptyChecked.fan)).toMatchObject({ outcome: "invalid_output", resultKind: "runtime_error" });
+            // A join of the first 1 over no items blocks, needing 1 (not a timeout).
+            expect((await endOf(base, (await startJoin(base, joinDoc({ items: [], join: { first: 1 }, timeoutSeconds: 60 }))).runId)).terminalOutput)
+                .toMatchObject({ joined: false, timedOut: false, total: 0, needed: 1 });
+
+            // k = n against every branch, with the same items and the same commit order (2, 0, 1).
+            const orderedRun = async join => {
+                const run = await startJoin(base, joinDoc({ items: WAITS(3), ...(join ? { join } : {}), concurrency: 3 }));
+                await persisted(base, [0, 1, 2].map(index => run.at(index, "hold")), "every wait pending");
+                for (const index of [2, 0, 1]) {
+                    expect(await base.store.completeNode(run.at(index, "hold"), elapsedResult({ v: index }))).toMatchObject({ won: true });
+                    await pause(20);
+                }
+                return endOf(base, run.runId);
+            };
+            expect((await orderedRun({ first: 3 })).terminalOutput, "the first 3: commit order, with the wrapper")
+                .toEqual([{ index: 2, output: { v: 2 } }, { index: 0, output: { v: 0 } }, { index: 1, output: { v: 1 } }]);
+            expect((await orderedRun(null)).terminalOutput, "every branch: item order, the outputs alone").toEqual([{ v: 0 }, { v: 1 }, { v: 2 }]);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+
+    it("JK-24 (J1b-T5): outputSchema checks the joined output in its own shape; an invalid one is invalid_output, routed once, no other winner chosen; reports are never checked", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const workers = [];
+        try {
+            workers.push(await joinRuntimeOn(base));
+            const winner = { type: "object", required: ["index", "output"], additionalProperties: false, properties: {
+                index: { type: "integer" }, output: { type: "object", required: ["v"], additionalProperties: false, properties: { v: { type: "integer" } } } } };
+            const firstTwo = { type: "array", minItems: 2, maxItems: 2, items: winner };
+            const itemOutputs = { type: "array", items: { type: "object", required: ["v"], additionalProperties: false, properties: { v: { type: "integer" } } } };
+            /** A run of `doc` over three waits whose branches succeed in order with `values` (by index). */
+            const runWith = async (doc, values) => {
+                const run = await startJoin(base, doc);
+                await persisted(base, [0, 1, 2].map(index => run.at(index, "hold")), "every wait pending");
+                for (const [index, value] of values) {
+                    expect(await base.store.completeNode(run.at(index, "hold"), elapsedResult(value))).toMatchObject({ won: true });
+                    await pause(20);
+                }
+                return { run, ended: await endOf(base, run.runId) };
+            };
+            // Valid: the first 2, in commit order, match the wrapper schema.
+            const valid = await runWith(withSchema(joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3 }), firstTwo), [[1, { v: 1 }], [0, { v: 0 }]]);
+            expect(valid.ended).toMatchObject({ terminalNodeId: "finished", terminalOutput: [{ index: 1, output: { v: 1 } }, { index: 0, output: { v: 0 } }] });
+            // Invalid: a winner's output breaks it: invalid_output, the failure route once; branch 3's later success is no replacement.
+            const invalid = await runWith(withSchema(joinDoc({ items: WAITS(3), join: { first: 2 }, concurrency: 3 }), firstTwo), [[0, { v: "x" }], [1, { v: 1 }]]);
+            expect(invalid.ended).toMatchObject({ terminalNodeId: "failed" });
+            expect(await base.store.readNodeExecution(invalid.run.fan)).toMatchObject({ outcome: "invalid_output", resultKind: "runtime_error" });
+            expect(await rootIdsOf(base, invalid.run.runId)).toEqual(["fan", "failed"]);
+            expect(await base.store.readNodeExecution(invalid.run.at(2, "hold")), "no other winner chosen").toMatchObject({ outcome: "cancelled", winner: "join" });
+            expect(decisionsOf(await eventsOf(base, invalid.run.workflowSessionId), invalid.run.fan)).toHaveLength(1);
+            // Every branch: the item outputs in order pass the outputs schema; the first 3 (the wrapper) do not pass it by accident.
+            const all = await runWith(withSchema(joinDoc({ items: WAITS(3), concurrency: 3 }), itemOutputs), [[2, { v: 2 }], [0, { v: 0 }], [1, { v: 1 }]]);
+            expect(all.ended).toMatchObject({ terminalNodeId: "finished", terminalOutput: [{ v: 0 }, { v: 1 }, { v: 2 }] });
+            const wrapped = await runWith(withSchema(joinDoc({ items: WAITS(3), join: { first: 3 }, concurrency: 3 }), itemOutputs), [[2, { v: 2 }], [0, { v: 0 }], [1, { v: 1 }]]);
+            expect(wrapped.ended).toMatchObject({ terminalNodeId: "failed" });
+            expect(await base.store.readNodeExecution(wrapped.run.fan)).toMatchObject({ outcome: "invalid_output" });
+            // A blocked join's report is not checked against outputSchema: it takes the blocked route with its documented shape.
+            const blockedRun = await startJoin(base, withSchema(joinDoc({ items: WAITS(2), join: { first: 2 }, concurrency: 2 }), firstTwo));
+            await persisted(base, [0, 1].map(index => blockedRun.at(index, "hold")), "both waits pending");
+            // Both fail (without failFast the join blocks once every branch has ended).
+            for (const index of [0, 1]) await base.store.completeNode(blockedRun.at(index, "hold"), failedHold);
+            const blockedEnd = await endOf(base, blockedRun.runId);
+            expect(blockedEnd).toMatchObject({ terminalNodeId: "stuck" });
+            expect(blockedEnd.terminalOutput).toMatchObject({ joined: false, timedOut: false, total: 2, needed: 2, succeeded: 0, failFast: false });
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+
+    it("JK-25: a joined output over the payload limit is invalid_output and takes the failure route once", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const workers = [];
+        try {
+            workers.push(await joinRuntimeOn(base));
+            const run = await startJoin(base, joinDoc({ items: WAITS(2), join: { first: 2 }, concurrency: 2 }));
+            await persisted(base, [0, 1].map(index => run.at(index, "hold")), "both waits pending");
+            // Each output fits (about 140 KB); the two together, with the wrapper, do not.
+            for (const index of [0, 1]) {
+                expect(await base.store.completeNode(run.at(index, "hold"), elapsedResult(bulky(`jk25-joined-${index}`, 140_000)))).toMatchObject({ won: true });
+            }
+            expect(await endOf(base, run.runId)).toMatchObject({ terminalNodeId: "failed" });
+            expect(await base.store.readNodeExecution(run.fan)).toMatchObject({ outcome: "invalid_output", resultKind: "runtime_error" });
+            // Both branches' results are kept as they were stored.
+            for (const index of [0, 1]) expect((await base.store.readNodeExecution(run.at(index, "done"))).output.marker).toBe(`jk25-joined-${index}`);
+            expect(await rootIdsOf(base, run.runId)).toEqual(["fan", "failed"]);
+            expect(decisionsOf(await eventsOf(base, run.workflowSessionId), run.fan)).toHaveLength(1);
+        } finally {
+            for (const worker of workers) await worker.stop();
+            await base.close();
+        }
+    });
+
+    it("JK-26: only a succeeded terminal counts: a blocked end after a successful script and a terminal failing its check are failures; failFast at n - k of them still joins", { timeout: TIMEOUT }, async () => {
+        const base = await joinBaseOf(getEnv());
+        const workers = [];
+        try {
+            workers.push(await joinRuntimeOn(base));
+            // Branch 1's script succeeds and routes to a blocked end; branch 2's script succeeds, but its terminal fails its
+            // outputSchema (no `ok`); branches 3 and 4 succeed. The first 2 of 4 with failFast: 2 failures are n - k.
+            const doc = joinDoc({ join: { first: 2 }, failFast: true, concurrency: 4,
+                items: [{ fail: true, ms: 100 }, { ms: 300 }, { ms: 900, ok: true }, { ms: 1_500, ok: true }] });
+            doc.states.fan.body.states.done.outputSchema = { type: "object", required: ["ok"] };
+            const run = await startJoin(base, doc);
+            const ended = await endOf(base, run.runId);
+            expect(ended).toMatchObject({ status: "completed", terminalNodeId: "finished" });
+            const works = [2, 3].map(index => run.at(index, "work"));
+            const order = (await commitOrder(base, works)).map(row => works.indexOf(row.id) + 2);
+            expect(ended.terminalOutput.map(item => item.index), "the two true successes, in commit order").toEqual(order);
+            expect(await base.store.readNodeExecution(run.at(0, "work")), "branch 1's script itself succeeded").toMatchObject({ outcome: "bad", resultKind: "business" });
+            expect(await base.store.readNodeExecution(run.at(0, "refused"))).toMatchObject({ outcome: "blocked", resultKind: "business" });
+            expect(await base.store.readNodeExecution(run.at(1, "work"))).toMatchObject({ outcome: "ok", resultKind: "business" });
+            expect(await base.store.readNodeExecution(run.at(1, "done"))).toMatchObject({ outcome: "invalid_output", resultKind: "runtime_error" });
+            expect((await base.store.listNodeExecutions(run.runId)).filter(node => node.winner === "fail_fast"), "failFast cut nothing").toEqual([]);
+        } finally {
             for (const worker of workers) await worker.stop();
             await base.close();
         }
