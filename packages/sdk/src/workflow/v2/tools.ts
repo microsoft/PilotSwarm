@@ -16,6 +16,7 @@ import {
 } from "./read-pages.js";
 import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
 import { workflowStoreFailure } from "./failure.js";
+import { redactWorkflowErrorValue } from "./redact.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import {
     advanceWorkflowV2Test,
@@ -1428,14 +1429,18 @@ function canonicalKey(...parts: string[]): string {
     return JSON.stringify(parts);
 }
 
-/** One intercepted effect of a test run, as read_workflow shows it. */
+/**
+ * One intercepted effect of a test run, as read_workflow shows it. An error answer is an error (S6-SF2 verification): its
+ * secrets are hidden, as the state's own error is, before its preview is cut; any other answer is shown as given.
+ */
 function interceptionViewOf(item: WorkflowTestInterception, node: WorkflowNodeExecutionRow | undefined): { [key: string]: JsonValue } {
     return {
         interceptionId: item.interceptionId, operation: item.operation, tool: item.tool, nodeExecutionId: item.nodeExecutionId,
         stateId: node?.nodeId ?? null, state: item.state, arguments: previewJson(item.arguments, 1_000), argumentsSha256: item.argumentsSha256,
         responseSchema: item.responseSchema, virtualAt: item.virtualAt.toISOString(),
         response: item.response === null ? null : {
-            kind: item.response.kind, disposition: item.response.disposition, value: previewJson(item.response.value, 1_000),
+            kind: item.response.kind, disposition: item.response.disposition,
+            value: previewJson(item.response.kind === "error" ? redactWorkflowErrorValue(item.response.value) : item.response.value, 1_000),
             sha256: item.response.sha256, respondedAt: item.response.respondedAt.toISOString(),
         },
     };
