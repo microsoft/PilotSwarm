@@ -29,6 +29,24 @@ export const PS_MARKER_FILE = ".ps-snapshot-version";
 export const PS_SENTINEL_FILE = ".ps-turn-inprogress";
 export const PS_TURN_COMMIT_FILE = ".ps-turn-commit.json";
 
+/**
+ * The one prefix every worker-owned file and folder inside a session
+ * directory carries: the marker, the sentinel, the committed-turn result,
+ * the temporary directories a hydrate unpacks into, and whatever is added
+ * next. Recovery trusts these, so nothing but the worker may write, remove,
+ * rename or supply them. Native host payloads exclude this namespace;
+ * the trusted worker reconstructs it after validating capture.
+ *
+ * It is a prefix rather than a list on purpose: a new control file must be
+ * protected by being named, not by being remembered somewhere else too.
+ */
+export const PS_CONTROL_PREFIX = ".ps-";
+
+/** Whether one path segment names a worker control file or directory. */
+export function isWorkerControlName(name: string): boolean {
+    return typeof name === "string" && name.startsWith(PS_CONTROL_PREFIX);
+}
+
 export interface SnapshotMarker {
     version: number;
     turnKey?: string;
@@ -239,13 +257,13 @@ export function clearTurnSentinel(sessionDir: string): void {
     try { fs.unlinkSync(sentinelPath(sessionDir)); } catch {}
 }
 
-export function writeTurnCommitFile(sessionDir: string, turnKey: string, result: unknown): void {
+export function writeTurnCommitFile(sessionDir: string, turnKey: string, result: unknown, writeback?: unknown): void {
     const tmp = `${turnCommitFilePath(sessionDir)}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ turnKey, result }));
+    fs.writeFileSync(tmp, JSON.stringify({ turnKey, result, ...(writeback === undefined ? {} : { writeback }) }));
     fs.renameSync(tmp, turnCommitFilePath(sessionDir));
 }
 
-export function readTurnCommitFile(sessionDir: string): { turnKey: string; result: unknown } | null {
+export function readTurnCommitFile(sessionDir: string): { turnKey: string; result: unknown; writeback?: unknown } | null {
     try {
         const parsed = JSON.parse(fs.readFileSync(turnCommitFilePath(sessionDir), "utf8"));
         if (typeof parsed?.turnKey !== "string") return null;

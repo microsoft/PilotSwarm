@@ -3,6 +3,7 @@ import { CapabilityCatalog, capabilityHash, resolveCapabilitySource, visibleCapa
     type CapabilitySource, type CapabilityState, type CapabilitySelection } from "./capability-catalog.js";
 import type { FeatureOwner } from "./feature-flags.js";
 import { mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+import { mcpOriginKey } from "./compute-mcp.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
 
 export interface PackageRequest {
@@ -14,6 +15,13 @@ export interface CapabilityServices {
     load(ref: string, kind: "skill" | "agent"): Promise<unknown>;
     list(): Promise<unknown>;
     use(args: PackageRequest): Promise<{ changed: boolean; revision: number }>;
+    /**
+     * Compute providers: the only worker folders this session's path tools
+     * may name, or undefined when it runs on the worker and the ordinary
+     * rules apply. Empty means its host shares none of them. The artifact
+     * tools read the same thing.
+     */
+    localPathRoots?(): string[] | undefined;
     /** Section 4.12: save or drop an agent or skill loaded by path. */
     saveWorkspaceLoad?(change: { add: import("./capability-catalog.js").WorkspaceLoad } | { remove: { kind: "agent" | "skill"; name: string } }): Promise<{ loads: import("./capability-catalog.js").WorkspaceLoad[] }>;
 }
@@ -91,6 +99,14 @@ export function nextCapabilityState(state: CapabilityState, sourceId: string, ar
 export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwner | null, selections: CapabilitySelection[],
     originalTools: Tool<any>[], originalMcp: Record<string, any>, agent: McpAllowlistAgent | null, strict = false) {
     const tools: Tool<any>[] = []; const mcpServers: Record<string, any> = Object.create(null); const unavailable: string[] = [];
+    /**
+     * Compute providers: which source each attached server came from.
+     *
+     * A session whose agent runs elsewhere needs the exact entry, not a
+     * name: two packages may export the same server name, and the one
+     * chosen here is the only one this session is authorized for.
+     */
+    const mcpOriginKeys: Record<string, string> = Object.create(null);
     const toolNames = new Set(originalTools.map(t => t.name)); const mcpNames = new Set(Object.keys(originalMcp));
     const bound: Array<{ sourceId: string; revision: string; tools: string[]; mcpServers: string[] }> = [];
     for (const selection of selections) {
@@ -107,6 +123,7 @@ export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwne
             }
         }
         const selectedTools: Tool<any>[] = []; const selectedMcp: Record<string, any> = {};
+        const selectedOriginKeys: Record<string, string> = {};
         let problem = "";
         for (const name of selection.tools) {
             const tool = source.tools.get(name);
@@ -125,12 +142,14 @@ export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwne
             if (mcpNames.has(name)) { problem = `MCP server name collision: ${name}`; break; }
             if (cfg.allowedAgents && !mcpAllowlistAdmits(cfg.allowedAgents, agent)) { problem = "MCP server is restricted to an authorized bound agent"; break; }
             const { allowedAgents: _, ...server } = cfg; selectedMcp[name] = server;
+            selectedOriginKeys[name] = mcpOriginKey(source.packageId ?? null, name);
         }
         if (problem) { if (strict) throw new Error(problem); unavailable.push(selection.sourceId); continue; }
         for (const tool of selectedTools) { tools.push(tool); toolNames.add(tool.name); }
-        Object.assign(mcpServers, selectedMcp); Object.keys(selectedMcp).forEach(n => mcpNames.add(n));
+        Object.assign(mcpServers, selectedMcp); Object.assign(mcpOriginKeys, selectedOriginKeys);
+        Object.keys(selectedMcp).forEach(n => mcpNames.add(n));
         bound.push({ sourceId: source.id, revision: source.revision,
             tools: [...selection.tools].sort(), mcpServers: [...selection.mcpServers].sort() });
     }
-    return { tools, mcpServers, unavailable, fingerprint: capabilityHash(bound) };
+    return { tools, mcpServers, mcpOriginKeys, unavailable, fingerprint: capabilityHash(bound) };
 }

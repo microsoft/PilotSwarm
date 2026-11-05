@@ -198,7 +198,7 @@ function filterPlansForTarget(plans: SystemAgentSessionPlan[], agentId?: string)
 }
 
 export async function startSystemAgents(opts: {
-    catalog: Pick<SessionCatalog, "getSession" | "createSession" | "updateSession">;
+    catalog: Pick<SessionCatalog, "getSession" | "createSession" | "updateSession" | "getSessionCreationConfig">;
     duroxideClient: any;
     agents: AgentConfig[];
     defaultModel: string;
@@ -287,6 +287,19 @@ export async function startSystemAgents(opts: {
             }
             const title = agent.title ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent");
             await opts.catalog.updateSession(sessionId, { title });
+
+            // Compute providers: a system agent gets the deployment's
+            // default compute target like any other root, and the catalog
+            // writes it as the session is created. The input above was
+            // built before that, so it is read back here — otherwise
+            // every turn of every system session is routed as if it ran
+            // on the worker.
+            if (opts.catalog.getSessionCreationConfig) {
+                const rootForTarget = parentSessionId ?? sessionId;
+                const stored = await opts.catalog.getSessionCreationConfig(rootForTarget).catch(() => null);
+                const target = typeof stored?.computeTarget === "string" ? stored.computeTarget : "";
+                if (target) input.config = { ...input.config, computeTarget: target };
+            }
 
             if (opts.prepareRetainedSessionLedger) {
                 // input.iteration is NOT the vehicle for this: a nonzero

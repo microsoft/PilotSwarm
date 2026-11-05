@@ -17,6 +17,7 @@ import {
     commandResponseKey,
 } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
+import { DURABLE_SESSION_LATEST_VERSION as CURRENT_ORCHESTRATION_VERSION } from "../orchestration-version.js";
 import { sameWorkingFolder, sameWorkspace, validateWorkspaceText, workingFolderOf } from "../workspace-check.js";
 import {
     beginGracefulShutdown,
@@ -207,8 +208,27 @@ export function* releaseAffinity(
             ctx.traceInfo(`[orch] releaseWorkspace failed (${err?.message ?? err}); releasing affinity anyway`);
         }
     }
+    // Compute providers: the session's host is let go the same way, and
+    // for the same reason. The worker that ran the last turn keeps a
+    // bridge, a pooled client and a warm handle to that host until it
+    // evicts the session much later; a worker that picks the session up
+    // meanwhile would resume the same session in the same runtime. One
+    // worker drives one session's runtime, so the old one lets go first.
+    if ((state.config as { computeTarget?: unknown }).computeTarget) {
+        try {
+            const raced: any = yield ctx.race(
+                runtime.session.releaseCompute({ reason }),
+                ctx.scheduleTimer(WORKSPACE_RELEASE_CAP_MS),
+            );
+            if (raced?.index === 1) {
+                ctx.traceInfo(`[orch] releaseCompute did not finish within ${WORKSPACE_RELEASE_CAP_MS}ms; releasing affinity anyway`);
+            }
+        } catch (err: any) {
+            ctx.traceInfo(`[orch] releaseCompute failed (${err?.message ?? err}); releasing affinity anyway`);
+        }
+    }
     state.affinityKey = yield ctx.newGuid();
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1", CURRENT_ORCHESTRATION_VERSION);
     try {
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.affinity_released",
@@ -345,7 +365,7 @@ export function* applyAgentWorkspaceExtrasChange(runtime: DurableSessionRuntime,
     const revision = state.workspaceRevision + 1;
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     state.config.workspace = next;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1", CURRENT_ORCHESTRATION_VERSION);
     state.workspaceRevision = revision;
     const note = extraFoldersChangedNote(previous, next, extraPaths);
     if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
@@ -1108,7 +1128,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     else delete state.config.workspace;
     // The proxy carries the config into every turn; rebuild it from the
     // changed config rather than rely on sharing one object.
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1", CURRENT_ORCHESTRATION_VERSION);
     state.workspaceRevision = revision;
     // A change of extra folders only (section 4.10) keeps the working
     // directory, so its note names the extra folders alone. A note not yet

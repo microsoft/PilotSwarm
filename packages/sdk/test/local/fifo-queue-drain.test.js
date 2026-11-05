@@ -119,7 +119,7 @@ function harness(overrides = {}) {
         isSystem: true,
         blobEnabled: false,
         ...overrides,
-    }, { currentVersion: "1.0.82", latestVersion: "1.0.82" }));
+    }, { currentVersion: "1.0.83", latestVersion: "1.0.83" }));
     const races = () => calls.filter(c => c.effect === "race" && c.left?.effect === "dequeue").map(c => c.right.ms);
     const events = () => calls.flatMap(c => (c.effect === "manager.recordSessionEvent" ? c.args[1] : []));
     const fifo = () => {

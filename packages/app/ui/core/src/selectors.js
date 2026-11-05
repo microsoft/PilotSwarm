@@ -8650,8 +8650,25 @@ function buildSessionStatsLines(state, session, maxWidth) {
         return [plainInspectorLine("Loading session stats...")];
     }
     const summary = entry.summary;
+    const computeLines = () => {
+        const execution = entry.computeExecution;
+        if (!execution && !entry.computeExecutionError) return [];
+        return buildMessageCardLines({
+            title: "Compute Execution",
+            body: entry.computeExecutionError ? `Authority unavailable: ${entry.computeExecutionError}` : formatKeyValueTable([
+                ["Phase", execution.phase],
+                ["Pending", String(execution.pendingOperations)],
+                ["Epoch", String(execution.identity?.transcriptEpoch ?? 0)],
+                ["Generation", shortSessionId(execution.identity?.generation || "")],
+                ["Detail", execution.detail || null],
+            ], { maxWidth: Math.max(12, maxWidth - 4) }),
+            width: Math.max(24, maxWidth),
+            titleColor: entry.computeExecutionError || execution?.phase === "unknown" ? "yellow" : "cyan",
+            borderColor: "gray", fitToContent: true,
+        });
+    };
     if (!summary) {
-        return [plainInspectorLine("Session stats unavailable.")];
+        return [plainInspectorLine("Session stats unavailable."), ...computeLines()];
     }
 
     const lines = [];
@@ -8793,6 +8810,9 @@ function buildSessionStatsLines(state, session, maxWidth) {
         borderColor: "gray",
         fitToContent: true,
     }));
+    if (entry.computeExecution || entry.computeExecutionError) {
+        lines.push(plainInspectorLine(""), ...computeLines());
+    }
 
     // Tree stats (if has children)
     const tree = entry.treeStats?.tree;

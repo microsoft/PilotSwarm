@@ -65,6 +65,7 @@ const SESSION_ATTACHED_TOOL_NAMES = [
     "read_fleet_skill_usage",
     "read_fleet_stats",
     "read_orchestration_stats",
+    "read_session_compute_execution",
     "read_session_facts_stats",
     "read_session_graph_edge_search_usage",
     "read_session_graph_node_usage",

@@ -2,6 +2,7 @@ import { CopilotClient, CopilotRequestHandler, RuntimeConnection } from "@github
 import type { CopilotClientOptions, CopilotRequestContext } from "@github/copilot-sdk";
 import { createParser } from "eventsource-parser";
 import { normalizeToolCatalog, type ToolCatalogCapability } from "./model-providers.js";
+import fs from "node:fs";
 
 type JsonObject = Record<string, any>;
 type ToolGroup = { body: JsonObject; name: string; toolNames: Set<string> };
@@ -233,14 +234,46 @@ export class ByokRequestCompatibility extends CopilotRequestHandler {
     }
 }
 
+/** Controller version evidence, read from this package's installed dependency, never user configuration. */
+export function copilotSdkVersion(): string {
+    const metadata: unknown = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.resolve("@github/copilot-sdk")), "utf8"));
+    if (!metadata || typeof metadata !== "object" || !("version" in metadata) || typeof metadata.version !== "string") {
+        throw new Error("The installed Copilot SDK version cannot be established");
+    }
+    return metadata.version;
+}
+
 /** Shared by durable sessions and the short-lived title/distillation clients. */
 export function createCopilotClient(
     options: CopilotClientOptions,
     provider?: unknown,
     toolCatalog?: ToolCatalogCapability | ToolCatalogPolicyResolver,
+    remote?: {
+        /** How to reach a runtime that is not the worker's child process (compute providers). */
+        connection: RuntimeConnection;
+        /**
+         * How a PilotSwarm model's requests come back to the worker, which
+         * holds the credentials. Left out only when the runtime is using
+         * model access of its own, so there is nothing to bring back — and
+         * because a request handler is client-wide, such a client is never
+         * shared with a session whose model is PilotSwarm's.
+         */
+        requestHandler?: CopilotRequestHandler;
+    },
 ): CopilotClient {
     if (toolCatalog && !needsByokRequestCompatibility(provider)) {
         throw new Error("toolCatalog requires an OpenAI-compatible Chat Completions provider.");
+    }
+    if (remote) {
+        // A remote runtime gets no GitHub token and no environment from the
+        // worker: the SDK refuses gitHubToken over a URI, and env would only
+        // describe the worker anyway.
+        const { gitHubToken: _token, env: _env, ...rest } = options;
+        return new CopilotClient({
+            ...rest,
+            connection: remote.connection,
+            ...(remote.requestHandler ? { requestHandler: remote.requestHandler } : {}),
+        });
     }
     return new CopilotClient({
         ...options,

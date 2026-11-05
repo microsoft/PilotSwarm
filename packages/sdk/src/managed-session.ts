@@ -2,6 +2,8 @@ import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-
 import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
+import { remoteRuntimeEventType } from "./compute-events.js";
+import { ComputeFolderMap } from "./compute.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -17,7 +19,7 @@ import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, TURN_RESULT_EXCLUDED_EVENT_TYPES } from "./turn-result-events.js";
 import { mergeWorkspaceChange, sameWorkspace, validateWorkspaceText } from "./workspace-check.js";
-import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } from "./workspace-loads.js";
+import { attachedFoldersOf, loadFoldersFor, parseSkillFile, readLoadFiles, resolveLoadPath } from "./workspace-loads.js";
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
@@ -579,11 +581,22 @@ function acknowledgeTurnBoundary(action: string): string {
  * the pid it keeps may since belong to another process (process-tree.ts).
  * The busy check and the release use this one test, so a finished shell
  * neither blocks a workspace change nor gets another process killed.
+ *
+ * Compute providers: `local` is false when the runtime runs somewhere the
+ * worker did not start it. The numbers in that task list are then process
+ * ids on another machine, and this machine's process table says nothing
+ * about them: a missing one would hide a shell that is still running, and
+ * a matching one would belong to some unrelated process here. So a remote
+ * task is taken at the runtime's word — it runs while the runtime says it
+ * runs, which is the conservative answer for a busy check.
  */
-function backgroundTaskRuns(task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }): boolean {
+function backgroundTaskRuns(
+    task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown },
+    local = true,
+): boolean {
     if (task.type !== "shell" && task.type !== "agent") return false;
     if (task.status !== "running" && task.status !== "idle") return false;
-    if (task.type === "shell" && typeof task.pid === "number") return taskProcessAlive(task.pid, task.startedAt);
+    if (local && task.type === "shell" && typeof task.pid === "number") return taskProcessAlive(task.pid, task.startedAt);
     return true;
 }
 
@@ -855,7 +868,19 @@ export class ManagedSession {
         if (!services?.saveWorkspaceLoad) return { ok: false, error: "this session cannot save loaded agents or skills" };
         const busy = await this.busyForLoad();
         if (busy) return { ok: false, error: busy };
-        const where = resolveLoadPath(input, attachedFoldersOf(this.config.workspaceAttach));
+        // A session whose agent runs on another host may name only the
+        // folders that host shares, and its paths are resolved before they
+        // are checked. A session that runs on the worker is unchanged.
+        const allowed = loadFoldersFor(attachedFoldersOf(this.config.workspaceAttach), services.localPathRoots?.());
+        if (!allowed.ok) return { ok: false, error: allowed.reason };
+        // The agent named a path on its own host. The file is read on the
+        // worker, so the name is turned back into the worker's before it
+        // is checked — otherwise a host path under a different mount
+        // prefix is either refused outright or, worse, lands on some other
+        // worker file the session happens to be allowed.
+        const asked = this.workerPathFor(input);
+        if (!asked.ok) return { ok: false, error: asked.error };
+        const where = resolveLoadPath(asked.path, allowed.folders, { linkSafe: allowed.linkSafe });
         if (!where.ok) return { ok: false, error: where.reason };
         const [read] = await readLoadFiles([{ kind, absolute: where.absolute, folder: where.folder }]);
         if (!read?.ok) return { ok: false, error: `cannot load ${where.absolute}: ${read?.reason ?? "unreadable"}` };
@@ -880,7 +905,8 @@ export class ManagedSession {
         } catch (error: any) {
             return { ok: false, error: `could not save the load: ${error?.message ?? error}` };
         }
-        return { ok: true, name, absolute: where.absolute, description, body };
+        // Named back to the agent the way it names paths itself.
+        return { ok: true, name, absolute: this.agentPath(where.absolute) ?? where.absolute, description, body };
     }
 
     /** Section 4.12: drop a loaded agent or skill by name. */
@@ -904,9 +930,13 @@ export class ManagedSession {
      * Refused while one runs, as set_session_workspace is (WORKSPACE_BUSY).
      */
     private async busyForLoad(): Promise<string | null> {
-        const busy = await this.activeBackgroundTasks().catch(() => []);
-        if (busy.length === 0) return null;
-        return `WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
+        const { tasks, unknown } = await this.busyBackgroundTasks();
+        if (unknown) {
+            return `WORKSPACE_BUSY: whether background tasks are still running could not be established — ${unknown}. `
+                + "Loading or unloading restarts the session's tools at the next turn, which would stop them. Try again once the host answers.";
+        }
+        if (tasks.length === 0) return null;
+        return `WORKSPACE_BUSY: ${tasks.length} background task(s) are running (${tasks.map((t) => `${t.type} ${t.id}`).join(", ")}). `
             + "Loading or unloading restarts the session's tools at the next turn, which would stop them. Wait for them or stop them first.";
     }
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
@@ -2891,6 +2921,14 @@ export class ManagedSession {
                     const augmented = {
                         ...invocation,
                         durableSessionId,
+                        // Compute providers: a deployment's own tool runs
+                        // in the worker, and the agent calling it may be on
+                        // another machine. A tool that takes a path has no
+                        // other way of knowing that, and would otherwise
+                        // open worker files for a session that is not
+                        // allowed any. Absent for a session that runs on
+                        // the worker, where nothing has changed.
+                        ...(this.config.computeRuntime ? { compute: this.computeToolContext() } : {}),
                         ...(this.factsAccessor ? { facts: this.factsAccessor } : {}),
                     };
                     try {
@@ -3085,7 +3123,11 @@ export class ManagedSession {
             // A running shell may be using a folder this call takes
             // away; adding extra folders takes nothing away.
             if (merged.changesWorkingFolder || merged.removed.length > 0 || merged.replaced.length > 0) {
-                const busy = await this.activeBackgroundTasks().catch(() => []);
+                const { tasks: busy, unknown } = await this.busyBackgroundTasks();
+                if (unknown) {
+                    return refuse("Error: WORKSPACE_BUSY: whether background tasks are still running could not be established — "
+                        + `${unknown}. Taking a folder away now could pull it from under one. Try again once the host answers.`);
+                }
                 if (busy.length > 0) {
                     return refuse(`Error: WORKSPACE_BUSY: ${busy.length} background task(s) are running (${busy.map((t) => `${t.type} ${t.id}`).join(", ")}). `
                         + "Stop them first, then call set_session_workspace again.");
@@ -3116,10 +3158,21 @@ export class ManagedSession {
                     type: "set_workspace", workspace: next, path,
                     ...(Object.keys(extraPaths).length > 0 ? { extraPaths } : {}),
                 });
-                const oldPath = this.config.workspaceAttach?.path ?? this.config.workingDirectory ?? "the current working directory";
+                const oldPath = this.agentPath(this.config.workspaceAttach?.path) ?? this.config.workingDirectory ?? "the current working directory";
+                // Compute providers: the worker checked and attached the
+                // folder on its own machine. Where the agent will find it
+                // is the host's path for it, which the worker only learns
+                // when it connects for the next turn — so it is not
+                // promised here.
+                const nextPath = this.config.computeRuntime
+                    ? (path ? "the folder you asked for, at the path your host gives it" : "the default working directory")
+                    : (path ?? "the default working directory");
                 return `Workspace change accepted: ${describeWorkspaceForModel(next)}.\n`
                     + `[SYSTEM: set_session_workspace acknowledged. You are still in ${oldPath}. `
-                    + `The working directory becomes ${path ?? "the default working directory"} only after this turn ends. `
+                    + `The working directory becomes ${nextPath} only after this turn ends. `
+                    + (this.config.computeRuntime
+                        ? "Call get_session_workspace in your next turn for the path on your compute host. "
+                        : "")
                     + "Do not edit or run anything now. Stop and end your turn.]";
             }
             // Extra folders only (section 4.10): the new ones are
@@ -3144,12 +3197,22 @@ export class ManagedSession {
                 path: this.config.workspaceAttach?.path ?? null,
                 ...(attached.length > 0 ? { extraPaths: Object.fromEntries(attached.map((extra) => [extra.name, extra.path])) } : {}),
             });
+            // Compute providers: the worker attached the folder on its own
+            // machine. Nothing has put it on the host, and the host's path
+            // for it is only known at the next connect — so a remote
+            // session is told plainly that the folder arrives next turn,
+            // rather than being given a path that is not there.
+            const deferred = Boolean(this.config.computeRuntime);
             const lines = [
-                ...attached.map((extra) => `${merged.added.includes(extra.name) ? "Added" : "Replaced"}: ${extra.name} at ${extra.path}${extra.readOnly ? " (read-only)" : ""}`),
+                ...attached.map((extra) => `${merged.added.includes(extra.name) ? "Added" : "Replaced"}: ${extra.name}`
+                    + (deferred ? "" : ` at ${extra.path}`) + (extra.readOnly ? " (read-only)" : "")),
                 ...merged.removed.map((name) => `Removed: ${name} (released after this turn)`),
             ];
             return `Extra folders changed.\n${lines.join("\n")}\n`
-                + "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]";
+                + (deferred
+                    ? "[SYSTEM: Your agent runs on a compute host, so a new folder is prepared there for your next turn, not this one. "
+                        + "Do not use it yet; call get_session_workspace next turn for its path. The working directory is unchanged. Continue your task.]"
+                    : "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]");
         };
         const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools ? [
             // Section 4.12: an agent from a file. The CLI takes its agents when
@@ -3193,6 +3256,21 @@ export class ManagedSession {
                 ...GET_SESSION_WORKSPACE_TOOL_SPEC,
                 handler: async () => {
                     const attach = this.config.workspaceAttach;
+                    const runtime = this.config.computeRuntime;
+                    // Compute providers: attached on the worker and
+                    // available on the host are two different things, and
+                    // the second is the one the agent can act on. A folder
+                    // the worker attached and the host has not been given
+                    // is reported as attached, with no path — never as a
+                    // worker path the agent would follow to nothing.
+                    const onHost = (workerPath: string | null | undefined) => {
+                        if (!runtime) return {};
+                        const hostPath = this.agentPath(workerPath);
+                        return {
+                            attachedOnWorker: workerPath ?? null,
+                            availableOnHost: hostPath !== null,
+                        };
+                    };
                     // Extra folders (section 4.10), as attached for this turn.
                     const extras = Object.entries(this.config.workspace?.extra ?? {}).map(([name, extra]) => {
                         const attached = attach?.extras?.find((one) => one.name === name);
@@ -3202,15 +3280,25 @@ export class ManagedSession {
                             root: extra.root,
                             folder: extra.folder ?? null,
                             required: extra.required !== false,
-                            path: attached?.path ?? null,
+                            path: this.agentPath(attached?.path),
                             status: attached ? "attached" : missing ? "unavailable" : "not attached",
+                            ...onHost(attached?.path),
                             ...(attached?.readOnly ? { readOnly: true } : {}),
                             ...(missing ? { error: `${missing.code}: ${missing.message}` } : {}),
                         };
                     });
                     return JSON.stringify({
                         workspace: this.config.workspace ?? null,
-                        path: this.config.workspace ? attach?.path ?? null : null,
+                        path: this.config.workspace ? this.agentPath(attach?.path) : null,
+                        ...(this.config.workspace ? onHost(attach?.path) : {}),
+                        ...(runtime ? {
+                            compute: {
+                                target: runtime.targetName,
+                                note: "Your shell runs on this session's compute host. Every path here is a path on that host. "
+                                    + "A folder that is attached but not available on the host is one PilotSwarm's own tools can reach and you cannot."
+                                    + (runtime.sharesWorkerFiles ? "" : " PilotSwarm's file tools cannot read or write your host's files."),
+                            },
+                        } : {}),
                         ...(this.config.workspace && attach?.readOnly ? { readOnly: true } : {}),
                         revision: this.config.workspace ? attach?.revision ?? null : null,
                         ...(extras.length > 0 ? { extra: extras } : {}),
@@ -3226,15 +3314,16 @@ export class ManagedSession {
                         // this turn. They are not part of the record above.
                         ...(attach && (attach.homeIsWorkingFolder || attach.defaultExtras?.length) ? {
                             defaults: {
-                                ...(attach.homeIsWorkingFolder ? { workingFolder: { root: attach.root, path: attach.path } } : {}),
+                                ...(attach.homeIsWorkingFolder ? { workingFolder: { root: attach.root, path: this.agentPath(attach.path), ...onHost(attach.path) } } : {}),
                                 extra: (attach.defaultExtras ?? []).map((name) => {
                                     const attached = attach.extras?.find((one) => one.name === name);
                                     const missing = attach.extrasUnavailable?.find((one) => one.name === name);
                                     return {
                                         name,
                                         root: attached?.root ?? missing?.root ?? null,
-                                        path: attached?.path ?? null,
+                                        path: this.agentPath(attached?.path),
                                         status: attached ? "attached" : missing ? "unavailable" : "not attached",
+                                        ...onHost(attached?.path),
                                         ...(attached?.readOnly ? { readOnly: true } : {}),
                                     };
                                 }),
@@ -3472,10 +3561,22 @@ export class ManagedSession {
             this.settleTurnResolver = () => settleRun();
             this.settleTurnRejecter = (err) => failRun(err);
             // Catch-all event handler — captures every event and fires onEvent immediately.
+            const remote = this.runsRemotely();
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {
                     lastEventAt = Date.now();
-                    const eventType = event.type ?? event.eventType ?? "unknown";
+                    const sentType = event.type ?? event.eventType ?? "unknown";
+                    // Compute providers: a runtime the worker did not start
+                    // is model-chosen code on another machine, and the
+                    // events PilotSwarm emits about a session are read as
+                    // PilotSwarm's own word — two of them change what the
+                    // CMS says the session is doing. One it claims keeps
+                    // the fact that it was sent and loses the authority,
+                    // under a name that says so.
+                    const eventType = remote ? remoteRuntimeEventType(sentType) : sentType;
+                    if (eventType !== sentType) {
+                        console.warn(`[ManagedSession] ${this.sessionId}: its compute host sent "${sentType}", which only PilotSwarm emits; recorded as "${eventType}"`);
+                    }
                     if (isStaleIdle(eventType, event)) return;
                     const rawEventData = event.data ?? event;
                     let eventData = rawEventData;
@@ -4158,12 +4259,153 @@ export class ManagedSession {
         if (this.activeTurnState) this.activeTurnState.workspaceChangeRequested = true;
     }
 
-    /** Running or idle background shells and agent tasks (the WORKSPACE_BUSY check). */
+    /**
+     * Compute providers: this session's folders as the worker and its host
+     * each name them, or undefined for a session that runs on the worker
+     * and has one set of paths.
+     *
+     * Built per call from the turn's configuration, which is where the
+     * mapping arrives: it can change from turn to turn, and nothing may
+     * answer from a remembered one.
+     */
+    private folderMap(): ComputeFolderMap | undefined {
+        const runtime = this.config.computeRuntime;
+        return runtime ? new ComputeFolderMap(runtime.folders) : undefined;
+    }
+
+    /**
+     * A path the agent named, as the worker's own path.
+     *
+     * A session that runs on the worker names worker paths already. A
+     * remote session names host paths: an absolute one is translated, and
+     * a relative one is left alone because it is resolved against a folder
+     * both sides have.
+     */
+    private workerPathFor(input: unknown): { ok: true; path: unknown } | { ok: false; error: string } {
+        const map = this.folderMap();
+        if (!map || typeof input !== "string" || !path.isAbsolute(input)) return { ok: true, path: input };
+        const worker = map.toWorker(input);
+        if (!worker) {
+            return {
+                ok: false,
+                error: `${input} is not inside this session's folders on its compute host (${map.hostRoots.join(", ") || "none are shared"})`,
+            };
+        }
+        return { ok: true, path: worker };
+    }
+
+    /**
+     * What a worker-side tool is told about where this session's agent
+     * runs, so a tool that takes a path can confine it.
+     *
+     * `allowedWorkerPaths` is the whole list: empty means this session's
+     * host shares no folders with the worker, and no worker path is this
+     * session's to open. `hostPaths` is the same folders as the agent
+     * names them, for a tool that wants to report a path back.
+     */
+    computeToolContext(): {
+        runsRemotely: true;
+        target: string;
+        sharesWorkerFiles: boolean;
+        allowedWorkerPaths: string[];
+        hostPaths: string[];
+    } | undefined {
+        const runtime = this.config.computeRuntime;
+        if (!runtime) return undefined;
+        const map = this.folderMap();
+        return {
+            runsRemotely: true,
+            target: runtime.targetName,
+            sharesWorkerFiles: runtime.sharesWorkerFiles,
+            allowedWorkerPaths: runtime.sharesWorkerFiles ? (map?.workerRoots ?? []) : [],
+            hostPaths: map?.hostRoots ?? [],
+        };
+    }
+
+    /** The path the agent must use for a folder the worker attached at `workerPath`. */
+    private agentPath(workerPath: string | null | undefined): string | null {
+        if (!workerPath) return null;
+        const map = this.folderMap();
+        if (!map) return workerPath;
+        return map.toHost(workerPath) ?? null;
+    }
+
+    /**
+     * Compute providers: true while this session's agent runtime runs
+     * somewhere the worker did not start it. Nothing the runtime reports
+     * about processes, paths or files then names anything on this machine.
+     */
+    runsRemotely(): boolean {
+        return Boolean(this.config.computeRuntime);
+    }
+
+    /**
+     * Compute providers: a cancel this session could not prove finished.
+     *
+     * A remote shell is stopped by asking its runtime; the worker has no
+     * second way. When the runtime neither confirms nor lists the task as
+     * gone, what is still running on the host is unknown, so the session
+     * stays busy and says why rather than quietly moving its folders.
+     */
+    private computeStopFailure: { at: number; reason: string; tasks: string[] } | null = null;
+
+    /** The last cancel on a remote host this session could not prove finished, if any. */
+    getComputeStopFailure(): { at: number; reason: string; tasks: string[] } | null {
+        return this.computeStopFailure;
+    }
+
+    private noteComputeStopFailure(reason: string, tasks: string[]): void {
+        this.computeStopFailure = { at: Date.now(), reason, tasks };
+        console.warn(`[ManagedSession] ${this.sessionId}: ${reason}`);
+    }
+
+    /**
+     * Running or idle background shells and agent tasks (the WORKSPACE_BUSY
+     * check).
+     *
+     * Compute providers: for a remote runtime an unanswerable list is not
+     * an empty one. The caller is deciding whether it may take a folder
+     * away or let the session move, and the only honest answer when the
+     * host cannot be asked is that the session is still busy — so this
+     * throws rather than reporting no tasks, and the guards below turn that
+     * into a refusal.
+     */
     async activeBackgroundTasks(): Promise<Array<{ id: string; type: string }>> {
+        const local = !this.runsRemotely();
         const tasks = (await this.copilotSession.rpc.tasks.list()).tasks ?? [];
         return tasks
-            .filter(backgroundTaskRuns)
+            .filter((task: any) => backgroundTaskRuns(task, local))
             .map((task: any) => ({ id: String(task.id), type: String(task.type) }));
+    }
+
+    /**
+     * The background tasks a busy guard should act on, and what to say when
+     * the answer could not be had.
+     *
+     * An ordinary session keeps the behaviour it has always had: a task
+     * list that fails counts as no tasks, because the worker started those
+     * processes and a dead handle means they are gone with it. A remote
+     * session fails the other way, because its processes outlive the
+     * handle.
+     */
+    async busyBackgroundTasks(): Promise<{ tasks: Array<{ id: string; type: string }>; unknown?: string }> {
+        const unstopped = this.runsRemotely() ? this.computeStopFailure : null;
+        try {
+            const tasks = await this.activeBackgroundTasks();
+            if (unstopped) {
+                return {
+                    tasks,
+                    unknown: `an earlier stop on the compute host was never confirmed (${unstopped.reason})`,
+                };
+            }
+            return { tasks };
+        } catch (error: any) {
+            if (!this.runsRemotely()) return { tasks: [] };
+            return {
+                tasks: [],
+                unknown: `the compute host did not say what is still running (${String(error?.message ?? error)})`,
+            };
+        }
     }
 
     /** Session workspaces: this session's workspace and its last attach on this worker. */
@@ -4250,17 +4492,36 @@ export class ManagedSession {
      * killed on missing data.
      */
     async cancelBackgroundTasks({ rounds = 5, pauseMs = 200, startedWithin }: { rounds?: number; pauseMs?: number; startedWithin?: { since: number; until: number } } = {}): Promise<number> {
+        const remote = this.runsRemotely();
         const startedInScope = (task: { startedAt?: unknown }) => {
             if (!startedWithin) return true;
             const at = typeof task.startedAt === "string" ? Date.parse(task.startedAt)
                 : typeof task.startedAt === "number" ? task.startedAt : Number.NaN;
             return Number.isFinite(at) && at >= startedWithin.since && at <= startedWithin.until;
         };
-        const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task) && startedInScope(task);
+        const active = (task: { type?: string; status?: string; pid?: unknown; startedAt?: unknown }) => backgroundTaskRuns(task, !remote) && startedInScope(task);
+        // A list this session cannot get is not an empty one when the tasks
+        // are somebody else's processes: the failure is recorded before it
+        // is raised, so the busy guards keep refusing until a later round
+        // gets an answer.
+        const listActive = async (): Promise<any[]> => {
+            try {
+                return ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
+            } catch (error: any) {
+                if (remote) {
+                    this.noteComputeStopFailure(
+                        `the compute host did not list this session's tasks (${String(error?.message ?? error)})`, []);
+                }
+                throw error;
+            }
+        };
         let cancelled = 0;
         for (let round = 0; round < rounds; round++) {
-            const tasks = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
-            if (tasks.length === 0) return cancelled;
+            const tasks = await listActive();
+            if (tasks.length === 0) {
+                if (!remote) this.computeStopFailure = null;
+                return cancelled;
+            }
             for (const task of tasks) {
                 let stopped = false;
                 try {
@@ -4269,15 +4530,26 @@ export class ManagedSession {
                 // CLI 1.0.83: after session.abort(), tasks.cancel answers
                 // { cancelled: false } and the shell keeps running. Kill the
                 // shell and every process below it, by the pid the CLI reports.
-                if (!stopped && task.type === "shell") stopped = killProcessTree((task as { pid?: unknown }).pid);
+                //
+                // Compute providers: not for a runtime the worker did not
+                // start. That pid names a process on the host, and the only
+                // thing this machine could do with it is kill whatever
+                // happens to hold the same number here. Asking the runtime
+                // is the one way a remote shell is stopped; when it will not
+                // say the task ended, that is reported rather than papered
+                // over.
+                if (!stopped && task.type === "shell" && !remote) stopped = killProcessTree((task as { pid?: unknown }).pid);
                 if (stopped) cancelled++;
             }
             await new Promise((resolve) => setTimeout(resolve, pauseMs));
         }
-        const remaining = ((await this.copilotSession.rpc.tasks.list()).tasks ?? []).filter(active);
+        const remaining = await listActive();
         if (remaining.length > 0) {
-            throw new Error(`${remaining.length} background task(s) still active after ${rounds} cancel rounds`);
+            const reason = `${remaining.length} background task(s) still active after ${rounds} cancel rounds`;
+            if (remote) this.noteComputeStopFailure(reason, remaining.map((task: any) => String(task.id)));
+            throw new Error(reason);
         }
+        if (remote) this.computeStopFailure = null;
         return cancelled;
     }
 
@@ -4342,11 +4614,10 @@ export class ManagedSession {
         if (config.featureToolFingerprint !== undefined
             && config.featureToolFingerprint !== this.config.featureToolFingerprint) return true;
         return Boolean(
-            (currentModel || nextModel)
-            && (currentModel !== nextModel
-                || currentReasoningEffort !== nextReasoningEffort
-                || currentContextTier !== nextContextTier
-                || currentProviderFingerprint !== nextProviderFingerprint)
+            ((currentModel || nextModel) && currentModel !== nextModel)
+            || currentReasoningEffort !== nextReasoningEffort
+            || currentContextTier !== nextContextTier
+            || currentProviderFingerprint !== nextProviderFingerprint
         );
     }
 

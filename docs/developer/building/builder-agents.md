@@ -4,6 +4,11 @@ PilotSwarm ships distributable template files for Copilot custom agents that hel
 
 These are not runtime agents inside PilotSwarm. They are authoring-time helpers meant to be copied into another repository.
 
+Builders adding remote execution should follow the public
+[native compute contract](./compute-providers.md), not copy a provider-specific
+prototype or private SDK imports. Native checkpoint/supervision qualification is
+required; the stock process fixture and local-parity file copying do not establish it.
+
 ## Template Source
 
 In this repo, the templates live in:

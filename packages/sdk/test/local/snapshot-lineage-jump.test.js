@@ -25,11 +25,11 @@ import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
     it("latest is 1.0.82, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.82");
+        expect(LATEST).toBe("1.0.83");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_82");
-        expect(dispatcher.durableSessionOrchestration_1_0_82).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_83");
+        expect(dispatcher.durableSessionOrchestration_1_0_83).toBeTypeOf("function");
     });
 
     it("freezes 1.0.65 through 1.0.81 as distinct registered handlers", () => {

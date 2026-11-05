@@ -30,6 +30,11 @@ Every SDK app has two halves:
 
 The worker is a trusted backend component and always connects directly to the store. Client code talks to a deployment through its [Web API](../../api/reference.md) and needs only the portal URL — no database or storage credentials.
 
+For remote agent execution, use a qualified provider through the public
+[native compute contract](./compute-providers.md). Keep the common host's native
+state capture separate from independently attached repositories; each delegated
+session has its own execution environment.
+
 ## Minimal Working App
 
 The worker half runs in your backend and connects directly to the store:

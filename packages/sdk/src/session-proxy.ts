@@ -1,6 +1,7 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeComputeActivity, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
+import { prepareComputeWriteback, readComputeWriteback, publishComputeWriteback, type ComputeChargeIdentity, type ComputeWritebackReceipt, type ComputeStoppedOutcome } from "./compute-writeback.js";
 import {
     BoundAgentPackageUnavailableError,
     isSessionLockAcquireTimeoutError,
@@ -14,6 +15,7 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
+import { orchestrationSupportsCompute, orchestrationVersionAtLeast, NATIVE_COMPUTE_ORCHESTRATION_MIN_VERSION } from "./orchestration-version.js";
 import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
@@ -37,7 +39,7 @@ import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./ma
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
-import { approvePermissionForSession } from "./permissions.js";
+import { TOOL_FREE_HELPER_SESSION } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
@@ -718,7 +720,15 @@ export function createSessionProxy(
     affinityKey: string,
     config: SerializableSessionConfig,
     routingContract?: ActivityRoutingContract,
+    /**
+     * Compute providers: the orchestration version running this session.
+     * Only a version that knows about compute may choose the compute
+     * routing tag — a frozen older one must schedule exactly what it
+     * always did, whichever build replays it. Absent counts as older.
+     */
+    orchestrationVersion?: string,
 ) {
+    const computeAware = orchestrationSupportsCompute(orchestrationVersion);
     return {
         runTurn(
             prompt: string,
@@ -787,6 +797,13 @@ export function createSessionProxy(
                 },
                 affinityKey,
             );
+            // Compute providers: the turn of a session that runs its agent
+            // on a host goes only to workers that can drive one. An older
+            // worker would run it as its own child process, beside the CMS
+            // and the model keys. Those workers declare the turn-control,
+            // workspace and handoff tags too.
+            if (computeAware && (config as { computeTarget?: unknown }).computeTarget) return routeComputeActivity(task,
+                orchestrationVersionAtLeast(orchestrationVersion, NATIVE_COMPUTE_ORCHESTRATION_MIN_VERSION));
             // Session turn control (1.0.81): every turn goes only to workers
             // that listen for controls. Those workers also declare the
             // handoff and workspace tags.
@@ -842,6 +859,22 @@ export function createSessionProxy(
         releaseWorkspace(args: { reason: string; revision?: number; turnIndex?: number }) {
             return routeWorkspaceActivity(ctx.scheduleActivityOnSession(
                 "releaseWorkspace",
+                { sessionId, ...args },
+                affinityKey,
+            ));
+        },
+        /**
+         * Compute providers: let go of this session's host on the worker
+         * that holds it, before the session can move to another one.
+         *
+         * Without this the worker that ran the last turn keeps its bridge,
+         * its pooled client and its warm handle until it evicts the session
+         * much later, while another worker resumes the same session on the
+         * same host. Two workers would then drive one runtime.
+         */
+        releaseCompute(args: { reason: string }) {
+            return routeComputeActivity(ctx.scheduleActivityOnSession(
+                "releaseCompute",
                 { sessionId, ...args },
                 affinityKey,
             ));
@@ -1198,9 +1231,9 @@ export function createSessionManagerProxy(
 export function registerActivities(
     runtime: any,
     sessionManager: SessionManager,
-    sessionStore: SessionStateStore | null,
+    activitySessionStore: SessionStateStore | null,
     githubToken?: string,
-    catalog?: SessionCatalog | null,
+    activityCatalog?: SessionCatalog | null,
     provider?: any,
     storeUrl?: string,
     cmsSchema?: string,
@@ -1235,6 +1268,8 @@ export function registerActivities(
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
 ) {
+    const catalog = activityCatalog;
+    const sessionStore = activitySessionStore;
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
     // these clients resolve the SAME store as the worker — otherwise
@@ -1469,6 +1504,29 @@ export function registerActivities(
             carriedSteers?: import("./types.js").LateSteer[];
         },
     ): Promise<TurnResult> => {
+        const execution = sessionManager.getComputeExecution?.(input.sessionId);
+        const native = sessionManager.isNativeComputeTurn?.(input.sessionId) === true;
+        const recoveredStop = sessionManager.getComputeStoppedOutcome?.(input.sessionId);
+        const catalog = execution && activityCatalog ? execution.guard(activityCatalog) : activityCatalog;
+        const sessionStore = execution && activitySessionStore ? execution.guard(activitySessionStore, {
+            commitSnapshot: `publication:${input.snapshot?.turnKey}`,
+        }) : activitySessionStore;
+        let nativeReceipt: ComputeWritebackReceipt | undefined;
+        let prepareNativeReceipt: (() => ComputeWritebackReceipt) | undefined;
+        let nativeChargeIdentity: ComputeChargeIdentity | undefined;
+        const completeNative = async (receipt: unknown): Promise<boolean> => {
+            if (!catalog || !input.snapshot) throw new Error("Committed native completion requires its catalog and durable identity");
+            const expected = {
+                sessionId: input.sessionId, turnKey: input.snapshot!.turnKey,
+                transcriptEpoch: input.transcriptEpoch ?? 0, turnIndex: input.turnIndex ?? 0,
+            };
+            const publish = () => publishComputeWriteback(activityCatalog!, receipt, expected, execution?.identity);
+            const completed = await cmsRetryCritical("runTurn.nativeCompletion",
+                () => execution ? execution.lifecycle(publish, `completion:${input.snapshot!.turnKey}`) : publish(),
+                message => activityCtx.traceInfo(message));
+            if (!execution) sessionManager.noteComputeRecovery?.(input.sessionId, readComputeWriteback(receipt, expected).execution);
+            return completed;
+        };
         // Attachment count is traced unconditionally: a 2026-07-21 incident
         // showed turns whose ActivityScheduled input carried refs executing
         // WITHOUT them (suspected work-item redelivery after eviction/lock
@@ -1478,7 +1536,7 @@ export function registerActivities(
             ? activityCtx.traceWarn(message)
             : activityCtx.traceInfo(message);
 
-        const modelSummary = await sessionManager.getModelSummary(input.sessionId);
+        const modelSummary = native && !execution ? undefined : await sessionManager.getModelSummary(input.sessionId);
         const turnTelemetry = {
             tokensInput: 0,
             tokensOutput: 0,
@@ -1708,6 +1766,10 @@ export function registerActivities(
 
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
+        if (recoveredStop) {
+            if (tc) tc.carriedTaken = tc.carried.length > 0;
+            return tc ? await finishTurnControl(recoveredStop, 0, { alwaysEnd: true }) : recoveredStop;
+        }
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
         // Only active when the orchestration (1.0.57+) supplied snapshot
         // coordinates AND the store implements the versioned CAS contract.
@@ -1730,6 +1792,10 @@ export function registerActivities(
                     // pre-1.0.67 inputs → 0 (legacy chain, today's behavior).
                     transcriptEpoch: input.transcriptEpoch ?? 0,
                     dropWarmSession: () => sessionManager.dropWarmSession(input.sessionId),
+                    // Optional, like the rest of the manager's late
+                    // additions: a session manager that does not hold
+                    // remote session folders has nothing to fence.
+                    requireCommittedOutcome: native,
                     trace,
                 }
                 : null;
@@ -1764,6 +1830,7 @@ export function registerActivities(
         if (lifecycle) {
             const pre = await runTurnPreamble(lifecycle);
             if (pre.kind === "already-committed") {
+                if (native) await completeNative(pre.writeback);
                 activityCtx.traceInfo(
                     `[runTurn] session=${input.sessionId} already-committed recovery at v${pre.version}; ` +
                     `returning stored result without re-running the turn`,
@@ -1920,6 +1987,11 @@ export function registerActivities(
                     message: `Provider admission could not verify this turn: ${err?.message ?? err}`,
                 } as TurnResult;
             }
+        }
+
+        if (native) {
+            if (!catalog?.getComputeChargeIdentity) throw new Error("Native accounting admission is unavailable");
+            nativeChargeIdentity = await catalog.getComputeChargeIdentity(input.sessionId, input.turnIndex ?? 0);
         }
 
         // ── the workspace gate (session workspaces) ─────────────────
@@ -2258,6 +2330,7 @@ export function registerActivities(
                             lifecycleRehydrated = true;
                         }
                     } catch (storeRecoveryErr: any) {
+                        if (native) throw storeRecoveryErr;
                         trace(
                             `session=${input.sessionId} snapshot-store recovery failed: ` +
                             `${storeRecoveryErr?.message ?? storeRecoveryErr}; falling back to lossy replay`,
@@ -4671,7 +4744,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 tc.live.retire();
                 sessionManager.getTurnControlHub?.()?.unregister(tc.live);
             }
-            if (cancelled) return { type: "cancelled" };
+            if (cancelled && !native) return { type: "cancelled" };
+            if (cancelled) result = { type: "cancelled" };
             if (tc) await faultPointAsync("turn.control.before-writeback", { sessionId: input.sessionId });
 
             // ── Activity-level writeback: sync turn result → CMS ──
@@ -4714,9 +4788,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     updates.lastError = null;
                 }
                 const turnEndedAt = new Date();
-                const writebackHasControls = await cmsRetryBestEffort(
-                    `runTurn.postTurn completeTurnWriteback state=${updates.state} session=${input.sessionId}`,
-                    () => catalog!.completeTurnWriteback({
+                const turnWriteback: import("./cms.js").CompleteTurnWritebackInput = {
                         sessionId: input.sessionId,
                         // The session's bound agent. This was hardcoded null,
                         // which left session_turn_metrics.agent_id empty on
@@ -4749,7 +4821,37 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         lastError: updates.lastError ?? null,
                         waitReason: updates.waitReason ?? null,
                         currentIteration: input.turnIndex ?? 0,
-                    }),
+                    };
+                if (native) {
+                    if (!nativeChargeIdentity || !input.snapshot) throw new Error("Native turn has no frozen accounting identity");
+                    const chargeIdentity = nativeChargeIdentity;
+                    const turnKey = input.snapshot.turnKey;
+                    const stoppedOutcome: ComputeStoppedOutcome | undefined = result.type === "stopped" ? {
+                        type: "stopped", ...(result.reason === undefined ? {} : { reason: result.reason }),
+                        ...(result.events ? { events: keepOrchestrationTurnEvents(result).events } : {}),
+                        snapshotVersion: lifecycleBaseVersion,
+                        ...((runConfig as ManagedSessionConfig).workspaceAttach ? { workspaceAttached: true } : {}),
+                    } : undefined;
+                    prepareNativeReceipt = () => prepareComputeWriteback({
+                        turnKey, transcriptEpoch: input.transcriptEpoch ?? 0,
+                        execution: execution!.identity,
+                        turn: { ...turnWriteback, tokensInput: turnTelemetry.tokensInput, tokensOutput: turnTelemetry.tokensOutput,
+                            tokensCacheRead: turnTelemetry.tokensCacheRead, tokensCacheWrite: turnTelemetry.tokensCacheWrite,
+                            toolCalls: turnTelemetry.toolCalls, toolErrors: turnTelemetry.toolErrors, toolNames: Array.from(turnTelemetry.toolNames).sort(),
+                            ...(stoppedOutcome ? { stoppedOutcome } : {}) },
+                        providerCharge: {
+                            sessionId: input.sessionId, turnIndex: input.turnIndex ?? 0,
+                            ledgerTurnIndex: chargeIdentity.ledgerTurnIndex, ownerUserId: chargeIdentity.ownerUserId,
+                            providerName: admittedProvider.name, modelQualified: admittedProvider.modelRef ?? runConfig.model ?? null,
+                            chargeClass: admittedProvider.name ? (chargeIdentity.isSystem ? "system" : "user") : "unattributed",
+                            agentId: turnWriteback.agentId, tokensInput: turnTelemetry.tokensInput, tokensOutput: turnTelemetry.tokensOutput,
+                            tokensCacheRead: turnTelemetry.tokensCacheRead, tokensCacheWrite: turnTelemetry.tokensCacheWrite,
+                        },
+                    });
+                }
+                const writebackHasControls = native ? undefined : await cmsRetryBestEffort(
+                    `runTurn.postTurn completeTurnWriteback state=${updates.state} session=${input.sessionId}`,
+                    () => catalog!.completeTurnWriteback(turnWriteback),
                     (msg) => activityCtx.traceInfo(msg),
                 );
                 if (tc) {
@@ -4771,7 +4873,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // deleted while the model was working, the tokens were still
                 // spent on the credential that was admitted, and that is what
                 // the ledger should say.
-                if (catalog?.providers) {
+                if (catalog?.providers && !native) {
                     await cmsRetryBestEffort(
                         `runTurn.postTurn settleTurn session=${input.sessionId}`,
                         async () => {
@@ -4812,6 +4914,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         // snapshot). Keep only the events the orchestration reads; the CMS
         // already has every event from onEvent (issue #121).
         const bodyResult: TurnResult = keepOrchestrationTurnEvents(fullBodyResult);
+        if (execution) {
+            await sessionManager.checkpointComputeExecution(input.sessionId);
+            await execution.drain();
+            nativeReceipt = prepareNativeReceipt?.();
+            if (!lifecycle || !nativeReceipt) throw new Error("Native turn did not produce required completion metadata");
+            lifecycle.writeback = nativeReceipt;
+        }
         const sizeWarning = turnResultSizeWarning(bodyResult);
         if (sizeWarning) traceWarn(`[runTurn] session=${input.sessionId} ${sizeWarning}`);
 
@@ -4837,6 +4946,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 ? { ...bodyResult, controlCursor: { turn: tc.turn, cursor: liveCursor } } as TurnResult
                 : bodyResult;
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
+            if (native) {
+                if (!committed.published && committed.unpublishedReason !== "stopped") throw new Error("Native checkpoint was superseded; publication refused");
+                sessionManager.noteComputeCheckpointDisposition(input.sessionId,
+                    committed.published && !committed.alreadyCommitted ? "committed" : "discarded");
+                const hasControls = await completeNative(committed.alreadyCommitted ? committed.storedWriteback : lifecycle.writeback);
+                if (tc) tc.hasControls = hasControls;
+            }
             if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
                 // Store-wins: the snapshot was NOT advanced — a user stop, or a
@@ -4901,6 +5017,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Not published (stopped or superseded): nothing of this turn survives.
             return tc ? await finishTurnControl(saved, committed.published ? liveCursor : 0) : saved;
         }
+        if (native) throw new Error("Native execution produced no validated checkpoint");
         return tc ? await finishTurnControl(bodyResult, liveCursor) : bodyResult;
             }, { trace });
             if (!finalTurnResult) {
@@ -4979,8 +5096,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
-    const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(false, activityCtx, input);
-    const runTurnV4Handler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(true, activityCtx, input);
+    const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) =>
+        sessionManager.withComputeExecution ? sessionManager.withComputeExecution(input, () => runTurnImpl(false, activityCtx, input)) : runTurnImpl(false, activityCtx, input);
+    const runTurnV4Handler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) =>
+        sessionManager.withComputeExecution ? sessionManager.withComputeExecution(input, () => runTurnImpl(true, activityCtx, input)) : runTurnImpl(true, activityCtx, input);
     registerHandoffActivity(runtime, "runTurn", runTurnHandler);
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
@@ -5305,6 +5424,30 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         return result;
     });
 
+    // ── releaseCompute (compute providers) ──────────────────
+    // Session-pinned, like releaseWorkspace: it runs on the worker that
+    // holds the session, before the orchestration releases affinity, so no
+    // second worker can drive the same runtime. The orchestration races it
+    // against a cap and releases affinity anyway if it does not finish.
+    runtime.registerActivity("releaseCompute", async (
+        activityCtx: any,
+        input: { sessionId: string; reason: string },
+    ): Promise<{ released: boolean }> => {
+        const released = await sessionManager.releaseComputeForMove(input.sessionId);
+        activityCtx.traceInfo?.(`[releaseCompute] session=${input.sessionId} reason=${input.reason} released=${released}`);
+        if (catalog && released) {
+            await cmsRetryBestEffort(
+                `releaseCompute.recordEvent session=${input.sessionId}`,
+                () => catalog!.recordEvents(input.sessionId, [{
+                    eventType: "session.compute_released",
+                    data: { reason: input.reason, workerNodeId: workerNodeId ?? os.hostname() },
+                }], workerNodeId),
+                (msg) => activityCtx.traceInfo?.(msg),
+            );
+        }
+        return { released };
+    });
+
     // ── checkpointSession ───────────────────────────────────
     runtime.registerActivity("checkpointSession", async (
         activityCtx: any,
@@ -5473,9 +5616,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry
-                const sessionOpts: any = {
-                    onPermissionRequest: approvePermissionForSession,
-                };
+                // A one-shot session that reads a transcript and writes a
+                // line. The transcript may carry anything a session's
+                // events carried, so the helper is given no tools at all
+                // (permissions.ts, TOOL_FREE_HELPER_SESSION).
+                const sessionOpts: any = { ...TOOL_FREE_HELPER_SESSION };
                 if (defaultProvider) {
                     sessionOpts.model = defaultProvider.modelName;
                     sessionOpts.provider = defaultProvider.sdkProvider;

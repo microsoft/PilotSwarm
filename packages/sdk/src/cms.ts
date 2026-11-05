@@ -12,12 +12,18 @@ import { normalizeCapabilityState, type CapabilityState } from "./capability-cat
 import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
+import { ComputeTargetStore } from "./compute-target-store.js";
+import { resolveComputeTargetName } from "./compute.js";
 import { FeatureStore } from "./feature-store.js";
 import { MotdStore } from "./motd-store.js";
 import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
+import { PgComputeExecutionAuthority } from "./compute-execution-store.js";
+import type { ComputeExecutionAuthority } from "./compute-execution.js";
+import type { CompleteExecutionTurnWritebackInput, ComputeChargeIdentity } from "./compute-writeback.js";
+import { isComputeStoppedOutcome } from "./compute-writeback.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -980,6 +986,10 @@ export interface FleetDirectiveRow {
 }
 
 export interface SessionCatalog {
+    readonly computeExecution?: ComputeExecutionAuthority;
+    getComputeChargeIdentity?(sessionId: string, turnIndex: number): Promise<ComputeChargeIdentity>;
+    completeExecutionTurnWriteback?(input: CompleteExecutionTurnWritebackInput): Promise<boolean>;
+    getComputeStoppedOutcome?(sessionId: string, turnKey: string, epoch: number): Promise<Extract<import("./types.js").TurnResult, { type: "stopped" }> | null>;
     getSessionCapabilities?(sessionId: string): Promise<CapabilityState>;
     saveSessionCapabilities?(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean>;
     /**
@@ -989,6 +999,13 @@ export interface SessionCatalog {
      */
     readonly providers?: ProviderStore;
     readonly features?: FeatureStore;
+    /** Compute targets (migration 0088). Optional, like providers. See compute-target-store.ts. */
+    readonly computeTargets?: ComputeTargetStore;
+    /**
+     * Compute providers: the target a new root session gets when it names
+     * none, or "" for none. Optional, so a test double need not have it.
+     */
+    readonly defaultComputeTarget?: string;
     readonly motds?: MotdStore;
 
     /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
@@ -1636,12 +1653,32 @@ function sqlForSchema(schema: string) {
  * Uses the `pg` package (node-postgres) directly.
  * Must be created via the async `PgSessionCatalog.create()` factory.
  */
+/**
+ * The deployment's default compute target, as a whole name.
+ *
+ * A bare label is shorthand for the shared target of that label, exactly
+ * as it is for a caller who names one. Anything that is not a target name
+ * at all is refused here, when the setting is made, rather than at every
+ * session creation from then on.
+ */
+export function normalizedDefaultComputeTarget(value: unknown): string {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw) return "";
+    const [name] = resolveComputeTargetName(raw);
+    if (name) return name;
+    throw Object.assign(
+        new Error(`COMPUTE_TARGET_INVALID: "${raw}" is not a compute target name; a default is "shared/<label>" or a bare label`),
+        { code: "COMPUTE_TARGET_INVALID" });
+}
+
 export class PgSessionCatalog implements SessionCatalog {
     private pool: any;
     private initialized = false;
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
     readonly features: FeatureStore;
+    readonly computeTargets: ComputeTargetStore;
+    readonly computeExecution: ComputeExecutionAuthority;
     readonly motds: MotdStore;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
@@ -1651,6 +1688,8 @@ export class PgSessionCatalog implements SessionCatalog {
         this.sql = sqlForSchema(schema);
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
+        this.computeTargets = new ComputeTargetStore(pool, schema);
+        this.computeExecution = new PgComputeExecutionAuthority(pool, schema);
         this.motds = new MotdStore(pool, schema);
     }
 
@@ -1662,6 +1701,33 @@ export class PgSessionCatalog implements SessionCatalog {
      */
     get providers(): ProviderStore {
         return this._providers;
+    }
+
+    /**
+     * Compute providers: the target a new root session gets when it names
+     * none, as `shared/<label>`. Empty for a deployment that leaves
+     * sessions on the worker, which is the default.
+     *
+     * Read here, from the environment, so that every surface that creates
+     * a session — the worker, the Web API, the CLI — gets the same answer
+     * without each of them having to pass it down. **Every process that
+     * creates sessions needs the same setting**, or they disagree about
+     * what a session that names no target gets. A worker may also set it
+     * from its own options.
+     *
+     * Set through the accessor below, which normalizes a bare label into
+     * a whole name. A bare label stored as it was would fail every
+     * session creation with `COMPUTE_TARGET_NOT_FOUND`, long after the
+     * setting was made.
+     */
+    private _defaultComputeTarget = normalizedDefaultComputeTarget(process.env.PILOTSWARM_DEFAULT_COMPUTE_TARGET);
+
+    get defaultComputeTarget(): string {
+        return this._defaultComputeTarget;
+    }
+
+    set defaultComputeTarget(value: string) {
+        this._defaultComputeTarget = normalizedDefaultComputeTarget(value);
     }
 
     static readonly DEFAULT_POOL_MAX = 3;
@@ -1762,11 +1828,33 @@ export class PgSessionCatalog implements SessionCatalog {
         // A 42883 mid-transaction aborts it, so probe the newer overloads'
         // existence up front (once) instead of catch-and-retry inside BEGIN.
         const useVisibilityCreate = await this.supportsVisibilityCreate();
-        const useCreationConfig = Boolean(opts?.creationConfig) && await this.supportsCreationConfig();
         const useSplashMobileCreate = !useVisibilityCreate && Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
         const providerModel = opts?.model ?? null;
         const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
             && await this.supportsProviderSessionModelValidation();
+        // Compute providers: a deployment may name a target for sessions
+        // that choose none. It applies to a new root session only — a
+        // sub-agent inherits its tree's target through the root's record,
+        // and recording one of its own would make it disagree with a tree
+        // that named a different one.
+        const named = typeof opts?.creationConfig?.computeTarget === "string"
+            ? opts.creationConfig.computeTarget as string : null;
+        const computeTarget = named
+            ?? (opts?.parentSessionId ? null : (this.defaultComputeTarget || null));
+        if (computeTarget) {
+            opts = { ...(opts ?? {}), creationConfig: { ...(opts?.creationConfig ?? {}), computeTarget } };
+        }
+        const useCreationConfig = Boolean(opts?.creationConfig) && await this.supportsCreationConfig();
+        if (computeTarget && !useCreationConfig) {
+            throw Object.assign(
+                new Error("COMPUTE_TARGET_NOT_FOUND: this deployment cannot persist compute target selection yet"),
+                { code: "COMPUTE_TARGET_NOT_FOUND", status: 400 });
+        }
+        if (computeTarget && !await this.supportsComputeTargets()) {
+            throw Object.assign(
+                new Error("COMPUTE_TARGET_NOT_FOUND: this deployment has no compute targets yet"),
+                { code: "COMPUTE_TARGET_NOT_FOUND", status: 400 });
+        }
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
@@ -1775,6 +1863,16 @@ export class PgSessionCatalog implements SessionCatalog {
                     `SELECT "${this.sql.schema}".cms_provider_assert_session_model($1,$2,$3,$4)`,
                     [providerModel, opts?.owner?.provider ?? null, opts?.owner?.subject ?? null, opts?.isSystem ?? false],
                 );
+            }
+            if (computeTarget) {
+                // Same shape as the model check above: the target must exist
+                // and be enabled. A refusal aborts the create. The session
+                // records the target's id: the worker binds by id.
+                const { rows: targetRows } = await client.query(
+                    `SELECT "${this.sql.schema}".cms_compute_target_assert_session($1) AS target_id`,
+                    [computeTarget],
+                );
+                opts!.creationConfig = { ...opts!.creationConfig, computeTargetId: String(targetRows[0]?.target_id ?? "") };
             }
             const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, null];
             if (useVisibilityCreate) {
@@ -1796,8 +1894,8 @@ export class PgSessionCatalog implements SessionCatalog {
 
             // Creation config rides the same transaction as a raw UPDATE, like
             // the service columns below — the create proc's signature stays
-            // untouched, and a pre-0072 database simply skips the write (the
-            // in-memory map still covers the same-process path there).
+            // untouched. Without compute selection, a pre-0072 database skips
+            // the write (the in-memory map still covers the same-process path).
             if (useCreationConfig) {
                 await client.query(
                     `UPDATE "${this.sql.schema}".sessions SET creation_config = $2::jsonb WHERE session_id = $1`,
@@ -1856,6 +1954,8 @@ export class PgSessionCatalog implements SessionCatalog {
             await client.query("COMMIT");
         } catch (err) {
             await client.query("ROLLBACK").catch(() => {});
+            const refusal = /^(COMPUTE_TARGET_[A-Z_]+):\s*(.*)$/s.exec(String((err as any)?.message ?? ""));
+            if (refusal) throw Object.assign(new Error(`${refusal[1]}: ${refusal[2].trim()}`), { code: refusal[1], status: 400 });
             throw err;
         } finally {
             client.release();
@@ -1900,6 +2000,19 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         this._providerSessionModelValidationSupported = Boolean(rows[0]?.supported);
         return this._providerSessionModelValidationSupported;
+    }
+
+    private _computeTargetsSupported: boolean | null = null;
+
+    /** Whether the DB has migration 0088's compute targets. Cached per catalog instance. */
+    private async supportsComputeTargets(): Promise<boolean> {
+        if (this._computeTargetsSupported !== null) return this._computeTargetsSupported;
+        const { rows } = await this.pool.query(
+            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
+            [`"${this.sql.schema}".cms_compute_target_assert_session(text)`],
+        );
+        this._computeTargetsSupported = Boolean(rows[0]?.supported);
+        return this._computeTargetsSupported;
     }
 
     /** Whether the DB has migration 0029's 10-arg cms_create_session overload. Cached per catalog instance. */
@@ -2953,6 +3066,30 @@ export class PgSessionCatalog implements SessionCatalog {
                 input.workerNodeId,
             ],
         );
+    }
+
+    async getComputeChargeIdentity(sessionId: string, turnIndex: number): Promise<ComputeChargeIdentity> {
+        const { rows } = await this.pool.query(`SELECT "${this.sql.schema}".cms_compute_charge_identity($1,$2) AS identity`, [sessionId, turnIndex]);
+        if (!rows[0]?.identity) throw new Error("Native accounting identity is unavailable");
+        return rows[0].identity;
+    }
+
+    async getComputeStoppedOutcome(sessionId: string, turnKey: string, epoch: number): Promise<Extract<import("./types.js").TurnResult, { type: "stopped" }> | null> {
+        const { rows } = await this.pool.query(`SELECT "${this.sql.schema}".cms_compute_stopped_outcome($1,$2,$3) AS outcome`, [sessionId, turnKey, epoch]);
+        const outcome = rows[0]?.outcome;
+        if (!outcome) return null;
+        if (!isComputeStoppedOutcome(outcome)) throw new Error("Stored native Stop outcome is invalid");
+        return outcome;
+    }
+
+    async completeExecutionTurnWriteback(input: CompleteExecutionTurnWritebackInput): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT "${this.sql.schema}".cms_complete_execution_turn_writeback($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb) AS controls`,
+            [input.turn.sessionId, input.turnKey, input.transcriptEpoch, JSON.stringify(input.turn),
+                input.providerCharge ? JSON.stringify(input.providerCharge) : null, JSON.stringify(input.execution),
+                JSON.stringify(input.operationIdentity ?? input.execution)],
+        );
+        return rows[0]?.controls === true;
     }
 
     async completeTurnWriteback(input: CompleteTurnWritebackInput): Promise<boolean> {

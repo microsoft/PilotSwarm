@@ -8,6 +8,12 @@ questions over the result using multi-signal search + graph traversal.
 This is the worked example referenced by the `pilotswarm-knowledge-harvester`
 builder skill.
 
+Compute placement is independent of the facts/graph providers. This example does
+not configure a remote compute provider. A remote adaptation follows the public
+[native compute contract](../../docs/developer/building/compute-providers.md);
+facts/graph stores and attached repositories are not part of the native session
+archive, and delegated sessions have separate execution environments.
+
 ## What it shows
 
 - **Wiring the providers from env** — the worker and client are configured with

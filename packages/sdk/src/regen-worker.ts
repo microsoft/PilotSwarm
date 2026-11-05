@@ -30,7 +30,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import type { SessionCatalog, SessionEvent } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
-import { approvePermissionForSession } from "./permissions.js";
+import { TOOL_FREE_HELPER_SESSION } from "./permissions.js";
 
 export interface RegenArchiveInput {
     /** Selection strategy name; defaults to exchange-clustered. */
@@ -662,10 +662,14 @@ export async function runRegenDistill(
                 env: { ...process.env, COPILOT_HOME: tempHome },
             }, resolved!.provider, resolved!.toolCatalog);
             await sdk.start();
+            // The distiller reads one session's own transcript and writes
+            // a summary of it. It needs no tool to do that, and the
+            // transcript may carry anything that session's events carried,
+            // so it gets none (permissions.ts, TOOL_FREE_HELPER_SESSION).
             const session: any = await sdk.createSession({
                 ...(resolved!.model ? { model: resolved!.model } : {}),
                 ...(resolved!.provider ? { provider: resolved!.provider } : {}),
-                onPermissionRequest: approvePermissionForSession,
+                ...TOOL_FREE_HELPER_SESSION,
             });
             ephemeralSessionId = session.id ?? null;
             return await new Promise<string>((resolve, reject) => {

@@ -795,6 +795,21 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         },
     });
 
+    const readComputeExecutionTool = defineTool("read_session_compute_execution", {
+        description: "Read a session's durable native compute generation, phase and unresolved operations. Unknown authority never permits replacement.",
+        parameters: {
+            type: "object" as const, properties: { session_id: { type: "string" } }, required: ["session_id"],
+        },
+        handler: async (args: { session_id: string }) => {
+            const id = normalizeSessionId(args.session_id);
+            const denied = await ensureVisible("read_session_compute_execution", id);
+            if (denied) return denied;
+            if (!catalog.computeExecution) return { error: "Compute execution authority is unavailable" };
+            try { return { sessionId: id, execution: await catalog.computeExecution.inspect(id) }; }
+            catch (error) { return { error: `read_session_compute_execution: ${error instanceof Error ? error.message : String(error)}` }; }
+        },
+    });
+
     const readSessionTokensByModelTool = defineTool("read_session_tokens_by_model", {
         description:
             "Read per-session token totals grouped by provider:model:reasoning effort, with turn counts. " +
@@ -1406,6 +1421,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         contextHealthTool,
         ...systemReadTools,
         readSessionMetricSummaryTool,
+        readComputeExecutionTool,
         readSessionTokensByModelTool,
         readSessionGraphSearchesTool,
         readSessionTreeStatsTool,

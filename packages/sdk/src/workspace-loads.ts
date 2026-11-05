@@ -12,6 +12,7 @@
  * Every turn the file is read again, so edits take effect. A loaded agent or
  * skill wins over the repo's and the person's own of the same name.
  */
+import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceLoad } from "./capability-catalog.js";
 import { readWorkspaceFiles, type WorkspaceFileResult } from "./workspace-check.js";
@@ -37,24 +38,94 @@ export function attachedFoldersOf(attach: AttachInfo): AttachedFolder[] {
 const within = (child: string, parent: string) => child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
 
 /**
+ * The place a path really is: its deepest existing ancestor resolved, with
+ * whatever is left joined back on. A link inside a folder that points out
+ * of it therefore reads as where it points, not where it sits.
+ *
+ * Unreadable (a folder that has gone, a permission) gives back the path as
+ * written, and the containment check below then decides.
+ */
+function realPlace(absolute: string): string {
+    let probe = absolute;
+    while (!fs.existsSync(probe)) {
+        const parent = path.dirname(probe);
+        if (parent === probe) return absolute;
+        probe = parent;
+    }
+    try {
+        return path.join(fs.realpathSync(probe), path.relative(probe, absolute));
+    } catch {
+        return absolute;
+    }
+}
+
+/**
  * Where a path the model gave is: absolute, or relative to the working
  * folder. It must be inside an attached folder (the deepest one that holds
  * it wins). The load keeps the path relative to that folder's root.
+ *
+ * `linkSafe` resolves the path and the folders before comparing them, so a
+ * link inside a folder that points outside it is refused here, and what is
+ * saved is where the file really is. It is asked for only for a session
+ * whose agent runs on another host: that session must not reach worker
+ * files outside its own folders, while a session that runs on the worker
+ * behaves exactly as it always has. Either way a file that resolves out of
+ * its folder is refused when it is read (`readWorkspaceFiles`).
  */
-export function resolveLoadPath(input: unknown, folders: AttachedFolder[]):
+export function resolveLoadPath(input: unknown, folders: AttachedFolder[], opts: { linkSafe?: boolean } = {}):
     { ok: true; folder: AttachedFolder; absolute: string; rootRelative: string } | { ok: false; reason: string } {
     if (typeof input !== "string" || !input.trim() || input.includes("\0")) return { ok: false, reason: "path is required" };
     if (folders.length === 0) return { ok: false, reason: "this session has no attached folders in this turn" };
-    const absolute = path.isAbsolute(input) ? path.normalize(input) : path.resolve(folders[0].path, input);
+    const asked = path.isAbsolute(input) ? path.normalize(input) : path.resolve(folders[0].path, input);
+    const absolute = opts.linkSafe ? realPlace(asked) : asked;
+    const place = (folder: AttachedFolder) => opts.linkSafe
+        ? { path: realPlace(folder.path), rootPath: realPlace(folder.rootPath) }
+        : { path: path.normalize(folder.path), rootPath: folder.rootPath };
     const folder = folders
-        .filter((candidate) => within(absolute, path.normalize(candidate.path)))
+        .filter((candidate) => within(absolute, place(candidate).path))
         .sort((a, b) => b.path.length - a.path.length)[0];
     if (!folder) {
         return { ok: false, reason: `${absolute} is not inside the working folder or an extra folder (${folders.map((f) => f.path).join(", ")})` };
     }
-    const rootRelative = path.relative(folder.rootPath, absolute).split(path.sep).join("/");
+    const rootRelative = path.relative(place(folder).rootPath, absolute).split(path.sep).join("/");
     if (!rootRelative || rootRelative.startsWith("..")) return { ok: false, reason: `${absolute} is not inside its root` };
     return { ok: true, folder, absolute, rootRelative };
+}
+
+/**
+ * Which of this turn's attached folders a load may name, and whether the
+ * path must be resolved before it is checked.
+ *
+ * `localRoots` is what the session's compute binding allows, as the
+ * artifact tools read it:
+ *
+ *   undefined  this session runs on the worker. Every attached folder, and
+ *              the path is taken as written — exactly as before.
+ *   []         it runs on a host that shares none of the worker's folders.
+ *              There is no worker file it may name, so a load by path is
+ *              refused outright.
+ *   [roots]    it runs on a host that shares its own folders. Only those,
+ *              and the path is resolved first, so a link cannot lead out
+ *              of them.
+ */
+export function loadFoldersFor(folders: AttachedFolder[], localRoots: string[] | undefined):
+    { ok: true; folders: AttachedFolder[]; linkSafe: boolean } | { ok: false; reason: string } {
+    if (localRoots === undefined) return { ok: true, folders, linkSafe: false };
+    if (localRoots.length === 0) {
+        return {
+            ok: false,
+            reason: "this session's agent runs on another host, which does not share the worker's folders, so an agent or skill cannot be loaded from a path here",
+        };
+    }
+    const roots = localRoots.map((root) => realPlace(path.resolve(root)));
+    const allowed = folders.filter((folder) => roots.some((root) => within(realPlace(folder.path), root)));
+    if (allowed.length === 0) {
+        return {
+            ok: false,
+            reason: "this session's agent runs on another host, and none of this turn's folders is one that host shares",
+        };
+    }
+    return { ok: true, folders: allowed, linkSafe: true };
 }
 
 /** A SKILL.md: its name (frontmatter, else the folder's name), description and body. */

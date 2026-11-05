@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createSessionManagerProxy, createSessionProxy } from "../../dist/session-proxy.js";
-import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
+import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, COMPUTE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
 const context = () => new OrchestrationContext({ instanceId: "parent", executionId: "1", orchestrationName: "test", orchestrationVersion: "1.0.74" });
@@ -53,8 +53,9 @@ for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
     });
 }
 
-test("registry retains 1.0.74 through 1.0.81 separately and activates 1.0.82", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.82");
+test("registry retains historical handoff handlers separately and activates native 1.0.84", () => {
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.84");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.83").handler.name, "durableSessionOrchestration_1_0_83");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.81").handler.name, "durableSessionOrchestration_1_0_81");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.80").handler.name, "durableSessionOrchestration_1_0_80");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler.name, "durableSessionOrchestration_1_0_79");
@@ -178,4 +179,55 @@ test("a workspace session's turns and workspace activities go only to workers th
     // A session that never had a workspace keeps the handoff tag.
     const plain = createSessionProxy(ctx, "child", "affinity", { model: "m" }, "agent-handoff-v2");
     assert.equal(plain.runTurn("work", false, 1).tag, AGENT_HANDOFF_CAPABILITY);
+});
+
+test("a session whose agent runs on a host goes only to workers that can drive one", () => {
+    const ctx = context();
+
+    // An older worker would run this session's agent as its own child
+    // process, beside the CMS and the model keys, which is the one thing
+    // the compute design exists to prevent.
+    const remote = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1", "1.0.83");
+    const turns = [
+        remote.runTurn("work", false, 1),
+        remote.runTurn("work", true, 0, { epochStart: true }),
+    ];
+    assert.deepEqual(turns.map((t) => [t.name, t.tag]), [
+        ["runTurnV4", COMPUTE_CAPABILITY],
+        ["runTurnEpochV4", COMPUTE_CAPABILITY],
+    ]);
+
+    // The tag is chosen inside the orchestration, so an orchestration that
+    // predates compute must schedule exactly what it always did — whichever
+    // build is replaying it. Not knowing the version counts as older.
+    const frozen = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1", "1.0.82");
+    assert.equal(frozen.runTurn("work", false, 1).tag, TURN_CONTROL_CAPABILITY);
+    const unversioned = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1");
+    assert.equal(unversioned.runTurn("work", false, 1).tag, TURN_CONTROL_CAPABILITY);
+
+    // A session with no target is untouched: it still goes wherever a turn
+    // of its contract has always gone.
+    const plain = createSessionProxy(ctx, "child", "affinity", { model: "m" }, "turn-control-v1");
+    assert.equal(plain.runTurn("work", false, 1).tag, TURN_CONTROL_CAPABILITY);
+    const older = createSessionProxy(ctx, "child", "affinity", { model: "m" }, "agent-handoff-v2");
+    assert.equal(older.runTurn("work", false, 1).tag, AGENT_HANDOFF_CAPABILITY);
+});
+
+test("compute routing fails closed if the SDK cannot express capability tags", () => {
+    const ctx = context();
+    const proxy = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1", "1.0.83");
+    const schedule = ctx.scheduleActivityOnSession ?? ctx.scheduleActivity;
+    const tagless = (...args) => {
+        const task = schedule.apply(ctx, args);
+        delete task.withTag;
+        return task;
+    };
+    ctx.scheduleActivityOnSession = tagless;
+    try {
+        // Never schedule such a turn untagged: an untagged turn is exactly
+        // the one an older worker would pick up.
+        assert.throws(() => proxy.runTurn("work", false, 1), /tag routing/);
+    } finally {
+        ctx.scheduleActivityOnSession = schedule;
+    }
 });

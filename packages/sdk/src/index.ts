@@ -233,6 +233,77 @@ export {
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
 export { createBuiltInWorkspaceProvider, combineWorkspaceProviders, applyWorkspaceDefaults } from "./workspace.js";
+// Compute providers and compute targets (experimental: may change before release)
+export {
+    LOCAL_COMPUTE_KIND,
+    COMPUTE_ERROR_CODES,
+    COMPUTE_KIND_PATTERN,
+    COMPUTE_TARGET_NAME_PATTERN,
+    ComputeProviderRegistry,
+    createLocalComputeProvider,
+    validateComputeTargetName,
+    runtimeConnectionFor,
+    runtimeEndpointKey,
+    isLoopbackAddress,
+    computeHostKey,
+    computeBindingKey,
+    checkRemoteEndpoint,
+} from "./compute.js";
+export type {
+    ComputeProvider,
+    ComputeCapabilities,
+    ComputeTarget,
+    ComputeTargetClass,
+    ComputePrincipal,
+    ComputeHostRef,
+    ComputeReleaseRequest,
+    ComputeFailure,
+    ComputeValidateRequest,
+    ComputeBindRequest,
+    ComputeConnectRequest,
+    ComputeConnectResult,
+    ComputeRuntimeEndpoint,
+    ComputeWorkspacePaths,
+    ComputeReleaseReason,
+} from "./compute.js";
+export { ComputeRuntimeBridge, ComputeBridgeRegistry, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_CONNECTIONS, openTcpPipe } from "./compute-bridge.js";
+export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
+export { formatComputeFailure, computeFailureError, computeFailureMessage } from "./compute-failures.js";
+export type { ComputeTargetRow } from "./compute-target-store.js";
+// The mutual handshake every remote runtime connection starts with.
+export {
+    COMPUTE_HANDSHAKE_VERSION,
+    COMPUTE_HANDSHAKE_TIMEOUT_MS,
+    COMPUTE_HANDSHAKE_MAX_FRAME_BYTES,
+    COMPUTE_HANDSHAKE_SECRET_MIN_CHARS,
+    COMPUTE_HANDSHAKE_FAILED,
+    ComputeHandshakeError,
+    newComputeHandshakeSecret,
+    isUsableHandshakeSecret,
+    computeHandshakeProof,
+    runWorkerHandshake,
+    runHostHandshake,
+    COMPUTE_HANDSHAKE_PURPOSES,
+} from "./compute-handshake.js";
+export type { ComputeHandshakeCredential, ComputeHandshakePurpose } from "./compute-handshake.js";
+// The host component: the PilotSwarm end of the handshake, on the host,
+// and the side channel it serves beside the session's runtime stream.
+export { startComputeHost, COMPUTE_HOST_MAX_CONNECTIONS } from "./compute-host.js";
+export type { ComputeHostOptions, ComputeHostHandle } from "./compute-host.js";
+export type { ComputeHostServiceOptions, ComputeHostServices } from "./compute-host-services.js";
+export { COMPUTE_COPY_MAX_BYTES, COMPUTE_COPY_MAX_FILES } from "./compute-assets.js";
+export type { ComputeCopyLimits } from "./compute-assets.js";
+export { ComputeNativeStateHost, COMPUTE_NATIVE_STATE_PROTOCOL, stageNativeCapture, readNativeStaging, nativeStateDigest } from "./compute-native-state.js";
+export { ComputeNativeStateClient } from "./compute-native-client.js";
+export type {
+    ComputeNativeStateProfile, ComputeNativeStateOptions, ComputeHostSupervisor,
+    ComputeCheckpointBarrier, ComputeNativeState, ComputeNativeCapture, ComputeNativeStateDescription,
+    ComputeHostNativeFactory,
+} from "./compute-native-state.js";
+export { ComputeExecutionAttempt, ComputeExecutionError } from "./compute-execution.js";
+export type { ComputeExecutionIdentity, ComputeExecutionStatus, ComputeExecutionAuthority } from "./compute-execution.js";
+export { PgComputeExecutionAuthority } from "./compute-execution-store.js";
+export type { CompleteExecutionTurnWritebackInput, ComputeChargeIdentity, ComputeWritebackReceipt } from "./compute-writeback.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,

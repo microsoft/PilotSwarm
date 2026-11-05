@@ -285,13 +285,24 @@ export default {
   (`unknown_mcp_server`): it must exist in the deployment catalog, or the
   reference is dropped at load.
 
-Two fields are **deployment-catalog only** and rejected in a package
+Three fields are **deployment-catalog only** and rejected in a package
 `.mcp.json`:
 
 - `"default": true` (`mcp_default_forbidden`) — it would add the server to
   every agent that inherits the deployment default set.
 - `"allowedAgents"` (`mcp_allowed_agents_forbidden`) — only a deployment may
   restrict who uses a server.
+- `"remote": false` (`mcp_remote_forbidden`) — only a deployment decides
+  whether one of **its** servers may be reached by a session whose agent runs
+  on a compute host. A package's own server always runs on that host, started
+  by the runtime out of the copied package folder.
+
+A package server that runs on a compute host is built from the entry **as you
+wrote it**, so a `${VAR}` in it is not resolved against the worker: that server
+is unavailable instead, and the session's events name the field that asked for
+it. Keep paths relative to the package folder, and either vendor what the
+server imports or rely only on what is already on the host — nothing is
+installed there.
 
 ### Using a server the deployment restricts
 

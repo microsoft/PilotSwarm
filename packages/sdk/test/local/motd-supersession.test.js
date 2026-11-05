@@ -102,7 +102,7 @@ describe.skipIf(!url)("fleet-current MoTD supersession in real PostgreSQL", () =
             expect((await store.current(reader)).motdId).toBe(older.motdId);
         });
     });
-    it("upgrades seeded 0086 to 0087 without changing rows, pictures, dismissals, history or earlier migration records", async () => {
+    it("upgrades seeded 0086 through the current chain without changing MoTD state or earlier migration records", async () => {
         await fixture(async ({ pool, schema, store, upgrade }) => {
             const picture = { base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", contentType: "image/png", alt: "Seeded picture" };
             const olderRequest = input({ endsAt: "2090-01-01T00:00:00Z", image: picture });
@@ -121,7 +121,8 @@ describe.skipIf(!url)("fleet-current MoTD supersession in real PostgreSQL", () =
             expect((await pool.query(`SELECT * FROM "${schema}".motds ORDER BY motd_id`)).rows).toEqual(rows);
             expect((await pool.query(`SELECT * FROM "${schema}".motd_dismissals ORDER BY user_id,motd_id`)).rows).toEqual(dismissals);
             expect((await pool.query(`SELECT * FROM "${schema}".schema_migrations WHERE version <= '0086' ORDER BY version`)).rows).toEqual(records);
-            expect((await pool.query(`SELECT version FROM "${schema}".schema_migrations ORDER BY version DESC LIMIT 1`)).rows[0].version).toBe("0087");
+            expect((await pool.query(`SELECT name FROM "${schema}".schema_migrations WHERE version='0087'`)).rows[0].name).toBe("motd_supersession");
+            expect((await pool.query(`SELECT version FROM "${schema}".schema_migrations ORDER BY version DESC LIMIT 1`)).rows[0].version).toBe("0089");
             expect((await pool.query(`SELECT pg_get_functiondef('"${schema}".cms_motd_list(text,text,boolean,integer,bigint)'::regprocedure) AS sql`)).rows[0].sql).toBe(listDefinition);
             expect(await catalog.motds.list(admin)).toEqual(history);
             expect(await catalog.motds.current(reader)).toBeNull();

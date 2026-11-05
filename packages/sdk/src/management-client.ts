@@ -40,6 +40,7 @@ import type {
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import { readDefaultsRecord } from "./workspace.js";
+import type { ComputeExecutionStatus } from "./compute-execution.js";
 import {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,
@@ -80,6 +81,15 @@ import type {
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { ComputeTargetError, type ComputeTargetRow } from "./compute-target-store.js";
+import {
+    COMPUTE_ERROR_CODES,
+    LOCAL_COMPUTE_KIND,
+    computeTargetNameFor,
+    parseComputeTargetName,
+    resolveComputeTargetName,
+    type ComputeTarget,
+} from "./compute.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
 import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
 import type {
@@ -3407,6 +3417,19 @@ export class PilotSwarmManagementClient {
         return this._catalog!.getSessionMetricSummary(sessionId);
     }
 
+    async getSessionComputeExecution(sessionId: string): Promise<ComputeExecutionStatus | null> {
+        this._ensureStarted();
+        if (!this._catalog?.computeExecution) throw new Error("Compute execution authority is unavailable");
+        return this._catalog.computeExecution.inspect(sessionId);
+    }
+
+    /** Request trusted worker reconciliation; never clears an execution hold itself. */
+    async reconcileSessionComputeExecution(sessionId: string): Promise<void> {
+        this._ensureStarted();
+        if (!this._catalog?.computeExecution?.requestReconciliation) throw new Error("Compute reconciliation is unavailable");
+        await this._catalog.computeExecution.requestReconciliation(sessionId);
+    }
+
     // ── Session footprint (sensor) ────────────────────────────
 
     private _footprintCache: FootprintCache | null = null;
@@ -4226,6 +4249,61 @@ export class PilotSwarmManagementClient {
             actor: await store.lookupUserId(viewer?.principal ?? null),
             isAdmin: viewer?.isAdmin === true,
         };
+    }
+
+    private _requireComputeTargets() {
+        this._ensureStarted();
+        const store = this._catalog?.computeTargets;
+        if (!store) throw new Error("Compute targets are not available on this deployment.");
+        return store;
+    }
+
+    private async _computeTargetActor(viewer: ProviderViewer) {
+        const store = this._requireComputeTargets();
+        return {
+            store,
+            actor: await store.lookupUserId(viewer?.principal ?? null),
+            isAdmin: viewer?.isAdmin === true,
+        };
+    }
+
+    private _computeTargetCandidates(name: string): string[] {
+        const parsed = parseComputeTargetName(name);
+        return parsed
+            ? [`${parsed.owner.toLowerCase()}/${parsed.label}`]
+            : resolveComputeTargetName(name);
+    }
+
+    private _findComputeTarget(
+        targets: ComputeTargetRow[],
+        name: string,
+    ): ComputeTargetRow {
+        const candidates = this._computeTargetCandidates(name);
+        const target = targets.find((row) => candidates.includes(row.name) && row.manageable);
+        if (!target) {
+            throw new ComputeTargetError(
+                COMPUTE_ERROR_CODES.NOT_FOUND,
+                `There is no compute target named "${name}".`,
+            );
+        }
+        return target;
+    }
+
+    private _newComputeTargetName(input: { name?: string; label?: string }): string {
+        if (input.name !== undefined && input.label !== undefined && input.name !== input.label) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.INVALID, "Provide either a target name or a label, not different values for both.");
+        }
+        const requested = input.name ?? input.label;
+        const parsed = parseComputeTargetName(requested);
+        if (parsed && parsed.owner.toLowerCase() !== "shared") {
+            throw new ComputeTargetError(
+                COMPUTE_ERROR_CODES.FORBIDDEN,
+                'An administrator may create targets only in the "shared" namespace.',
+            );
+        }
+        const normalized = computeTargetNameFor(parsed ? parsed.label : requested);
+        if (!normalized.ok) throw new ComputeTargetError(normalized.code, normalized.message);
+        return normalized.name;
     }
 
     private async _auditProviderMutation(
@@ -5559,6 +5637,70 @@ export class PilotSwarmManagementClient {
             }
         }
         return out;
+    }
+
+    /** List the shared targets, as authorized by the store. */
+    async listComputeTargets(viewer: ProviderViewer): Promise<{ targets: ComputeTargetRow[] }> {
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        return { targets: await store.list(actor, isAdmin) };
+    }
+
+    /** Create a target in the shared namespace. */
+    async createComputeTarget(
+        viewer: ProviderViewer,
+        input: { name?: string; label?: string; kind: string; displayName?: string | null; config?: Record<string, unknown> | null },
+    ): Promise<{ target: ComputeTarget }> {
+        if (!viewer.isAdmin) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Only an administrator can create a shared compute target.");
+        }
+        if (input.kind === LOCAL_COMPUTE_KIND) {
+            // That kind runs the agent in the worker's own process, which
+            // is what a session with no target already does. Registering
+            // it as a target would mean sessions that look like they run
+            // elsewhere and do not, and turns routed to workers by a tag
+            // that says nothing about which kinds a worker has.
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.INVALID,
+                `"${LOCAL_COMPUTE_KIND}" runs a session's agent on the worker, which is what a session with no compute target already does; it cannot be registered as a target.`);
+        }
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        const name = this._newComputeTargetName(input);
+        const target = await store.create({
+            name, kind: input.kind,
+            displayName: input.displayName, config: input.config,
+        }, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "createComputeTarget", target.name, { class: target.class, kind: target.kind });
+        return { target };
+    }
+
+    /** Update a shared target; enabled is the target's explicit on/off switch. */
+    async updateComputeTarget(
+        viewer: ProviderViewer,
+        input: { name: string; displayName?: string | null; config?: Record<string, unknown> | null; enabled?: boolean | null },
+    ): Promise<{ target: ComputeTarget }> {
+        if (!viewer.isAdmin) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Only an administrator can change a shared compute target.");
+        }
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        const target = this._findComputeTarget(await store.list(actor, isAdmin), input.name);
+        const updated = await store.update(target.name, input, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "updateComputeTarget", updated.name, {
+            enabled: updated.enabled,
+            changedDisplayName: input.displayName !== undefined,
+            changedConfig: input.config !== undefined,
+        });
+        return { target: updated };
+    }
+
+    /** Delete a shared target. The result includes sessions still naming it. */
+    async deleteComputeTarget(viewer: ProviderViewer, name: string): Promise<{ name: string; waitingSessions: number }> {
+        if (!viewer.isAdmin) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Only an administrator can delete a shared compute target.");
+        }
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        const target = this._findComputeTarget(await store.list(actor, isAdmin), name);
+        const waitingSessions = await store.delete(target.name, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "deleteComputeTarget", target.name, { waitingSessions });
+        return { name: target.name, waitingSessions };
     }
 
     /**
