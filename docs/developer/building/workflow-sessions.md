@@ -366,6 +366,16 @@ names and its version at continue-as-new, including historical runtimes.
 The new delay completes before continue-as-new; irrelevant messages do not
 restart a completed poll or reset its deadline.
 
+A version 2 parallel state that does not join ends with a report of its
+branches (`joined: false`, `total`, `succeeded`, `failFast`, `branches`). The
+report also has `timedOut` (whether the state's time limit ended it) and
+`needed` (the successes its join needed). A run compiled before parallel time
+limits existed (IR 8) gets both too, with `timedOut` always `false`; a report
+already stored is not rewritten. These fields are added; none is removed or
+changed, so read a report by the fields you use, not by its exact set of
+fields. Version 2 workflows were not turned on before these fields came, so no
+stored run depends on the shorter report.
+
 Cleanup failures are explicit. The worker attempts native-task cancellation
 and disconnect even when abort fails. If it cannot confirm that tasks stopped,
 it retains the folder hold and blocks a new executor on that worker pending

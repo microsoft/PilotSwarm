@@ -128,7 +128,8 @@ describe("J3 JK-21 and JK-23: the build before the join of the first k (8d568890
             expect(report).toMatchObject({ joined: false, total: 3, succeeded: 2, failFast: true });
             expect(report.branches.map(branch => [branch.index, branch.ended, branch.outcome, branch.resultKind])).toEqual([
                 [0, "terminal", "succeeded", "business"], [1, "terminal", "succeeded", "business"], [2, "error", "invalid_input", "runtime_error"]]);
-            // This build's report has the old fields and two more (timedOut false, needed: the parent's decision on JK-21).
+            // This build's report has the old fields and two more, timedOut (false) and needed; they are additive and documented
+            // in workflow-sessions.md (the parent's decision on JK-21).
             expect(Object.keys(report).sort()).toEqual(["branches", "failFast", "joined", "needed", "succeeded", "timedOut", "total"]);
             for (const run of runs) {
                 // The stored IR is the old one, unchanged; the controller's same instance replayed and finished.
