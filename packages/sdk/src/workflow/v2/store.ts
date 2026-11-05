@@ -6241,7 +6241,9 @@ export class WorkflowStore {
      * `reason` join, the branches still running when a join of the first k
      * had its successes (winner `join`); with `reason` timeout, those the
      * state's own time limit cut (winner `join_timeout`; elapseParallelNode
-     * already decided their work). A result that won its node's
+     * already decided their work). A terminal is never cancelled (as in
+     * cancelBranchWorkIn): it records the end of work stored before, and its
+     * branch's end decides it. A result that won its node's
      * compare-and-swap first stands. Returns every node execution of these
      * scopes that any of these cancellations decided, this call's and an
      * earlier one's, with why, so a retry still asks their effects to stop.
@@ -6262,7 +6264,7 @@ export class WorkflowStore {
                     `UPDATE ${this.t.nodes}
                         SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $3, output = NULL,
                             winner = $4, completed_at = clock_timestamp()
-                      WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND state = 'pending'
+                      WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND state = 'pending' AND node_type <> 'terminal'
                       RETURNING node_execution_id, scope_id`,
                     [input.runId, input.scopeIds, canonicalJson(branchCancelError(reason)), BRANCH_CANCEL_WINNERS[reason]]);
                 const now = decided.map(row => str(row, "node_execution_id")).sort();

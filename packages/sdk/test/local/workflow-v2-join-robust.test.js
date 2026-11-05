@@ -779,6 +779,34 @@ describe("J3 robust joins, part 2: the store (no controller)", () => {
         }
     });
 
+    // Formal check jk13-prep: a branch's cut (cancelBranchScopes, the controller's cut of every branch still running) never
+    // cancels a terminal, as the store's own cut (cancelBranchWorkIn) never does: a terminal records the end of work stored
+    // before, and its branch's end decides it.
+    it("JK-18 (guard): a branch's cut never cancels its terminal; the terminal is still decided by its branch's end", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            for (const reason of [undefined, "join", "timeout"]) {
+                const run = await storedRun(h, joinDoc({ items: WAITS(2) }));
+                await run.enterFan(WAITS(2), null);
+                await run.hold(0);
+                await run.hold(1);
+                await run.succeed(0);
+                // Branch 1's terminal admitted, not yet decided (a controller between its admission and its end).
+                expect(await h.store.enterNode({
+                    runId: run.runId, nodeExecutionId: run.at(0, "done"), scopeId: branchScopeId(run.fan, 0), nodeId: "done", ordinal: 1, nodeType: "terminal",
+                    predecessorId: run.at(0, "hold"), arrivalRoute: "elapsed", inputText: canonicalJson({ index: 0 }), kvRevision: 1, waitSeconds: null, immediate: null,
+                })).toMatchObject({ admitted: true, node: { state: "pending" } });
+                const cut = await h.store.cancelBranchScopes({ runId: run.runId, scopeIds: [0, 1].map(index => branchScopeId(run.fan, index)), ...(reason ? { reason } : {}) });
+                expect(cut.cancelled.map(item => item.nodeExecutionId), String(reason)).toEqual([run.at(1, "hold")]);
+                expect(await h.store.readNodeExecution(run.at(0, "done")), String(reason)).toMatchObject({ state: "pending" });
+                expect(await h.store.completeNode(run.at(0, "done"), { outcome: "succeeded", resultKind: "business", valueText: canonicalJson({ index: 0 }), winner: "controller" }))
+                    .toMatchObject({ won: true, node: { outcome: "succeeded" } });
+            }
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("J1b-T4: a winner whose terminal fails after the time limit gives way to the next success committed in time", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
         try {
