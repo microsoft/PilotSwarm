@@ -2413,12 +2413,14 @@ function runtimeError(code: RuntimeErrorCode, message: string, details?: JsonVal
 }
 
 /**
- * runtimeError as the effect orchestrations build it in their own code, byte for byte as before R3-SF-2: its text is
- * an activity's input, which a replay compares. Its message is cut before its secrets are hidden (when it is stored), so
- * a secret at the cut of an activity failure message over 4,000 characters can leave a part (a known limit).
+ * The runtime error the effect orchestrations build in their own code when the script activity itself fails: as
+ * runtimeError builds it, its message redacted whole before it is cut (S6-SF2). Its text is the input of the next store
+ * activity, which a replay compares, so this changed that input in place: safe only because Workflow V2 was never
+ * activated and every hot patch requires 0 non-terminal runs and 0 controller orchestrations (no effect orchestration
+ * is in flight to replay it).
  */
 function generatorRuntimeError(code: RuntimeErrorCode, message: string): NodeResultInput {
-    return { outcome: code, resultKind: "runtime_error", valueText: canonicalJson({ code, message: jsonbSafeText(message, 4_000) }), winner: "effect" };
+    return runtimeError(code, message);
 }
 
 /** The runtime error a send state records when it may not send to its recipient (store.recipientRefusal). */

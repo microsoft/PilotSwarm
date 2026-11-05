@@ -10,6 +10,7 @@ import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "../../d
 import { respondSessionRequestFromTool, workflowRespondFailure } from "../../dist/workflow/v2/request-service.js";
 import { WorkflowSchemaSet } from "../../dist/workflow/v2/schema.js";
 import { jsonbSafeText } from "../../dist/workflow/v2/json.js";
+import { workflowTestAnsweredProjection } from "../../dist/workflow/v2/test-mode.js";
 
 // Adversarial review SF-6: one secret-safe projection of workflow error text, wherever it is persisted or shown.
 
@@ -250,8 +251,9 @@ test("E2bH-T5: quoted and JSON Authorization values, a scheme word alone, an opa
 
 // Adversarial review R3-SF-2: text is redacted whole before it is cut, so a credential longer than the cut leaves no part;
 // text that was cut before (rows stored earlier) still has a cut URL's user and password hidden, however long, in linear
-// time. R3-SF-4: a host and a port of digits only, cut after the port, is not taken for a user and a password.
-test("R3-SF-2, R3-SF-4: a URL password longer than the cut leaves no part, cut after or before redaction; a cut host:port stays", () => {
+// time. S6-SF2 (reverting R3-SF-4's exemption): a host and a port of digits only, cut right after the port, cannot be
+// told from a user and a password of digits, so it is hidden too; a URL cut later (in its path) keeps its host.
+test("R3-SF-2, S6-SF2: a URL password longer than the cut leaves no part, cut after or before redaction; a cut host:port is hidden too", () => {
     const LONG = "p".repeat(600);
     const text = `stop it: postgres://admin:${LONG}${SENTINEL}@db.example.com/app and more`;
     for (const out of [redactThenClip(text, 500), redactWorkflowSecrets(jsonbSafeText(text, 500)), redactErrorThenClip(text, 500)]) {
@@ -261,10 +263,12 @@ test("R3-SF-2, R3-SF-4: a URL password longer than the cut leaves no part, cut a
     }
     // A long user before the cut, no password yet: hidden too.
     assert.equal(redactWorkflowSecrets(`postgres://${"u".repeat(400)}:…`), "postgres://<hidden>…");
-    // A host and its port, cut after the port: kept; with any other password, hidden.
-    for (const kept of ["see https://api.example.com:443…", "https://10.0.0.1:5432…", "https://api.example.com:443/v1/items…"]) {
-        assert.equal(redactWorkflowSecrets(kept), kept);
-    }
+    // A host and its port, cut right after the port, reads as a user and a password of digits: hidden (privacy wins).
+    assert.equal(redactWorkflowSecrets("see https://api.example.com:443…"), "see https://<hidden>…");
+    assert.equal(redactWorkflowSecrets("https://10.0.0.1:5432…"), "https://<hidden>…");
+    assert.equal(redactWorkflowSecrets("https://admin:12345678…"), "https://<hidden>…");
+    // Cut later, in its path: the host and port stay.
+    assert.equal(redactWorkflowSecrets("https://api.example.com:443/v1/items…"), "https://api.example.com:443/v1/items…");
     assert.equal(redactWorkflowSecrets("https://admin:Zq9…"), "https://<hidden>…");
     assert.equal(redactWorkflowSecrets("https://admin:44x…"), "https://<hidden>…");
     // Linear time on long and hostile cut-URL shapes.
@@ -277,8 +281,10 @@ test("R3-SF-2, R3-SF-4: a URL password longer than the cut leaves no part, cut a
 });
 
 // Adversarial review R3-SF-3: a parallel state's timed_out report keeps its finished branches' business outputs exactly, as
-// the blocked report does; its envelope, its other details and each branch's error have their secrets hidden.
-test("R3-SF-3: a timed_out report keeps branch outputs as they are; its message, details and branch errors are redacted", () => {
+// the blocked report does; its envelope, its other details and each branch's error have their secrets hidden. S6-SF2: only
+// where the caller vouches for its origin (the controller's parallel decision, parallelReport); the same shape from
+// anywhere else, an author's mocked error included, is an ordinary error.
+test("R3-SF-3, S6-SF2: a vouched timed_out report keeps branch outputs as they are; the same shape unvouched is hidden like any error", () => {
     const output = { key: "ordinary-value", token: "an-ordinary-field", nested: { password: "a-business-field" } };
     const report = {
         joined: false, timedOut: true, total: 2, needed: 2, succeeded: 1, failFast: false,
@@ -289,7 +295,8 @@ test("R3-SF-3: a timed_out report keeps branch outputs as they are; its message,
         ],
     };
     const envelope = { code: "timed_out", message: `limit passed; password=${SENTINEL}`, details: report };
-    const out = redactWorkflowErrorValue(envelope);
+    const vouched = { parallelReport: true };
+    const out = redactWorkflowErrorValue(envelope, vouched);
     assert.deepEqual(out.details.branches[0].output, output, "the business output exactly");
     assert.deepEqual(out.details.branches[0], report.branches[0]);
     assert.equal(JSON.stringify(out).includes(SENTINEL), false);
@@ -298,15 +305,65 @@ test("R3-SF-3: a timed_out report keeps branch outputs as they are; its message,
     // The same as the blocked report's branch (a business output, never redacted), and as stored and read back.
     const blocked = { ...report, timedOut: false };
     assert.deepEqual(out.details.branches[0], blocked.branches[0]);
-    const stored = redactWorkflowErrorText(canonicalJson(envelope), canonicalJson);
+    const stored = redactWorkflowErrorText(canonicalJson(envelope), canonicalJson, vouched);
     assert.deepEqual(JSON.parse(stored).details.branches[0].output, output);
     // A report without secrets is stored as it was written.
     const clean = canonicalJson({ code: "timed_out", message: "limit passed", details: { ...report, branches: [report.branches[0]] } });
-    assert.equal(redactWorkflowErrorText(clean, canonicalJson), clean);
+    assert.equal(redactWorkflowErrorText(clean, canonicalJson, vouched), clean);
+    // Unvouched (any other writer or reader, an event's error, a forged mocked error of the same shape): hidden as any error.
+    const hiddenOutput = { key: "<hidden>", token: "<hidden>", nested: { password: "<hidden>" } };
+    assert.deepEqual(redactWorkflowErrorValue(envelope).details.branches[0].output, hiddenOutput);
+    assert.deepEqual(JSON.parse(redactWorkflowErrorText(canonicalJson(envelope), canonicalJson)).details.branches[0].output, hiddenOutput);
+    assert.deepEqual(redactWorkflowEventData({ error: envelope }).error.details.branches[0].output, hiddenOutput);
+    assert.equal(JSON.stringify(redactWorkflowEventData({ error: canonicalJson(envelope) })).includes("an-ordinary-field"), false);
     // Any other error, timed_out included, keeps hiding a member named for a secret.
-    assert.deepEqual(redactWorkflowErrorValue({ code: "timed_out", message: "x", details: { output: { key: "v" } } }).details, { output: { key: "<hidden>" } });
-    assert.deepEqual(redactWorkflowErrorValue({ code: "timed_out", message: "x", details: { joined: false, timedOut: false, branches: [{ output: { key: "v" } }] } })
-        .details.branches[0].output, { key: "<hidden>" });
+    assert.deepEqual(redactWorkflowErrorValue({ code: "timed_out", message: "x", details: { output: { key: "v" } } }, vouched).details, { output: { key: "<hidden>" } });
+    assert.deepEqual(redactWorkflowErrorValue({ code: "timed_out", message: "x", details: { joined: false, timedOut: false, branches: [{ output: { key: "v" } }] } },
+        vouched).details.branches[0].output, { key: "<hidden>" });
+});
+
+// Narrow verification of R3-SF-2 (S6-SF2): text cut before it was redacted (the effect orchestrations' 4,000-character
+// message, an event's error) can end inside a JSON field named for a secret, with no closing quote. Its value is hidden to
+// the end, plain or escaped inside a JSON string; a field with its closing quote, or one not named for a secret, is as
+// before. Linear time on long and hostile shapes.
+test("S6-SF2: a secret-named JSON field whose closing quote a clip removed is hidden to the end, plain or escaped", () => {
+    const LONG = "t".repeat(5_000);
+    const raw = `request failed: {"token":"${LONG}${SENTINEL}","other":1}`;
+    // As the effect orchestration cut it before (4,000 characters), as text and inside its stored error.
+    const cut = jsonbSafeText(raw, 4_000);
+    assert.equal(redactWorkflowSecrets(cut), 'request failed: {"token":"<hidden>…');
+    const stored = redactWorkflowErrorText(canonicalJson({ code: "execution_failed", message: cut }), canonicalJson);
+    assert.equal(JSON.parse(stored).message, 'request failed: {"token":"<hidden>…');
+    // A whole envelope cut as text (an event's error stored before): the field escaped inside its message.
+    const shown = redactWorkflowSecrets(jsonbSafeText(canonicalJson({ code: "execution_failed", message: raw }), 2_000));
+    assert.equal(shown.includes("tttttttt"), false, shown.slice(-80));
+    assert.ok(shown.endsWith('\\"token\\":\\"<hidden>…'), shown.slice(-60));
+    // Cut right after an escape character, or with no cut mark: still hidden to the end.
+    assert.equal(redactWorkflowSecrets('{"password":"abc\\'), '{"password":"<hidden>');
+    assert.equal(redactWorkflowSecrets('{"api_key": "abc'), '{"api_key": "<hidden>');
+    // Closed fields, other names and prose: as before.
+    assert.equal(redactWorkflowSecrets('{"token":"abc","note":"tail…'), '{"token":"<hidden>","note":"tail…');
+    assert.equal(redactWorkflowSecrets('{"note":"abc…'), '{"note":"abc…');
+    // Now redacted before it is cut: the same message leaves nothing either.
+    assert.equal(redactThenClip(raw, 4_000).includes("tttttttt"), false);
+    for (const hostile of [`{"token":"${"a".repeat(200_000)}`, '"token":"x\\'.repeat(100_000), '\\"token\\":\\"'.repeat(50_000),
+        '"token":"a",'.repeat(50_000), `${'"token":"'.repeat(50_000)}"`]) {
+        const started = process.hrtime.bigint();
+        redactWorkflowSecrets(hostile);
+        assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 1_000, `${hostile.slice(0, 12)}… took too long`);
+    }
+});
+
+// Narrow verification of R3-SF-2 (S6-SF2): an answered test interception's error event is redacted whole before it is cut,
+// so a mocked error's secret longer than the event's 2,000 characters leaves no part.
+test("S6-SF2: a mocked error's event has its secrets hidden before it is cut", () => {
+    const valueText = canonicalJson({ code: "execution_failed", message: "mocked", details: { token: `${"k".repeat(3_000)}${SENTINEL}` } });
+    const projection = workflowTestAnsweredProjection({ workflowSessionId: "wf", runId: "run-1" }, { nodeExecutionId: "nx-1", nodeId: "review", ordinal: 1 },
+        { interceptionId: "i-1", operation: "agent", response: { kind: "error", disposition: "parent" } },
+        { outcome: "execution_failed", resultKind: "runtime_error", valueText, winner: "effect" });
+    const error = projection.events[1].data.error;
+    assert.equal(error.includes("kkkkkkkk") || error.includes(SENTINEL), false, error.slice(0, 120));
+    assert.equal(JSON.parse(error).details.token, "<hidden>");
 });
 
 // Adversarial review R2-SF-4 (with R2-RT-3): the agent's completion tool and the request answer tool answer every failure

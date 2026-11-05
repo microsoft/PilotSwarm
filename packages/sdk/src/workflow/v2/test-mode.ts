@@ -10,6 +10,7 @@ import {
     type WorkflowTestOperation, type WorkflowTestResponseKind,
 } from "./store.js";
 import { promptSafeJson, workflowUpdateHeader, workflowUpdateMessage, workflowUpdateSentenceId, workflowUpdateShortId } from "./parent-messages.js";
+import { redactErrorThenClip } from "./redact.js";
 
 /**
  * Workflow v2 test runs (design 05 tool-mocked testing; R19, R20, R28;
@@ -302,7 +303,8 @@ export function workflowTestAnsweredProjection(run: Pick<WorkflowRunRow, "workfl
             ...(decided === null ? [] : [{ eventType: decided.resultKind === "business" ? "workflow.state_completed" : "workflow.state_failed", data: {
                 runId: run.runId, nodeExecutionId: executed.nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal, outcome: decided.outcome,
                 resultKind: decided.resultKind, mocked: true,
-                ...(decided.resultKind === "business" ? { outputPreview: jsonbSafeText(decided.valueText, 1_000) } : { error: jsonbSafeText(decided.valueText, 2_000) }),
+                // S6-SF2: a mocked error has its secrets hidden in full before it is cut (redactErrorThenClip).
+                ...(decided.resultKind === "business" ? { outputPreview: jsonbSafeText(decided.valueText, 1_000) } : { error: redactErrorThenClip(decided.valueText, 2_000) }),
             } }]),
         ],
         update: { touch: true },

@@ -382,6 +382,13 @@ changed, so read a report by the fields you use, not by its exact set of
 fields. Version 2 workflows were not turned on before these fields came, so no
 stored run depends on the shorter report.
 
+Version 2 hides more secrets in workflow text than it did before. Events and
+rows that were stored before this change are not rewritten. Such events and
+rows exist only in development and test deployments. An old event can show a
+list or object default of a binding, or part of a credential that was cut
+before it was hidden. Before you share a version 2 test session from such a
+deployment with other people, delete the session or create it again.
+
 Cleanup failures are explicit. The worker attempts native-task cancellation
 and disconnect even when abort fails. If it cannot confirm that tasks stopped,
 it retains the folder hold and blocks a new executor on that worker pending

@@ -8,7 +8,10 @@ import {
     utf8ByteLength, WORKFLOW_PAYLOAD_MAX_BYTES, WorkflowJsonError, type JsonValue,
 } from "./json.js";
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
-import { redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets } from "./redact.js";
+import {
+    redactErrorThenClip, redactThenClip, redactWorkflowErrorText, redactWorkflowErrorValue, redactWorkflowEventData, redactWorkflowSecrets,
+    type WorkflowErrorRedaction,
+} from "./redact.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_ID_LENGTH, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem,
@@ -463,7 +466,10 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         predecessorId: strOrNull(row, "predecessor_id"), arrivalRoute: strOrNull(row, "arrival_route"),
         input: parseStoredJson(str(row, "input"), "input"), inputSha256: str(row, "input_sha256"), state,
         // SF-6: a stored error is read with its secrets hidden, so no reader (the read model, a notification) shows them.
-        outcome: strOrNull(row, "outcome"), resultKind, output: jsonOrNull(row, "output"), error: redactWorkflowErrorValue(jsonOrNull(row, "error")),
+        // R3-SF-3, S6-SF2: only a parallel state's own decided error (its controller-written report) keeps its branches'
+        // business outputs; any other error of that shape, a mocked one included, is hidden like every error.
+        outcome: strOrNull(row, "outcome"), resultKind, output: jsonOrNull(row, "output"),
+        error: redactWorkflowErrorValue(jsonOrNull(row, "error"), { parallelReport: str(row, "node_type") === "parallel" && strOrNull(row, "winner") === "controller" }),
         hasOutput: row.output !== null && row.output !== undefined,
         winner: strOrNull(row, "winner"), effectAttempts: int(row, "effect_attempts"), kvRevision: intOrNull(row, "kv_revision"),
         deadlineAt: dateOrNull(row, "deadline_at"),
@@ -1655,9 +1661,10 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
 /**
  * A result's text as it is stored (SF-6 verification): a runtime error's has its secrets hidden before it is written,
  * so the node's and the outbox message's error columns never hold them; a business result's is stored as it is.
+ * `options.parallelReport` only from the controller's parallel decision (settleParallelIn; R3-SF-3, S6-SF2).
  */
-function storedResultText(result: Pick<NodeResultInput, "resultKind" | "valueText">): string {
-    return result.resultKind === "runtime_error" ? redactWorkflowErrorText(result.valueText, canonicalJson) : result.valueText;
+function storedResultText(result: Pick<NodeResultInput, "resultKind" | "valueText">, options: WorkflowErrorRedaction = {}): string {
+    return result.resultKind === "runtime_error" ? redactWorkflowErrorText(result.valueText, canonicalJson, options) : result.valueText;
 }
 
 /**
@@ -6465,7 +6472,8 @@ export class WorkflowStore {
                     error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
                     winner = $5, completed_at = clock_timestamp()
               WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
-            [node.nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner]);
+            // The controller's own parallel report: its finished branches' business outputs are kept (R3-SF-3, S6-SF2).
+            [node.nodeExecutionId, result.outcome, result.resultKind, storedResultText(result, { parallelReport: true }), result.winner]);
         if (!rows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Parallel state ${node.nodeExecutionId} was decided under its lock.`);
         return { node: nodeFrom(rows[0]), cancelled, decided: { result, total, succeeded, cancelled } };
     }

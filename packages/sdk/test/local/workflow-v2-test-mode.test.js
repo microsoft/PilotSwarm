@@ -23,7 +23,9 @@
  *   advance times a request out; a cancel leaves open interceptions
  *   unanswered; agent mode real on a worker without an agent host fails its
  *   agent state unavailable (nothing is answered for it); a draft edit
- *   makes the tested revision stale and the live run is never touched.
+ *   makes the tested revision stale and the live run is never touched. A
+ *   mocked error shaped like a parallel state's timed_out report is an
+ *   ordinary error: its secrets are hidden everywhere (S6-SF2).
  *
  * Scripts run as real script processes (their direct effects are real, as
  * in any test run). No model runs. Not an activation proof.
@@ -36,7 +38,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
+import { readWorkflowFromTool, readWorkflowV2View, sendWorkflowInputFromTool, updateWorkflowFromTool, workflowV2ReaderView } from "../../src/workflow/v2/tools.ts";
 import {
     matchTestFixture, parseTestFixtures, parseTestResponse, testResultFor, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE,
 } from "../../src/workflow/v2/test-mode.ts";
@@ -449,6 +451,42 @@ describe("workflow v2 test runs: controller 1.9.0 (inactive, test-only registrat
             expect(view.run.test.coverage).toMatchObject({ entered: ["ask", "await_build", "done", "review", "tell"], notEntered: ["blocked", "failed", "late", "rework"] });
             const events = await h.catalog.getSessionEvents(draft.workflowId, 0, 500);
             expect(events.filter(event => event.eventType === "workflow.test_answered").map(event => event.data.operation)).toEqual(["agent", "request", "send"]);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    // Narrow verification of R3-SF-3 (S6-SF2): only the controller's own parallel decision keeps a timed_out report's branch
+    // outputs. An author's mocked error with exactly that shape, on an agent state, is an ordinary error: a member named for
+    // a secret in it is hidden on the stored node, the execution read, a shared reader's view, read_workflow and the events.
+    it("S6-SF2: a mocked timed_out error shaped like a parallel report hides its secrets on the node, the execution read, a reader's view and the events", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const draft = await draftOf(h, mockedDoc());
+            const runId = await draft.test("forge-1");
+            const id = state => nodeExecutionIdFor(runId, "root", state, 1);
+            const agent = await awaiting(h, `${id("review")}/agent`);
+            const SECRET = "s6sf2-forged-token-7f31";
+            const forged = { code: "timed_out", message: "The parallel state's time limit passed before its join.", details: {
+                joined: false, timedOut: true, total: 1, needed: 1, succeeded: 1, failFast: false,
+                branches: [{ index: 0, ended: "terminal", nodeExecutionId: "nx-forged", outcome: "succeeded", resultKind: "business",
+                    output: { token: SECRET, key: SECRET, note: "kept" } }] } };
+            expect(await draft.respond(runId, agent.interceptionId, { kind: "error", value: forged }, "f-1"))
+                .toMatchObject({ ok: true, node: { stateId: "review", outcome: "timed_out" } });
+            const hidden = { token: "<hidden>", key: "<hidden>", note: "kept" };
+            const node = await h.store.readNodeExecution(id("review"));
+            expect(node).toMatchObject({ resultKind: "runtime_error", outcome: "timed_out" });
+            expect(node.error.details.branches[0].output).toEqual(hidden);
+            // Its run goes on by its timed_out route and ends there.
+            expect(await ended(h, runId)).toMatchObject({ status: "completed", terminalOutcome: "blocked" });
+            const whole = await readWorkflowV2View(h.store, draft.workflowId, { runId, executionId: id("review") });
+            expect(whole.execution.result).toMatchObject({ whole: true });
+            expect(whole.execution.result.value.details.branches[0].output).toEqual(hidden);
+            const view = await readWorkflowV2View(h.store, draft.workflowId, { runId });
+            for (const read of [whole, workflowV2ReaderView(whole), view, workflowV2ReaderView(view), await draft.read({ run_id: runId })]) {
+                expect(JSON.stringify(read)).not.toContain(SECRET);
+            }
+            expect(JSON.stringify(await h.catalog.getSessionEvents(draft.workflowId, 0, 500))).not.toContain(SECRET);
         } finally {
             await h.stop();
         }

@@ -2,7 +2,8 @@ import type { PermissionRequestResult } from "@github/copilot-sdk";
 import { resolveEffectiveSpawnOwner } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
-import { boundedCanonicalJson, canonicalJson, jsonbSafeText, previewJson, sha256Hex, WorkflowJsonError } from "./json.js";
+import { boundedCanonicalJson, canonicalJson, previewJson, sha256Hex, WorkflowJsonError } from "./json.js";
+import { redactThenClip } from "./redact.js";
 import { matchTestFixture, storedTestFixtures, toolCallResultOf, WORKFLOW_V2_TEST_POLL_MS, workflowTestNoticePrompt } from "./test-mode.js";
 import { ACTIVE_RUN_STATUSES, WorkflowStoreError, type WorkflowLineage, type WorkflowStore, type WorkflowTestInterception } from "./store.js";
 
@@ -130,7 +131,8 @@ export function workflowTestAgentToolCall(deps: WorkflowTestAgentToolDeps, scope
             }, label), `workflow-test:${record.interceptionId}`);
         } catch (error) {
             await store.recordSessionEvents(scope.workflowSessionId, [{ eventType: "workflow.test_notice_failed", data: {
-                runId: scope.runId, interceptionId: record.interceptionId, error: jsonbSafeText(error instanceof Error ? error.message : String(error), 1_000),
+                // S6-SF2: its secrets hidden in full before it is cut.
+                runId: scope.runId, interceptionId: record.interceptionId, error: redactThenClip(error instanceof Error ? error.message : String(error), 1_000),
             } }]).catch(() => undefined);
         }
     };
