@@ -308,9 +308,10 @@ notice included, is timed out after 30 seconds and tried again. Under 1.9.0 an
 attempt has no time limit of its own. Only the notice's own waits are bounded:
 at most 15 seconds for deliveries in flight and at most 20 seconds for the lock,
 no more than 27 seconds in all. Getting a database connection, the SQL calls
-and the send itself have no time limit. An attempt that hangs there keeps the
-lock: the later attempts wait for it and fail, and when every attempt has
-failed, `recover` finishes the notice. A retry after an attempt that may have queued the
+and the send itself have no time limit, so an attempt that hangs there can
+stay pending with no end and keep the lock. The later attempts and `recover`
+make progress only after that attempt settles, or after its database
+connection or its worker process ends and releases the lock. A retry after an attempt that may have queued the
 notice queues it again with the same client message id when the parent may be
 told; when it finds a known refusal it records the skip with
 `earlierAttempt: true`, and Run activity adds "An earlier attempt may have
@@ -346,6 +347,21 @@ started), the run ends as **cancelled** without reaching a terminal state
 (complete also ends it as cancelled, with reason "Stopped"), and the parent
 is told unless it asked. Delete also removes the session.
 
+For a version 2 workflow, a cancel or complete that `update_workflow` or the
+parent agent sends ends the run in the store when it is accepted. Its pending
+steps are cancelled in the same transaction, so no further step starts. The
+controller finds the ended run at its next store call: it stops the cancelled
+scripts, ends agent children, tells the parent (unless the parent asked) and
+finishes. A delete from the parent agent deletes the workflow at once, which
+ends its run. A paused run ends too, and a graceful stop in progress is
+replaced by the cancel. On a run that already ended, the request is recorded
+with that end and changes nothing. A cancel, complete or delete sent to an
+active run another way (the management API's `cancelSession`,
+`completeSession` and `deleteSession`, or the agent manager's
+`manage_agent_session`) still reaches the controller as a queued message. The
+controller applies it when it reads it, as described under Running
+workflows.
+
 The kill reaches the worker when the running script state next renews its
 activity lock. The lock times out after `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`
 (10 seconds by default) and is renewed about every 5 seconds, so the worker
@@ -353,10 +369,7 @@ can take up to about 5 seconds to see the cancellation. It then kills the
 script's process tree within about 250 milliseconds. The activity's
 JavaScript is not aborted: it returns when the killed script ends. The
 worker's activity slot stays held until that task ends, or at most for a
-10-second grace. A command sent between two states stops the next one. In a
-version 2 workflow, a command that arrives while the controller admits the
-next step, or that waits behind many wake messages, can let one more step
-start; the run's end then cancels that step.
+10-second grace. A command sent between two states stops the next one.
 
 ## Running workflows (operators)
 
@@ -439,25 +452,32 @@ end ends any agent chat still owed.
 A version 2 run's controller is one duroxide orchestration, and these
 duroxide limits shape it:
 
-- It waits by racing its command queue against a durable timer. When a
-  message wins, duroxide drops the timer from the race but does not remove
-  it: the timer still fires later and adds a turn and a history entry. The
+- It waits by racing its command queue against a durable timer. A queue
+  read wins only when its message is already in the turn that duroxide
+  fetched, and duroxide returns a fetched batch in the order the messages
+  were stored, so the timer can win over a message that arrived before the
+  timer was due. When a message wins, duroxide drops the timer from the race
+  but does not remove it: the timer still fires later and adds a turn and a
+  history entry. The
   controller continues as new after 25 admitted steps, or after 50 waits
   (a wait counts when its timer found nothing, and every wait counts while
   the run is paused). These counts bound the work that one execution
   repeats. They do not bound its history: wake messages, the timers that lost
   their races and the timers of retried store activities add entries that no
   count includes.
-- duroxide carries at most 100 unread queue messages into the next
-  execution, and drops the newer ones. Before the controller continues as
-  new, it reads the whole queue, at most 32 messages per turn. If it finds a
-  cancel, complete or delete, it applies it instead of continuing as new.
-  Only the messages that arrive in the turn that continues as new, after the
-  last empty read, are carried. A command is dropped only when more than 100
-  messages arrive in that one turn ahead of it.
+- The queue carries hints. An accepted cancel, complete or delete is store
+  state: it has already ended the run, and the controller's next store call
+  finds that (see Stopping a workflow). duroxide carries at most 100 unread
+  queue messages into the next execution and drops the newer ones, so a
+  continue-as-new can drop wake messages. It can also drop a queued command
+  that has at least 100 earlier unread messages ahead of it. Such a command
+  is one an older build queued, or one sent another way than
+  `update_workflow` or the parent agent.
 - duroxide fails a turn that takes more than 100 queued messages in a row.
-  The controller's read of the queue before an admission takes at most 32, so
-  a command behind more wake messages is read one or more passes later.
+  The controller's read of the queue before an admission takes at most 32
+  messages per batch, and a store activity comes before the next batch. A
+  queued command behind more wake messages is read one or more passes later;
+  a wait, a stop or the run deadline is not held back by them.
 - duroxide fixes how a race between a queue read and a timer resolves when
   an execution starts, by the duroxide version that started it (the
   corrected behavior came in 0.1.31). An upgrade does not change an

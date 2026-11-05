@@ -293,9 +293,9 @@ describe("workflow v2 fault boundaries on the real runtime", () => {
             // Duroxide review DX-RECORD: the script's own result, stored after the collection found the effect ended (an
             // attempt of recordEffectResult that outlived its orchestration), loses the compare-and-swap. This is the
             // intended outcome once the collection decided: the first decision stands, the run already went on by it, and
-            // the late result is not stored. The effect orchestration's record and wake now have no attempt timeout
-            // (WORKFLOW_V2_EFFECT_RECORD_RETRY), so it ends only after the result is stored or every attempt failed with
-            // an error; this sequence is then left to an orchestration that was terminated, as here.
+            // the late result is not stored. The effect orchestration's record and wake now have no attempt timeout (they
+            // are retried after an error on its own durable timers), so it ends only after the result is stored or every
+            // attempt failed with an error; this sequence is then left to an orchestration that was terminated, as here.
             const late = await h.store.completeNode(node.nodeExecutionId,
                 { outcome: "ok", resultKind: "business", valueText: JSON.stringify({ late: true }), winner: "effect" });
             expect(late.won).toBe(false);

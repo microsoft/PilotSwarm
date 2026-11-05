@@ -447,9 +447,10 @@ describe("workflow v2 run control on the real runtime", () => {
             const begun = await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.started"]);
             expect(begun).toHaveLength(1);
 
-            // A cancel is processed while paused; its receipt only says it was accepted.
+            // A cancel is processed while paused: it ends the begun run in the store as it is accepted (S7-DX2), and its
+            // receipt says so; the controller finds the run ended and finishes.
             const cancel = await parent.update(id, { operation: "cancel", operation_id: "cancel-1", reason: "not needed" });
-            expect(cancel, JSON.stringify(cancel)).toMatchObject({ ok: true, operation: "cancel", replayed: false, status: "paused" });
+            expect(cancel, JSON.stringify(cancel)).toMatchObject({ ok: true, operation: "cancel", replayed: false, status: "cancelled" });
             const run = await finished(h, runId);
             expect(run).toMatchObject({ status: "cancelled", pausedFrom: null, terminalError: { code: "cancelled", message: "not needed" } });
             expect((await h.client.waitForOrchestration(controllerInstanceId, 30_000)).status).toBe("Completed");
@@ -597,13 +598,13 @@ describe("workflow v2 run control on the real runtime", () => {
                 expect(await h.host.catalog.getSessionEvents(run.id, 0, 50, ["workflow.started"])).toEqual([]);
             }
 
-            // Begin commits first: the cancel finds a begun run, its receipt says so, and the controller,
-            // which began the run, takes the queued command before it admits anything.
+            // Begin commits first: the cancel finds a begun run and ends it in the store as it is accepted (S7-DX2), and its
+            // receipt says so; the controller, which began the run, finds it ended and admits nothing.
             const run = await started("after");
             expect(await h.store.readRun(run.runId)).toMatchObject({ status: "running" });
             const cancel = await parent.update(run.id, { operation: "cancel", operation_id: "cancel", reason: "late" });
-            expect(cancel, JSON.stringify(cancel)).toMatchObject({ ok: true, replayed: false, status: "running" });
-            expect(await h.store.readRun(run.runId)).toMatchObject({ status: "running" });
+            expect(cancel, JSON.stringify(cancel)).toMatchObject({ ok: true, replayed: false, status: "cancelled" });
+            expect(await h.store.readRun(run.runId)).toMatchObject({ status: "cancelled", terminalError: { details: { accepted: true, operationId: "cancel" } } });
             run.open();
             const ended = await finished(h, run.runId);
             expect(ended).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled", message: "late",

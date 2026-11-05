@@ -32,6 +32,7 @@ import { readWorkflowInterfaceExport, workflowInterfaceMismatches } from "./pack
 import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
 import {
     ACTIVE_RUN_STATUSES,
+    commandEndOf,
     ADMITTING_RUN_STATUSES,
     checkedKvText,
     isKvKey,
@@ -914,7 +915,10 @@ export async function controlWorkflowV2Run(
         const requestedBy = context.actor.kind === "agent" ? context.actor.sessionId : null;
         const stored = await host.store.recordRunCancelRequest({ workflowSessionId, runId: run.runId, operationId: context.operationId, requestSha256,
             reason, requestedBy });
-        if (ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
+        // S7-DX2: the store ended a begun run as it accepted the cancel. Its controller is told at once (a repeat tells it
+        // again): the command, as before, which it applies to the ended run (its post-end work) when it reads it; if this
+        // message is late or lost, its next store call finds the run ended and does the same.
+        if (ACTIVE_RUN_STATUSES.includes(stored.run.status) || commandEndOf(stored.run)?.operationId === context.operationId) {
             await host.duroxideClient.enqueueEvent(stored.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE, JSON.stringify({
                 type: "cmd", cmd: "cancel", id: `cancel-${context.operationId}`, args: { reason }, requestedBy,
             }));
@@ -972,13 +976,17 @@ function parseSessionLifecycleCommand(raw: unknown): { cmd: "cancel" | "done" | 
  *   (store.recordSessionCommand): delete always soft-deletes the child (the
  *   deletion trigger tombstones it and ends an active run in that
  *   transaction; a run that already ended keeps its result), then its facts
- *   are removed; cancel and done end a run that has not begun (done keeps
- *   its "Stopped" meaning), and for a run that has begun its controller
- *   applies the queued command;
+ *   are removed; cancel and done end an active run there (done keeps its
+ *   "Stopped" meaning): one that has not begun as before, one that has
+ *   begun as its controller's cancel would (S7-DX2), and then the caller
+ *   queues the command for that controller, which finds the run ended and
+ *   finishes (it stops cancelled effects, ends agent children, tells the
+ *   parent unless the parent asked);
  * - a retry of the activity replays the receipt: it queues a cancel or done
- *   again while that run is active, and applies an accepted delete whose
- *   child is still live, then the facts cleanup; another request with that
- *   id fails.
+ *   again for the run it ended (or, for a receipt an older build stored as
+ *   queued, ends that run if it is still active), and applies an accepted
+ *   delete whose child is still live, then the facts cleanup; another request
+ *   with that id fails.
  * Every other target (an ordinary agent session, a legacy workflow) returns
  * "enqueue": the caller queues the command as before.
  */
@@ -1032,8 +1040,10 @@ export async function applySessionCommandToWorkflowV2(
         if (host.deleteSessionFacts) await host.deleteSessionFacts(workflowSessionId);
         return { action: "applied", receipt };
     }
-    // A cancel or done for the run's controller: queue it while that run is active (a repeat queues it again); a run that ended makes it moot.
-    if (receipt.applied === "queued" && run !== null && ACTIVE_RUN_STATUSES.includes(run.status)) return { action: "enqueue" };
+    // S7-DX2: a cancel or done that ended a begun run in the store is queued for its controller too (a repeat queues it
+    // again), which applies it to the ended run (its post-end work); a run still active (an older receipt the store could
+    // not apply) keeps it queued as before.
+    if (stored.wake || (receipt.applied === "queued" && run !== null && ACTIVE_RUN_STATUSES.includes(run.status))) return { action: "enqueue" };
     return { action: "applied", receipt };
 }
 

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_COMMAND_READ_BATCH, WORKFLOW_V2_EFFECT_RECORD_RETRY, WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS,
-    WORKFLOW_V2_STORE_RETRY,
+    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_COMMAND_READ_BATCH, WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS, WORKFLOW_V2_STORE_RETRY,
+    workflowV2Effect,
 } from "../../dist/workflow/v2/runtime.js";
 
 // Adversarial review WFO-1 (TLC parent.late-message, parent.late-request): a send's message or a request to the parent
@@ -257,13 +257,55 @@ test("the store activities' retry policy times each attempt out at 30 s and sets
     assert.ok(WORKFLOW_V2_NOTICE_DELIVERY_WAIT_MS < WORKFLOW_V2_STORE_RETRY.timeoutMs);
 });
 
-// Duroxide review DX-RECORD: the 1.8.0 effect orchestration stores the script's result and wakes its controller with no
-// attempt timeout (errors are still retried, as often as the store activities'), so it never ends while an attempt that
-// timed out could still store the result. DX-2: a read of the command queue takes fewer messages in a row than duroxide's
-// 100 per turn.
-test("DX-RECORD, DX-2: the effect's record and wake have no attempt timeout; a command read takes at most 32 messages in a row", () => {
-    assert.deepEqual(WORKFLOW_V2_EFFECT_RECORD_RETRY, { maxAttempts: WORKFLOW_V2_STORE_RETRY.maxAttempts });
-    assert.equal(Object.hasOwn(WORKFLOW_V2_EFFECT_RECORD_RETRY, "timeoutMs"), false);
-    assert.equal(Object.hasOwn(WORKFLOW_V2_EFFECT_RECORD_RETRY, "totalTimeoutMs"), false);
+// Duroxide review DX-RECORD, V-1: the 1.8.0 effect orchestration stores the script's result and wakes its controller as
+// ordinary activities with no attempt timeout (duroxide-node 0.2.4's typed retry policy requires one), retried after an
+// error on its own durable timers, as often as the store activities' (5 attempts). DX-2: a read of the command queue takes
+// fewer messages in a row than duroxide's 100 per turn.
+test("DX-RECORD, V-1, DX-2: the effect's record and wake are timeout-free activities retried on durable timers; a command read takes at most 32 messages", () => {
+    const ctx = {
+        scheduleActivityTyped: (name, input) => ({ kind: "activity", name, input }),
+        scheduleActivityWithRetryTyped: (name, input, policy) => ({ kind: "retry", name, input, policy }),
+        scheduleTimer: ms => ({ kind: "timer", ms }),
+    };
+    const input = { runId: "run-1", nodeExecutionId: "nx-1", controllerInstanceId: "session-wf" };
+    /** Drive the generator: `answer(task)` returns { value } or { error }; every task it yielded, in order. */
+    const drive = answer => {
+        const gen = workflowV2Effect(ctx, input);
+        const tasks = [];
+        let step = gen.next();
+        while (!step.done) {
+            tasks.push(step.value);
+            const reply = answer(step.value, tasks);
+            step = "error" in reply ? gen.throw(reply.error) : gen.next(reply.value);
+        }
+        return { tasks, result: step.value };
+    };
+    const ran = { kind: "result", result: { outcome: "ok", resultKind: "business", valueText: "{}", winner: "effect" } };
+    // The record fails twice, then is stored; the wake is sent at once.
+    let failures = 2;
+    const ok = drive(task => (task.kind === "activity" && task.name === WORKFLOW_V2_ACTIVITIES.recordEffectResult && failures-- > 0
+        ? { error: new Error("store unavailable") } : { value: task.name === WORKFLOW_V2_ACTIVITIES.runScript ? ran : null }));
+    assert.equal(ok.result, null);
+    assert.deepEqual(ok.tasks.map(task => task.kind === "timer" ? ["timer", task.ms] : [task.kind, task.name]), [
+        ["activity", WORKFLOW_V2_ACTIVITIES.runScript],
+        ["activity", WORKFLOW_V2_ACTIVITIES.recordEffectResult], ["timer", 1_000],
+        ["activity", WORKFLOW_V2_ACTIVITIES.recordEffectResult], ["timer", 2_000],
+        ["activity", WORKFLOW_V2_ACTIVITIES.recordEffectResult],
+        ["activity", WORKFLOW_V2_ACTIVITIES.wake],
+    ]);
+    assert.ok(ok.tasks.every(task => task.kind !== "retry"), "no retry policy, so no attempt timeout");
+    assert.deepEqual(ok.tasks[1].input, { ...input, outcome: ran });
+    // Every attempt fails: 5 attempts, 4 durable delays, then the last error ends the orchestration.
+    assert.throws(() => drive(task => (task.name === WORKFLOW_V2_ACTIVITIES.recordEffectResult ? { error: new Error("store unavailable") }
+        : { value: ran })), /store unavailable/);
+    let attempts = 0;
+    try {
+        drive(task => {
+            if (task.name !== WORKFLOW_V2_ACTIVITIES.recordEffectResult) return { value: ran };
+            attempts += 1;
+            return { error: new Error("store unavailable") };
+        });
+    } catch { /* the last error */ }
+    assert.equal(attempts, WORKFLOW_V2_STORE_RETRY.maxAttempts);
     assert.equal(WORKFLOW_V2_COMMAND_READ_BATCH, 32);
 });

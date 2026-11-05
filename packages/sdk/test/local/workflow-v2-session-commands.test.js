@@ -15,8 +15,10 @@
  *   and a delete an earlier head accepted as queued (then interrupted before
  *   it queued the command, while the run ended on its own) is applied by its
  *   repeat; the child's facts are removed each time;
- * - a cancel or done for a begun v2 workflow child, and any command for an
- *   ordinary agent child, is queued as before (positive controls);
+ * - a cancel or done for a begun v2 workflow child ends its run in the store
+ *   as it is accepted (S7-DX2), and is queued for its controller too, which
+ *   finds the run ended and finishes; any command for an ordinary agent child
+ *   is queued as before (positive control);
  * - only the child's parent may send them, and a requestedBy must name the
  *   sender;
  * - each command's receipt is keyed by its deterministic command id: a retry
@@ -255,7 +257,7 @@ describe("a parent session's lifecycle commands to a v2 workflow child", () => {
         }
     });
 
-    it("still queues the command for a begun v2 child and for an ordinary agent child", { timeout: TIMEOUT }, async () => {
+    it("ends a begun v2 child's run in the store and queues the command for its controller; queues an ordinary agent child's as before", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const h = await harness(env);
         const db = new pg.Client({ connectionString: env.store });
@@ -284,20 +286,22 @@ describe("a parent session's lifecycle commands to a v2 workflow child", () => {
                 { sessionId: stoppedId, command: lifecycle("done", "done-2-hhhh", parentId) }]))
                 .toEqual([{ ok: true }, { ok: true }, { ok: true }]);
 
-            // Begun: the receipt says so, and the run's controller, which began it, applies the queued command.
+            // Begun: the store ended the run as it accepted the command (S7-DX2); the receipt says so, and the run's
+            // controller, which began it, finds it ended and finishes.
             const receipt = (await db.query(`SELECT kind, receipt FROM "${env.cmsSchema}".workflow_operations
                 WHERE workflow_session_id = $1 AND operation_id = $2`, [begunId, `${SESSION_COMMAND_OPERATION_PREFIX}cancel-2-ffff`])).rows;
             expect(receipt.map(row => ({ kind: row.kind, ...JSON.parse(row.receipt) }))).toEqual([{ kind: "session-cancel", workflowSessionId: begunId,
-                command: "cancel", applied: "queued", runId: begun.runId, status: "running" }]);
+                command: "cancel", applied: "store", runId: begun.runId, status: "cancelled" }]);
             const ended = await until(async () => {
                 const run = await h.store.readRun(begun.runId);
                 return run.status === "cancelled" ? run : null;
             }, "the begun child's controller to cancel it");
-            expect(ended.terminalError).toMatchObject({ code: "cancelled", message: "stop the wait", details: { command: "cancel", requestedBy: parentId } });
+            expect(ended.terminalError).toMatchObject({ code: "cancelled", message: "stop the wait",
+                details: { command: "cancel", requestedBy: parentId, accepted: true, operationId: `${SESSION_COMMAND_OPERATION_PREFIX}cancel-2-ffff` } });
             expect(ended.terminalError.details.beforeBegin).toBeUndefined();
             expect((await h.store.listNodeExecutions(begun.runId)).map(node => [node.nodeId, node.outcome, node.winner])).toEqual([["nap", "cancelled", "cancel"]]);
             expect((await h.client.waitForOrchestration(begun.controllerInstanceId, 30_000)).status).toBe("Completed");
-            // done keeps its meaning for a begun child: its controller cancels the run as stopped.
+            // done keeps its meaning for a begun child: the run ends cancelled as stopped.
             const stoppedRun = await until(async () => {
                 const run = await h.store.readRun(stopped.runId);
                 return run.status === "cancelled" ? run : null;

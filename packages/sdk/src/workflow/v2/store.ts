@@ -54,6 +54,19 @@ export function runNotBegun(run: { status: WorkflowRunStatus; pausedFrom: "admit
     return run.status === "admitted" || (run.status === "paused" && run.pausedFrom === "admitted");
 }
 
+/**
+ * S7-DX2: the lifecycle command whose acceptance ended a begun run in the store (endRunForCommandIn), as its terminal error
+ * records it: the command (cancel or done), who asked and the accepted operation. Null for any other end (a cancel before
+ * the run began, a deletion, a finish, a failure, a stop, the run deadline) and for an active run.
+ */
+export function commandEndOf(run: Pick<WorkflowRunRow, "status" | "terminalError">): { command: "cancel" | "done"; requestedBy: string | null; operationId: string | null } | null {
+    if (run.status !== "cancelled" || !isJsonObject(run.terminalError) || !isJsonObject(run.terminalError.details)) return null;
+    const details = run.terminalError.details;
+    if (details.accepted !== true || (details.command !== "cancel" && details.command !== "done")) return null;
+    return { command: details.command, requestedBy: typeof details.requestedBy === "string" ? details.requestedBy : null,
+        operationId: typeof details.operationId === "string" ? details.operationId : null };
+}
+
 /** Open KV limits (design D07: proposed defaults, enforced on every update). */
 export const WORKFLOW_V2_KV_LIMITS = { maxKeys: 1_000, maxKeyLength: 128, maxValueBytes: 256 * 1024, maxTotalBytes: 1024 * 1024 } as const;
 
@@ -2678,25 +2691,29 @@ export class WorkflowStore {
     }
 
     /**
-     * Record that a cancel command was accepted for a run. A run that has not
-     * begun (admitted, or paused before its controller began it) is ended
-     * here, at once, as cancelled, with this request's operation id in its
-     * terminal error: its controller may not exist yet, and duroxide drops a
-     * queue message sent to an instance that has not started, so a command
-     * could be lost. The run end, its projection and the receipt commit in
-     * one transaction. A controller that starts later finds the run ended at
-     * begin (begin and this transaction both lock the session row, then the
-     * run row). A run that has begun is returned as it is: its controller,
-     * which began it, applies the command, and the caller sends it while the
-     * run is active, on a replay too (a crash after this receipt and before
-     * the send must not lose it).
+     * Record that a cancel command was accepted for a run, and end the run
+     * here, at once, as cancelled, when it is active (durable lifecycle
+     * intent, S7-DX2): the first run-ending commit decides the run, and a
+     * command never waits in the controller's queue, where duroxide can drop
+     * it. A run that has not begun (admitted, or paused before its controller
+     * began it) ends as before (cancelBeforeBegin): its controller may not
+     * exist yet, and a controller that starts later finds the run ended at
+     * begin. A begun run (running, paused, or stopping) ends as the
+     * controller's cancel activity ends it (endRunForCommandIn): its pending
+     * work is cancelled, so no further state is admitted; the caller then
+     * wakes the controller, which finds the run ended and does its post-end
+     * work (it stops the cancelled effects, ends agent children and tells the
+     * parent). The run end, its projection and the receipt commit in one
+     * transaction, under the session and run locks. A run that already ended
+     * is left as it is: the receipt records its status.
      *
      * The receipt is the accept-time result: the run's status and KV revision
-     * when the cancel was accepted. It is stored once and never rewritten; a
+     * after the cancel was accepted. It is stored once and never rewritten; a
      * repeat returns it as stored, and read_workflow shows the run as it is
      * now. A repeat of a cancel accepted by an earlier build, for a run that
-     * still has not begun (its command may have been dropped), ends the run
-     * now, as that accepted cancel requires; its receipt stays as stored.
+     * is still active (its command was only queued, and may have been
+     * dropped), ends the run now, as that accepted cancel requires; its
+     * receipt stays as stored.
      */
     async recordRunCancelRequest(input: {
         workflowSessionId: string;
@@ -2712,12 +2729,15 @@ export class WorkflowStore {
             const prior = await this.priorRunCommand(client, input.workflowSessionId, input.operationId, "cancel", input.requestSha256);
             const run = await this.lockRun(client, input.runId);
             if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
+            const end = (repaired: boolean): Promise<WorkflowRunRow> => !ACTIVE_RUN_STATUSES.includes(run.status) ? Promise.resolve(run)
+                : runNotBegun(run) ? this.cancelBeforeBegin(client, run, input, repaired)
+                    : this.endRunForCommandIn(client, run, { command: "cancel", reason: input.reason, requestedBy: input.requestedBy,
+                        operationId: input.operationId, repaired });
             if (prior) {
                 // The request hash names the run, so the stored receipt is this run's.
-                const current = runNotBegun(run) ? await this.cancelBeforeBegin(client, run, input, true) : run;
-                return { receipt: prior, replayed: true, run: current };
+                return { receipt: prior, replayed: true, run: await end(true) };
             }
-            const current = runNotBegun(run) ? await this.cancelBeforeBegin(client, run, input, false) : run;
+            const current = await end(false);
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "cancel", runId: run.runId, status: current.status, kvRevision: current.kvRevision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "cancel", input.requestSha256, receipt);
             return { receipt, replayed: false, run: current };
@@ -2770,11 +2790,14 @@ export class WorkflowStore {
      *   lose to the deletion, and a running script's liveness check stops
      *   it); a run that already ended keeps its result. A delete never waits
      *   in a queue, where a run that ended first would leave it unapplied;
-     * - cancel or done of a live run that has not begun ends it here, as
-     *   update_workflow cancel does (done is cancel with its "Stopped" reason);
-     * - cancel or done of a run that has begun is for its controller (which
-     *   began it): the receipt says "queued", and the caller queues it; a run
-     *   that ends first makes it moot (the first run end stands);
+     * - cancel or done of a live active run ends it here, as update_workflow
+     *   cancel does (done is cancel with its "Stopped" reason): a run that has
+     *   not begun as before, a begun one (running, paused or stopping) as its
+     *   controller's cancel activity would (S7-DX2; `wake` then says the
+     *   caller queues the command for the controller, which finds the run
+     *   ended and does its post-end work); the first run end stands;
+     * - a receipt an older build stored as "queued" (for its controller) whose
+     *   run is still active is applied when its request is repeated;
      * - cancel or done with no active run has nothing to apply ("none").
      * The receipt (kind session-<command>) records how it was applied and the
      * run as it was accepted; it is stored once and never rewritten. A repeat
@@ -2788,7 +2811,7 @@ export class WorkflowStore {
         command: "cancel" | "done" | "delete";
         reason: string;
         requestedBy: string;
-    }): Promise<{ receipt: WorkflowSessionCommandReceipt; replayed: boolean; run: WorkflowRunRow | null }> {
+    }): Promise<{ receipt: WorkflowSessionCommandReceipt; replayed: boolean; run: WorkflowRunRow | null; wake: boolean }> {
         return this.transaction(async client => {
             if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             await this.lockDefinition(client, input.workflowSessionId);
@@ -2809,21 +2832,36 @@ export class WorkflowStore {
                 await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.workflowSessionId]);
                 if (run) run = runFrom((await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [run.runId])).rows[0]);
             };
+            /** End a begun active run for this cancel or done (S7-DX2); the controller is then woken. */
+            const endBegun = async (current: WorkflowRunRow, command: "cancel" | "done", repaired: boolean): Promise<WorkflowRunRow> =>
+                this.endRunForCommandIn(client, current, { command, reason: input.reason, requestedBy: input.requestedBy, operationId: input.operationId, repaired });
             if (priorRows[0]) {
                 const prior = parseSessionCommandReceipt(parseStoredJson(str(priorRows[0], "receipt"), "receipt"));
                 // An accepted delete holds whatever the run did since; the session is live here, so it was not applied yet.
                 if (prior.command === "delete") await softDelete();
-                return { receipt: prior, replayed: true, run };
+                // A cancel or done an older build accepted for the run's controller (only queued): applied now, if its run is
+                // still active (S7-DX2). Its receipt stays as stored.
+                if (prior.applied === "queued" && prior.command !== "delete" && run !== null && prior.runId === run.runId
+                    && ACTIVE_RUN_STATUSES.includes(run.status) && !runNotBegun(run)) {
+                    run = await endBegun(run, prior.command, true);
+                }
+                // A repeat of an end applied here wakes the controller again (its earlier wake may have been lost).
+                const wake = run !== null && prior.command !== "delete" && commandEndOf(run)?.operationId === input.operationId;
+                return { receipt: prior, replayed: true, run, wake };
             }
             const begun = run !== null && ACTIVE_RUN_STATUSES.includes(run.status) && !runNotBegun(run);
             let applied: WorkflowSessionCommandReceipt["applied"];
             let status: string | null = run?.status ?? null;
+            let wake = false;
             if (input.command === "delete") {
                 await softDelete();
                 applied = "store";
                 status = "deleted";
-            } else if (begun) {
-                applied = "queued";
+            } else if (begun && run !== null) {
+                run = await endBegun(run, input.command, false);
+                applied = "store";
+                status = run.status;
+                wake = true;
             } else if (run !== null && runNotBegun(run)) {
                 run = await this.cancelBeforeBegin(client, run, { ...input, command: input.command }, false);
                 applied = "store";
@@ -2833,7 +2871,7 @@ export class WorkflowStore {
             }
             const receipt: WorkflowSessionCommandReceipt = { workflowSessionId: input.workflowSessionId, command: input.command, applied, runId: run?.runId ?? null, status };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
-            return { receipt, replayed: false, run };
+            return { receipt, replayed: false, run, wake };
         });
     }
 
@@ -6087,33 +6125,75 @@ export class WorkflowStore {
             const run = await this.lockRun(client, input.runId);
             if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return { ended: false, run };
             if (input.receipt) await this.insertReceiptOnce(client, run.workflowSessionId, input.receipt);
-            const { rows } = await client.query(
-                `UPDATE ${this.t.runs}
-                    SET status = $2, terminal_node_id = $3, terminal_outcome = $4, terminal_output = $5, terminal_error = $6,
-                        paused_from = NULL, updated_at = now(), finished_at = now()
-                  WHERE run_id = $1 RETURNING *`,
-                [input.runId, input.status, input.terminalNodeId, input.terminalOutcome, input.outputText,
-                    input.errorText === null ? null : redactWorkflowErrorText(input.errorText, canonicalJson)]);
-            if (input.terminalNode) {
-                const { result } = input.terminalNode;
-                await client.query(
-                    `UPDATE ${this.t.nodes}
-                        SET state = 'completed', outcome = $2, result_kind = $3,
-                            output = CASE WHEN $3 = 'business' THEN $4 END,
-                            error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
-                            winner = $5, completed_at = now()
-                      WHERE node_execution_id = $1 AND run_id = $6 AND state = 'pending'`,
-                    [input.terminalNode.nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner, input.runId]);
-            }
+            return { ended: true, run: await this.endRunIn(client, run, input) };
+        });
+    }
+
+    /**
+     * finishRun's end of `run`, in the caller's transaction, which holds the session and run locks and found the run live
+     * and active: the run's terminal columns, its terminal node, its pending node executions and its pending sends to
+     * workflows, and the projection. Returns the ended run.
+     */
+    private async endRunIn(client: PoolClient, run: WorkflowRunRow, input: {
+        status: "completed" | "failed" | "cancelled";
+        terminalNodeId: string | null;
+        terminalOutcome: string | null;
+        outputText: string | null;
+        errorText: string | null;
+        endPending: { winner: "cancel" | "controller"; message: string };
+        terminalNode?: { nodeExecutionId: string; result: NodeResultInput } | null;
+        projection?: SessionProjection;
+    }): Promise<WorkflowRunRow> {
+        const { rows } = await client.query(
+            `UPDATE ${this.t.runs}
+                SET status = $2, terminal_node_id = $3, terminal_outcome = $4, terminal_output = $5, terminal_error = $6,
+                    paused_from = NULL, updated_at = now(), finished_at = now()
+              WHERE run_id = $1 RETURNING *`,
+            [run.runId, input.status, input.terminalNodeId, input.terminalOutcome, input.outputText,
+                input.errorText === null ? null : redactWorkflowErrorText(input.errorText, canonicalJson)]);
+        if (input.terminalNode) {
+            const { result } = input.terminalNode;
             await client.query(
                 `UPDATE ${this.t.nodes}
-                    SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
-                        winner = $3, completed_at = now()
-                  WHERE run_id = $1 AND state = 'pending'`,
-                [input.runId, canonicalJson({ code: "cancelled", message: input.endPending.message }), input.endPending.winner]);
-            await this.decidePendingSendsIn(client, run.workflowSessionId, input.runId);
-            await this.project(client, input.projection, run);
-            return { ended: true, run: runFrom(rows[0]) };
+                    SET state = 'completed', outcome = $2, result_kind = $3,
+                        output = CASE WHEN $3 = 'business' THEN $4 END,
+                        error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
+                        winner = $5, completed_at = now()
+                  WHERE node_execution_id = $1 AND run_id = $6 AND state = 'pending'`,
+                [input.terminalNode.nodeExecutionId, result.outcome, result.resultKind, storedResultText(result), result.winner, run.runId]);
+        }
+        await client.query(
+            `UPDATE ${this.t.nodes}
+                SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
+                    winner = $3, completed_at = now()
+              WHERE run_id = $1 AND state = 'pending'`,
+            [run.runId, canonicalJson({ code: "cancelled", message: input.endPending.message }), input.endPending.winner]);
+        await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
+        await this.project(client, input.projection, run);
+        return runFrom(rows[0]);
+    }
+
+    /**
+     * S7-DX2 (durable lifecycle intent): end a begun active run for an accepted cancel or done, in the caller's transaction
+     * under the session and run locks, exactly as the controller's cancel activity ends it (finishRun's end: cancelled,
+     * every pending node execution cancelled with winner cancel, pending sends decided, workflow.cancelled). Its terminal
+     * error records the command, who asked (so the parent is not told of its own command) and the operation that was
+     * accepted. The controller then finds the run ended at its next store call and does its post-end work (observeEnd).
+     * `repaired` marks a cancel or done an older build accepted and only queued, applied when its request is repeated.
+     */
+    private async endRunForCommandIn(client: PoolClient, run: WorkflowRunRow,
+        input: { command: "cancel" | "done"; reason: string; requestedBy: string | null; operationId: string; repaired?: boolean }): Promise<WorkflowRunRow> {
+        const marks: { [key: string]: JsonValue } = { accepted: true, operationId: input.operationId, ...(input.repaired ? { repaired: true } : {}) };
+        return this.endRunIn(client, run, {
+            status: "cancelled", terminalNodeId: null, terminalOutcome: null, outputText: null,
+            // SF-6 verification: the reason is a person's or an agent's text; its secrets are hidden before it is stored.
+            errorText: canonicalJson({ code: "cancelled", message: redactThenClip(input.reason, 4_000), details: {
+                command: input.command, requestedBy: input.requestedBy, ...marks,
+            } }),
+            endPending: { winner: "cancel", message: "The workflow run was cancelled." },
+            projection: { sessionId: run.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
+                runId: run.runId, reason: redactThenClip(input.reason, 500), command: input.command, ...marks,
+            } }], update: { state: "cancelled", lastError: redactThenClip(input.reason, 500), touch: true } },
         });
     }
     /**
@@ -7005,7 +7085,10 @@ export interface WorkflowRunCommandReceipt {
 export interface WorkflowSessionCommandReceipt {
     workflowSessionId: string;
     command: "cancel" | "done" | "delete";
-    /** In the store (the child's run had not begun, or a delete), by the run's controller (queued), or nothing to apply. */
+    /**
+     * In the store (since S7-DX2 every cancel, done or delete of an active run), by the run's controller ("queued": only
+     * receipts an older build stored), or nothing to apply.
+     */
     applied: "store" | "queued" | "none";
     runId: string | null;
     /** The run's status as the command was accepted, after the store applied it; "deleted" for a delete applied in the store. */

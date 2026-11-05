@@ -3817,11 +3817,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
                     const sdkClient = await getInlineClient();
                     const cmdId = `done-inline-${Date.now()}`;
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        child.orchId,
-                        "messages",
-                        JSON.stringify({ type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId }),
-                    );
+                    const command = { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId };
+                    // S7-DX2: a v2 workflow child's command goes through the store first, as the orchestration's path sends it.
+                    if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
+                    }
                     return `[SYSTEM: Graceful completion requested for sub-agent ${child.orchId}. ` +
                         `Use check_agents or wait_for_agents to observe final completion.]`;
                 } catch (err: any) {
@@ -3855,11 +3855,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
                     const sdkClient = await getInlineClient();
                     const cmdId = `cancel-inline-${Date.now()}`;
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        child.orchId,
-                        "messages",
-                        JSON.stringify({ type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId }),
-                    );
+                    const command = { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId };
+                    // S7-DX2: a v2 workflow child's command goes through the store first, as the orchestration's path sends it.
+                    if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
+                    }
                     return `[SYSTEM: Graceful cancellation requested for sub-agent ${child.orchId}. ` +
                         `Use check_agents or wait_for_agents to observe final termination.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                 } catch (err: any) {
@@ -3890,11 +3890,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         return `[SYSTEM: Sub-agent ${child.orchId} has been deleted.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                     }
                     const cmdId = `delete-inline-${Date.now()}`;
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        child.orchId,
-                        "messages",
-                        JSON.stringify({ type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" }, requestedBy: input.sessionId }),
-                    );
+                    const command = { type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" }, requestedBy: input.sessionId };
+                    // S7-DX2: a v2 workflow child's delete is applied in the store, as the orchestration's path sends it.
+                    if (!await workflowChildCommandApplied(activityCtx, child.sessionId, command)) {
+                        await sdkClient._getDuroxideClient().enqueueEvent(child.orchId, "messages", JSON.stringify(command));
+                    }
                     return `[SYSTEM: Graceful deletion requested for sub-agent ${child.orchId}. ` +
                         `It will cancel its descendants first and then delete itself.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                 } catch (err: any) {
@@ -6272,31 +6272,38 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
     // ── sendCommandToSession ────────────────────────────────
     // Sends a raw JSON command directly to a session's orchestration event queue.
+    /**
+     * A lifecycle command (cancel, done or delete) from the session whose orchestration runs `activityCtx` to its child
+     * `targetSessionId`, for a v2 workflow child: the v2 store applies it (applySessionCommandToWorkflowV2: only the
+     * child's parent may send it; delete always deletes the child; cancel and done end its active run, S7-DX2). True when
+     * nothing more is to be sent; false when the caller queues the command (a cancel or done that ended a begun run, for
+     * its controller to finish, or any other target). Used by the sendCommandToSession activity and by the inline control
+     * tools (complete_agent, cancel_agent, delete_agent), so both reach the store the same way.
+     */
+    const workflowChildCommandApplied = async (activityCtx: any, targetSessionId: string, command: unknown): Promise<boolean> => {
+        if (!catalog?.workflowStore) return false;
+        const facts = factStore ?? null;
+        const applied = await applySessionCommandToWorkflowV2({
+            store: catalog.workflowStore(),
+            deleteSessionFacts: facts ? (sessionId: string) => facts.deleteSessionFactsForSession(sessionId) : null,
+        }, { callerInstanceId: String(activityCtx.instanceId ?? ""), targetSessionId, command });
+        if (applied.action !== "applied") return false;
+        const how = applied.receipt ? `${applied.receipt.applied}, ${applied.receipt.status ?? "no run"}` : "already deleted";
+        activityCtx.traceInfo(`[lifecycle] ${(command as { cmd?: string } | null)?.cmd} for workflow ${targetSessionId}: ${how}`);
+        return true;
+    };
+
     // Unlike sendToSession, this does NOT wrap the payload in { prompt: ... }.
     runtime.registerActivity("sendCommandToSession", async (
         activityCtx: any,
         input: { sessionId: string; command: any },
     ): Promise<void> => {
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
-        // A v2 workflow child may have no controller to read a queued command
-        // (its run has not begun, and duroxide drops a queue message for an
-        // instance that has not started; or it has no run): for the child's
-        // own parent, the v2 store applies delete always, and cancel and done
-        // unless a controller began the run (those are queued for it). Every
-        // other target keeps the queued command. The activity's input and
-        // result are unchanged.
-        if (catalog?.workflowStore) {
-            const facts = factStore ?? null;
-            const applied = await applySessionCommandToWorkflowV2({
-                store: catalog.workflowStore(),
-                deleteSessionFacts: facts ? (sessionId: string) => facts.deleteSessionFactsForSession(sessionId) : null,
-            }, { callerInstanceId: String(activityCtx.instanceId ?? ""), targetSessionId: input.sessionId, command: input.command });
-            if (applied.action === "applied") {
-                const how = applied.receipt ? `${applied.receipt.applied}, ${applied.receipt.status ?? "no run"}` : "already deleted";
-                activityCtx.traceInfo(`[sendCommandToSession] ${input.command?.cmd} for workflow ${input.sessionId}: ${how}`);
-                return;
-            }
-        }
+        // A v2 workflow child's lifecycle command is applied in the v2 store
+        // for the child's own parent (workflowChildCommandApplied); it is
+        // queued only when that says so. Every other target keeps the queued
+        // command. The activity's input and result are unchanged.
+        if (await workflowChildCommandApplied(activityCtx, input.sessionId, input.command)) return;
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());

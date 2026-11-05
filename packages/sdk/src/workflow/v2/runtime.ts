@@ -81,6 +81,7 @@ import {
     type WorkflowAgentInvocation,
     type WorkflowAgentTask,
     type WorkflowTestInterception,
+    commandEndOf,
     workflowTestInterceptionId,
 } from "./store.js";
 
@@ -213,8 +214,8 @@ export const WORKFLOW_V2_COMMAND_POLL_MS = 10;
 /**
  * The most messages one read of the command queue takes in a row (duroxide review DX-2): each one already queued is
  * taken at once, in the same turn, and duroxide 0.1.32 fails a turn whose orchestration resolves more than 100 of them in
- * a row (MAX_QUIESCENCE_ITERATIONS, replay_engine.rs). A read that reaches this many returns without a command, and a
- * durable step (a store activity, or a short timer before continue-as-new) comes before the next read.
+ * a row (MAX_QUIESCENCE_ITERATIONS, replay_engine.rs). A read that reaches this many returns without a command, and the
+ * pass's next store activity comes before the next read. Commands are store state (S7-DX2), so a read never needs more.
  */
 export const WORKFLOW_V2_COMMAND_READ_BATCH = 32;
 /**
@@ -259,6 +260,7 @@ export const WORKFLOW_V2_ACTIVITIES = {
     wake: "workflow.v2.wake",
     deliver: "workflow.v2.deliver",
     deliveryFailed: "workflow.v2.deliveryFailed",
+    observeEnd: "workflow.v2.observeEnd",
 } as const;
 
 /**
@@ -296,6 +298,7 @@ export const WORKFLOW_V2_REQUEST_ACTIVITIES = {
     join: "workflow.v2.r1.join",
     intercept: "workflow.v2.r1.intercept",
     expire: "workflow.v2.r1.expire",
+    observeEnd: "workflow.v2.r1.observeEnd",
 } as const;
 
 type WorkflowV2ActivityKey = keyof typeof WORKFLOW_V2_ACTIVITIES;
@@ -313,15 +316,6 @@ type WorkflowV2ActivityKey = keyof typeof WORKFLOW_V2_ACTIVITIES;
 // it replaced the 30 s per-attempt timeout; duroxide has no total timeout.
 export const WORKFLOW_V2_STORE_RETRY = { maxAttempts: 5, timeoutMs: 30_000 } as const;
 const STORE_RETRY = WORKFLOW_V2_STORE_RETRY;
-/**
- * The retry policy of the 1.8.0 effect orchestration's last two activities, recordEffectResult and wake (duroxide review
- * DX-RECORD): STORE_RETRY's attempts, each retried after an error, and no attempt timeout. A timed-out attempt is not
- * stopped: its JavaScript can still commit the script's result after the orchestration ended failed, while the
- * controller's collection, finding the effect ended, decides the state execution_failed first, and its compare-and-swap
- * then refuses the real result. With the 30 s attempt timeout (21993700; it was 180 s) that became practical. Without
- * one, the orchestration ends only after the result is stored or every attempt failed with an error.
- */
-export const WORKFLOW_V2_EFFECT_RECORD_RETRY = { maxAttempts: WORKFLOW_V2_STORE_RETRY.maxAttempts } as const;
 
 export function workflowLiveControllerInstanceId(workflowSessionId: string): string {
     return `session-${workflowSessionId}`;
@@ -730,12 +724,14 @@ function parseElapse(value: unknown): Array<{ nodeExecutionId: string; remaining
  * whether it is past its deadline, and whether it is paused (adversarial review R2-RT-1; a result recorded before that
  * field existed says not paused, as its controller then read it).
  */
-function parseCollectedWithStop(value: unknown): { collected: CollectedResult[]; stopping: { deadlineMs: number } | null; expired: boolean; paused: boolean } {
+function parseCollectedWithStop(value: unknown): { collected: CollectedResult[]; stopping: { deadlineMs: number } | null; expired: boolean; paused: boolean;
+    ended: boolean } {
     const result = record(value, "collect result");
     expect(result.expired === undefined || result.expired === true, "collect expiry is invalid");
     expect(result.paused === undefined || result.paused === true, "collect pause is invalid");
+    expect(result.ended === undefined || result.ended === true, "collect end is invalid");
     return { collected: parseCollected(result.collected), stopping: parseStopping(result.stopping, "collect stopping"), expired: result.expired === true,
-        paused: result.paused === true };
+        paused: result.paused === true, ended: result.ended === true };
 }
 
 /**
@@ -778,6 +774,14 @@ function parseResult(value: unknown): ControllerResult {
     const result = record(value, "controller result");
     expect(isRunStatus(result.status), "result status is invalid");
     return { runId: text(result.runId, "runId"), status: result.status, outcome: textOrNull(result.outcome, "outcome") };
+}
+
+/** observeEnd's answer: the ended run, and the lifecycle command whose acceptance ended it (null for any other end). */
+function parseObservedEnd(value: unknown): ControllerResult & { command: "cancel" | "done" | null } {
+    const observed = record(value, "observed end");
+    const command = observed.command === "cancel" || observed.command === "done" ? observed.command : null;
+    expect(command !== null || observed.command === null, "observed command is invalid");
+    return { ...parseResult(observed), command };
 }
 
 /**
@@ -874,6 +878,26 @@ function* storeTagged(ctx: OrchestrationContext, name: string, input: unknown): 
     for (let attempt = 0; ; attempt += 1) {
         try {
             return yield taggedActivity(ctx, name, input);
+        } catch (error) {
+            if (attempt >= TAGGED_STORE_RETRY_DELAYS_MS.length) throw error;
+            yield ctx.scheduleTimer(TAGGED_STORE_RETRY_DELAYS_MS[attempt]);
+        }
+    }
+}
+
+/**
+ * The 1.8.0 effect orchestration's last two activities, recordEffectResult and wake (duroxide review DX-RECORD, V-1): an
+ * ordinary untagged activity with STORE_RETRY's attempts on durable timers (TAGGED_STORE_RETRY_DELAYS_MS, as storeTagged
+ * retries a tagged one) and no attempt timeout; the last error propagates. A timed-out attempt is not stopped: its
+ * JavaScript could still store the script's result after the orchestration ended failed, while the controller's
+ * collection, finding the effect ended, decides the state execution_failed first. With the 30 s attempt timeout
+ * (21993700) that became practical; duroxide-node 0.2.4's typed retry policy requires a timeout, so the retries are the
+ * orchestration's own. An attempt can stay pending while its JavaScript hangs.
+ */
+function* storeWithoutTimeout(ctx: OrchestrationContext, name: string, input: unknown): Generator<ScheduledTask, unknown, unknown> {
+    for (let attempt = 0; ; attempt += 1) {
+        try {
+            return yield ctx.scheduleActivityTyped(name, input);
         } catch (error) {
             if (attempt >= TAGGED_STORE_RETRY_DELAYS_MS.length) throw error;
             yield ctx.scheduleTimer(TAGGED_STORE_RETRY_DELAYS_MS[attempt]);
@@ -985,43 +1009,37 @@ type WorkflowCommand = NonNullable<ReturnType<typeof parseWorkflowCommand>>;
 
 /**
  * Read the messages already queued, without waiting for more, at most WORKFLOW_V2_COMMAND_READ_BATCH of them (review
- * DX-2): the first lifecycle command; else `empty` when the 10 ms poll found the queue empty, or not when the batch ended
- * first. Wakes ahead of a command are only hints and are dropped, so they never hide it.
- */
-function* readQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask, { command: WorkflowCommand | null; empty: boolean }, unknown> {
-    for (let read = 0; read < WORKFLOW_V2_COMMAND_READ_BATCH; read += 1) {
-        const polled = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(WORKFLOW_V2_COMMAND_POLL_MS)));
-        if (polled.index === 1) return { command: null, empty: true };
-        const command = parseWorkflowCommand(polled.value);
-        if (command) return { command, empty: false };
-    }
-    return { command: null, empty: false };
-}
-
-/**
- * The lifecycle command already queued, or null: read before an admission (readQueuedCommand). Null also when a full batch
- * held no command (review DX-2): the pass goes on to its store activities, and the next pass reads on. A command behind
- * more wakes than that is read a pass or more later.
+ * DX-2): the first lifecycle command, or null when the 10 ms poll found the queue empty or the batch ended first (the pass
+ * goes on to its store activities, and the next pass reads on). A message is only a hint since S7-DX2: an accepted cancel,
+ * done or delete has already ended the run in the store, which every store call of the controller finds; a command read
+ * here (also one an older build queued) is applied to the run as it is (applyCommand), and wakes are dropped.
  */
 function* takeQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask, WorkflowCommand | null, unknown> {
-    return (yield* readQueuedCommand(ctx)).command;
+    for (let read = 0; read < WORKFLOW_V2_COMMAND_READ_BATCH; read += 1) {
+        const polled = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(WORKFLOW_V2_COMMAND_POLL_MS)));
+        if (polled.index === 1) return null;
+        const command = parseWorkflowCommand(polled.value);
+        if (command) return command;
+    }
+    return null;
 }
 
 /**
- * Before a controller continues as new (review DX-1): every message queued is read, batch by batch, each batch followed by
- * a short durable timer (a turn of its own, so no turn reads more than a batch), until a poll finds the queue empty. It
- * returns the first lifecycle command, which the controller applies instead of continuing as new, or null. duroxide 0.1.32
- * carries at most 100 unread messages into the next execution and drops the newer ones (MAX_CARRY_FORWARD_EVENTS,
- * execution.rs), so a command behind 100 wakes would be lost there. After this, only messages that arrive in the very turn
- * that continues as new, after the empty poll, are carried. Wakes are only hints: the next execution collects the stored
- * results anyway.
+ * S7-DX2: the run ended in another transaction, as one of this controller's store calls found it (an admission, its stop's
+ * end, the run deadline's end): the store ended it as an accepted cancel or done was recorded, or a deletion ended it.
+ * After an accepted command, the controller does what applyCommand does after its end: the effects that end cancelled
+ * are asked to stop (observeEnd), 1.9.0's agent children are ended (afterEnd), the parent is told (unless it asked: the
+ * notice reads the requester the end records) and the final status is published. After any other end, the children are
+ * ended, as before.
  */
-function* commandBeforeContinueAsNew(ctx: OrchestrationContext): Generator<ScheduledTask, WorkflowCommand | null, unknown> {
-    for (;;) {
-        const read = yield* readQueuedCommand(ctx);
-        if (read.command !== null || read.empty) return read.command;
-        yield ctx.scheduleTimer(WORKFLOW_V2_COMMAND_POLL_MS);
-    }
+function* endedElsewhere(ctx: OrchestrationContext, input: ControllerInput, profile: ControllerProfile): Generator<ScheduledTask, ControllerResult, unknown> {
+    const observed = parseObservedEnd(yield* profile.persist(ctx, "observeEnd", { runId: input.runId }));
+    if (profile.afterEnd) yield* profile.afterEnd(ctx, input.runId);
+    const result: ControllerResult = { runId: observed.runId, status: observed.status, outcome: observed.outcome };
+    if (observed.command === null) return result;
+    yield* profile.persist(ctx, "notifyParent", { runId: input.runId });
+    ctx.setCustomStatus(JSON.stringify({ status: "cancelled", sessionKind: "workflow", workflow: { v: 2, runId: input.runId, outcome: observed.outcome } }));
+    return result;
 }
 
 /** Apply one lifecycle command (cancel, done or delete) and end the controller. */
@@ -1055,10 +1073,8 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     const plan = parsePlan(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.plan, { runId: input.runId, irSha256: state.irSha256 }, STORE_RETRY));
     let admittedThisExecution = 0;
     let idleWaits = 0;
-    const continueAsNew = function* (): Generator<ScheduledTask, ControllerResult | null, unknown> {
-        // Review DX-1: no lifecycle command is left behind in the queue (changed in place: never activated).
-        const command = yield* commandBeforeContinueAsNew(ctx);
-        if (command) return yield* applyCommand(ctx, input, command);
+    // S7-DX2: a lifecycle command is store state, not a queued message, so continue-as-new may drop unread wakes.
+    const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
         // 1.8.0 is frozen: it continues as new at itself, whatever version new runs start at.
         yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
             "1.8.0");
@@ -1066,14 +1082,16 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     };
 
     for (;;) {
-        // 0. Commands first. A command queued before this read's 10 ms poll
-        // is due is read here, before anything else is admitted, unless more
-        // than WORKFLOW_V2_COMMAND_READ_BATCH messages are ahead of it (review
-        // DX-2). One that arrives later, also one that arrives in the turn
-        // that finds the poll's timer due (duroxide orders that turn's
-        // messages by when they became visible, so the timer comes first:
-        // review DX-POLL), is read at a later pass or while waiting, so one
-        // more state can be admitted first; the run's end then cancels it.
+        // 0. Commands first. An accepted cancel, done or delete has already
+        // ended the run in the store (S7-DX2), so the admission below finds it
+        // ended and admits nothing, whatever this read finds. This read takes
+        // a queued command (also one an older build queued) and applies it to
+        // the run as it is, and drops wakes; it takes at most
+        // WORKFLOW_V2_COMMAND_READ_BATCH messages (review DX-2). A dequeue
+        // wins its race only when its message is already in the turn: duroxide
+        // returns a fetched batch in insertion order, so the poll's timer can
+        // win over a message that arrived before the timer was due (review
+        // V-4); that message is read at a later pass or while waiting.
         // Whichever run-ending transaction commits first (finish, cancel or
         // deletion) decides the run; a command read after that changes nothing.
         if (state.cursors.some(cursor => cursor.pending === null)) {
@@ -1102,9 +1120,9 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }, STORE_RETRY));
             if (!entered.admitted) {
-                // A paused run admits nothing until it is resumed; an ended one is done.
+                // A paused run admits nothing until it is resumed; an ended one is done (S7-DX2: its post-end work).
                 if (entered.status === "paused") { paused = true; break; }
-                return { runId: input.runId, status: entered.status, outcome: entered.outcome };
+                return yield* endedElsewhere(ctx, input, LEGACY_PROFILE);
             }
             // The ordinal and the step count only once the admission is stored.
             state.ordinals[key] = ordinal;
@@ -1340,16 +1358,11 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             return null;
         }
         // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
-        if (!expiry.expired) {
-            yield* REQUEST_PROFILE.afterEnd!(ctx, input.runId);
-            return expiry.result;
-        }
+        if (!expiry.expired) return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
         return yield* reportEnded(ctx, input.runId, expiry.result, REQUEST_PROFILE);
     };
-    const continueAsNew = function* (): Generator<ScheduledTask, ControllerResult | null, unknown> {
-        // Review DX-1: no lifecycle command is left behind in the queue.
-        const command = yield* commandBeforeContinueAsNew(ctx);
-        if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
+    // S7-DX2: a lifecycle command is store state, not a queued message, so continue-as-new may drop unread wakes.
+    const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
         yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
             WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
         return null;
@@ -1558,6 +1571,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             else {
                 // A stop is seen by the next admission or collection; only the results and the run's own deadline matter here.
                 const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingAgents }));
+                if (collection.ended) return { result: yield* endedElsewhere(ctx, input, REQUEST_PROFILE) };
                 if (collection.expired) {
                     const expired = yield* expireRun();
                     return expired !== null ? { result: expired } : null;
@@ -1644,6 +1658,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 // Review R2-RT-1: the limit ends the run where it would admit, so a run read now as past its deadline,
                 // stopping or paused is not ended by it here (an admission's order); a paused one at its limit ends after the resume.
                 const seen = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: [] }));
+                if (seen.ended) return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
                 if (seen.expired) {
                     const expired = yield* expireRun();
                     if (expired !== null) return expired;
@@ -1680,9 +1695,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 // A stopping run admits nothing (paused or not); its admitted work settles below.
                 if (entered.stopping !== null) { stopping = entered.stopping; break; }
                 if (entered.status === "paused") { paused = true; break; }
-                // Another end decided the run (a deletion): the children of its decided agent states are ended.
-                yield* REQUEST_PROFILE.afterEnd!(ctx, input.runId);
-                return { runId: input.runId, status: entered.status, outcome: entered.outcome };
+                // Another end decided the run (an accepted cancel or done, a deletion): its post-end work (S7-DX2).
+                return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
             }
             state.ordinals[key] = ordinal;
             state.steps += 1;
@@ -1829,6 +1843,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         }
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
         const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingIds }));
+        // S7-DX2: a run that another transaction ended (an accepted cancel or done, a deletion) routes none of its results.
+        if (collection.ended) return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
         // A run past its deadline (read after the results): the store ends it before any of them is routed.
         if (collection.expired) {
             const expired = yield* expireRun();
@@ -1891,10 +1907,7 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 const finished = parseStopFinish(yield* persistentlyTagged(ctx, R.stop, { runId: input.runId }));
                 if (finished.ended) {
                     // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
-                    if (finished.result.status !== "stopped") {
-                        yield* REQUEST_PROFILE.afterEnd!(ctx, input.runId);
-                        return finished.result;
-                    }
+                    if (finished.result.status !== "stopped") return yield* endedElsewhere(ctx, input, REQUEST_PROFILE);
                     return yield* reportEnded(ctx, input.runId, finished.result, REQUEST_PROFILE);
                 }
                 const read = parseNow(yield ctx.utcNow());
@@ -2017,10 +2030,10 @@ export function* workflowV2Effect(ctx: OrchestrationContext, rawInput: unknown):
     } catch (error) {
         result = { kind: "result", result: generatorRuntimeError("execution_failed", workflowErrorMessage(error)) };
     }
-    // Review DX-RECORD: no attempt timeout, so the orchestration does not end while an attempt can still store the result
-    // (changed in place: never activated, and every hot patch requires no run in flight).
-    yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.recordEffectResult, { ...input, outcome: result }, WORKFLOW_V2_EFFECT_RECORD_RETRY);
-    yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.wake, input, WORKFLOW_V2_EFFECT_RECORD_RETRY);
+    // Review DX-RECORD, V-1: no attempt timeout, so the orchestration does not end while an attempt can still store the
+    // result (changed in place: never activated, and every hot patch requires no run in flight).
+    yield* storeWithoutTimeout(ctx, WORKFLOW_V2_ACTIVITIES.recordEffectResult, { ...input, outcome: result });
+    yield* storeWithoutTimeout(ctx, WORKFLOW_V2_ACTIVITIES.wake, input);
     return null;
 }
 
@@ -3559,9 +3572,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // And whether the run is past its deadline (migration 0104), by its own clock: only a run with one says so.
         const expired = ACTIVE_RUN_STATUSES.includes(run.status) && await store.isRunExpired(run);
         // And whether it is paused (adversarial review R2-RT-1): its controller then routes none of these results, even when
-        // every cursor waits on work and no admission would find the pause.
+        // every cursor waits on work and no admission would find the pause. And whether it ended (S7-DX2: an accepted cancel
+        // or done, or a deletion, ended it in the store): its controller then routes none of them and does its post-end work.
         return { collected, stopping: ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null ? { deadlineMs: run.stop.deadlineAt.getTime() } : null,
-            ...(expired ? { expired: true } : {}), ...(run.status === "paused" ? { paused: true } : {}) };
+            ...(expired ? { expired: true } : {}), ...(run.status === "paused" ? { paused: true } : {}),
+            ...(!ACTIVE_RUN_STATUSES.includes(run.status) ? { ended: true } : {}) };
     });
 
     register("finish", async (_ctx, rawInput, requests) => {
@@ -3677,6 +3692,41 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome };
     });
 
+    /**
+     * Ask the effect of every node whose stored result is the run's cancellation (winner cancel) to stop. The list comes
+     * from the store on every execution, so an activity retried after the run's end still sends the requests.
+     */
+    const stopCancelledEffects = async (actx: ActivityContext, run: WorkflowRunRow, reason: string): Promise<void> => {
+        const client = actx.getClient();
+        if (!client) throw new Error("Workflow cancellation needs the durable client.");
+        const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
+        for (const nodeExecutionId of await store.listCancelledNodeIds(run.runId)) {
+            const instanceId = workflowEffectInstanceId(nodeExecutionId);
+            const status = await client.getStatus(instanceId);
+            if (status.status === "Running" || status.status === "Suspended") {
+                await client.cancelInstance(instanceId, reason);
+                requested.push({ nodeExecutionId, instanceId, status: status.status });
+            }
+        }
+        if (requested.length) {
+            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested } }]);
+        }
+    };
+
+    /**
+     * S7-DX2: a run that another transaction ended, as its controller found it (endedElsewhere): its status and outcome,
+     * and the lifecycle command (cancel or done) whose acceptance ended it, or null for any other end. After an accepted
+     * command, the effects that end cancelled are asked to stop, as the cancel activity asks.
+     */
+    register("observeEnd", async (actx, rawInput) => {
+        const run = await runOf(text(record(rawInput, "observe end input").runId, "runId"));
+        const ended = commandEndOf(run);
+        if (ended !== null) {
+            await stopCancelledEffects(actx, run, ended.command === "done" ? "Stopped" : "Cancelled");
+        }
+        return { runId: run.runId, status: run.status, outcome: run.terminalOutcome, command: ended?.command ?? null };
+    });
+
     register("cancel", async (actx, rawInput) => {
         const input = record(rawInput, "cancel input");
         const run = await runOf(text(input.runId, "runId"));
@@ -3693,23 +3743,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 update: { state: "cancelled", lastError: redactThenClip(reason, 500), touch: true },
             },
         });
-        // Ask the effect of every node whose stored result is this cancellation
-        // to stop. The list comes from the store on every execution, so an
-        // activity retried after the commit above still sends the requests.
-        const client = actx.getClient();
-        if (!client) throw new Error("Workflow cancellation needs the durable client.");
-        const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
-        for (const nodeExecutionId of await store.listCancelledNodeIds(run.runId)) {
-            const instanceId = workflowEffectInstanceId(nodeExecutionId);
-            const status = await client.getStatus(instanceId);
-            if (status.status === "Running" || status.status === "Suspended") {
-                await client.cancelInstance(instanceId, reason);
-                requested.push({ nodeExecutionId, instanceId, status: status.status });
-            }
-        }
-        if (requested.length) {
-            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested } }]);
-        }
+        await stopCancelledEffects(actx, run, reason);
         // Soft-deleting the session tombstones the definition in the same
         // transaction (migration 0090 trigger), whichever path deletes it.
         if (command === "delete") await deps.deleteSession(run.workflowSessionId);
