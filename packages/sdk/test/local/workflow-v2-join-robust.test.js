@@ -100,7 +100,7 @@ import { createManagementClient } from "../helpers/local-workers.js";
 import { projectWorkflowV2, workflowV2BranchNumber } from "../../../app/ui/core/src/workflow-v2-view.js";
 import {
     BRANCH_ROUTE, branchScopeId, registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_ACTIVITIES, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
-    workflowEffectInstanceId, workflowLiveControllerInstanceId,
+    WORKFLOW_V2_STOP_CONTROLLER_VERSIONS, workflowEffectInstanceId, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
 
@@ -825,6 +825,53 @@ describe("J3 robust joins, part 2: the store (no controller)", () => {
                 expect(await h.store.completeNode(run.at(0, "done"), { outcome: "succeeded", resultKind: "business", valueText: canonicalJson({ index: 0 }), winner: "controller" }))
                     .toMatchObject({ won: true, node: { outcome: "succeeded" } });
             }
+        } finally {
+            await h.stop();
+        }
+    });
+
+    // Parent review Q1 of fff25ffc: a branch terminal admitted and not yet decided survives the controller's cut (the store
+    // never cancels a terminal). Controller 1.9.0 decides it with its branch's end in the same pass; were it ever left (an
+    // orchestration ended outside its failure path), every end of the run decides it: the run's end, and a stop at its grace.
+    it("Q1 (fff25ffc): a pending branch terminal left after a cut is decided by the run's end, and a stop waits for it only until its grace ends", { timeout: TIMEOUT }, async () => {
+        const h = await openWorkflowStore(getEnv());
+        try {
+            const leftPending = async () => {
+                const run = await storedRun(h, joinDoc({ items: WAITS(2) }));
+                await run.enterFan(WAITS(2), null);
+                await run.hold(0);
+                await run.hold(1);
+                await run.succeed(0);
+                expect(await h.store.enterNode({
+                    runId: run.runId, nodeExecutionId: run.at(0, "done"), scopeId: branchScopeId(run.fan, 0), nodeId: "done", ordinal: 1, nodeType: "terminal",
+                    predecessorId: run.at(0, "hold"), arrivalRoute: "elapsed", inputText: canonicalJson({ index: 0 }), kvRevision: 1, waitSeconds: null, immediate: null,
+                })).toMatchObject({ admitted: true, node: { state: "pending" } });
+                await h.store.cancelBranchScopes({ runId: run.runId, scopeIds: [0, 1].map(index => branchScopeId(run.fan, index)) });
+                expect(await h.store.readNodeExecution(run.at(0, "done")), "precondition: the terminal survived the cut").toMatchObject({ state: "pending" });
+                expect(await h.store.hasPendingNodes(run.runId), "it is pending work").toBe(true);
+                return run;
+            };
+            // The run's end decides it.
+            const ended = await leftPending();
+            await h.store.finishRun({ runId: ended.runId, status: "failed", terminalNodeId: null, terminalOutcome: null, outputText: null,
+                errorText: canonicalJson({ code: "controller_error", message: "test" }),
+                endPending: { winner: "controller", message: "The workflow run ended before this state finished." } });
+            expect(await h.store.readNodeExecution(ended.at(0, "done"))).toMatchObject({ state: "completed", outcome: "cancelled", winner: "controller" });
+            expect(await h.store.hasPendingNodes(ended.runId)).toBe(false);
+            // A stop: before its grace ends it waits (the terminal is pending work); at the grace's end it ends the run and cancels it.
+            const stopped = await leftPending();
+            await h.store.requestRunStop({ workflowSessionId: stopped.workflowSessionId, runId: stopped.runId, operationId: "stop-1", requestSha256: "stop-1",
+                actor: JOIN_ACTOR, reason: null, graceSeconds: 1, stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS });
+            const projection = () => ({ sessionId: stopped.workflowSessionId, update: { state: "cancelled", touch: true } });
+            const early = await h.store.finishStoppedRun({ runId: stopped.runId, projection });
+            expect(early.result, "precondition: asked before the grace ended").toBe("not_due");
+            const done = await until(async () => {
+                const answer = await h.store.finishStoppedRun({ runId: stopped.runId, projection });
+                return answer.result === "ended" ? answer : null;
+            }, "the stop's grace to end", 10_000);
+            expect(done).toMatchObject({ graceExpired: true, run: { status: "stopped" } });
+            expect(done.cancelled).toContain(stopped.at(0, "done"));
+            expect(await h.store.readNodeExecution(stopped.at(0, "done"))).toMatchObject({ state: "completed", outcome: "cancelled", winner: "stop" });
         } finally {
             await h.stop();
         }

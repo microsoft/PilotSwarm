@@ -1505,8 +1505,10 @@ export interface PilotSwarmWorkerOptions {
      * longest stall (a blocked event loop, a paused database) the item
      * survives without losing its lock. Locks of 15 s or more use the buffer;
      * shorter locks renew at half their timeout, rounded up to whole seconds
-     * (at least 1 s), and ignore it. So a lock under 2 s renews no earlier
-     * than it expires: an activity that runs longer loses it, is stopped and
+     * (at least 1 s), and ignore it (duroxide 0.1.32); the PostgreSQL
+     * provider extends a lock by whole seconds (duroxide-pg 0.1.38). So a
+     * lock under 2 s, or one that is not a whole number of seconds, cannot be
+     * renewed reliably: an activity that runs longer loses it, is stopped and
      * runs again until it is given up. Use whole seconds of at least 2.
      */
     workerLockTimeoutMs?: number;

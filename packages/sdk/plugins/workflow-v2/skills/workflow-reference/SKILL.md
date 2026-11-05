@@ -193,6 +193,8 @@ Outcomes: `joined` and `blocked`. Routes for both are required.
   slot count, with room to spare. With full slots, stopping a race's losers
   waits for a free slot, so a losing script may finish its side effects.
   Stopping a script is best-effort: it usually stops within about a second.
+  A script whose worker loses its lock runs again from its start: scripts
+  run at least once, so make a rerun safe.
 
 ### terminal
 

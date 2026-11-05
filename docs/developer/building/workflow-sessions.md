@@ -386,7 +386,9 @@ for the agents that run there (the duroxide default is 2). With fewer slots
 than running branches plus one, the branches run in waves and the controller
 waits behind them, so a race's stop of its losers waits for a free slot.
 
-Stopping a losing branch's script is best-effort. When the cancellation is
+Stopping a losing branch's script is best-effort, and a script runs at least
+once: one whose worker loses its activity lock runs again from its start
+(its attempt count goes up; see Durability). When the cancellation is
 saved, the script's own liveness check usually stops it within about a
 second. If both that check and the cancel request fail, the script can run
 until recovery or until its own timeout (300 seconds by default, at most
