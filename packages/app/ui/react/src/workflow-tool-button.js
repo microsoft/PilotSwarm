@@ -29,6 +29,8 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
     edit: () => glyph(h("path", { d: "M4 20h4L19 9l-4-4L4 16z" }), h("path", { d: "M13 7l4 4" })),
     publish: () => glyph(h("path", { d: "M12 16V4" }), h("path", { d: "M7 9l5-5 5 5" }), h("path", { d: "M5 20h14" })),
     start: () => glyph(h("circle", { cx: "12", cy: "12", r: "9" }), h("path", { d: "M10 8l6 4-6 4z" })),
+    // Exit full screen (owner, 2026-11-06T19:40Z, F7): four corners pulling in, as the canvas's Restore.
+    "exit-full-screen": () => glyph(h("path", { d: "M4 9h5V4" }), h("path", { d: "M20 9h-5V4" }), h("path", { d: "M20 15h-5v5" }), h("path", { d: "M4 15h5v5" })),
     test: () => glyph(h("path", { d: "M9 3h6" }), h("path", { d: "M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" }), h("path", { d: "M7.5 15h9" })),
     details: () => glyph(h("rect", { x: "3", y: "4", width: "18", height: "16", rx: "2" }), h("path", { d: "M14 4v16" }),
         h("path", { d: "M16.5 9h2" }), h("path", { d: "M16.5 13h2" })),

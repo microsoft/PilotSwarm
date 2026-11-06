@@ -684,6 +684,8 @@ export function workflowTabButtonTip(kind, { name = null, number = null, revisio
         case "stop": return "choose: let started steps finish, or cancel now";
         case "save": return Number.isSafeInteger(revision) ? `save as a new revision after revision ${revision}` : "save as a new revision";
         case "discard": return "go back to the saved revision";
+        // Owner, 2026-11-06T19:40Z (F7): full screen's way out, where Full screen was pressed.
+        case "exit-full-screen": return "bring back the chat and the sessions";
         default: return null;
     }
 }

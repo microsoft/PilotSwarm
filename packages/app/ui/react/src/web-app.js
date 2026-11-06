@@ -9,8 +9,10 @@ import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
+import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
     normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowNeedsAttention, workflowHighlightedSessionId,
+    workflowTabButtonTip,
 } from "../../core/src/workflow-owner.js";
 import { normalizeSidePaneTab } from "../../core/src/state.js";
 import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
@@ -9102,10 +9104,13 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
         title: maximized ? "Back to the inset canvas" : "Maximize — cover the whole screen",
         "aria-label": maximized ? "Restore canvas" : "Maximize canvas",
     }, React.createElement(maximized ? RestoreGlyph : MaximizeGlyph)) : null);
-    // The Workflow tab draws its own header; these go at its right end. Full screen on a desktop puts them in the toolbar.
+    // The Workflow tab draws its own header; these go at its right end. Full screen on a desktop also puts the canvas's
+    // controls in the toolbar's left slot. Owner, 2026-11-06T19:40Z (F7): there, beside his name, two faint glyphs read as
+    // no way out at all; so in full screen the tab's header keeps one, framed, where Full screen was pressed.
     const workflowModeButtons = !onWorkflow ? null
         : mobile ? phoneMaximizeButton()
-        : maximized ? null
+        : maximized ? React.createElement(WorkflowToolButton, { label: "Exit full screen", glyph: "exit-full-screen", "data-action": "exit-full-screen",
+            title: workflowTabButtonTip("exit-full-screen"), onClick: () => controller.dispatch({ type: "ui/canvasMaximized", on: false }) })
         : React.createElement(React.Fragment, null, zenButton(), fullScreenButton());
     const header = onWorkflow && (mobile || !maximized) ? null : mobile
         ? (showRevStrip

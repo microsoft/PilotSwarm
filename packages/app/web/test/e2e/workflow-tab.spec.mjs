@@ -1929,6 +1929,54 @@ test("zen and full screen: the Workflow tab has the canvas's buttons, keeps the 
     expect(errors).toEqual([]);
 });
 
+// Owner, 2026-11-06T19:40Z (F7): "there is no minimize button from full screen". Full screen moved the tab's Zen and Full
+// screen out of its header into the toolbar's left slot, two faint unframed glyphs beside the person's name (his
+// screenshot, about 2,550 px wide); he found no way out. Now the tab's header keeps one where Full screen was pressed: a
+// framed Exit full screen with its tooltip. The toolbar's slot keeps Restore canvas as well (as the canvas's).
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "owner 19:40Z F7" (from packages/app/web, after build).
+for (const width of [1440, 2000]) {
+    test(`owner 19:40Z F7: in full screen the Workflow tab's header has a framed Exit full screen where Full screen was, at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeApi(page, { workflowEvents: QUALITY_EVENTS, workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const head = page.locator(".ps-wf-tab-head").filter({ visible: true });
+        const maximizedLayer = page.locator(".ps-canvas-layer.is-maximized");
+        await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
+        const full = head.getByRole("button", { name: "Full screen canvas", exact: true });
+        for (const from of ["normal", "zen"]) {
+            if (from === "zen") await head.getByRole("button", { name: "Zen mode", exact: true }).click();
+            const pressedAt = await full.boundingBox();
+            await full.click();
+            await expect(maximizedLayer).toHaveCount(1);
+            const exit = head.getByRole("button", { name: "Exit full screen", exact: true });
+            await expect(exit).toBeVisible();
+            // At the header's right end, where Full screen was pressed, inside the window; framed, at least 32 px.
+            const [box, headBox] = await Promise.all([exit.boundingBox(), head.boundingBox()]);
+            expect(box.x + box.width).toBeGreaterThan(headBox.x + headBox.width - 48);
+            expect(box.x + box.width).toBeLessThanOrEqual(width);
+            expect(Math.abs((box.x + box.width) - (pressedAt.x + pressedAt.width))).toBeLessThan(48);
+            expect(box.width).toBeGreaterThanOrEqual(32);
+            expect(box.height).toBeGreaterThanOrEqual(32);
+            expect(parseFloat(await exit.evaluate((element) => getComputedStyle(element).borderTopWidth))).toBeGreaterThan(0);
+            expect(await exit.innerText()).toBe("");
+            await exit.hover();
+            await expect(page.getByRole("tooltip")).toHaveText("Exit full screen — bring back the chat and the sessions");
+            // The toolbar's slot keeps the canvas's controls too.
+            await expect(page.locator("#ps-toolbar-canvas-slot").getByRole("button", { name: "Restore canvas", exact: true })).toBeVisible();
+            if (from === "normal") await shot(page, `owner-1940-f7-full-screen-${width}`);
+            await exit.click();
+            await expect(maximizedLayer).toHaveCount(0);
+            await expect(full).toBeVisible();
+            // Back to where it was: zen stays zen.
+            await expect(head.getByRole("button", { name: from === "zen" ? "Leave zen mode" : "Zen mode", exact: true })).toBeVisible();
+            await page.mouse.move(2, 2);
+        }
+        expect(errors).toEqual([]);
+    });
+}
+
 // Removed (spec draft 3, D4 and F-7; 21 stage 1 "Publish removed"): the f-04 tests of the compact Publish review. The
 // draft fixture stays for the tests that use it.
 const PUBLISH_MODEL = {
