@@ -304,8 +304,10 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     }) : store;
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
+    // duroxide's real default is 2 worker slots (see workflow-v2-join.test.js): a test that holds a spawn's send in a slot
+    // must leave room for the controller's and the cleanup's activities.
     const runtime = new Runtime(provider, {
-        dispatcherPollIntervalMs: 10, logLevel: "error", workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
+        dispatcherPollIntervalMs: 10, logLevel: "error", workerConcurrency: 8, workerTagFilter: { defaultAnd: [WORKFLOW_REQUEST_CAPABILITY] },
     });
     runtime.registerOrchestrationVersioned(CHILD, "1.0.0", chatChild);
     const spawns = [];
