@@ -653,12 +653,26 @@ function workflowUpdateCardOf(event, parsed, sender, id) {
  * workflow card. Pure.
  */
 function buildUserMessageItems(event) {
-    const message = buildChatMessage(event, "user");
-    if (!message) return [];
     const data = event?.data && typeof event.data === "object" ? event.data : {};
     const merged = data.mergedMessages;
-    if (message.role === "user" && !data.sender && Number.isSafeInteger(merged) && merged >= 2) return [{ ...message, mergedMessages: merged }];
-    return [message];
+    // Review SF-D1: the merged turn is classified first, before any card or role is read from its text, so no text in it
+    // (a session-message header, a system notice) makes it a card or a system row.
+    if (!data.sender && Number.isSafeInteger(merged) && merged >= 2) {
+        const neutral = buildChatMessage(event, "user", { neutral: true });
+        return neutral ? [{ ...neutral, mergedMessages: merged }] : [];
+    }
+    const message = buildChatMessage(event, "user");
+    return message ? [message] : [];
+}
+
+/**
+ * Review SF-D1: a user.message recorded with a person's or an agent's sender (server-stamped at the API edge) is theirs:
+ * its text never makes a session-message card or a system row. The runtime records a session message, a reply and its
+ * own notices with no sender or its own system sender (that remainder is still read from text: FU-13). Pure.
+ */
+function stampedByPersonOrAgent(event) {
+    const sender = event?.data?.sender;
+    return event?.eventType === "user.message" && Boolean(sender && typeof sender === "object" && (sender.kind === "user" || sender.kind === "agent"));
 }
 
 function buildSessionMessageChatCard(event, text) {
@@ -729,9 +743,9 @@ function buildSessionMessageChatCard(event, text) {
     return null;
 }
 
-function deriveChatRole(event, fallbackRole, text) {
+function deriveChatRole(event, fallbackRole, text, { textTrusted = true } = {}) {
     if (event?.eventType === "system.message") return "system";
-    if ((fallbackRole === "user" || fallbackRole === "assistant") && isInternalSystemLikeText(text)) return "system";
+    if (textTrusted && (fallbackRole === "user" || fallbackRole === "assistant") && isInternalSystemLikeText(text)) return "system";
     return fallbackRole;
 }
 
@@ -861,11 +875,14 @@ function buildWorkflowChatMessage(event) {
     };
 }
 
-function buildChatMessage(event, role) {
+function buildChatMessage(event, role, { neutral = false } = {}) {
     const rawText = messageTextFromEvent(event);
-    const sessionMessageCard = buildSessionMessageChatCard(event, rawText);
+    // Text makes a card or a system row only where it can be the runtime's own (review SF-D1): never for a neutral merged
+    // turn, never for a person's or an agent's stamped message.
+    const textTrusted = !neutral && !stampedByPersonOrAgent(event);
+    const sessionMessageCard = textTrusted ? buildSessionMessageChatCard(event, rawText) : null;
     if (sessionMessageCard) return sessionMessageCard;
-    const workflowUpdateCard = buildWorkflowUpdateChatCard(event, rawText);
+    const workflowUpdateCard = neutral ? null : buildWorkflowUpdateChatCard(event, rawText);
     if (workflowUpdateCard) return workflowUpdateCard;
 
     // The attribution prefix and any embedded system notice come off BEFORE
@@ -879,7 +896,7 @@ function buildChatMessage(event, role) {
     // behalf after validating it against the drawn contract. One item shape
     // from ONE builder, so bulk load and live append cannot disagree. The
     // portal collapses it to one row; the TUI shows a compact line.
-    if (role === "user" && isCanvasActionContent(visibleText)) {
+    if (role === "user" && !neutral && isCanvasActionContent(visibleText)) {
         const parsed = parseCanvasActionContent(visibleText);
         if (parsed) {
             return {
@@ -920,7 +937,7 @@ function buildChatMessage(event, role) {
     const messageId = typeof event?.data?.messageId === "string" && event.data.messageId
         ? event.data.messageId
         : null;
-    const chatRole = deriveChatRole(event, role, text);
+    const chatRole = deriveChatRole(event, role, text, { textTrusted });
     // Model commentary is a durable user-facing progress update. Once it has
     // been recorded as assistant.message it belongs in the transcript like
     // any other agent message; only transient live-turn output and an
