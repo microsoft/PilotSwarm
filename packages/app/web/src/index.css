@@ -12933,6 +12933,22 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-log li[data-level="warning"] { color: var(--ps-warning); }
 .ps-wf-log time { color: var(--ps-muted); white-space: nowrap; }
 
+/* r3 (390 px): a failed Workflow's failure is one line on a phone, with Details at its end; a tap on the line shows all
+   of it, and Details opens under it. The graph keeps its place (two header rows and this line). */
+.ps-wf-tab.is-phone .ps-wf-failure { display: flex; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--ps-border); }
+.ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-line.is-error {
+  flex: 1 1 0;
+  min-width: 0;
+  border-bottom: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.ps-wf-tab.is-phone .ps-wf-failure.is-open > .ps-wf-line.is-error { white-space: normal; overflow-wrap: anywhere; }
+.ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-failure-details { flex: none; padding: 6px 10px 6px 0; border-bottom: 0; }
+.ps-wf-tab.is-phone .ps-wf-failure > .ps-wf-failure-details[open] { flex-basis: 100%; padding: 0 10px 6px; }
+
 /* The phone's node sheet (12): over the graph, with a visible way back. */
 .ps-wf-tab.is-mobile .ps-wf-panel.is-sheet {
   position: absolute;

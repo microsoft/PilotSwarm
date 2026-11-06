@@ -562,6 +562,8 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
     }, [events, runId]);
     const failure = state?.key === "failed" && readModel?.run && readModel.run.mode !== "test" ? workflowFailure(readModel.run, { summary: endSummary }) : null;
     const [stopping, setStopping] = React.useState(false);
+    // r3 (390 px): a phone shows the failure on one line beside Details; a tap on it shows all of it.
+    const [failureOpen, setFailureOpen] = React.useState(false);
     // An agent node's Log shows its chat (finding 8); "Whole Workflow" shows every line of this Workflow.
     const [logScope, setLogScope] = React.useState("node");
     const controls = runControls?.controls ?? [];
@@ -602,8 +604,9 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
                     title: stop?.enabled || cancel?.enabled ? workflowTabButtonTip("stop") : (stop?.title ?? cancel?.title ?? null),
                     onClick: () => setStopping(true) }) : null)),
         // Failure first, in plain words; the error as it arrived is folded under it (coordinator 2026-11-06).
-        failure ? h("div", { className: "ps-wf-failure" },
-            h("p", { className: "ps-wf-line is-error", role: "status" }, failure.headline),
+        failure ? h("div", { className: `ps-wf-failure${phone && failureOpen ? " is-open" : ""}` },
+            h("p", { className: "ps-wf-line is-error", role: "status", title: phone ? failure.headline : undefined,
+                onClick: phone ? () => setFailureOpen(open => !open) : undefined }, failure.headline),
             h(WorkflowV2FailureDetails, { failure, runId, executionValues: view.executionValues ?? null,
                 onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); } })) : null,
         readError ? h("p", { className: "ps-wf-line is-error", role: "alert" }, `This Workflow could not be read: ${readError} `,

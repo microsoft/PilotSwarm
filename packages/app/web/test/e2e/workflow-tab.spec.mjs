@@ -3445,6 +3445,38 @@ for (const theme of listThemes()) {
     });
 }
 
+// Usability re-test r3, C02 at 390 px: a failed Workflow's graph started 209 px below the tab's top, under the failure line
+// and its Details row. On a phone the failure is one line with Details at its end; a tap on the line shows all of it.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "r3 C02 phone" (from packages/app/web, after build).
+test("r3 C02 phone: a failed Workflow's failure is one line with Details beside it, and the graph starts within 150 px", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeOwned(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.failed}`);
+    const main = workflowTab(page);
+    await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
+    const line = main.locator(".ps-wf-failure > .ps-wf-line.is-error");
+    await expect(line).toHaveText("Failed: the feed did not answer");
+    const details = main.locator(".ps-wf-failure > .ps-wf-failure-details");
+    await expect(details).toBeVisible();
+    const [lineBox, detailsBox] = await Promise.all([line.boundingBox(), details.boundingBox()]);
+    expect(lineBox.height).toBeLessThan(40);
+    expect(Math.abs((detailsBox.y + detailsBox.height / 2) - (lineBox.y + lineBox.height / 2))).toBeLessThan(6);
+    expect(detailsBox.x).toBeGreaterThan(lineBox.x + lineBox.width - 2);
+    expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(150);
+    await expect(line).toHaveCSS("white-space", "nowrap");
+    await expect(line).toHaveCSS("text-overflow", "ellipsis");
+    await shot(page, "r3-c02-phone-failed");
+    // A tap shows all of it; Details opens under the line.
+    await line.click();
+    await expect(line).toHaveCSS("white-space", "normal");
+    await details.locator("summary").click();
+    await expect(details).toHaveAttribute("open", "");
+    expect((await details.boundingBox()).y).toBeGreaterThanOrEqual((await line.boundingBox()).y + (await line.boundingBox()).height - 1);
+    expect(errors).toEqual([]);
+});
+
 test("layout: on a phone the Workflow pane lies over the chat, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
