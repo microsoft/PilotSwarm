@@ -16,7 +16,8 @@ import {
 } from "../../core/src/workflow-agent-log.js";
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowElapsedText, workflowFailure,
-    workflowPanelHeight, workflowRunTimes, workflowStarted, workflowStateOf, workflowTabButtonTip, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS,
+    workflowPanelHeight, workflowPickerFace, workflowPickerGroupLabel, workflowPickerOptionLabel, workflowRunTimes, workflowStarted, workflowStateOf,
+    workflowTabButtonTip, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS,
     WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
@@ -555,7 +556,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
     const number = workflow.number;
     return h("div", { className: "ps-wf-body", "data-session-id": sessionId },
         h("div", { className: "ps-wf-bar" },
-            h(WorkflowNumberPicker, { definition, chosen: sessionId, onOpen }),
+            h(WorkflowNumberPicker, { controller, definition, chosen: sessionId, onOpen }),
             h(StateChip, { state }),
             h("span", { className: "ps-wf-bar-text" }, [revision !== null ? `revision ${revision}` : null,
                 times.started !== null ? shownTime(times.started) : null, times.took !== null ? workflowElapsedText(times.took) : null].filter(Boolean).join(" · ")),
@@ -597,13 +598,43 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
             onClose: () => setStopping(false) }) : null);
 }
 
-/** "#3 ▾": the definition's Workflows, newest first, and the list of all of them (W3). */
-function WorkflowNumberPicker({ definition, chosen, onOpen }) {
+/**
+ * "#7 of 7 ▾" (W3; owner, 2026-11-06T13:43Z, F2: the count is in this picker, not beside the definition): the definition's
+ * Workflows, newest first, in one group that says how many ("7 Workflows"), each "#7 · Running · 05:38:01", then the list
+ * of all of them. The closed picker is a face over the native select (the native list still opens, on a phone too); the
+ * select keeps the name "Workflow" and its value. The newest Workflows' states and starts come from their read models
+ * and events, read as the Workflows list reads them.
+ */
+function WorkflowNumberPicker({ controller, definition, chosen, onOpen }) {
     const id = `wf-number-${React.useId().replace(/:/g, "")}`;
+    const byId = useControllerSelector(controller, state => state.sessions.byId);
+    const views = useControllerSelector(controller, state => state.ui.workflowViews);
+    const histories = useControllerSelector(controller, state => state.history.bySessionId);
+    const rows = [...definition.workflows].reverse();
+    const stamp = rows.map(row => `${row.sessionId}:${byId?.[row.sessionId]?.updatedAt ?? ""}`).join(",");
+    React.useEffect(() => {
+        for (const row of rows.slice(0, LIST_READ_LIMIT)) {
+            controller.ensureSessionHistory(row.sessionId).catch(() => {});
+            controller.ensureWorkflowReadModel(row.sessionId).catch(() => {});
+        }
+    }, [controller, stamp]);
+    const count = rows.length;
+    const shown = rows.find(row => row.sessionId === chosen) ?? null;
+    const label = row => {
+        const view = views?.[row.sessionId] ?? null;
+        const model = workflowChildModel(view);
+        const live = Array.isArray(model?.runs) ? model.runs.find(run => run?.mode === "live") ?? null : null;
+        const times = workflowRunTimes(histories?.get?.(row.sessionId)?.events, live?.runId ?? null);
+        return workflowPickerOptionLabel({ number: row.number, state: workflowStateOf(byId?.[row.sessionId], view)?.label ?? null,
+            started: times.started !== null ? shownTime(times.started) : null });
+    };
     return h("span", { className: "ps-wf-picker is-number" },
         h("label", { htmlFor: id, className: "ps-sr-only" }, "Workflow"),
-        h("select", { id, className: "ps-workflow-input", value: chosen, onChange: event => onOpen(event.target.value === "__all__" ? null : event.target.value) },
-            [...definition.workflows].reverse().map(item => h("option", { key: item.sessionId, value: item.sessionId }, `#${item.number}`)),
+        h("span", { className: "ps-workflow-input ps-wf-picker-face", "aria-hidden": "true" }, shown ? workflowPickerFace(shown.number, count) : "—"),
+        h("select", { id, className: "ps-workflow-input ps-wf-picker-native", value: chosen,
+            onChange: event => onOpen(event.target.value === "__all__" ? null : event.target.value) },
+            h("optgroup", { label: workflowPickerGroupLabel(count) },
+                rows.map(row => h("option", { key: row.sessionId, value: row.sessionId }, label(row)))),
             h("option", { value: "__all__" }, "All Workflows")));
 }
 

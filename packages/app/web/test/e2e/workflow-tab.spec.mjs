@@ -2942,6 +2942,13 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await list.getByRole("button", { name: "Open watch-v2 #2", exact: true }).click();
     await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
     await expect(main.locator(".ps-wf-bar .ps-wf-state").first()).toHaveText("Failed");
+    // F2 (owner, 2026-11-06T13:43Z): the count is in the Workflow picker: one group "2 Workflows", newest first, each with
+    // its state (and its start, once read); closed, it reads "#2 of 2".
+    const shownPicker = main.getByRole("combobox", { name: "Workflow", exact: true });
+    await expect(shownPicker.locator("optgroup")).toHaveAttribute("label", "2 Workflows");
+    await expect.poll(() => shownPicker.locator("optgroup option").allTextContents())
+        .toEqual([expect.stringMatching(/^#2 · Failed( · .+)?$/), expect.stringMatching(/^#1 · Running( · .+)?$/)]);
+    await expect(main.locator(".ps-wf-picker-face")).toHaveText("#2 of 2");
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
     await expect(page.locator(".ps-toolbar-count")).toHaveCount(0);
     // A Workflow row in the session list does the same: the chat stays, the tab shows #1.

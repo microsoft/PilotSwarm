@@ -12657,6 +12657,27 @@ textarea.ps-link-input {
 .ps-wf-tab-modes .ps-canvas-max-btn { margin-left: 0; }
 .ps-wf-picker { display: inline-flex; min-width: 0; }
 .ps-wf-picker-select { max-width: 100%; min-width: 0; }
+/* Owner, 2026-11-06T13:43Z (F2): the Workflow picker reads "#7 of 7" closed; its open list (the native one, a phone's
+   too) is one group that says how many. The face is drawn; the select lies over it, transparent, and takes the taps. */
+.ps-wf-picker.is-number { position: relative; flex: none; }
+.ps-wf-picker-face {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.ps-wf-picker-face::after { content: "\25BE"; color: var(--ps-muted); }
+.ps-wf-picker.is-number > .ps-wf-picker-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.ps-wf-picker.is-number:focus-within > .ps-wf-picker-face { border-color: var(--ps-accent); outline: 2px solid var(--ps-accent); outline-offset: 1px; }
+select.ps-workflow-input optgroup { background: var(--ps-background); color: var(--ps-muted); }
 .ps-wf-switch {
   display: inline-flex;
   border: 1px solid var(--ps-border);
