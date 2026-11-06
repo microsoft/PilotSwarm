@@ -100,11 +100,19 @@ export function workflowReadableValue(preview) {
     return { text: JSON.stringify(value, null, 2), truncated: false };
 }
 
-/** The visit whose result is shown: the given one when it ended, else the latest ended visit (by visit number). */
-function lastEnded(node, execution) {
+/**
+ * The visit whose result is shown (review UI-3): the given one when it ended; else the selected item's own latest ended
+ * visit when the caller names it (`ended`, null: none yet); none for a step its item's visit has not reached; for a
+ * For each step with no item chosen, the latest ended visit of the For each's shown visit (the view's `result`, never an
+ * earlier visit's); else, for a step outside a For each, its latest ended visit (by visit number: they count in one scope).
+ */
+function lastEnded(node, execution, ended = undefined) {
+    if (node?.notReached) return null;
     if (execution?.status === "completed") return execution;
-    const ended = (Array.isArray(node?.executions) ? node.executions : []).filter(item => item?.status === "completed");
-    return ended.reduce((best, item) => (!best || (item.ordinal ?? 0) > (best.ordinal ?? 0) ? item : best), null);
+    if (ended !== undefined) return ended?.status === "completed" ? ended : null;
+    if (typeof node?.parallel === "string") return node.result?.status === "completed" ? node.result : null;
+    const done = (Array.isArray(node?.executions) ? node.executions : []).filter(item => item?.status === "completed");
+    return done.reduce((best, item) => (!best || (item.ordinal ?? 0) > (best.ordinal ?? 0) ? item : best), null);
 }
 
 const ENDED_WORDS = { cancelled: "Canceled", timed_out: "Time limit passed", stopped: "Stopped" };
@@ -152,8 +160,8 @@ export function workflowNodeRuns(node, execution, now = Date.now()) {
 }
 
 /** The last result as readable text: a node's output, an error's message, a message it sent or took. */
-export function workflowNodeResult(node, execution) {
-    const ended = lastEnded(node, execution);
+export function workflowNodeResult(node, execution, { ended: itemEnded = undefined } = {}) {
+    const ended = lastEnded(node, execution, itemEnded);
     if (!ended) return null;
     if (ended.resultKind === "runtime_error") {
         const error = errorOf(ended.errorPreview);
@@ -168,6 +176,14 @@ export function workflowNodeResult(node, execution) {
     if (!value) return null;
     return { label: sent !== undefined ? "Last message sent" : taken !== undefined ? "Last message taken" : "Last result", ...value,
         executionId: ended.id ?? null, error: false };
+}
+
+/** What a For each step without a result of its own says (review UI-3); null elsewhere. */
+function noResultText(node, execution, ended) {
+    if (!node || node.notReached || node.type === "terminal") return null;
+    if (lastEnded(node, execution, ended)) return null;
+    if (ended !== undefined) return execution?.status === "pending" ? "No result yet for this item: it is still running." : "No result yet for this item.";
+    return typeof node.parallel === "string" && node.runs ? "No result of its own yet in this visit." : null;
 }
 
 /** Its agent chat: the one the shown visit uses, else the latest visit's. */
@@ -203,7 +219,7 @@ export function workflowNodeNext(node) {
  * The whole summary of a node for the Node panel: { what, now, runs, result, agent, next }. `execution` is the visit
  * shown (a branch step's chosen branch, else the node's current visit).
  */
-export function workflowNodeSummary(node, { execution = node?.current ?? null, now = Date.now() } = {}) {
+export function workflowNodeSummary(node, { execution = node?.current ?? null, ended = undefined, now = Date.now() } = {}) {
     if (!node) return null;
     const agent = node.kind === "agent" ? {
         chatMode: workflowV2AgentChatMode(node),
@@ -214,6 +230,8 @@ export function workflowNodeSummary(node, { execution = node?.current ?? null, n
     } : null;
     return {
         what: workflowNodeWhat(node), now: workflowNodeNow(node, execution, now), runs: workflowNodeRuns(node, execution, now),
-        result: workflowNodeResult(node, execution), agent, next: workflowNodeNext(node),
+        result: workflowNodeResult(node, execution, { ended }), agent, next: workflowNodeNext(node),
+        // A chosen item (`ended` given) or a For each step that has no result of its own here says so (review UI-3).
+        noResult: noResultText(node, execution, ended),
     };
 }

@@ -457,7 +457,8 @@ export function WorkflowV2NodeSummary({ selected, nodes, select, openSession = n
     branchIndex = null, onBranch = null, onLog = null }) {
     const branch = workflowV2BranchChoice(selected.branches, branchIndex);
     const current = branch ? branch.execution : selected.current ?? null;
-    const summary = workflowNodeSummary(selected, { execution: current });
+    // Review UI-3: a chosen item shows its own result (its latest ended visit in that item), never another item's.
+    const summary = workflowNodeSummary(selected, { execution: current, ...(branch ? { ended: branch.ended ?? null } : {}) });
     const fact = (label, value, extra = {}) => value ? h("div", { className: "ps-wf-fact", key: label, ...extra }, h("span", null, label), h("strong", null, value)) : null;
     const result = summary.result;
     const whole = result?.executionId && runId ? workflowV2WholeValue(workflowV2ExecutionValue(executionValues, runId, result.executionId)) : null;
@@ -478,6 +479,7 @@ export function WorkflowV2NodeSummary({ selected, nodes, select, openSession = n
                 disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(result.executionId) },
             whole && whole.kind !== "loading" ? "Read the whole value again" : "Read the whole value") : null,
             whole ? h(WholeValue, { whole }) : null) : null,
+        !result && summary.noResult ? h("p", { className: "ps-wf-muted", "data-fact": "no-result" }, summary.noResult) : null,
         summary.agent ? h("div", { className: "ps-wf-agent" },
             summary.agent.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "What the agent is told"), h("pre", null, summary.agent.told))
                 : summary.agent.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
