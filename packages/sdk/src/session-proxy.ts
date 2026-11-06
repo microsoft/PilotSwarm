@@ -3054,8 +3054,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
                     return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
-                        // A continued chat's turn completes only the visit whose prompt it received (RT-3).
-                        ...(workflowTurnVisit?.nodeExecutionId ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
+                        // A continued chat's turn completes only the visit whose prompt it received (RT-3); a turn with none
+                        // (null) completes none (D1).
+                        ...(workflowTurnVisit ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
                 },
             } : {}),
 
@@ -4696,22 +4697,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 ? cmsRetryCritical(`runTurn.turnVisit session=${input.sessionId}`,
                     () => workflowFenceStore.readTurnVisit(input.sessionId, incomingClientMessageIds), (msg) => activityCtx.traceInfo(msg))
                 : null;
+            // A read that fails fails the turn (it is retried), never applies every Stop (formal deviation D2); a Stop that is
+            // not this turn's gets its outcome (too_late) now, so a turn that fails later is not ended as stopped by it (D3).
             const admitTurnControls = async (controls: TurnControl[]): Promise<TurnControl[]> => {
                 const visit = workflowTurnVisit?.nodeExecutionId ?? null;
-                if (!workflowFenceStore || !workflowTurnVisit || !controls.some((c) => c.kind === "stop")) return controls;
-                let ids: Map<number, string | null>;
-                try {
-                    ids = await workflowFenceStore.readControlRequestIds(input.sessionId, controls.filter((c) => c.kind === "stop").map((c) => c.seq));
-                } catch {
-                    return controls;    // unknown: a Stop is applied, as before the fence
+                if (!workflowFenceStore || !workflowTurnVisit || !tc || !controls.some((c) => c.kind === "stop")) return controls;
+                const ids = await cmsRetryCritical(`runTurn.stopVisits session=${input.sessionId}`,
+                    () => workflowFenceStore.readControlRequestIds(input.sessionId, controls.filter((c) => c.kind === "stop").map((c) => c.seq)),
+                    (msg) => activityCtx.traceInfo(msg));
+                const kept: TurnControl[] = [];
+                for (const c of controls) {
+                    const target = c.kind === "stop" ? workflowVisitOfStopRequestId(ids.get(c.seq) ?? null) : null;
+                    if (target === null || target === visit) {
+                        kept.push(c);
+                        continue;
+                    }
+                    await cmsRetryCritical(`runTurn.stopNotForTurn session=${input.sessionId} seq=${c.seq}`,
+                        () => workflowFenceStore.recordStopNotForTurn(input.sessionId, c.seq, tc.turn), (msg) => activityCtx.traceInfo(msg));
+                    activityCtx.traceInfo(`[turn-control] session=${input.sessionId} seq=${c.seq} stop for visit ${target} is not this turn's (${visit ?? "none"})`);
                 }
-                return controls.filter((c) => {
-                    if (c.kind !== "stop") return true;
-                    const target = workflowVisitOfStopRequestId(ids.get(c.seq) ?? null);
-                    const kept = target === null || target === visit;
-                    if (!kept) activityCtx.traceInfo(`[turn-control] session=${input.sessionId} seq=${c.seq} stop for visit ${target} is not this turn's (${visit ?? "none"})`);
-                    return kept;
-                });
+                return kept;
             };
             const decidedTurnVisit = (): string | null =>
                 workflowTurnVisit?.nodeExecutionId && !workflowTurnVisit.open ? workflowTurnVisit.nodeExecutionId : null;

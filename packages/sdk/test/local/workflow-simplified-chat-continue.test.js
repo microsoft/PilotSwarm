@@ -184,6 +184,22 @@ describe("chat: continue in the store (migration 0106)", () => {
                 [chat, JSON.stringify({ turn: 3, text: "cycle ended", requestId: `workflow-cycle-stop:${first}:sent` })]);
             expect(await store.readControlRequestIds(chat, [Number(stopRow.seq), 999_999_999]))
                 .toEqual(new Map([[Number(stopRow.seq), `workflow-cycle-stop:${first}:sent`]]));
+            // D3: a Stop that names another visit gets its outcome (too_late) at once, so a turn that then fails ends as an
+            // error (it is retried), not as stopped by it. Without that, the open Stop turns the failure into a stop.
+            const failsWith = async (turn, record) => {
+                expect(await catalog.turnStart(chat, turn, [], "worker-d3")).toMatchObject({ stopped: false });
+                const added = await catalog.turnControlAdd(chat, "stop", "cycle ended", `workflow-cycle-stop:${first}:${turn}`, null);
+                expect(added).toMatchObject({ turn });
+                if (record) {
+                    expect(await store.recordStopNotForTurn(chat, added.seq, turn)).toEqual({ recorded: true });
+                    expect(await store.recordStopNotForTurn(chat, added.seq, turn), "once").toEqual({ recorded: false });
+                }
+                return (await catalog.turnEnd(chat, turn, 0, "error", [])).stopped;
+            };
+            expect(await failsWith(5, true)).toBe(false);
+            expect(await failsWith(6, false), "the open Stop would have turned the failure into a stop").toBe(true);
+            expect(await store.recordStopNotForTurn(chat, 999_999_999, 7), "no such Stop").toEqual({ recorded: false });
+
             // RT-1: whether any visit of the chat began a spawn attempt.
             expect(await store.chatHasSpawnAttempt(chat)).toBe(false);
             expect((await store.beginAgentSpawn(second)).action).toBe("spawn");
@@ -198,7 +214,10 @@ describe("chat: continue in the store (migration 0106)", () => {
             expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: first })).toEqual({ recorded: false, reason: "decided" });
             expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: second }))
                 .toMatchObject({ recorded: true, nodeExecutionId: second, cycle: second, stateId: "talk", n: 1 });
-            // A turn completes only its own visit (RT-3).
+            // A turn completes only its own visit (RT-3); a turn with no cycle prompt (null) completes none (D1).
+            await expect(store.completeAgentNode({ childSessionId: chat, operationId: "op-no-visit", call: { outcome: "finish", output: { fact: "x" } },
+                nodeExecutionId: second, turnVisit: null }))
+                .rejects.toMatchObject({ code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining("This turn received no cycle prompt") });
             await expect(store.completeAgentNode({ childSessionId: chat, operationId: "op-other-turn", call: { outcome: "finish", output: { fact: "x" } },
                 nodeExecutionId: second, turnVisit: first }))
                 .rejects.toMatchObject({ code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining(`This turn works on cycle ${first}`) });

@@ -19,11 +19,16 @@ const NX2 = "nx-2222222222222222222222222222222222222222";
 const promptId = nx => `workflow:wf-1:run-1:agent:${nx}`;
 const control = (seq, kind, text = `${kind}-${seq}`) => ({ seq, kind, text, createdAt: new Date().toISOString() });
 
-/** A workflow store whose chat continues; `visit` is the turn visit readTurnVisit answers; `requestIds` the Stops' ids. */
-function fenceStore({ visit, requestIds = new Map() }) {
+/**
+ * A workflow store whose chat continues; `visit` is the turn visit readTurnVisit answers; `requestIds` the Stops' ids;
+ * `failIds` makes readControlRequestIds fail; `dropped` records the Stops given their outcome as not this turn's (D3).
+ */
+function fenceStore({ visit, requestIds = new Map(), failIds = false }) {
     const reads = [];
+    const dropped = [];
     return {
         reads,
+        dropped,
         store: {
             readWorkflowLineage: async sessionId => ({ sessionId, level: 2,
                 agentRoot: { childSessionId: CHAT, nodeExecutionId: NX2, workflowSessionId: "wf-1", controllingSessionId: "parent", distance: 0 } }),
@@ -32,14 +37,16 @@ function fenceStore({ visit, requestIds = new Map() }) {
             readTurnVisit: async (sessionId, ids) => { reads.push(["readTurnVisit", sessionId, ids]); return visit; },
             readControlRequestIds: async (sessionId, seqs) => {
                 reads.push(["readControlRequestIds", sessionId, seqs]);
+                if (failIds) throw new Error("the stops' ids could not be read");
                 return new Map(seqs.map(seq => [seq, requestIds.get(seq) ?? null]));
             },
+            recordStopNotForTurn: async (sessionId, seq, turn) => { dropped.push([sessionId, seq, turn]); return { recorded: true }; },
         },
     };
 }
 
-function harness({ visit, start = { stopped: false, controls: [] }, requestIds, turn } = {}) {
-    const fence = fenceStore({ visit, requestIds });
+function harness({ visit, start = { stopped: false, controls: [] }, requestIds, turn, failIds = false } = {}) {
+    const fence = fenceStore({ visit, requestIds, failIds });
     const calls = [];
     const aborts = [];
     const h = makeRunTurnHarness({
@@ -58,10 +65,10 @@ function harness({ visit, start = { stopped: false, controls: [] }, requestIds, 
     return { h, fence, calls, aborts };
 }
 
-/** A model session with an open send gate: the turn takes `controls` live, then ends. */
-const liveTurn = controls => async opts => {
+/** A model session with an open send gate: the turn takes `controls` live, then ends; `failed` records a failed turn. */
+const liveTurn = (controls, failed = []) => async opts => {
     let gate = "pending";
-    opts.turnControl.attach({ gate: () => gate, close: () => { gate = "closed"; }, sendSteer: async () => {}, failTurn: () => {} });
+    opts.turnControl.attach({ gate: () => gate, close: () => { gate = "closed"; }, sendSteer: async () => {}, failTurn: error => { failed.push(error); } });
     gate = "open";
     opts.turnControl.gateOpened();
     await opts.turnControl.enqueue(controls);
@@ -95,6 +102,8 @@ describe("the turn-to-visit fence of a chat that continues", () => {
         const ran = await other.h.runTurn(CHAT, { turnIndex: 6, clientMessageIds: [promptId(NX2)] }, "runTurnV5");
         expect(ran.type).toBe("completed");
         expect(other.h.session.runTurn).toHaveBeenCalledTimes(1);
+        // D3: the Stop that is not this turn's gets its outcome now, so a later failure of the turn is not ended as stopped.
+        expect(other.fence.dropped).toEqual([[CHAT, 41, 6]]);
         // The turn's own visit's Stop ends it at turn start (a turn that starts after its Stop: t1's third path).
         const own = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false },
             start: { stopped: false, controls: [control(42, "stop", "cycle ended")] }, requestIds: new Map([[42, `workflow-cycle-stop:${NX2}`]]) });
@@ -108,6 +117,7 @@ describe("the turn-to-visit fence of a chat that continues", () => {
         const newer = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false }, requestIds: ids, turn: liveTurn([control(51, "stop")]) });
         expect((await newer.h.runTurn(CHAT, { turnIndex: 7, clientMessageIds: [promptId(NX2)] }, "runTurnV5")).type).toBe("completed");
         expect(newer.aborts).toEqual([]);
+        expect(newer.fence.dropped).toEqual([[CHAT, 51, 7]]);
         // Visit 1's late turn (its visit open when it started): visit 2's Stop lands on it (the other direction).
         const older = harness({ visit: { nodeExecutionId: NX1, open: true, inherited: false }, requestIds: ids, turn: liveTurn([control(52, "stop")]) });
         expect((await older.h.runTurn(CHAT, { turnIndex: 8, clientMessageIds: [promptId(NX1)] }, "runTurnV5")).type).toBe("completed");
@@ -116,6 +126,23 @@ describe("the turn-to-visit fence of a chat that continues", () => {
         const own = harness({ visit: { nodeExecutionId: NX1, open: true, inherited: false }, requestIds: ids, turn: liveTurn([control(51, "stop", "cycle 1 ended")]) });
         await own.h.runTurn(CHAT, { turnIndex: 8, clientMessageIds: [promptId(NX1)] }, "runTurnV5");
         expect(own.aborts).toEqual([[CHAT, "cycle 1 ended"]]);
+    });
+
+    it("D2: a Stop whose visit cannot be read fails the turn (it is retried); it is never applied as every Stop", async () => {
+        // At turn start: the activity fails, so the turn is retried; no model run, no Stop applied.
+        const atStart = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false }, failIds: true,
+            start: { stopped: false, controls: [control(81, "stop", "cycle ended")] } });
+        await expect(atStart.h.runTurn(CHAT, { turnIndex: 10, clientMessageIds: [promptId(NX2)] }, "runTurnV5"))
+            .rejects.toThrow("the stops' ids could not be read");
+        expect(atStart.h.session.runTurn).not.toHaveBeenCalled();
+        // Live: the turn is failed (not aborted as a Stop).
+        const failed = [];
+        const live = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false }, failIds: true,
+            turn: liveTurn([control(82, "stop", "cycle ended")], failed) });
+        await live.h.runTurn(CHAT, { turnIndex: 11, clientMessageIds: [promptId(NX2)] }, "runTurnV5");
+        expect(live.aborts).toEqual([]);
+        expect(failed.map(error => error.message)).toEqual(["the stops' ids could not be read"]);
+        expect(live.fence.dropped).toEqual([]);
     });
 
     it("a person's Stop still applies to a continued chat's turn", async () => {

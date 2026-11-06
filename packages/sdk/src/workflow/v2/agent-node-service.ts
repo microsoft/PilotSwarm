@@ -106,7 +106,7 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
         const result = await context.store.completeAgentNode({
             childSessionId: context.callerSessionId, operationId: args.operation_id as string, call,
             ...(typeof args.node_execution_id === "string" && args.node_execution_id ? { nodeExecutionId: args.node_execution_id } : {}),
-            ...(typeof context.turnVisit === "string" ? { turnVisit: context.turnVisit } : {}),
+            ...(typeof context.turnVisit === "string" || context.turnVisit === null ? { turnVisit: context.turnVisit } : {}),
         });
         const decided = result.kind === "accepted" || result.code === "OUTPUT_ATTEMPTS_EXHAUSTED";
         if (decided && context.client) {

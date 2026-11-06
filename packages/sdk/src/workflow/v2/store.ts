@@ -5724,6 +5724,27 @@ export class WorkflowStore {
     }
 
     /**
+     * A Stop of a continued chat's turn that names another visit (the turn-to-visit fence; formal deviation D3): its outcome
+     * is recorded now as too_late, under the session row's lock as turn end takes it, so it is no longer open on the turn.
+     * Left open, a turn that then fails would be ended as stopped by it (cms_turn_end), and its crash retry would not run.
+     * Once only: a Stop that already has an outcome keeps it. Returns whether this call recorded it.
+     */
+    async recordStopNotForTurn(sessionId: string, seq: number, turn: number): Promise<{ recorded: boolean }> {
+        if (!storableId(sessionId) || !Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(turn) || turn < 0) return { recorded: false };
+        return this.transaction(async client => {
+            await client.query(`SELECT 1 FROM ${this.t.sessions} WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+            const { rows } = await client.query(
+                `INSERT INTO ${this.t.sessionEvents} (session_id, event_type, data)
+                 SELECT $1, 'session.control_outcome', jsonb_build_object('seq', $2::bigint, 'turn', $3::int, 'outcome', 'too_late')
+                  WHERE EXISTS (SELECT 1 FROM ${this.t.sessionEvents} s WHERE s.session_id = $1 AND s.seq = $2 AND s.event_type = 'user.stop')
+                    AND NOT EXISTS (SELECT 1 FROM ${this.t.sessionEvents} o
+                                     WHERE o.session_id = $1 AND o.event_type = 'session.control_outcome' AND (o.data->>'seq')::bigint = $2)
+                 RETURNING seq`, [sessionId, seq, turn]);
+            return { recorded: rows.length > 0 };
+        });
+    }
+
+    /**
      * Whether any visit of chat `childSessionId` began a spawn attempt (review RT-1, t2): such an attempt may still create
      * the chat, so a run's end that finds no chat leaves its end owed. beginAgentSpawn records each attempt in the
      * transaction that checks its node is pending, under the workflow session's lock, and a run's end decides its pending
@@ -5775,7 +5796,7 @@ export class WorkflowStore {
      * call without the id, or with one that is not its own, is refused in words, nothing written.
      */
     private async agentInvocationOfCompletion(client: PoolClient, childSessionId: string, nodeExecutionId: string | undefined,
-        turnVisit: string | null = null): Promise<Row | null> {
+        turnVisit: string | null | undefined = undefined): Promise<Row | null> {
         const columns = "node_execution_id, workflow_session_id, run_id";
         const { rows } = await client.query(
             `SELECT ${columns} FROM ${this.t.agentInvocations} WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`,
@@ -5786,6 +5807,12 @@ export class WorkflowStore {
         // A visit's own chat (chat: new) binds to its one invocation, exactly as at e696f2c6 (review RT-8): a node execution
         // id it gives is ignored, as the tool wrapper there dropped it.
         if (!workflowAgentChatContinues({ nodeExecutionId: newest, childSessionId })) return rows[0];
+        // A turn of a continued chat that received no cycle prompt (null: none recorded in the chat yet) completes none
+        // (formal deviation D1, as its reminder: no_visit).
+        if (turnVisit === null) {
+            throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This turn received no cycle prompt, so it finishes no cycle; "
+                + "complete a cycle in the turn that received its prompt.");
+        }
         if (nodeExecutionId === undefined) {
             throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This chat continues across the visits of its workflow state, so a completion must "
                 + "name the cycle it finishes: give node_execution_id, the id in this cycle's prompt.");
@@ -5796,7 +5823,7 @@ export class WorkflowStore {
             throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `node_execution_id ${named} is not a cycle of this chat; give the id in this cycle's prompt.`);
         }
         // The turn-to-visit fence (review RT-3): a turn completes only the visit whose prompt it received.
-        if (turnVisit !== null && nodeExecutionId !== turnVisit) {
+        if (typeof turnVisit === "string" && nodeExecutionId !== turnVisit) {
             throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `This turn works on cycle ${turnVisit}, not ${named}; `
                 + `give node_execution_id ${turnVisit}, the id in the prompt this turn received.`);
         }
@@ -6134,8 +6161,9 @@ export class WorkflowStore {
         const valueText = canonicalJson(value);
         const resultSha256 = kindValueSha256(kind, valueText);
         return this.transaction(async client => {
+            // turnVisit: absent (no fence: a caller outside a turn), null (a turn with no cycle prompt), or the turn's visit.
             const found = await this.agentInvocationOfCompletion(client, input.childSessionId, input.nodeExecutionId,
-                typeof input.turnVisit === "string" ? input.turnVisit : null);
+                typeof input.turnVisit === "string" || input.turnVisit === null ? input.turnVisit : undefined);
             if (!found) throw notFound();
             const nodeExecutionId = str(found, "node_execution_id");
             // 2. The locks, then a known operation decides alone.
