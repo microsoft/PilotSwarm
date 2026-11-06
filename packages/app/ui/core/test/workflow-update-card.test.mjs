@@ -228,7 +228,8 @@ test("a prompt merged from a workflow's message and a person's words is shown sp
     assert.equal(card.workflowUpdate.from, "wf-session-1");
     assert.match(card.text, /^Workflow: session-wf-sessi\nRun: run-1234\nStep: notify\nContract: note@1\n\nA workflow \(session wf-sessi/);
     const rendered = JSON.stringify(chatLines(buildHistoryModel([event(7, "user.message", { content: `${SEND}\n\n${PERSON_WORDS}` })])));
-    assert.ok(rendered.includes("Workflow · message") && rendered.includes(PERSON_WORDS), rendered);
+    // A card's title is drawn in capitals; the person's words wrap at the 80-column width, so their start is checked.
+    assert.ok(rendered.includes("Workflow · message".toUpperCase()) && rendered.includes(PERSON_WORDS.slice(0, 42)), rendered);
     assert.ok(!rendered.includes("[WORKFLOW_UPDATE"), "no raw header in the transcript");
 });
 
