@@ -1617,10 +1617,13 @@ test("f-03: a new revision keeps the places of the steps it still has; a removed
     await expect(graph.getByRole("button", { name: "Inspect review", exact: true })).toBeVisible();
     await expect(graph.locator('.react-flow__node[data-id="failed"]')).toHaveCount(0);
 
-    // The next save keeps "pause", adds the step just moved, and drops "failed".
+    // The next save keeps "pause", adds the step just moved, and drops "failed". A profile save the reload scheduled can
+    // land just after the drag (wfs-full-5d687726: 4 ms after mouse up), before the drag's own save; that one only
+    // repeats the stored places, so wait for the save that carries the step just moved.
     const count = placesSaved(profile).length;
     await dragStep(page, graph, "done", 60, 0);
     await expect.poll(() => placesSaved(profile).length).toBeGreaterThan(count);
+    await expect.poll(() => Object.keys(placesSaved(profile).at(-1).workflowLayouts[LAYOUT_KEY].steps ?? {}).includes("done")).toBe(true);
     const steps = placesSaved(profile).at(-1).workflowLayouts[LAYOUT_KEY].steps;
     expect(Object.keys(steps).sort()).toEqual(["done", "pause"]);
     expect(steps.pause).toEqual(pausePlace);
