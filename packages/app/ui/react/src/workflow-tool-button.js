@@ -52,6 +52,18 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
         h("path", { d: "M19 12l.6 1.4 1.4.6-1.4.6L19 16l-.6-1.4-1.4-.6 1.4-.6z" })),
     // Reset layout: every step box back in its automatic place (batch 6, f-03).
     reset: () => glyph(h("path", { d: "M4 12a8 8 0 1 0 2.3-5.7" }), h("path", { d: "M4 4v4h4" })),
+    // The Workflow tab's header and toolbar (owner, 2026-11-06T13:43Z: icons, no text). Definition: its graph, three nodes;
+    // Workflows: a list; Start another: start again (a turn arrow around a play mark).
+    definition: () => glyph(h("circle", { cx: "6", cy: "6", r: "2.6" }), h("circle", { cx: "18", cy: "6", r: "2.6" }),
+        h("circle", { cx: "12", cy: "18", r: "2.6" }), h("path", { d: "M8.6 6h6.8" }), h("path", { d: "M7.4 8.3l3.2 7.4" }), h("path", { d: "M16.6 8.3l-3.2 7.4" })),
+    workflows: () => glyph(h("path", { d: "M9 6h11" }), h("path", { d: "M9 12h11" }), h("path", { d: "M9 18h11" }),
+        h("path", { d: "M4.5 6h.01" }), h("path", { d: "M4.5 12h.01" }), h("path", { d: "M4.5 18h.01" })),
+    "start-another": () => glyph(h("path", { d: "M20 12a8 8 0 1 1-2.3-5.7" }), h("path", { d: "M20 4v4h-4" }), h("path", { d: "M10 9l5 3-5 3z" })),
+    yaml: () => glyph(h("path", { d: "M8 7l-5 5 5 5" }), h("path", { d: "M16 7l5 5-5 5" }), h("path", { d: "M14 4l-4 16" })),
+    compare: () => glyph(h("rect", { x: "3", y: "4", width: "7", height: "16", rx: "1" }), h("rect", { x: "14", y: "4", width: "7", height: "16", rx: "1" }),
+        h("path", { d: "M5.5 9h2" }), h("path", { d: "M16.5 9h2" }), h("path", { d: "M16.5 13h2" })),
+    save: () => glyph(h("path", { d: "M5 3h11l3 3v15H5z" }), h("path", { d: "M8 3v5h7V3" }), h("path", { d: "M8 21v-7h8v7" })),
+    discard: () => glyph(h("path", { d: "M9 14L4 9l5-5" }), h("path", { d: "M4 9h11a5 5 0 0 1 0 10h-4" })),
 });
 
 /**

@@ -16,7 +16,7 @@ import {
 } from "../../core/src/workflow-agent-log.js";
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowElapsedText, workflowFailure,
-    workflowPanelHeight, workflowRunTimes, workflowStarted, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS,
+    workflowPanelHeight, workflowRunTimes, workflowStarted, workflowStateOf, workflowTabButtonTip, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS,
     WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
@@ -26,6 +26,7 @@ import {
     WorkflowV2YamlView,
 } from "./workflow-v2-panels.js";
 import { WorkflowGraph } from "./workflow-graph.js";
+import { WorkflowToolButton } from "./workflow-tool-button.js";
 import { ModalDialog } from "./modal-dialog.js";
 
 const h = React.createElement;
@@ -148,16 +149,17 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null }) 
                 h("p", { className: "ps-wf-empty-title" }, "No workflow definitions."),
                 h("p", null, "Ask the chat to create one.")));
     }
-    const count = definition.workflows.length;
     return h("section", { className: `ps-wf-tab${mobile ? " is-mobile" : ""}`, "aria-label": "Workflow", "data-view": view, "data-definition": definition.name },
         h("header", { className: "ps-wf-tab-head" },
             h(DefinitionPicker, { definitions, chosen: definition.name, views,
                 onChoose: name => setTab({ definition: name, workflowId: null }), onNew: () => askChat("Create a new workflow definition: ") }),
-            h("div", { className: "ps-wf-switch", role: "tablist", "aria-label": "Definition or Workflows" },
-                h("button", { type: "button", role: "tab", "aria-selected": view === "definition", className: view === "definition" ? "is-on" : "",
-                    onClick: () => setTab({ view: "definition" }) }, "Definition"),
-                h("button", { type: "button", role: "tab", "aria-selected": view === "workflows", className: view === "workflows" ? "is-on" : "",
-                    onClick: () => setTab({ view: "workflows" }) }, `Workflows · ${count}`)),
+            // Owner, 2026-11-06T13:43Z (F1): two icon toggles with tooltips; no count beside the definition (F2: it is in the
+            // Workflow picker).
+            h("div", { className: "ps-wf-switch is-icons", role: "group", "aria-label": "Definition or Workflows" },
+                h(WorkflowToolButton, { label: "Definition", glyph: "definition", title: workflowTabButtonTip("definition"),
+                    "aria-pressed": view === "definition", onClick: () => setTab({ view: "definition" }) }),
+                h(WorkflowToolButton, { label: "Workflows", glyph: "workflows", title: workflowTabButtonTip("workflows"),
+                    "aria-pressed": view === "workflows", onClick: () => setTab({ view: "workflows" }) })),
             modeButtons ? h("span", { className: "ps-wf-tab-modes" }, modeButtons) : null),
         view === "definition"
             ? h(DefinitionView, { key: definition.newestId, controller, definition, tab, setTab, mobile, ownerTitle: byId?.[ownerId]?.title ?? null,
@@ -382,13 +384,17 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     return h("div", { className: "ps-wf-body" },
         h("div", { className: "ps-wf-bar" },
             h("span", { className: "ps-wf-bar-text" }, revision !== null ? `Revision ${revision}` : null),
-            startControl ? h("button", { type: "button", className: "ps-mini-button is-primary", "data-action": "start", disabled: !startControl.enabled,
-                title: startControl.enabled ? `Start Workflow #${nextNumber}` : startControl.title, onClick: () => setStarting(true) }, "Start…") : null,
-            startedAlready ? h("button", { type: "button", className: "ps-mini-button is-primary", "data-action": "start-another",
-                title: `Ask the chat to start ${definition.name} #${nextNumber} from this definition`, onClick: () => setAsking(true) }, "Start another…") : null,
-            h("button", { type: "button", className: "ps-mini-button", "aria-pressed": mode === "yaml", onClick: () => setMode(mode === "yaml" ? "graph" : "yaml") }, "YAML"),
-            h("button", { type: "button", className: "ps-mini-button", "aria-pressed": panel === "revisions",
-                onClick: () => setTab({ definitionPanel: panel === "revisions" ? null : "revisions" }) }, "Compare")),
+            // Owner, 2026-11-06T13:43Z (F1): icons; each keeps its words as its name and explains itself in its tooltip.
+            h("span", { className: "ps-wf-bar-actions" },
+                startControl ? h(WorkflowToolButton, { label: "Start…", glyph: "start", "data-action": "start", disabled: !startControl.enabled,
+                    title: startControl.enabled ? workflowTabButtonTip("start", { number: nextNumber }) : startControl.title,
+                    onClick: () => setStarting(true) }) : null,
+                startedAlready ? h(WorkflowToolButton, { label: "Start another…", glyph: "start-another", "data-action": "start-another",
+                    title: workflowTabButtonTip("start-another", { name: definition.name, number: nextNumber }), onClick: () => setAsking(true) }) : null,
+                h(WorkflowToolButton, { label: "YAML", glyph: "yaml", title: workflowTabButtonTip("yaml"), "aria-pressed": mode === "yaml",
+                    onClick: () => setMode(mode === "yaml" ? "graph" : "yaml") }),
+                h(WorkflowToolButton, { label: "Compare", glyph: "compare", title: workflowTabButtonTip("compare"), "aria-pressed": panel === "revisions",
+                    onClick: () => setTab({ definitionPanel: panel === "revisions" ? null : "revisions" }) }))),
         line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined },
             line.text) : null,
         notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,
@@ -500,10 +506,11 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
                 })),
         rows.length ? h("div", { className: "ps-wf-bar is-foot" },
             definition.startable
-                ? h("button", { type: "button", className: "ps-mini-button is-primary", onClick: onStart }, "Start…")
+                ? h(WorkflowToolButton, { label: "Start…", glyph: "start", "data-action": "start",
+                    title: workflowTabButtonTip("start", { number: rows.length + 1 }), onClick: onStart })
                 // Run again (W8): another Workflow from this definition, which the chat starts with the same YAML.
-                : h("button", { type: "button", className: "ps-mini-button is-primary", "data-action": "start-another", onClick: onAnother },
-                    "Start another…")) : null);
+                : h(WorkflowToolButton, { label: "Start another…", glyph: "start-another", "data-action": "start-another",
+                    title: workflowTabButtonTip("start-another", { name: definition.name, number: rows.length + 1 }), onClick: onAnother })) : null);
 }
 
 /** One Workflow (08): its header, controls by state, its failure first, its graph and its bottom panel. */
@@ -552,13 +559,18 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
             h(StateChip, { state }),
             h("span", { className: "ps-wf-bar-text" }, [revision !== null ? `revision ${revision}` : null,
                 times.started !== null ? shownTime(times.started) : null, times.took !== null ? workflowElapsedText(times.took) : null].filter(Boolean).join(" · ")),
+            // Owner, 2026-11-06T13:43Z (F1): icons; a refused or waiting control explains why in its tooltip.
             h("span", { className: "ps-wf-bar-actions" },
-                pause ? h("button", { type: "button", className: "ps-mini-button", "data-operation": "pause", disabled: !pause.enabled, title: pause.title,
-                    onClick: () => controller.sendWorkflowRunCommand(sessionId, { operation: "pause", runId: runControls.runId }) }, pause.label) : null,
-                resume ? h("button", { type: "button", className: "ps-mini-button", "data-operation": "resume", disabled: !resume.enabled, title: resume.title,
-                    onClick: () => controller.sendWorkflowRunCommand(sessionId, { operation: "resume", runId: runControls.runId }) }, resume.label) : null,
-                stop || cancel ? h("button", { type: "button", className: "ps-mini-button", "data-action": "stop-dialog",
-                    disabled: !(stop?.enabled || cancel?.enabled), onClick: () => setStopping(true) }, "Stop…") : null)),
+                pause ? h(WorkflowToolButton, { label: pause.label, glyph: "pause", "data-operation": "pause", disabled: !pause.enabled,
+                    title: pause.enabled ? workflowTabButtonTip("pause") : pause.title,
+                    onClick: () => controller.sendWorkflowRunCommand(sessionId, { operation: "pause", runId: runControls.runId }) }) : null,
+                resume ? h(WorkflowToolButton, { label: resume.label, glyph: "resume", "data-operation": "resume", disabled: !resume.enabled,
+                    title: resume.enabled ? workflowTabButtonTip("resume") : resume.title,
+                    onClick: () => controller.sendWorkflowRunCommand(sessionId, { operation: "resume", runId: runControls.runId }) }) : null,
+                stop || cancel ? h(WorkflowToolButton, { label: "Stop…", glyph: "stop", "data-action": "stop-dialog",
+                    disabled: !(stop?.enabled || cancel?.enabled),
+                    title: stop?.enabled || cancel?.enabled ? workflowTabButtonTip("stop") : (stop?.title ?? cancel?.title ?? null),
+                    onClick: () => setStopping(true) }) : null)),
         // Failure first, in plain words; the error as it arrived is folded under it (coordinator 2026-11-06).
         failure ? h("div", { className: "ps-wf-failure" },
             h("p", { className: "ps-wf-line is-error", role: "status" }, failure.headline),

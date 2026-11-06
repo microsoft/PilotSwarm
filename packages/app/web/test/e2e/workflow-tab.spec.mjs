@@ -83,8 +83,8 @@ const NODE_NAME = ".ps-wf-node-head strong";
 const panelTab = (tab, name) => tab.getByRole("tablist", { name: "Workflow panel" }).getByRole("tab", { name, exact: true });
 /** The bottom panel's content while it shows `panel`. */
 const bottomPanel = (tab, panel) => tab.locator(`.ps-wf-panel[data-panel="${panel}"]`);
-/** The Definition | Workflows switch of the Workflow tab. */
-const viewSwitch = (tab, name) => tab.getByRole("tablist", { name: "Definition or Workflows" }).getByRole("tab", { name: new RegExp(`^${name}`) });
+/** The Definition | Workflows switch of the Workflow tab: two icon toggles, the one shown pressed (owner, 2026-11-06T13:43Z). */
+const viewSwitch = (tab, name) => tab.getByRole("group", { name: "Definition or Workflows" }).getByRole("button", { name, exact: true });
 /** A phone's way from the Workflow pane back to the chat: the toolbar's Workflow button. */
 async function hideWorkflowPane(page) {
     await page.getByRole("button", { name: /^Hide the Workflow tab/ }).click();
@@ -970,7 +970,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         const pause = bar.locator('[data-operation="pause"]');
         const stopButton = bar.getByRole("button", { name: "Stop…", exact: true });
         // A running Workflow: Pause and Stop… (W3), no Resume, no separate Cancel, no old run controls.
-        await expect(pause).toHaveText("Pause");
+        await expect(pause).toHaveAttribute("aria-label", "Pause");
+        await expect(pause).toHaveText("");
         await expect(stopButton).toBeEnabled();
         await expect(bar.locator('[data-operation="resume"], [data-operation="cancel"]')).toHaveCount(0);
         await expect(main.getByRole("group", { name: "Run controls", exact: true })).toHaveCount(0);
@@ -1042,9 +1043,9 @@ test("v2 commands: an unconfirmed pause is retried with the same operation id, n
     await pause.click();
 
     // Pending: the sent control shows its pending label and is disabled, saying why; Stop… waits too (W3).
-    await expect(pause).toHaveText("Pausing…");
+    await expect(pause).toHaveAttribute("aria-label", "Pausing…");
     await expect(pause).toBeDisabled();
-    await expect(pause).toHaveAttribute("title", "This command is being sent.");
+    await expect(pause).toHaveAttribute("data-title", "This command is being sent.");
     await expect(bar.getByRole("button", { name: "Stop…", exact: true })).toBeDisabled();
     release();
 
@@ -1200,7 +1201,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
         const main = workflowTab(page);
         await expect(main.getByText("No Workflows yet.", { exact: true })).toHaveCount(1);
-        await expect(viewSwitch(main, "Workflows")).toHaveText("Workflows · 0");
+        // No count beside the definition (owner, 2026-11-06T13:43Z): the switch is an icon.
+        await expect(viewSwitch(main, "Workflows")).toHaveText("");
         await expect(main.getByRole("combobox", { name: "Workflow run" })).toHaveCount(0);
         await expect(main.getByRole("button", { name: "Notices", exact: true })).toHaveCount(0);
         await expect(main.getByText(/No run yet/)).toHaveCount(0);
@@ -1421,7 +1423,7 @@ test("v2 commands: a draft save whose answer is lost keeps the edit and Retry se
     const save = editor.locator('[data-operation="replace_definition"]');
     // Negative control: nothing changed -> cannot save, and the title says why.
     await expect(save).toBeDisabled();
-    await expect(save).toHaveAttribute("title", "Nothing changed.");
+    await expect(save).toHaveAttribute("data-title", "Nothing changed.");
 
     const yaml = editor.getByRole("textbox", { name: "Workflow YAML", exact: true });
     await yaml.fill(DRAFT_YAML_2);
@@ -1855,8 +1857,8 @@ test("zen and full screen: the Workflow tab has the canvas's buttons, keeps the 
     await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
     const normalRail = await rail();
     // The buttons: the canvas's own icons, names and titles, at the right end of the header, in both views.
-    for (const view of [/^Definition$/, /^Workflows · \d+$/]) {
-        await head.getByRole("tab", { name: view }).click();
+    for (const view of ["Definition", "Workflows"]) {
+        await viewSwitch(head, view).click();
         await expect(head.getByRole("button", { name: "Zen mode", exact: true })).toHaveAttribute("title", "Zen — chat rail + canvas only");
         await expect(head.getByRole("button", { name: "Full screen canvas", exact: true })).toHaveAttribute("title", "Full screen — hide chat and sessions");
     }
@@ -2907,8 +2909,9 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await expect(picker).toHaveValue("report-v2");
     await expect.poll(async () => (await picker.locator("option").allTextContents()).map(text => text.replace(/ · revision \d+/u, "")))
         .toEqual(["report-v2 · 0 Workflows", "watch-v2 · 2 Workflows", "New definition… (asks the chat)"]);
-    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-selected", "true");
-    await expect(viewSwitch(main, "Workflows")).toHaveText("Workflows · 0");
+    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
+    await expect(viewSwitch(main, "Workflows")).toHaveAttribute("aria-pressed", "false");
+    await expect(viewSwitch(main, "Workflows")).toHaveText("");
     await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
     // No Notices, no Publish, no Test with test mode off (D4, 16, 17).
     for (const name of ["Notices", "Publish…", "Test…", "Test"]) await expect(main.getByRole("button", { name, exact: true })).toHaveCount(0);
@@ -2921,7 +2924,7 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     // watch-v2: it has started, so its Definition view and its Workflows list offer Start another… (Run again, W8); its
     // Workflows view lists #2 then #1 with their states.
     await picker.selectOption("watch-v2");
-    await expect(viewSwitch(main, "Workflows")).toHaveText("Workflows · 2");
+    await expect(viewSwitch(main, "Workflows")).toHaveText("");
     const list = main.getByRole("table", { name: "Workflows of watch-v2" });
     // Review UI-16: a real row with cells; its action is the named button in its first cell.
     const rowOf = name => list.getByRole("row").filter({ has: page.getByRole("button", { name, exact: true }) });
@@ -2985,13 +2988,13 @@ test("UI-D3: the Workflow shown under its parent, the tab's definition and view 
     // A non-default view in the parent's view: report-v2's Definition view.
     await picker.selectOption("report-v2");
     await viewSwitch(main, "Definition").click();
-    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-selected", "true");
+    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
     // Back to #2's row view, Forward to the parent's: its definition and view come back, not #2.
     await back.click();
     await expect(shown).toHaveValue(OWNED.failed);
     await forward.click();
     await expect(picker).toHaveValue("report-v2");
-    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-selected", "true");
+    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
     // The parent showing #2 again (from the Workflows list), then a normal reload of the parent's URL: #2 is shown.
     await picker.selectOption("watch-v2");
     await viewSwitch(main, "Workflows").click();
@@ -3129,8 +3132,8 @@ test("Run again: Start another… asks the chat once to start the same definitio
     await expect(composer).toHaveValue("my own draft");
     // The chat's new Workflow arrives with the next session-list read: #3, under the same definition.
     await viewSwitch(main, "Workflows").click();
-    await expect(viewSwitch(main, "Workflows")).toHaveText("Workflows · 3", { timeout: 15_000 });
-    await expect(main.getByRole("table", { name: "Workflows of watch-v2" }).getByRole("button", { name: "Open watch-v2 #3", exact: true })).toBeVisible();
+    await expect(main.getByRole("table", { name: "Workflows of watch-v2" }).getByRole("button", { name: "Open watch-v2 #3", exact: true }))
+        .toBeVisible({ timeout: 15_000 });
     await expect(main.getByRole("combobox", { name: "Workflow definition", exact: true }).locator("option")).toHaveCount(3);
     await shot(page, "run-again-listed");
     expect(messages).toHaveLength(1);

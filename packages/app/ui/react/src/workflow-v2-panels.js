@@ -9,6 +9,7 @@ import {
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import { WORKFLOW_BASE_INSTRUCTIONS_CHANGED, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY } from "../../core/src/workflow-agent-log.js";
+import { workflowTabButtonTip } from "../../core/src/workflow-owner.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
@@ -1126,14 +1127,16 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model: givenModel
     return h("section", { id, className: "ps-workflow-draft-editor", "aria-label": "YAML editor", "data-revision": base.revision },
     h("div", { className: "ps-workflow-yaml-strip" },
         h("h3", null, `Definition · editing revision ${base.revision}`),
-        h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", disabled: !edit.canSave,
-            title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save"),
-        h("button", { type: "button", className: "ps-mini-button", "data-action": "discard", disabled: !edit.changed,
+        // Owner, 2026-11-06T13:43Z (F1): icons; each keeps its words as its name, and a refusal's reason is its tooltip.
+        h(WorkflowToolButton, { label: model.pending ? "Saving…" : "Save", glyph: "save", "data-operation": "replace_definition", disabled: !edit.canSave,
+            title: edit.reason ?? workflowTabButtonTip("save", { revision: base.revision }), onClick: save }),
+        h(WorkflowToolButton, { label: "Discard edits", glyph: "discard", "data-action": "discard", disabled: !edit.changed,
+            title: workflowTabButtonTip("discard"),
             // VR-6: a discarded edit is dropped from the view too, so nothing brings it back.
             onClick: () => {
                 setTextValue(base.yaml);
                 controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftEdit: null, draftDirty: false } });
-            } }, "Discard edits"),
+            } }),
         edit.changed && !edit.conflict ? h("span", { role: "status", className: "ps-workflow-yaml-unsaved" }, "Unsaved changes") : null,
         tools ? h("span", { className: "ps-workflow-yaml-strip-tools" }, tools) : null),
     h("p", { className: "ps-workflow-yaml-note" },

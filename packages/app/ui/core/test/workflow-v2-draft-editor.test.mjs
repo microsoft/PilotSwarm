@@ -168,7 +168,8 @@ test("the YAML tab edits the draft's YAML; without it, for a published definitio
     assert.ok(open.includes("Definition · editing revision 2"));
     assert.ok(open.includes(`>${YAML}</textarea>`), "the YAML is in the editor");
     assert.ok(open.includes("The version stays 1.0.0: a new version needs a new workflow."));
-    assert.match(open, /data-operation="replace_definition" disabled="" title="Nothing changed\."/);
+    // Owner, 2026-11-06T13:43Z (F1): Save is an icon named "Save"; the reason it cannot save is its tooltip.
+    assert.match(open, /<button type="button" disabled=""[^>]*aria-label="Save" data-title="Nothing changed\."[^>]*data-operation="replace_definition"/);
 
     for (const [label, model] of [["no YAML", modelOf({ draft: null })], ["published", modelOf({ definition: { state: "published", currentRevision: 1 } })],
         ["subtree", modelOf({ operations: ["pause", "stop", "cancel"] })]]) {

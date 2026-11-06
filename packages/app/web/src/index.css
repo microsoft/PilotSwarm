@@ -12680,6 +12680,22 @@ textarea.ps-link-input {
   background: var(--ps-selection-background, var(--ps-highlight-background));
   color: var(--ps-foreground);
 }
+/* Owner, 2026-11-06T13:43Z (F1): the Definition | Workflows switch is two icon toggles, and the header's and toolbars'
+   buttons are icons (Workflow tool buttons, 32 px; a phone's are 44 px, below). The one shown is pressed. */
+.ps-wf-switch.is-icons { gap: 2px; border: 0; border-radius: 0; overflow: visible; }
+.ps-wf-switch.is-icons .ps-mini-button.ps-workflow-tool-button {
+  border: 1px solid var(--ps-border);
+  background: var(--ps-chrome);
+  color: var(--ps-muted);
+  padding: 4px 6px;
+}
+.ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
+  color: var(--ps-accent);
+  border-color: var(--ps-accent);
+  background: var(--ps-selection-background, var(--ps-highlight-background));
+}
+.ps-wf-bar-actions .ps-mini-button.ps-workflow-tool-button,
+.ps-wf-bar.is-foot .ps-mini-button.ps-workflow-tool-button { color: var(--ps-foreground); }
 .ps-wf-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .ps-wf-bar {
   display: flex;
