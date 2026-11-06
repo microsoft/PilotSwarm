@@ -94,12 +94,15 @@ import {
     normalizeStoredSessionOrder,
     computeFitWidthColumnLayout,
     normalizeTableCellText,
+    MOBILE_MEDIA_QUERY,
+    PHONE_LANDSCAPE_MEDIA_QUERY,
+    matchesMobileViewport,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
-const MOBILE_BREAKPOINT = 920;
-// Phones: the one-line composer (no "you" label, the blue button steers).
-const PHONE_MEDIA_QUERY = "(max-width: 600px)";
+// Phones, in either orientation: the one-line composer (no "you" label, the
+// blue button steers).
+const PHONE_MEDIA_QUERY = `(max-width: 600px), ${PHONE_LANDSCAPE_MEDIA_QUERY}`;
 // A touch keyboard (no hover, coarse pointer): its return key adds a line and
 // the button sends. With a physical keyboard Enter sends at every width.
 const TOUCH_KEYBOARD_MEDIA_QUERY = "(hover: none) and (pointer: coarse)";
@@ -435,9 +438,7 @@ function normalizeProfileSettings(settings) {
 
 /** True on phone-sized viewports — the device class that owns the mobile slot. */
 function isNarrowViewport() {
-    return typeof window !== "undefined"
-        && typeof window.matchMedia === "function"
-        && window.matchMedia("(max-width: 920px)").matches;
+    return matchesMobileViewport();
 }
 
 /** Profile key this device reads and writes. */
@@ -2288,9 +2289,7 @@ function openArtifactFromChat(controller, sessionId, filename) {
         Promise.resolve(controller.openChatArtifact(sessionId, filename)).catch(() => {});
         return;
     }
-    const isPhone = typeof window !== "undefined"
-        && typeof window.matchMedia === "function"
-        && window.matchMedia("(max-width: 920px)").matches;
+    const isPhone = matchesMobileViewport();
     // Whether ✕ hands the column back or collapses it again is decided inside
     // revealArtifact, from the layout it can already see.
     Promise.resolve(isPhone
@@ -5358,7 +5357,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // sessions-ONLY layout is the exception: it has the whole screen and the
     // detail box is the point of asking for it.
     const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
-    const compactSearch = useMediaQuery("(max-width: 920px)");
+    const compactSearch = useMediaQuery(MOBILE_MEDIA_QUERY);
     const [searchOpen, setSearchOpen] = React.useState(false);
     const searchOverlay = compactSearch && searchOpen;
     const searchDialogRef = React.useRef(null);
@@ -8926,8 +8925,15 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
             : null);
 }
 
+// On a phone, Activity is a tab of the diagnostics view rather than a stop of
+// the toolbar button. The phone's diagnostics view provides this; desktop
+// never does, so its tab row is unchanged.
+const MobileDiagnosticsContext = React.createContext(null);
+
 function InspectorTabs({ activeTab, controller }) {
     const visibleTabs = React.useMemo(() => getVisibleInspectorTabs(controller), [controller]);
+    const phoneDiagnostics = React.useContext(MobileDiagnosticsContext);
+    const activityActive = Boolean(phoneDiagnostics?.activityActive);
     // Icon-only tabs: the full label (e.g. "Node Map") lives in the IconButton
     // tooltip, so there's no per-label width pressure and no mobile shortening.
     // Default IconButton className ("ps-toolbar-button") so these render
@@ -8937,12 +8943,25 @@ function InspectorTabs({ activeTab, controller }) {
             key: tab,
             icon: INSPECTOR_TAB_ICONS[tab] ? React.createElement(INSPECTOR_TAB_ICONS[tab]) : "•",
             label: INSPECTOR_TAB_LABELS[tab] || tab,
-            active: activeTab === tab,
+            active: !activityActive && activeTab === tab,
             onClick: () => {
+                phoneDiagnostics?.selectInspector();
                 controller.setFocus("inspector");
                 controller.selectInspectorTab(tab).catch(() => {});
             },
-        })));
+        })),
+        phoneDiagnostics
+            ? React.createElement(IconButton, {
+                key: "activity",
+                icon: React.createElement(ActivityPaneGlyph),
+                label: "Activity",
+                active: activityActive,
+                onClick: () => {
+                    phoneDiagnostics.selectActivity();
+                    controller.setFocus("activity");
+                },
+            })
+            : null);
 }
 
 // `previewOnly` renders JUST the artifact preview panel, so the desktop layout
@@ -9598,7 +9617,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     });
 }
 
-function ActivityPane({ controller, panelClassName = "", extraActions = null }) {
+function ActivityPane({ controller, panelClassName = "", extraActions = null, topContent = null, forceActivity = false }) {
     const viewState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const layout = computeStateLayout(state);
@@ -9625,7 +9644,7 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
     }, shallowEqualObject);
     // On the Node Map tab this pane IS the worker-details pane; Activity
     // returns the moment the inspector shows anything else.
-    const nodeMode = viewState.inspectorTab === "nodes";
+    const nodeMode = !forceActivity && viewState.inspectorTab === "nodes";
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,
         admin: { workers: viewState.adminWorkers },
@@ -9665,6 +9684,7 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
         color: "gray",
         focused: viewState.focused,
         actions: extraActions,
+        topContent,
         lines: activity.lines,
         scrollOffset: viewState.scroll,
         scrollMode: viewState.followBottom ? "bottom" : "top",
@@ -10661,7 +10681,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
+function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", mobileDiagnosticsPane = "inspector", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -10864,21 +10884,19 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         // up here hands that whole strip back to the chat pane. Main is the
         // chat; the session list is the slide-over behind the leftmost button.
         // There is no Chat button: the chat is where every other surface
-        // returns to. Inspector + Activity are one idea on the desktop already
-        // (Diagnostics, the bug), so one button walks chat -> inspector ->
-        // activity -> chat. The list button and the canvas toggle also lead
-        // back to the chat.
+        // returns to. Diagnostics is a toggle: it opens the diagnostics view
+        // (the inspector tabs, with Activity as one more tab) where it was
+        // left, and a second tap returns to the chat. The list button and the
+        // canvas toggle also lead back to the chat.
         const onDiagnostics = mobilePane === "inspector" || mobilePane === "activity";
-        const nextDiagnosticsPane = mobilePane === "inspector" ? "activity" : (mobilePane === "activity" ? "workspace" : "inspector");
+        const diagnosticsPane = mobileDiagnosticsPane === "activity" ? "activity" : "inspector";
         const paneDefs = [
             {
-                id: nextDiagnosticsPane,
+                id: onDiagnostics ? "workspace" : diagnosticsPane,
                 icon: DiagnosticsGlyph,
                 active: onDiagnostics,
-                label: onDiagnostics
-                    ? (mobilePane === "inspector" ? "Diagnostics — inspector (tap for activity)" : "Diagnostics — activity (tap to return to the chat)")
-                    : "Diagnostics — inspector and activity",
-                focus: nextDiagnosticsPane === "workspace" ? "chat" : nextDiagnosticsPane,
+                label: onDiagnostics ? "Diagnostics — back to the chat" : "Diagnostics",
+                focus: onDiagnostics ? "chat" : diagnosticsPane,
             },
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
@@ -16113,9 +16131,7 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     // terminal view fits far more per screen and does not reflow wide content.
     // This is only the DEFAULT — a stored profile preference still wins once
     // settings load, so an explicit choice is never overridden.
-    const isNarrowViewport = typeof window !== "undefined"
-        && typeof window.matchMedia === "function"
-        && window.matchMedia("(max-width: 920px)").matches;
+    const isNarrowViewport = matchesMobileViewport();
     const store = createStore(appReducer, createInitialState({
         mode,
         branding,
@@ -16277,9 +16293,17 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const appliedProfileSettingsJsonRef = React.useRef(null);
     const defaultProfileSettingsRef = React.useRef(null);
     const [mobilePane, setMobilePane] = React.useState("workspace");
+    // The diagnostics view reopens on the tab it was left on.
+    const lastDiagnosticsPaneRef = React.useRef("inspector");
+    if (mobilePane === "inspector" || mobilePane === "activity") lastDiagnosticsPaneRef.current = mobilePane;
+    const mobileDiagnostics = React.useMemo(() => ({
+        activityActive: mobilePane === "activity",
+        selectActivity: () => setMobilePane("activity"),
+        selectInspector: () => setMobilePane("inspector"),
+    }), [mobilePane]);
     // Match the CSS and MoA breakpoint. The padded shell is narrower than
     // the browser and otherwise flips to mobile while the header is desktop.
-    const mobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
+    const mobile = useMediaQuery(MOBILE_MEDIA_QUERY);
     // The slide-over belongs to Main on a phone; leaving either closes it.
     React.useEffect(() => {
         if (!mobile || mobilePane !== "workspace") setMobileSessionsOpen(false);
@@ -16595,7 +16619,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const [narrowViewport, setNarrowViewport] = React.useState(isNarrowViewport);
     React.useEffect(() => {
         if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
-        const query = window.matchMedia("(max-width: 920px)");
+        const query = window.matchMedia(MOBILE_MEDIA_QUERY);
         const onChange = () => setNarrowViewport(query.matches);
         query.addEventListener?.("change", onChange);
         return () => query.removeEventListener?.("change", onChange);
@@ -16992,14 +17016,22 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // means. On a phone Activity is a separate bottom tab, so tapping a node
     // filled a pane you could not see. Stack them here instead — the node list
     // scrolls, the details sit under it.
-    else if (mobilePane === "inspector") mobileContent = (state.inspectorTab === "nodes")
-        ? React.createElement("div", { className: "ps-mobile-pane-fill ps-mobile-node-split" },
-            React.createElement(InspectorPane, { controller, mobile: true }),
-            React.createElement(ActivityPane, { controller, panelClassName: "ps-mobile-node-detail" }))
-        : React.createElement("div", { className: "ps-mobile-pane-fill" },
-            React.createElement(InspectorPane, { controller, mobile: true }));
-    else if (mobilePane === "activity") mobileContent = React.createElement("div", { className: "ps-mobile-pane-fill" },
-        React.createElement(ActivityPane, { controller }));
+    else if (mobilePane === "inspector") mobileContent = React.createElement(MobileDiagnosticsContext.Provider, { value: mobileDiagnostics },
+        (state.inspectorTab === "nodes")
+            ? React.createElement("div", { className: "ps-mobile-pane-fill ps-mobile-node-split" },
+                React.createElement(InspectorPane, { controller, mobile: true }),
+                React.createElement(ActivityPane, { controller, panelClassName: "ps-mobile-node-detail" }))
+            : React.createElement("div", { className: "ps-mobile-pane-fill" },
+                React.createElement(InspectorPane, { controller, mobile: true })));
+    // Activity is a tab of the diagnostics view: the same tab row on top, the
+    // session's activity below.
+    else if (mobilePane === "activity") mobileContent = React.createElement(MobileDiagnosticsContext.Provider, { value: mobileDiagnostics },
+        React.createElement("div", { className: "ps-mobile-pane-fill" },
+            React.createElement(ActivityPane, {
+                controller,
+                forceActivity: true,
+                topContent: React.createElement(InspectorTabs, { activeTab: state.inspectorTab, controller }),
+            })));
     // The canvas fills the whole region, so there is nothing to render under
     // it — the layer below is a SIBLING of this content and covers it. Drawing
     // a pane here would only be invisible work.
@@ -17037,6 +17069,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
             mobilePane,
+            mobileDiagnosticsPane: lastDiagnosticsPaneRef.current,
             mobileSessionsOpen: mobileSessionsOpen && mobilePane === "workspace" && !state.budgetOpen && !state.adminVisible,
             onToggleMobileSessions: () => {
                 // From any other surface (canvas, diagnostics, budget), the

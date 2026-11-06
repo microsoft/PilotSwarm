@@ -2,7 +2,7 @@ import React from "react";
 import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
-import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
+import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOBILE_MEDIA_QUERY, matchesMobileViewport, selectSessionRows } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
 import { paneLayout, boxStyle, emptySessionPanes, MOA_PANE_GAP_PX } from "./pane-layout.js";
@@ -210,10 +210,10 @@ function DashboardPreview({ dashboard }) {
 }
 
 function useDesktop() {
-    const [desktop, setDesktop] = React.useState(() => window.innerWidth > MOA_BREAKPOINT);
+    const [desktop, setDesktop] = React.useState(() => !matchesMobileViewport());
     React.useEffect(() => {
-        const media = window.matchMedia(`(min-width: ${MOA_BREAKPOINT + 1}px)`);
-        const update = () => setDesktop(media.matches); update();
+        const media = window.matchMedia(MOBILE_MEDIA_QUERY);
+        const update = () => setDesktop(!media.matches); update();
         media.addEventListener("change", update); return () => media.removeEventListener("change", update);
     }, []);
     return desktop;
@@ -265,7 +265,7 @@ function Modal({ title, onClose, children, hideHeader = false, dismissible = tru
     }, []);
     React.useEffect(() => {
         const previous = document.activeElement;
-        ((window.innerWidth > MOA_BREAKPOINT && ref.current?.querySelector("input:not(:disabled)")) || ref.current?.querySelector("button:not(:disabled),select:not(:disabled)"))?.focus({ preventScroll: true });
+        ((!matchesMobileViewport() && ref.current?.querySelector("input:not(:disabled)")) || ref.current?.querySelector("button:not(:disabled),select:not(:disabled)"))?.focus({ preventScroll: true });
         const key = e => {
             if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeRef.current(); }
             if (e.key !== "Tab") return;

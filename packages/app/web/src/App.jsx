@@ -5,7 +5,7 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { createWebPilotSwarmController, PilotSwarmWebApp, CogGlyph, setPortalLinkOrigins, setPortalWorkspaceFiles } from "pilotswarm/ui-react";
 import { jsonMergePatch } from "pilotswarm-sdk/api";
-import { getTheme } from "pilotswarm/ui-core";
+import { getTheme, matchesMobileViewport } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
@@ -689,9 +689,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                     return null;
                 }
                 if (!deepLinkTarget?.artifact) return null;
-                const isPhone = typeof window !== "undefined"
-                    && typeof window.matchMedia === "function"
-                    && window.matchMedia("(max-width: 920px)").matches;
+                const isPhone = matchesMobileViewport();
                 return controller.revealArtifact(initialSessionId, deepLinkTarget.artifact, isPhone
                     ? { fullscreen: true }
                     : { pane: true }).catch(() => null);
