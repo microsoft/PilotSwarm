@@ -842,8 +842,11 @@ export class PortalRuntime {
             // above, which is enforced for it even while the ownership switch is off. The actor is the signed-in caller,
             // never a field of the command; the command is passed as it is, and the adapter refuses what is not one.
             case "updateWorkflow":
+                // The session the command comes from, when the caller names one: a definition operation from inside a Workflow
+                // is refused (review SF-2).
                 return this.transport.updateWorkflow(safeParams.sessionId, safeParams.command,
-                    { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });
+                    { principal: owner ? { provider: owner.provider, subject: owner.subject } : null,
+                        ...(safeParams.originatingSessionId !== undefined ? { originatingSessionId: safeParams.originatingSessionId } : {}) });
             // Session workspaces: the wait for the answer holds this request,
             // so the caller's timeout is bounded like the other long waits.
             case "setSessionWorkspace":

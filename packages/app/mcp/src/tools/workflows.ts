@@ -94,11 +94,16 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             inputSchema: {
                 session_id: sessionIdShape().describe("The workflow session to command"),
                 command: z.record(z.string(), z.unknown()).describe("The command: { operation, operation_id, ...its arguments }"),
+                originating_session_id: z.string().optional()
+                    .describe("The session this command comes from, when an agent's call is passed on; a session inside a Workflow cannot change definitions"),
             },
         },
-        withToolErrors(async ({ session_id, command }) => {
+        withToolErrors(async ({ session_id, command, originating_session_id }) => {
             try {
-                return jsonResult(await ctx.mgmt.updateWorkflow(session_id, command));
+                // The session this server acts for, when it was started for one, wins over the argument (review SF-2).
+                const originatingSessionId = ctx.originatingSessionId ?? originating_session_id;
+                return jsonResult(await ctx.mgmt.updateWorkflow(session_id, command,
+                    ...(originatingSessionId !== undefined ? [{ originatingSessionId }] : [])));
             } catch (err: unknown) {
                 return refusal(err, session_id);
             }

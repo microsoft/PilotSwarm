@@ -77,7 +77,25 @@ for (const [error, expected] of [
     assert.equal(failed.content[0].text, "Error: boom");
 }
 
-console.log("✅ update_workflow: registration gate, receipt and refusal shapes");
+// 5. Review SF-2: the session a command comes from is passed on, so the client refuses a definition operation from a
+//    session inside a Workflow. A server started for one session (PILOTSWARM_ORIGINATING_SESSION_ID, the context's
+//    originatingSessionId) passes that session, whatever the argument says.
+{
+    const calls = [];
+    const updateWorkflow = async (sessionId, command, ...rest) => { calls.push(rest); return { ok: true }; };
+    const loose = toolsWith({ workflowCommands: true, mgmt: { updateWorkflow } }).get("update_workflow");
+    await loose({ session_id: SID, command: { operation: "publish", operation_id: "o-1" }, originating_session_id: "node-chat" });
+    const bound = toolsWith({ workflowCommands: true, originatingSessionId: "bound-chat", mgmt: { updateWorkflow } }).get("update_workflow");
+    await bound({ session_id: SID, command: { operation: "publish", operation_id: "o-2" } });
+    await bound({ session_id: SID, command: { operation: "publish", operation_id: "o-3" }, originating_session_id: "other" });
+    assert.deepEqual(calls, [[{ originatingSessionId: "node-chat" }], [{ originatingSessionId: "bound-chat" }], [{ originatingSessionId: "bound-chat" }]]);
+    const { originatingSessionIdFromEnv } = await import("../../dist/src/context.js");
+    assert.equal(originatingSessionIdFromEnv({}), null);
+    assert.equal(originatingSessionIdFromEnv({ PILOTSWARM_ORIGINATING_SESSION_ID: "  " }), null);
+    assert.equal(originatingSessionIdFromEnv({ PILOTSWARM_ORIGINATING_SESSION_ID: " s-1 " }), "s-1");
+}
+
+console.log("✅ update_workflow: registration gate, receipt and refusal shapes, and the session a command comes from");
 
 // 5. The descriptor: the deployment's workflow support exactly as its bootstrap advertises it, and this server's workflow tools.
 function capabilityCtx(mgmt, { workflowCommands = false, webMode = false } = {}) {

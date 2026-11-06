@@ -31,6 +31,7 @@ import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, work
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
 import { workflowAuthoringPointer, workflowAuthoringSkillLoaded, workflowSessionGuidance } from "./workflow/guidance.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
+import { workflowDefinitionMcpPermission, workflowDefinitionMcpToolFilters } from "./workflow/v2/input-policy.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -2634,6 +2635,8 @@ export class SessionManager {
         const excludedTools = [...new Set([
             ...(nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"]),
             ...(config.excludedTools ?? []),
+            // A1 for every registry (review SF-2): inside a Workflow, no MCP server's spawn_workflow or update_workflow.
+            ...(config.workflowInsideWorkflow === true ? workflowDefinitionMcpToolFilters(Object.keys(effectiveMcpServers)) : []),
         ])];
         // A child of a system session can be non-system yet retain the system
         // principal; use the same filtered owner as the V2 index and catalog.
@@ -2774,10 +2777,14 @@ export class SessionManager {
             // Workflow v2 real-agent test runs (INACTIVE: only on a worker that runs controller 1.9.0): a session whose turn ran
             // under such a test refuses MCP tools, which cannot be intercepted; its other requests go to its handler unchanged.
             // Every other session gets its handler as it is.
-            onPermissionRequest: config.workflowMilestoneTurn === true
-                ? workflowTestPermission((config as any).onPermissionRequest ?? approvePermissionForSession,
-                    () => this.sessions.get(sessionId)?.workflowTestSessionActive() === true)
-                : (config as any).onPermissionRequest ?? approvePermissionForSession,
+            // A session inside a Workflow is refused any MCP tool named as a definition tool, however it was offered (review SF-2).
+            onPermissionRequest: (() => {
+                const handler = (config as any).onPermissionRequest ?? approvePermissionForSession;
+                const base = config.workflowInsideWorkflow === true ? workflowDefinitionMcpPermission(handler) : handler;
+                return config.workflowMilestoneTurn === true
+                    ? workflowTestPermission(base, () => this.sessions.get(sessionId)?.workflowTestSessionActive() === true)
+                    : base;
+            })(),
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
             // ManagedSession sees `assistant.message_delta` /

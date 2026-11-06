@@ -1819,12 +1819,13 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * A person's command to a version 2 workflow session (INACTIVE: 501 WORKFLOW_COMMANDS_UNAVAILABLE unless the deployment enables it): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). 404 WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow; refusals carry their status and details.
+     * A person's command to a version 2 workflow session (INACTIVE: 501 WORKFLOW_COMMANDS_UNAVAILABLE unless the deployment enables it): command is the update_workflow tool's command (operation, operation_id and the operation's arguments), run by the same implementation; the actor is the signed-in caller. Owner or admin only, enforced even while the ownership switch is off. A workflow in a workflow agent state's subtree takes only pause, stop and cancel (403 WORKFLOW_HUMAN_INPUT_DENIED). originatingSessionId (optional): the session the command comes from, when a caller passes one on for an agent; a definition operation from a session inside a Workflow is refused (403 WORKFLOW_DEFINITION_TOOLS_REFUSED). 404 WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow; refusals carry their status and details.
      * @remarks `POST /sessions/:sessionId/workflow/commands` — access: `session:manage`
      */
     updateWorkflow(params: {
         sessionId: string;
         command?: any;
+        originatingSessionId?: any;
     }): Promise<any>;
 
     /**

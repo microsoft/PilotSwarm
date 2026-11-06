@@ -71,6 +71,31 @@ export async function sessionInsideWorkflow(store: Pick<WorkflowStore, "readWork
 }
 
 /**
+ * A1 for every tool registry (review SF-2): a session inside a Workflow is offered no MCP server's tool named as a
+ * definition tool either (a person-mode update_workflow of the PilotSwarm MCP server, or any server's spawn_workflow or
+ * update_workflow). These are the session's tool filters for the MCP servers it has (`serverNames`): the runtime names an
+ * MCP tool `<server>-<tool>`, matched as an MCP tool and by that name.
+ */
+export function workflowDefinitionMcpToolFilters(serverNames: Iterable<string>): string[] {
+    const filters: string[] = [];
+    for (const server of serverNames) {
+        for (const tool of WORKFLOW_DEFINITION_TOOLS) filters.push(`mcp:${server}-${tool}`, `${server}-${tool}`);
+    }
+    return filters;
+}
+
+/**
+ * The same, where a call is permitted: a session inside a Workflow is refused any MCP tool named as a definition tool,
+ * whatever its server and however it was offered, with the A1 words; every other request goes to `base` unchanged.
+ */
+export function workflowDefinitionMcpPermission<A extends unknown[], R>(base: (request: { kind?: string; toolName?: string } | undefined, ...rest: A) => R)
+    : (request: { kind?: string; toolName?: string } | undefined, ...rest: A) => R | { kind: "reject"; feedback: string } {
+    return (request, ...rest) => (request?.kind === "mcp" && typeof request.toolName === "string" && WORKFLOW_DEFINITION_TOOLS.includes(request.toolName)
+        ? { kind: "reject", feedback: WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT }
+        : base(request, ...rest));
+}
+
+/**
  * The A1 refusal as the tool answers it: a version 1 spawn_workflow's `[SYSTEM: ...]` line, otherwise the workflow
  * tools' JSON refusal with its code.
  */

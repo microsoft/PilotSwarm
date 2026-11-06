@@ -2015,7 +2015,8 @@ export class PilotSwarmManagementClient {
      * its reason (batch 7, n-3).
      */
     async updateWorkflow(sessionId: string, command: Record<string, unknown>,
-        options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
+        options: { principal?: { provider?: string | null; subject?: string | null } | null; originatingSessionId?: string | null } = {})
+        : Promise<Record<string, unknown>> {
         try {
             return await this._updateWorkflow(sessionId, command, options);
         } catch (error) {
@@ -2024,7 +2025,8 @@ export class PilotSwarmManagementClient {
     }
 
     private async _updateWorkflow(sessionId: string, command: Record<string, unknown>,
-        options: { principal?: { provider?: string | null; subject?: string | null } | null }): Promise<Record<string, unknown>> {
+        options: { principal?: { provider?: string | null; subject?: string | null } | null; originatingSessionId?: string | null })
+        : Promise<Record<string, unknown>> {
         this._ensureStarted();
         const failure = (code: string, status: number, message: string, details?: unknown): Error =>
             Object.assign(new Error(message), { code, status, ...(details !== undefined ? { details } : {}) });
@@ -2048,7 +2050,9 @@ export class PilotSwarmManagementClient {
                 resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}),
         };
         try {
-            return await updateWorkflowForPerson(command, { host, workflowSessionId: sessionId, actor });
+            // A command that names the session it comes from is refused a definition operation from inside a Workflow (SF-2).
+            return await updateWorkflowForPerson(command, { host, workflowSessionId: sessionId, actor,
+                ...(options.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
         } catch (error) {
             // The details of a refusal (field errors, the conflicting revision, the controlling agent) are safe to show over the
             // Web API (exposeDetails), as its message is.

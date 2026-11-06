@@ -1147,7 +1147,9 @@ export class NodeSdkTransport {
         // The portal always names the caller (null: no signed-in user); the TUI names none, and its own user is the caller.
         const principal = Object.prototype.hasOwnProperty.call(options ?? {}, "principal") ? options.principal
             : this.currentUser?.provider && this.currentUser?.subject ? { provider: this.currentUser.provider, subject: this.currentUser.subject } : null;
-        return this.mgmt.updateWorkflow(sessionId, command, { principal });
+        // The session the command comes from, when the portal passes one on (review SF-2).
+        return this.mgmt.updateWorkflow(sessionId, command, { principal,
+            ...(options?.originatingSessionId !== undefined ? { originatingSessionId: options.originatingSessionId } : {}) });
     }
 
     /**

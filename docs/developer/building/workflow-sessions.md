@@ -91,6 +91,18 @@ value stays `cancelled`.
 - **Inside a Workflow** (an agent node's chat and its sub-agents), sessions
   get no definition tools: `spawn_workflow` and `update_workflow` are not
   declared, and the server refuses them (`WORKFLOW_DEFINITION_TOOLS_REFUSED`).
+  No other registry gives them either: such a session is offered no MCP
+  server's `spawn_workflow` or `update_workflow` (for example the PilotSwarm
+  MCP server's person-mode `update_workflow`), and a call of one is refused.
+  A person's workflow command (management client, Web API
+  `originatingSessionId`, MCP `originating_session_id` or an MCP server
+  started with `PILOTSWARM_ORIGINATING_SESSION_ID`) that names the session it
+  comes from is refused a definition operation (`replace_definition`,
+  `publish`, `publish_and_start`, `start`) when that session is inside a
+  Workflow (403 `WORKFLOW_DEFINITION_TOOLS_REFUSED`). Known limit: a caller
+  that holds a person's credential and names no session acts as that person;
+  the server cannot tell. A parent asked by its child to change a definition
+  must decide on its own.
   Any other session may hand prescriptive work to a Workflow; the base
   guidance says so. Sessions inside a Workflow stop at level 3 below the
   top-level chat, and each refusal says so in words.

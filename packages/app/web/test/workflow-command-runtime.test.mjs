@@ -28,7 +28,7 @@ test("updateWorkflow is one POST session:manage operation: the session in the pa
     assert.ok(op, "updateWorkflow is a protocol operation");
     assert.deepEqual({ access: op.access, method: op.method, path: op.path, params: op.params }, {
         access: "session:manage", method: "POST", path: "/sessions/:sessionId/workflow/commands",
-        params: { sessionId: { in: "path", name: "sessionId" }, command: { in: "body" } },
+        params: { sessionId: { in: "path", name: "sessionId" }, command: { in: "body" }, originatingSessionId: { in: "body" } },
     });
 });
 
@@ -80,6 +80,9 @@ for (const enforce of [true, false]) {
         await runtime.call("updateWorkflow", { sessionId: "s1", command }, as("ada", "admin"));
         assert.deepEqual(calls.at(-1)[2], { principal: { provider: "dev", subject: "ada" } });
         assert.ok(audits.some((entry) => entry.action === "updateWorkflow" && entry.sessionId === "s1" && entry.decision === "break_glass"));
+        // The session a command comes from, when the caller names one, is passed on to the client (review SF-2).
+        await runtime.call("updateWorkflow", { sessionId: "s1", command, originatingSessionId: "node-chat" }, as("alice"));
+        assert.deepEqual(calls.at(-1)[2], { principal: { provider: "dev", subject: "alice" }, originatingSessionId: "node-chat" });
     });
 }
 

@@ -355,8 +355,10 @@ export class WebPilotSwarmManagementClient {
      * the caller as the actor; `options` is accepted for the direct client's
      * signature and not sent.
      */
-    async updateWorkflow(sessionId: string, command: Record<string, unknown>, _options: Record<string, unknown> = {}): Promise<any> {
-        return this._api.call("updateWorkflow", { sessionId, command });
+    async updateWorkflow(sessionId: string, command: Record<string, unknown>, options: { originatingSessionId?: string | null } = {}): Promise<any> {
+        // The signed-in caller is the actor; the session the command comes from, when given, is passed on (review SF-2).
+        return this._api.call("updateWorkflow", { sessionId, command,
+            ...(typeof options?.originatingSessionId === "string" ? { originatingSessionId: options.originatingSessionId } : {}) });
     }
 
     /**

@@ -96,6 +96,12 @@ interface ServerContextBase {
      */
     workflowTestMode?: boolean;
     /**
+     * The session this MCP server acts for, when it was started for one (PILOTSWARM_ORIGINATING_SESSION_ID): passed on
+     * with every person's workflow command, so a definition operation from a session inside a Workflow is refused
+     * (review SF-2). Absent: a command passes on only the session its caller names.
+     */
+    originatingSessionId?: string;
+    /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
      * from /auth/me and /bootstrap; direct mode is privileged (`admin`) with
@@ -169,6 +175,12 @@ export interface CreateContextOptions {
 export function workflowContextOptionsFromEnv(env: Record<string, string | undefined> = process.env): Pick<CreateContextOptions, "workflowCommands" | "sessionStartVersion"> {
     const test = workflowV2TestEnvironmentFromEnv(env);
     return test ? { workflowCommands: test.workflowCommands, sessionStartVersion: test.sessionStartVersion } : {};
+}
+
+/** The session an MCP server acts for (PILOTSWARM_ORIGINATING_SESSION_ID, trimmed), or null when it was not started for one. */
+export function originatingSessionIdFromEnv(env: Record<string, string | undefined> = process.env): string | null {
+    const value = typeof env.PILOTSWARM_ORIGINATING_SESSION_ID === "string" ? env.PILOTSWARM_ORIGINATING_SESSION_ID.trim() : "";
+    return value && value.length <= 256 ? value : null;
 }
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
@@ -377,6 +389,8 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         role: ctxRole,
         authz: ctxAuthz,
         ...(opts.workflowCommands ? { workflowCommands: true } : {}),
+        // The session this server acts for, when it was started for one (review SF-2).
+        ...(originatingSessionIdFromEnv() ? { originatingSessionId: originatingSessionIdFromEnv()! } : {}),
         webMode: Boolean(opts.apiUrl),
         models,
         skills,

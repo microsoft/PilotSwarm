@@ -1,5 +1,5 @@
 import { WORKFLOW_V2_API_VERSION } from "./compiler.js";
-import { workflowHumanInputError } from "./input-policy.js";
+import { sessionInsideWorkflow, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT, WORKFLOW_DEFINITION_TOOLS_REFUSED, workflowHumanInputError } from "./input-policy.js";
 import { jsonbSafeText, type JsonValue } from "./json.js";
 import { WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, WORKFLOW_V2_STOP_CONTROLLER_VERSIONS } from "./runtime.js";
 import type { WorkflowV2Host } from "./service.js";
@@ -170,7 +170,7 @@ const LIMITED = new Set(["OPERATION_LIMIT", "TEST_INTERCEPTION_LIMIT", "INBOX_RA
  */
 export function workflowCommandStatus(code: string): number {
     if (NOT_FOUND.has(code)) return 404;
-    if (code === "FORBIDDEN" || code === "WORKFLOW_HUMAN_INPUT_DENIED") return 403;
+    if (code === "FORBIDDEN" || code === "WORKFLOW_HUMAN_INPUT_DENIED" || code === WORKFLOW_DEFINITION_TOOLS_REFUSED) return 403;
     if (INVALID.has(code)) return 400;
     if (UNPROCESSABLE.has(code)) return 422;
     if (LIMITED.has(code)) return 429;
@@ -180,12 +180,34 @@ export function workflowCommandStatus(code: string): number {
 }
 
 /**
+ * A1 for a person's command (review SF-2): a command that names the session it comes from (`originatingSessionId`: a
+ * management client, the Web API or MCP passing it on for an agent's call) is refused a definition operation
+ * (replace_definition, publish, publish_and_start, start) when that session is inside a Workflow, by its stored
+ * lineage, as that session's own definition tools are (403 WORKFLOW_DEFINITION_TOOLS_REFUSED). A lineage that cannot be
+ * read refuses the command (it throws). Run, brake and read commands are not definition operations. A caller that holds a
+ * person's credential and names no session is that person: this cannot tell (the receipt's known limit).
+ */
+export async function refuseDefinitionFromInsideWorkflow(store: Pick<WorkflowStore, "readWorkflowLineage">, operation: unknown,
+    originatingSessionId: unknown): Promise<void> {
+    if (originatingSessionId === undefined || originatingSessionId === null) return;
+    if (typeof originatingSessionId !== "string" || !originatingSessionId.trim() || originatingSessionId.length > 256) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "originatingSessionId, when given, must be a session id of 1 to 256 characters.");
+    }
+    if (typeof operation !== "string" || !(UPDATE_WORKFLOW_OPERATIONS.definition as readonly string[]).includes(operation)) return;
+    if (await sessionInsideWorkflow(store, originatingSessionId)) {
+        throw new WorkflowStoreError(WORKFLOW_DEFINITION_TOOLS_REFUSED, WORKFLOW_DEFINITION_TOOLS_REFUSAL_TEXT);
+    }
+}
+
+/**
  * Run a person's command on workflow session `workflowSessionId` (see the
  * module's comment). Returns the receipt's JSON, as the tool's answer without
  * its `ok`; throws the refusal (a WorkflowStoreError, or the human-input
- * denial with its 403).
+ * denial with its 403). `originatingSessionId`: the session the command comes
+ * from, when its caller names one (refuseDefinitionFromInsideWorkflow).
  */
-export async function updateWorkflowForPerson(command: unknown, context: { host: WorkflowV2Host; workflowSessionId: string; actor: WorkflowActor })
+export async function updateWorkflowForPerson(command: unknown,
+    context: { host: WorkflowV2Host; workflowSessionId: string; actor: WorkflowActor; originatingSessionId?: string | null })
     : Promise<{ [key: string]: JsonValue }> {
     const { host, workflowSessionId, actor } = context;
     if (actor.kind === "agent") {
@@ -201,6 +223,7 @@ export async function updateWorkflowForPerson(command: unknown, context: { host:
     if (args.operation === "recover") {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "recover is not a person's command; the workflow's parent agent recovers a run.");
     }
+    await refuseDefinitionFromInsideWorkflow(host.store, args.operation, context.originatingSessionId);
     // Test mode hidden (spec 16; owner answer Q3): while it is off, a test operation answers as an operation that does
     // not exist: the same checks as any unknown operation, then the same refusal, with no word of testing.
     const absent = workflowTestModeAbsentError(args.operation, host);
