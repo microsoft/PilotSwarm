@@ -165,9 +165,11 @@ test('dev releases use matching prepared versions and preserve stable publicatio
     assert.throws(() => releaseOptions(invalid), /Release version/);
   }
 });
-test('same workflow retains dev qualification and skips only deployment steps', () => {
-  const workflow = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
-  const condition = "if: needs.resolve.outputs.development == 'false'";
+test('separate release entrypoints share qualification and skip only dev deployment steps', () => {
+  const workflow = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
+  const stable = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const dev = readFileSync(new URL('../../workflows/release-dev.yml', import.meta.url), 'utf8');
+  const condition = "if: ${{ !inputs.development }}";
   assert.equal(workflow.split(condition).length - 1, 2);
   for (const name of ['Refresh Azure login for deployment', 'Deploy released source to test environment']) {
     assert(workflow.includes(`- name: ${name}\n        ${condition}`));
@@ -177,16 +179,39 @@ test('same workflow retains dev qualification and skips only deployment steps', 
   assert.doesNotMatch(qualification, /if:/);
   assert.match(qualification, /providers: all\s+mode: parallel\s+qualify-failures: "true"/);
   assert.match(workflow, /github.ref == 'refs\/heads\/main'/);
-  assert.equal(workflow.split("if: github.ref == 'refs/heads/main' || inputs.dev_release").length - 1, 2);
+  assert.equal(workflow.split("if: github.ref == 'refs/heads/main' || inputs.development").length - 1, 1);
   assert.match(workflow, /environment: azure-deploy/);
-  assert.match(workflow, /dev_release:[\s\S]*type: boolean/);
-  assert.match(workflow, /source_branch:/);
-  assert.match(workflow, /needs: resolve/);
-  assert.match(workflow, /ref: \$\{\{ needs.resolve.outputs.source_sha \}\}/);
+  assert.match(workflow, /workflow_call:/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /development:[\s\S]*type: boolean/);
+  assert.match(workflow, /source_sha:/);
+  assert.doesNotMatch(workflow, /needs: resolve|release-source\.mjs resolve/);
+  assert.match(workflow, /ref: \$\{\{ inputs.source_sha \}\}/);
   assert.match(workflow, /persist-credentials: false/);
-  assert.match(qualification, /source-sha: \$\{\{ steps.snapshot.outputs.snapshot_sha \|\| needs.resolve.outputs.source_sha \}\}/);
+  assert.match(qualification, /source-sha: \$\{\{ steps.snapshot.outputs.snapshot_sha \|\| github.sha \}\}/);
   assert.match(workflow, /node "\$GITHUB_WORKSPACE\/\.github\/scripts\/release\.mjs" publish/);
-  assert.match(workflow, /group: azure-deploy/);
+  for (const entry of [stable, dev]) {
+    assert.match(entry, /workflow_dispatch:/);
+    assert.match(entry, /uses: \.\/\.github\/workflows\/release-common\.yml/);
+    assert.match(entry, /secrets: inherit/);
+    assert.match(entry, /contents: write/);
+    assert.match(entry, /id-token: write/);
+    assert.match(entry, /group: azure-deploy\s+cancel-in-progress: false/);
+    assert.doesNotMatch(entry, /uses: azure\/login|actions\/provider-tests|release\.mjs publish/);
+  }
+  assert.match(stable, /if: github.ref == 'refs\/heads\/main'/);
+  assert.match(stable, /development: false/);
+  assert.match(stable, /version: \$\{\{ inputs.version \}\}/);
+  assert.doesNotMatch(stable, /source_branch:|dev_release:/);
+  assert.match(dev, /development: true/);
+  assert.match(dev, /SOURCE_BRANCH: \$\{\{ inputs.source_branch \}\}/);
+  assert.match(dev, /source_sha: \$\{\{ needs.resolve.outputs.source_sha \}\}/);
+  assert.match(dev, /needs: resolve/);
+  assert.match(dev, /release-source\.mjs resolve/);
+  assert.doesNotMatch(dev, /^\s+(?:if|version):/m);
+  assert.doesNotMatch(stable, /needs:|resolve:|prepare/);
+  // Sharing the caller's concurrency group here would cancel or block that caller.
+  assert.doesNotMatch(workflow, /group: azure-deploy/);
 });
 test('dev numbering advances beyond tags and releases, including drafts and gaps', () => {
   assert.equal(nextDevVersion([]), '0.0.0-dev.1');
@@ -195,29 +220,20 @@ test('dev numbering advances beyond tags and releases, including drafts and gaps
   assert.equal(nextDevVersion(['v0.8.9', 'v0.8.10-dev.42', 'v0.0.0-dev.01', 'v0.0.0-dev.1^{}']), '0.0.0-dev.1');
   assert.equal(nextDevVersion(['v0.0.0-dev.9007199254740992']), '0.0.0-dev.9007199254740993');
 });
-test('dev source pins a repository branch; stable source remains captured main', async () => {
+test('dev source pins a repository branch or uses the captured workflow commit', async () => {
   const workflowSha = 'a'.repeat(40);
   const sourceSha = 'b'.repeat(40);
-  const args = { workflowSha, repository: 'microsoft/PilotSwarm', version, development: 'true', branch: 'feature/dev',
+  const args = { workflowSha, repository: 'microsoft/PilotSwarm', branch: 'feature/dev',
     gitFn: argv => assert.deepEqual(argv, ['check-ref-format', 'refs/heads/feature/dev']),
     api: async path => {
       assert.equal(path, 'repos/microsoft/PilotSwarm/git/ref/heads/feature%2Fdev');
       return { ref: 'refs/heads/feature/dev', object: { type: 'commit', sha: sourceSha } };
     } };
-  assert.deepEqual(await resolveReleaseSource(args), { development: 'true', source_branch: args.branch,
-    source_sha: sourceSha, source_directory: 'candidate', version: '' });
-  assert.deepEqual(await resolveReleaseSource({ ...args, development: 'false', branch: 'main' }),
-    { development: 'false', source_branch: 'main', source_sha: workflowSha, source_directory: '.', version });
+  assert.deepEqual(await resolveReleaseSource(args), { source_branch: args.branch, source_sha: sourceSha });
   assert.deepEqual(await resolveReleaseSource({ ...args, branch: '', workflowRef: 'refs/heads/feature/dev',
     api: async () => assert.fail('Blank source must use the captured workflow SHA, not a moving branch head') }),
-  { development: 'true', source_branch: 'feature/dev', source_sha: workflowSha, source_directory: 'candidate', version: '' });
-  assert.deepEqual(await resolveReleaseSource({ ...args, development: 'false', branch: '' }),
-    { development: 'false', source_branch: 'main', source_sha: workflowSha, source_directory: '.', version });
-  await assert.rejects(resolveReleaseSource({ ...args, development: 'false', branch: 'main',
-    workflowRef: 'refs/heads/feature/dev' }), /Stable releases require main/);
-  await assert.rejects(resolveReleaseSource({ ...args, development: 'false' }), /Stable releases require main/);
-  await assert.rejects(resolveReleaseSource({ ...args, development: 'false', branch: 'main', version: '0.0.0-dev.1' }), /Stable releases/);
-  await assert.rejects(resolveReleaseSource({ ...args, development: 'invalid' }), /boolean/);
+  { source_branch: 'feature/dev', source_sha: workflowSha });
+  await assert.rejects(resolveReleaseSource({ ...args, workflowRef: 'refs/tags/v0.6.0' }), /branch workflow/);
   await assert.rejects(resolveReleaseSource({ ...args, api: async () => ({ ref: 'refs/heads/other' }) }), /existing branch/);
   await assert.rejects(resolveReleaseSource({ ...args, gitFn: () => { throw new Error('invalid branch'); } }), /invalid branch/);
 });
@@ -256,7 +272,7 @@ test('dev source selection allows branch workflows, but refuses reruns and non-m
     DEV_RELEASE: 'true', GITHUB_RUN_ATTEMPT: '2' };
   const api = async () => { assert.fail('No API calls should happen before validation'); };
   for (const command of ['resolve', 'prepare']) await assert.rejects(selectRelease(command, env, api), /new dev release/);
-  await assert.rejects(selectRelease('resolve', { ...env, DEV_RELEASE: 'false', GITHUB_REF: 'refs/heads/feature' }, api), /stable workflows must use main/);
+  await assert.rejects(selectRelease('resolve', { ...env, DEV_RELEASE: 'false', GITHUB_REF: 'refs/heads/feature' }, api), /dev release branch workflow/);
   const root = licenseFixture(t);
   const source = 'a'.repeat(40);
   const output = join(root, 'output');
@@ -339,7 +355,7 @@ if (args[1] === 'create') {
   }
 });
 test('release and additive coverage use hosted runners; regional routing is full-HDB only', () => {
-  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const release = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
   const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
   assert.match(release, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
@@ -351,7 +367,7 @@ test('release and additive coverage use hosted runners; regional routing is full
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });
 test('release refreshes Azure authentication after testing and publication, before deployment', () => {
-  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const release = readFileSync(new URL('../../workflows/release-common.yml', import.meta.url), 'utf8');
   const gate = release.indexOf('- name: Qualify complete all-provider coverage');
   const publish = release.indexOf('- name: Publish verified package tarballs');
   const refresh = release.indexOf('- name: Refresh Azure login for deployment');

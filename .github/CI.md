@@ -24,46 +24,33 @@ release. It preserves existing asset identities/digests and performs no deploy.
 
 ## Development snapshots
 
-Use the existing **Create release** (`release-tarballs.yml`) workflow for both
-stable and dev releases. For dev, select any repository branch in **Use workflow
-from** and check `dev_release`. Leave `source_branch` blank to snapshot that
-workflow's captured commit, or enter a branch to snapshot its head instead.
-The stable `version` input is ignored for dev releases; no version-preparation
-commit is needed on the selected branch.
-
-The workflow captures or resolves the source to an immutable SHA before protected-environment
-approval and displays it in the selection summary. Approval trusts that source's
-workflow/control code and source install/build/test code with CI credentials and
-the Azure CI identity; separate checkouts are not a sandbox. Branch movement after selection does
-not change the captured source.
-
-After approval, the serialized release job allocates `0.0.0-dev.N`, starting at
-`N=1`, using one greater than the highest existing number across remote tags
-and releases (including drafts). It does not fill old gaps or overwrite tags.
-The runner creates a version-only snapshot commit on top of the selected SHA,
-updating the three manifests, internal dependencies, lockfile entries, and
-changelog. It tests and tags that snapshot commit, without pushing changes to
-the source branch. Release notes record both the selected and tested SHAs.
+Use **Create dev release** (`release-dev.yml`). Select a repository branch in
+**Use workflow from**; blank `source_branch` snapshots its captured commit,
+while an explicit branch selects its head. The source SHA is pinned and shown
+before environment approval. No prepared version is needed.
 
 ```bash
-gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref feature/my-change \
-  -f dev_release=true
+gh workflow run release-dev.yml --repo microsoft/PilotSwarm --ref feature/my-change
 ```
 
-The generated tag, such as `v0.0.0-dev.1`, is a GitHub prerelease that
-does not become the latest stable release. The same protected environment,
-Azure login, full provider qualification, package/license checks, and release
-assets still apply. Only the post-publication Azure login refresh and deployment
-are skipped. There is no separate workflow or npm publication.
+After approval, release concurrency serializes allocation of `0.0.0-dev.N`,
+starting at 1 and advancing beyond the highest remote tag or release (including
+drafts), without filling gaps. A version-only snapshot commit updates manifests,
+internal dependencies, the lockfile and changelog. Tests and the tag use that
+commit; the source branch is unchanged and release notes record both SHAs.
+Dispatch a new run instead of rerunning dev selection/preparation.
 
-Each dev version is immutable. Dispatch a new run for another snapshot; dev
-selection/preparation reruns are rejected rather than changing source/version
-within an approved run. A failed run before tag creation does not consume a
-number; a retained tag or draft does. Stable versions retain the existing
-prepared-version publication and deployment behavior, require `main` as the
-source and workflow branch, and leave `dev_release` unchecked.
-The protected environment must also permit the selected dev workflow branch;
-workflow conditions do not bypass environment deployment-branch policies.
+Stable **Create release** (`release-tarballs.yml`) keeps its main-only prepared
+version and unchanged validate/test/publish/deploy sequence. Both entrypoints
+call `release-common.yml` for the same full provider, license and package checks.
+Dev skips only post-publication login refresh/deployment and publishes a
+non-latest prerelease. A tag or draft consumes its number; a failure before tag
+creation does not. There is no npm publication.
+
+Dev approval trusts workflow/control and source install/build/test code with CI
+credentials and the Azure CI identity; separate checkouts are not a sandbox.
+The protected environment must permit the workflow branch. This code does not
+change or bypass environment branch policies.
 
 The existing install helper accepts an exact dev version; its default selects
 the latest stable release. The stable deployment workflow does not accept dev

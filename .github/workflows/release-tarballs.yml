@@ -3,16 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Prepared stable package version on main (X.Y.Z, without v); ignored for dev
-        required: false
+        description: Prepared stable package version on main (X.Y.Z, without v)
+        required: true
         default: 0.6.0
-      dev_release:
-        description: Publish a dev prerelease with the next unused 0.0.0-dev.N version (no deployment)
-        type: boolean
-        default: false
-      source_branch:
-        description: Optional dev source branch; blank snapshots the selected workflow commit. Stable releases require main.
-        default: ""
 permissions:
   contents: write
   id-token: write
@@ -20,139 +13,10 @@ concurrency:
   group: azure-deploy
   cancel-in-progress: false
 jobs:
-  resolve:
-    if: github.ref == 'refs/heads/main' || inputs.dev_release
-    name: Select source for approval
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      development: ${{ steps.source.outputs.development }}
-      source_sha: ${{ steps.source.outputs.source_sha }}
-      source_directory: ${{ steps.source.outputs.source_directory }}
-      version: ${{ steps.source.outputs.version }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24.22.1"
-      - name: Pin the selected source before approval
-        id: source
-        run: node .github/scripts/release-source.mjs resolve
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEV_RELEASE: ${{ inputs.dev_release }}
-          SOURCE_BRANCH: ${{ inputs.source_branch }}
-          RELEASE_VERSION: ${{ inputs.version }}
   release:
-    needs: resolve
-    if: github.ref == 'refs/heads/main' || inputs.dev_release
-    name: Test, publish tarballs and deploy
-    environment: azure-deploy
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    concurrency:
-      group: ci-provider-database
-      cancel-in-progress: false
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: durable_copilot
-        ports:
-          - 5432:5432
-        options: --health-cmd="pg_isready -U postgres" --health-interval=10s
-          --health-timeout=5s --health-retries=5
-    steps:
-      - name: Checkout captured workflow controls
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Checkout pinned dev source
-        if: needs.resolve.outputs.development == 'true'
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.resolve.outputs.source_sha }}
-          path: candidate
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24.22.1"
-          cache: npm
-          cache-dependency-path: ${{ needs.resolve.outputs.source_directory }}/package-lock.json
-      - name: Allocate and prepare dev snapshot
-        if: needs.resolve.outputs.development == 'true'
-        id: snapshot
-        working-directory: candidate
-        run: node "$GITHUB_WORKSPACE/.github/scripts/release-source.mjs" prepare
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEV_RELEASE: ${{ needs.resolve.outputs.development }}
-          RELEASE_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
-      - name: Validate release candidate
-        working-directory: ${{ needs.resolve.outputs.source_directory }}
-        run: node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" validate
-        env:
-          RELEASE_VERSION: ${{ steps.snapshot.outputs.version || needs.resolve.outputs.version }}
-          RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || needs.resolve.outputs.source_sha }}
-          DEV_RELEASE: ${{ needs.resolve.outputs.development }}
-      - uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Qualify complete all-provider coverage
-        uses: ./.github/actions/provider-tests
-        with:
-          providers: all
-          mode: parallel
-          qualify-failures: "true"
-          working-directory: ${{ needs.resolve.outputs.source_directory }}
-          source-sha: ${{ steps.snapshot.outputs.snapshot_sha || needs.resolve.outputs.source_sha }}
-          postgres-container: ${{ job.services.postgres.id }}
-        env:
-          CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
-          MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
-          AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
-      - name: Publish verified package tarballs
-        working-directory: ${{ needs.resolve.outputs.source_directory }}
-        run: node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" publish
-        env:
-          RELEASE_VERSION: ${{ steps.snapshot.outputs.version || needs.resolve.outputs.version }}
-          RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || needs.resolve.outputs.source_sha }}
-          DEV_RELEASE: ${{ needs.resolve.outputs.development }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Refresh Azure login for deployment
-        if: needs.resolve.outputs.development == 'false'
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Deploy released source to test environment
-        if: needs.resolve.outputs.development == 'false'
-        uses: ./.github/actions/deploy-azure
-        env:
-          AZURE_DEPLOY_ENV: ${{ secrets.AZURE_DEPLOY_ENV }}
-          AZURE_FOUNDRY_DEPLOYMENTS_JSON: ${{ secrets.AZURE_FOUNDRY_DEPLOYMENTS_JSON }}
-          AZURE_MODEL_PROVIDERS_JSON: ${{ secrets.AZURE_MODEL_PROVIDERS_JSON }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_DEPLOY_PRINCIPAL_OBJECT_ID: ${{ secrets.AZURE_DEPLOY_PRINCIPAL_OBJECT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          # Plain switches, from the environment's variables rather than the
-          # secret. A set variable wins over the same key in AZURE_DEPLOY_ENV;
-          # an unset one is empty and changes nothing (loadEnv in
-          # deploy/scripts/lib/common.mjs).
-          WORKSPACES_ENABLED: ${{ vars.WORKSPACES_ENABLED }}
-          USER_POOL_MIN_COUNT: ${{ vars.USER_POOL_MIN_COUNT }}
-          PILOTSWARM_NATIVE_SUBAGENTS: ${{ vars.PILOTSWARM_NATIVE_SUBAGENTS }}
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/release-common.yml
+    with:
+      development: false
+      version: ${{ inputs.version }}
+    secrets: inherit

@@ -32,11 +32,12 @@ against the managed environment.
 | Provision/register or deallocate the dedicated CI runner | **Manage Azure CI runner** (`provision-ci-runner.yml`) |
 | Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` |
 | Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
-| Publish a stable release and deploy its tested source, or publish a dev prerelease without deployment | **Create release** (`release-tarballs.yml`) |
+| Publish a stable release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
+| Publish an automatically numbered dev prerelease without deployment | **Create dev release** (`release-dev.yml`; branch workflows allowed) |
 | Add the copyright/permission notice to an existing release without changing packages or deploying | **Add release license notice** (`release-notices.yml`) |
 
-Dev releases are the exception to the main-only workflow column: select
-`dev_release=true` to run **Create release** from a repository branch. Blank
+Dev releases are the exception to the main-only workflow column:
+**Create dev release** can run from a repository branch. Blank
 `source_branch` uses that captured workflow commit; an explicit branch selects
 its head before approval. Stable releases still require main for both workflow
 and source. Dev approval trusts the captured workflow/control and source code
@@ -59,7 +60,7 @@ and provider. Six or more failures fail without sequential verification. Both
 results remain visible; incomplete/setup/unhandled failures still block release.
 Release assets are three npm-format tarballs, checksums and `LICENSE`. Each new
 tarball embeds the same copyright and permission notice. There is no npm
-publication or starter-image publication. Selecting `dev_release` snapshots a
+publication or starter-image publication. **Create dev release** snapshots a
 repository branch pinned before approval and automatically allocates the next
 `0.0.0-dev.N` version. It uses the same release qualification and assets, but
 publishes an immutable version-stamped snapshot without becoming latest or

@@ -20,10 +20,10 @@ Run `npm run check:privacy` after staging release changes.
 - The first Microsoft release was **v0.6.0**. Check remote tags and releases
   before selecting the next version; never replace a published tag as part of
   an ordinary release.
-- **Create release** (`release-tarballs.yml`) is a manual GitHub Action. Stable
-  releases require main for both workflow and source; dev workflows may use branches.
+- **Create release** (`release-tarballs.yml`) is a manual GitHub Action on main.
+  Its stable validate/test/publish/deploy sequence is unchanged.
   Merging a PR or pushing a tag does not publish a release.
-- Dev releases select `dev_release=true` and any repository workflow branch.
+- **Create dev release** (`release-dev.yml`) selects any repository workflow branch.
   Blank `source_branch` snapshots the captured workflow commit; an explicit
   branch snapshots its head. Captured workflow controls resolve and
   display the immutable source SHA before approval. Approval trusts candidate
@@ -37,6 +37,7 @@ Run `npm run check:privacy` after staging release changes.
   Prereleases use `--latest=false`; only post-publication login refresh and
   deployment are skipped. Dispatch a new run instead of rerunning dev selection
   or preparation. Stable releases require main and a prepared stable version.
+  Both entrypoints reuse `release-common.yml` for qualification and publication.
 - One protected-environment approval precedes all cloud work. The Action captures
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
@@ -68,8 +69,8 @@ Run `npm run check:privacy` after staging release changes.
 
 ## Preparation
 
-The steps below prepare a stable release. For dev snapshots, keep **Use workflow
-from** on the desired branch, enable `dev_release`, and leave `source_branch`
+The steps below prepare a stable release. For dev snapshots, use **Create dev
+release**, keep **Use workflow from** on the desired branch, and leave `source_branch`
 blank (or explicitly select another source branch); the workflow
 stamps versions automatically. Inspect the selected SHA before environment
 approval. See [development snapshots](../../CI.md#development-snapshots).
