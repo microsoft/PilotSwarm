@@ -2947,6 +2947,57 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     expect(errors).toEqual([]);
 });
 
+// ------------------------------------------------------------------------------------------------------------
+// Review UI-D3: the Workflow a session's tab shows under its parent's row, the tab's definition and its Definition |
+// Workflows view are part of a view (no Workflow deep link in the URL): Back/Forward and a normal reload show them again.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI-D3" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("UI-D3: the Workflow shown under its parent, the tab's definition and view come back with Back/Forward and a reload", async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeOwned(page);
+    const profile = await routeProfileSaves(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    const back = page.getByRole("button", { name: /^Back.*\((Alt|Option)\+/ });
+    const forward = page.getByRole("button", { name: /^Forward.*\((Alt|Option)\+/ });
+    const main = workflowTab(page);
+    const shown = main.getByRole("combobox", { name: "Workflow", exact: true });
+    const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
+    // #2 from its row, then the parent's row: the tab keeps showing #2 (the parent is highlighted, not #2).
+    await openSession(page, "watch-v2 #2");
+    await expect(shown).toHaveValue(OWNED.failed);
+    await openSession(page, "Release triage agent");
+    await expect(shown).toHaveValue(OWNED.failed);
+    // A non-default view in the parent's view: report-v2's Definition view.
+    await picker.selectOption("report-v2");
+    await viewSwitch(main, "Definition").click();
+    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-selected", "true");
+    // Back to #2's row view, Forward to the parent's: its definition and view come back, not #2.
+    await back.click();
+    await expect(shown).toHaveValue(OWNED.failed);
+    await forward.click();
+    await expect(picker).toHaveValue("report-v2");
+    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-selected", "true");
+    // The parent showing #2 again (from the Workflows list), then a normal reload of the parent's URL: #2 is shown.
+    await picker.selectOption("watch-v2");
+    await viewSwitch(main, "Workflows").click();
+    await main.getByRole("table", { name: "Workflows of watch-v2" }).getByRole("button", { name: "Open watch-v2 #2", exact: true }).click();
+    await expect(shown).toHaveValue(OWNED.failed);
+    await openSession(page, "Release triage agent");
+    await expect(shown).toHaveValue(OWNED.failed);
+    await expect.poll(() => profile.stored?.activeSessionId ?? null, { timeout: 15_000 }).toBe(AGENT_ID);
+    await expect.poll(() => page.evaluate(() => {
+        const key = Object.keys(sessionStorage).find(k => k.startsWith("pilotswarm.view-history.v1:"));
+        const saved = key ? JSON.parse(sessionStorage.getItem(key)) : null;
+        return saved ? saved.entries[saved.index]?.workflowTab?.workflowId ?? null : null;
+    })).toBe(OWNED.failed);
+    await page.reload();
+    await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
+    expect(errors).toEqual([]);
+});
+
 test("layout: on a phone the Workflow pane lies over the chat, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];

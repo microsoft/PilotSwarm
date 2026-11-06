@@ -2,6 +2,31 @@
 export const VIEW_HISTORY_LIMIT = 10;
 const text = value => typeof value === "string" && value.length <= 1024 ? value : null;
 const SIDE_TABS = ["canvas", "workspace", "workflow"];
+const WORKFLOW_TAB_VIEWS = ["definition", "workflows"];
+/**
+ * Review UI-D3: the Workflow tab's context of a view (the session that owns its Workflows, the Workflow it shows, its
+ * definition and Definition | Workflows view), kept apart from the highlighted row. References only; null without an owner.
+ */
+function cleanWorkflowTab(value) {
+    const ownerId = value && typeof value === "object" ? text(value.ownerId) : null;
+    if (!ownerId) return null;
+    return { ownerId, workflowId: text(value.workflowId), definition: text(value.definition),
+        view: WORKFLOW_TAB_VIEWS.includes(value.view) ? value.view : null };
+}
+/** The ui/workflowTab patch that shows a view's Workflow tab context again. */
+export function workflowTabPatch(tab) {
+    return { workflowId: tab.workflowId, definition: tab.definition, view: tab.view };
+}
+/**
+ * Review UI-D3: after a reload, the Workflow tab context the tab's saved current view had, when that view is of the
+ * session now active and its owner's tab has nothing chosen in this page yet: { ownerId, patch }; else null. Pure.
+ */
+export function workflowTabOnReload(entry, state) {
+    const tab = entry && entry.mode === "workspace" ? cleanWorkflowTab(entry.workflowTab) : null;
+    if (!tab || !entry.sessionId || entry.sessionId !== state?.sessions?.activeSessionId) return null;
+    if (state.ui?.workflowTabs?.[tab.ownerId]) return null;
+    return { ownerId: tab.ownerId, patch: workflowTabPatch(tab) };
+}
 export function cleanView(value) {
     if (!value || !["workspace", "moa", "admin", "budget"].includes(value.mode)) return null;
     return {
@@ -16,6 +41,8 @@ export function cleanView(value) {
         // Workflow Simplified (review UI-8): the Workflow row selected under its chat, and the right block's tab.
         workflowRowId: text(value.workflowRowId),
         sidePaneTab: SIDE_TABS.includes(value.sidePaneTab) ? value.sidePaneTab : "canvas",
+        // Review UI-D3: the Workflow tab's context, restored with the view (choosing in the tab is not a visit).
+        workflowTab: cleanWorkflowTab(value.workflowTab),
     };
 }
 export function viewKey(view) {

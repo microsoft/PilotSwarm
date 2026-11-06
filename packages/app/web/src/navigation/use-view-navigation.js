@@ -1,9 +1,10 @@
 import React from "react";
 import { useControllerSelector } from "pilotswarm/ui-react";
 import {
-    activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, updateMoaDashboard, workflowHighlightedSessionId, workflowRowTitle,
+    activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, selectWorkflowTabContext, updateMoaDashboard, workflowHighlightedSessionId,
+    workflowRowTitle,
 } from "pilotswarm/ui-core";
-import { cleanView, createViewHistory, navigationShortcut, viewKey } from "./view-history.js";
+import { cleanView, createViewHistory, navigationShortcut, viewKey, workflowTabOnReload, workflowTabPatch } from "./view-history.js";
 
 function capture(controller, moa) {
     const s = controller.getState(), dashboard = activeMoaDashboard(normalizeMoa(s.ui.moa));
@@ -18,7 +19,15 @@ function capture(controller, moa) {
         artifactFilename: separator >= 0 ? artifact.slice(separator + 1) : null,
         // Review UI-8: a Workflow selected under its chat is its own view, as is the right block's tab.
         workflowRowId: workflowRowOf(s), sidePaneTab: s.ui.sidePaneTab,
+        // Review UI-D3: the Workflow tab's context (the Workflow it shows, its definition and view), apart from the row.
+        workflowTab: workflowTabOf(s),
     });
+}
+/** The Workflow tab's context for the active session: its owner's tab state, or null. */
+function workflowTabOf(state) {
+    const ownerId = selectWorkflowTabContext(state).ownerId;
+    const tab = ownerId ? state.ui.workflowTabs?.[ownerId] : null;
+    return tab ? { ownerId, workflowId: tab.workflowId ?? null, definition: tab.definition ?? null, view: tab.view ?? null } : null;
 }
 /** The Workflow row selected under the active chat, or null. */
 function workflowRowOf(state) {
@@ -61,6 +70,9 @@ export function useViewNavigation(controller, moa) {
         const key = `pilotswarm.view-history.v1:${scope}`;
         let saved; try { saved = sessionStorage.getItem(key); } catch {}
         const history = createViewHistory(saved);
+        // Review UI-D3: a reload shows the Workflow tab context this tab last had for the session it opens on.
+        const reloaded = workflowTabOnReload(history.current, controller.getState());
+        if (reloaded) controller.dispatch({ type: "ui/workflowTab", ownerId: reloaded.ownerId, patch: reloaded.patch });
         history.visit(capture(controller, latest.current));
         data.current = { key, history }; publish();
         return () => { generation.current++; data.current = null; };
@@ -109,6 +121,8 @@ export function useViewNavigation(controller, moa) {
         }
         controller.dispatch({ type: "ui/canvasOpen", open: view.canvasOpen, manual: true });
         if (view.canvasOpen) controller.dispatch({ type: "ui/sidePaneTab", tab: view.sidePaneTab ?? "canvas" });
+        // Review UI-D3: the Workflow tab shows what it showed in that view (its Workflow, definition and view).
+        if (view.workflowTab) controller.dispatch({ type: "ui/workflowTab", ownerId: view.workflowTab.ownerId, patch: workflowTabPatch(view.workflowTab) });
         controller.dispatch({ type: "ui/canvasSlot", slot: view.canvasSlot });
         controller.dispatch({ type: "ui/canvasMaximized", on: view.canvasMaximized });
         controller.dispatch({ type: "ui/canvasZen", on: view.canvasZen });
