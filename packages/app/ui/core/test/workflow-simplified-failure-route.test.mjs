@@ -87,3 +87,37 @@ test("a run that failed with an error of its own keeps its headline", () => {
     assert.equal(workflowFailureText(own), "poll failed: the script stopped with an error: missing ) after argument list");
     assert.equal(workflowFailureText({ status: "failed", terminalState: "poll", error: "plain words" }), "poll failed: plain words");
 });
+
+// Review UI2-F3 (short UI re-review, medium): with no named predecessor the fallback chose the visit that ended last, in
+// any scope, and without the terminal any completed visit: an unrelated branch's error could become the headline. Now a
+// cause only on evidence (the terminal's own scope, a unique latest visit, a named predecessor or nothing), else the
+// terminal's summary or "Ended at …", never a wrong cause.
+test("UI2-F3: no cause from another scope, from a tie, without the terminal, or for a named predecessor not loaded", () => {
+    const BRANCH_ERROR = JSON.stringify({ code: "execution_failed", details: { exitCode: 1, stderr: "Error: item 3 feed timed out" }, message: "x" });
+    const branch = (stateId, entered, ended) => ({ ...visit(stateId, 1, entered, ended, { outcome: "execution_failed", resultKind: "runtime_error",
+        errorPreview: BRANCH_ERROR }), scopeId: "scope-par-1", branch: { index: 2 }, predecessorId: null });
+    const ok = (stateId, entered, ended) => visit(stateId, 1, entered, ended, { outcome: "ok", resultKind: "business", outputPreview: "{}" });
+    const terminal = (entered) => visit("failed", 1, entered, entered, { outcome: "failed", resultKind: "business", outputPreview: "{}" });
+    const ended = "Ended at failed (failed)";
+    // A root terminal reached by a business outcome; an unrelated branch error ended later than that outcome: not the cause.
+    const mixed = [ok("decide", 0, 1), branch("fetch", 0.2, 1.1), terminal(1.2)];
+    assert.equal(workflowFailureText(run({ nodeExecutions: mixed })), ended);
+    assert.equal(workflowFailureText(run({ nodeExecutions: [...mixed].reverse() })), ended, "page order changes nothing");
+    // Two top-level visits ended at the same time before the terminal: a tie proves no route, in either order.
+    const tied = [visit("poll", 1, 0, 1, { outcome: "execution_failed", resultKind: "runtime_error", errorPreview: POLL_ERROR }), ok("audit", 0.5, 1), terminal(1.2)];
+    assert.equal(workflowFailureText(run({ nodeExecutions: tied })), ended);
+    assert.equal(workflowFailureText(run({ nodeExecutions: [...tied].reverse() })), ended);
+    // The terminal's visit is not in the page: no cause is chosen among the others.
+    assert.equal(workflowFailureText(run({ nodeExecutions: [rows[0]] })), ended);
+    // A named predecessor that is not loaded: never another row instead.
+    assert.equal(workflowFailureText(run({ nodeExecutions: [rows[0], { ...rows[1], predecessorId: "nx-not-loaded" }] })), ended);
+    // A handled retry: an earlier error, then a business visit just before the terminal: the error did not take the route.
+    const handled = [visit("poll", 1, 0, 1, { outcome: "execution_failed", resultKind: "runtime_error", errorPreview: POLL_ERROR }), ok("poll", 1.1, 1.15), terminal(1.2)];
+    assert.equal(workflowFailureText(run({ nodeExecutions: handled })), ended);
+    // A branch's own terminal visits (repeated) are not the run's terminal; the top-level one is, and its cause is found.
+    const branchEnds = [{ ...terminal(0.5), nodeExecutionId: "nx-failed-b1", scopeId: "scope-par-1", predecessorId: null },
+        { ...terminal(0.6), nodeExecutionId: "nx-failed-b2", scopeId: "scope-par-1", predecessorId: null }, ...rows];
+    assert.equal(workflowFailureText(run({ nodeExecutions: branchEnds })), "poll failed: the script stopped with an error: missing ) after argument list");
+    // The summary, when the terminal has one, is what an unproven cause leaves.
+    assert.equal(workflowFailureText(run({ nodeExecutions: mixed }), { summary: "The feed check failed." }), "The feed check failed.");
+});

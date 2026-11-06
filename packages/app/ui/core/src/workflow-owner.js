@@ -256,23 +256,34 @@ export function workflowFailure(run, { itemOf = null, summary = null } = {}) {
 }
 
 /**
- * F6: the execution that took a failure route to the run's terminal `terminal`: the visit that ended last before the
- * terminal's visit began, when it ended with a runtime error whose words say why; null otherwise. A row's `ordinal` is its
- * visit number of that node (every node's first visit is 1), not a step number of the run, so the order is the visits'
- * times (enteredAt, endedAt); a branch row's predecessorId names its visit before when the read gives it (r3, C17).
+ * F6: the execution that took a failure route to the run's terminal `terminal`: the visit before the terminal's visit,
+ * when it ended with a runtime error whose words say why; null otherwise. A row's `ordinal` is its visit number of that
+ * node (every node's first visit is 1), not a step number of the run, so the order is the visits' times (enteredAt,
+ * endedAt); a branch row's predecessorId names its visit before when the read gives it (r3, C17).
+ * Review UI2-F3: a cause only on evidence, else none (the terminal's summary or "Ended at …" says what is known):
+ * - the run's terminal visit is a top-level one (a branch's end does not end the run); none loaded: no cause;
+ * - a named predecessor is that visit or nothing (never a substitute when it is not loaded);
+ * - else, only visits of the terminal's own scope that ended by the time it was entered count, and the latest one is
+ *   the cause only when no other ended at the same time (a tie proves no route).
  */
 function failureRouteCause(rows, terminal) {
     const at = value => { const ms = typeof value === "string" ? Date.parse(value) : NaN; return Number.isFinite(ms) ? ms : null; };
+    const scopeOf = row => (typeof row.scopeId === "string" && row.scopeId ? row.scopeId : null);
     const visits = rows.filter(isRecord);
-    const ends = visits.filter(row => row.stateId === terminal);
-    const end = ends.sort((a, b) => (at(b.enteredAt) ?? 0) - (at(a.enteredAt) ?? 0))[0] ?? null;
+    const end = visits.filter(row => row.stateId === terminal && scopeOf(row) === null)
+        .sort((a, b) => (at(b.enteredAt) ?? 0) - (at(a.enteredAt) ?? 0))[0] ?? null;
+    if (!end) return null;
     let before = null;
-    if (end && typeof end.predecessorId === "string") before = visits.find(row => row.nodeExecutionId === end.predecessorId) ?? null;
-    if (!before) {
-        const endAt = end ? at(end.enteredAt) : null;
-        const candidates = visits.filter(row => row.stateId !== terminal && at(row.endedAt) !== null
-            && (endAt === null || at(row.endedAt) <= endAt));
-        before = candidates.sort((a, b) => (at(b.endedAt) - at(a.endedAt)) || ((at(b.enteredAt) ?? 0) - (at(a.enteredAt) ?? 0)))[0] ?? null;
+    if (typeof end.predecessorId === "string" && end.predecessorId) {
+        before = visits.find(row => row.nodeExecutionId === end.predecessorId) ?? null;
+    } else {
+        const endAt = at(end.enteredAt);
+        if (endAt === null) return null;
+        const candidates = visits.filter(row => row !== end && row.stateId !== terminal && scopeOf(row) === scopeOf(end)
+            && at(row.endedAt) !== null && at(row.endedAt) <= endAt)
+            .sort((a, b) => at(b.endedAt) - at(a.endedAt));
+        if (candidates.length > 1 && at(candidates[0].endedAt) === at(candidates[1].endedAt)) return null;
+        before = candidates[0] ?? null;
     }
     return before && before.stateId !== terminal && before.resultKind === "runtime_error" && workflowErrorWords(before.errorPreview) ? before : null;
 }
