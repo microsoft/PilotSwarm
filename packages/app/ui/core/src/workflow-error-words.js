@@ -45,7 +45,8 @@ function jsonStringText(json) {
 
 /**
  * The parts of a runtime error: { code, message, exitCode, stderr, raw } (each null when absent; raw is the text as it
- * arrived, a JSON string's text unwrapped). Null for no error.
+ * arrived, a JSON string's text unwrapped). Null for no error. `stderrCut` and `messageCut` (review UI2-F8) say that the
+ * preview's cut ended inside that field, so its words are not whole.
  */
 export function workflowErrorParts(value) {
     if (value === undefined || value === null || value === "") return null;
@@ -66,7 +67,8 @@ export function workflowErrorParts(value) {
     if (literal) {
         const inner = literal.text.trim();
         if (inner.startsWith("{")) return workflowErrorParts(literal.cut ? `${inner}…` : inner);
-        return { code: null, message: text(inner), exitCode: null, stderr: null, raw: literal.cut ? `${inner}…` : trimmed };
+        return { code: null, message: text(inner), exitCode: null, stderr: null, raw: literal.cut ? `${inner}…` : trimmed,
+            ...(literal.cut ? { messageCut: true } : {}) };
     }
     let parsed;
     try { parsed = JSON.parse(trimmed); } catch { parsed = undefined; }
@@ -76,11 +78,13 @@ export function workflowErrorParts(value) {
     const cut = trimmed.replace(/…$/u, "");
     const exit = /"exitCode":(-?\d+)/u.exec(cut);
     const stderr = cutFieldOf(cut, "stderr");
+    const message = cutFieldOf(cut, "message");
     return {
-        code: text(cutField(cut, "code")), message: text(cutField(cut, "message")),
+        code: text(cutField(cut, "code")), message: text(message?.value),
         exitCode: exit ? Number(exit[1]) : null, stderr: text(stderr?.value), raw: trimmed,
         // Whether the stderr arrived cut: an error line that is its last line is then shown ending in "…".
         ...(stderr?.cut ? { stderrCut: true } : {}),
+        ...(message?.cut ? { messageCut: true } : {}),
     };
 }
 
@@ -100,7 +104,14 @@ function scriptErrorLineOf(stderr) {
     return null;
 }
 
-const bounded = (value, max = 240) => (value.length > max ? `${value.slice(0, max - 1).trimEnd()}…` : value);
+/** At most `max` characters, "…" last when shortened; never a lone half of a surrogate pair (review UI2-F8). */
+const bounded = (value, max = 240) => {
+    if (value.length <= max) return value;
+    let end = max - 1;
+    const last = value.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    return `${value.slice(0, end).trimEnd()}…`;
+};
 
 /**
  * What went wrong, in plain words: a script that failed says "the script stopped with an error: <its error>" (else "the
@@ -117,7 +128,9 @@ export function workflowErrorWords(value) {
         if (parts.exitCode !== null) return `the script exited with code ${parts.exitCode}`;
     }
     const said = parts.message ?? parts.code;
-    return said ? bounded(said) : null;
+    if (!said) return null;
+    // Review UI2-F8: words the preview's cut ended inside say so.
+    return bounded(parts.message !== null && parts.messageCut && !said.endsWith("…") ? `${said}…` : said);
 }
 
 /**

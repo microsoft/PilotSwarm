@@ -49,8 +49,8 @@ test("other errors read as their message; a script without an error line says it
     assert.equal(workflowErrorWords(JSON.stringify({ code: "unavailable" })), "unavailable");
     assert.equal(workflowErrorWords(null), null);
     assert.equal(workflowErrorWords(""), null);
-    // A message cut inside an escape keeps what arrived.
-    assert.equal(workflowErrorWords("{\"code\":\"x\",\"message\":\"a \\\"quoted\\u00"), "a \"quoted");
+    // A message cut inside an escape keeps what arrived, and says it was cut (review UI2-F8).
+    assert.equal(workflowErrorWords("{\"code\":\"x\",\"message\":\"a \\\"quoted\\u00"), "a \"quoted…");
     // Error lines of other runtimes.
     assert.equal(workflowScriptErrorLine("Traceback (most recent call last):\n  File \"s.py\", line 3\nValueError: bad input"), "bad input");
     assert.equal(workflowScriptErrorLine("TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" argument must be of type string"),
@@ -154,8 +154,9 @@ test("a node's error preview that is a JSON string of its envelope reads in word
     assert.equal(workflowErrorWords("\"no stock\""), "no stock");
     const literal = JSON.stringify("{\"message\":\"a \\u00e9 b\"}");
     const at = literal.indexOf("u00e9");
-    assert.equal(workflowErrorWords(`${literal.slice(0, at + 2)}…`), "a", "cut inside the text's own \\u escape");
-    assert.equal(workflowErrorWords(`${literal.slice(0, at - 1)}…`), "a", "cut between the two backslashes of the literal's escape");
+    // Review UI2-F8: words the cut ended inside say so ("…"), here before the rest of the message.
+    assert.equal(workflowErrorWords(`${literal.slice(0, at + 2)}…`), "a…", "cut inside the text's own \\u escape");
+    assert.equal(workflowErrorWords(`${literal.slice(0, at - 1)}…`), "a…", "cut between the two backslashes of the literal's escape");
     assert.equal(workflowErrorWords(literal), "a é b");
 });
 
@@ -176,4 +177,26 @@ test("HN #2's exact error preview reads as its SyntaxError; a line the cut ends 
         message: "The script exited with code 1." })), "the script stopped with an error: ux-boom-4821");
     assert.equal(workflowErrorWords(WHOLE), WORDS);
     assert.equal(workflowErrorWords(CUT), WORDS, "a cut plain preview whose error line arrived whole has no '…'");
+});
+
+// Review UI2-F8 (short UI re-review, low): a cut message lost its "…" (only a cut stderr kept one), and shortening to 240
+// characters could leave half of a surrogate pair.
+test("UI2-F8: cut message words end with '…'; shortening never splits a character; whole words get no '…'", () => {
+    // A plain message string, cut (a node's error preview that is a JSON string).
+    assert.equal(workflowErrorWords(`${JSON.stringify("The feed answered 503 three times in a row")}`.slice(0, 20) + "…"), "The feed answered 5…");
+    // An envelope's message field, cut in its JSON text; and the same field whole.
+    assert.equal(workflowErrorWords("{\"code\":\"timed_out\",\"message\":\"The script ran past its 30s tim…"), "The script ran past its 30s tim…");
+    assert.equal(workflowErrorWords("{\"code\":\"timed_out\",\"message\":\"The script ran past its 30s timeout.\",\"details\":{\"x\":\"…"),
+        "The script ran past its 30s timeout.", "a message that arrived whole has no '…'");
+    // Double-escaped (a JSON string of the envelope's text), cut inside the message.
+    const envelope = JSON.stringify(JSON.stringify({ code: "timed_out", message: "The script ran past its 30s timeout." }));
+    assert.equal(workflowErrorWords(`${envelope.slice(0, envelope.indexOf("past") + 4)}…`), "The script ran past…");
+    // 238 ASCII characters, then U+1F600 across the 239-code-unit bound, then more.
+    const long = `${"x".repeat(238)}\u{1F600}${"y".repeat(20)}`;
+    const said = workflowErrorWords(JSON.stringify({ code: "bad", message: long }));
+    assert.ok(said.endsWith("…") && said.length <= 240);
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u.test(said.replace(/\p{Extended_Pictographic}/gu, "")), "no lone high surrogate");
+    assert.equal(said, `${"x".repeat(238)}…`);
+    // A whole long message of plain characters is shortened as before.
+    assert.equal(workflowErrorWords(JSON.stringify({ code: "bad", message: "z".repeat(300) })), `${"z".repeat(239)}…`);
 });
