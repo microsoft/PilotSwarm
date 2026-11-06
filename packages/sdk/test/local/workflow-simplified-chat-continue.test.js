@@ -168,6 +168,39 @@ describe("chat: continue in the store (migration 0106)", () => {
     });
 });
 
+describe("migration 0106 finds the child session's uniqueness by what it is (review RT-6)", () => {
+    const uniqueness = async (direct, schema) => (await direct.query(
+        `SELECT x.relname FROM pg_index i JOIN pg_class x ON x.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid
+           JOIN pg_namespace n ON n.oid = t.relnamespace JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
+          WHERE n.nspname = $1 AND t.relname = 'workflow_agent_invocations' AND i.indisunique AND NOT i.indisprimary
+            AND i.indnkeyatts = 1 AND a.attname = 'child_session_id'`, [schema])).rows.map(row => row.relname);
+    for (const [label, drift] of [
+        ["a renamed UNIQUE constraint", schema => `ALTER TABLE "${schema}".workflow_agent_invocations
+            RENAME CONSTRAINT workflow_agent_invocations_child_session_id_key TO legacy_child_unique`],
+        ["a unique index that no constraint owns", schema => `ALTER TABLE "${schema}".workflow_agent_invocations
+            DROP CONSTRAINT workflow_agent_invocations_child_session_id_key;
+            CREATE UNIQUE INDEX legacy_child_index ON "${schema}".workflow_agent_invocations (child_session_id)`],
+    ]) {
+        it(`drops ${label} on a 0105 database, then records 0106`, { timeout: TIMEOUT }, async () => {
+            const env = getEnv();
+            const direct = new pg.Pool({ connectionString: env.store, max: 2 });
+            const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+            try {
+                await runMigrations(direct, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema).filter(m => m.version <= "0105"), CMS_LOCK_SEED);
+                await direct.query(drift(env.cmsSchema));
+                expect(await uniqueness(direct, env.cmsSchema)).toHaveLength(1);
+                await catalog.initialize();
+                expect(await uniqueness(direct, env.cmsSchema)).toEqual([]);
+                const versions = (await direct.query(`SELECT version FROM "${env.cmsSchema}".schema_migrations ORDER BY version`)).rows.map(row => row.version);
+                expect(versions.at(-1)).toBe("0106");
+            } finally {
+                await catalog.close();
+                await direct.end();
+            }
+        });
+    }
+});
+
 // ─── Controller 1.9.0 ─────────────────────────────────────────
 
 const CHILD = "test-chat-child";
