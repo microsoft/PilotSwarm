@@ -458,10 +458,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     });
 }
 
-// Batch 6 (f-02), on the Workflow pane (12): a phone's Workflow pane has no mobile zen entry and no maximize toggle; its
-// Log opens as a sheet with a visible way back (← Graph), and the Workflow button takes the person back to the chat;
-// a node's details are reachable from the graph (a tap selects, a second tap opens).
-test("mobile: a workflow has no zen entry, no maximize toggle and no composer bar, and node details are reachable", async ({ page }) => {
+// On a phone (12), the Workflow pane has the canvas's maximize toggle, exactly as the canvas has it (owner,
+// 2026-11-06T06:28Z; replaces batch 6 f-02): it covers the whole screen and Restore brings the pane back. A phone has no
+// canvas zen, so there is no zen entry here either. Its Log opens as a sheet with a visible way back (← Graph), and the
+// Workflow button takes the person back to the chat; a node's details are reachable (a tap selects, a second tap opens).
+test("mobile: the Workflow pane maximizes and restores as the canvas does, has no zen entry or composer bar, and node details are reachable", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -475,8 +476,22 @@ test("mobile: a workflow has no zen entry, no maximize toggle and no composer ba
     await expect(log.getByRole("list", { name: "Workflow log" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Enter mobile zen", exact: true })).toHaveCount(0);
     await expect(page.locator(".ps-mobile-zen")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Maximize canvas", exact: true })).toHaveCount(0);
     await expect(main.locator(".ps-composer-readonly")).toHaveCount(0);
+    // Maximize: the layer covers the portal header and the toolbar; Restore, in the same place, brings them back.
+    const layer = page.locator(".ps-mobile-canvas-layer");
+    const maximize = main.locator(".ps-wf-tab-head").getByRole("button", { name: "Maximize canvas", exact: true });
+    await expect(maximize).toBeVisible();
+    await maximize.click();
+    await expect(layer).toHaveClass(/is-maximized/);
+    // It covers the whole screen, the portal header and toolbar too.
+    const covered = await layer.boundingBox();
+    expect(Math.round(covered.y)).toBe(0);
+    expect(Math.round(covered.height)).toBe(844);
+    await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    await shot(page, "workflow-maximized-390");
+    await main.locator(".ps-wf-tab-head").getByRole("button", { name: "Restore canvas", exact: true }).click();
+    await expect(layer).not.toHaveClass(/is-maximized/);
+    await expect(maximize).toBeVisible();
     await shot(page, "quality-mobile-no-zen");
     await log.getByRole("button", { name: "← Graph", exact: true }).click();
     await expect(main.locator(".ps-wf-panel.is-sheet")).toHaveCount(0);
@@ -808,15 +823,15 @@ test("of-03: Diagnostics squeezed by a narrower window gets its width back first
     expect(errors).toEqual([]);
 });
 
-// A workflow has no zen (batch 6, f-02), so the zen chat rail is exercised from a chat.
+// The Workflow tab has zen, as the canvas does (owner, 2026-11-06T06:28Z): the zen chat rail is exercised from it.
 test("of-03: the zen chat rail resizes by drag and a double-click puts it back at 380px", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await routeApi(page);
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
-    await page.getByRole("button", { name: "Show canvas", exact: true }).click();
-    await page.getByRole("region", { name: "Session canvas" }).getByRole("button", { name: "Zen mode", exact: true }).click();
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    await workflowTab(page).getByRole("button", { name: "Zen mode", exact: true }).click();
     const rail = async () => Math.round(await page.locator(".ps-workspace-main-grid").evaluate((element) => element.getBoundingClientRect().width));
     await expect.poll(rail).toBe(380);
     const seam = page.getByRole("button", { name: "Resize the zen chat rail", exact: true });
@@ -1803,44 +1818,101 @@ test("r-3: the Log fills the bottom panel, a node on the graph shows the Node pa
 });
 
 // ------------------------------------------------------------------------------------------------------------
-// Batch 6 (f-02), on the Workflow tab (L1): the right block on the Workflow tab has neither Zen nor Full screen (a
-// canvas has both); the Canvas button switches it to the canvas, where they are, and the Workflow button back. A chat's
-// zen, turned on from its canvas, is part of its saved view and comes back as it was left.
-// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "f-02:" (from packages/app/web, after build).
+// Zen and full screen on the Workflow tab, exactly as on the canvas (owner, 2026-11-06T06:28Z: "need the full screen and
+// zen mode buttons for the workflow tab as well, exact same behavior as the canvas"; replaces batch 6 f-02 and spec L1's
+// "no Zen or Full screen"). The buttons sit at the right end of the tab's header in both views. Zen: the session list
+// steps away and the chat is the rail. Full screen: the block covers chat and sessions, and its controls move into the
+// toolbar (the tab switch, Zen to step down into zen, Restore). Canvas and Workflow share the mode: switching keeps it.
+// Escape steps down one rung; a reload keeps it.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "zen and full screen" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-test("f-02: the Workflow tab has no Zen or Full screen, the canvas has both, and a chat's zen comes back as it was left", async ({ page }) => {
+test("zen and full screen: the Workflow tab has the canvas's buttons, keeps the mode across Canvas and Workflow, Escape and a reload", async ({ page }) => {
+    test.setTimeout(60_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await routeApi(page, { workflowEvents: QUALITY_EVENTS, workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
     const profile = await routeProfile(page);
     const side = page.getByRole("region", { name: "Session canvas" });
-    const zenButton = side.getByRole("button", { name: /^(Zen mode|Leave zen mode)$/ });
-    const fullScreenButton = side.getByRole("button", { name: "Full screen canvas", exact: true });
+    const head = page.locator(".ps-wf-tab-head").filter({ visible: true });
+    const rail = async () => Math.round(await page.locator(".ps-workspace-main-grid").evaluate((element) => element.getBoundingClientRect().width));
+    const maximizedLayer = page.locator(".ps-canvas-layer.is-maximized");
+    const slot = page.locator("#ps-toolbar-canvas-slot");
+    const showCanvas = () => page.getByRole("button", { name: "Show canvas", exact: true }).click();
+    const showWorkflow = () => page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
 
-    // The Workflow: the right block is on the Workflow tab, with neither.
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
-    await expect(zenButton).toHaveCount(0);
-    await expect(fullScreenButton).toHaveCount(0);
-    // L1: Canvas and Workflow switch each other off. On the canvas, Zen and Full screen are there.
-    await page.getByRole("button", { name: "Show canvas", exact: true }).click();
-    await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
-    await expect(zenButton).toBeVisible();
-    await expect(fullScreenButton).toBeVisible();
-    await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
-    await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
-    await expect(zenButton).toHaveCount(0);
+    const normalRail = await rail();
+    // The buttons: the canvas's own icons, names and titles, at the right end of the header, in both views.
+    for (const view of [/^Definition$/, /^Workflows · \d+$/]) {
+        await head.getByRole("tab", { name: view }).click();
+        await expect(head.getByRole("button", { name: "Zen mode", exact: true })).toHaveAttribute("title", "Zen — chat rail + canvas only");
+        await expect(head.getByRole("button", { name: "Full screen canvas", exact: true })).toHaveAttribute("title", "Full screen — hide chat and sessions");
+    }
+    const headBox = await head.boundingBox();
+    const fullBox = await head.getByRole("button", { name: "Full screen canvas", exact: true }).boundingBox();
+    expect(fullBox.x + fullBox.width).toBeGreaterThan(headBox.x + headBox.width - 40);
 
-    // Zen on from the chat's canvas: saved with the chat's view, and on again when the chat is opened again.
-    await page.getByRole("button", { name: "Show canvas", exact: true }).click();
-    await zenButton.click();
+    // Zen: the chat becomes the 380 px rail beside the Workflow tab; the canvas keeps the mode, and so does the way back.
+    await head.getByRole("button", { name: "Zen mode", exact: true }).click();
+    await expect.poll(rail).toBe(380);
+    await expect(head.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
+    await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    await shot(page, "workflow-zen-1440");
+    await showCanvas();
+    await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
     await expect(side.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
+    await expect.poll(rail).toBe(380);
+    await showWorkflow();
+    await expect(head.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
+    await expect.poll(rail).toBe(380);
+    // A reload keeps zen and the Workflow tab.
     await expect.poll(() => profile.settings?.sessionViews?.[AGENT_ID]?.desktop?.zen ?? false).toBe(true);
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
-    await expect(side.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
-    await side.getByRole("button", { name: "Leave zen mode", exact: true }).click();
-    await shot(page, "f02-workflow-tab-no-zen");
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await expect(head.getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
+    await expect.poll(rail).toBe(380);
+    // Escape steps down: zen ends.
+    await head.getByRole("button", { name: "Leave zen mode", exact: true }).focus();
+    await page.keyboard.press("Escape");
+    await expect(head.getByRole("button", { name: "Zen mode", exact: true })).toBeVisible();
+    await expect.poll(rail).toBe(normalRail);
+
+    // Full screen: the block covers chat and sessions; the controls move to the toolbar (not in the tab's header).
+    await head.getByRole("button", { name: "Full screen canvas", exact: true }).click();
+    await expect(maximizedLayer).toHaveCount(1);
+    await expect(slot.getByRole("button", { name: "Restore canvas", exact: true })).toBeVisible();
+    await expect(slot.getByRole("button", { name: "Zen mode", exact: true })).toBeVisible();
+    await expect(head.getByRole("button", { name: "Full screen canvas", exact: true })).toHaveCount(0);
+    await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    await shot(page, "workflow-full-screen-1440");
+    // Canvas and back: still full screen.
+    await showCanvas();
+    await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
+    await expect(maximizedLayer).toHaveCount(1);
+    await showWorkflow();
+    await expect(workflowTab(page).getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    await expect(maximizedLayer).toHaveCount(1);
+    // Escape leaves full screen.
+    await slot.getByRole("button", { name: "Restore canvas", exact: true }).focus();
+    await page.keyboard.press("Escape");
+    await expect(maximizedLayer).toHaveCount(0);
+    await expect(head.getByRole("button", { name: "Full screen canvas", exact: true })).toBeVisible();
+    // From full screen, the toolbar's Zen steps down into zen; Restore from full screen goes back to the sessions view.
+    await head.getByRole("button", { name: "Full screen canvas", exact: true }).click();
+    await slot.getByRole("button", { name: "Zen mode", exact: true }).click();
+    await expect(maximizedLayer).toHaveCount(0);
+    await expect.poll(rail).toBe(380);
+    await head.getByRole("button", { name: "Leave zen mode", exact: true }).click();
+    await head.getByRole("button", { name: "Full screen canvas", exact: true }).click();
+    await slot.getByRole("button", { name: "Restore canvas", exact: true }).click();
+    await expect(maximizedLayer).toHaveCount(0);
+    await expect.poll(rail).toBe(normalRail);
+    // The Workflow button puts the block away from full screen, and the mode with it (as the Canvas button does).
+    await head.getByRole("button", { name: "Full screen canvas", exact: true }).click();
+    await page.getByRole("button", { name: /^Hide the Workflow tab/ }).click();
+    await expect(maximizedLayer).toHaveCount(0);
+    await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
     expect(errors).toEqual([]);
 });
 

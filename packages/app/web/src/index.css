@@ -12648,6 +12648,9 @@ textarea.ps-link-input {
   padding: 8px 10px;
   border-bottom: 1px solid var(--ps-border);
 }
+/* Zen and full screen (a phone: maximize), the canvas's own buttons, at the right end of the Workflow tab's header. */
+.ps-wf-tab-modes { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; flex: none; }
+.ps-wf-tab-modes .ps-canvas-max-btn { margin-left: 0; }
 .ps-wf-picker { display: inline-flex; min-width: 0; }
 .ps-wf-picker-select { max-width: 100%; min-width: 0; }
 .ps-wf-switch {

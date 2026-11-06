@@ -118,8 +118,11 @@ function StateChip({ state, className = "" }) {
     return h("span", { className: `ps-wf-state is-${state.tone}${className ? ` ${className}` : ""}`, "data-state": state.key }, state.label);
 }
 
-/** The Workflow tab (06). */
-export function WorkflowTab({ controller, mobile = false }) {
+/**
+ * The Workflow tab (06). `modeButtons`: zen and full screen (a phone: maximize), the canvas's own, at the right end of the
+ * tab's header when the tab is in the right block (owner, 2026-11-06T06:28Z); none where it is shown in the middle.
+ */
+export function WorkflowTab({ controller, mobile = false, modeButtons = null }) {
     const context = useControllerSelector(controller, selectWorkflowTabContext, workflowTabContextEqual);
     const byId = useControllerSelector(controller, state => state.sessions.byId);
     const views = useControllerSelector(controller, state => state.ui.workflowViews);
@@ -164,6 +167,8 @@ export function WorkflowTab({ controller, mobile = false }) {
     if (!definition) {
         // D8: nothing to show yet.
         return h("section", { className: "ps-wf-tab is-empty", "aria-label": "Workflow" },
+            // The way back from full screen stays, even with nothing to show.
+            modeButtons ? h("header", { className: "ps-wf-tab-head" }, h("span", { className: "ps-wf-tab-modes" }, modeButtons)) : null,
             h("div", { className: "ps-wf-empty" },
                 h("p", { className: "ps-wf-empty-title" }, "No workflow definitions."),
                 h("p", null, "Ask the chat to create one.")));
@@ -177,7 +182,8 @@ export function WorkflowTab({ controller, mobile = false }) {
                 h("button", { type: "button", role: "tab", "aria-selected": view === "definition", className: view === "definition" ? "is-on" : "",
                     onClick: () => setTab({ view: "definition" }) }, "Definition"),
                 h("button", { type: "button", role: "tab", "aria-selected": view === "workflows", className: view === "workflows" ? "is-on" : "",
-                    onClick: () => setTab({ view: "workflows" }) }, `Workflows · ${count}`))),
+                    onClick: () => setTab({ view: "workflows" }) }, `Workflows · ${count}`)),
+            modeButtons ? h("span", { className: "ps-wf-tab-modes" }, modeButtons) : null),
         view === "definition"
             ? h(DefinitionView, { key: definition.newestId, controller, definition, tab, setTab, mobile, ownerTitle: byId?.[ownerId]?.title ?? null,
                 ownerWorking: ownerId ? workflowParentWorking(byId?.[ownerId]) : false, onStarted: id => openWorkflow(id), askChat })

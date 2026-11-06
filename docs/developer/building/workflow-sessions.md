@@ -48,6 +48,13 @@ value stays `cancelled`.
   **Log** and **Variables** in a bottom panel). A failed Workflow shows its
   failure first. **Stop…** opens one dialog: **Let started nodes finish** or
   **Cancel now**; its close button says **Keep running**.
+  The tab has the canvas's **Zen** and **Full screen** buttons at the right
+  end of its header, with the same behaviour: zen makes the chat a rail beside
+  the tab; full screen covers chat and sessions and moves the tab switch, Zen
+  and Restore into the toolbar; Escape steps down one level. The canvas and
+  the Workflow tab share the mode, so switching between them keeps it. On a
+  phone the tab has the canvas's maximize toggle. A Workflow shown in the
+  middle (its session is not loaded) has neither.
 - **Start another… (Run again).** A definition that has started offers
   **Start another…** in its Definition view and its Workflows list. Its form
   is filled with the inputs of the Workflow it repeats (the definition's
@@ -181,9 +188,9 @@ workflow, a link) instead of its cron.
   workflow and that pane to resize it, use the divider's arrow keys, or
   double-click it to reset its width; the width is kept for this session. On a
   phone, the side pane opens as a separate layer; return to Main to see the
-  graph again. A workflow has no zen and no full screen: its side pane offers
-  neither, and a workflow opened while either is on shows in the normal
-  layout. On a desktop, returning to a chat brings them back as you left them;
+  graph again. A workflow shown in the middle has no zen and no full screen:
+  its side pane offers neither, and a workflow opened there while either is on
+  shows in the normal layout (the Workflow tab has both, as above). On a desktop, returning to a chat brings them back as you left them;
   on a phone, opening a workflow leaves mobile zen. The worker's original canvas
   artifact remains available without changing running workflows.
 - The main pane stays still: a compact header (the name, the status,
