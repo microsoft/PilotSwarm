@@ -14,14 +14,17 @@ function capture(controller, moa) {
         canvasMaximized: s.ui.canvasMaximized, canvasZen: s.ui.canvasZen, diagnosticsOpen: s.ui.diagnosticsOpen,
         artifactSessionId: separator >= 0 ? artifact.slice(0, separator) : null,
         artifactFilename: separator >= 0 ? artifact.slice(separator + 1) : null,
+        mobilePane: controller.mobileView?.get() || null,
     });
 }
+const PHONE_PANE_LABELS = { inspector: "Diagnostics", activity: "Activity", canvas: "Canvas" };
 function label(view, state) {
     if (!view) return "";
     if (view.mode === "moa") return normalizeMoa(state.ui.moa).dashboards.find(d => d.id === view.dashboardId)?.name || "Unavailable dashboard";
     if (view.mode === "admin") return "Settings";
     if (view.mode === "budget") return "Budget";
     const title = state.sessions.byId[view.sessionId]?.title || "Session";
+    if (view.mobilePane && PHONE_PANE_LABELS[view.mobilePane]) return `${title} · ${PHONE_PANE_LABELS[view.mobilePane]}`;
     return view.artifactFilename ? `${title} · ${view.artifactFilename}` : view.canvasOpen ? `${title} · Canvas ${view.canvasSlot}` : title;
 }
 
@@ -51,7 +54,7 @@ export function useViewNavigation(controller, moa) {
     }, [controller, scope, publish]);
 
     React.useEffect(() => {
-        if (!createdSessionId || !moa.desktop) return;
+        if (!createdSessionId) return;
         // Session creation is an explicit navigation whose completion can
         // arrive after the initiating click (and after leaving its dialog).
         const timer = setTimeout(() => {
@@ -59,7 +62,7 @@ export function useViewNavigation(controller, moa) {
             data.current.history.visit(capture(controller, latest.current)); publish();
         }, 0);
         return () => clearTimeout(timer);
-    }, [createdSessionId, controller, moa.desktop, publish]);
+    }, [createdSessionId, controller, publish]);
 
     const restore = React.useCallback(view => {
         const request = ++generation.current, currentMoa = latest.current;
@@ -94,6 +97,8 @@ export function useViewNavigation(controller, moa) {
         controller.dispatch({ type: "ui/canvasMaximized", on: view.canvasMaximized });
         controller.dispatch({ type: "ui/canvasZen", on: view.canvasZen });
         controller.dispatch({ type: "ui/diagnosticsOpen", open: view.diagnosticsOpen });
+        // On a phone, put the same screen back: chat, diagnostics or canvas.
+        if (controller.mobileView) controller.mobileView.set(view.mobilePane || (view.canvasOpen ? "canvas" : "workspace"));
         if (view.artifactFilename && view.artifactSessionId) {
             // Selection happens before the fetch; a late response only warms
             // the cache and can never open a pane over a newer destination.
@@ -124,14 +129,13 @@ export function useViewNavigation(controller, moa) {
 
     const move = React.useCallback(delta => {
         const history = data.current?.history;
-        if (!latest.current.desktop || !history?.destination(delta)) return;
+        if (!history?.destination(delta)) return;
         gesture.current = null;
         history.replace(capture(controller, latest.current));
         const destination = history.move(delta); publish(); restore(destination);
     }, [controller, publish, restore]);
 
     React.useEffect(() => {
-        if (!moa.desktop) return;
         let timer;
         // Observe user gestures, not store subscriptions: polling, streamed
         // messages, agent canvas presentations and resize never add entries.
@@ -162,13 +166,15 @@ export function useViewNavigation(controller, moa) {
         document.addEventListener("click", begin, true);
         window.addEventListener("keydown", begin, true);
         return () => { clearTimeout(timer); gesture.current = null; document.removeEventListener("click", begin, true); window.removeEventListener("keydown", begin, true); };
-    }, [controller, moa.desktop, move, publish]);
+    }, [controller, move, publish]);
 
     const state = controller.getState(), history = data.current?.history;
     const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? "Option" : "Alt";
     return {
         back: () => move(-1), forward: () => move(1),
         canBack: Boolean(history?.destination(-1)), canForward: Boolean(history?.destination(1)),
+        backTitle: history?.destination(-1) ? label(history.destination(-1), state) : "",
+        forwardTitle: history?.destination(1) ? label(history.destination(1), state) : "",
         backLabel: `Back${history?.destination(-1) ? ` to ${label(history.destination(-1), state)}` : ""} (${modifier}+−)`,
         forwardLabel: `Forward${history?.destination(1) ? ` to ${label(history.destination(1), state)}` : ""} (${modifier}++)`,
     };

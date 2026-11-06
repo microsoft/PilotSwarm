@@ -7,6 +7,7 @@ import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { themeSoundPlayer } from "./theme-sound-player.js";
+import { useSwipeNavigation } from "./swipe-navigation.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -16301,6 +16302,29 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         selectActivity: () => setMobilePane("activity"),
         selectInspector: () => setMobilePane("inspector"),
     }), [mobilePane]);
+    // The phone's view history: which screen is showing (chat, diagnostics and
+    // its tab, canvas) is phone-local state, so the history reads and restores
+    // it through this bridge. Desktop never registers one.
+    const mobilePaneRef = React.useRef(mobilePane);
+    mobilePaneRef.current = mobilePane;
+    React.useEffect(() => {
+        if (!mobile) return undefined;
+        const bridge = {
+            get: () => mobilePaneRef.current,
+            set: (pane) => {
+                setMobileSessionsOpen(false);
+                if (pane === "canvas") setMobileCanvasEverOpened(true);
+                setMobilePane(["workspace", "inspector", "activity", "canvas"].includes(pane) ? pane : "workspace");
+            },
+        };
+        controller.mobileView = bridge;
+        return () => { if (controller.mobileView === bridge) delete controller.mobileView; };
+    }, [controller, mobile]);
+    const mobileSwipeRef = React.useRef(null);
+    useSwipeNavigation(mobileSwipeRef, {
+        enabled: Boolean(mobile && viewNavigation && !suspended),
+        navigation: viewNavigation,
+    });
     // Match the CSS and MoA breakpoint. The padded shell is narrower than
     // the browser and otherwise flips to mobile while the header is desktop.
     const mobile = useMediaQuery(MOBILE_MEDIA_QUERY);
@@ -17096,7 +17120,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 if (focus) controller.setFocus(focus);
             },
         }),
-        React.createElement("div", { className: "ps-workspace" },
+        React.createElement("div", { className: "ps-workspace", ref: mobileSwipeRef },
             state.adminVisible
                 ? React.createElement(AdminConsolePanel, { controller, mobile, navigation: mobileAdminNavigation })
                 : state.budgetOpen

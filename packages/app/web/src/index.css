@@ -12329,3 +12329,39 @@ textarea.ps-link-input {
   }
   :root[data-ps-theme="horizon-dawn"] .ps-panel { border-radius: 12px; background: #101d31; }
 }
+/* ═══ Phone: back and forward by swipe ═══════════════════════════════════════
+   The workspace follows the finger; the destination's name shows on the side
+   it will come from, and lights up once a release would navigate. */
+.ps-swipe-hint {
+  position: fixed;
+  top: 46%;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(70vw, 320px);
+  padding: 9px 14px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 94%, transparent);
+  color: var(--ps-foreground);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  font-size: 14px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.ps-swipe-hint[data-side="left"] { left: 12px; }
+.ps-swipe-hint[data-side="right"] { right: 12px; flex-direction: row-reverse; }
+.ps-swipe-hint[data-ready="true"] {
+  border-color: var(--ps-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ps-accent) 35%, transparent), 0 8px 28px rgba(0, 0, 0, 0.28);
+  transform: scale(1.04);
+}
+.ps-swipe-hint[data-blocked="true"] { color: var(--ps-muted); }
+.ps-swipe-hint-arrow { font-size: 22px; line-height: 1; color: var(--ps-accent); }
+.ps-swipe-hint-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+@media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  .ps-web-shell { overflow-x: clip; }
+  .ps-workspace { will-change: transform; touch-action: pan-y pinch-zoom; }
+}
