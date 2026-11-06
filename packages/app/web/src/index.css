@@ -12767,8 +12767,8 @@ textarea.ps-link-input {
   cursor: pointer;
 }
 .ps-wf-list-row.is-head { cursor: default; color: var(--ps-muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
-button.ps-wf-list-row:hover,
-button.ps-wf-list-row:focus-visible { background: var(--ps-highlight-background); }
+.ps-wf-list-row.is-action:hover,
+.ps-wf-list-row.is-action:focus-within { background: var(--ps-highlight-background); }
 .ps-wf-list-number { font-weight: 700; }
 .ps-wf-list-state { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .ps-wf-list-reason { color: var(--ps-danger); font-size: 0.9em; overflow-wrap: anywhere; }

@@ -2839,9 +2839,11 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await picker.selectOption("watch-v2");
     await expect(viewSwitch(main, "Workflows")).toHaveText("Workflows · 2");
     const list = main.getByRole("table", { name: "Workflows of watch-v2" });
-    await expect(list.getByRole("row", { name: /^Open watch-v2 #/ })).toHaveCount(2);
-    await expect(list.getByRole("row", { name: "Open watch-v2 #2", exact: true }).locator(".ps-wf-state")).toHaveText("Failed");
-    await expect(list.getByRole("row", { name: "Open watch-v2 #1", exact: true }).locator(".ps-wf-state")).toHaveText("Running");
+    // Review UI-16: a real row with cells; its action is the named button in its first cell.
+    const rowOf = name => list.getByRole("row").filter({ has: page.getByRole("button", { name, exact: true }) });
+    await expect(list.getByRole("button", { name: /^Open watch-v2 #/ })).toHaveCount(2);
+    await expect(rowOf("Open watch-v2 #2").locator(".ps-wf-state")).toHaveText("Failed");
+    await expect(rowOf("Open watch-v2 #1").locator(".ps-wf-state")).toHaveText("Running");
     await expect(main.getByRole("button", { name: "Start another…", exact: true })).toBeVisible();
     await viewSwitch(main, "Definition").click();
     await expect(main.getByRole("button", { name: "Start another…", exact: true })).toBeVisible();
@@ -2850,7 +2852,7 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await shot(page, "layout-workflows-list");
 
     // S4, W2: opening #2 shows it in the tab and keeps the session's chat in the middle; opened, it no longer counts (O6).
-    await list.getByRole("row", { name: "Open watch-v2 #2", exact: true }).click();
+    await list.getByRole("button", { name: "Open watch-v2 #2", exact: true }).click();
     await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
     await expect(main.locator(".ps-wf-bar .ps-wf-state").first()).toHaveText("Failed");
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
@@ -2938,7 +2940,7 @@ test("Run again: Start another… asks the chat once to start the same definitio
     // The chat's new Workflow arrives with the next session-list read: #3, under the same definition.
     await viewSwitch(main, "Workflows").click();
     await expect(viewSwitch(main, "Workflows")).toHaveText("Workflows · 3", { timeout: 15_000 });
-    await expect(main.getByRole("table", { name: "Workflows of watch-v2" }).getByRole("row", { name: "Open watch-v2 #3", exact: true })).toBeVisible();
+    await expect(main.getByRole("table", { name: "Workflows of watch-v2" }).getByRole("button", { name: "Open watch-v2 #3", exact: true })).toBeVisible();
     await expect(main.getByRole("combobox", { name: "Workflow definition", exact: true }).locator("option")).toHaveCount(3);
     await shot(page, "run-again-listed");
     expect(messages).toHaveLength(1);

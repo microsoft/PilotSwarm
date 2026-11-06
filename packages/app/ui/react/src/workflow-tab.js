@@ -504,9 +504,13 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
                     const live = Array.isArray(model?.runs) ? model.runs.find(run => run?.mode === "live") ?? null : null;
                     const times = workflowTimes(histories?.get?.(row.sessionId)?.events, live?.runId ?? null);
                     const reason = state?.key === "failed" && model?.run && model.run.mode !== "test" ? workflowFailureText(model.run) : null;
-                    return h("button", { key: row.sessionId, type: "button", role: "row", className: "ps-wf-list-row", "data-session-id": row.sessionId,
-                        "aria-label": `Open ${definition.name} #${row.number}`, onClick: () => onOpen(row.sessionId) },
-                        h("span", { role: "cell", className: "ps-wf-list-number" }, `#${row.number}`),
+                    // Review UI-16: a real row with cells; its action is a named button in its first cell (a click anywhere on
+                    // the row does the same).
+                    return h("div", { key: row.sessionId, role: "row", className: "ps-wf-list-row is-action", "data-session-id": row.sessionId,
+                        onClick: event => { if (!event.target.closest?.("button")) onOpen(row.sessionId); } },
+                        h("span", { role: "cell", className: "ps-wf-list-number" },
+                            h("button", { type: "button", className: "ps-link-button", "aria-label": `Open ${definition.name} #${row.number}`,
+                                onClick: () => onOpen(row.sessionId) }, `#${row.number}`)),
                         h("span", { role: "cell", className: "ps-wf-list-state" }, h(StateChip, { state }),
                             reason ? h("span", { className: "ps-wf-list-reason" }, reason.replace(/^Failed /u, "")) : null),
                         h("span", { role: "cell" }, Number.isSafeInteger(live?.revision) ? String(live.revision) : "—"),
