@@ -78,12 +78,28 @@ test("a Workflow's state reads in words, from its read model when loaded, else f
     assert.equal(workflowStateOf({ sessionId: "x", title: "chat" }), null);
 });
 
-test("a failed Workflow says where and why first (W4)", () => {
-    const run = { status: "failed", terminalState: null, error: null,
-        nodeExecutions: [{ stateId: "prepare", state: "completed" }, { stateId: "check", state: "failed", resultKind: "runtime_error", errorPreview: "{\"message\":\"cherry is out of stock\"}" }] };
-    assert.equal(workflowFailureText(run), "Failed at check: cherry is out of stock");
-    assert.equal(workflowFailureText(run, { itemOf: () => "item 3" }), "Failed at check · item item 3: cherry is out of stock");
+test("a failed Workflow says where and why first (W4), from the run's own end, never a guess (UI-15)", () => {
+    const ended = (nodeExecutionId, message = "State 'check' ended with runtime error 'execution_failed' and has no route for it.") =>
+        JSON.stringify({ code: "execution_failed", message, details: { nodeExecutionId } });
+    const run = { status: "failed", terminalState: "check", error: ended("nx-check-3"),
+        nodeExecutions: [
+            // An early timeout that a route recovered from: an older error that did not end the run.
+            { nodeExecutionId: "nx-fetch-1", stateId: "fetch", state: "completed", resultKind: "runtime_error", errorPreview: "{\"message\":\"the API timed out\"}" },
+            { nodeExecutionId: "nx-check-3", stateId: "check", state: "completed", resultKind: "runtime_error", errorPreview: "{\"message\":\"cherry is out of stock\"}",
+                branch: { parallelNodeExecutionId: "nx-fan-1", index: 2 } },
+        ] };
+    assert.equal(workflowFailureText(run), "Failed at check · item 3: cherry is out of stock");
+    assert.equal(workflowFailureText(run, { itemOf: () => "cherry" }), "Failed at check · item cherry: cherry is out of stock");
+    // Newest first or oldest first: the same cause.
+    assert.equal(workflowFailureText({ ...run, nodeExecutions: [...run.nodeExecutions].reverse() }), "Failed at check · item 3: cherry is out of stock");
+    // The causing execution not loaded: the run's own error, never the older recovered one.
+    const unloaded = workflowFailureText({ ...run, nodeExecutions: [run.nodeExecutions[0]] });
+    assert.equal(unloaded, "Failed at check: State 'check' ended with runtime error 'execution_failed' and has no route for it.");
+    // A run whose error names no execution (its deadline, the controller): its own error, no guess among historical errors.
+    assert.equal(workflowFailureText({ status: "failed", terminalState: null, error: JSON.stringify({ code: "timed_out", message: "The run reached its deadline." }),
+        nodeExecutions: run.nodeExecutions }), "Failed: The run reached its deadline.");
     assert.equal(workflowFailureText({ status: "failed", terminalState: "stuck", error: "\"no stock\"" }), "Failed at stuck: no stock");
+    assert.equal(workflowFailureText({ status: "failed", terminalState: null, error: null, nodeExecutions: run.nodeExecutions }), null);
     assert.equal(workflowFailureText({ status: "completed" }), null);
 });
 

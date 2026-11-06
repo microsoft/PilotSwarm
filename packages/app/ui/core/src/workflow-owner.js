@@ -204,20 +204,36 @@ function errorText(value) {
 }
 
 /**
- * Why a failed run failed (W4, failure first): "Failed at check · item cherry: cherry is out of stock", from what the
- * run says: its end state, then the failed execution (by its item when it ran inside a For each node) and its error.
- * Null when nothing says.
+ * Why a failed run failed (W4, failure first): "Failed at check · item 3: cherry is out of stock". Review UI-15: from the
+ * run's own record of its end, never a guess among older errors: the run's error names the execution that ended it
+ * (details.nodeExecutionId); that execution's own error says why (else the run's message), and its For each item (its
+ * branch, `itemOf` or the item's number) says where. A run whose error names no execution says its own error. Null
+ * when nothing says.
  */
 export function workflowFailureText(run, { itemOf = null } = {}) {
     if (!isRecord(run) || run.status !== "failed") return null;
-    const rows = [...(Array.isArray(run.nodeExecutions) ? run.nodeExecutions : []), ...(Array.isArray(run.openExecutions) ? run.openExecutions : [])]
-        .filter(row => isRecord(row) && (row.state === "failed" || row.resultKind === "runtime_error" || row.errorPreview != null));
-    const failed = rows.at(-1) ?? null;
-    const stateId = text(failed?.stateId) ?? text(run.terminalState);
-    const message = errorText(failed?.errorPreview) ?? errorText(run.error);
-    const item = failed && typeof itemOf === "function" ? itemOf(failed) : null;
+    const envelope = jsonRecord(run.error);
+    const causeId = text(envelope?.details?.nodeExecutionId);
+    const rows = [...(Array.isArray(run.nodeExecutions) ? run.nodeExecutions : []), ...(Array.isArray(run.openExecutions) ? run.openExecutions : [])];
+    const cause = causeId ? rows.find(row => isRecord(row) && (row.nodeExecutionId === causeId || row.id === causeId)) ?? null : null;
+    const stateId = text(run.terminalState) ?? text(cause?.stateId);
+    const message = (cause ? errorText(cause.errorPreview) : null) ?? errorText(run.error);
+    const item = !cause ? null : typeof itemOf === "function" ? itemOf(cause)
+        : Number.isSafeInteger(cause.branch?.index) ? String(cause.branch.index + 1) : null;
     if (!stateId && !message) return null;
     return `Failed${stateId ? ` at ${stateId}` : ""}${item ? ` · item ${item}` : ""}${message ? `: ${message}` : ""}`;
+}
+
+/** A JSON object given as itself or as its text; null otherwise. */
+function jsonRecord(value) {
+    if (isRecord(value)) return value;
+    if (typeof value !== "string") return null;
+    try {
+        const parsed = JSON.parse(value);
+        return isRecord(parsed) ? parsed : null;
+    } catch {
+        return null;
+    }
 }
 
 const byCreation = (a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0) || String(a.sessionId).localeCompare(String(b.sessionId));
