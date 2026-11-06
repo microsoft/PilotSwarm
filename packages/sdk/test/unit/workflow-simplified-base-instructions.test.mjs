@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import {
-    forgetWorkflowBaseInstructions, keepWorkflowBaseInstructions, SDK_SYSTEM_PROMPT_PREFIX, sdkSystemPromptEchoContent, WORKFLOW_BASE_INSTRUCTIONS_KEPT_TTL_MS,
+    keepWorkflowBaseInstructions, SDK_SYSTEM_PROMPT_PREFIX, sdkSystemPromptEchoContent,
     workflowBaseInstructionsArtifact, workflowBaseInstructionsRef,
 } from "../../dist/workflow/v2/base-instructions.js";
 
@@ -71,26 +71,24 @@ test("two visits with the same instructions share one artifact; another text get
     assert.deepEqual(kept.uploads, []);
 });
 
-// Review SF-4: what this worker kept is trusted only for a while (or until forgotten); then the store is asked again,
-// and an artifact that is missing or holds other bytes (its sha256 is not the text's) is written again.
-test("a kept text that was replaced or deleted is written again once the worker checks the store again", async () => {
+// Review SF-4 and its delta residual: a kept reference is never reused unchecked: every keep asks the store, so an
+// artifact replaced by other bytes or deleted right after it was kept (within any time) is written again at the next
+// visit, and one that is unchanged is not.
+test("a kept text that was replaced or deleted right after it was kept is written again at the next visit", async () => {
     const workflow = `wf-${randomUUID()}`;
     const s = store();
     const ref = workflowBaseInstructionsRef(workflow, TEXT);
-    const t0 = 1_000_000;
-    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT, t0), true);
-    // Replaced by other bytes under its name: trusted while the entry lasts, then found out and written again.
+    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT), true);
+    // Replaced by other bytes under its name: the very next visit finds it out and writes the text again.
     s.files.set(`${workflow}/${ref.artifact}`, "forged");
-    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT, t0 + 1_000), false);
-    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT, t0 + WORKFLOW_BASE_INSTRUCTIONS_KEPT_TTL_MS + 1), true);
+    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT), true);
     assert.equal(s.files.get(`${workflow}/${ref.artifact}`), TEXT);
-    // Deleted, and forgotten: the next keep writes it at once.
+    // Deleted: the next visit writes it again at once.
     s.files.delete(`${workflow}/${ref.artifact}`);
-    forgetWorkflowBaseInstructions(ref);
-    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT, t0 + WORKFLOW_BASE_INSTRUCTIONS_KEPT_TTL_MS + 2), true);
+    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT), true);
     assert.equal(s.files.get(`${workflow}/${ref.artifact}`), TEXT);
-    // Unchanged in the store: checked again after the entry lapses, and not written.
+    // Unchanged in the store: checked, and not written.
     const writes = s.uploads.length;
-    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT, t0 + 3 * WORKFLOW_BASE_INSTRUCTIONS_KEPT_TTL_MS), false);
+    assert.equal(await keepWorkflowBaseInstructions(s, ref, TEXT), false);
     assert.equal(s.uploads.length, writes);
 });
