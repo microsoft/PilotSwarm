@@ -36,6 +36,7 @@ const ICON_THEMES = [
     { id: "winamp", label: "WinAMP" },
     { id: "duroxide", label: "Duroxide" },
     { id: "hearth", label: "Hearth" },
+    { id: "horizon-dawn", label: "Horizon Dawn" },
 ];
 
 for (const { id, label } of ICON_THEMES) {
@@ -239,4 +240,12 @@ test("Hearth's garland lights twinkle one at a time, and stand still when motion
     assert.ok(reduced, "a reduced-motion rule covers the strand");
     assert.match(reduced, /:root\[data-ps-theme="hearth"\] \.portal-header::before \{\s*background: url\("data:image\/svg\+xml,/);
     assert.doesNotMatch(reduced, /%3Canimate/, "the reduced-motion strand has no animation");
+});
+
+test("Horizon Dawn carries the HorizonDB mark as data, and no sound", () => {
+    const theme = getTheme("horizon-dawn");
+    assert.equal(theme.sound, null);
+    assert.equal(theme.icon.paths.length, 4, "cylinder body, top, chevron, peak");
+    assert.ok(theme.icon.paths.every((path) => /^M[0-9 .LVAZQH-]+$/i.test(path.d)), "plain path data, no markup");
+    assert.notEqual(theme.tui.red, theme.tui.green);
 });
