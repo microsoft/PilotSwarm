@@ -95,5 +95,6 @@ test("an agent node's chat is read-only with one plain line naming the chat that
         reason: "This session runs a step of a workflow.", workflowSessionId: "wf2", controllingSessionId: "r1" } });
     const recorded = store.getState().ui.workflowInputPolicies?.c1;
     assert.equal(recorded.controllingSessionId, "r1");
-    assert.equal(selectWorkflowInputNote(store.getState(), "c1"), "Read-only. To change this, message Stock check.");
+    // Review UI-17: the server's reason first, then the short direction.
+    assert.equal(selectWorkflowInputNote(store.getState(), "c1"), "This session runs a step of a workflow. To change this, message Stock check.");
 });

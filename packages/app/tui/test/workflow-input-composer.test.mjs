@@ -48,7 +48,7 @@ test("an agent state's child has a read-only composer with the server's reason a
     const pending = controller.ensureWorkflowInputPolicy("c1");
     assert.equal(render(controller), '<span data-kind="readonly">Checking whether you can send messages here…</span>');
     await pending;
-    assert.equal(render(controller), '<span data-kind="readonly">Read-only. To change this, message Root.</span>');
+    assert.equal(render(controller), `<span data-kind="readonly">${REASON.replace("workflow's", "workflow&#x27;s")} To change this, message Root.</span>`);
     assert.deepEqual(asked, ["c1"]);
 });
 
@@ -127,8 +127,8 @@ test("a failed policy read resolves null, records nothing, shows that it could n
     assert.deepEqual(await controller.ensureWorkflowInputPolicy("c1"), DENIED);
     assert.deepEqual(asked, ["c1", "c1"]);
     assert.equal(recorded(store, "c1").canSendPrompt, false);
-    // Words (spec 09, S7): the read-only composer names the session to message.
-    assert.match(render(controller), /data-kind="readonly">Read-only\. To change this, message Root\.</);
+    // Words (spec 09, S7; review UI-17): the server's reason first, then the session to message.
+    assert.match(render(controller), /data-kind="readonly">This session runs a step of a workflow\..* To change this, message Root\.</);
 });
 
 test("concurrent asks for one session share one server read", async () => {
