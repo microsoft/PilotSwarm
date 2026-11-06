@@ -12259,7 +12259,7 @@ textarea.ps-link-input {
   :root[data-ps-theme="horizon-dawn"] .portal-header::before {
     background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion-phone), var(--dawn-sky);
     background-size: 100% 26px, 100% 46px, 390px 56px, 400px 100px;
-    background-position: center bottom, center bottom, right 0 top 50px, left top;
+    background-position: center bottom, center bottom, right -30px top 26px, left top;
     background-repeat: no-repeat, no-repeat, no-repeat, repeat;
   }
   :root[data-ps-theme="horizon-dawn"] .portal-header::after {
