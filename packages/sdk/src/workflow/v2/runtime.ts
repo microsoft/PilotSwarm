@@ -4637,6 +4637,17 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }));
         // A state decided while its child was being created: the controller's end may have found no session yet.
         await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
+        // Review RT-1, the after-send check of a continued chat: the session the host just created may not be visible yet
+        // (its orchestration's start is still queued, so it reads NotFound), and the chat's end then stays owed with nothing
+        // left to look again. This attempt fails instead, once: its retry finds the visit decided and ends the chat
+        // (beginAgentSpawn "decided" with an attempt), by then visible. A chat: new child keeps its path as at e696f2c6.
+        if (continued && begun.action === "spawn") {
+            const childSessionId = begun.invocation.childSessionId;
+            const owed = await store.readAgentInvocationByChild(childSessionId);
+            if (owed?.endChildStatus === "NotFound" && (await client.getStatus(`session-${childSessionId}`)).status === "NotFound") {
+                throw new Error(`Chat ${childSessionId} was created, but its session is not visible yet; the next attempt sends its end.`);
+            }
+        }
         return { wake: false };
     });
 

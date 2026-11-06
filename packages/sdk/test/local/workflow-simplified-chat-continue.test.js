@@ -212,6 +212,9 @@ describe("chat: continue in the store (migration 0106)", () => {
             // one, is not reminded, whatever visit is open.
             expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7 })).toEqual({ recorded: false, reason: "no_visit" });
             expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: first })).toEqual({ recorded: false, reason: "decided" });
+            // The chat's sub-agent (RT-4's, above) is still at work: no reminder while it is (review D5).
+            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: second })).toEqual({ recorded: false, reason: "sub_agents" });
+            await catalog.updateSession(mini, { state: "completed" });
             expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: second }))
                 .toMatchObject({ recorded: true, nodeExecutionId: second, cycle: second, stateId: "talk", n: 1 });
             // A turn completes only its own visit (RT-3); a turn with no cycle prompt (null) completes none (D1).
@@ -381,6 +384,35 @@ async function chatMessages(h, chat) {
 }
 const commandsOf = async (h, chat) => (await chatMessages(h, chat)).filter(message => message?.type === "cmd");
 const chatEnd = (h, chat) => until(async () => (await commandsOf(h, chat))[0] ?? null, `the end of chat ${chat}`, 30_000);
+/** What a test that waits for a chat's end saw when none came: the chat, its visits, the spawn's orchestration, the log. */
+async function chatEndDiagnosis(h, run, chat, nodeExecutionIds) {
+    const status = async instanceId => {
+        const read = await h.client.getStatus(instanceId).catch(error => ({ status: `read failed: ${error?.message}` }));
+        return { status: read.status, output: read.output ?? null, error: read.error ?? null };
+    };
+    const events = await h.catalog.getSessionEvents(run.workflowSessionId, 0, 500).catch(() => []);
+    return JSON.stringify({
+        chat: await status(`session-${chat}`),
+        spawns: await Promise.all(nodeExecutionIds.map(nx => status(`wfa-${nx}`))),
+        visits: await Promise.all(nodeExecutionIds.map(async nx => {
+            const invocation = await h.store.readAgentInvocation(nx);
+            const node = await h.store.readNodeExecution(nx);
+            return invocation && { nx, spawnAttempts: invocation.spawnAttempts, spawnedAt: invocation.spawnedAt, endRequested: invocation.endRequested,
+                endSentAt: invocation.endSentAt, endChildStatus: invocation.endChildStatus, node: node && [node.state, node.outcome, node.winner] };
+        })),
+        run: (await h.store.readRun(run.runId))?.status ?? null,
+        log: events.filter(event => event.eventType.startsWith("workflow.agent") || event.eventType === "workflow.cancelled")
+            .map(event => [event.eventType, event.data?.childStatus ?? event.data?.error ?? null, event.data?.sent ?? null]),
+    });
+}
+/** chatEnd, failing with chatEndDiagnosis when no end comes. */
+const chatEndOrDiagnose = async (h, run, chat, nodeExecutionIds) => {
+    try {
+        return await chatEnd(h, chat);
+    } catch (error) {
+        throw new Error(`${error.message}; diagnosis: ${await chatEndDiagnosis(h, run, chat, nodeExecutionIds)}`);
+    }
+};
 const visit = (h, n) => until(async () => (h.spawns.length >= n ? h.spawns[n - 1] : null), `visit ${n}`);
 const spawnedVisit = async (h, n) => {
     const request = await visit(h, n);
@@ -602,7 +634,7 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
                 await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "NotFound", "the owed end");
                 expect((await h.client.getStatus(`session-${chat}`)).status).toBe("NotFound");
                 release();
-                expect(await chatEnd(h, chat)).toMatchObject({ type: "cmd", cmd: end, id: `workflow-agent-chat-end:${chat}`, requestedBy: run.workflowSessionId });
+                expect(await chatEndOrDiagnose(h, run, chat, [first.nodeExecutionId])).toMatchObject({ type: "cmd", cmd: end, id: `workflow-agent-chat-end:${chat}`, requestedBy: run.workflowSessionId });
                 await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "ChatEnded", "the chat ended");
                 await pause(1_000);
                 expect(await commandsOf(h, chat)).toHaveLength(1);
@@ -647,11 +679,15 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             // Visit 1 times out while its send is held; visit 2 is admitted to the same chat (never created yet).
             await until(async () => (secondVisit.length > 0 ? secondVisit : null), "visit 2's spawn");
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
-            const newest = await h.store.readAgentInvocation(secondVisit[0]);
+            // The run's cleanup (after the run's status) leaves the end owed on the newest visit, which began no attempt.
+            const newest = await until(async () => {
+                const invocation = await h.store.readAgentInvocation(secondVisit[0]);
+                return invocation?.endChildStatus === "NotFound" ? invocation : null;
+            }, "the owed end on the newest visit, as the test reads it");
             expect(newest).toMatchObject({ childSessionId: chat, spawnAttempts: 0, endChildStatus: "NotFound" });
             // Visit 1's host now creates the chat; its after-send check finds the run ended and ends the chat.
             release();
-            expect(await chatEnd(h, chat)).toMatchObject({ type: "cmd", cmd: "cancel", id: `workflow-agent-chat-end:${chat}` });
+            expect(await chatEndOrDiagnose(h, run, chat, [first.nodeExecutionId, secondVisit[0]])).toMatchObject({ type: "cmd", cmd: "cancel", id: `workflow-agent-chat-end:${chat}` });
             await pause(1_000);
             expect(await commandsOf(h, chat)).toHaveLength(1);
             expect(h.spawns.map(request => request.nodeExecutionId)).toEqual([first.nodeExecutionId]);
