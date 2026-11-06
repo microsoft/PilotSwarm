@@ -182,6 +182,20 @@ function watchSessionLock(h) {
 const waitingOnLock = h => until(async () => (await h.q(`SELECT count(*)::int AS n FROM pg_stat_activity
     WHERE datname = current_database() AND wait_event_type = 'Lock'`))[0].n > 0 || null, "a store statement to wait on the session lock", 5_000);
 
+
+/**
+ * A failed branch's end as the join's report gives it (wfs-full-5d687726 classification): at its blocked terminal, or,
+ * when the join decided before that terminal step committed (under load), finished at its work step with the outcome
+ * that routes there (parallelBranchStates: a terminal admitted but not yet decided stands as the state before it).
+ * Either is the same failure; the finished form must be this branch's own work step with outcome "bad". Never a
+ * success, a cancellation or still running.
+ */
+function failedBranchEnd(branch, workId) {
+    if (branch.ended !== "finished") return [branch.index, branch.ended, branch.outcome];
+    expect(branch, `branch ${branch.index}`).toMatchObject({ nodeExecutionId: workId, outcome: "bad" });
+    return [branch.index, "terminal", "blocked"];
+}
+
 describe("J3 robust joins: the store's commit order and its clock (no controller)", () => {
     it("JK-04 (HG-3, J1b-T3): equal SQL commit times tie by branch index; times less than a millisecond apart keep their order", { timeout: TIMEOUT }, async () => {
         const h = await openWorkflowStore(getEnv());
@@ -681,7 +695,8 @@ describe("J3 robust joins: commit order, repeats and lost acknowledgements (cont
             const blockedRun = await endOf(base, blocked.runId);
             expect(blockedRun).toMatchObject({ terminalNodeId: "stuck" });
             expect(blockedRun.terminalOutput).toMatchObject({ joined: false, timedOut: false, total: 5, needed: 3, succeeded: 1, failFast: true });
-            const ends = blockedRun.terminalOutput.branches.map(branch => [branch.index, branch.ended, branch.outcome]);
+            const ends = blockedRun.terminalOutput.branches.map(branch => ([1, 2, 3].includes(branch.index)
+                ? failedBranchEnd(branch, blocked.at(branch.index, "work")) : [branch.index, branch.ended, branch.outcome]));
             expect(ends.slice(0, 4)).toEqual([[0, "terminal", "succeeded"], [1, "terminal", "blocked"], [2, "terminal", "blocked"], [3, "terminal", "blocked"]]);
             const fifth = blockedRun.terminalOutput.branches[4];
             if (fifth.ended === "cancelled") expect(fifth).toMatchObject({ cancelledBy: "failFast" });

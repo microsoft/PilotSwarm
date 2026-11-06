@@ -103,6 +103,19 @@ const WORK = "const item = context.input;\n"
     + "await setResult(item.fail ? \"bad\" : item.seconds ? \"hold\" : \"ok\", { index: context.branch.index, ...item });\n";
 
 /** A parallel state over `items` with the join, failFast, concurrency and time limit given; its routes lead to the outer terminals. */
+/**
+ * A failed branch's end as the join's report gives it (wfs-full-5d687726 classification): at its blocked terminal, or,
+ * when the join decided before that terminal step committed (under load), finished at its work step with the outcome
+ * that routes there (parallelBranchStates: a terminal admitted but not yet decided stands as the state before it).
+ * Either is the same failure; the finished form must be this branch's own work step with outcome "bad". Never a
+ * success, a cancellation or still running.
+ */
+function failedBranchEnd(branch, workId) {
+    if (branch.ended !== "finished") return [branch.index, branch.ended, branch.outcome];
+    expect(branch, `branch ${branch.index}`).toMatchObject({ nodeExecutionId: workId, outcome: "bad" });
+    return [branch.index, "terminal", "blocked"];
+}
+
 function joinDoc({ items = [], forEach = "${input.items}", join, failFast = false, concurrency, timeoutSeconds } = {}) {
     const timed = timeoutSeconds !== undefined;
     return {
@@ -866,7 +879,8 @@ describe("workflow v2 parallel joins of the first k: controller 1.9.0 (inactive,
             const run = await ended(h, fast.runId);
             expect(run).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "stuck" });
             expect(run.terminalOutput).toMatchObject({ joined: false, timedOut: false, total: 3, needed: 2, succeeded: 0, failFast: true });
-            expect(run.terminalOutput.branches.map(branch => [branch.index, branch.ended, branch.outcome])).toEqual([
+            expect(run.terminalOutput.branches.map(branch => (branch.index < 2 ? failedBranchEnd(branch, fast.at(branch.index, "work"))
+                : [branch.index, branch.ended, branch.outcome]))).toEqual([
                 [0, "terminal", "blocked"], [1, "terminal", "blocked"], [2, "cancelled", "cancelled"]]);
             const cut = await branchRows(h, fast.runId, fast.fan, 2);
             expect(cut.filter(node => node.winner === "fail_fast").map(node => node.outcome)).toEqual(["cancelled"]);
