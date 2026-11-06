@@ -12202,7 +12202,7 @@ textarea.ps-link-input {
 :root[data-ps-theme="horizon-dawn"] .portal-header {
   position: relative;
   isolation: isolate;
-  min-height: 97px;
+  min-height: 94px;
   padding-bottom: 26px;
   overflow: hidden;
   border-bottom: 1px solid #5cc8f273;

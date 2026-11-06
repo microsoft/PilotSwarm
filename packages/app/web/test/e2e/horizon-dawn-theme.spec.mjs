@@ -42,7 +42,7 @@ test("desktop: no words in the scenery, a compact header, and every layer from t
     const header = page.locator(".portal-header");
     expect(await header.evaluate(el => getComputedStyle(el, "::after").content)).toBe("none");
     const box = await header.boundingBox();
-    expect(box.height).toBeGreaterThanOrEqual(96);
+    expect(box.height).toBeGreaterThanOrEqual(93);
     expect(box.height).toBeLessThanOrEqual(110);
     const images = await layers(page);
     const order = ["mountains-front", "mountains-back", "orion", "sky"].map(name => where(images, name));
