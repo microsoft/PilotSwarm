@@ -2962,7 +2962,16 @@ test("UI-D3: the Workflow shown under its parent, the tab's definition and view 
     page.on("pageerror", (error) => errors.push(error.message));
     await routeOwned(page);
     const profile = await routeProfileSaves(page);
+    // Back/Forward history is kept per signed-in person: the stub's bootstrap names none, so name one (as the view
+    // navigation specs do), and list every owner's sessions (these rows have no owner) as a stored choice.
+    profile.stored = { sessionOwnerFilter: { all: true } };
+    await routeViewer(page, TEST_OWNER);
+    const historySaved = () => page.evaluate(() => {
+        const key = Object.keys(sessionStorage).find(k => k.startsWith("pilotswarm.view-history.v1:"));
+        return key ? JSON.parse(sessionStorage.getItem(key)) : null;
+    });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await expect.poll(async () => Boolean(await historySaved())).toBe(true);
     const back = page.getByRole("button", { name: /^Back.*\((Alt|Option)\+/ });
     const forward = page.getByRole("button", { name: /^Forward.*\((Alt|Option)\+/ });
     const main = workflowTab(page);
@@ -2991,11 +3000,10 @@ test("UI-D3: the Workflow shown under its parent, the tab's definition and view 
     await openSession(page, "Release triage agent");
     await expect(shown).toHaveValue(OWNED.failed);
     await expect.poll(() => profile.stored?.activeSessionId ?? null, { timeout: 15_000 }).toBe(AGENT_ID);
-    await expect.poll(() => page.evaluate(() => {
-        const key = Object.keys(sessionStorage).find(k => k.startsWith("pilotswarm.view-history.v1:"));
-        const saved = key ? JSON.parse(sessionStorage.getItem(key)) : null;
+    await expect.poll(async () => {
+        const saved = await historySaved();
         return saved ? saved.entries[saved.index]?.workflowTab?.workflowId ?? null : null;
-    })).toBe(OWNED.failed);
+    }).toBe(OWNED.failed);
     await page.reload();
     await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
     expect(errors).toEqual([]);
