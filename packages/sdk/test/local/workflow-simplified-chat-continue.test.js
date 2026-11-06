@@ -149,6 +149,22 @@ describe("chat: continue in the store (migration 0106)", () => {
             expect(spawnNesting(1, 2, await store.readWorkflowLineage(chat)))
                 .toEqual({ childNestingLevel: 3, maxNestingLevel: WORKFLOW_V2_MAX_DESCENDANT_LEVEL });
             // A real-agent test's scope (workflowTestAgentScope) is the agent root's visit: the open one, not the first.
+
+            // RT-5: the visits are counted in the store, with no cap. 1,001 older decided visits (copies of the first,
+            // admitted earlier) make the second visit cycle 1,003 of the state; its previous visit is still the first.
+            const copies = 1_001;
+            const copy = (table, extra) => `INSERT INTO "${env.cmsSchema}".${table}
+                SELECT (jsonb_populate_record(NULL::"${env.cmsSchema}".${table}, to_jsonb(t) || ${extra})).*
+                  FROM "${env.cmsSchema}".${table} t, generate_series(1, ${copies}) g WHERE t.node_execution_id = $1`;
+            await direct.query(copy("workflow_node_executions",
+                "jsonb_build_object('node_execution_id', 'rt5-' || g, 'ordinal', 100000 + g)"), [first]);
+            await direct.query(copy("workflow_agent_invocations",
+                "jsonb_build_object('node_execution_id', 'rt5-' || g, 'created_at', t.created_at - make_interval(secs => g))"), [first]);
+            const before = await store.readAgentVisitsBefore(runId, "talk", second);
+            expect([before.count, before.previous.nodeExecutionId]).toEqual([copies + 1, first]);
+            const all = await store.readAgentVisitsBefore(runId, "talk", null);
+            expect([all.count, all.previous.nodeExecutionId]).toEqual([copies + 2, second]);
+            expect(await store.readAgentVisitsBefore(runId, "talk", "rt5-1001")).toEqual({ count: 0, previous: null });
             // A late answer of the first visit binds to it, never to the open one, and is refused there.
             expect(await store.completeAgentNode({ childSessionId: chat, operationId: "late-1", call: { outcome: "finish", output: { fact: "late" } },
                 nodeExecutionId: first })).toMatchObject({ kind: "refused", code: "COMPLETION_CONFLICT" });
@@ -512,15 +528,15 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
         let watched = null;
         const decided = [];
         h = await harness(getEnv(), { storeHooks: {
-            // The spawn of visit 2 reads the state's visits (its cycle); its result arrives right then, before the send.
-            async listAgentInvocationsOfState(visits, [runId]) {
-                if (watched && runId === watched && visits.length === 2 && decided.length === 0) {
-                    const second = visits[1];
+            // The spawn of visit 2 reads the visits before it (its cycle); its result arrives right then, before the send.
+            async readAgentVisitsBefore(found, [runId, , before]) {
+                if (watched && runId === watched && before !== null && found.count === 1 && decided.length === 0) {
+                    const second = await h.store.readAgentInvocation(before);
                     decided.push(second.nodeExecutionId);
                     expect(await completeAs(h, second.childSessionId, { outcome: "finish", output: { fact: "two" }, operation_id: "early",
                         node_execution_id: second.nodeExecutionId })).toMatchObject({ ok: true });
                 }
-                return visits;
+                return found;
             },
         } });
         try {

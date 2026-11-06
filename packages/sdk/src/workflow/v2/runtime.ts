@@ -3096,12 +3096,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      */
     const agentChatCycle = async (runId: string, invocation: WorkflowAgentInvocation, node: WorkflowNodeExecutionRow)
         : Promise<WorkflowAgentCycle | null> => {
-        const visits = await store.listAgentInvocationsOfState(runId, node.nodeId);
-        const at = visits.findIndex(item => item.nodeExecutionId === invocation.nodeExecutionId);
-        const earlier = at >= 0 ? visits.slice(0, at)
-            : visits.filter(item => item.nodeExecutionId !== invocation.nodeExecutionId && item.createdAt.getTime() <= invocation.createdAt.getTime());
-        if (earlier.length === 0) return null;
-        const last = earlier[earlier.length - 1];
+        // The visits before this one, counted, and the one right before it (review RT-5: no cap on a run's visits).
+        const { count: earlier, previous: last } = await store.readAgentVisitsBefore(runId, node.nodeId, invocation.nodeExecutionId);
+        if (earlier === 0 || last === null) return null;
         const previous = await store.readNodeExecution(last.nodeExecutionId);
         // A pinned KV revision is read as it is (review RT-7): a read that fails throws, so this spawn attempt fails before
         // anything is sent and is retried, and a revision that is not an object is corrupt. Only a visit with no pinned
@@ -3118,7 +3115,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             .filter(key => canonicalJson(now[key] ?? null) !== canonicalJson(before[key] ?? null) || Object.hasOwn(now, key) !== Object.hasOwn(before, key))
             .sort();
         return {
-            cycle: earlier.length + 1,
+            cycle: earlier + 1,
             previous: previous ? { outcome: previous.outcome, resultKind: previous.resultKind, output: previous.hasOutput ? previous.output : null,
                 error: previous.resultKind === "runtime_error" ? previous.error : null } : null,
             variables: now, changedVariables: changed,
@@ -3133,14 +3130,13 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * id also names this visit's number among the state's visits, so it is derived too.
      */
     const continuedChatOf = async (client: WorkflowV2AgentEndClient | null, runId: string, stateId: string): Promise<string> => {
-        const visits = await store.listAgentInvocationsOfState(runId, stateId);
-        const last = visits.at(-1);
+        const { count: visits, previous: last } = await store.readAgentVisitsBefore(runId, stateId, null);
         if (!last || !workflowAgentChatContinues(last)) return workflowAgentChatSessionId(runId, stateId);
         const deleted = await store.isSessionDeleted(last.childSessionId);
         const status = client ? (await client.getStatus(`session-${last.childSessionId}`)).status : null;
         const created = last.spawnedAt !== null || (status !== null && status !== "NotFound");
         const ended = created && (deleted || status === "NotFound" || (status !== null && TERMINAL_ORCHESTRATION_STATUSES.includes(status)));
-        return ended ? workflowAgentChatSessionId(runId, stateId, visits.length + 1) : last.childSessionId;
+        return ended ? workflowAgentChatSessionId(runId, stateId, visits + 1) : last.childSessionId;
     };
     /** The bindings of a state: its run's inputs, its incoming value, its pinned KV, the runtime error, and a branch's own `branch`. */
     const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue, branch: BranchBinding | null = null): BindingScope => ({

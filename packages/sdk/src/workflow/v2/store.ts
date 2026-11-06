@@ -5651,8 +5651,27 @@ export class WorkflowStore {
     }
 
     /**
-     * The invocations of a run's state `stateId`, oldest first (its visits): a state that continues its chat (owner
-     * decision agent-node-continue-20261106) chooses its next visit's chat from them.
+     * The visits of a run's state `stateId` before visit `beforeNodeExecutionId` (every visit, when null), in the order
+     * they were admitted: how many there are, and the last of them (null when none). A state that continues its chat
+     * (owner decision agent-node-continue-20261106) numbers a visit's cycle and finds its previous visit, and chooses a
+     * new visit's chat, from this. Counted in the store, not read and capped (review RT-5): a run may admit up to
+     * WORKFLOW_V2_MAX_NODE_EXECUTIONS visits.
+     */
+    async readAgentVisitsBefore(runId: string, stateId: string, beforeNodeExecutionId: string | null)
+        : Promise<{ count: number; previous: WorkflowAgentInvocation | null }> {
+        const { rows } = await this.pool.query(
+            `SELECT count(*) OVER () AS visits, i.* FROM ${this.t.agentInvocations} i
+               JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+              WHERE i.run_id = $1 AND n.node_id = $2
+                AND ($3::text IS NULL OR (i.created_at, i.node_execution_id) <
+                     (SELECT b.created_at, b.node_execution_id FROM ${this.t.agentInvocations} b WHERE b.node_execution_id = $3))
+              ORDER BY i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [runId, stateId, beforeNodeExecutionId]);
+        return rows[0] ? { count: int(rows[0], "visits"), previous: agentInvocationFrom(rows[0]) } : { count: 0, previous: null };
+    }
+
+    /**
+     * The invocations of a run's state `stateId`, oldest first (its visits), at most `limit`: for a reader. The runtime
+     * numbers and chooses with readAgentVisitsBefore, which has no cap.
      */
     async listAgentInvocationsOfState(runId: string, stateId: string, limit = 1_000): Promise<WorkflowAgentInvocation[]> {
         const { rows } = await this.pool.query(
