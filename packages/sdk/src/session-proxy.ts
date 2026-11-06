@@ -1848,6 +1848,11 @@ export function registerActivities(
                 /** Text folded into the prompt at T3; a recovery re-run folds it again. */
                 carriedText: "",
                 foldedSteerText: "",
+                /**
+                 * Review RT-D2 (C1): a continued workflow chat's turn ends with its visit fence, exactly the turn visit live
+                 * admission uses (inherited included; null visit when it names none); null for every other turn.
+                 */
+                visitFence: null as { visit: string | null } | null,
             }
             : null;
         const sessionDirOf = () => path.join(sessionManager.getSessionStateDir(), input.sessionId);
@@ -1859,7 +1864,8 @@ export function registerActivities(
                 try {
                     // Test-only probe: a turn end that never succeeds (design 5.1, double fault).
                     await faultPointAsync("turn.control.before-end", { sessionId: input.sessionId });
-                    return await catalog!.turnEnd(input.sessionId, tc!.turn, cursor, kind, carried);
+                    return await catalog!.turnEnd(input.sessionId, tc!.turn, cursor, kind, carried,
+                        ...(tc!.visitFence ? [{ visitFence: tc!.visitFence }] : []));
                 } catch (err) {
                     lastErr = err;
                     activityCtx.traceInfo(`[turn-control] turnEnd attempt ${attempt} failed session=${input.sessionId}: ${String((err as Error)?.message ?? err)}`);
@@ -1867,6 +1873,20 @@ export function registerActivities(
                 }
             }
             throw lastErr;
+        };
+        // Review RT-D2 (C1): a turn whose result an earlier attempt saved ends with the visit fence its live turn had: its
+        // turn visit read again as the live turn reads it (this input's prompt ids; a continued chat only).
+        const savedTurnVisitFence = async (): Promise<{ visit: string | null } | null> => {
+            if (!workflowRequestTurn || !catalog?.workflowStore) return null;
+            const store = catalog.workflowStore();
+            const lineage = await store.readWorkflowLineage(input.sessionId);
+            if (lineage?.agentRoot?.distance !== 0) return null;
+            const ids: string[] = Array.isArray((input as any).clientMessageIds)
+                ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
+                : [];
+            const visit = await cmsRetryCritical(`runTurn.turnVisit session=${input.sessionId}`,
+                () => store.readTurnVisit(input.sessionId, ids), (msg) => activityCtx.traceInfo(msg));
+            return visit ? { visit: visit.nodeExecutionId } : null;
         };
         const finishTurnControl = async (result: TurnResult, cursor: number, opts: { alwaysEnd?: boolean } = {}): Promise<TurnResult> => {
             if (!tc || result.type === "cancelled") return result;
@@ -1983,6 +2003,7 @@ export function registerActivities(
                     // An earlier attempt with this same input saved the turn:
                     // no model run, only T8 with the saved cursor.
                     tc.carriedTaken = tc.carried.length > 0;
+                    tc.visitFence = await savedTurnVisitFence();
                     return await finishTurnControl(stored, savedControlCursor(pre.result, tc.turn), { alwaysEnd: true });
                 }
                 return stored;
@@ -4736,6 +4757,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
                 }
                 workflowTurnVisit = await readWorkflowTurnVisit();
+                // RT-D2 (C1): the end's fence is the visit this admission uses, set before any path can end the turn.
+                tc.visitFence = workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : null;
                 const decided = decidedTurnVisit();
                 let start = 0;
                 if (lifecycle && (started.stopped || started.controls.length > 0)) {

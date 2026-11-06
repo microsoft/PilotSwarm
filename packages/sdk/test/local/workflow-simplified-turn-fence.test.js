@@ -45,7 +45,7 @@ function fenceStore({ visit, requestIds = new Map(), failIds = false }) {
     };
 }
 
-function harness({ visit, start = { stopped: false, controls: [] }, requestIds, turn, failIds = false } = {}) {
+function harness({ visit, start = { stopped: false, controls: [] }, requestIds, turn, failIds = false, writeback = false } = {}) {
     const fence = fenceStore({ visit, requestIds, failIds });
     const calls = [];
     const aborts = [];
@@ -54,7 +54,7 @@ function harness({ visit, start = { stopped: false, controls: [] }, requestIds, 
         catalogExtras: {
             workflowStore: () => fence.store,
             turnStart: vi.fn(async (...args) => { calls.push(["turnStart", ...args]); return start; }),
-            completeTurnWriteback: vi.fn(async () => false),
+            completeTurnWriteback: vi.fn(async () => writeback),
             turnEnd: vi.fn(async (...args) => { calls.push(["turnEnd", ...args]); return { stopped: false, late: [] }; }),
         },
         managerExtras: {
@@ -162,4 +162,32 @@ describe("the turn-to-visit fence of a chat that continues", () => {
         expect(plain.aborts).toEqual([["chat-new", "stop"]]);
         expect(plain.fence.reads.filter(([name]) => name === "readControlRequestIds")).toEqual([]);
     });
+
+    // Review RT-D2 (C1): turn end gets the visit fence, exactly the turn visit live admission used (inherited included;
+    // a null visit when the chat names none), and only for a continued chat's turn.
+    describe("RT-D2 (C1): turn end carries the turn's visit fence", () => {
+        const endArgs = calls => calls.filter(([name]) => name === "turnEnd").map(call => call.slice(1));
+        it("a direct visit's turn and an inherited one end with their own visit; a chat that does not continue ends without a fence", async () => {
+            const direct = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false }, writeback: true });
+            await direct.h.runTurn(CHAT, { turnIndex: 12, clientMessageIds: [promptId(NX2)] }, "runTurnV5");
+            expect(endArgs(direct.calls)).toEqual([[CHAT, 12, 0, "other", [], { visitFence: { visit: NX2 } }]]);
+            const inherited = harness({ visit: { nodeExecutionId: NX1, open: true, inherited: true }, writeback: true });
+            await inherited.h.runTurn(CHAT, { turnIndex: 13, prompt: "[SYSTEM: a timer fired]" }, "runTurnV5");
+            expect(endArgs(inherited.calls)).toEqual([[CHAT, 13, 0, "other", [], { visitFence: { visit: NX1 } }]]);
+            const plain = harness({ visit: null, writeback: true });
+            await plain.h.runTurn("chat-new", { turnIndex: 2 }, "runTurnV5");
+            expect(endArgs(plain.calls)).toEqual([["chat-new", 2, 0, "other", []]]);
+        });
+
+        it("a continued chat that names no visit: a workflow Stop is too_late live, and its end fences with a null visit", async () => {
+            const none = harness({ visit: { nodeExecutionId: null, open: false, inherited: true }, writeback: true,
+                requestIds: new Map([[91, `workflow-cycle-stop:${NX1}`]]), turn: liveTurn([control(91, "stop", "cycle ended")]) });
+            const result = await none.h.runTurn(CHAT, { turnIndex: 14, prompt: "a sub-agent's update" }, "runTurnV5");
+            expect(result.type).toBe("completed");
+            expect(none.aborts).toEqual([]);
+            expect(none.fence.dropped).toEqual([[CHAT, 91, 14]]);
+            expect(endArgs(none.calls)).toEqual([[CHAT, 14, 0, "other", [], { visitFence: { visit: null } }]]);
+        });
+    });
 });
+

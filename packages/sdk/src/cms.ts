@@ -14,11 +14,11 @@ import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
 import { MotdStore } from "./motd-store.js";
-import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
+import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndOptions, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
-import { WorkflowStore } from "./workflow/v2/store.js";
+import { WorkflowStore, insertStopNotForTurn, workflowVisitOfStopRequestId } from "./workflow/v2/store.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -1239,7 +1239,7 @@ export interface SessionCatalog {
      * or stopped unless `kind` is error. An error leaves them open for retry.
      * Redelivery passes the same carried seqs; closing is idempotent.
      */
-    turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult>;
+    turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[], options?: TurnEndOptions): Promise<TurnEndResult>;
     /** Queued messages replaced by the turn's delivered converted steers (the latest started turn when omitted). */
     turnReplaced(sessionId: string, turn?: number): Promise<string[]>;
     /**
@@ -2128,19 +2128,62 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map((row: any) => ({ sessionId: row.session_id, turn: Number(row.turn), controls: toTurnControls(row.controls) }));
     }
 
-    /** Closes controls after the save and records carried-steer disposition idempotently. */
-    async turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[]): Promise<TurnEndResult> {
-        const { rows } = await this.turnControlQuery(
-            "turnEnd",
-            `SELECT ${this.sql.fn.turnEnd}($1, $2, $3, $4, $5::bigint[]) AS r`,
-            [sessionId, turn, cursor, kind, carried],
-        );
+    /**
+     * Closes controls after the save and records carried-steer disposition idempotently. With a visit fence (a continued
+     * workflow chat's turn; review RT-D2), one transaction: the session row's lock first (the lock cms_turn_end and
+     * cms_turn_control_add take, in the same order), then each open Stop of the turn that names another visit gets its
+     * too_late outcome (the classifier and insert live admission uses), then cms_turn_end. A Stop added after the live
+     * reader retired is classified under the same lock as the result is decided, so another visit's Stop never makes this
+     * turn stopped.
+     */
+    async turnEnd(sessionId: string, turn: number, cursor: number, kind: TurnEndKind, carried: number[], options: TurnEndOptions = {}): Promise<TurnEndResult> {
+        const values = [sessionId, turn, cursor, kind, carried];
+        const end = `SELECT ${this.sql.fn.turnEnd}($1, $2, $3, $4, $5::bigint[]) AS r`;
+        const rows = options.visitFence
+            ? await this.turnEndFenced(sessionId, turn, options.visitFence.visit, end, values)
+            : (await this.turnControlQuery("turnEnd", end, values)).rows;
         const r = rows[0]?.r ?? {};
         return {
             stopped: r.stopped === true,
             late: Array.isArray(r.late) ? r.late.map((l: any) => ({ seq: Number(l.seq), text: String(l.text ?? "") })) : [],
             replaced: toStringList(r.replaced),
         };
+    }
+
+    /** turnEnd with a visit fence: the classification and the end in one transaction under the session row's lock. */
+    private async turnEndFenced(sessionId: string, turn: number, visit: string | null, end: string, values: unknown[]): Promise<any[]> {
+        const s = `"${this.sql.schema}"`;
+        const client = await this.pool.connect();
+        let released = false;
+        try {
+            await client.query("BEGIN");
+            await client.query(`SELECT 1 FROM ${s}.sessions WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+            const { rows: stops } = await client.query(
+                `SELECT c.seq, e.data->>'requestId' AS request_id
+                   FROM ${s}.cms_turn_open_controls($1, $2) c
+                   JOIN ${s}.session_events e ON e.session_id = $1 AND e.seq = c.seq
+                  WHERE c.kind = 'stop'
+                  ORDER BY c.seq`, [sessionId, turn]);
+            for (const stop of stops) {
+                const target = workflowVisitOfStopRequestId(stop.request_id ?? null);
+                if (target === null || target === visit) continue;
+                await insertStopNotForTurn(client, `${s}.session_events`, sessionId, Number(stop.seq), turn);
+            }
+            const { rows } = await client.query(end, values);
+            await client.query("COMMIT");
+            return rows;
+        } catch (err) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                released = true;
+                client.release(rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError)));
+            }
+            if (isUndefinedFunctionError(err)) throw new TurnControlUnavailableError("turnEnd");
+            throw err;
+        } finally {
+            if (!released) client.release();
+        }
     }
 
     /** Queued messages replaced by the turn's delivered converted steers (the latest started turn when omitted). */

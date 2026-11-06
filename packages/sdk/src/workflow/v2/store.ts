@@ -738,6 +738,24 @@ export function workflowVisitOfStopRequestId(requestId: unknown): string | null 
     const found = /^workflow-cycle-stop:(nx-[0-9a-f]{1,64})(?::sent)?$/.exec(requestId);
     return found ? found[1] : null;
 }
+
+/**
+ * The too_late outcome of a Stop that is not a turn's (the turn-to-visit fence; formal deviation D3): the one insert both
+ * live admission (recordStopNotForTurn) and turn end with a visit fence (the CMS catalog's turnEnd; review RT-D2) use.
+ * Once only: a Stop that already has an outcome keeps it (NOT EXISTS). The caller holds the session row's lock.
+ * `sessionEvents` is the CMS session_events table, qualified. Returns whether this call recorded it.
+ */
+export async function insertStopNotForTurn(client: { query(text: string, values?: unknown[]): Promise<{ rows: unknown[] }> },
+    sessionEvents: string, sessionId: string, seq: number, turn: number): Promise<boolean> {
+    const { rows } = await client.query(
+        `INSERT INTO ${sessionEvents} (session_id, event_type, data)
+         SELECT $1, 'session.control_outcome', jsonb_build_object('seq', $2::bigint, 'turn', $3::int, 'outcome', 'too_late')
+          WHERE EXISTS (SELECT 1 FROM ${sessionEvents} s WHERE s.session_id = $1 AND s.seq = $2 AND s.event_type = 'user.stop')
+            AND NOT EXISTS (SELECT 1 FROM ${sessionEvents} o
+                             WHERE o.session_id = $1 AND o.event_type = 'session.control_outcome' AND (o.data->>'seq')::bigint = $2)
+         RETURNING seq`, [sessionId, seq, turn]);
+    return rows.length > 0;
+}
 /** The largest details value of an agent's reported runtime error, in UTF-8 bytes of canonical JSON. */
 export const WORKFLOW_V2_AGENT_ERROR_DETAILS_MAX_BYTES = 16 * 1024;
 
@@ -5750,14 +5768,7 @@ export class WorkflowStore {
         if (!storableId(sessionId) || !Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(turn) || turn < 0) return { recorded: false };
         return this.transaction(async client => {
             await client.query(`SELECT 1 FROM ${this.t.sessions} WHERE session_id = $1 FOR UPDATE`, [sessionId]);
-            const { rows } = await client.query(
-                `INSERT INTO ${this.t.sessionEvents} (session_id, event_type, data)
-                 SELECT $1, 'session.control_outcome', jsonb_build_object('seq', $2::bigint, 'turn', $3::int, 'outcome', 'too_late')
-                  WHERE EXISTS (SELECT 1 FROM ${this.t.sessionEvents} s WHERE s.session_id = $1 AND s.seq = $2 AND s.event_type = 'user.stop')
-                    AND NOT EXISTS (SELECT 1 FROM ${this.t.sessionEvents} o
-                                     WHERE o.session_id = $1 AND o.event_type = 'session.control_outcome' AND (o.data->>'seq')::bigint = $2)
-                 RETURNING seq`, [sessionId, seq, turn]);
-            return { recorded: rows.length > 0 };
+            return { recorded: await insertStopNotForTurn(client, this.t.sessionEvents, sessionId, seq, turn) };
         });
     }
 

@@ -2117,6 +2117,16 @@ export interface TurnEndResult {
     replaced: string[];
 }
 
+/** Options of turn end (worker T8). */
+export interface TurnEndOptions {
+    /**
+     * A continued workflow chat's turn (review RT-D2): its turn visit, exactly the one live admission uses (the read turn
+     * visit's node execution, inherited included; null when it names none). An open Stop that names another visit gets
+     * too_late, under the session row's lock and in the same transaction as the end. Absent for every other turn.
+     */
+    visitFence?: { visit: string | null };
+}
+
 /** A prompt record that turn start writes in its own transaction (migration 0083). */
 export interface TurnStartRecord {
     eventType: "user.message" | "system.message";
