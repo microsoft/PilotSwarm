@@ -55,6 +55,29 @@ test("desktop: the GA line, a compact header, and every layer from the bundle", 
     expect(failed).toEqual([]);
 });
 
+test("state signals survive the theme: focused pane, focused composer, pressed toggle, current tab", async ({ page }) => {
+    await openTheme(page, { width: 1440, height: 900 });
+    const states = await page.evaluate(() => {
+        const style = (el) => { const s = getComputedStyle(el); return `${s.borderTopColor}|${s.backgroundColor}|${s.boxShadow}`; };
+        const focused = document.querySelector(".ps-panel.is-focused");
+        const unfocused = document.querySelector(".ps-panel:not(.is-focused)");
+        const button = document.querySelector(".portal-header .ps-toolbar-button:not(.is-active)");
+        const rest = style(button);
+        button.classList.add("is-active"); const pressed = style(button); button.classList.remove("is-active");
+        const row = document.createElement("div"); row.className = "ps-tab-row-icons";
+        const tab = document.createElement("button"); tab.className = "ps-toolbar-button is-active"; row.append(tab); document.body.append(row);
+        const tabShadow = getComputedStyle(tab).boxShadow; row.remove();
+        return { focused: focused && style(focused), unfocused: unfocused && style(unfocused), rest, pressed, tabShadow };
+    });
+    expect(states.focused, "a pane is focused at start").toBeTruthy();
+    expect(states.focused).not.toBe(states.unfocused);
+    expect(states.pressed).not.toBe(states.rest);
+    expect(states.tabShadow).toMatch(/inset 0px -2px 0px/);
+    const input = page.locator(".ps-prompt-input").first();
+    await input.focus();
+    expect(await input.evaluate(el => getComputedStyle(el).borderTopColor)).toBe("rgb(92, 200, 242)");
+});
+
 test("reduced motion: still art for the mark, Orion and the sky", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await openTheme(page, { width: 1440, height: 900 });

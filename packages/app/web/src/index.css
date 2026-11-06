@@ -12127,9 +12127,14 @@ textarea.ps-link-input {
 }
 /* Sora's hinted advances at fractional sizes open gaps inside words
    ("Pilo tSwarm") on Linux; geometric precision keeps the designed spacing.
-   Set on every element: a `font:` shorthand on an ancestor resets it. */
-:root[data-ps-theme="horizon-dawn"] * {
+   It inherits from the root, but the browser's own stylesheet sets
+   `text-rendering: auto` on form controls (session rows are buttons), so it is
+   set on those too. Code keeps its own rendering. */
+:root[data-ps-theme="horizon-dawn"] :is(body, #root, button, input, textarea, select) {
   text-rendering: geometricPrecision;
+}
+:root[data-ps-theme="horizon-dawn"] :is(pre, code, kbd, samp) {
+  text-rendering: auto;
 }
 :root[data-ps-theme="horizon-dawn"] body {
   background-image:
@@ -12181,11 +12186,25 @@ textarea.ps-link-input {
   font: 500 13px/18px var(--dawn-display);
   letter-spacing: 0.06em;
   white-space: pre;
-  background: linear-gradient(90deg, #ffffff 0%, #d8f5ff 30%, #8fe1fb 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  filter: drop-shadow(0 0 6px #5cc8f266) drop-shadow(0 1px 2px #071125);
+  color: #d8f5ff;
+  text-shadow: 0 0 6px #5cc8f266, 0 1px 2px #071125;
+}
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  :root[data-ps-theme="horizon-dawn"] .portal-header::after {
+    background: linear-gradient(90deg, #ffffff 0%, #d8f5ff 30%, #8fe1fb 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: none;
+    filter: drop-shadow(0 0 6px #5cc8f266) drop-shadow(0 1px 2px #071125);
+  }
+}
+@media (forced-colors: active), print {
+  :root[data-ps-theme="horizon-dawn"] .portal-header::after {
+    background: none;
+    color: CanvasText;
+    filter: none;
+  }
 }
 :root[data-ps-theme="horizon-dawn"] :is(.portal-header-brand, .portal-header-slot) {
   position: relative;
@@ -12244,12 +12263,36 @@ textarea.ps-link-input {
   box-shadow: inset 3px 0 0 #5cc8f2;
 }
 :root[data-ps-theme="horizon-dawn"] .ps-session-list-button { border-radius: 8px; }
+/* State signals survive the theme's resting styles: the focused pane, the
+   focused composer, pressed toolbar toggles and the current inspector tab. */
+:root[data-ps-theme="horizon-dawn"] .ps-panel.is-focused {
+  border-color: #5cc8f2b3;
+  box-shadow: 0 0 0 1px #5cc8f266, inset 0 1px 0 #d7eeff0d, 0 10px 30px #030a182b;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-workspace-grid .ps-panel.is-focused {
+  box-shadow: inset 0 0 0 1px #5cc8f2b3, 0 10px 30px #030a182b;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-button.is-active {
+  background: #1c4865;
+  border-color: #5cc8f2;
+  color: #f1fbff;
+  box-shadow: inset 0 0 0 1px #5cc8f24d;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-tab-row-icons .ps-toolbar-button.is-active {
+  background: #5cc8f21f;
+  border-color: #5cc8f26b;
+  box-shadow: inset 0 -2px 0 #5cc8f2cc;
+}
 :root[data-ps-theme="horizon-dawn"] .ps-prompt-input {
   background: #0c1a2e;
   border-color: #45627e;
   border-radius: 11px;
 }
 :root[data-ps-theme="horizon-dawn"] .ps-prompt-input::placeholder { color: #a4b8d1; opacity: 1; }
+:root[data-ps-theme="horizon-dawn"] .ps-prompt-input:focus {
+  border-color: #5cc8f2;
+  box-shadow: 0 0 0 3px #5cc8f233;
+}
 :root[data-ps-theme="horizon-dawn"] .ps-prompt-label { color: #a7dcff; font-weight: 550; }
 :root[data-ps-theme="horizon-dawn"] .ps-chat-call { background: #12263b; border-color: #36536e; }
 
