@@ -27,7 +27,7 @@ import {
 function rowFor(title, agentId) {
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "aaaabbbb-1111-2222-3333-444444444444", title, agentId, status: "idle", createdAt: 1, updatedAt: 2 }] });
-    return selectSessionRows(store.getState())[0]?.text || "";
+    return (selectSessionRows(store.getState())[0]?.text || "").trim();
 }
 
 test("the person's words stay whole and in order after the agent name", () => {
