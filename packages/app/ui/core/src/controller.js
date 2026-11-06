@@ -11785,7 +11785,10 @@ export class PilotSwarmUiController {
                     this.afterWorkflowPublication(modal.returnModal, result);
                 } else if (modal.returnModal?.type === "workflowTest") {
                     this.afterWorkflowTest(modal.returnModal, result);
-                } else if (modal.returnModal && !result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
+                } else if (!result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
+                    // Review UI-F1: with or without a view to return to (a terminal row's Stop or Cancel has none), the status
+                    // line says a refusal with its reason, or that the command may not have arrived (sending it again keeps
+                    // its operation id).
                     const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
                     if (notice) this.dispatch({ type: "ui/status", text: notice.text });
                 }

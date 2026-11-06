@@ -89,12 +89,13 @@ test("the portal and the terminal UI send c, d and D to the same controller comm
 // Review UI-D1: the terminal UI draws no Terminate picker, so its c and d on a highlighted Workflow open the confirm dialog
 // it draws and handles (Enter or y sends, Esc or n closes): d stops the Workflow (started nodes finish), c cancels it now,
 // each bound to that Workflow's id and its live run only.
-function terminalHarness({ status = "running" } = {}) {
+function terminalHarness({ status = "running", updateWorkflow = null } = {}) {
     const calls = [];
     const record = name => async (...args) => { calls.push([name, ...args]); return { receipt: { status: "running" } }; };
     const transport = {
         cancelSession: record("cancelSession"), completeSession: record("completeSession"), deleteSession: record("deleteSession"),
-        updateWorkflow: record("updateWorkflow"),
+        updateWorkflow: updateWorkflow ? async (...args) => { calls.push(["updateWorkflow", ...args]); return updateWorkflow(...args); }
+            : record("updateWorkflow"),
         readWorkflow: async () => null, getSessionEvents: async () => [], getSessionEventsBefore: async () => [],
     };
     const store = createStore(appReducer, createInitialState({ mode: "local" }));
@@ -125,6 +126,41 @@ for (const [key, command, operation, label] of [
         await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
         assert.deepEqual(calls.map(([name, id, body]) => [name, id, body?.operation, body?.run_id]), [["updateWorkflow", "wf-2", operation, "run-b"]]);
         assert.ok(!calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner chat");
+    });
+}
+
+// Review UI-F1: a terminal row's Stop or Cancel that the server refuses, or whose answer never comes, says so on the status
+// line (the dialog is gone and there is no Workflow pane to show the notice); sending it again keeps the operation id.
+for (const [key, command, operation, label] of [
+    ["d", UI_COMMANDS.DONE_SESSION, "stop", "Stop"],
+    ["c", UI_COMMANDS.CANCEL_SESSION, "cancel", "Cancel"],
+]) {
+    test(`terminal UI: ${key} refused (403) says the server's reason; a lost answer says so, and sending again keeps the operation id`, async () => {
+        const refused = terminalHarness({ updateWorkflow: async () => {
+            throw Object.assign(new Error("You may not command this workflow"), { status: 403, code: "WORKFLOW_COMMAND_FORBIDDEN" });
+        } });
+        await refused.controller.handleCommand(command);
+        await refused.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+        assert.equal(refused.store.getState().ui.modal, null);
+        assert.equal(refused.store.getState().ui.statusText, `${label} was refused for run run-b: You may not command this workflow.`);
+        assert.ok(!refused.calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner chat");
+
+        let failures = 1;
+        const lost = terminalHarness({ updateWorkflow: async () => {
+            if (failures-- > 0) throw new TypeError("fetch failed");
+            return { receipt: { status: "running" } };
+        } });
+        await lost.controller.handleCommand(command);
+        await lost.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+        assert.match(lost.store.getState().ui.statusText ?? "", new RegExp(`^${label} for run run-b may not have reached the workflow: fetch failed\\. Retry sends the same command again\\.$`));
+        // The same key again: the confirm, then the same command with the same operation id.
+        await lost.controller.handleCommand(command);
+        await lost.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+        const sends = lost.calls.filter(([name]) => name === "updateWorkflow").map(([, id, body]) => [id, body.operation, body.run_id, body.operation_id]);
+        assert.equal(sends.length, 2);
+        assert.deepEqual(sends[1], sends[0], "the retry is the same command with the same operation id");
+        assert.equal(lost.store.getState().ui.workflowViews["wf-2"].runCommand, null, "accepted the second time");
+        assert.ok(!lost.calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner chat");
     });
 }
 
