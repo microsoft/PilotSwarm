@@ -253,6 +253,34 @@ export function workflowChildrenOf(byId, ownerId) {
  * newest child, newest first. `views` is the portal's ui.workflowViews.
  */
 export function workflowDefinitionsOf(byId, ownerId, views = {}) {
+    return definitionsEntry(byId, ownerId, views).definitions;
+}
+
+/**
+ * Review UI-12: an owner's definitions and its Workflows' numbers, computed once per session map and views (both
+ * replaced, never changed in place, when anything in them changes) and reused by every row, instead of regrouping the
+ * owner's Workflows for each of its rows. { definitions, numbers: Map(sessionId -> number) }.
+ */
+const definitionsCache = new WeakMap();
+const NO_VIEWS = Object.freeze({});
+function definitionsEntry(byId, ownerId, views) {
+    const viewKey = views && typeof views === "object" ? views : NO_VIEWS;
+    if (!isRecord(byId)) return { definitions: computeDefinitions(byId, ownerId, viewKey), numbers: new Map() };
+    let byViews = definitionsCache.get(byId);
+    if (!byViews) definitionsCache.set(byId, byViews = new WeakMap());
+    let byOwner = byViews.get(viewKey);
+    if (!byOwner) byViews.set(viewKey, byOwner = new Map());
+    let entry = byOwner.get(ownerId);
+    if (!entry) {
+        const definitions = computeDefinitions(byId, ownerId, viewKey);
+        const numbers = new Map();
+        for (const definition of definitions) for (const item of definition.workflows) numbers.set(item.sessionId, item.number);
+        byOwner.set(ownerId, entry = { definitions, numbers });
+    }
+    return entry;
+}
+
+function computeDefinitions(byId, ownerId, views) {
     const groups = new Map();
     for (const session of workflowChildrenOf(byId, ownerId)) {
         const view = views?.[session.sessionId] ?? null;
@@ -275,9 +303,7 @@ export function workflowNumberOf(byId, sessionId, views = {}) {
     const session = byId?.[sessionId];
     const ownerId = workflowOwnerId(session);
     if (!ownerId || !workflowStarted(session, views?.[sessionId] ?? null)) return null;
-    const name = workflowDefinitionName(session, views?.[sessionId] ?? null);
-    const definition = workflowDefinitionsOf(byId, ownerId, views).find(group => group.name === name);
-    return definition?.workflows.find(item => item.sessionId === sessionId)?.number ?? null;
+    return definitionsEntry(byId, ownerId, views).numbers.get(sessionId) ?? null;
 }
 
 /** A Workflow row's text (S2): `check-items #3`; a child that has not started reads by its name alone. */
