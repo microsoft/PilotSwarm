@@ -3252,11 +3252,12 @@ const AGENT_STATES = [
     { id: "pause", type: "wait", seconds: 30, outcomes: ["elapsed"], next: { elapsed: "fact" } },
 ];
 
-test("agent node: the Node panel says what it does and the Log shows its chat, visit by visit", async ({ page }) => {
-    test.setTimeout(60_000);
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+/**
+ * The agent node fixture (findings 7 and 8): Workflow fact-loop whose agent node `fact` continues ONE chat (AGENT_CHAT)
+ * across two visits; visit 1 ended with its typed result, visit 2 is at work. Routes its read model, events, the chat's
+ * events and the kept base instructions.
+ */
+async function routeAgentNode(page) {
     const ago = seconds => new Date(Date.now() - seconds * 1000).toISOString();
     const wf = (seq, eventType, seconds, data) => ({ sessionId: WORKFLOW_ID, seq, eventType, createdAt: ago(seconds), data: { runId: "run-1", stateId: "fact", ...data } });
     const events = [
@@ -3301,6 +3302,14 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
         }
         return route.fallback();
     });
+}
+
+test("agent node: the Node panel says what it does and the Log shows its chat, visit by visit", async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeAgentNode(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
     const main = workflowTab(page);
     const graph = main.getByRole("group", { name: "Workflow graph" });
@@ -3342,5 +3351,54 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
     await shot(page, "agent-log-1440");
     await log.getByRole("button", { name: "Whole Workflow", exact: true }).click();
     await expect(log.getByRole("list", { name: "Workflow log" })).toBeVisible();
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// The grant's missing capture (wfs-full-5d687726): a chat: continue node's Log is ONE chat across two visits. Both visits
+// are listed, newest first, cut at each visit's prompt; visit 2 says its chat continues from visit 1 (its base
+// instructions are the same as visit 1's, without their text), and its Workflow row says the same chat got visit 2.
+// Screenshot: agent-log-continue-1440 (both visits in view).
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "one chat across two visits" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("agent node: a chat: continue node's Log shows one chat across two visits", async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeAgentNode(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await graph.getByRole("button", { name: "Inspect fact", exact: true }).click();
+    const details = nodeDetails(page);
+    await expect(details.locator('[data-fact="chat"]')).toContainText("Continues the same chat");
+    await details.getByRole("button", { name: "See all 2 runs in the Log", exact: true }).click();
+    const log = bottomPanel(main, "log");
+    // Room for both visits: the bottom panel grows by keyboard (16 px a press), the graph keeps its minimum.
+    const handle = main.getByRole("separator", { name: "Resize the bottom panel", exact: true });
+    await handle.focus();
+    for (let press = 0; press < 20; press++) await page.keyboard.press("ArrowUp");
+    const visits = log.locator(".ps-wf-alog-visit");
+    await expect(visits).toHaveCount(2);
+    const [second, first] = [visits.nth(0), visits.nth(1)];
+    await expect(second.locator("h3")).toContainText(/^Visit 2 · /);
+    await expect(first.locator("h3")).toContainText(/^Visit 1 · /);
+    // One chat, cut at each visit's prompt: each visit has its own prompt and its own agent rows.
+    await expect(first.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION.]" })).toHaveCount(1);
+    await expect(first.locator('[data-kind="result"]')).toContainText("produced");
+    await expect(second.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION, CYCLE 2" })).toHaveCount(1);
+    await expect(second.locator('[data-kind="agent"]')).toContainText("Looking for a fact I have not given yet.");
+    await expect(first.locator('[data-kind="prompt"]').filter({ hasText: "CYCLE 2" })).toHaveCount(0);
+    // Visit 2 continues visit 1's chat: its base instructions are visit 1's, named, not repeated.
+    await expect(second.locator('[data-carried-from="1"]')).toHaveText("The same as visit 1 (this chat continues).");
+    await expect(first.locator(".ps-wf-alog-base summary")).toContainText("48,210 characters");
+    // The Workflow's own rows say the same chat got visit 2.
+    await expect(second.locator('[data-kind="workflow"]').filter({ hasText: "Agent chat for node fact given visit 2 (same chat, session abababab)" })).toHaveCount(1);
+    await expect(first.locator('[data-kind="workflow"]').filter({ hasText: "Agent chat for node fact created (session abababab)" })).toHaveCount(1);
+    await second.scrollIntoViewIfNeeded();
+    await expect(second.locator("h3")).toBeInViewport();
+    await shot(page, "agent-log-continue-1440");
     expect(errors).toEqual([]);
 });
