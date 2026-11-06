@@ -12072,3 +12072,192 @@ textarea.ps-link-input {
   .ps-motd-history-row > .ps-motd-status { grid-column: 1; grid-row: 3; }
   .ps-motd-history-row > .ps-motd-history-actions { grid-column: 1; grid-row: 4; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HORIZON DAWN — Azure HorizonDB, generally available on 17 November 2026.
+   Scoped to [data-ps-theme="horizon-dawn"]. A pre-dawn Azure sky full of
+   stars, Orion above a range of mountains, the HorizonDB cylinder holding a
+   light that slowly brightens and dims, and the GA line on the horizon.
+   The sky always sits behind the land: the mountains are opaque and drawn on
+   top of the star field and the constellation. Art in ./assets/horizon-dawn.
+   Sora is bundled (SIL OFL 1.1, ./assets/horizon-dawn/Sora-OFL.txt).
+   Under reduced motion every layer is swapped for a still version.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@font-face {
+  font-family: "PS Sora";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("./assets/horizon-dawn/sora-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "PS Sora";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("./assets/horizon-dawn/sora-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+:root[data-ps-theme="horizon-dawn"] {
+  --dawn-ui: "Segoe UI Variable", "PS Sora", "Segoe UI", system-ui, sans-serif;
+  --dawn-display: "PS Sora", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --dawn-logo: url("./assets/horizon-dawn/logo.svg");
+  --dawn-sky: url("./assets/horizon-dawn/sky.svg");
+  --dawn-orion: url("./assets/horizon-dawn/orion.svg");
+  --dawn-orion-phone: url("./assets/horizon-dawn/orion-phone.svg");
+  --dawn-mountains-back: url("./assets/horizon-dawn/mountains-back.svg");
+  --dawn-mountains-front: url("./assets/horizon-dawn/mountains-front.svg");
+  --ps-chat-card-accent: var(--ps-accent);
+  --ps-chat-card-success: var(--ps-success);
+  --ps-chat-card-warning: var(--ps-warning);
+  color-scheme: dark;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-ps-theme="horizon-dawn"] {
+    --dawn-logo: url("./assets/horizon-dawn/logo-still.svg");
+    --dawn-sky: url("./assets/horizon-dawn/sky-still.svg");
+    --dawn-orion: url("./assets/horizon-dawn/orion-still.svg");
+    --dawn-orion-phone: url("./assets/horizon-dawn/orion-phone-still.svg");
+  }
+}
+
+:root[data-ps-theme="horizon-dawn"] body {
+  font-family: var(--dawn-ui);
+  background-image:
+    radial-gradient(ellipse at 9% 0%, #14395c 0%, transparent 46%),
+    linear-gradient(180deg, #071125 0%, #0c1c33 65%, #10263d 100%);
+  background-attachment: fixed;
+}
+:root[data-ps-theme="horizon-dawn"] :is(button, input, textarea, select, .ps-panel, .ps-toolbar, .ps-prompt-input) {
+  font-family: var(--dawn-ui);
+}
+:root[data-ps-theme="horizon-dawn"] :is(pre, code, kbd, samp) {
+  font-family: ui-monospace, "Cascadia Code", SFMono-Regular, Consolas, monospace;
+}
+
+/* The header: sky, Orion and mountains, back to front. */
+:root[data-ps-theme="horizon-dawn"] .portal-header {
+  position: relative;
+  isolation: isolate;
+  min-height: 140px;
+  overflow: hidden;
+  border-bottom: 1px solid #5cc8f273;
+  backdrop-filter: none;
+  background:
+    radial-gradient(ellipse 250px 140px at 180px 100%, #67d3f24d, transparent 77%),
+    radial-gradient(ellipse 370px 150px at 420px 110%, #3d8fe03b, transparent 80%),
+    linear-gradient(180deg, #071125 0%, #102b49 80%, #1c526c 100%);
+  box-shadow: 0 3px 20px #00000033, 0 1px 0 #b1f3ff29;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion), var(--dawn-sky);
+  background-size: 100% 100%, 100% 100%, 300px 140px, 400px 140px;
+  background-position: center bottom, center bottom, left 400px bottom, left bottom;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat-x;
+}
+/* The GA line, set on the horizon. */
+:root[data-ps-theme="horizon-dawn"] .portal-header::after {
+  content: "Azure HorizonDB  /  Generally Available Nov 17, 2026";
+  position: absolute;
+  left: 24px;
+  bottom: 8px;
+  z-index: 1;
+  pointer-events: none;
+  font: 500 13px/18px var(--dawn-display);
+  letter-spacing: 0.06em;
+  white-space: pre;
+  background: linear-gradient(90deg, #ffffff 0%, #d8f5ff 30%, #8fe1fb 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 6px #5cc8f266) drop-shadow(0 1px 2px #071125);
+}
+:root[data-ps-theme="horizon-dawn"] :is(.portal-header-brand, .portal-header-slot) {
+  position: relative;
+  z-index: 1;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-header-kicker {
+  color: #c5ecff;
+  font-family: var(--dawn-display);
+  font-weight: 650;
+  letter-spacing: 0.15em;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-header-name { color: #f1fbff; font-weight: 550; }
+:root[data-ps-theme="horizon-dawn"] .portal-header-email { color: #bed0e5; }
+
+/* The HorizonDB mark, holding a light that slowly brightens and dims. */
+:root[data-ps-theme="horizon-dawn"] .portal-logo-frame {
+  width: 58px;
+  height: 62px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+  background: var(--dawn-logo) center / contain no-repeat;
+}
+:root[data-ps-theme="horizon-dawn"] .portal-logo-frame > * { visibility: hidden; }
+
+/* Panes: soft depth on the night sky. */
+:root[data-ps-theme="horizon-dawn"] .ps-panel {
+  background: linear-gradient(145deg, #162c4259, transparent 55%), #101d31f7;
+  border: 1px solid #304b67;
+  border-radius: 16px;
+  box-shadow: inset 0 1px 0 #d7eeff0d, 0 10px 30px #030a182b;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-panel-header {
+  background: #15294180;
+  border-bottom-color: #304b67;
+}
+:root[data-ps-theme="horizon-dawn"] :is(.ps-panel-title, .ps-moa-panel-title) {
+  color: #d7e8fc;
+  font-weight: 550;
+  letter-spacing: 0.015em;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-button {
+  background: #142740d9;
+  border: 1px solid #45627e;
+  border-radius: 9px;
+  box-shadow: inset 0 1px 0 #e5f4ff0b;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-button:hover {
+  background: #21405d;
+  border-color: #5cc8f2;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-list-button.is-selected {
+  background: linear-gradient(90deg, #1c4865, #153d59);
+  border-color: #5cc8f28c;
+  box-shadow: inset 3px 0 0 #5cc8f2;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-session-list-button { border-radius: 8px; }
+:root[data-ps-theme="horizon-dawn"] .ps-prompt-input {
+  background: #0c1a2e;
+  border-color: #45627e;
+  border-radius: 11px;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-prompt-input::placeholder { color: #a4b8d1; opacity: 1; }
+:root[data-ps-theme="horizon-dawn"] .ps-prompt-label { color: #a7dcff; font-weight: 550; }
+:root[data-ps-theme="horizon-dawn"] .ps-chat-call { background: #12263b; border-color: #36536e; }
+
+@media (max-width: 600px) {
+  :root[data-ps-theme="horizon-dawn"] .portal-logo-frame { width: 42px; height: 46px; }
+  /* Phone: the land is a low band; Orion is in open sky above it, behind the land. */
+  :root[data-ps-theme="horizon-dawn"] .portal-header::before {
+    background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion-phone), var(--dawn-sky);
+    background-size: 100% 26px, 100% 46px, 390px 56px, 400px 140px;
+    background-position: center bottom, center bottom, right 0 top 50px, left top;
+    background-repeat: no-repeat, no-repeat, no-repeat, repeat-x;
+  }
+  :root[data-ps-theme="horizon-dawn"] .portal-header::after {
+    left: 16px;
+    bottom: 7px;
+    font-size: 11px;
+    letter-spacing: 0.036em;
+  }
+  :root[data-ps-theme="horizon-dawn"] .ps-panel { border-radius: 12px; background: #101d31; }
+}
