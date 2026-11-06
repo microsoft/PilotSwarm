@@ -3082,3 +3082,99 @@ test("on a phone the bottom panel's sheet keeps one height across its tabs", asy
     await expect(main.getByRole("separator", { name: "Resize the bottom panel", exact: true })).toBeVisible();
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// Findings 7 and 8 (owner feedback 2026-11-06): an agent node's Node panel says what it does, where it is now, how
+// often it ran, its last result in words, how its chat works and what its agent is told; its Log shows its chat, visit
+// by visit, newest first, with Prompt, Agent, Typed result and Workflow rows told apart. The chat is read with the
+// ordinary session history reads (its events route below). Screenshots: node-agent-1440, agent-log-1440.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "agent node:" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const AGENT_CHAT = "77777777-2222-3333-4444-555555555555";
+const AGENT_STATES = [
+    { id: "fact", type: "agent", invoke: { source: "prompt" }, about: { prompt: "Tell one new fact about PostgreSQL. Keep it to one sentence." },
+        timeoutSeconds: 90, outcomes: ["produced"], chat: "continue", next: { produced: "pause", timed_out: "pause" } },
+    { id: "pause", type: "wait", seconds: 30, outcomes: ["elapsed"], next: { elapsed: "fact" } },
+];
+
+test("agent node: the Node panel says what it does and the Log shows its chat, visit by visit", async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const ago = seconds => new Date(Date.now() - seconds * 1000).toISOString();
+    const wf = (seq, eventType, seconds, data) => ({ sessionId: WORKFLOW_ID, seq, eventType, createdAt: ago(seconds), data: { runId: "run-1", stateId: "fact", ...data } });
+    const events = [
+        { sessionId: WORKFLOW_ID, seq: 1, eventType: "workflow.started", createdAt: ago(120), data: { runId: "run-1", mode: "live", revision: 1,
+            definitionHash: "hash-1", irSha256: "ir-1", name: "fact-loop", version: "1.0.0", initial: "fact", states: AGENT_STATES } },
+        wf(2, "workflow.state_started", 110, { nodeExecutionId: "nx-fact-1", step: 1 }),
+        wf(3, "workflow.agent_spawned", 109, { nodeExecutionId: "nx-fact-1", childSessionId: AGENT_CHAT, chat: "continue", cycle: 1 }),
+        wf(4, "workflow.state_completed", 100, { nodeExecutionId: "nx-fact-1", step: 1, outcome: "produced" }),
+        wf(5, "workflow.state_started", 30, { nodeExecutionId: "nx-fact-2", step: 2 }),
+        wf(6, "workflow.agent_spawned", 29, { nodeExecutionId: "nx-fact-2", childSessionId: AGENT_CHAT, chat: "continue", cycle: 2 }),
+    ];
+    const agent = { childSessionId: AGENT_CHAT, controllingSessionId: AGENT_ID, spawned: true, spawnAttempts: 1, end: null, endSent: false };
+    const model = { ...V2_WITH_CONTROLS, revision: { ...V2_READ_MODEL.revision, name: "fact-loop" }, graph: { revision: 1, initial: "fact", states: AGENT_STATES },
+        run: { ...V2_READ_MODEL.run, nodeExecutions: [
+            { nodeExecutionId: "nx-fact-2", stateId: "fact", ordinal: 2, state: "pending", outcome: null, resultKind: null, winner: null, attempts: 0,
+                kvRevision: 1, enteredAt: ago(30), deadline: new Date(Date.now() + 60_000).toISOString(), agent },
+            { nodeExecutionId: "nx-fact-1", stateId: "fact", ordinal: 1, state: "completed", outcome: "produced", resultKind: "business", winner: "agent",
+                attempts: 0, kvRevision: 1, enteredAt: ago(110), endedAt: ago(100), outputPreview: "{\"fact\":\"PostgreSQL keeps old row versions (MVCC).\"}", agent },
+        ] } };
+    await routeV2(page, { events, readModel: () => model, onCommand: (route, command) => accept(route, command) });
+    const prompt = (seq, nx, seconds, text) => ({ sessionId: AGENT_CHAT, seq, eventType: "user.message", createdAt: ago(seconds),
+        data: { content: text, clientMessageIds: [`workflow:${WORKFLOW_ID}:run-1:agent:${nx}`], sender: { kind: "agent", display: "workflow node invocation" } } });
+    const said = (seq, eventType, seconds, data) => ({ sessionId: AGENT_CHAT, seq, eventType, createdAt: ago(seconds), data });
+    const chat = [
+        prompt(1, "nx-fact-1", 108, "[SYSTEM: WORKFLOW NODE INVOCATION.]\n{\"input\":null}\n[SYSTEM: The task of this state:]\nTell one new fact about PostgreSQL."),
+        said(2, "tool.execution_start", 106, { toolCallId: "t1", toolName: "read_facts", arguments: { key_pattern: "facts/%" } }),
+        said(3, "tool.execution_complete", 105, { toolCallId: "t1", toolName: "read_facts", result: { count: 0 } }),
+        said(4, "assistant.message", 104, { content: "PostgreSQL keeps old row versions (MVCC)." }),
+        said(5, "tool.execution_start", 103, { toolCallId: "t2", toolName: "complete_workflow_node",
+            arguments: { outcome: "produced", output: { fact: "PostgreSQL keeps old row versions (MVCC)." }, operation_id: "op-1", node_execution_id: "nx-fact-1" } }),
+        prompt(6, "nx-fact-2", 28, "[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2.]\n{\"cycle\":2}\n[SYSTEM: The task of this state:]\nTell one new fact about PostgreSQL."),
+        said(7, "assistant.message", 20, { content: "Looking for a fact I have not given yet." }),
+    ];
+    await page.route("**/api/v1/**", async (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        if (pathname.includes(`/sessions/${AGENT_CHAT}/events`)) return route.fulfill({ json: { ok: true, result: chat } });
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await graph.getByRole("button", { name: "Inspect fact", exact: true }).click();
+    const details = nodeDetails(page);
+    await expect(details.locator(NODE_NAME)).toHaveText("fact");
+    await expect(details.locator("[data-node-what]")).toHaveText("Asks an agent: “Tell one new fact about PostgreSQL.”");
+    await expect(details.locator('[data-fact="now"]')).toContainText("Agent working since");
+    await expect(details.locator('[data-fact="chat"]')).toContainText("Continues the same chat");
+    await expect(details.locator('[data-fact="result"] pre')).toHaveText("PostgreSQL keeps old row versions (MVCC).");
+    await expect(details.getByText("What the agent is told", { exact: true })).toBeVisible();
+    await expect(details.getByRole("button", { name: "Open the agent chat", exact: true })).toBeVisible();
+    await expect(details.locator('[data-route="produced"]')).toHaveText("produced → pause");
+    await expect(details.locator('[data-route="timed_out"]')).toHaveText("If its time limit passes → pause");
+    await expect(details).not.toContainText("runtime error route");
+    await expect(main.getByRole("tablist", { name: "Node detail views" })).toHaveCount(0);
+    await shot(page, "node-agent-1440");
+
+    await details.getByRole("button", { name: "See all 2 runs in the Log", exact: true }).click();
+    const log = bottomPanel(main, "log");
+    await expect(log.getByRole("button", { name: "Node fact", exact: true })).toHaveAttribute("aria-pressed", "true");
+    const visits = log.locator(".ps-wf-alog-visit");
+    await expect(visits).toHaveCount(2);
+    await expect(visits.nth(0).locator("h3")).toContainText(/^Visit 2 · /);
+    await expect(visits.nth(1).locator("h3")).toContainText(/^Visit 1 · /);
+    const first = visits.nth(1);
+    await expect(first.locator('[data-kind="prompt"]').first()).toContainText("WORKFLOW NODE INVOCATION");
+    await expect(first.locator('[data-kind="agent"]').filter({ hasText: "read_facts" })).toHaveCount(1);
+    await expect(first.locator('[data-kind="result"]')).toContainText("produced · {\"fact\":\"PostgreSQL keeps old row versions (MVCC).\"}");
+    await expect(first.locator('[data-kind="workflow"]').first()).toContainText("Node fact started");
+    await expect(visits.nth(0).locator('[data-kind="agent"]')).toContainText("Looking for a fact I have not given yet.");
+    await expect(log.locator(".ps-wf-alog-note")).toHaveText("The agent's base instructions are not recorded in its chat. Prompt rows show what it was sent.");
+    await shot(page, "agent-log-1440");
+    await log.getByRole("button", { name: "Whole Workflow", exact: true }).click();
+    await expect(log.getByRole("list", { name: "Workflow log" })).toBeVisible();
+    expect(errors).toEqual([]);
+});
