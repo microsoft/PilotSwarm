@@ -7,6 +7,7 @@ import {
     workflowV2RevisionErrorsText, workflowV2JoinWords, workflowV2VisitScope, workflowV2NotReachedText,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
+import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
@@ -387,6 +388,56 @@ function KvApplied({ execution, runId, kv }) {
                     h("td", null, row.key), h("td", null, row.change),
                     h("td", null, row.before === null ? "—" : h("code", { style: { overflowWrap: "anywhere" } }, row.before)),
                     h("td", null, row.after === null ? "—" : h("code", { style: { overflowWrap: "anywhere" } }, row.after)))))) : null) : null);
+}
+
+/**
+ * A Workflow's Node panel (Workflow Simplified; owner feedback 2026-11-06, finding 7): one view, no tabs inside the tab.
+ * What the node does in one sentence; Now and Runs in one line each; its last result as readable text (Read the whole
+ * value when the preview was cut short); for an agent node how its chat works, what its agent is told (folded) and Open
+ * the agent chat; a parallel node's For each and branches; and Next, one line per outcome in words, each selecting the
+ * node it names, then what happens when it fails. Its visits, one by one, are in the Log. From the shared model
+ * (workflowNodeSummary), as the TUI says it.
+ */
+export function WorkflowV2NodeSummary({ selected, nodes, select, openSession = null, runId = null, executionValues = null, onReadWholeValue = null,
+    branchIndex = null, onBranch = null, onLog = null }) {
+    const branch = workflowV2BranchChoice(selected.branches, branchIndex);
+    const current = branch ? branch.execution : selected.current ?? null;
+    const summary = workflowNodeSummary(selected, { execution: current });
+    const fact = (label, value, extra = {}) => value ? h("div", { className: "ps-wf-fact", key: label, ...extra }, h("span", null, label), h("strong", null, value)) : null;
+    const result = summary.result;
+    const whole = result?.executionId && runId ? workflowV2WholeValue(workflowV2ExecutionValue(executionValues, runId, result.executionId)) : null;
+    const canRead = Boolean(result?.truncated && onReadWholeValue && runId && result.executionId);
+    const known = id => nodes.some(node => node.id === id);
+    return h("div", { className: "ps-wf-summary" },
+        summary.what ? h("p", { className: "ps-wf-what", "data-node-what": "true" }, summary.what) : null,
+        branch ? h(BranchPicker, { branches: selected.branches, chosen: branch, onBranch }) : null,
+        h("div", { className: "ps-wf-facts" },
+            fact("Now", summary.now, { "data-fact": "now" }),
+            fact("Runs", summary.runs, { "data-fact": "runs" }),
+            summary.agent ? fact("Chat", summary.agent.chatMode, { "data-fact": "chat" }) : null),
+        result ? h("div", { className: `ps-wf-result${result.error ? " is-error" : ""}`, "data-fact": "result" },
+            h("h3", null, result.label),
+            h("pre", null, result.text),
+            result.truncated ? h("p", { className: "ps-wf-muted" }, canRead ? "This is its start; Read the whole value shows all of it." : "This is its start.") : null,
+            canRead ? h("button", { type: "button", className: "ps-mini-button", "data-action": "whole-value", "data-execution": result.executionId,
+                disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(result.executionId) },
+            whole && whole.kind !== "loading" ? "Read the whole value again" : "Read the whole value") : null,
+            whole ? h(WholeValue, { whole }) : null) : null,
+        summary.agent ? h("div", { className: "ps-wf-agent" },
+            summary.agent.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "What the agent is told"), h("pre", null, summary.agent.told))
+                : summary.agent.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
+            ...workflowV2AgentBindingRows(selected.binding).map(([label, value]) => fact(label, value)),
+            openSession && summary.agent.chatSessionId ? h("button", { type: "button", className: "ps-mini-button", "data-action": "open-agent-chat",
+                "data-session": summary.agent.chatSessionId, onClick: () => openSession(summary.agent.chatSessionId) }, "Open the agent chat") : null) : null,
+        selected.kind === "parallel" ? h(ParallelSections, { selected, current, nodes, select, openSession }) : null,
+        summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
+            h("h3", null, selected.kind === "parallel" ? "Next, after the join" : "Next"),
+            summary.next.lines.map(line => h("button", { key: line.label, type: "button", className: "ps-workflow-transition", "data-route": line.label,
+                "data-kind": line.kind, disabled: !known(line.target), onClick: () => select(line.target) }, line.text)),
+            summary.next.failure ? h("p", { className: "ps-wf-muted", "data-route": "unrouted" }, summary.next.failure) : null) : null,
+        selected.type === "terminal" ? h("p", { className: "ps-wf-muted" }, typeof selected.parallel === "string" ? "The item ends here." : "The Workflow ends here.") : null,
+        onLog && selected.runs ? h("button", { type: "button", className: "ps-mini-button ps-wf-to-log", "data-action": "node-log", onClick: onLog },
+            selected.runs === 1 ? "See this run in the Log" : `See all ${selected.runs} runs in the Log`) : null);
 }
 
 /**

@@ -7,7 +7,7 @@ import {
     type JsonObject,
     type JsonValue,
 } from "./json.js";
-import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
+import { WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowIR } from "./compiler.js";
 import { schemaWithoutLiterals } from "./schema.js";
 import { parseBindingExpression, WorkflowBindingError, type BindingExpression } from "./bindings.js";
 import {
@@ -1196,7 +1196,8 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             ...(options.includeYaml ? { yaml: jsonbSafeText(revision.yaml) } : {}),
         },
         // With the input schema of that revision, its references resolved (batch 7, f-05; null without one).
-        graph: ir ? { revision: graphRevision, initial: ir.initial, states: describeWorkflowV2States(ir), inputsSchema: workflowV2ResolvedInputsSchema(ir) } : null,
+        graph: ir ? { revision: graphRevision, initial: ir.initial, states: describeWorkflowV2States(ir).map(state => withStateAbout(state, ir)),
+            inputsSchema: workflowV2ResolvedInputsSchema(ir) } : null,
         runs: runs.map(run => ({ runId: run.runId, mode: run.mode, status: run.status, revision: run.revision, outcome: run.terminalOutcome })),
         run: selected && sections ? {
             runId: selected.runId, mode: selected.mode, status: selected.status, outcome: selected.terminalOutcome,
@@ -1326,12 +1327,30 @@ async function runSectionsOf(store: WorkflowStore, run: WorkflowRunRow, limits: 
     };
 }
 
+/**
+ * What a state is for, beside its graph entry (owner feedback 2026-11-06, finding 7: the Node panel says what a node does
+ * in a sentence and what its agent is told): `about.description`, the definition's own description of the state, and an
+ * agent state's inline prompt (`about.prompt`; at most 4,000 characters here, its agent chat shows it whole). Only a state
+ * with either gets `about`; the graph entry is otherwise as before.
+ */
+function withStateAbout(state: { [key: string]: JsonValue }, ir: WorkflowIR): { [key: string]: JsonValue } {
+    const node = typeof state.id === "string" ? ir.nodes[state.id] : undefined;
+    if (!node) return state;
+    const written = (node as { description?: unknown }).description;
+    const description = typeof written === "string" && written.trim() ? jsonbSafeText(written.trim(), 1_000) : null;
+    const prompt = node.type === "agent" && "prompt" in node.invoke && node.invoke.prompt.trim() ? jsonbSafeText(node.invoke.prompt.trim(), 4_000) : null;
+    if (description === null && prompt === null) return state;
+    return { ...state, about: { ...(description !== null ? { description } : {}), ...(prompt !== null ? { prompt } : {}) } };
+}
+
 /** One node execution as a read shows it: its result as bounded previews (an execution read gives the whole value). */
 function nodeExecutionViewOf(node: WorkflowNodeExecutionRow, agents: ReadonlyMap<string, WorkflowAgentInvocation>): { [key: string]: JsonValue } {
     const agent = agents.get(node.nodeExecutionId);
     return {
         nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
         outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
+        // When the visit started and ended (owner feedback 2026-11-06, finding 7: the Node panel's Now and Runs lines).
+        enteredAt: node.enteredAt.toISOString(), ...(node.completedAt !== null ? { endedAt: node.completedAt.toISOString() } : {}),
         // A parallel branch's state (IR 8, INACTIVE): its branch's parallel state execution and index, and the state before
         // it in its branch (its last state is the one no other names; owner decision join-k-of-n, review J1-R1).
         ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId), predecessorId: node.predecessorId } : {}),

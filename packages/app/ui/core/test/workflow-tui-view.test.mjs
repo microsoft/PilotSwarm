@@ -107,10 +107,12 @@ test("w opens the view on the pending agent state: its state, transitions with t
     assert.match(details[0], /^Run: Live run · running · revision 1 · run-1$/);
     assert.ok(details.includes("review · Agent · code-reviewer · first step"));
     assert.ok(details.includes("Status: Agent working · waiting for its typed result"));
-    assert.ok(details.includes("Next steps:"));
+    assert.ok(details.includes("Next:"));
     assert.ok(details.includes("  accepted → fan"));
     assert.ok(details.includes("  rework → fix · ↺ in a loop"));
-    assert.ok(details.includes("  timed_out → failed · runtime error route"));
+    // Finding 7: an error route in words, as the portal's Node panel says it.
+    assert.ok(details.includes("  If its time limit passes → failed"), details.join("\n"));
+    assert.ok(!details.some(line => line.includes("runtime error route")));
     assert.ok(details.includes("Agent chats (Tab: choose · Enter: open):"));
     assert.ok(details.includes("▸ visit 3 · working · child-r2"), details.join("\n"));
     assert.ok(details.includes("  visit 1 · completed · rework · child-r1"), details.join("\n"));

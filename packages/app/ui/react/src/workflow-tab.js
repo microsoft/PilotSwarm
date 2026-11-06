@@ -8,12 +8,13 @@ import {
     workflowV2RunControls, workflowV2RunVariables, workflowV2SampleInputs, workflowV2TestControls, workflowV2TestModeListed, workflowV2TestResponder,
 } from "../../core/src/workflow-v2-commands.js";
 import { formatLocalTime } from "../../core/src/formatting.js";
+import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowFailureText, workflowStarted,
     workflowPanelHeight, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
-    WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RevisionCompare, WorkflowV2RunCommandNotice,
+    WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2NoGraph, WorkflowV2NodeSummary, WorkflowV2RevisionCompare, WorkflowV2RunCommandNotice,
     WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock, WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2Variables,
     WorkflowV2YamlView,
 } from "./workflow-v2-panels.js";
@@ -222,18 +223,30 @@ function revisionLine(model, { writing = false, writer = null } = {}) {
     return { calm: false, text: `Revision ${revision.revision} not valid${why}.${showing}` };
 }
 
-/** The selected node's facts in the Definition view (D9 Node): its type, input, outcomes and time limit. */
+/**
+ * The selected node in the Definition view (D9 Node; finding 7): what it does in one sentence, its input and time limit,
+ * an agent node's chat and what its agent is told, and where each outcome goes, in the words the run's Node panel uses
+ * (workflowNodeSummary). No run: nothing about visits or results.
+ */
 function NodeFacts({ node }) {
     if (!node) return h("p", { className: "ps-wf-muted" }, "Select a node to see it.");
     const row = (label, value) => value === null || value === undefined || value === "" ? null
         : h("div", { className: "ps-wf-fact", key: label }, h("span", null, label), h("strong", null, value));
-    const outcomes = Object.keys(node.next ?? {});
+    const summary = workflowNodeSummary(node, { execution: null });
     const input = node.input !== undefined ? JSON.stringify(node.input) : node.forEach ? `each item of ${typeof node.forEach === "string" ? node.forEach : "its list"}` : null;
-    return h("div", { className: "ps-wf-facts" },
-        row("Node", `${node.id} · ${node.typeWord ?? node.label ?? node.type}`),
-        row("Input", input),
-        row("Outcomes", outcomes.length ? outcomes.join(" · ") : null),
-        row("Time limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null));
+    return h("section", { className: "ps-wf-def-node", "aria-label": "Node" },
+        h("p", { className: "ps-wf-node-head" }, h("strong", null, node.id), ` · ${node.typeWord ?? node.label ?? node.type}`),
+        summary.what ? h("p", { className: "ps-wf-what", "data-node-what": "true" }, summary.what) : null,
+        h("div", { className: "ps-wf-facts" },
+            row("Input", input),
+            row("Time limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null),
+            summary.agent ? row("Chat", summary.agent.chatMode) : null),
+        summary.agent?.told ? h("details", { className: "ps-wf-told" }, h("summary", null, "What the agent is told"), h("pre", null, summary.agent.told))
+            : summary.agent?.toldWords ? h("p", { className: "ps-wf-muted" }, summary.agent.toldWords) : null,
+        summary.next.lines.length || summary.next.failure ? h("div", { className: "ps-wf-next", "aria-label": "Next" },
+            h("h3", null, "Next"),
+            h("ul", null, summary.next.lines.map(line => h("li", { key: line.label, "data-route": line.label }, line.text))),
+            summary.next.failure ? h("p", { className: "ps-wf-muted" }, summary.next.failure) : null) : null);
 }
 
 /** How far one arrow key moves the bottom panel's edge, and Shift or Page Up/Down. */
@@ -580,36 +593,25 @@ function WorkflowNumberPicker({ definition, chosen, onOpen }) {
             h("option", { value: "__all__" }, "All Workflows")));
 }
 
-/** The Node panel of a Workflow (W10): the node's status, error, input and output, and an agent node's chat. */
+/**
+ * The Node panel of a Workflow (W10; owner feedback 2026-11-06, finding 7): one view that says what the node does, where
+ * it is now, how often it ran, its last result, an agent node's chat and what its agent is told, and where each outcome
+ * goes (WorkflowV2NodeSummary). No Details / Output / History tabs inside the panel's tab: the Log has the visits.
+ */
 function RunNodePanel({ controller, child, selected }) {
-    const { sessionId, session, view, events, projection } = child;
-    const sessionsById = useControllerSelector(controller, state => state.sessions.byId);
-    const [detailTab, setDetailTab] = React.useState("details");
+    const { sessionId, view, projection } = child;
     const [branchPick, setBranchPick] = React.useState(null);
     if (!selected) return h("p", { className: "ps-wf-muted" }, "Select a node to see it.");
     if (selected.shape !== "v2") return h(LegacyNodePanel, { selected });
     const runId = projection?.runId ?? null;
-    const tabs = [["details", "Details"], ["output", "Output"], ["history", "History"]];
     return h("section", { className: "ps-wf-node", "aria-label": "Node details" },
-        h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label} · ${selected.stateLabel}`),
-        h("div", { className: "ps-wf-node-tabs", role: "tablist", "aria-label": "Node detail views" },
-            tabs.map(([id, title]) => h("button", { key: id, type: "button", role: "tab", "aria-selected": detailTab === id,
-                className: detailTab === id ? "is-on" : "", onClick: () => setDetailTab(id) }, title))),
-        h(WorkflowV2NodeContent, {
-            tab: detailTab, selected, nodes: child.nodes,
+        h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label}`),
+        h(WorkflowV2NodeSummary, {
+            selected, nodes: child.nodes, runId,
             select: id => controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: id } }),
             openSession: id => { controller.loadSession(id).catch(() => {}); },
-            runOutput: projection?.status.terminalState === selected.id ? projection.output : null,
-            runError: projection?.status.terminalState === selected.id ? projection.error : null,
-            runId, selection: view.selectedExecution ?? null, onTab: setDetailTab,
-            events: projection?.bound ? events : null, sessionsById,
-            onAskParent: null,
-            onSelectExecution: (executionId, bound) => controller.selectWorkflowExecution(sessionId,
-                executionId === null ? null : { runId, stateId: selected.id, executionId, ...(bound ?? {}) }),
             executionValues: view.executionValues ?? null,
             onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); },
-            history: projection?.bound ? projection?.readModel?.run?.history ?? null : null,
-            onLoadOlder: restart => { controller.loadOlderWorkflowHistory(sessionId, { restart }).catch(() => {}); },
             branchIndex: branchPick?.key === workflowV2BranchPickKey(sessionId, runId, selected) ? branchPick.index : null,
             onBranch: index => {
                 setBranchPick({ key: workflowV2BranchPickKey(sessionId, runId, selected), index });
@@ -617,11 +619,6 @@ function RunNodePanel({ controller, child, selected }) {
                     controller.selectWorkflowExecution(sessionId, null);
                 }
             },
-            kv: projection?.bound && runId ? {
-                accepted: projection.readModel?.run?.kvRevision ?? null, snapshots: view.kvRevisions ?? null, compare: view.kvCompare ?? null,
-                onCompare: (from, to) => { controller.compareWorkflowKvRevisions(sessionId, { runId, from, to }).catch(() => {}); },
-            } : null,
-            parentSessionId: session?.parentSessionId ?? null,
         }));
 }
 

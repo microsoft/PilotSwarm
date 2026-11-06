@@ -1,6 +1,7 @@
 import { shortRunId, shortSessionId } from "./formatting.js";
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
+import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
 import {
     compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentChatMode, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
@@ -1601,6 +1602,9 @@ function detailLines(selection, width) {
     }
     const node = selected.node;
     add(`${selected.id} · ${selected.label}${selected.initial ? " · first step" : ""}`, "cyan", { bold: true });
+    // What it does, in one sentence (finding 7), as the portal's Node panel says it.
+    const what = node.shape === "v2" ? workflowNodeWhat(node) : null;
+    if (what) for (const text of wrapped(what, Math.max(20, width))) add(text);
     add(`Status: ${selected.stateLabel}`);
     add(`Visits: ${selected.runs}${selected.partial ? " in loaded history" : ""}`);
     if (node.shape === "v2") {
@@ -1612,6 +1616,8 @@ function detailLines(selection, width) {
         if (node.kind === "agent") {
             add(`Agent: ${workflowV2AgentTask(node)}`);
             add(`Chat: ${workflowV2AgentChatMode(node)}`);
+            const told = node.invoke?.source === "agent" ? null : workflowFirstSentence(node.about?.prompt, Math.max(40, width - 8));
+            if (told) add(`Told: ${told}`, "gray");
             for (const [label, value] of workflowV2AgentBindingRows(node.binding)) add(`${label}: ${value}`);
         }
         for (const line of node.description || []) add(line, "gray");
@@ -1642,12 +1648,16 @@ function detailLines(selection, width) {
         add(`Last outcome: ${node.outcome}`);
     }
     if (selected.transitions.length) {
-        add("Next steps:", "cyan");
+        // Where each outcome goes, in the portal's words (finding 7): an error route says when it is taken, never "runtime error route".
+        const next = node.shape === "v2" ? workflowNodeNext(node) : { lines: [], failure: null };
+        const words = new Map(next.lines.map(line => [line.label, line.text]));
+        add("Next:", "cyan");
         for (const route of selected.transitions) {
-            const notes = [route.kind === "error" ? "runtime error route" : null, route.kind === "branch" ? "where each branch starts" : null,
-                route.loop ? "↺ in a loop" : null].filter(Boolean);
-            add(`  ${route.label} → ${route.target}${notes.length ? ` · ${notes.join(" · ")}` : ""}`);
+            const notes = [route.kind === "branch" ? "where each branch starts" : null, route.loop ? "↺ in a loop" : null].filter(Boolean);
+            const said = route.kind === "error" && words.has(route.label) ? words.get(route.label) : `${route.label} → ${route.target}`;
+            add(`  ${said}${notes.length ? ` · ${notes.join(" · ")}` : ""}`);
         }
+        if (next.failure) add(`  ${next.failure}`, "gray");
     } else if (node.type === "terminal") {
         add(typeof node.parallel === "string" ? "The branch ends at this step." : "The workflow ends at this step.", "gray");
     }

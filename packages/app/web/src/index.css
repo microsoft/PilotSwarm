@@ -12819,6 +12819,27 @@ button.ps-wf-list-row:focus-visible { background: var(--ps-highlight-background)
 .ps-wf-node { display: grid; gap: 6px; }
 .ps-wf-node-head { margin: 0; overflow-wrap: anywhere; }
 .ps-wf-node-tabs { display: inline-flex; gap: 2px; }
+/* The Node panel's summary (finding 7): what it does, Now, Runs, the last result, the agent, Next. */
+.ps-wf-summary, .ps-wf-def-node { display: grid; gap: 8px; }
+.ps-wf-what { margin: 0; font-size: 0.95em; overflow-wrap: anywhere; }
+.ps-wf-summary h3, .ps-wf-def-node h3 { margin: 0 0 2px; font-size: 0.8em; font-weight: 600; color: var(--ps-muted); }
+.ps-wf-result pre, .ps-wf-told pre {
+  margin: 0;
+  max-height: 12em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 4px;
+}
+.ps-wf-result.is-error pre { color: var(--ps-danger); }
+.ps-wf-told summary { cursor: pointer; color: var(--ps-muted); }
+.ps-wf-told[open] summary { margin-bottom: 4px; }
+.ps-wf-agent { display: grid; gap: 6px; justify-items: start; }
+.ps-wf-next { display: grid; gap: 4px; justify-items: start; }
+.ps-wf-next ul { margin: 0; padding-left: 18px; }
+.ps-wf-next p, .ps-wf-summary > p.ps-wf-muted { margin: 0; }
 .ps-wf-log { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .ps-wf-log li { display: grid; grid-template-columns: auto 1fr; gap: 8px; overflow-wrap: anywhere; }
 .ps-wf-log li[data-level="error"] { color: var(--ps-danger); }

@@ -27,6 +27,7 @@ import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { completeWorkflowNodeFromTool } from "../../src/workflow/v2/agent-node-service.ts";
+import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 import {
     registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
@@ -326,6 +327,15 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
                 .toEqual([expect.objectContaining({ childSessionId: chat, end: "done", sent: true, chat: "continue" })]);
             expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => [data.childSessionId, data.chat, data.cycle]))
                 .toEqual([[chat, "continue", 1], [chat, "continue", 2]]);
+
+            // Finding 7: the read view says what the agent is told and when each visit started and ended (the Node panel's lines).
+            const view = await readWorkflowV2View(h.store, run.workflowSessionId);
+            expect(view.graph.states.find(state => state.id === "talk")).toMatchObject({ type: "agent", chat: "continue", about: { prompt: TASK } });
+            expect(view.graph.states.find(state => state.id === "pause")).not.toHaveProperty("about");
+            for (const visit of view.run.nodeExecutions.filter(node => node.stateId === "talk")) {
+                expect(Number.isFinite(Date.parse(visit.enteredAt)), JSON.stringify(visit)).toBe(true);
+                expect(Date.parse(visit.endedAt)).toBeGreaterThanOrEqual(Date.parse(visit.enteredAt));
+            }
         } finally {
             await h.stop();
         }

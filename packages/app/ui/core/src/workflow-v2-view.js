@@ -690,16 +690,19 @@ function branchOfScope(scopeId) {
  * visit its branch as a read row would, so a visit known only from live events is grouped with its own branch; a
  * completion that names none takes its start's (they are one visit: collectExecutions merges them by node execution).
  */
-function executionFromEvent(type, data) {
+function executionFromEvent(type, data, at = undefined) {
     const scopeId = text(data.scopeId);
     const base = { id: data.nodeExecutionId, stateId: data.stateId, ordinal: Number.isSafeInteger(data.step) ? data.step : undefined,
         scopeId, branch: branchOfScope(scopeId) };
     if (type === "workflow.state_started") {
-        return { ...base, status: "pending", catchAll: data.catchAll === true ? true : undefined, immediateOutcome: text(data.immediateOutcome) };
+        return { ...base, status: "pending", catchAll: data.catchAll === true ? true : undefined, immediateOutcome: text(data.immediateOutcome),
+            enteredAt: text(at) };
     }
     // R3-UI-1 (S6-UI2): an end event carries its node's completed_at (the store's completion clock), so an end known only
     // from its event is ordered as a read row is. An event from before that has none; its own time is not the end's.
-    const common = { ...base, status: "completed", completedAt: text(data.completedAt), outcome: text(data.outcome), messageId: text(data.messageId), contract: text(data.contract),
+    // When it ended, for the Node panel (finding 7): the store's completion clock when the event carries it, else the event's.
+    const common = { ...base, status: "completed", completedAt: text(data.completedAt), endedAt: text(data.completedAt) ?? text(at),
+        outcome: text(data.outcome), messageId: text(data.messageId), contract: text(data.contract),
         senderSessionId: text(data.senderSessionId), exchangeId: text(data.exchangeId), recipientSessionId: text(data.recipientSessionId),
         recipientKind: text(data.recipientKind), responderSessionId: text(data.responderSessionId), inputMessageId: text(data.inputMessageId),
         attempts: Number.isSafeInteger(data.attempts) ? data.attempts : undefined };
@@ -729,6 +732,7 @@ function collectExecutions(events, runId, run, overlay) {
                 status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
                 errorPreview: row.errorPreview, winner: text(row.winner), attempts: Number.isSafeInteger(row.attempts) ? row.attempts : undefined,
                 kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), completedAt: text(row.completedAt),
+                enteredAt: text(row.enteredAt), endedAt: text(row.endedAt),
                 predecessorId: text(row.predecessorId),
                 receive: isRecord(row.receive) ? row.receive : undefined,
                 agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
@@ -745,7 +749,7 @@ function collectExecutions(events, runId, run, overlay) {
                 ignoredEvents++;
                 continue;
             }
-            if (data.runId === runId) add(executionFromEvent(event.eventType, data), "event");
+            if (data.runId === runId) add(executionFromEvent(event.eventType, data, event.createdAt), "event");
         }
     } else if (!runId) {
         // Only events that name no run are unreadable; an event of a run that was left out belongs to that run.
