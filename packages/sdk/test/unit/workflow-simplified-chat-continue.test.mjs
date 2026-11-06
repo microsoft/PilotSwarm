@@ -30,6 +30,7 @@ import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC } from "../../dist/workflow/tool-spe
 import { UPDATE_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/v2/tools.js";
 
 const AGENTS = { enableRequests: true, enableAgents: true };
+const PARALLEL = { ...AGENTS, enableParallel: true };
 const READ = { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION };
 const errors = result => result.diagnostics.filter(item => item.severity === "error");
 
@@ -97,12 +98,13 @@ test("the compiler: chat new is the default and leaves the IR as it was; continu
 });
 
 test("the compiler refuses chat: continue inside a For each body, in words", () => {
-    const result = compileWorkflowV2(FOR_EACH, AGENTS);
+    const result = compileWorkflowV2(FOR_EACH, PARALLEL);
     const refused = errors(result).filter(item => item.path === "states.fan.body.states.talk.chat");
     assert.equal(refused.length, 1, JSON.stringify(result.diagnostics));
     assert.equal(refused[0].code, "WORKFLOW_FIELD_INVALID");
     assert.match(refused[0].message, /^state 'talk' cannot continue its chat: it runs inside For each state 'fan', whose items run side by side and cannot share one chat\. Use chat: new\.$/);
-    assert.equal(compileWorkflowV2(FOR_EACH.replace("chat: continue", "chat: new"), AGENTS).valid, true);
+    const fresh = compileWorkflowV2(FOR_EACH.replace("chat: continue", "chat: new"), PARALLEL);
+    assert.deepEqual(errors(fresh), [], JSON.stringify(fresh.diagnostics));
 });
 
 test("chat ids are derived: one per run and state, another per run, a replacement names its visit; a continued chat is told apart", () => {
@@ -115,7 +117,13 @@ test("chat ids are derived: one per run and state, another per run, a replacemen
     assert.notEqual(replacement, chat);
     assert.equal(workflowAgentChatSessionId("run-1", "talk", 3), replacement);
     assert.equal(workflowAgentChatContinues({ nodeExecutionId: "nx-1", childSessionId: chat }), true);
+    assert.equal(workflowAgentChatContinues({ nodeExecutionId: "nx-1", childSessionId: replacement }), true);
     assert.equal(workflowAgentChatContinues({ nodeExecutionId: "nx-1", childSessionId: workflowAgentChildSessionId("nx-1") }), false);
+    // Known by the chat mark in its id: any other child id (chat: new, whatever it is) is a visit's own, handled as before.
+    assert.match(chat, /-c0a7[0-9a-f]{8}$/);
+    for (const other of ["child-1", workflowAgentChildSessionId("nx-2"), "8f1e2d3c-1111-8222-9333-444455556666"]) {
+        assert.equal(workflowAgentChatContinues({ nodeExecutionId: "nx-1", childSessionId: other }), false, other);
+    }
 });
 
 const INVOCATION = {

@@ -16,7 +16,7 @@ import {
     WORKFLOW_V2_CONTROLLER_VERSION,
     WORKFLOW_V2_MAX_CORRELATION_BYTES,
     WORKFLOW_V2_NOTIFY_NAME,
-    endWorkflowV2RunAgents,
+    endWorkflowV2RunChats,
     workflowV2RunEndRequester,
     WORKFLOW_V2_NOTIFY_VERSION,
     WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
@@ -477,7 +477,8 @@ async function finishRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
     await host.store.repairEndedRunSessionRow(run.runId);
     let unended: unknown = null;
     try {
-        await endWorkflowV2RunAgents(host.store, host.duroxideClient, run.runId);
+        // With the chats that continued across visits (chat: continue), which only a run's end ends.
+        await endWorkflowV2RunChats(host.store, host.duroxideClient, run.runId);
     } catch (error) {
         unended = error;
     }

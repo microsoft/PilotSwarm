@@ -2859,6 +2859,16 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
         const shown = failed.slice(0, 20).join(", ");
         throw new Error(`The children of agent states ${shown}${failed.length > 20 ? ` and ${failed.length - 20} more` : ""} were not ended yet.`);
     }
+}
+
+/**
+ * A run's end for its agent children (the controller's endAgents and a recover): the owed ends of its visits' own
+ * children, exactly as before continue mode (endWorkflowV2RunAgents), then the chats that continued across its states'
+ * visits (endWorkflowV2ContinuedChats; owner decision agent-node-continue-20261106). A run with no `chat: continue`
+ * state finds no such chat there.
+ */
+export async function endWorkflowV2RunChats(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string): Promise<void> {
+    await endWorkflowV2RunAgents(store, client, runId);
     await endWorkflowV2ContinuedChats(store, client, runId);
 }
 
@@ -2906,7 +2916,7 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowV2AgentEn
             } }]);
         }
     }
-    if (run !== null && newest && (!active || run.stop !== null)) {
+    if (run !== null && newest && (!active || Boolean(run.stop))) {
         const chatEnd = await endContinuedChat(store, client, run, invocation.childSessionId);
         if (chatEnd !== null) return chatEnd;
     }
@@ -2955,7 +2965,7 @@ async function endContinuedChat(store: WorkflowStore, client: WorkflowV2AgentEnd
  */
 export async function endWorkflowV2ContinuedChats(store: WorkflowStore, client: WorkflowV2AgentEndClient, runId: string): Promise<void> {
     const run = await store.readRun(runId);
-    if (!run || (ACTIVE_RUN_STATUSES.includes(run.status) && run.stop === null)) return;
+    if (!run || (ACTIVE_RUN_STATUSES.includes(run.status) && !run.stop)) return;
     const chats = new Set<string>();
     for (const invocation of await store.listAgentInvocations(runId, 10_000)) {
         if (workflowAgentChatContinues(invocation)) chats.add(invocation.childSessionId);
@@ -3065,7 +3075,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      * ended by its spawn when it finds the state decided. A cancel ends the
      * child's own descendants too (its graceful shutdown cascades).
      */
-    const stopChatTurn: WorkflowV2AgentTurnStop | undefined = typeof deps.catalog.turnControlAdd === "function"
+    const stopChatTurn: WorkflowV2AgentTurnStop | undefined = typeof deps.catalog?.turnControlAdd === "function"
         ? async (childSessionId, reason, requestId) => {
             // A refusal (no turn running, a session gone) has nothing to stop; a catalog without turn controls stops nothing.
             try {
@@ -3077,7 +3087,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         : undefined;
     const endAgentChild = (client: WorkflowV2AgentEndClient, nodeExecutionId: string, options: { afterSpawn?: boolean } = {}) =>
         endWorkflowV2AgentChild(store, client, nodeExecutionId, { ...options, ...(stopChatTurn ? { stopTurn: stopChatTurn } : {}) });
-    const endRunAgents = (client: WorkflowV2AgentEndClient, runId: string): Promise<void> => endWorkflowV2RunAgents(store, client, runId);
+    const endRunAgents = (client: WorkflowV2AgentEndClient, runId: string): Promise<void> => endWorkflowV2RunChats(store, client, runId);
     /**
      * A later visit of a state that continues its chat (chat: continue; owner decision agent-node-continue-20261106): null
      * for the state's first visit in the run; for a later one, its number among the state's visits, the previous visit's
@@ -3776,11 +3786,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // reaches the controller with them (it routes none of them then). A stop is never withdrawn.
         const run = await runOf(runId);
         // chat: continue (formal Q5): a stopping run's idle continued chats are not started work; they are ended at once.
-        if (ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) {
-            const client = actx.getClient();
+        if (ACTIVE_RUN_STATUSES.includes(run.status) && Boolean(run.stop)) {
+            const client = typeof actx?.getClient === "function" ? actx.getClient() : null;
             if (client) {
                 await endWorkflowV2ContinuedChats(store, client, runId).catch(error =>
-                    actx.traceWarn(`[workflow-v2] run=${runId} an idle agent chat was not ended yet: ${workflowErrorMessage(error)}`));
+                    actx.traceWarn?.(`[workflow-v2] run=${runId} an idle agent chat was not ended yet: ${workflowErrorMessage(error)}`));
             }
         }
         // And whether the run is past its deadline (migration 0104), by its own clock: only a run with one says so.

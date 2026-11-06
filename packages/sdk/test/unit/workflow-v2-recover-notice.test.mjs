@@ -20,6 +20,8 @@ function fakeHost({ run = completed, controller = "Completed", notifier = "NotFo
         readDefinition: async () => ({ parentSessionId: PARENT }),
         runNoticeRecorded: async () => noticed,
         listOwedAgentInvocations: async () => [],
+        // A recover also ends the run's chats that continued across visits (chat: continue); this run has none.
+        listAgentInvocations: async () => [],
         recordSessionEvents: async () => {},
         // R2-RT-2: an ended run's session row is put right first (its own test is in workflow-v2-control).
         repairEndedRunSessionRow: async () => ({ repaired: false }),

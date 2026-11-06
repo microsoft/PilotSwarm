@@ -31,10 +31,21 @@ export function workflowAgentChildSessionId(nodeExecutionId: string): string {
  * whose id also names the visit number (`visit`), so it is derived too, and later visits continue in it.
  */
 export function workflowAgentChatSessionId(runId: string, stateId: string, visit: number | null = null): string {
-    return uuidOf("workflow-v2-agent-chat:", visit === null ? `${runId}\u0000${stateId}` : `${runId}\u0000${stateId}\u0000${visit}`);
+    const id = uuidOf("workflow-v2-agent-chat:", visit === null ? `${runId}\u0000${stateId}` : `${runId}\u0000${stateId}\u0000${visit}`);
+    // The last group starts with the chat mark, so a continued chat is known by its id alone (workflowAgentChatContinues).
+    return `${id.slice(0, 24)}${CHAT_MARK}${id.slice(24 + CHAT_MARK.length)}`;
 }
 
-/** Whether an agent invocation's child is a continued chat (shared by the state's visits) rather than its own. Pure. */
+/** The first characters of the last group of a continued chat's id (hex, so the id stays a UUID). */
+const CHAT_MARK = "c0a7";
+const CHAT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-c0a7[0-9a-f]{8}$/;
+
+/**
+ * Whether an agent invocation's child is a chat that continues across its state's visits (chat: continue), known by
+ * the chat's own id: one workflowAgentChatSessionId made (it carries the chat mark) that is not the visit's own child
+ * id. Every other invocation (chat: new, whatever its child id) is a visit's own child, handled exactly as before
+ * continue mode. Pure.
+ */
 export function workflowAgentChatContinues(invocation: { nodeExecutionId: string; childSessionId: string }): boolean {
-    return invocation.childSessionId !== workflowAgentChildSessionId(invocation.nodeExecutionId);
+    return CHAT_ID.test(invocation.childSessionId) && invocation.childSessionId !== workflowAgentChildSessionId(invocation.nodeExecutionId);
 }
