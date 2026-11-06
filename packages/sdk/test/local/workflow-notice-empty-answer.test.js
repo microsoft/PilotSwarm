@@ -14,7 +14,8 @@
  *   nothing is one completed turn, no session.error, the session idle, no retry; the run's end answered with nothing is
  *   still an error.
  *
- * ManagedSession's own case (a fake CLI) is in inline-control-tools.test.js.
+ * ManagedSession's own case (a fake CLI) is in inline-control-tools.test.js; a real model on repeated notices is
+ * workflow-notice-empty-answer-real-model.test.js (runs only when asked).
  */
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
