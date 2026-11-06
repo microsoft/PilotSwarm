@@ -325,11 +325,23 @@ console.log("✅ the Workflow V2 test environment switch: off for every value bu
         }
         const on = descriptions({ workflowCommands: true, workflowTestMode: true, mgmt: {} });
         for (const word of ["test_respond", "test_advance", "agent_mode", "interception_id"]) assert.ok(on.includes(word), word);
+        // read_workflow (review SF-5): off, its description names no test run's part either.
+        const readDescription = ctx => {
+            const specs = new Map();
+            registerWorkflowTools({ registerTool: (name, spec) => { specs.set(name, spec); } }, ctx);
+            return specs.get("read_workflow").description;
+        };
+        for (const off of [readDescription({ mgmt: {} }), readDescription({ workflowTestMode: false, mgmt: {} })]) {
+            assert.ok(!/\btest|interception/i.test(off), off);
+            assert.ok(off.includes("(openExecutions, openInbox, openOutbox). run.pages gives"));
+        }
+        assert.ok(readDescription({ workflowTestMode: true, mgmt: {} }).includes("openOutbox, run.test.openInterceptions). run.pages gives"));
         process.env.PILOTSWARM_WORKFLOW_TEST_MODE = "on";
         assert.ok(descriptions({ workflowCommands: true, mgmt: {} }).includes("test_respond"), "the flag turns it on");
+        assert.ok(readDescription({ mgmt: {} }).includes("run.test.openInterceptions"));
     } finally {
         if (flag === undefined) delete process.env.PILOTSWARM_WORKFLOW_TEST_MODE;
         else process.env.PILOTSWARM_WORKFLOW_TEST_MODE = flag;
     }
 }
-console.log("✅ update_workflow names the test operations only with workflow test mode on");
+console.log("✅ update_workflow names the test operations, and read_workflow a test run's part, only with workflow test mode on");

@@ -18,8 +18,9 @@ import {
     resolveWorkflowTestMode, WORKFLOW_TEST_MODE_ENABLED, WORKFLOW_TEST_MODE_OFF_TEXT, WORKFLOW_TEST_MODE_OPERATIONS, WORKFLOW_TEST_MODE_VARIABLE,
     workflowTestModeFromEnv, workflowTestModeNotice,
 } from "../../dist/workflow/v2/test-mode-switch.js";
+import { workflowReadCursor } from "../../dist/workflow/v2/read-pages.js";
 import {
-    READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, readWorkflowToolSpec,
+    READ_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, readWorkflowToolSpec, readWorkflowV2,
     UPDATE_WORKFLOW_MILESTONE_NO_TEST_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC, updateWorkflowFromTool, updateWorkflowToolSpec,
 } from "../../dist/workflow/v2/tools.js";
 import {
@@ -249,4 +250,49 @@ test("base guidance: with test mode off, neither the guidance nor the authoring 
     assert.ok(prompt().includes("## Workflow Sessions"));
     assert.ok(!prompt().includes("test_waiting"), "off by default");
     await withFlag("on", () => { assert.ok(prompt().includes("test_waiting")); });
+});
+
+// Review SF-5: with test mode off, a test run kept from while it was on is not a run of the workflow to any server read
+// (the SDK, REST and MCP reads all run readWorkflowV2): the view lists none, and its id, as a run, a cursor's run, an
+// execution's or a KV revision's, is refused exactly as an unknown run's is. With test mode on, it reads as before.
+test("server reads: with test mode off, test runs are not listed, and a test run's id is refused as an unknown one", async () => {
+    const testRun = { runId: "run-t", workflowSessionId: "wf", mode: "test", status: "completed", revision: 1, terminalOutcome: "done", kvRevision: 2 };
+    const store = {
+        readDefinition: async id => (id === "wf" ? { state: "draft", semver: "1.0.0", currentRevision: 1, publishedRevision: null, publishedYamlSha256: null,
+            notifyParent: false, publishedAgentPins: null } : null),
+        readRevision: async () => ({ revision: 1, valid: false, irSha256: null, yamlSha256: "h-1", name: "watch", diagnostics: [], yaml: "" }),
+        listRuns: async () => [testRun],
+        readRun: async runId => (runId === "run-t" ? testRun : null),
+        readNodeExecution: async () => ({ nodeExecutionId: "nx-1", runId: "run-t" }),
+    };
+    const read = (request, testMode) => readWorkflowV2({ store, testMode }, "wf", request, "api");
+    const refusal = async (request, testMode = false) => {
+        try {
+            await read(request, testMode);
+        } catch (error) {
+            return { code: error.code, message: error.message.replace(/run-[a-z]+/g, "<run>") };
+        }
+        return null;
+    };
+    // The view: no test run listed, none selected.
+    const view = await read({}, false);
+    assert.deepEqual(view.runs, []);
+    assert.equal(view.run, null);
+    assert.ok(!JSON.stringify(view).includes("run-t"));
+    // A test run's id answers as an unknown run's does, whatever it is read for.
+    const cursor = id => workflowReadCursor("wf", id, "inbox", { seq: 3 });
+    for (const [what, request] of [["view", { runId: "%" }], ["execution", { runId: "%", executionId: "nx-1" }], ["kv", { runId: "%", kvRevision: 1 }],
+        ["page", { cursor: "%" }]]) {
+        const as = id => JSON.parse(JSON.stringify(request).replace('"%"', what === "page" ? JSON.stringify(cursor(id)) : JSON.stringify(id)));
+        const hidden = await refusal(as("run-t"));
+        assert.ok(hidden, what);
+        assert.deepEqual(hidden, await refusal(as("run-nope")), `${what}: the same refusal as an unknown run`);
+        assert.ok(["RUN_NOT_FOUND", "WORKFLOW_CURSOR_INVALID"].includes(hidden.code), `${what}: ${hidden.code}`);
+    }
+    // Off by default (no host value, no flag); on, by the host's value or the flag, the test run is listed as before.
+    assert.deepEqual((await read({}, undefined)).runs, []);
+    assert.deepEqual((await read({}, true)).runs, [{ runId: "run-t", mode: "test", status: "completed", revision: 1, outcome: "done" }]);
+    await withFlag("on", async () => { assert.equal((await read({}, undefined)).runs.length, 1); });
+    // A caller cannot turn the filter off through the request.
+    assert.deepEqual((await read({ hideTestRuns: false }, false)).runs, []);
 });

@@ -672,12 +672,22 @@ export interface WorkflowV2ReadOptions {
     kvRevision?: unknown;
     /** With kvRevision: one variable of that revision, whole. */
     kvKey?: unknown;
+    /**
+     * Test mode is off (review SF-5): a test run (one kept from while it was on) is not a run of this workflow to this read.
+     * The view lists none and selects none; a test run's id, as a run, a cursor's run, an execution's or a KV revision's,
+     * is refused as an unknown run is. readWorkflowV2 sets it from its host's test mode.
+     */
+    hideTestRuns?: boolean;
 }
+
+/** The runs a read may show: all of them, or, with test mode off (`hide`), the live ones (review SF-5). */
+const readableRuns = <T extends { mode: string }>(runs: readonly T[], hide: boolean | undefined): T[] =>
+    (hide ? runs.filter(run => run.mode !== "test") : [...runs]);
 
 const readInvalid = (message: string): WorkflowStoreError => new WorkflowStoreError("WORKFLOW_READ_INVALID", message);
 
 /** A read's options as an adapter received them (read_workflow's arguments, or readWorkflow's options), for readWorkflowV2. */
-export interface WorkflowV2ReadRequest extends Omit<WorkflowV2ReadOptions, "includeYaml"> {
+export interface WorkflowV2ReadRequest extends Omit<WorkflowV2ReadOptions, "includeYaml" | "hideTestRuns"> {
     includeYaml?: unknown; agentVersions?: unknown; definitionRevision?: unknown; stepInput?: unknown;
 }
 
@@ -701,15 +711,17 @@ export function workflowV2ExclusiveRead(request: WorkflowV2ReadRequest): "agentV
  * of its own, any other given option refused by the caller's name for it, or the view, a page or a value. Who may read
  * is decided before this, and what an adapter adds to the view, after it.
  */
-export async function readWorkflowV2(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests">, workflowSessionId: string,
-    request: WorkflowV2ReadRequest, names: "tool" | "api"): Promise<{ [key: string]: JsonValue }> {
+export async function readWorkflowV2(host: Pick<WorkflowV2Host, "store" | "resolveAgent" | "requests"> & { testMode?: boolean },
+    workflowSessionId: string, request: WorkflowV2ReadRequest, names: "tool" | "api"): Promise<{ [key: string]: JsonValue }> {
     const own = workflowV2ExclusiveRead(request);
     const extra = (Object.keys(READ_TOOL_NAMES) as (keyof WorkflowV2ReadRequest)[])
         .filter(key => key !== own && readOptionGiven(request, key)).map(key => (names === "tool" ? READ_TOOL_NAMES[key] : key));
     if (own === "agentVersions") return readWorkflowV2AgentVersions(host, workflowSessionId, request.agentVersions, extra);
     if (own === "definitionRevision") return readWorkflowV2DefinitionRevision(host.store, workflowSessionId, request.definitionRevision, extra);
     if (own === "stepInput") return readWorkflowV2StepInput(host, workflowSessionId, request.stepInput, extra);
-    return readWorkflowV2View(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true });
+    // With test mode off (the host's, or else the deployment flag), test runs are not shown and not found (review SF-5).
+    return readWorkflowV2View(host.store, workflowSessionId, { ...request, runId: request.runId ?? null, includeYaml: request.includeYaml === true,
+        hideTestRuns: !resolveWorkflowTestMode(host.testMode) });
 }
 
 /** A read of its own given with other read options (`extra`, by the caller's names): WORKFLOW_READ_INVALID naming them. */
@@ -1016,9 +1028,9 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     if (given(options.kvKey) && !kv) throw readInvalid("kv_key names a variable of a KV revision: give kv_revision with it.");
     if ((paging || execution || kv) && options.includeYaml === true) throw readInvalid("include_yaml belongs to the workflow's view, not to a page or to a value.");
     if ((execution || kv) && given(options.limit)) throw readInvalid("limit belongs to the view and its pages, not to a value.");
-    if (execution) return readExecution(store, workflowSessionId, options.runId ?? null, options.executionId);
-    if (kv) return readKvRevision(store, workflowSessionId, options.runId ?? null, options.kvRevision, options.kvKey);
-    if (paging) return readSectionPage(store, workflowSessionId, options.runId ?? null, options.cursor, options.limit);
+    if (execution) return readExecution(store, workflowSessionId, options.runId ?? null, options.executionId, options.hideTestRuns);
+    if (kv) return readKvRevision(store, workflowSessionId, options.runId ?? null, options.kvRevision, options.kvKey, options.hideTestRuns);
+    if (paging) return readSectionPage(store, workflowSessionId, options.runId ?? null, options.cursor, options.limit, options.hideTestRuns);
     return readOverview(store, workflowSessionId, options);
 }
 
@@ -1035,8 +1047,8 @@ const KV_ENTRY_PREVIEW_CHARS = 200;
  * says which). With `kvKey`, one variable of that revision, whole (a value is at most 256 KiB, the KV limit), or that
  * it is not set. A revision the run does not have is KV_REVISION_NOT_FOUND. Reading changes nothing.
  */
-async function readKvRevision(store: WorkflowStore, workflowSessionId: string, runId: string | null, revisionValue: unknown, keyValue: unknown)
-    : Promise<{ [key: string]: JsonValue }> {
+async function readKvRevision(store: WorkflowStore, workflowSessionId: string, runId: string | null, revisionValue: unknown, keyValue: unknown,
+    hideTestRuns?: boolean): Promise<{ [key: string]: JsonValue }> {
     if (typeof revisionValue !== "number" || !Number.isSafeInteger(revisionValue) || revisionValue < 1) {
         throw readInvalid("kv_revision must be a positive integer.");
     }
@@ -1045,7 +1057,7 @@ async function readKvRevision(store: WorkflowStore, workflowSessionId: string, r
         throw readInvalid(`kv_key must be a variable name of 1 to ${WORKFLOW_V2_KV_LIMITS.maxKeyLength} characters.`);
     }
     if (!await store.readDefinition(workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
-    const runs = await store.listRuns(workflowSessionId);
+    const runs = readableRuns(await store.listRuns(workflowSessionId), hideTestRuns);
     const run = runId ? runs.find(item => item.runId === runId) : runs.find(item => item.mode === "live");
     if (!run) {
         throw new WorkflowStoreError("RUN_NOT_FOUND", runId ? `Run ${runId} is not a run of this workflow.`
@@ -1168,7 +1180,7 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
     // Reading shows any stored graph, request and agent states (IR 7 and 8, INACTIVE) included; it runs nothing.
     const ir = graphRow?.valid && graphRow.irSha256
         ? await store.readRevisionIr(workflowSessionId, graphRow.revision, graphRow.irSha256, { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION }) : null;
-    const runs = await store.listRuns(workflowSessionId);
+    const runs = readableRuns(await store.listRuns(workflowSessionId), options.hideTestRuns);
     const selected = options.runId ? runs.find(run => run.runId === options.runId) : runs.find(run => run.mode === "live");
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
     const sections = selected ? await runSectionsOf(store, selected, limits) : null;
@@ -1389,13 +1401,13 @@ function outboxViewOf(message: WorkflowOutboxMessage, intakeOutcomes: ReadonlyMa
 }
 
 /** The next page of one section of a run (read-pages.ts): its rows, oldest first, and the cursor of the page after it. */
-async function readSectionPage(store: WorkflowStore, workflowSessionId: string, runId: string | null, cursorValue: unknown, limitValue: unknown)
-    : Promise<{ [key: string]: JsonValue }> {
+async function readSectionPage(store: WorkflowStore, workflowSessionId: string, runId: string | null, cursorValue: unknown, limitValue: unknown,
+    hideTestRuns?: boolean): Promise<{ [key: string]: JsonValue }> {
     if (!await store.readDefinition(workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
     const cursor = parseWorkflowReadCursor(cursorValue, workflowSessionId, runId);
     const limit = workflowReadLimit(limitValue, cursor.section);
     const run = await store.readRun(cursor.runId);
-    if (!run || run.workflowSessionId !== workflowSessionId) {
+    if (!run || run.workflowSessionId !== workflowSessionId || (hideTestRuns && run.mode === "test")) {
         throw new WorkflowStoreError("WORKFLOW_CURSOR_INVALID", "This cursor names a run that is not a run of this workflow.");
     }
     const page = (items: JsonValue[], nextCursor: WorkflowReadCursor | null): { [key: string]: JsonValue } => ({
@@ -1434,14 +1446,14 @@ async function readSectionPage(store: WorkflowStore, workflowSessionId: string, 
  * bounded preview is, marked whole: false. Only an execution of the run read is shown (EXECUTION_NOT_FOUND otherwise),
  * whatever workflow or run the id belongs to.
  */
-async function readExecution(store: WorkflowStore, workflowSessionId: string, runId: string | null, executionIdValue: unknown)
-    : Promise<{ [key: string]: JsonValue }> {
+async function readExecution(store: WorkflowStore, workflowSessionId: string, runId: string | null, executionIdValue: unknown,
+    hideTestRuns?: boolean): Promise<{ [key: string]: JsonValue }> {
     if (typeof executionIdValue !== "string" || !executionIdValue.trim() || executionIdValue.length > 256) {
         throw readInvalid("execution_id must be a node execution id of 1 to 256 characters.");
     }
     const definition = await store.readDefinition(workflowSessionId);
     if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `No v2 workflow ${workflowSessionId}.`);
-    const runs = await store.listRuns(workflowSessionId);
+    const runs = readableRuns(await store.listRuns(workflowSessionId), hideTestRuns);
     const run = runId ? runs.find(item => item.runId === runId) : runs.find(item => item.mode === "live");
     if (runId && !run) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${runId} is not a run of this workflow.`);
     const node = run ? await store.readNodeExecution(executionIdValue) : null;

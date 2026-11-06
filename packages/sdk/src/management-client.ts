@@ -1971,7 +1971,8 @@ export class PilotSwarmManagementClient {
             // The agent versions publishing would lock (owner decision q1) are resolved as this client's publications resolve them,
             // and a step's proposed inputs (q6) compiled as its saves compile them. The portal reads a definition revision's and a
             // step's YAML only for a person who may change the workflow; this client is trusted.
-            view = await readWorkflowV2({ store, ...(enabled?.requests === true
+            // With test mode off, test runs are not shown or found (review SF-5): this client's own test mode, or else the flag.
+            view = await readWorkflowV2({ store, ...(typeof enabled?.testMode === "boolean" ? { testMode: enabled.testMode } : {}), ...(enabled?.requests === true
                 ? { requests: true, resolveAgent: createRegistryWorkflowAgentResolver(this._catalog!) } : {}) }, sessionId, request, "api");
         } catch (error) {
             const status = error instanceof WorkflowStoreError ? WORKFLOW_READ_STATUS[error.code] : undefined;

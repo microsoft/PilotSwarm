@@ -19,6 +19,9 @@ import { jsonResult, errorResult, withToolErrors, type ToolResult } from "../uti
  * actor; a workflow in a workflow agent state's subtree takes only pause, stop and cancel.
  */
 export function registerWorkflowTools(server: McpServer, ctx: ServerContext): void {
+    // Workflow test mode is hidden unless this process's deployment flag is on (spec 16): off, neither tool names it, and the
+    // read shows no test run (review SF-5).
+    const testMode = ctx.workflowTestMode ?? workflowTestModeFromEnv();
     server.registerTool(
         "read_workflow",
         {
@@ -26,8 +29,8 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
             description:
                 "Read a version 2 workflow session without changing it, as a person: its definition (state, current revision, "
                 + "diagnostics), graph and runs, and one run (run_id, default the live run). Each section of the run holds its newest rows, "
-                + "oldest first; rows still open are listed apart, however old (openExecutions, openInbox, openOutbox, "
-                + "run.test.openInterceptions). run.pages gives each section's nextCursor: give it back as cursor (a JSON object; limit may "
+                + "oldest first; rows still open are listed apart, however old (openExecutions, openInbox, openOutbox"
+                + `${testMode ? ", run.test.openInterceptions" : ""}). run.pages gives each section's nextCursor: give it back as cursor (a JSON object; limit may `
                 + "go with it) for that section's next, older page; null means none is older. execution_id, kv_revision, agent_versions, "
                 + "definition_revision and step_input are separate reads: each argument says what it returns. Refusals carry their code: "
                 + "WORKFLOW_NOT_FOUND, RUN_NOT_FOUND, EXECUTION_NOT_FOUND, KV_REVISION_NOT_FOUND, DEFINITION_REVISION_NOT_FOUND, WORKFLOW_CURSOR_INVALID, WORKFLOW_READ_INVALID, "
@@ -68,8 +71,7 @@ export function registerWorkflowTools(server: McpServer, ctx: ServerContext): vo
 
     if (ctx.workflowCommands !== true) return;
 
-    // Workflow test mode is hidden unless this process's deployment flag is on (spec 16): the tool then names stop only.
-    const testMode = ctx.workflowTestMode ?? workflowTestModeFromEnv();
+    // Off, update_workflow names stop and no test operation.
     const operations = testMode
         ? "operation (replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel; stop, test, test_respond "
             + "and test_advance when the workers run controller 1.9.0), operation_id (repeat it to retry the same command) and the "
