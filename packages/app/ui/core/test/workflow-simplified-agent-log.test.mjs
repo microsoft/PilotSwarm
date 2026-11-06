@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-    WORKFLOW_AGENT_LOG_FOLD, WORKFLOW_AGENT_LOG_NOTE, workflowAgentLogChats, workflowAgentNodeLog, workflowLogFold, workflowPromptVisit,
+    WORKFLOW_AGENT_LOG_FOLD, WORKFLOW_AGENT_LOG_NOTE, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructions, workflowLogFold,
+    workflowPromptVisit,
 } from "../src/workflow-agent-log.js";
 import { WorkflowV2AgentLog } from "../../react/src/workflow-v2-panels.js";
 
@@ -103,7 +104,7 @@ test("one group per visit, newest first; each visit's chat rows and Workflow row
 test("the portal draws each row with its label, folds long text and expands a tool call; the note says what is not recorded", () => {
     const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, chat]]), runId: "run-1", now: NOW });
     const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", onMore: () => {} }));
-    assert.ok(html.includes("The agent&#x27;s base instructions are not recorded in its chat."));
+    assert.ok(html.includes("Prompt rows are what the agent was given, its base instructions first; Agent rows are what it did."));
     assert.ok(html.includes("Visit 2 · 17:42:01 UTC") && html.includes("Visit 1 · 17:40:01 UTC"));
     assert.ok(html.indexOf("Visit 2") < html.indexOf("Visit 1"), "newest visit first");
     for (const kind of ["prompt", "agent", "result", "workflow"]) assert.ok(html.includes(`data-kind="${kind}"`), kind);
@@ -113,4 +114,49 @@ test("the portal draws each row with its label, folds long text and expands a to
     const failed = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, {
         log: workflowAgentNodeLog({ node, events, chats: new Map(), runId: "run-1", now: NOW }), failed: new Set([CHAT]) }));
     assert.ok(failed.includes("Its agent chat could not be read."));
+});
+
+// The base instructions (finding 8, "show the base prompts"): the runtime records a summary of the SDK's echo of the
+// composed system prompt; for a workflow agent chat it also keeps the whole text once per distinct sha256 on the
+// Workflow and names it in the summary event (baseInstructions). The Log shows a folded "Base instructions" Prompt row
+// before the visit's prompt; opened, it reads the kept text. The same text again in a visit is one row.
+const SUMMARY = "[SYSTEM: Copilot SDK rebuilt the full system prompt for model input. Full content omitted from CMS (48210 chars). "
+    + "Snippet: You are the GitHub Copilot CLI, a terminal assistant built by GitHub. You are an interactive...]";
+const SHA = "0123456789abcdef".repeat(4);
+const KEPT = { sessionId: "wf-1", artifact: "base-instructions-0123456789abcdef.md", sha256: SHA, chars: 48210 };
+const base = (seq, clock, kept = KEPT) => chatEvent(seq, "system.message", clock, { content: SUMMARY, ...(kept ? { baseInstructions: kept } : {}) });
+
+test("the base instructions: the recorded summary is a Base instructions row before the visit's prompt, naming where the whole text is", () => {
+    assert.deepEqual(workflowBaseInstructions({ content: SUMMARY, baseInstructions: KEPT }), { chars: 48210,
+        snippet: "You are the GitHub Copilot CLI, a terminal assistant built by GitHub. You are an interactive...",
+        ref: { sessionId: "wf-1", artifact: "base-instructions-0123456789abcdef.md", sha256: SHA } });
+    assert.equal(workflowBaseInstructions({ content: SUMMARY }).ref, null, "an older chat kept only the summary");
+    assert.equal(workflowBaseInstructions({ content: SUMMARY, baseInstructions: { ...KEPT, artifact: "../secret.md" } }).ref, null);
+    assert.equal(workflowBaseInstructions({ content: "Workspace note." }), null);
+    // The echo comes after the visit's prompt is recorded; the Log shows it first, once per visit.
+    const withBase = [...chat.slice(0, 2), base(2.1, "17:40:02"), base(2.2, "17:40:05"), ...chat.slice(2)];
+    const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, withBase]]), runId: "run-1", now: NOW });
+    const first = log.groups[1].rows.filter(row => row.kind === "prompt");
+    assert.deepEqual(first.map(row => row.label), ["Base instructions", "Prompt"]);
+    assert.equal(first[0].text, "48,210 characters: You are the GitHub Copilot CLI, a terminal assistant built by GitHub. You are an interactive...");
+    assert.deepEqual(first[0].instructions, { sessionId: "wf-1", artifact: "base-instructions-0123456789abcdef.md", sha256: SHA });
+});
+
+test("the portal's Base instructions row reads the kept text when opened, and says plainly when only the summary was kept", () => {
+    const withBase = [...chat.slice(0, 2), base(2.1, "17:40:02"), ...chat.slice(2), base(9.5, "17:42:02", null)];
+    const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, withBase]]), runId: "run-1", now: NOW });
+    const asked = [];
+    const render = read => renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", readInstructions: read,
+        onInstructions: ref => asked.push(ref) }));
+    const closed = render(() => null);
+    assert.match(closed, /<details class="ps-wf-alog-base"><summary>48,210 characters: You are the GitHub Copilot CLI/);
+    assert.ok(closed.includes("Open to read the whole text."));
+    assert.ok(closed.includes("Only this summary was kept for this chat; its whole text was not."), "the second visit's echo kept no text");
+    const loading = render(() => ({ loading: true, text: null, error: null }));
+    assert.ok(loading.includes("Reading the base instructions…"));
+    const whole = "You are the GitHub Copilot CLI, a terminal assistant built by GitHub.\n\nThe whole composed text.";
+    const read = render(ref => (ref.artifact === KEPT.artifact ? { loading: false, text: whole, error: null } : null));
+    assert.ok(read.includes(`data-base-instructions="${KEPT.artifact}"`) && read.includes("The whole composed text."));
+    const failed = render(() => ({ loading: false, text: null, error: "Forbidden" }));
+    assert.ok(failed.includes("The base instructions could not be read: Forbidden"));
 });

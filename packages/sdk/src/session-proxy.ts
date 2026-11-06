@@ -79,6 +79,7 @@ import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool
 import { isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
+import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef } from "./workflow/v2/base-instructions.js";
 import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
@@ -4459,10 +4460,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
                     if (!recordModelEvents && MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING.has(event.eventType)) return;
-                    const persistedEvent = summarizeSdkSystemPromptEchoEvent(event.eventType === "session.input_required_started"
+                    let persistedEvent = summarizeSdkSystemPromptEchoEvent(event.eventType === "session.input_required_started"
                         ? { ...event, data: { ...(event.data as Record<string, unknown>), ...(input.turnIndex != null ? { questionIteration: input.turnIndex + 1 } : {}) } }
                         : event);
                     if (!persistedEvent) return;
+                    // A workflow agent node's chat keeps its whole base instructions (finding 8): once per distinct text, as an
+                    // artifact of its Workflow, named in the summary event; the transcript still records only the summary.
+                    const echoed = workflowAgentChild && artifactStore && workflowLineage?.agentRoot ? sdkSystemPromptEchoContent(event) : null;
+                    if (echoed !== null && artifactStore && workflowLineage?.agentRoot) {
+                        const ref = workflowBaseInstructionsRef(workflowLineage.agentRoot.workflowSessionId, echoed);
+                        persistedEvent = { ...persistedEvent, data: { ...(persistedEvent.data as Record<string, unknown>), baseInstructions: ref } };
+                        trackEventWrite(keepWorkflowBaseInstructions(artifactStore, ref, echoed).then(() => undefined, (error: unknown) => {
+                            activityCtx.traceInfo(`[runTurn] session=${input.sessionId} base instructions not kept: ${errorMessage(error)}`);
+                        }));
+                    }
                     if (event.eventType === "session.wait_started") {
                         const data = (event.data ?? {}) as { reason?: string };
                         void cmsRetryBestEffort(

@@ -390,10 +390,27 @@ function KvApplied({ execution, runId, kv }) {
                     h("td", null, row.after === null ? "—" : h("code", { style: { overflowWrap: "anywhere" } }, row.after)))))) : null) : null);
 }
 
+/**
+ * A Base instructions row (finding 8): their length and first words; opened, their whole text, read from the artifact
+ * the runtime kept on the Workflow (`row.instructions`), or a plain line that only the summary was kept.
+ */
+function BaseInstructions({ row, readInstructions, onInstructions }) {
+    const loaded = row.instructions && readInstructions ? readInstructions(row.instructions) : null;
+    return h("details", { className: "ps-wf-alog-base", onToggle: event => {
+        if (event.currentTarget.open && row.instructions && onInstructions && !loaded?.text) onInstructions(row.instructions);
+    } },
+    h("summary", null, row.text),
+    !row.instructions ? h("p", { className: "ps-wf-muted" }, "Only this summary was kept for this chat; its whole text was not.")
+        : loaded?.error ? h("p", { role: "alert" }, `The base instructions could not be read: ${loaded.error}`)
+            : loaded?.text ? h("pre", { "data-base-instructions": row.instructions.artifact }, loaded.text)
+                : h("p", { className: "ps-wf-muted" }, loaded?.loading ? "Reading the base instructions…" : "Open to read the whole text."));
+}
+
 /** One row of an agent node's Log: its label and time, then its text (folded with Show more) or its call (to expand). */
-function AgentLogRow({ row }) {
+function AgentLogRow({ row, readInstructions = null, onInstructions = null }) {
     const [open, setOpen] = React.useState(false);
-    const body = row.detail !== undefined
+    const body = row.label === "Base instructions" ? h(BaseInstructions, { row, readInstructions, onInstructions })
+        : row.detail !== undefined
         ? h("details", null, h("summary", null, row.text), h("pre", null, row.detail))
         : h("div", { className: "ps-wf-alog-text" },
             h("p", null, open && row.more ? row.more : row.text),
@@ -410,14 +427,15 @@ function AgentLogRow({ row }) {
  * apart by their label and the colour of their edge. `failed` names the chats that could not be read; `onMore` shows
  * older visits.
  */
-export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId = null }) {
+export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId = null, readInstructions = null, onInstructions = null }) {
     return h("div", { className: "ps-wf-alog", "aria-label": nodeId ? `Log of node ${nodeId}` : "Agent node log" },
         h("p", { className: "ps-wf-muted ps-wf-alog-note" }, log.note),
         log.groups.length ? null : h("p", { className: "ps-wf-muted" }, "This node has not run yet."),
         log.groups.map(group => h("section", { key: group.visitId, className: "ps-wf-alog-visit", "data-visit": group.ordinal ?? undefined },
             h("h3", null, group.header, group.status ? h("span", { className: "ps-wf-alog-status" }, ` · ${group.status}`) : null),
             group.loading ? h("p", { className: "ps-wf-muted" }, failed?.has?.(group.chatId) ? "Its agent chat could not be read." : "Reading its agent chat…") : null,
-            group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row }))) : null)),
+            group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions,
+                onInstructions }))) : null)),
         log.more && onMore ? h("button", { type: "button", className: "ps-mini-button", "data-action": "older-visits", onClick: onMore }, "Show older visits") : null,
         !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits are not in the loaded history of this run.") : null);
 }

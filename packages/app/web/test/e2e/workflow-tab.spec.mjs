@@ -3091,6 +3091,7 @@ test("on a phone the bottom panel's sheet keeps one height across its tabs", asy
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "agent node:" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
 const AGENT_CHAT = "77777777-2222-3333-4444-555555555555";
+const BASE_ARTIFACT = "base-instructions-0123456789abcdef.md";
 const AGENT_STATES = [
     { id: "fact", type: "agent", invoke: { source: "prompt" }, about: { prompt: "Tell one new fact about PostgreSQL. Keep it to one sentence." },
         timeoutSeconds: 90, outcomes: ["produced"], chat: "continue", next: { produced: "pause", timed_out: "pause" } },
@@ -3127,17 +3128,24 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
     const said = (seq, eventType, seconds, data) => ({ sessionId: AGENT_CHAT, seq, eventType, createdAt: ago(seconds), data });
     const chat = [
         prompt(1, "nx-fact-1", 108, "[SYSTEM: WORKFLOW NODE INVOCATION.]\n{\"input\":null}\n[SYSTEM: The task of this state:]\nTell one new fact about PostgreSQL."),
-        said(2, "tool.execution_start", 106, { toolCallId: "t1", toolName: "read_facts", arguments: { key_pattern: "facts/%" } }),
-        said(3, "tool.execution_complete", 105, { toolCallId: "t1", toolName: "read_facts", result: { count: 0 } }),
-        said(4, "assistant.message", 104, { content: "PostgreSQL keeps old row versions (MVCC)." }),
-        said(5, "tool.execution_start", 103, { toolCallId: "t2", toolName: "complete_workflow_node",
+        said(2, "system.message", 107, { content: "[SYSTEM: Copilot SDK rebuilt the full system prompt for model input. Full content omitted from CMS "
+            + "(48210 chars). Snippet: You are the GitHub Copilot CLI, a terminal assistant built by GitHub. You are...]",
+        baseInstructions: { sessionId: WORKFLOW_ID, artifact: BASE_ARTIFACT, sha256: "0123456789abcdef".repeat(4), chars: 48210 } }),
+        said(3, "tool.execution_start", 106, { toolCallId: "t1", toolName: "read_facts", arguments: { key_pattern: "facts/%" } }),
+        said(4, "tool.execution_complete", 105, { toolCallId: "t1", toolName: "read_facts", result: { count: 0 } }),
+        said(5, "assistant.message", 104, { content: "PostgreSQL keeps old row versions (MVCC)." }),
+        said(6, "tool.execution_start", 103, { toolCallId: "t2", toolName: "complete_workflow_node",
             arguments: { outcome: "produced", output: { fact: "PostgreSQL keeps old row versions (MVCC)." }, operation_id: "op-1", node_execution_id: "nx-fact-1" } }),
-        prompt(6, "nx-fact-2", 28, "[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2.]\n{\"cycle\":2}\n[SYSTEM: The task of this state:]\nTell one new fact about PostgreSQL."),
-        said(7, "assistant.message", 20, { content: "Looking for a fact I have not given yet." }),
+        prompt(7, "nx-fact-2", 28, "[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2.]\n{\"cycle\":2}\n[SYSTEM: The task of this state:]\nTell one new fact about PostgreSQL."),
+        said(8, "assistant.message", 20, { content: "Looking for a fact I have not given yet." }),
     ];
     await page.route("**/api/v1/**", async (route) => {
         const pathname = new URL(route.request().url()).pathname;
         if (pathname.includes(`/sessions/${AGENT_CHAT}/events`)) return route.fulfill({ json: { ok: true, result: chat } });
+        if (pathname.endsWith(`/sessions/${WORKFLOW_ID}/artifacts/${BASE_ARTIFACT}/text`)) {
+            return route.fulfill({ json: { ok: true, result: "You are the GitHub Copilot CLI, a terminal assistant built by GitHub.\n\n"
+                + "The whole composed text of the agent's base instructions." } });
+        }
         return route.fallback();
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
@@ -3167,12 +3175,17 @@ test("agent node: the Node panel says what it does and the Log shows its chat, v
     await expect(visits.nth(0).locator("h3")).toContainText(/^Visit 2 · /);
     await expect(visits.nth(1).locator("h3")).toContainText(/^Visit 1 · /);
     const first = visits.nth(1);
-    await expect(first.locator('[data-kind="prompt"]').first()).toContainText("WORKFLOW NODE INVOCATION");
+    await expect(first.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION" })).toHaveCount(1);
     await expect(first.locator('[data-kind="agent"]').filter({ hasText: "read_facts" })).toHaveCount(1);
     await expect(first.locator('[data-kind="result"]')).toContainText("produced · {\"fact\":\"PostgreSQL keeps old row versions (MVCC).\"}");
     await expect(first.locator('[data-kind="workflow"]').first()).toContainText("Node fact started");
     await expect(visits.nth(0).locator('[data-kind="agent"]')).toContainText("Looking for a fact I have not given yet.");
-    await expect(log.locator(".ps-wf-alog-note")).toHaveText("The agent's base instructions are not recorded in its chat. Prompt rows show what it was sent.");
+    await expect(log.locator(".ps-wf-alog-note")).toHaveText("Prompt rows are what the agent was given, its base instructions first; Agent rows are what it did.");
+    // The base instructions (finding 8): a folded row before the prompt; opened, it reads the whole text kept on the Workflow.
+    const baseRow = first.locator(".ps-wf-alog-base");
+    await expect(baseRow.locator("summary")).toContainText("48,210 characters: You are the GitHub Copilot CLI");
+    await baseRow.locator("summary").click();
+    await expect(baseRow.locator("pre")).toContainText("The whole composed text of the agent's base instructions.");
     await shot(page, "agent-log-1440");
     await log.getByRole("button", { name: "Whole Workflow", exact: true }).click();
     await expect(log.getByRole("list", { name: "Workflow log" })).toBeVisible();

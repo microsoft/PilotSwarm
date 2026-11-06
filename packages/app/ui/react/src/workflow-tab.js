@@ -697,7 +697,15 @@ function AgentNodeLog({ controller, node, events, runId }) {
     const chats = React.useMemo(() => new Map(chatIds.map(id => [id, histories?.get?.(id)?.events])), [chatKey, histories]);
     const failed = React.useMemo(() => new Set(chatIds.filter(id => histories?.get?.(id)?.loadState === "failed")), [chatKey, histories]);
     const log = React.useMemo(() => workflowAgentNodeLog({ node, events, chats, runId, limit }), [node, events, chats, runId, limit]);
-    return h(WorkflowV2AgentLog, { log, failed, nodeId: node.id, onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS) });
+    // The base instructions are read like any file of a session (the Workflow's), when a person opens their row.
+    const files = useControllerSelector(controller, state => state.files.bySessionId);
+    const readInstructions = ref => {
+        const preview = files?.[ref.sessionId]?.previews?.[ref.artifact];
+        return preview ? { loading: Boolean(preview.loading), text: typeof preview.content === "string" ? preview.content : null, error: preview.error ?? null } : null;
+    };
+    const onInstructions = ref => { controller.ensureFilePreview(ref.sessionId, ref.artifact).catch(() => {}); };
+    return h(WorkflowV2AgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions,
+        onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS) });
 }
 
 /**

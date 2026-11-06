@@ -18,8 +18,25 @@ import { workflowNodeClock, workflowNodeNow } from "./workflow-node-summary.js";
 /** How many visits the Log shows before "Show older visits"; how long a text is before it folds. */
 export const WORKFLOW_AGENT_LOG_VISITS = 10;
 export const WORKFLOW_AGENT_LOG_FOLD = 600;
-/** What the Log says about the base instructions, which no chat records. */
-export const WORKFLOW_AGENT_LOG_NOTE = "The agent's base instructions are not recorded in its chat. Prompt rows show what it was sent.";
+/** The Log's one line about what its rows are (finding 8). */
+export const WORKFLOW_AGENT_LOG_NOTE = "Prompt rows are what the agent was given, its base instructions first; Agent rows are what it did.";
+
+/** The summary the runtime records for the SDK's echo of the full system prompt (session-proxy summarizeSdkSystemPromptEchoEvent). */
+const BASE_SUMMARY = /^\[SYSTEM: Copilot SDK rebuilt the full system prompt for model input\. Full content omitted from CMS \((\d+) chars\)\. Snippet: ([\s\S]*)\]$/;
+
+/**
+ * A recorded base-instructions summary as a row's parts: its length and snippet, and where its whole text is kept
+ * (`baseInstructions`, a workflow agent chat's: { sessionId, artifact, sha256, chars }), or null for another message.
+ */
+export function workflowBaseInstructions(data) {
+    const content = isRecord(data) && typeof data.content === "string" ? data.content : "";
+    const found = BASE_SUMMARY.exec(content);
+    if (!found) return null;
+    const kept = isRecord(data.baseInstructions) ? data.baseInstructions : null;
+    const ref = kept && typeof kept.sessionId === "string" && typeof kept.artifact === "string" && /^base-instructions-[0-9a-f]{16}\.md$/.test(kept.artifact)
+        ? { sessionId: kept.sessionId, artifact: kept.artifact, sha256: typeof kept.sha256 === "string" ? kept.sha256 : null } : null;
+    return { chars: Number(found[1]), snippet: found[2], ref };
+}
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const timeOf = value => {
@@ -85,6 +102,7 @@ const toolPreview = args => {
 function chatRows(events, visitId) {
     const rows = [];
     const calls = new Map();
+    const seenInstructions = new Set();
     for (const event of events) {
         const data = isRecord(event.data) ? event.data : {};
         const at = timeOf(event.createdAt);
@@ -97,7 +115,16 @@ function chatRows(events, visitId) {
             rows.push({ ...base, kind: "prompt", label: own ? "Prompt" : `Message${from ? ` from ${from}` : ""}`, ...workflowLogFold(content) });
         } else if (event.eventType === "system.message") {
             const content = typeof data.content === "string" ? data.content : "";
-            if (content.trim()) rows.push({ ...base, kind: "prompt", label: "Note to the agent", ...workflowLogFold(content) });
+            const instructions = workflowBaseInstructions(data);
+            if (instructions) {
+                // The same instructions once per visit (the SDK may compose them again at a later turn).
+                const key = instructions.ref?.sha256 ?? `${instructions.chars}:${instructions.snippet}`;
+                if (seenInstructions.has(key)) continue;
+                seenInstructions.add(key);
+                rows.push({ ...base, kind: "prompt", label: "Base instructions",
+                    text: `${instructions.chars.toLocaleString("en-US")} characters: ${instructions.snippet}`, instructions: instructions.ref,
+                    instructionsKept: instructions.ref !== null });
+            } else if (content.trim()) rows.push({ ...base, kind: "prompt", label: "Note to the agent", ...workflowLogFold(content) });
         } else if (event.eventType === "assistant.message") {
             const content = typeof data.content === "string" ? data.content : "";
             if (content.trim()) rows.push({ ...base, kind: "agent", label: "Agent", ...workflowLogFold(content) });
@@ -172,10 +199,14 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), run
         const waiting = Boolean(chatId) && !cut.has(chatId);
         if (waiting) loading = true;
         const chatEvents = chatId && cut.has(chatId) ? cut.get(chatId).get(visit.id) ?? [] : [];
-        const rows = [...chatRows(chatEvents, visit.id), ...workflowRows(events, runId, visit.id)]
+        const sorted = [...chatRows(chatEvents, visit.id), ...workflowRows(events, runId, visit.id)]
             .map((row, index) => ({ ...row, order: index }))
-            .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity) || a.order - b.order)
-            .map(({ order, ...row }) => ({ ...row, time: row.at === null ? null : workflowNodeClock(row.at, now) }));
+            .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity) || a.order - b.order);
+        // The base instructions come before the visit's own prompt (they are what the agent is, the prompt what it is asked).
+        const base = sorted.findIndex(row => row.label === "Base instructions");
+        const asked = sorted.findIndex(row => row.label === "Prompt");
+        if (base > asked && asked >= 0) sorted.splice(asked, 0, ...sorted.splice(base, 1));
+        const rows = sorted.map(({ order, ...row }) => ({ ...row, time: row.at === null ? null : workflowNodeClock(row.at, now) }));
         const started = visit.enteredAt ? workflowNodeClock(visit.enteredAt, now) : null;
         return {
             visitId: visit.id, ordinal: visit.ordinal ?? null, chatId, loading: waiting,
