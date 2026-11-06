@@ -3481,7 +3481,7 @@ for (const theme of listThemes()) {
 // Usability re-test r3, C02 at 390 px: a failed Workflow's graph started 209 px below the tab's top, under the failure line
 // and its Details row. On a phone the failure is one line with Details at its end; a tap on the line shows all of it.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "r3 C02 phone" (from packages/app/web, after build).
-test("r3 C02 phone: a failed Workflow's failure is one line with Details beside it, and the graph starts within 150 px", async ({ page }) => {
+test("r3 C02 phone: a failed Workflow's failure is one line with Details beside it, each a 44 px target, and the graph starts within 156 px", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -3497,15 +3497,23 @@ test("r3 C02 phone: a failed Workflow's failure is one line with Details beside 
     const details = main.locator(".ps-wf-failure > .ps-wf-failure-details");
     await expect(details).toBeVisible();
     const [lineBox, detailsBox] = await Promise.all([line.boundingBox(), details.boundingBox()]);
-    expect(lineBox.height).toBeLessThan(40);
+    expect(lineBox.height).toBeLessThan(50);
     expect(Math.abs((detailsBox.y + detailsBox.height / 2) - (lineBox.y + lineBox.height / 2))).toBeLessThan(6);
     expect(detailsBox.x).toBeGreaterThan(lineBox.x + lineBox.width - 2);
-    expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(150);
+    // Review UI2-F4: each control is itself a 44 px target (measured on the control, not its row): the line's button and
+    // Details' summary, side by side, not overlapping. The graph's budget is the two header rows and this 44 px line.
+    const [toggleBox, summaryBox] = await Promise.all([toggle.boundingBox(), details.locator("summary").boundingBox()]);
+    expect(toggleBox.height).toBeGreaterThanOrEqual(44);
+    expect(summaryBox.height).toBeGreaterThanOrEqual(44);
+    expect(summaryBox.width).toBeGreaterThanOrEqual(44);
+    expect(summaryBox.x).toBeGreaterThanOrEqual(toggleBox.x + toggleBox.width - 0.5);
+    expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(156);
     await expect(toggle).toHaveCSS("white-space", "nowrap");
     await expect(toggle).toHaveCSS("text-overflow", "ellipsis");
     await shot(page, "r3-c02-phone-failed");
-    // A tap shows all of it, and Enter folds it again; Details opens under the line.
-    await toggle.click();
+    // A tap shows all of it (near the button's top edge: the whole 44 px is the button), and Enter folds it again; Details
+    // opens under the line.
+    await toggle.click({ position: { x: 8, y: 3 } });
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(toggle).toHaveCSS("white-space", "normal");
     await toggle.focus();
@@ -3513,7 +3521,7 @@ test("r3 C02 phone: a failed Workflow's failure is one line with Details beside 
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await page.keyboard.press(" ");
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    await details.locator("summary").click();
+    await details.locator("summary").click({ position: { x: 10, y: 41 } });
     await expect(details).toHaveAttribute("open", "");
     expect((await details.boundingBox()).y).toBeGreaterThanOrEqual((await line.boundingBox()).y + (await line.boundingBox()).height - 1);
     expect(errors).toEqual([]);
