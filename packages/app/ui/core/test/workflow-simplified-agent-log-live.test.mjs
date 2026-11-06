@@ -119,3 +119,35 @@ test("a window that starts after the chat's start keeps its leading lines apart 
     assert.deepEqual(unknown.earlier.map(part => part.rows.map(row => row.label)), [["Note to the agent"]]);
     assert.deepEqual(chatRowsOf(unknown.groups[1]).map(row => row.label), ["Base instructions", "Prompt", "Agent", "Typed result"]);
 });
+
+// r4 C04 (low): the Workflow's line about the agent chat read "Agent chat for node fact created (session d07dd6ba); its time
+// limit is 2026-11-06 08:41:17 PST": a raw id and a full date, in the node's own Log. Now: "Agent chat started; time limit
+// 16:41:17 UTC", the chat linked (as the Node panel's Open the agent chat opens it).
+test("the Workflow's line about the agent chat: plain words, a clock, the chat linked; no raw id, no date", () => {
+    const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, chat]]), coverage: new Map([[CHAT, { hasOlder: false }]]), runId: RUN, now: NOW });
+    const [second, first] = log.groups;
+    const line = group => group.rows.find(row => row.kind === "workflow" && row.chat);
+    assert.equal(line(first).text, "Agent chat started; time limit 16:41:17 UTC");
+    assert.deepEqual(line(first).chat, { sessionId: CHAT, words: "Agent chat" });
+    assert.equal(line(second).text, "Visit 2 given to the same agent chat; time limit 16:41:22 UTC");
+    assert.deepEqual(line(second).chat, { sessionId: CHAT, words: "the same agent chat" });
+    for (const group of log.groups) {
+        for (const row of group.rows.filter(item => item.kind === "workflow")) {
+            assert.ok(!/session [0-9a-f]{6,}|\d{4}-\d{2}-\d{2}|node fact (created|given)/.test(row.text), row.text);
+        }
+    }
+    const opened = [];
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "fact", onOpenChat: id => opened.push(id) }));
+    assert.ok(html.includes(`<button type="button" class="ps-link-button" data-action="open-agent-chat" data-session="${CHAT}">Agent chat</button> started; time limit 16:41:17 UTC`), html);
+    assert.ok(html.includes(`Visit 2 given to <button type="button" class="ps-link-button" data-action="open-agent-chat" data-session="${CHAT}">the same agent chat</button>`), html);
+    // Without a way to open a chat, the words stay plain.
+    const plain = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "fact" }));
+    assert.ok(!plain.includes("open-agent-chat") && plain.includes("Agent chat started; time limit 16:41:17 UTC"));
+    // A later visit whose chat had ended starts a new chat, linked, without the ended chat's raw id.
+    const restarted = workflowAgentNodeLog({ node, events: [...events, wfEvent(36, "workflow.agent_chat_restarted", "16:39:52",
+        { nodeExecutionId: "nx-2", childSessionId: "new-chat", endedChatSessionId: CHAT, cycle: 2 })], chats: new Map([[CHAT, chat]]),
+    coverage: new Map([[CHAT, { hasOlder: false }]]), runId: RUN, now: NOW });
+    const note = restarted.groups[0].rows.find(row => row.chat?.sessionId === "new-chat");
+    assert.equal(note.text, "The earlier agent chat had ended, so visit 2 starts a new chat");
+    assert.equal(note.level, "warning");
+});

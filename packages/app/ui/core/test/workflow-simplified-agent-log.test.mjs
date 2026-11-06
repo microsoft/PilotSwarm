@@ -79,7 +79,7 @@ test("one group per visit, newest first; each visit's chat rows and Workflow row
     assert.deepEqual(first.rows.map(row => [row.kind, row.label, row.text.split("\n")[0]]), [
         ["workflow", "Workflow", "Node talk started"],
         ["prompt", "Prompt", "[SYSTEM: WORKFLOW NODE INVOCATION.]"],
-        ["workflow", "Workflow", "Agent chat for node talk created (session chat-con)"],
+        ["workflow", "Workflow", "Agent chat started"],
         ["agent", "Tool", "read_facts — facts/%"],
         ["agent", "Agent", "PostgreSQL uses MVCC."],
         ["result", "Typed result", "again · {\"fact\":\"MVCC\"}"],

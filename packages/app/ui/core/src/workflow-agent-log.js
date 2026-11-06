@@ -215,16 +215,38 @@ function chatRows(events, visitId) {
     return rows;
 }
 
+/**
+ * r4 C04 (low): the Log's own words for its agent chat's lines. In a node's own Log the node's name and a raw session id
+ * say nothing new, and its time limit is a clock: "Agent chat started; time limit 08:41:17 PST", with the chat linked
+ * (`chat`: { sessionId, words }, the words of the text that open it). Other lines read as the Whole Workflow Log says them.
+ */
+function agentLogWorkflowLine(event, data, now) {
+    const chatId = typeof data.childSessionId === "string" && data.childSessionId ? data.childSessionId : null;
+    const limit = data.deadline ? workflowNodeClock(data.deadline, now) : null;
+    if (event.eventType === "workflow.agent_spawned") {
+        const later = data.chat === "continue" && Number.isSafeInteger(data.cycle) && data.cycle > 1;
+        const words = later ? "the same agent chat" : "Agent chat";
+        return { text: `${later ? `Visit ${data.cycle} given to ${words}` : `${words} started`}${limit ? `; time limit ${limit}` : ""}`,
+            ...(chatId ? { chat: { sessionId: chatId, words } } : {}) };
+    }
+    if (event.eventType === "workflow.agent_chat_restarted") {
+        const words = "a new chat";
+        return { text: `The earlier agent chat had ended, so visit ${Number.isSafeInteger(data.cycle) ? data.cycle : "this"} starts ${words}`, level: "warning",
+            ...(chatId ? { chat: { sessionId: chatId, words } } : {}) };
+    }
+    return workflowEventText(event.eventType, data, "short");
+}
+
 /** The Workflow's own rows for one visit: its events that name the visit, in the Log's sentences. */
-function workflowRows(events, runId, visitId) {
+function workflowRows(events, runId, visitId, now = Date.now()) {
     const rows = [];
     for (const event of Array.isArray(events) ? events : []) {
         const data = isRecord(event?.data) ? event.data : {};
         if (data.nodeExecutionId !== visitId || (runId && data.runId && data.runId !== runId)) continue;
-        const line = workflowEventText(event.eventType, data, "short");
+        const line = agentLogWorkflowLine(event, data, now);
         if (!line) continue;
         rows.push({ key: `wf:${event.seq}`, seq: event.seq ?? 0, at: timeOf(event.createdAt), kind: "workflow", label: "Workflow", text: line.text,
-            level: line.level ?? "info" });
+            level: line.level ?? "info", ...(line.chat ? { chat: line.chat } : {}) });
     }
     return rows;
 }
@@ -313,7 +335,7 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
         const waiting = Boolean(chatId) && !cut.has(chatId);
         if (waiting) loading = true;
         const chatEvents = chatId && cut.has(chatId) ? cut.get(chatId).get(visit.id) ?? [] : [];
-        const sorted = [...chatRows(chatEvents, visit.id), ...workflowRows(events, runId, visit.id)]
+        const sorted = [...chatRows(chatEvents, visit.id), ...workflowRows(events, runId, visit.id, now)]
             .map((row, index) => ({ ...row, order: index }))
             .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity) || a.order - b.order);
         // The base instructions come before the visit's own prompt (they are what the agent is, the prompt what it is asked).

@@ -3915,9 +3915,11 @@ test("agent node: a chat: continue node's Log shows one chat across two visits",
     // Visit 2 continues visit 1's chat: its base instructions are visit 1's, named, not repeated.
     await expect(second.locator('[data-carried-from="1"]')).toHaveText("The same as visit 1 (this chat continues).");
     await expect(first.locator(".ps-wf-alog-base summary")).toContainText("48,210 characters");
-    // The Workflow's own rows say the same chat got visit 2.
-    await expect(second.locator('[data-kind="workflow"]').filter({ hasText: "Agent chat for node fact given visit 2 (same chat, session abababab)" })).toHaveCount(1);
-    await expect(first.locator('[data-kind="workflow"]').filter({ hasText: "Agent chat for node fact created (session abababab)" })).toHaveCount(1);
+    // The Workflow's own rows say the same chat got visit 2, in the Log's words (r4 C04: no node name, no raw id), the chat linked.
+    await expect(second.locator('[data-kind="workflow"]').filter({ hasText: "Visit 2 given to the same agent chat" })).toHaveCount(1);
+    await expect(first.locator('[data-kind="workflow"]').filter({ hasText: "Agent chat started" })).toHaveCount(1);
+    await expect(log.locator('[data-kind="workflow"]').filter({ hasText: "abababab" })).toHaveCount(0);
+    await expect(first.locator('[data-kind="workflow"] [data-action="open-agent-chat"]')).toHaveAttribute("data-session", AGENT_CHAT);
     await second.scrollIntoViewIfNeeded();
     await expect(second.locator("h3")).toBeInViewport();
     await shot(page, "agent-log-continue-1440");

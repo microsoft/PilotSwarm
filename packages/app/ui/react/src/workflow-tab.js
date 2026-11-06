@@ -808,7 +808,7 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
     const onInstructions = instructionsReadable
         ? ref => { controller.ensureFilePreview(ref.sessionId, ref.artifact, { force: true }).catch(() => {}); } : null;
     return h(WorkflowV2AgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions, onOlderChat, olderChatLoading, onOlderVisits,
-        onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS) });
+        onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS), onOpenChat: id => { controller.loadSession(id).catch(() => {}); } });
 }
 
 /**

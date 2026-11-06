@@ -441,7 +441,15 @@ function LazyDetails({ summary, body, className = undefined, openBodies = false 
 }
 
 /** One row of an agent node's Log: its label and time, then its text (folded with Show more) or its call (to expand). */
-function AgentLogRow({ row, readInstructions = null, onInstructions = null, openBodies = false }) {
+/** A row's text with its chat's words as a link that opens that chat (r4 C04: the Workflow's line about the agent chat). */
+function withChatLink(text, chat, onOpenChat) {
+    const at = chat && onOpenChat && typeof text === "string" ? text.indexOf(chat.words) : -1;
+    if (at < 0) return text;
+    return [text.slice(0, at), h("button", { key: "chat", type: "button", className: "ps-link-button", "data-action": "open-agent-chat",
+        "data-session": chat.sessionId, onClick: () => onOpenChat(chat.sessionId) }, chat.words), text.slice(at + chat.words.length)];
+}
+
+function AgentLogRow({ row, readInstructions = null, onInstructions = null, openBodies = false, onOpenChat = null }) {
     const [open, setOpen] = React.useState(false);
     const body = row.label === "Base instructions" && row.carriedFrom !== undefined
         ? h("p", { className: "ps-wf-muted", "data-carried-from": row.carriedFrom ?? "" }, row.text)
@@ -449,7 +457,7 @@ function AgentLogRow({ row, readInstructions = null, onInstructions = null, open
         : row.detail !== undefined
         ? h(LazyDetails, { summary: row.text, body: () => h("pre", null, row.detail), openBodies })
         : h("div", { className: "ps-wf-alog-text" },
-            h("p", null, open && row.more ? row.more : row.text),
+            h("p", null, open && row.more ? row.more : withChatLink(row.text, row.chat, onOpenChat)),
             row.more ? h("button", { type: "button", className: "ps-mini-button", "data-action": "fold", onClick: () => setOpen(!open) },
                 open ? "Show less" : "Show more") : null);
     return h("li", { className: "ps-wf-alog-row", "data-kind": row.kind, "data-level": row.level ?? undefined },
@@ -479,7 +487,7 @@ function OlderChat({ older, chatId, onOlderChat, olderChatLoading }) {
  * older visits.
  */
 export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId = null, readInstructions = null, onInstructions = null,
-    onOlderChat = null, olderChatLoading = null, onOlderVisits = null, openBodies = false }) {
+    onOlderChat = null, olderChatLoading = null, onOlderVisits = null, openBodies = false, onOpenChat = null }) {
     return h("div", { className: "ps-wf-alog", "aria-label": nodeId ? `Log of node ${nodeId}` : "Agent node log" },
         h("p", { className: "ps-wf-muted ps-wf-alog-note" }, log.note),
         log.groups.length ? null : h("p", { className: "ps-wf-muted" }, "This node has not run yet."),
@@ -490,13 +498,13 @@ export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId =
             group.truncated ? h("p", { className: "ps-wf-muted", "data-truncated": "" }, "The start of this visit's chat is not loaded. ",
                 h(OlderChat, { older: group.older, chatId: group.chatId, onOlderChat, olderChatLoading })) : null,
             group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions,
-                onInstructions, openBodies }))) : null)),
+                onInstructions, openBodies, onOpenChat }))) : null)),
         // Review UI-D5: a continued chat's loaded lines whose visit is not known yet, shown apart until their prompt is loaded.
         (log.earlier ?? []).map(part => h("section", { key: `earlier:${part.chatId}`, className: "ps-wf-alog-visit is-earlier", "data-earlier": "" },
             h("h3", null, part.header),
             h("p", { className: "ps-wf-muted" }, "Which visit these lines belong to is known once the chat's earlier prompt is loaded. ",
                 h(OlderChat, { older: part.older, chatId: part.chatId, onOlderChat, olderChatLoading })),
-            h("ol", { className: "ps-wf-alog-rows" }, part.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions, onInstructions, openBodies }))))),
+            h("ol", { className: "ps-wf-alog-rows" }, part.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions, onInstructions, openBodies, onOpenChat }))))),
         log.more && onMore ? h("button", { type: "button", className: "ps-mini-button", "data-action": "older-visits", onClick: onMore }, "Show older visits") : null,
         !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits are not in the loaded history of this run. ",
             onOlderVisits ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-executions", onClick: onOlderVisits }, "Load older visits") : null)
