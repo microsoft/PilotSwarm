@@ -733,6 +733,8 @@ const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
 // change. An explicit 0 disables either guard.
 export const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
 export const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
+/** Review RT-F1: the bound on settling a model run aborted after a turn-control admission failure. */
+export const CONTROL_FAILURE_QUIESCE_MS = 5_000;
 // The inactivity settle is phrased to match isCopilotConnectionClosedError()
 // (orchestration/utils.ts) so the existing connection-closed recovery runs:
 // release affinity, delayed retry on a fresh subprocess, bounded by
@@ -981,6 +983,12 @@ export class ManagedSession {
      * or assistant.turn_start.
      */
     private staleIdlePending = false;
+    /**
+     * Review RT-F1: a model run aborted after a turn-control admission failure did not settle within the bound (its idle
+     * did not come, or a steer send stayed in flight). The activity reads it (takeUnsettledRun) and drops this warm
+     * session before it commits the snapshot or reuses the session.
+     */
+    private unsettledRun = false;
 
     constructor(
         sessionId: string,
@@ -1676,6 +1684,53 @@ export class ManagedSession {
             steer.unconfirmed.set(messageId, onConfirmed);
         }
         steer.trySettle();
+    }
+
+    /** Review RT-F1: whether the last run aborted after a turn-control failure did not settle; reading clears it. */
+    takeUnsettledRun(): boolean {
+        const unsettled = this.unsettledRun;
+        this.unsettledRun = false;
+        return unsettled;
+    }
+
+    /**
+     * Review RT-F1: after a turn-control admission failure fails the host turn (a retryable error), the model run it was
+     * waiting on must not outlive it. Abort it WITHOUT the user-stopped marker (the result stays an error, never stopped),
+     * stop the turn's background tasks as a timeout does, then wait, bounded, for the run's idle (session.idle, or an
+     * aborted assistant.idle) and for every steer send still in flight. A run that does not settle in time is reported
+     * unsettled, so the activity drops this warm session before the snapshot is committed or the session reused.
+     */
+    private async quiesceAfterControlFailure(steer: SteerTurnState | null): Promise<void> {
+        let idle = false;
+        let abortedIdleOnly = false;
+        const offs: Array<(() => void) | undefined> = [
+            this.copilotSession.on("session.idle", (event: any) => {
+                if (isNativeChildEvent(event)) return;
+                idle = true;
+                abortedIdleOnly = false;
+            }) as (() => void) | undefined,
+            this.copilotSession.on("assistant.idle", (event: any) => {
+                if (isNativeChildEvent(event) || event.data?.aborted !== true || idle) return;
+                idle = true;
+                abortedIdleOnly = true;
+            }) as (() => void) | undefined,
+        ];
+        try {
+            this.closeSteerGate();
+            try { await this.copilotSession.abort(); } catch {}
+            if (this.config.workspaceAttach) {
+                try { await this.cancelBackgroundTasks({ rounds: 3 }); } catch {}
+            }
+            const deadline = Date.now() + (this.config.controlFailureQuiesceMs ?? CONTROL_FAILURE_QUIESCE_MS);
+            while ((!idle || (steer?.inFlight ?? 0) > 0) && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+        } finally {
+            for (const off of offs) { try { off?.(); } catch {} }
+        }
+        if (!idle || (steer?.inFlight ?? 0) > 0) this.unsettledRun = true;
+        // Settled on an aborted assistant.idle only: its session.idle may still come; the next run ignores it.
+        else if (abortedIdleOnly) this.staleIdlePending = true;
     }
 
     /** The in-flight turn, if any. Read by the lock-bypassing stop path. */
@@ -4223,6 +4278,8 @@ export class ManagedSession {
         // just before it is: local bookkeeping only, never an observer (nothing may run between the last check and the
         // send; review E2). `hooks.afterSend` runs once the SDK accepted the prompt, before the send gate opens: a Stop
         // its observer asks for keeps the gate closed.
+        // Review RT-F1: a model run was sent and has not settled (set at each send, cleared when its run ends normally).
+        let runLive = false;
         const runCorrection = async (message: Record<string, unknown>,
             hooks: { beforeSend?: () => void; afterSend?: () => void } = {}): Promise<boolean> => {
             const heldStop = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
@@ -4238,6 +4295,7 @@ export class ManagedSession {
             hooks.beforeSend?.();
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
+            runLive = true;
             await this.copilotSession.send(message as any);
             hooks.afterSend?.();
             if (this.steer && this.steer.gate === "pending") {
@@ -4249,6 +4307,7 @@ export class ManagedSession {
             } else {
                 await done;
             }
+            runLive = false;
             return true;
         };
 
@@ -4315,6 +4374,7 @@ export class ManagedSession {
             // ready-to-send base64 blobs (fetched + vision-gated by the runTurn
             // activity host); the Copilot runtime packs them into the
             // provider-specific multimodal content.
+            runLive = true;
             await this.copilotSession.send({
                 prompt: initialPrompt,
                 ...(initialDisplay !== null ? { displayPrompt: initialDisplay } : {}),
@@ -4345,6 +4405,7 @@ export class ManagedSession {
             } else {
                 await turnComplete;
             }
+            runLive = false;
 
             // ── Guard: tool call emitted as text instead of executed ──────────
             // If the model typed a tool call as `<invoke .../>` text rather than
@@ -4507,6 +4568,14 @@ export class ManagedSession {
             // includes extra-folder changes, which never end the turn.
             const accepted = acceptedWorkspaceChanges(turnState);
             const acceptedChange = accepted.length > 0 ? { queuedActions: accepted } : {};
+            // Review RT-F1: a turn-control admission failure fails the turn as a retryable error (never stopped: a foreign or
+            // unreadable Stop is not applied). The model run it was waiting on is aborted and settled first (or reported
+            // unsettled), so nothing of it runs on after this result.
+            const controlFailure = opts?.turnControl?.heldFailure?.() ?? null;
+            if (controlFailure) {
+                if (runLive) await this.quiesceAfterControlFailure(this.steer);
+                return { type: "error", message: errMsg, ...acceptedChange } as any;
+            }
             // Inactivity watchdog — the CLI subprocess is presumed dead or
             // wedged. Settle as a retryable transport-loss error: the message
             // matches isCopilotConnectionClosedError(), so the orchestration

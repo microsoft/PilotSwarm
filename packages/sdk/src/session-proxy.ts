@@ -5059,7 +5059,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
                     intakeAdmission = intakeAdmissionFor(prompt, run, eligible);
                 }
-                return await targetSession.runTurn(modelPrompt, {
+                const ran = await targetSession.runTurn(modelPrompt, {
                     ...(intakeAdmission ? { intakeAdmission } : {}),
                     onEvent,
                     trace: traceWarn,
@@ -5075,6 +5075,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                     ...(tc?.live ? { turnControl: tc.live } : {}),
                 });
+                // Review RT-F1: a model run aborted after a turn-control failure that did not settle is not reused or saved
+                // live: its warm session is dropped (destroyed, so the CLI stops and flushes) before the snapshot is committed.
+                const unsettled = (targetSession as { takeUnsettledRun?: () => boolean }).takeUnsettledRun;
+                if (typeof unsettled === "function" && unsettled.call(targetSession)) {
+                    traceWarn(`[runTurn] session=${input.sessionId}: the model run aborted after a turn-control failure did not settle; dropping its warm session`);
+                    await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true }).catch((err: any) => {
+                        activityCtx.traceInfo(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`);
+                    });
+                }
+                return ran;
             };
 
             if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });

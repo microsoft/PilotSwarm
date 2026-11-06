@@ -247,5 +247,24 @@ describe("the turn-to-visit fence of a chat that continues", () => {
             expect(savedTurnVisitFence(null, 3)).toBeUndefined();
         });
     });
+
+    // Review RT-F1: when the model session reports a run aborted after a turn-control failure as unsettled, the activity
+    // drops its warm session (destroyed, so the CLI stops and flushes) before turn end; a settled run keeps it.
+    it("RT-F1: an unsettled run after a control failure drops the warm session before turn end; a settled one keeps it", async () => {
+        for (const [unsettled, dropped] of [[true, 1], [false, 0]]) {
+            const order = [];
+            const { h, calls } = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false }, writeback: true,
+                turn: async () => ({ type: "error", message: "canceling statement due to statement timeout" }) });
+            h.session.takeUnsettledRun = vi.fn(() => unsettled);
+            h.sessionManager.invalidateWarmSession = vi.fn(async (...args) => { order.push(["invalidateWarmSession", ...args]); });
+            h.catalog.turnEnd.mockImplementation(async (...args) => { order.push(["turnEnd"]); calls.push(["turnEnd", ...args]); return { stopped: false, late: [] }; });
+            const result = await h.runTurn(CHAT, { turnIndex: 16, clientMessageIds: [promptId(NX2)] }, "runTurnV5");
+            expect(result.type).toBe("error");
+            expect(h.session.takeUnsettledRun).toHaveBeenCalledTimes(1);
+            expect(h.sessionManager.invalidateWarmSession).toHaveBeenCalledTimes(dropped);
+            if (dropped) expect(order.map(([name]) => name)).toEqual(["invalidateWarmSession", "turnEnd"]);
+            if (dropped) expect(order[0].slice(1)).toEqual([CHAT, { lockHeld: true }]);
+        }
+    });
 });
 

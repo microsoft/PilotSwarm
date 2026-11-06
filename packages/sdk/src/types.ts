@@ -913,6 +913,12 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      * DEFAULT_TURN_INACTIVITY_TIMEOUT_MS (5 minutes).
      */
     turnInactivityTimeoutMs?: number;
+    /**
+     * Review RT-F1: how long a model run aborted after a turn-control admission failure may take to settle (its idle,
+     * and any steer send in flight) before it is reported unsettled and its warm session dropped. Undefined =
+     * CONTROL_FAILURE_QUIESCE_MS (5 s).
+     */
+    controlFailureQuiesceMs?: number;
 }
 
 // ─── Session Status ──────────────────────────────────────────────

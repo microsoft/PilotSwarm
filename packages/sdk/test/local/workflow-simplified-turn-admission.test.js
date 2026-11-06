@@ -174,13 +174,17 @@ describe("RT-D3: an admission that fails is kept, fails the turn and takes nothi
     });
 });
 
-/** A fake Copilot session (as in turn-control-live.test.js): the test drives every event. */
-function createFakeCopilotSession() {
+/**
+ * A fake Copilot session (as in turn-control-live.test.js): the test drives every event. `holdSteers`: an immediate
+ * (steer) send stays unresolved until the test releases it (`heldSteers`), or, with `abortReleases`, until abort().
+ */
+function createFakeCopilotSession({ holdSteers = false, abortReleases = false } = {}) {
     const handlers = [];
     const emit = (type, data = {}) => { for (const h of [...handlers]) if (h.type === null || h.type === type) h.fn({ type, data }); };
     let n = 0;
     const fake = {
         sent: [],
+        heldSteers: [],
         abortCalls: 0,
         registerTools() {},
         on(a, b) {
@@ -188,8 +192,21 @@ function createFakeCopilotSession() {
             handlers.push(h);
             return () => { const i = handlers.indexOf(h); if (i >= 0) handlers.splice(i, 1); };
         },
-        async send(msg) { const id = `msg-${++n}`; fake.sent.push({ ...msg, id }); return id; },
-        abort() { fake.abortCalls++; queueMicrotask(() => emit("session.idle")); },
+        async send(msg) {
+            const id = `msg-${++n}`;
+            fake.sent.push({ ...msg, id });
+            if (holdSteers && msg.mode === "immediate") {
+                const held = deferred();
+                fake.heldSteers.push({ id, release: () => held.resolve() });
+                await held.promise;
+            }
+            return id;
+        },
+        abort() {
+            fake.abortCalls++;
+            if (abortReleases) for (const held of fake.heldSteers.splice(0)) held.release();
+            queueMicrotask(() => emit("session.idle"));
+        },
         async disconnect() {},
         getMessages() { return []; },
         _emit: emit,
@@ -223,6 +240,9 @@ describe("RT-D3 (C5): ManagedSession sends no prompt while an admission failure 
         expect(fake.sent).toEqual([]);
         expect(result).toMatchObject({ type: "error" });
         expect(String(result.message)).toContain("could not read a Stop");
+        // No model run was started, so none is aborted (RT-F1) and nothing is reported unsettled.
+        expect(fake.abortCalls).toBe(0);
+        expect(managed.takeUnsettledRun()).toBe(false);
     });
 
     it("before a corrective send: no corrective prompt is sent after the failure", async () => {
@@ -245,3 +265,63 @@ describe("RT-D3 (C5): ManagedSession sends no prompt while an admission failure 
         expect(String(result.message)).toContain("id read failed");
     });
 });
+
+// Review RT-F1: an admission failure while the model run is live (its initial send returned, its idle not come) and a steer
+// send is held: the run is aborted without the user-stopped marker before the result, the result stays a retryable error
+// (the foreign Stop is not applied), a run that cannot settle is reported unsettled so the activity drops the warm
+// session, and the old send released later does nothing in the next turn.
+describe("RT-F1: an attached admission failure aborts and settles the live model run before the result", () => {
+    const steerThenFailingStop = async ({ fake, quiesceMs }) => {
+        const managed = new ManagedSession("chat", fake, { waitThreshold: 30, controlFailureQuiesceMs: quiesceMs });
+        const failure = new Error("canceling statement due to statement timeout");
+        let fail = null;
+        const live = newLive(async (controls) => { if (fail) throw fail; return controls; });
+        const { b, opened } = binding(live);
+        const turn = managed.runTurn("work", { turnIndex: 3, turnControl: b });
+        let abortsAtResult = null;
+        const settled = turn.then((result) => { abortsAtResult = fake.abortCalls; return result; });
+        await opened;
+        expect(fake.sent).toHaveLength(1);                        // the initial send returned; no idle yet
+        void live.enqueue([control(1, "steer", "look again")]);
+        await flush();
+        expect(fake.sent.map((m) => m.mode ?? null)).toEqual([null, "immediate"]);
+        fail = failure;
+        void live.enqueue([control(2, "stop", "another visit's Stop")]);
+        const result = await settled;
+        return { managed, live, result, abortsAtResult };
+    };
+
+    it("a steer send that never resolves: aborted before the result, an error (not stopped), reported unsettled", async () => {
+        const fake = createFakeCopilotSession({ holdSteers: true });
+        const { managed, live, result, abortsAtResult } = await steerThenFailingStop({ fake, quiesceMs: 200 });
+        expect(abortsAtResult).toBe(1);
+        expect(result).toMatchObject({ type: "error" });
+        expect(String(result.message)).toContain("statement timeout");
+        expect(managed.takeUnsettledRun()).toBe(true);
+        expect(managed.takeUnsettledRun()).toBe(false);           // read once
+        expect(fake.sent).toHaveLength(2);                        // no corrective or other send
+        // The old send, released after the turn, confirms nothing and reaches no later turn.
+        const old = fake.heldSteers[0];
+        old.release();
+        await flush();
+        expect(live.cursor).toBe(0);
+        const next = newLive(async (controls) => controls);
+        const { b, opened } = binding(next);
+        const turn = managed.runTurn("next", { turnIndex: 4, turnControl: b });
+        await opened;
+        fake._emit("user.message", { messageId: old.id });        // the old steer's late echo
+        fake._emit("assistant.message", { content: "the next turn's own answer" });
+        fake._emit("session.idle");
+        expect(await turn).toMatchObject({ type: "completed", content: "the next turn's own answer" });
+        expect(next.cursor).toBe(0);
+    });
+
+    it("a steer send the abort ends: settled before the result, an error, not reported unsettled", async () => {
+        const fake = createFakeCopilotSession({ holdSteers: true, abortReleases: true });
+        const { managed, result, abortsAtResult } = await steerThenFailingStop({ fake, quiesceMs: 2_000 });
+        expect(abortsAtResult).toBe(1);
+        expect(result).toMatchObject({ type: "error" });
+        expect(managed.takeUnsettledRun()).toBe(false);
+    });
+});
+
