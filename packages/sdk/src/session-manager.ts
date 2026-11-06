@@ -826,6 +826,22 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined,
     });
 }
 
+/** The words of ModelListUnavailableError (coordinator, 2026-11-06). */
+export const MODEL_LIST_UNAVAILABLE_TEXT = "The model list could not be loaded right now (the database is not reachable); try again shortly.";
+
+/**
+ * A model did not resolve because the worker's last provider-registry refresh failed and left no providers (the registry
+ * fails closed; FU-10), not because the model is unknown. Retryable: the next refresh that reads the catalog restores it.
+ */
+export class ModelListUnavailableError extends Error {
+    readonly code = "MODEL_LIST_UNAVAILABLE";
+    readonly retryable = true;
+    constructor() {
+        super(MODEL_LIST_UNAVAILABLE_TEXT);
+        this.name = "ModelListUnavailableError";
+    }
+}
+
 export class SessionManager {
     /**
      * Resolved inspect viewers, keyed by session id. Static so it is shared
@@ -984,6 +1000,8 @@ export class SessionManager {
     /** Duroxide client used by tuner-only inspect tools. */
     private _duroxideClient: any = null;
     private _refreshModelProviders: (() => Promise<void>) | null = null;
+    /** The last provider-registry refresh failed (setModelProviders `unavailable`). */
+    private _modelListUnavailable = false;
     /** Lineage lookup for ancestor/descendant facts access. */
     private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
     /** Per-session critical sections; protects the SDK session handle and local session.db. */
@@ -1065,6 +1083,7 @@ export class SessionManager {
         }
         const normalized = this.normalizeModelRef(ref, options);
         if (!normalized) {
+            if (this._modelListUnavailable) throw new ModelListUnavailableError();
             throw new Error(`Unknown model "${ref}". Call list_available_models and choose an exact provider:model value.`);
         }
         return normalized;
@@ -1081,6 +1100,8 @@ export class SessionManager {
 
         const ref = model || registry.defaultModel;
         if (!ref) {
+            // A failed refresh leaves no providers and no default: say that, not that the model is unknown (FU-10 keeps it closed).
+            if (this._modelListUnavailable) throw new ModelListUnavailableError();
             if (model) {
                 throw new Error(
                     `Unknown model "${model}". Call list_available_models and choose an exact configured provider:model value.`,
@@ -1093,6 +1114,7 @@ export class SessionManager {
 
         const normalized = registry.normalize(ref);
         if (!normalized) {
+            if (this._modelListUnavailable) throw new ModelListUnavailableError();
             throw new Error(
                 `Unknown model "${ref}". Call list_available_models and choose an exact configured provider:model value.`,
             );
@@ -1344,8 +1366,18 @@ export class SessionManager {
      * live warm sessions keep their bound client until their next
      * getOrCreate re-resolves.
      */
-    setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null): void {
+    setModelProviders(registry: import("./model-providers.js").ModelProviderRegistry | null, options?: { unavailable?: boolean }): void {
         this.workerDefaults.modelProviders = registry ?? undefined;
+        this._modelListUnavailable = options?.unavailable === true;
+    }
+
+    /**
+     * Whether the last provider-registry refresh failed (the worker then set a registry with no providers, so a turn fails
+     * closed; FU-10). While it is, a model that does not resolve is reported as the model list not loaded, retryably,
+     * instead of an unknown model.
+     */
+    get modelListUnavailable(): boolean {
+        return this._modelListUnavailable;
     }
 
     setModelProvidersRefresher(refresh: (() => Promise<void>) | null): void {

@@ -566,9 +566,11 @@ export class PilotSwarmWorker {
         } catch (err) {
             // Provider identity and credentials are authoritative in CMS.
             // Clear the runtime registry so a turn fails closed instead of
-            // executing through a stale/file-backed credential.
+            // executing through a stale/file-backed credential (FU-10 keeps
+            // this). The manager is told the list is unavailable, so a model
+            // that no longer resolves says that, retryably, not "Unknown model".
             this._modelProviders = buildRuntimeRegistry(this._modelProviderTypes, [], null);
-            this.sessionManager.setModelProviders(this._modelProviders);
+            this.sessionManager.setModelProviders(this._modelProviders, { unavailable: true });
             console.warn(`[PilotSwarmWorker] provider registry refresh failed: ${String((err as Error)?.message ?? err)}`);
         }
     }
