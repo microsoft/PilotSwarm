@@ -12147,7 +12147,9 @@ textarea.ps-link-input {
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 :root[data-ps-theme="horizon-dawn"] {
-  --dawn-ui: "Segoe UI Variable", "PS Sora", "Segoe UI", system-ui, sans-serif;
+  /* Text and controls use the portal's mono face; Sora stays for the display
+     lines (the kicker and the GA line). */
+  --dawn-ui: var(--ps-mono);
   --dawn-display: "PS Sora", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
   --dawn-logo: url("./assets/horizon-dawn/logo.svg");
   --dawn-sky: url("./assets/horizon-dawn/sky.svg");
