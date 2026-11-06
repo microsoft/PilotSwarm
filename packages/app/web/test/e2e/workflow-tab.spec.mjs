@@ -3125,6 +3125,16 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
 
         // F1: no words on a header or toolbar button; each has a name; a Workflow tool button explains itself in its tooltip.
         const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        // One tooltip at a time, inside the viewport, sized to its text: a button at the edge moves its tooltip in instead of
+        // squeezing it into a narrow column (the 281d86cf screenshot at 390 px).
+        const tipFits = async () => {
+            await expect(page.getByRole("tooltip")).toHaveCount(1);
+            const tip = await page.getByRole("tooltip").boundingBox();
+            expect(tip.x).toBeGreaterThanOrEqual(0);
+            expect(tip.x + tip.width).toBeLessThanOrEqual(viewport.width);
+            expect(tip.y).toBeGreaterThanOrEqual(0);
+            expect(tip.width).toBeGreaterThanOrEqual(120);
+        };
         const checkIcons = async (names) => {
             const buttons = main.locator(".ps-wf-tab-head button, .ps-wf-bar button");
             const seen = await buttons.evaluateAll(elements => elements.filter(element => element.offsetParent !== null)
@@ -3145,11 +3155,13 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
                     expect(Math.round(box.height)).toBeGreaterThanOrEqual(44);
                     expect(Math.round(box.width)).toBeGreaterThanOrEqual(44);
                     await button.dispatchEvent("pointerdown", { pointerType: "touch", clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 });
-                    await expect(page.getByRole("tooltip").filter({ hasText: new RegExp(`^${escape(name)} — .+`) })).toBeVisible();
+                    await expect(page.getByRole("tooltip")).toHaveText(new RegExp(`^${escape(name)} — .+`));
+                    await tipFits();
                     await button.dispatchEvent("pointerup", { pointerType: "touch" });
                 } else {
                     await button.hover();
                     await expect(page.getByRole("tooltip")).toHaveText(new RegExp(`^${escape(name)} — .+`));
+                    await tipFits();
                     await page.mouse.move(2, 2);
                     await expect(page.getByRole("tooltip")).toHaveCount(0);
                 }
