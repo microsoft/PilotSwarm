@@ -12339,9 +12339,7 @@ textarea.ps-link-input {
   }
   :root[data-ps-theme="horizon-dawn"] .ps-panel { border-radius: 12px; background: #101d31; }
 }
-/* ═══ Phone: back and forward by swipe ═══════════════════════════════════════
-   The workspace follows the finger; the destination's name shows on the side
-   it will come from, and lights up once a release would navigate. */
+
 /* ═══ Phone: back and forward by a two-finger swipe ═════════════════════════
    The workspace (or a full-screen canvas) follows the fingers; the
    destination's name shows on the side it will come from, and lights up once
