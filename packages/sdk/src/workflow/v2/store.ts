@@ -5682,8 +5682,8 @@ export class WorkflowStore {
 
     /**
      * The invocation a completion by `childSessionId` binds to (owner decision agent-node-continue-20261106; formal
-     * cmp.ac-bind-current): a visit's own chat binds to its one invocation, and a node execution id it gives must be that
-     * one's; a chat that continues across a state's visits binds ONLY by the node execution id it gives, which must be one
+     * cmp.ac-bind-current): a visit's own chat binds to its one invocation, and a node execution id it gives is ignored (as
+     * at e696f2c6; review RT-8); a chat that continues across a state's visits binds ONLY by the node execution id it gives, which must be one
      * of that chat's visits. Never by "the newest": a late answer of a visit that ended must not decide the next one (it
      * binds to its own, decided visit and is refused there). Null: not a workflow agent state's chat. A continued chat's
      * call without the id, or with one that is not its own, is refused in words, nothing written.
@@ -5696,12 +5696,9 @@ export class WorkflowStore {
         if (!rows[0]) return null;
         const newest = str(rows[0], "node_execution_id");
         const named = nodeExecutionId === undefined ? null : jsonbSafeText(nodeExecutionId, 200);
-        if (!workflowAgentChatContinues({ nodeExecutionId: newest, childSessionId })) {
-            if (nodeExecutionId !== undefined && nodeExecutionId !== newest) {
-                throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `node_execution_id ${named} is not the workflow state this session runs (${newest}).`);
-            }
-            return rows[0];
-        }
+        // A visit's own chat (chat: new) binds to its one invocation, exactly as at e696f2c6 (review RT-8): a node execution
+        // id it gives is ignored, as the tool wrapper there dropped it.
+        if (!workflowAgentChatContinues({ nodeExecutionId: newest, childSessionId })) return rows[0];
         if (nodeExecutionId === undefined) {
             throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This chat continues across the visits of its workflow state, so a completion must "
                 + "name the cycle it finishes: give node_execution_id, the id in this cycle's prompt.");

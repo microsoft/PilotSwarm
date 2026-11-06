@@ -912,7 +912,9 @@ describe("workflow v2 agent states: controller 1.9.0 (inactive, test-only regist
             await until(async () => (await h.store.readAgentInvocation(nodeExecutionId))?.spawnedAt ?? null, "the spawn to be recorded");
 
             // Chat is not completion: the run waits. An invalid completion is answered with field errors; a valid one routes.
-            expect(await completeAs(h, spawn.childSessionId, { outcome: "accepted", output: { verdict: 5 }, operation_id: "op-0" }))
+            // A node execution id a visit's own chat gives is ignored, as at e696f2c6 (review RT-8): a stale one still binds
+            // to the chat's one state, which answers the invalid output.
+            expect(await completeAs(h, spawn.childSessionId, { outcome: "accepted", output: { verdict: 5 }, operation_id: "op-0", node_execution_id: "nx-stale" }))
                 .toMatchObject({ ok: false, error: { code: "OUTPUT_INVALID", attemptsLeft: WORKFLOW_V2_AGENT_MAX_INVALID_COMPLETIONS - 1 } });
             expect((await h.store.readRun(runId)).status).toBe("running");
             expect(await completeAs(h, spawn.childSessionId, { outcome: "accepted", output: { verdict: "ok" }, operation_id: "op-1" }))
