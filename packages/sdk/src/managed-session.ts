@@ -1800,7 +1800,7 @@ export class ManagedSession {
      * (traced; the turn stands), or the run was interrupted first. A late answer of the gate is ignored.
      */
     private async awaitStepReminderGate(gate: NonNullable<TurnOptions["stepReminder"]>, input: { scheduleCancelled: boolean },
-        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number } | null> {
+        guards: Promise<void>[], trace?: (message: string) => void): Promise<{ stateId: string; n: number; max: number; cycle?: string } | null> {
         const interrupt = this.runInterrupt;
         let wake: (reason: string) => void = () => {};
         const interrupted = new Promise<string>((resolve) => { wake = resolve; });
@@ -1837,7 +1837,9 @@ export class ManagedSession {
                 trace?.(`[runTurn] session=${this.sessionId} no step reminder: ${raced.verdict.reason}`);
                 return null;
             }
-            return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max };
+            // chat: continue: the open cycle's node execution id, which the reminder names (owner decision agent-node-continue-20261106).
+            return { stateId: raced.verdict.stateId, n: raced.verdict.n, max: raced.verdict.max,
+                ...(raced.verdict.cycle ? { cycle: raced.verdict.cycle } : {}) };
         } finally {
             if (interrupt && interrupt.wake === wake) interrupt.wake = null;
         }
