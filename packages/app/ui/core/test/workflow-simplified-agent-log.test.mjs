@@ -385,6 +385,28 @@ test("UI-D9: the carried instructions are the visit's last; each distinct body i
     assert.deepEqual(full.map(row => row.instructions.sha256), [SHA, SHA_B], "each distinct body once");
 });
 
+// Review UI-F5: A, then B, then A again in one visit (with a same-digest echo of A, no change) and a next visit with no echo:
+// the next visit carries A, the last; A and B are each shown in full once; the echo adds no row.
+test("UI-F5: A/B/A carries A; each body is shown in full once; an unchanged echo adds no row", () => {
+    const SHA_B = "fedcba9876543210".repeat(4);
+    const KEPT_B = { ...KEPT, artifact: "base-instructions-fedcba9876543210.md", sha256: SHA_B, chars: 50000 };
+    const continued = { ...node, chat: "continue" };
+    const log = [
+        ...chat.slice(0, 2), base(2.1, "17:40:02"), base(2.15, "17:40:02"),                  // A, then an echo of A
+        base(2.2, "17:40:02", KEPT_B), base(2.3, "17:40:03"),                               // B, then A again
+        ...chat.slice(2),
+    ];
+    const result = workflowAgentNodeLog({ node: continued, events, chats: new Map([[CHAT, log]]), runId: "run-1", now: NOW });
+    const [second, first] = result.groups;
+    const bases = group => group.rows.filter(row => row.label === "Base instructions");
+    assert.deepEqual(bases(first).map(row => [row.instructions?.sha256 ?? null, row.carriedFrom ?? null, row.carriedNumber ?? null]),
+        [[SHA, null, null], [SHA_B, null, null], [null, 1, 1]], "A in full, B in full, A again as a reference; the echo adds none");
+    assert.deepEqual(bases(second).map(row => [row.text, row.carriedNumber]),
+        [["The same as visit 1, its instructions 1 of 2 (this chat continues).", 1]], "the next visit carries A, the last");
+    const full = result.groups.flatMap(bases).filter(row => row.instructions);
+    assert.deepEqual(full.map(row => row.instructions.sha256), [SHA, SHA_B]);
+});
+
 // Review UI-11: a closed tool call or Base instructions row keeps its body out of the page; the same base instructions
 // (by digest) are shown once, at the oldest visit that has them.
 test("UI-11: closed bodies are not mounted; the same base instructions show once", () => {

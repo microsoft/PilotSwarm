@@ -147,7 +147,9 @@ const toolPreview = args => {
 function chatRows(events, visitId) {
     const rows = [];
     const calls = new Map();
-    const seenInstructions = new Set();
+    // Review UI-F5: the instructions in force, by digest; only an echo of the same ones is dropped, so a change back (A, B,
+    // A) keeps its row and the carried instructions stay the last ones.
+    let lastInstructions = null;
     for (const event of events) {
         const data = isRecord(event.data) ? event.data : {};
         const at = timeOf(event.createdAt);
@@ -162,10 +164,11 @@ function chatRows(events, visitId) {
             const content = typeof data.content === "string" ? data.content : "";
             const instructions = workflowBaseInstructions(data);
             if (instructions) {
-                // The same instructions once per visit (the SDK may compose them again at a later turn).
+                // An echo of the instructions already in force (the SDK may compose them again at a later turn) adds no row;
+                // a change, also back to earlier ones, does (its text is shown once: the cross-visit pass makes repeats references).
                 const key = instructions.ref?.sha256 ?? `${instructions.chars}:${instructions.snippet}`;
-                if (seenInstructions.has(key)) continue;
-                seenInstructions.add(key);
+                if (key === lastInstructions) continue;
+                lastInstructions = key;
                 rows.push({ ...base, kind: "prompt", label: "Base instructions",
                     text: `${instructions.chars.toLocaleString("en-US")} characters: ${instructions.snippet}`, instructions: instructions.ref,
                     instructionsKept: instructions.ref !== null });
