@@ -3385,7 +3385,7 @@ for (const theme of listThemes()) {
 // Node panel open, as r3 had it.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "r3 C15" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-const R3_TEXT = ".ps-wf-bar-text, .ps-wf-state, .ps-workflow-node-name, .ps-workflow-node-meta, .ps-wf-panel-tabs button, .ps-wf-what, .ps-wf-fact span, .ps-wf-fact strong";
+const R3_TEXT = ".ps-wf-bar-text, .ps-wf-state, .ps-workflow-node-name, .ps-workflow-node-meta, .ps-wf-panel-tabs button, .ps-wf-what, .ps-wf-fact span, .ps-wf-fact strong, .ps-wf-picker-face, .ps-wf-picker-select";
 /** The lowest contrast of the visible text of `selector` in the Workflow tab against what is behind it (r3's measure). */
 const textContrast = (page, selector) => page.evaluate((sel) => {
     const parse = (value) => {

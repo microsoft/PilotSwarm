@@ -12157,6 +12157,15 @@ textarea.ps-link-input {
   /* r3 C15: the Workflow tab is the canvas pane's window face, not the teal desktop its text read 4.4:1 (muted 1.9:1) on. */
   background: var(--w95-face);
 }
+/* Its pickers and fields are win95's text wells (white, inset), as the composer is: black on the teal they took from the
+   page background read 4.4:1 (the 5482bae3 win95 screenshot: "#2 of 2"). */
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-workflow-input {
+  background: #ffffff;
+  color: var(--w95-dark);
+  border: 2px solid;
+  border-color: var(--w95-shadow) var(--w95-light) var(--w95-light) var(--w95-shadow);
+  border-radius: 0;
+}
 :root[data-ps-theme="win95"] .ps-mobile-canvas-layer .ps-canvas-pane {
   border: 0;
   box-shadow: none;
