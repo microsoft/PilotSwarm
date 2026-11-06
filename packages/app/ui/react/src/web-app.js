@@ -7264,9 +7264,10 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
 }
 
 /**
- * Why a session in a workflow agent state's subtree has no composer (design 03 human-input denial): in the terminal's
- * words (workflowInputNoteText), `Read-only. To change this, message <the chat that owns the Workflow>.` when that chat
- * is loaded, else the reason the server reports and where to go instead. Text only.
+ * Why a session in a workflow agent state's subtree has no composer (design 03 human-input denial), in the terminal's
+ * words (workflowInputNoteText): the reason the server reports first (review UI-17), then `To change this, message
+ * <the chat that owns the Workflow>.` when that chat is loaded (with no reason, `Read-only. To change this, message
+ * <that chat>.`), else the controlling agent's session by its short id. Text only.
  */
 function workflowInputNote(access, byId = null) {
     const controlling = access?.workflowInput?.controllingSessionId;

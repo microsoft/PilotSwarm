@@ -31,7 +31,9 @@ value stays `cancelled`.
   (same listing, collapse and order), titled by its definition and number
   (`check-items #3`) with its state. A definition that never started has no
   row. An agent node's chat is a row under its Workflow (`summarize · agent`)
-  and is read-only: `Read-only. To change this, message <the session>.`
+  and is read-only: its note gives the server's reason, then `To change this,
+  message <the session>.` (with no reason: `Read-only. To change this, message
+  <the session>.`). The portal and the terminal show the same words.
 - **Selecting a Workflow row keeps the chat.** The session's chat stays in
   the middle, and the right block switches to its **Workflow** tab on that
   Workflow. Selecting an agent node's chat shows that chat and its Workflow
@@ -48,7 +50,11 @@ value stays `cancelled`.
   **Cancel now**; its close button says **Keep running**.
 - **Start another… (Run again).** A definition that has started offers
   **Start another…** in its Definition view and its Workflows list. Its form
-  asks for the inputs and sends the session's chat one message: start another
+  is filled with the inputs of the Workflow it repeats (the definition's
+  newest), never with sample values; when the read cannot give them, it says
+  so and sends none, so the chat uses the same ones (**Give other inputs**
+  opens the fields, empty). A schema the form cannot draw as fields gets a
+  JSON box. The form sends the session's chat one message: start another
   Workflow from this definition with the same YAML, unchanged (no key or a new
   one; never renamed). The chat spawns it, and it is listed under the same
   definition as the next number. The base guidance and the authoring skill
@@ -93,14 +99,27 @@ value stays `cancelled`.
   An update from a sub-agent or a timer that arrives between visits is
   recorded in the chat but is not given to the model; the next visit's prompt
   carries the current state.
-- **Removed:** the Notices bell and the Publish review. Each notice moved to
-  where it applies (the revision line, one line over the graph, the Workflow
-  state, the Log) or went away.
+- **The Log of an agent node** shows its chat visit by visit and says what is
+  loaded: a visit whose chat start is not loaded says so, with **Load older**
+  (that chat's older page); **Load older visits** reads the run's older
+  history. A later visit of a continued chat names the visit whose base
+  instructions it carries instead of repeating them.
+- **Removed** from the Workflow tab, the session list and the terminal UI:
+  the Notices bell and the Publish review (and the draft and publish words of
+  the YAML editors). Each notice moved to where it applies (the revision line,
+  one line over the graph, the Workflow state, the Log) or went away. The
+  older workflow screen (`workflow-workspace.js`) is no longer shown anywhere
+  but still holds them in its code until stage 2 removes it.
 - **Phone (390 px):** the Workflow tab opens as a sheet over the chat; in a
   panel, **← Graph** returns to the graph.
 - **Terminal UI:** the same model. `w` opens the Workflow pane for the chat
   (its selected Workflow, an agent node chat's own Workflow at that node, else
-  its newest Workflow); Esc goes back to the chat.
+  its newest Workflow); Esc goes back to the chat. In the session list, `c`,
+  `d` and `D` act on the highlighted Workflow row (`c` and `d` open its
+  Stop, Cancel or Delete choices, `D` asks to delete it), never on the chat
+  that owns it; the portal's keys do the same. In the Workflow pane, `S`
+  opens the Start form for the revision shown (a definition being edited is
+  saved and started in one step); publishing alone has no key.
 - **Inside a Workflow** (an agent node's chat and its sub-agents), sessions
   get no definition tools: `spawn_workflow` and `update_workflow` are not
   declared, and the server refuses them (`WORKFLOW_DEFINITION_TOOLS_REFUSED`).
@@ -495,7 +514,8 @@ refusal, with no word of testing); so does a person's command (Web API, MCP).
 route, so `POST /api/v1/sessions/{id}/workflow/commands` with a test operation
 answers `400 WORKFLOW_COMMAND_INVALID`, exactly as any unknown operation does
 (an unknown route would be 404). The portal and the terminal UI show no test
-control or test run. Stored test
+control or test run: a workflow read says `testMode: true` only while the flag
+is on, and the screens show test runs only on that word. Stored test
 runs are kept but not shown: the workflow read (SDK, Web API, MCP) does not
 list them, and refuses a test run's id, as a run, a page cursor's run, an
 execution's or a variables revision's, exactly as it refuses an unknown run's.
