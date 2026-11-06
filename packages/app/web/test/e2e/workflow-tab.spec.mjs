@@ -3292,10 +3292,12 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
         await expect(page.getByRole("button", { name: /^Hide the Workflow tab/ })).toBeVisible();
         await expect(dot).toHaveCount(0);
         await expect.poll(() => profile.stored?.canvasPrefs?.[AGENT_ID]?.lastViewedWorkflowAt ?? 0, { timeout: 15_000 }).toBeGreaterThan(0);
-        // Put away, and after a reload: no dot (nothing new).
+        // Put away, and after a reload: no dot (nothing new). A desktop keeps the closed column in the session's stored view;
+        // reload only once that is saved, or the reload opens the panel again (which would itself clear the dot).
         await page.getByRole("button", { name: /^Hide the Workflow tab/ }).click();
         await expect(named("Workflow")).toBeVisible();
         await expect(dot).toHaveCount(0);
+        if (!phone) await expect.poll(() => profile.stored?.sessionViews?.[AGENT_ID]?.desktop?.canvasOpen ?? null, { timeout: 15_000 }).toBe(false);
         await page.reload();
         await expect(named("Workflow")).toBeVisible();
         await expect(dot).toHaveCount(0);
@@ -3352,6 +3354,9 @@ for (const theme of listThemes()) {
         const check = async (button, what) => {
             await expect(button).toHaveAttribute("aria-pressed", "true");
             await page.mouse.move(2, 400);
+            // A button's background eases in (120 ms) while its icon colour changes at once: measure the pressed look, not
+            // the first frame of the change (cobalt2 and hearth read 1:1 there).
+            await button.evaluate(element => Promise.all(element.getAnimations({ subtree: true }).map(animation => animation.finished)));
             const { icon, backgrounds } = await iconAndBackgrounds(button);
             for (const background of backgrounds) {
                 const ratio = contrast(icon, background);
