@@ -82,9 +82,13 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
  * The tooltip is sized to its text, at most min(260 px, the viewport less 16 px), and kept inside the viewport with an
  * 8 px margin by moving it, never by narrowing it (a button at the edge squeezed it into a one-word column); with no room
  * above its button it shows below. On touch one tooltip is open at a time: any new touch, a long-press elsewhere or a tap
- * anywhere, closes it. Mouse hover and keyboard focus behave as before.
+ * anywhere, closes it. Review UI2-F7: one Workflow tooltip is on screen at a time whatever showed it (touch, hover or
+ * focus): a new one closes the one before; and Escape closes the one on screen wherever focus is, leaving focus there.
  * `badge` (a count) shows on the icon, tinted by `badgeLevel`; the count is said in `title` too, for screen readers.
  */
+/** Review UI2-F7: the Workflow tooltip on screen ({ owner, close }), whichever input showed it; one at a time. */
+let shownTip = null;
+
 export function WorkflowToolButton({ label, glyph: glyphName, title = null, danger = false, disabled = false, badge = null, badgeLevel = null, onClick, ...rest }) {
     const [tip, setTip] = React.useState(null);
     const buttonRef = React.useRef(null);
@@ -109,7 +113,28 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
         clearTimeout(hideTimerRef.current);
         setTip(null);
     };
+    const ownerRef = React.useRef({});
+    const hideRef = React.useRef(hide);
+    hideRef.current = hide;
     React.useEffect(() => () => { clearTimeout(timerRef.current); clearTimeout(hideTimerRef.current); }, []);
+    // Review UI2-F7: shown, this tooltip closes any other; while it is shown, Escape closes it wherever focus is.
+    const shownNow = Boolean(tip);
+    React.useLayoutEffect(() => {
+        const owner = ownerRef.current;
+        if (!shownNow) {
+            if (shownTip?.owner === owner) shownTip = null;
+            return undefined;
+        }
+        if (shownTip && shownTip.owner !== owner) shownTip.close();
+        shownTip = { owner, close: () => hideRef.current() };
+        if (typeof document === "undefined") return undefined;
+        const onKey = event => { if (event.key === "Escape") hideRef.current(); };
+        document.addEventListener("keydown", onKey, true);
+        return () => {
+            document.removeEventListener("keydown", onKey, true);
+            if (shownTip?.owner === owner) shownTip = null;
+        };
+    }, [shownNow]);
     // A touch tooltip closes at the next touch anywhere: a tap, or a long-press on another button (one at a time).
     const touchTip = Boolean(tip?.touch);
     React.useEffect(() => {

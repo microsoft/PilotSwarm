@@ -3310,6 +3310,45 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
     });
 }
 
+// Review UI2-F7 (short UI re-review, low): each icon button kept its own tooltip, so a keyboard-focused button's tooltip
+// and a hovered one's could both be on screen, and Escape reached only the focused button. Now one Workflow tooltip at a
+// time, whatever showed it, and Escape closes the one on screen wherever focus is, leaving focus where it was.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI2-F7" (from packages/app/web, after build).
+test("UI2-F7: one tooltip at a time across focus and hover; Escape closes the one shown and focus stays", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeOwned(page, { models: OWNED_MODELS_WITH_CONTROLS });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
+    const main = workflowTab(page);
+    await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
+    const definition = viewSwitch(main, "Definition");
+    const stop = main.getByRole("button", { name: "Stop…", exact: true });
+    // Keyboard focus on Definition (Tab from the definition picker): its tooltip.
+    await main.getByRole("combobox", { name: "Workflow definition", exact: true }).focus();
+    await page.keyboard.press("Tab");
+    await expect(definition).toBeFocused();
+    await expect(page.getByRole("tooltip")).toHaveText(/^Definition — /);
+    // Hovering Stop… while Definition keeps focus: one tooltip, Stop…'s.
+    await stop.hover();
+    await expect(page.getByRole("tooltip")).toHaveText(/^Stop… — /);
+    await expect(page.getByRole("tooltip")).toHaveCount(1);
+    // Escape closes it; focus stays on Definition.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await expect(definition).toBeFocused();
+    // Focus in the message box, a Workflow icon hovered: Escape closes its tooltip, and the message box keeps focus.
+    await page.mouse.move(2, 2);
+    const prompt = page.locator(".ps-prompt-input").filter({ visible: true }).first();
+    await prompt.focus();
+    await main.getByRole("button", { name: "Pause", exact: true }).hover();
+    await expect(page.getByRole("tooltip")).toHaveText(/^Pause — /);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await expect(prompt).toBeFocused();
+    expect(errors).toEqual([]);
+});
+
 // Review UI2-F1 (short UI re-review, high): a Workflow the panel showed once (its model read and cached as Running) fails
 // in the background while the panel is closed. The catalog read brings its Failed row; the dot must come back, although
 // the cached model still says Running and no panel reads it.
