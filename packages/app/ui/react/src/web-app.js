@@ -10174,9 +10174,16 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         // or a queued batch that an empty send flushes. An empty send is silent.
         const sendState = controller.getState();
         const sendSessionId = sendState.sessions.activeSessionId;
-        const willSend = String(sendState.ui.prompt || "").trim()
+        // Editing a message that is already queued or being cancelled only
+        // closes the editor: nothing goes out.
+        const promptEdit = sendSessionId ? controller.getPromptEditSessionMatch?.(sendSessionId) : null;
+        const editedPhase = promptEdit
+            ? controller.getSessionOutbox?.(sendSessionId)?.find((item) => item.id === promptEdit.itemId)?.phase
+            : null;
+        const willSend = editedPhase !== "queued" && editedPhase !== "cancelling" && (
+            String(sendState.ui.prompt || "").trim()
             || controller.getPromptAttachments?.().some((attachment) => attachment?.kind === "image")
-            || (sendSessionId && controller.getPendingOutboxItems?.(sendSessionId)?.length > 0);
+            || (sendSessionId && controller.getPendingOutboxItems?.(sendSessionId)?.length > 0));
         if (willSend) themeSoundPlayer().cue("send");
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
             .catch(() => {})

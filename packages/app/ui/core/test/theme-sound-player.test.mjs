@@ -220,8 +220,9 @@ test("action cues sound only for a theme that has them, while its sound is on", 
     player.dispose();
 });
 
-// The cue bus is the second gain wired to the limiter (the first is the ambient's master).
-const cueBusOf = (audio) => audio.stats.gains.filter((g) => g.to.has(audio.stats.limiter))[1];
+// Cue buses are every gain wired to the limiter after the ambient's master.
+const cueBusesOf = (audio) => audio.stats.gains.filter((g) => g.to.has(audio.stats.limiter)).slice(1);
+const cueBusOf = (audio) => cueBusesOf(audio).at(-1);
 
 test("cues already ringing stop when sound goes off, the tab hides, the theme changes or the volume drops to zero", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
@@ -265,5 +266,26 @@ test("stopping the dawn sky cuts its star chimes and unhooks its room", (t) => {
     assert.ok(voiceOscs.every((osc) => osc.cut), "every chord and star oscillator was stopped by the voice");
     const stillWired = audio.stats.gains.filter((g) => g.to.size > 0 && voiceOscs.some((o) => o.to.has(g)));
     assert.equal(stillWired.length, 0, "no note gain is left connected");
+    player.dispose();
+});
+
+test("sound coming straight back after a mute opens a fresh cue bus; the old one never reopens", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    const audio = fakeAudio();
+    const player = createThemeSoundPlayer({ win: audio.win });
+    player.update({ sound: dawn, enabled: true, volume: 0.4 });
+    advance(t, 500);
+    assert.equal(player.cue("done"), true);
+    const old = cueBusOf(audio);
+    player.update({ sound: dawn, enabled: true, volume: 0 });
+    player.update({ sound: dawn, enabled: true, volume: 0.4 });
+    advance(t, 300);
+    assert.equal(old.gain.target, 0, "the bus that carried the old chime stays muted");
+    const fresh = cueBusOf(audio);
+    assert.notEqual(fresh, old, "a new bus opens instead");
+    assert.ok(fresh.gain.target > 0);
+    advance(t, 4000);
+    assert.equal(old.to.size, 0, "the retired bus is unhooked once its tail is gone");
+    assert.equal(player.cue("tick"), true, "cues play on the fresh bus");
     player.dispose();
 });

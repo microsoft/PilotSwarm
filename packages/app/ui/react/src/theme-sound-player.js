@@ -315,8 +315,10 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
     const AudioContextClass = win ? (win.AudioContext || win.webkitAudioContext) : null;
     let ctx = null;
     let master = null;
+    let limiter = null;
     let cueBus = null;
     let cueWet = null;
+    let cueRoom = null;
     // Cue notes still ringing, so turning sound off, hiding the tab or a
     // theme without cues cuts them instead of letting them finish.
     const cueNotes = new Set();
@@ -353,7 +355,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             ctx = new AudioContextClass();
             master = ctx.createGain();
             master.gain.value = 0;
-            const limiter = ctx.createDynamicsCompressor();
+            limiter = ctx.createDynamicsCompressor();
             limiter.threshold.value = -3;
             limiter.knee.value = 0;
             limiter.ratio.value = 20;
@@ -361,18 +363,6 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             limiter.release.value = 0.1;
             master.connect(limiter);
             limiter.connect(ctx.destination);
-            // Cues bypass the ambient's fade: they sound at the person's
-            // volume whenever the theme's sound is on and the tab is shown.
-            cueBus = ctx.createGain();
-            cueBus.gain.value = 0;
-            cueBus.connect(limiter);
-            const room = roomTail(ctx, cache);
-            if (room) {
-                cueWet = ctx.createGain();
-                cueWet.gain.value = 0.35;
-                cueWet.connect(room);
-                room.connect(cueBus);
-            }
         } catch {
             ctx = null;
         }
@@ -406,15 +396,41 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
     // volume only while the theme's sound is active and the theme has cues.
     // Muting fades the bus in a few ms and cuts the notes still ringing, so
     // nothing plays on after sound off, a hidden tab or a theme change.
-    const setCueLevel = (level) => {
-        if (!cueBus || !ctx) return;
-        if (level > 0) {
-            cueBus.gain.setTargetAtTime(level, ctx.currentTime, 0.02);
-            return;
+    // Muting RETIRES the bus: it fades out with its notes and its room tail
+    // and is unhooked once they are gone. The next opening builds a fresh bus,
+    // so sound coming back on can never reveal what was playing before.
+    const openCueBus = (level) => {
+        if (!ctx || !limiter) return;
+        if (!cueBus) {
+            cueBus = ctx.createGain();
+            cueBus.gain.value = 0;
+            cueBus.connect(limiter);
+            cueRoom = roomTail(ctx, cache);
+            if (cueRoom) {
+                cueWet = ctx.createGain();
+                cueWet.gain.value = 0.35;
+                cueWet.connect(cueRoom);
+                cueRoom.connect(cueBus);
+            }
         }
-        cueBus.gain.cancelScheduledValues(ctx.currentTime);
-        cueBus.gain.setTargetAtTime(0, ctx.currentTime, 0.012);
+        cueBus.gain.setTargetAtTime(level, ctx.currentTime, 0.02);
+    };
+    const setCueLevel = (level) => {
+        if (!ctx) return;
+        if (level > 0) { openCueBus(level); return; }
+        if (!cueBus) return;
+        const bus = cueBus;
+        const wet = cueWet;
+        const room = cueRoom;
+        cueBus = null;
+        cueWet = null;
+        cueRoom = null;
+        bus.gain.cancelScheduledValues(ctx.currentTime);
+        bus.gain.setTargetAtTime(0, ctx.currentTime, 0.012);
         stopAll(cueNotes, ctx.currentTime + 0.08);
+        setTimeout(() => {
+            for (const node of [wet, room, bus]) { try { node?.disconnect(); } catch { /* gone */ } }
+        }, 3000);
     };
 
     // Fade to silence over `seconds`, then stop the voice so it costs nothing.
@@ -493,12 +509,13 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
         cue(name) {
             const gap = THEME_SOUND_CUES[name];
             if (gap === undefined || !enabled || !sound?.cues || !doc || doc.hidden) return false;
-            if (!ctx || ctx.state !== "running" || !cueBus) return false;
+            if (!ctx || ctx.state !== "running") return false;
             const now = Date.now();
             if (now - (lastCue[name] ?? -Infinity) < gap) return false;
             if (!(volume > 0)) return false;
+            openCueBus(volume * MAX_GAIN);
+            if (!cueBus) return false;
             lastCue[name] = now;
-            cueBus.gain.setTargetAtTime(volume * MAX_GAIN, ctx.currentTime, 0.005);
             try { playCue(ctx, cueBus, name, cueWet, cueNotes); } catch { return false; }
             return true;
         },
@@ -530,8 +547,10 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             if (ctx) ctx.close().catch(() => {});
             ctx = null;
             master = null;
+            limiter = null;
             cueBus = null;
             cueWet = null;
+            cueRoom = null;
         },
     };
 }
