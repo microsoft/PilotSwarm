@@ -1320,10 +1320,13 @@ function nodeRow(entry, selected, idWidth, labelWidth, width) {
     const marker = selected ? "▶ " : "  ";
     const id = bounded(entry.id, idWidth).padEnd(idWidth);
     const label = bounded(entry.label, labelWidth).padEnd(labelWidth);
-    // Counts carry nouns (Workflow Simplified, usability finding 4): "ran 3 times", never "×3".
-    const runs = entry.runs > 1 && !entry.itemCounts ? ` · ran ${entry.runs} times${entry.partial ? " in the loaded history" : ""}` : "";
-    const used = marker.length + 2 + idWidth + 1 + labelWidth + 1 + runs.length;
-    const stateLabel = bounded(entry.stateLabel, Math.max(8, width - used));
+    // Counts carry nouns (Workflow Simplified, usability finding 4): "ran 3 times", never "×3". The node's state comes
+    // first: "in the loaded history" is added only when the row still has room for it.
+    const ran = entry.runs > 1 && !entry.itemCounts ? ` · ran ${entry.runs} times` : "";
+    const room = width - (marker.length + 2 + idWidth + 1 + labelWidth + 1);
+    const stateLabel = bounded(entry.stateLabel, Math.max(8, room - ran.length));
+    const partial = ran && entry.partial ? " in the loaded history" : "";
+    const runs = ran + (partial && stateLabel.length + ran.length + partial.length <= room ? partial : "");
     return [
         { text: marker, color: selected ? "cyan" : "gray", bold: selected },
         { text: `${STATE_GLYPHS[entry.state]} `, color: STATE_COLORS[entry.state] },

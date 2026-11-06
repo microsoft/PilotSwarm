@@ -29,7 +29,9 @@ test("the legacy graph renders as before, without v2 marks", () => {
     const html = main(mount({ view: { definition: workflowDefinition(legacyStartedData) } }));
     // Words (Workflow Simplified 03, 10): a node's type in a word, never the Node.js runtime as "node".
     assert.ok(html.includes("Script · idle"));
-    assert.ok(!html.includes("data-kind"));
+    // No v2 route marks on its edges. Its nodes carry their type for their icon (Workflow Simplified 10).
+    assert.ok(!/<g class="ps-workflow-edge"[^>]*data-kind=/.test(html), html);
+    assert.ok(html.includes('data-kind="script"') && html.includes('data-kind="terminal"'));
     assert.ok(!html.includes("data-phase=\"waiting\""));
     assert.equal(html.split(">Workflow session<").length - 1, 0, "no static composer bar (flow-09)");
 });
