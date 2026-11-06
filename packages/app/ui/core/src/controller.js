@@ -10896,8 +10896,8 @@ export class PilotSwarmUiController {
             return;
         }
         // Workflow Simplified (S9): a selected Workflow row is stopped, canceled or deleted as a Workflow.
-        const highlighted = workflowHighlightedSessionId(state.sessions);
-        if (highlighted && highlighted !== state.sessions.activeSessionId && state.sessions.byId[highlighted]?.sessionKind === "workflow") {
+        const highlighted = this.highlightedWorkflowRow(state);
+        if (highlighted) {
             const row = state.sessions.byId[highlighted];
             const workflowState = workflowStateOf(row, state.ui.workflowViews?.[highlighted] ?? null);
             this.ensureWorkflowReadModel(highlighted).catch(() => {});
@@ -10959,6 +10959,36 @@ export class PilotSwarmUiController {
                 canRegenerate: false,
             },
         });
+    }
+
+    /**
+     * Workflow Simplified, review UI-1: the Workflow row the session list's actions target. A Workflow row selected under
+     * its chat keeps the chat active (the chat stays in the middle) and is highlighted; the Terminate button, and the
+     * shortcuts c, d and D in the portal and the terminal UI, then act on that Workflow, never on its chat. Null when no
+     * Workflow row is highlighted, or in select mode (its selection is the target).
+     */
+    highlightedWorkflowRow(state = this.getState()) {
+        if (state.sessions.selectMode && Array.isArray(state.sessions.selectedIds) && state.sessions.selectedIds.length >= 1) return null;
+        const id = workflowHighlightedSessionId(state.sessions);
+        return id && id !== state.sessions.activeSessionId && state.sessions.byId[id]?.sessionKind === "workflow" ? id : null;
+    }
+
+    /**
+     * UI-1: a lifecycle shortcut (c cancel, d done, D delete) while a Workflow row is highlighted. Cancel and done open
+     * that Workflow's Terminate choices (Stop, Cancel, Delete: what its row offers), delete asks to delete that Workflow;
+     * each names the Workflow and binds its id. Returns whether the shortcut was taken for a Workflow.
+     */
+    async workflowRowShortcut(action, { confirmed = false } = {}) {
+        if (confirmed) return false;
+        const state = this.getState();
+        const workflowId = this.highlightedWorkflowRow(state);
+        if (!workflowId) return false;
+        if (action === "delete") {
+            await this.terminateWorkflowRow(workflowId, "delete", workflowRowTitle(state.sessions.byId, state.sessions.byId[workflowId], state.ui.workflowViews));
+        } else {
+            await this.openTerminatePickerModal();
+        }
+        return true;
     }
 
     /**
@@ -13273,6 +13303,8 @@ export class PilotSwarmUiController {
             return;
         }
 
+        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its chat.
+        if (await this.workflowRowShortcut("cancel", { confirmed })) return;
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
         const activeSession = state.sessions.byId[sessionId];
@@ -14161,6 +14193,8 @@ export class PilotSwarmUiController {
             await this.refreshSessions();
             return;
         }
+        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its chat.
+        if (await this.workflowRowShortcut("done", { confirmed })) return;
         const sessionId = this.getState().sessions.activeSessionId;
         if (!sessionId) return;
         const activeSession = this.getState().sessions.byId[sessionId];
@@ -14287,6 +14321,8 @@ export class PilotSwarmUiController {
             await this.refreshSessions();
             return;
         }
+        // UI-1: a highlighted Workflow row is acted on as a Workflow, never through its chat.
+        if (await this.workflowRowShortcut("delete", { confirmed })) return;
         const sessionId = state.sessions.activeSessionId;
         if (!sessionId) return;
         const activeSession = state.sessions.byId[sessionId];
