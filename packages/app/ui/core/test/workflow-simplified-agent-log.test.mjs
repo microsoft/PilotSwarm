@@ -324,6 +324,34 @@ test("UI-10: a continued chat's later visit carries the base instructions an ear
     assert.ok(html.includes('data-carried-from="1"') && html.includes("The same as visit 1 (this chat continues)."));
 });
 
+// Review UI-D9: every Base instructions row of a visit counts, in order. Visit 1 records body A, then a changed body B;
+// visit 2 continues without a new echo; visit 3 echoes A and B again. Visit 2 carries B (the last), each body is shown in
+// full once, and a reference names which of visit 1's instructions it means.
+test("UI-D9: the carried instructions are the visit's last; each distinct body is shown in full once; references name which body", () => {
+    const SHA_B = "fedcba9876543210".repeat(4);
+    const KEPT_B = { ...KEPT, artifact: "base-instructions-fedcba9876543210.md", sha256: SHA_B, chars: 50000 };
+    const three = { ...node, chat: "continue", runs: 3, executions: [...node.executions.map(item => ({ ...item, status: "completed" })),
+        { id: "nx-3", ordinal: 3, status: "pending", enteredAt: at("17:44:01"), agent: { childSessionId: CHAT } }] };
+    three.current = three.executions[2];
+    const log3 = [
+        ...chat.slice(0, 2), base(2.1, "17:40:02"), chatEvent(2.2, "assistant.message", "17:40:02", { content: "Thinking." }),
+        base(2.3, "17:40:03", KEPT_B), ...chat.slice(2),
+        prompt(11, "nx-3", "17:44:02", "[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 3.]\n{}"), base(12, "17:44:03"), base(13, "17:44:04", KEPT_B),
+    ];
+    const log = workflowAgentNodeLog({ node: three, events, chats: new Map([[CHAT, log3]]), runId: "run-1", now: NOW });
+    const [third, second, first] = log.groups;
+    const bases = group => group.rows.filter(row => row.label === "Base instructions");
+    assert.deepEqual(bases(first).map(row => row.instructions?.sha256), [SHA, SHA_B], "visit 1 shows both in full, in order");
+    assert.deepEqual(bases(second).map(row => [row.text, row.carriedFrom, row.carriedNumber, row.instructions]),
+        [["The same as visit 1, its instructions 2 of 2 (this chat continues).", 1, 2, null]], "visit 2 carries B, the last");
+    assert.deepEqual(bases(third).map(row => [row.text, row.carriedFrom, row.carriedNumber, row.instructions]), [
+        ["The same as visit 1, its instructions 1 of 2.", 1, 1, null],
+        ["The same as visit 1, its instructions 2 of 2.", 1, 2, null],
+    ], "visit 3 repeats neither in full");
+    const full = log.groups.flatMap(bases).filter(row => row.instructions);
+    assert.deepEqual(full.map(row => row.instructions.sha256), [SHA, SHA_B], "each distinct body once");
+});
+
 // Review UI-11: a closed tool call or Base instructions row keeps its body out of the page; the same base instructions
 // (by digest) are shown once, at the oldest visit that has them.
 test("UI-11: closed bodies are not mounted; the same base instructions show once", () => {

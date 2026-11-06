@@ -315,31 +315,40 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
     });
     // UI-10: a continued chat's later visits carry the base instructions the chat had at an earlier visit (one row, no text).
     // Review UI-11: the same base instructions (by their whole digest) are shown once, at the oldest visit that has them;
-    // a later visit's row says which visit shows them.
+    // a later row says which visit shows them. Review UI-D9: every Base instructions row of a visit counts, in recorded
+    // order: each distinct digest is shown in full once; a reference names which of a visit's instructions it means when
+    // that visit has more than one; a visit with none carries the chat's last ones.
     const byOrdinal = groups.slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
     const lastBase = new Map();
     const shownBySha = new Map();
+    const where = from => `visit ${from.ordinal ?? "—"}${from.count > 1 ? `, its instructions ${from.number} of ${from.count}` : ""}`;
     for (const group of byOrdinal) {
-        const ownAt = group.rows.findIndex(row => row.label === "Base instructions");
-        const own = ownAt >= 0 ? group.rows[ownAt] : null;
-        const sha = own?.instructions?.sha256 ?? null;
-        if (own && sha && shownBySha.has(sha)) {
-            const from = shownBySha.get(sha);
-            group.rows[ownAt] = { ...own, text: `The same as visit ${from ?? "—"}.`, carriedFrom: from, instructions: null };
-            lastBase.set(group.chatId, { row: own, ordinal: from });
-            continue;
+        const at = group.rows.flatMap((row, index) => row.label === "Base instructions" ? [index] : []);
+        const shas = [...new Set(at.map(index => group.rows[index].instructions?.sha256 ?? null).filter(Boolean))];
+        let last = null;
+        for (const index of at) {
+            const own = group.rows[index];
+            const sha = own.instructions?.sha256 ?? null;
+            if (sha && shownBySha.has(sha)) {
+                const from = shownBySha.get(sha);
+                group.rows[index] = { ...own, text: `The same as ${where(from)}.`, carriedFrom: from.ordinal, carriedNumber: from.number, instructions: null };
+                last = { row: own, from };
+                continue;
+            }
+            const from = { ordinal: group.ordinal ?? null, number: sha ? shas.indexOf(sha) + 1 : 1, count: shas.length };
+            if (sha) shownBySha.set(sha, from);
+            last = { row: own, from };
         }
-        if (own) {
-            if (sha) shownBySha.set(sha, group.ordinal ?? null);
-            lastBase.set(group.chatId, { row: own, ordinal: group.ordinal });
+        if (last) {
+            lastBase.set(group.chatId, last);
             continue;
         }
         const earlier = group.chatId ? lastBase.get(group.chatId) : null;
         if (!earlier || group.loading) continue;
         const prompt = group.rows.findIndex(row => row.label === "Prompt");
         const carried = { key: `carried:${group.visitId}`, kind: "prompt", label: "Base instructions", at: null, time: null,
-            text: `The same as visit ${earlier.ordinal ?? "—"} (this chat continues).`, carriedFrom: earlier.ordinal ?? null,
-            instructions: null, instructionsKept: earlier.row.instructionsKept === true };
+            text: `The same as ${where(earlier.from)} (this chat continues).`, carriedFrom: earlier.from.ordinal ?? null,
+            carriedNumber: earlier.from.number, instructions: null, instructionsKept: earlier.row.instructionsKept === true };
         group.rows.splice(prompt >= 0 ? prompt : 0, 0, carried);
     }
     // Review UI-D5: a continued chat's loaded rows whose visit is not known yet (its prompt is on an older page): shown
