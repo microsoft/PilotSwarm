@@ -1331,6 +1331,8 @@ function baseReducer(state, action) {
                     },
                 },
             };
+        case "agents/titles":
+            return { ...state, agentTitles: action.agentTitles && typeof action.agentTitles === "object" ? action.agentTitles : null };
         case "budget/agents/loading":
             return { ...state, budget: { ...state.budget, agents: { ...state.budget.agents, loading: true } } };
         case "budget/agents/loaded":

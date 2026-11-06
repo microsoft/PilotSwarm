@@ -97,3 +97,26 @@ test("the rename box learns a custom agent title from the catalog", async () => 
     assert.equal(modal.agentTitlePrefix, "Agent Smith");
     assert.equal(modal.value, "TRON MOTD");
 });
+
+test("an agent's catalog title leads nothing: the person's title comes first", () => {
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const long = "Investigate the nightly replication lag regression on the westus3 read replicas";
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "aaaabbbb-1111-2222-3333-444444444446", title: `DeepWiki Code Explorer: ${long}`, agentId: "deepwiki", status: "idle", createdAt: 1, updatedAt: 2 }] });
+    const before = selectSessionRows(store.getState())[0].text.trim();
+    assert.match(before, /^DeepWiki Code Explorer: /, "before the catalog loads, the stored title shows as it is");
+    store.dispatch({ type: "agents/titles", agentTitles: { deepwiki: ["DeepWiki Code Explorer"] } });
+    const after = selectSessionRows(store.getState())[0].text.trim();
+    assert.match(after, new RegExp(`^${long} · DeepWiki Code Explorer`), "once it loads, the row is rebuilt with the title first");
+});
+
+test("the portal's rename box shows the count under the field", () => {
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    store.dispatch({ type: "ui/modal", modal: { type: "renameSession", sessionId: "s", value: "abc", cursorIndex: 3, maxLength: 100 } });
+    let modal = selectRenameSessionModal(store.getState());
+    assert.equal(modal.lengthLine, "3 / 100 characters");
+    assert.equal(modal.atLimit, false);
+    store.dispatch({ type: "ui/modal", modal: { type: "renameSession", sessionId: "s", value: "x".repeat(100), cursorIndex: 100, maxLength: 100 } });
+    modal = selectRenameSessionModal(store.getState());
+    assert.equal(modal.lengthLine, "100 / 100 characters, the limit");
+    assert.equal(modal.atLimit, true);
+});

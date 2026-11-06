@@ -14090,6 +14090,12 @@ function ModalLayer({ controller }) {
                     },
                     autoFocus: true,
                 }),
+                modalState.renameSession.lengthLine
+                    ? React.createElement("div", {
+                        className: `ps-modal-input-count${modalState.renameSession.atLimit ? " is-at-limit" : ""}`,
+                        role: modalState.renameSession.atLimit ? "status" : undefined,
+                    }, modalState.renameSession.lengthLine)
+                    : null,
                 React.createElement("div", { className: "ps-modal-details" },
                     normalizeLines(modalState.renameSession.helpLines || []).map((line, index) => React.createElement(Line, { key: `help:${index}`, line, theme, className: "ps-modal-detail-line" })),
                 ),

@@ -2661,6 +2661,9 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "sessions/navigationIntent", sessionId: deepLinkSessionId });
         }
         await this.refreshSessions();
+        // Agent display titles decide how a named agent session's title reads
+        // in the list; fetched once, off the start path.
+        void this.loadAgentTitles().catch(() => {});
         this.catalogTimer = setInterval(() => {
             // Do not queue more catalog traffic behind a slow periodic read.
             if (this.catalogPollInFlight) return;
@@ -8728,20 +8731,26 @@ export class PilotSwarmUiController {
 
     /** Catalog display titles for an agent, or null until the catalog has loaded. */
     cachedAgentTitles(agentId) {
-        if (!this._agentTitles) return null;
-        const wanted = comparableAgentTitle(agentId);
-        return this._agentTitles.filter((entry) => entry.key === wanted).map((entry) => entry.title);
+        const byAgent = this.getState().agentTitles;
+        if (!byAgent) return null;
+        return byAgent[comparableAgentTitle(agentId)] || [];
     }
 
     rememberAgentTitles(agents) {
         if (!Array.isArray(agents)) return;
-        this._agentTitles = agents
-            .filter((agent) => agent?.name && agent?.title)
-            .map((agent) => ({ key: comparableAgentTitle(agent.name), title: String(agent.title) }));
+        const byAgent = {};
+        for (const agent of agents) {
+            if (!agent?.name || !agent?.title) continue;
+            const key = comparableAgentTitle(agent.name);
+            (byAgent[key] ||= []).push(String(agent.title));
+        }
+        const current = this.getState().agentTitles;
+        if (current && JSON.stringify(current) === JSON.stringify(byAgent)) return;
+        this.dispatch({ type: "agents/titles", agentTitles: byAgent });
     }
 
     async loadAgentTitles() {
-        if (this._agentTitles || typeof this.transport.listCreatableAgents !== "function") return;
+        if (this.getState().agentTitles || typeof this.transport.listCreatableAgents !== "function") return;
         this._agentTitlesLoad ||= this.transport.listCreatableAgents()
             .then((agents) => this.rememberAgentTitles(agents))
             .finally(() => { this._agentTitlesLoad = null; });

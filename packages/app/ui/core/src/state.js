@@ -391,6 +391,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
     const hasStoredCollapsedSessionIds = collapsedSessionIds != null;
     const initialLayoutAdjustments = normalizeStoredLayoutAdjustments(layoutAdjustments);
     return {
+        // Agent display titles by comparable agent id ({ deepwiki: ["DeepWiki
+        // Code Explorer"] }), from the agent catalog; null until it loads.
+        agentTitles: null,
         branding: branding || {
             title: "PilotSwarm",
             splash: "{bold}{cyan-fg}PilotSwarm{/cyan-fg}{/bold}",
