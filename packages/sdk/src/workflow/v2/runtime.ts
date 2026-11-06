@@ -295,6 +295,8 @@ export const WORKFLOW_V2_REQUEST_ACTIVITIES = {
     agentSpawnFailed: "workflow.v2.r1.agentSpawnFailed",
     endAgent: "workflow.v2.r1.endAgent",
     endAgents: "workflow.v2.r1.endAgents",
+    endOwedChat: "workflow.v2.r1.endOwedChat",
+    endOwedChatLast: "workflow.v2.r1.endOwedChatLast",
     endBranch: "workflow.v2.r1.endBranch",
     cancelBranches: "workflow.v2.r1.cancelBranches",
     join: "workflow.v2.r1.join",
@@ -2775,6 +2777,8 @@ function unsupportedController(version: string) {
 export interface WorkflowV2AgentEndClient {
     getStatus(instanceId: string): Promise<{ status: string }>;
     enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
+    /** Starts a continued chat's detached end retry (formal t3); absent on a client that cannot (a test double). */
+    startOrchestrationVersioned?(instanceId: string, orchestrationName: string, input: unknown, version: string): Promise<void>;
 }
 
 /**
@@ -2941,6 +2945,19 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowV2AgentEn
  */
 async function endContinuedChat(store: WorkflowStore, client: WorkflowV2AgentEndClient, run: WorkflowRunRow, childSessionId: string)
     : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
+    // One looker at a time sends the end (formal t3): the look, the command and its mark are one critical section. A
+    // looker that finds another holding it looks again later (the end stays owed until the holder marks it).
+    if (typeof store.withChatEndLock !== "function") return endContinuedChatLocked(store, client, run, childSessionId);
+    const held = await store.withChatEndLock(childSessionId, () => endContinuedChatLocked(store, client, run, childSessionId),
+        { waitMs: WORKFLOW_V2_CHAT_END_LOCK_WAIT_MS, pollMs: 100 });
+    return held.locked ? held.value : null;
+}
+
+/** How long a looker waits for a continued chat's end lock before it leaves the end to the holder and looks again later. */
+const WORKFLOW_V2_CHAT_END_LOCK_WAIT_MS = 2_000;
+
+async function endContinuedChatLocked(store: WorkflowStore, client: WorkflowV2AgentEndClient, run: WorkflowRunRow, childSessionId: string)
+    : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
     const last = await store.readAgentInvocationByChild(childSessionId);
     if (!last || last.endChildStatus === WORKFLOW_AGENT_CHAT_ENDED) return null;
     const node = await store.readNodeExecution(last.nodeExecutionId);
@@ -2991,7 +3008,84 @@ export async function endWorkflowV2ContinuedChats(store: WorkflowStore, client: 
     for (const invocation of await store.listAgentInvocations(runId, 10_000)) {
         if (workflowAgentChatContinues(invocation)) chats.add(invocation.childSessionId);
     }
-    for (const childSessionId of chats) await endContinuedChat(store, client, run, childSessionId);
+    for (const childSessionId of chats) {
+        await endContinuedChat(store, client, run, childSessionId);
+        // Formal t3 (1): a chat whose end is still owed (created but not visible yet, or not created yet by an attempt in
+        // flight) is looked at again by a detached retry, so the run's own end, and its notice to the parent after it,
+        // never wait for it.
+        if (await continuedChatEndOwed(store, childSessionId)) await startContinuedChatEndRetry(client, run, childSessionId);
+    }
+}
+
+/**
+ * Whether a continued chat's end is owed (review RT-1, formal t2b and t3): its newest visit was marked NotFound (the chat
+ * had no session when its end was due) and some visit of the chat began a spawn attempt, which may have created it or
+ * may still. Not spawnedAt: an attempt that crashed between creating the chat and recording it leaves that empty.
+ */
+async function continuedChatEndOwed(store: WorkflowStore, childSessionId: string): Promise<boolean> {
+    const last = await store.readAgentInvocationByChild(childSessionId);
+    if (!last || !workflowAgentChatContinues(last) || last.endChildStatus !== "NotFound") return false;
+    return store.chatHasSpawnAttempt(childSessionId);
+}
+
+/**
+ * Look again at a continued chat whose end is owed, and send the end once its session is visible (endContinuedChat).
+ * `retry`: still owed after the look, fail, so the calling activity's retry schedule looks again (the spawn's after-send
+ * and decided paths, the detached cleanup retry); without it (the last look of a schedule) report it. A chat whose end is
+ * not owed is left alone. Never creates a chat or sends a visit's prompt.
+ */
+export async function endOwedContinuedChat(store: WorkflowStore, client: WorkflowV2AgentEndClient, childSessionId: string,
+    options: { retry: boolean }): Promise<"not_owed" | "ended" | "still_owed"> {
+    if (!(await continuedChatEndOwed(store, childSessionId))) return "not_owed";
+    const last = await store.readAgentInvocationByChild(childSessionId);
+    const run = last ? await store.readRun(last.runId) : null;
+    if (!run) return "not_owed";
+    await endContinuedChat(store, client, run, childSessionId);
+    if (!(await continuedChatEndOwed(store, childSessionId))) return "ended";
+    if (options.retry) {
+        throw new Error(`The end of chat ${childSessionId} is owed and its session is not visible yet; the next attempt looks again.`);
+    }
+    return "still_owed";
+}
+
+/** A continued chat's detached end retry: one per chat, a stable instance id. */
+export const WORKFLOW_V2_CHAT_END_NAME = "workflow-v2-chat-end";
+export const WORKFLOW_V2_CHAT_END_VERSION = "1.0.0";
+export function workflowChatEndInstanceId(childSessionId: string): string {
+    return `wfc-${childSessionId}`;
+}
+
+/**
+ * Start the detached end retry of a continued chat (WORKFLOW_V2_CHAT_END_NAME), once per chat: a client that cannot
+ * start orchestrations (a test double), or a retry already started, starts nothing. A failed start is reported, not
+ * thrown: the run's end has looked once, and a recover looks again.
+ */
+async function startContinuedChatEndRetry(client: WorkflowV2AgentEndClient, run: WorkflowRunRow, childSessionId: string): Promise<void> {
+    if (typeof client.startOrchestrationVersioned !== "function") return;
+    const instanceId = workflowChatEndInstanceId(childSessionId);
+    try {
+        if ((await client.getStatus(instanceId)).status !== "NotFound") return;
+        await client.startOrchestrationVersioned(instanceId, WORKFLOW_V2_CHAT_END_NAME, { runId: run.runId, childSessionId }, WORKFLOW_V2_CHAT_END_VERSION);
+    } catch (error) {
+        console.warn(`[workflow-v2] run=${run.runId} chat=${childSessionId}: its end retry did not start: ${workflowErrorMessage(error)}`);
+    }
+}
+
+/**
+ * A continued chat's detached end retry (formal t3): the run's cleanup found the chat's end owed. It looks again on the
+ * run-ending writes' schedule (persistentlyTagged: each attempt storeTagged's 5 tries 1-8 s apart, then
+ * WORKFLOW_V2_FINALIZE_DELAYS_MS, 1 s to 10 min; about half an hour in all), which outlasts a session's visibility delay
+ * (its orchestration's first turn: one dispatcher poll and one turn, normally well under a second, longer while the
+ * database is slow); then the last look reports a chat that never became visible.
+ */
+export function* workflowV2ChatEnd(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
+    const input = record(rawInput, "chat end input");
+    try {
+        yield* persistentlyTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChat, input);
+    } catch {
+        yield* storeTagged(ctx, WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChatLast, input);
+    }
+    return null;
 }
 
 /**
@@ -3041,6 +3135,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         runtime.registerOrchestrationVersioned(WORKFLOW_V2_SEND_NAME, WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION, workflowV2SendTagged);
         runtime.registerOrchestrationVersioned(WORKFLOW_V2_REQUEST_NAME, WORKFLOW_V2_REQUEST_VERSION, workflowV2RequestDelivery);
         runtime.registerOrchestrationVersioned(WORKFLOW_V2_AGENT_NAME, WORKFLOW_V2_AGENT_VERSION, workflowV2AgentSpawn);
+        runtime.registerOrchestrationVersioned(WORKFLOW_V2_CHAT_END_NAME, WORKFLOW_V2_CHAT_END_VERSION, workflowV2ChatEnd);
     }
     /**
      * Each activity under its legacy name (as 1.8.0 and the 1.0.0
@@ -4563,6 +4658,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (begun.action === "decided") {
             // An earlier attempt may have created the child and stopped before recording it: end it too.
             if (begun.invocation.spawnAttempts > 0) await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
+            // Formal t3: a continued chat whose end is owed (some visit attempted a spawn) is looked at again on this
+            // activity's retry schedule until its session is visible, whatever spawnedAt says (a crash between creating
+            // the chat and recording it leaves it empty). Nothing is spawned or sent here.
+            if (workflowAgentChatContinues(begun.invocation)) {
+                await endOwedContinuedChat(store, client, begun.invocation.childSessionId, { retry: true });
+            }
             return { wake: false };
         }
         const run = await runOf(input.runId);
@@ -4637,17 +4738,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }));
         // A state decided while its child was being created: the controller's end may have found no session yet.
         await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
-        // Review RT-1, the after-send check of a continued chat: the session the host just created may not be visible yet
-        // (its orchestration's start is still queued, so it reads NotFound), and the chat's end then stays owed with nothing
-        // left to look again. This attempt fails instead, once: its retry finds the visit decided and ends the chat
-        // (beginAgentSpawn "decided" with an attempt), by then visible. A chat: new child keeps its path as at e696f2c6.
-        if (continued && begun.action === "spawn") {
-            const childSessionId = begun.invocation.childSessionId;
-            const owed = await store.readAgentInvocationByChild(childSessionId);
-            if (owed?.endChildStatus === "NotFound" && (await client.getStatus(`session-${childSessionId}`)).status === "NotFound") {
-                throw new Error(`Chat ${childSessionId} was created, but its session is not visible yet; the next attempt sends its end.`);
-            }
-        }
+        // Review RT-1 and formal t3, the after-send check of a continued chat: the session the host just created may not be
+        // visible yet (its orchestration's first turn has not run, so it reads NotFound). While the chat's end is owed, this
+        // attempt fails, and every retry (the decided path above) looks again until the chat is visible and its end is
+        // sent; the last look is agentSpawnFailed's. A chat: new child keeps its path as at e696f2c6.
+        if (continued) await endOwedContinuedChat(store, client, begun.invocation.childSessionId, { retry: true });
         return { wake: false };
     });
 
@@ -4676,9 +4771,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         // that existed is not sent again (endWorkflowV2AgentChild).
         const invocation = await store.readAgentInvocation(input.nodeExecutionId);
         const client = actx.getClient();
-        if (invocation && invocation.spawnAttempts > 0 && client) {
+        if (invocation && (invocation.spawnAttempts > 0 || workflowAgentChatContinues(invocation)) && client) {
             try {
-                await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
+                if (invocation.spawnAttempts > 0) await endAgentChild(client, input.nodeExecutionId, { afterSpawn: true });
+                // The last look of a continued chat whose end is still owed (formal t3); reported when it is still not visible.
+                if (workflowAgentChatContinues(invocation)
+                    && await endOwedContinuedChat(store, client, invocation.childSessionId, { retry: false }) === "still_owed") {
+                    await reportUnseenChat(run.workflowSessionId, run.runId, input.nodeExecutionId, invocation.childSessionId);
+                }
             } catch (error) {
                 // A later run-end cleanup (endRunAgents) sends it again.
                 await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
@@ -4700,6 +4800,35 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const invocation = await store.readAgentInvocation(nodeExecutionId);
         if (!invocation || invocation.runId !== runId) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not an agent state of run ${runId}.`);
         return await endAgentChild(client, nodeExecutionId);
+    });
+
+    /** A continued chat that never became visible within its retry schedule: its end stays owed until a recover finds it. */
+    const reportUnseenChat = (workflowSessionId: string, runId: string, nodeExecutionId: string | null, childSessionId: string) =>
+        store.recordSessionEvents(workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
+            runId, ...(nodeExecutionId ? { nodeExecutionId } : {}), childSessionId,
+            error: "The chat's session never became visible, so its end was not sent; a recover looks again.",
+        } }]);
+
+    /** A continued chat's detached end retry (workflowV2ChatEnd): one look; still owed, it fails, so the schedule looks again. */
+    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChat, async (actx, rawInput) => {
+        const input = record(rawInput, "chat end input");
+        const client = actx.getClient();
+        if (!client) throw new Error("A continued chat's end needs the durable client.");
+        return { result: await endOwedContinuedChat(store, client, text(input.childSessionId, "childSessionId"), { retry: true }) };
+    });
+
+    /** The detached end retry's last look: a chat still not visible is reported. */
+    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.endOwedChatLast, async (actx, rawInput) => {
+        const input = record(rawInput, "chat end input");
+        const client = actx.getClient();
+        if (!client) throw new Error("A continued chat's end needs the durable client.");
+        const childSessionId = text(input.childSessionId, "childSessionId");
+        const result = await endOwedContinuedChat(store, client, childSessionId, { retry: false });
+        if (result === "still_owed") {
+            const run = await runOf(text(input.runId, "runId"));
+            await reportUnseenChat(run.workflowSessionId, run.runId, null, childSessionId);
+        }
+        return { result };
     });
 
     /** End the children of every decided agent state of a run whose end the controller saw (endRunAgents). */

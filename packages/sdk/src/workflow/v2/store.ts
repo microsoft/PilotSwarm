@@ -2975,7 +2975,24 @@ export class WorkflowStore {
      */
     async withRunNoticeLock<T>(runId: string, work: () => Promise<T>, wait: { waitMs?: number; pollMs?: number } = {})
         : Promise<{ locked: true; value: T } | { locked: false }> {
-        const key = `${this.schema}:workflow-run-notice:${runId}`;
+        return this.withSessionAdvisoryLock(`${this.schema}:workflow-run-notice:${runId}`, work, wait);
+    }
+
+    /**
+     * Run `work` while this attempt holds a continued chat's end lock (chat: continue; review RT-1, formal t3): the look
+     * at the chat, the end command and the mark that it was sent are one critical section, so the lookers that may
+     * meet (the spawn's after-send and decided-path retries, the run's cleanup and its detached retry, a recover) send
+     * the end once. The same lock as withRunNoticeLock, on the chat's id: `{ locked: false }` when another looker holds
+     * it past `waitMs`.
+     */
+    async withChatEndLock<T>(childSessionId: string, work: () => Promise<T>, wait: { waitMs?: number; pollMs?: number } = {})
+        : Promise<{ locked: true; value: T } | { locked: false }> {
+        return this.withSessionAdvisoryLock(`${this.schema}:workflow-chat-end:${childSessionId}`, work, wait);
+    }
+
+    /** withRunNoticeLock's and withChatEndLock's lock: a session-level advisory lock on `key`, as described there. */
+    private async withSessionAdvisoryLock<T>(key: string, work: () => Promise<T>, wait: { waitMs?: number; pollMs?: number })
+        : Promise<{ locked: true; value: T } | { locked: false }> {
         const pool = this.options.noticeLockPool ? await this.options.noticeLockPool() : this.pool;
         const client = await pool.connect();
         let broken: Error | undefined;

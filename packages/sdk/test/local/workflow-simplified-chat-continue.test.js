@@ -286,7 +286,7 @@ function* chatChild(ctx) {
  * (its catalog row and its orchestration) and gives it each visit's prompt; the catalog's turn control is a spy that
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
-async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null } = {}) {
+async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null, deferVisible = false } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -310,17 +310,26 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     runtime.registerOrchestrationVersioned(CHILD, "1.0.0", chatChild);
     const spawns = [];
     const stops = [];
+    // deferVisible: the host creates the chat (its catalog row) and reports it spawned, but its session's orchestration
+    // starts only when the test calls makeVisible (a session whose first turn has not run yet reads NotFound; formal t3).
+    const unseen = new Map();
     const agentNodes = {
         async spawn(request) {
             spawns.push(request);
             // A spawn that passed its open check and has not created the chat yet (a test holds it here).
             if (beforeCreate) await beforeCreate(request);
             const instanceId = `session-${request.childSessionId}`;
+            const message = JSON.stringify({ prompt: request.prompt, clientMessageIds: [request.clientMessageId] });
+            if (deferVisible && (await client.getStatus(instanceId)).status === "NotFound") {
+                await catalog.createSession(request.childSessionId, {}).catch(() => {});
+                unseen.set(request.childSessionId, [...(unseen.get(request.childSessionId) ?? []), message]);
+                return { spawned: true };
+            }
             if ((await client.getStatus(instanceId)).status === "NotFound") {
                 await catalog.createSession(request.childSessionId, {}).catch(() => {});
                 await client.startOrchestrationVersioned(instanceId, CHILD, {}, "1.0.0");
             }
-            await client.enqueueEvent(instanceId, "messages", JSON.stringify({ prompt: request.prompt, clientMessageIds: [request.clientMessageId] }));
+            await client.enqueueEvent(instanceId, "messages", message);
             return { spawned: true };
         },
     };
@@ -354,6 +363,13 @@ async function harness(env, { storeHooks = null, storeBefore = null, beforeCreat
     await runtime.start();
     return {
         catalog, store, client, spawns, stops, host: { catalog, store, duroxideClient: client, requests: true },
+        /** A deferred chat's session starts now, and gets the prompts it was sent while it was not visible. */
+        async makeVisible(chat) {
+            const instanceId = `session-${chat}`;
+            await client.startOrchestrationVersioned(instanceId, CHILD, {}, "1.0.0");
+            for (const message of unseen.get(chat) ?? []) await client.enqueueEvent(instanceId, "messages", message);
+            unseen.delete(chat);
+        },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
@@ -660,15 +676,15 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
                 return request.nodeExecutionId === firstVisit ? held : undefined;
             },
             storeBefore: {
-                // Visit 2 is admitted; before its spawn attempt begins, the run is canceled and its cleanup runs.
+                // Visit 2 is admitted; before its spawn attempt begins, the run is canceled, so the attempt never begins
+                // (beginAgentSpawn finds the visit decided). The hook does not wait for the cleanup: an activity that waited
+                // here held a worker slot beside visit 1's held send, and the cleanup's activity could not run (c00519ae).
                 async beginAgentSpawn([nodeExecutionId]) {
                     if (firstVisit === null || nodeExecutionId === firstVisit || secondVisit.length > 0) return;
                     secondVisit.push(nodeExecutionId);
                     const { workflowSessionId } = await h.store.readAgentInvocation(nodeExecutionId);
                     await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "enough" },
                         { actor: ACTOR, operationId: "cancel-t2" });
-                    await until(async () => (await h.store.readAgentInvocation(nodeExecutionId))?.endChildStatus === "NotFound",
-                        "the owed end on the newest visit");
                 },
             },
         });
@@ -680,10 +696,15 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             await until(async () => (secondVisit.length > 0 ? secondVisit : null), "visit 2's spawn");
             expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
             // The run's cleanup (after the run's status) leaves the end owed on the newest visit, which began no attempt.
-            const newest = await until(async () => {
-                const invocation = await h.store.readAgentInvocation(secondVisit[0]);
-                return invocation?.endChildStatus === "NotFound" ? invocation : null;
-            }, "the owed end on the newest visit, as the test reads it");
+            let newest;
+            try {
+                newest = await until(async () => {
+                    const invocation = await h.store.readAgentInvocation(secondVisit[0]);
+                    return invocation?.endChildStatus === "NotFound" ? invocation : null;
+                }, "the owed end on the newest visit, as the test reads it");
+            } catch (error) {
+                throw new Error(`${error.message}; diagnosis: ${await chatEndDiagnosis(h, run, chat, [first.nodeExecutionId, secondVisit[0]])}`);
+            }
             expect(newest).toMatchObject({ childSessionId: chat, spawnAttempts: 0, endChildStatus: "NotFound" });
             // Visit 1's host now creates the chat; its after-send check finds the run ended and ends the chat.
             release();
@@ -693,6 +714,125 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             expect(h.spawns.map(request => request.nodeExecutionId)).toEqual([first.nodeExecutionId]);
         } finally {
             release?.();
+            await h.stop();
+        }
+    });
+
+    // Formal t3 (pse/wfv2/formal/agent-visible): a chat the host created reads NotFound until its session's first turn has
+    // run. While a continued chat's end is owed, every looker keeps looking on its activity's retry schedule (the spawn's
+    // after-send and decided paths, the run cleanup's detached retry), and the end is sent once, when the chat is visible.
+    // `looks` counts the looks that found no session (markContinuedChatEnded with NotFound).
+    const visibleLater = (extra = {}) => {
+        const counter = { looks: 0 };
+        const options = {
+            deferVisible: true,
+            storeHooks: {
+                markContinuedChatEnded(result, args) {
+                    if (args[1] === "NotFound") counter.looks += 1;
+                    return result;
+                },
+            },
+            ...extra,
+        };
+        return { counter, options };
+    };
+    const status = async (h, instanceId) => (await h.client.getStatus(instanceId)).status;
+    const endOnce = async (h, run, chat, nx, end) => {
+        const command = await until(async () => (await commandsOf(h, chat))[0] ?? null, `the end of chat ${chat}`, 90_000)
+            .catch(async error => { throw new Error(`${error.message}; diagnosis: ${await chatEndDiagnosis(h, run, chat, [nx])}`); });
+        expect(command).toMatchObject({ type: "cmd", cmd: end, id: `workflow-agent-chat-end:${chat}`, requestedBy: run.workflowSessionId });
+        await until(async () => (await h.store.readAgentInvocationByChild(chat))?.endChildStatus === "ChatEnded", "the chat ended");
+        await pause(3_000);
+        expect(await commandsOf(h, chat)).toHaveLength(1);
+        expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_ended")).map(data => [data.sent, data.childStatus]))
+            .toEqual([[false, "NotFound"], [true, expect.any(String)]]);
+    };
+
+    it("formal t3: a chat that is NotFound for 3 looks after the run ended is ended once it is visible, by the spawn's after-send retries", { timeout: 180_000 }, async () => {
+        let release;
+        const held = new Promise(resolve => { release = resolve; });
+        const { counter, options } = visibleLater({ beforeCreate: () => held });
+        const h = await harness(getEnv(), options);
+        try {
+            const run = await started(h, CHAT_YAML());
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const first = await visit(h, 1);
+            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3a" });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
+            await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "NotFound", "the owed end");
+            // The host creates the chat; it is not visible yet. The looks go on, and the spawn keeps retrying.
+            const before = counter.looks;
+            release();
+            await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.spawnedAt ?? null, "the spawn recorded");
+            await until(async () => counter.looks >= before + 3 || null, "3 more looks that found no session", 60_000);
+            expect(await status(h, `session-${chat}`)).toBe("NotFound");
+            expect(await status(h, `wfa-${first.nodeExecutionId}`)).toBe("Running");
+            expect(await commandsOf(h, chat)).toEqual([]);
+            await h.makeVisible(chat);
+            await endOnce(h, run, chat, first.nodeExecutionId, "cancel");
+            await until(async () => (await status(h, `wfa-${first.nodeExecutionId}`)) === "Completed" || null, "the spawn to end", 60_000);
+            expect(h.spawns.map(request => request.nodeExecutionId)).toEqual([first.nodeExecutionId]);
+        } finally {
+            release?.();
+            await h.stop();
+        }
+    });
+
+    it("formal t3: a spawn that created the chat and crashed before recording it keeps looking (spawnedAt empty) until the chat is visible", { timeout: 180_000 }, async () => {
+        let release;
+        const held = new Promise(resolve => { release = resolve; });
+        let crashed = 0;
+        const { counter, options } = visibleLater({
+            beforeCreate: () => held,
+            // The attempt created the chat, then stopped before it recorded the spawn (once).
+            storeBefore: { async recordAgentSpawned() { if (crashed++ === 0) throw new Error("the worker stopped here"); } },
+        });
+        const h = await harness(getEnv(), options);
+        try {
+            const run = await started(h, CHAT_YAML());
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const first = await visit(h, 1);
+            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3b" });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
+            await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "NotFound", "the owed end");
+            release();
+            await until(async () => crashed > 0 || null, "the crash");
+            const before = counter.looks;
+            await until(async () => counter.looks >= before + 3 || null, "3 more looks that found no session", 60_000);
+            // The retried spawn found the visit decided, with an attempt and no spawnedAt: it is still looking, not done.
+            expect(await h.store.readAgentInvocation(first.nodeExecutionId)).toMatchObject({ spawnAttempts: 1, spawnedAt: null, endChildStatus: "NotFound" });
+            expect(await status(h, `wfa-${first.nodeExecutionId}`)).toBe("Running");
+            await h.makeVisible(chat);
+            await endOnce(h, run, chat, first.nodeExecutionId, "cancel");
+            await until(async () => (await status(h, `wfa-${first.nodeExecutionId}`)) === "Completed" || null, "the spawn to end", 60_000);
+            // No second chat and no prompt sent again.
+            expect(h.spawns.map(request => request.nodeExecutionId)).toEqual([first.nodeExecutionId]);
+        } finally {
+            release?.();
+            await h.stop();
+        }
+    });
+
+    it("formal t3: a chat created while the run was live and not visible when the run ended is ended by the cleanup's detached retry", { timeout: 180_000 }, async () => {
+        const { counter, options } = visibleLater();
+        const h = await harness(getEnv(), options);
+        try {
+            const run = await started(h, CHAT_YAML());
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const first = await spawnedVisit(h, 1);
+            // The send finished while the run was live (nothing owed then): the spawn is done.
+            await until(async () => (await status(h, `wfa-${first.nodeExecutionId}`)) === "Completed" || null, "the spawn to end");
+            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-t3c" });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
+            // The cleanup looked once and started its detached retry; the run's end did not wait for it.
+            await until(async () => (await status(h, `wfc-${chat}`)) === "Running" || null, "the detached end retry");
+            await until(async () => counter.looks >= 3 || null, "3 looks that found no session", 60_000);
+            expect(await status(h, `wfc-${chat}`)).toBe("Running");
+            expect(await commandsOf(h, chat)).toEqual([]);
+            await h.makeVisible(chat);
+            await endOnce(h, run, chat, first.nodeExecutionId, "cancel");
+            await until(async () => (await status(h, `wfc-${chat}`)) === "Completed" || null, "the detached retry to end", 60_000);
+        } finally {
             await h.stop();
         }
     });
