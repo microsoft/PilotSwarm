@@ -485,6 +485,34 @@ export function workflowBadgeCount(byId, ownerId, views = {}, seen = {}) {
 }
 
 /**
+ * Owner, 2026-11-06T14:35Z (F4): the Workflow button's dot, the canvas button's. What it watches is what the badge
+ * counted (O6): a session's Workflows that need the person, waiting for input or failed. This is the newest change among
+ * them (their rows' updatedAt, server time; 0 for none). As the canvas's lastViewedRev, the Workflow panel records what it
+ * showed (canvas prefs `lastViewedWorkflowAt`, "canvas/viewed" with `workflowAt`), and the dot shows while this is newer
+ * and the panel is not on screen.
+ */
+export function workflowAttentionAt(byId, ownerId, views = {}) {
+    let at = 0;
+    for (const session of workflowChildrenOf(byId, ownerId)) {
+        const view = views?.[session.sessionId] ?? null;
+        if (!workflowStarted(session, view)) continue;
+        const key = workflowStateOf(session, view)?.key;
+        if (key !== "waiting" && key !== "failed") continue;
+        const value = session.updatedAt;
+        const updated = typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value ?? "");
+        if (Number.isFinite(updated) && updated > at) at = updated;
+    }
+    return at;
+}
+
+/** Whether the Workflow button's dot shows for the session whose Workflow tab context is `ownerId` (F4; see above). */
+export function workflowNeedsAttention(state, ownerId) {
+    if (!ownerId) return false;
+    const at = workflowAttentionAt(state?.sessions?.byId, ownerId, state?.ui?.workflowViews);
+    return at > (Number(state?.canvas?.prefs?.[ownerId]?.lastViewedWorkflowAt) || 0);
+}
+
+/**
  * The session list's highlighted row (S4): the selected Workflow row when it is a Workflow of the active session,
  * else the active session.
  */

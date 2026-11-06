@@ -2890,15 +2890,16 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await expect(sessionRow(page, "report-v2")).toHaveCount(0);
     await expect(sessionRow(page, "Workflow: watch-v2")).toHaveCount(0);
 
-    // L1: the Workflow button is between Canvas and Diagnostics. L2, O6: it counts the failed Workflow not yet opened.
+    // L1: the Workflow button is between Canvas and Diagnostics. F4 (owner, 2026-11-06T14:35Z): the failed Workflow puts the
+    // canvas's dot on it, and its name says so.
     const canvasButton = page.getByRole("button", { name: /^(Show canvas|Hide the canvas)$/ });
-    const workflowButton = page.getByRole("button", { name: "Workflow — 1 needs you", exact: true });
+    const workflowButton = page.getByRole("button", { name: "Workflow — needs attention", exact: true });
     const diagnosticsButton = page.getByRole("button", { name: /^(Show|Hide) diagnostics/ });
     await expect(workflowButton).toBeVisible();
     const [canvasBox, workflowBox, diagnosticsBox] = await Promise.all([canvasButton.boundingBox(), workflowButton.boundingBox(), diagnosticsButton.boundingBox()]);
     expect(canvasBox.x).toBeLessThan(workflowBox.x);
     expect(workflowBox.x).toBeLessThan(diagnosticsBox.x);
-    await expect(page.locator(".ps-toolbar-count")).toHaveText("1");
+    await expect(page.locator(".ps-canvas-toggle").filter({ has: workflowButton }).locator(".ps-canvas-badge")).toHaveCount(1);
     await shot(page, "layout-rows-and-button");
 
     // The Workflow button opens the Workflow tab on the session's newest definition (D1), its Definition view (07).
@@ -2950,7 +2951,9 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
         .toEqual([expect.stringMatching(/^#2 · Failed( · .+)?$/), expect.stringMatching(/^#1 · Running( · .+)?$/)]);
     await expect(main.locator(".ps-wf-picker-face")).toHaveText("#2 of 2");
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
-    await expect(page.locator(".ps-toolbar-count")).toHaveCount(0);
+    // The Workflow panel is shown: no dot.
+    await expect(page.getByRole("button", { name: "Hide the Workflow tab", exact: true })).toBeVisible();
+    await expect(page.locator(".ps-toolbar .ps-canvas-badge")).toHaveCount(0);
     // A Workflow row in the session list does the same: the chat stays, the tab shows #1.
     await openSession(page, "watch-v2 #1");
     await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
@@ -3234,6 +3237,69 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
         const dialog = page.getByRole("dialog", { name: /^Stop watch-v2 #1$/ });
         await expect(dialog.getByRole("button", { name: "Keep running", exact: true })).toHaveText("Keep running");
         await dialog.getByRole("button", { name: "Keep running", exact: true }).click();
+        expect(errors).toEqual([]);
+    });
+}
+
+// ------------------------------------------------------------------------------------------------------------
+// Owner feedback 2026-11-06T14:35Z: "the notifications number on the workflow button doesn't give me much. if attention is
+// needed, just put a dot on it like the canavs. and the dot should go away once I've switch to the wf panel. in all color
+// themes the workflows button's contents are wiped out by the color, need to fix that."
+// F4: the Workflow button carries the canvas button's dot (ps-canvas-toggle, ps-canvas-badge) while a Workflow that needs
+// the person (waiting for input, or failed) changed since the Workflow panel last showed it; showing the panel clears it,
+// the receipt is kept in the canvas prefs (the profile) like the canvas's, and only a newer change brings it back. Its name
+// and tooltip say "needs attention". F5: a pressed toggle (the view shown, Move the graph) is the top bar's pressed
+// button in every shipped theme: its icon keeps at least 3:1 against the button.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "owner 14:35Z" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+for (const viewport of OWNER_1343_VIEWPORTS) {
+    test(`owner 14:35Z F4: the Workflow button has the canvas's dot until the Workflow panel is shown, then only for something new, at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const phone = viewport.width <= 600;
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        const later = "aaaaaaa5-2222-3333-4444-555555555555";
+        const { rows } = await routeOwned(page, { models: { ...OWNED_MODELS, [later]: { ...OWNED_MODELS[OWNED.failed], workflowId: later } } });
+        const profile = await routeProfileSaves(page);
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+        const named = (name) => page.getByRole("button", { name, exact: true });
+        const dot = page.locator(".ps-canvas-toggle").filter({ has: page.getByRole("button", { name: /^Workflow( —|$)/ }) }).locator(".ps-canvas-badge");
+        // #2 failed and was never shown: the dot, and the name and tooltip say so.
+        await expect(named("Workflow — needs attention")).toBeVisible();
+        await expect(dot).toHaveCount(1);
+        // The canvas button's own dot: the same wrapper and class.
+        expect(await dot.getAttribute("class")).toBe("ps-canvas-badge");
+        if (phone) {
+            const box = await named("Workflow — needs attention").boundingBox();
+            await named("Workflow — needs attention").dispatchEvent("pointerdown", { pointerType: "touch", clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 });
+            await expect(page.getByRole("tooltip")).toHaveText("Workflow — needs attention");
+            await named("Workflow — needs attention").dispatchEvent("pointerup", { pointerType: "touch" });
+            // The top bar's long-press swallows the next click, or forgets after 250 ms (IconButton).
+            await page.waitForTimeout(300);
+        } else {
+            await named("Workflow — needs attention").hover();
+            await expect(page.getByRole("tooltip")).toHaveText("Workflow — needs attention");
+            await page.mouse.move(viewport.width / 2, viewport.height / 2);
+        }
+        await shot(page, `owner-1435-dot-${viewport.width}`);
+        // The Workflow panel is shown: the dot goes at once, and the receipt is kept in the profile's canvas prefs.
+        await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
+        await expect(workflowTab(page)).toBeVisible();
+        await expect(page.getByRole("button", { name: /^Hide the Workflow tab/ })).toBeVisible();
+        await expect(dot).toHaveCount(0);
+        await expect.poll(() => profile.stored?.canvasPrefs?.[AGENT_ID]?.lastViewedWorkflowAt ?? 0, { timeout: 15_000 }).toBeGreaterThan(0);
+        // Put away, and after a reload: no dot (nothing new).
+        await page.getByRole("button", { name: /^Hide the Workflow tab/ }).click();
+        await expect(named("Workflow")).toBeVisible();
+        await expect(dot).toHaveCount(0);
+        await page.reload();
+        await expect(named("Workflow")).toBeVisible();
+        await expect(dot).toHaveCount(0);
+        // A Workflow fails after that: the dot comes back with the next session-list read.
+        rows.push({ sessionId: later, title: "Workflow: watch-v2", status: "failed", sessionKind: "workflow", parentSessionId: AGENT_ID,
+            createdAt: Date.now(), updatedAt: Date.now() });
+        await expect(named("Workflow — needs attention")).toBeVisible({ timeout: 15_000 });
+        await expect(dot).toHaveCount(1);
         expect(errors).toEqual([]);
     });
 }

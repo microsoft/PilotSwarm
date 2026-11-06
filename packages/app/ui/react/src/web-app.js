@@ -10,7 +10,7 @@ import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./im
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
 import {
-    normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowBadgeCount, workflowHighlightedSessionId,
+    normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowNeedsAttention, workflowHighlightedSessionId,
 } from "../../core/src/workflow-owner.js";
 import { normalizeSidePaneTab } from "../../core/src/state.js";
 import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
@@ -10996,14 +10996,12 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     // surface on screen is NOT the canvas, so the canvas toggle must not
     // read as active (its next press still shows the canvas).
     const artifactReaderOpen = useControllerSelector(controller, selectArtifactPaneShown);
-    // Workflow Simplified (L1, L2): the right block shows the Workflow tab instead of the canvas, and the Workflow button
-    // counts the Workflows that need the person (O6).
+    // Workflow Simplified (L1, L2): the right block shows the Workflow tab instead of the canvas. Owner, 2026-11-06T14:35Z
+    // (F4): the Workflow button carries the canvas's dot, not a count: a Workflow needing the person (waiting for input, or
+    // failed) changed since the Workflow panel last showed it; showing the panel clears it.
     const workflowSide = useControllerSelector(controller, (s) => s?.ui?.sidePaneTab === WORKFLOW_SIDE_TAB);
     const workflowTabOpen = workflowSide && (mobile ? canvasPaneOpen : canvasView.mode === "canvas" && !artifactReaderOpen);
-    const workflowCount = useControllerSelector(controller, (s) => {
-        const ownerId = selectWorkflowTabContext(s).ownerId;
-        return ownerId ? workflowBadgeCount(s.sessions.byId, ownerId, s.ui.workflowViews, s.ui.workflowSeen) : 0;
-    });
+    const workflowAttention = useControllerSelector(controller, (s) => workflowNeedsAttention(s, selectWorkflowTabContext(s).ownerId)) && !workflowTabOpen;
 
     // Icon-first toolbar: the glyph is the affordance, the label rides a
     // tooltip (desktop hover via title; mobile long-press via IconButton).
@@ -11083,11 +11081,11 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             loadedDot: canvasView.exists,
         },
         // The Workflow tab (L1), between Canvas and Diagnostics, on every session (L2). It and the canvas switch each
-        // other off; its count is the Workflows waiting for input and the failed ones not yet opened (O6).
+        // other off; its dot is the canvas's (owner F4), and its name says so.
         {
             key: "workflow",
             icon: React.createElement(WorkflowGlyph, { decorative: true }),
-            label: workflowTabOpen ? "Hide the Workflow tab" : "Workflow",
+            label: workflowTabOpen ? "Hide the Workflow tab" : workflowAttention ? "Workflow — needs attention" : "Workflow",
             onClick: () => {
                 if (mobile) {
                     if (onToggleWorkflowPane) onToggleWorkflowPane();
@@ -11101,7 +11099,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
                 if (canvasView.mode !== "canvas") controller.dispatch({ type: "ui/canvasOpen", open: true, sessionId: canvasView.sessionId });
             },
             active: workflowTabOpen,
-            count: workflowCount,
+            badge: workflowAttention,
         },
         // Providers & Budgets. Both device classes: what a turn costs, and
         // what stopped a session, are answers a person needs wherever they
@@ -11173,18 +11171,6 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     });
 
     const renderButton = (def) => {
-        // A count on the button (the Workflow button, O6), said in its name too.
-        if (def.count) {
-            return React.createElement("span", { key: def.key, className: "ps-canvas-toggle ps-toolbar-counted" },
-                React.createElement(IconButton, {
-                    icon: def.icon,
-                    label: `${def.label} — ${def.count} ${def.count === 1 ? "needs" : "need"} you`,
-                    onClick: def.onClick,
-                    disabled: Boolean(def.disabled),
-                    active: Boolean(def.active),
-                }),
-                React.createElement("span", { className: "ps-toolbar-count", "aria-hidden": "true" }, def.count > 99 ? "99+" : String(def.count)));
-        }
         const button = React.createElement(IconButton, {
             key: def.badge ? undefined : def.key,
             icon: def.icon,

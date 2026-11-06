@@ -319,11 +319,14 @@ export function normalizeStoredCanvasPrefs(value) {
         if (!id || !entry || typeof entry !== "object") continue;
         const lastViewedRev = Number(entry.lastViewedRev);
         const lastViewedDataRev = Number(entry.lastViewedDataRev);
+        const lastViewedWorkflowAt = Number(entry.lastViewedWorkflowAt);
         const zenRailPx = Number(entry.zenRailPx);
         out[id] = {
             optedOut: entry.optedOut === true,
             lastViewedRev: Number.isFinite(lastViewedRev) && lastViewedRev > 0 ? Math.floor(lastViewedRev) : 0,
             lastViewedDataRev: Number.isFinite(lastViewedDataRev) && lastViewedDataRev > 0 ? Math.floor(lastViewedDataRev) : 0,
+            // Workflow Simplified (owner F4): the newest Workflow attention change the Workflow panel showed (server ms).
+            ...(Number.isFinite(lastViewedWorkflowAt) && lastViewedWorkflowAt > 0 ? { lastViewedWorkflowAt: Math.floor(lastViewedWorkflowAt) } : {}),
             // Zen chat-rail width, remembered for THIS session only.
             ...(Number.isFinite(zenRailPx) && zenRailPx > 0 ? { zenRailPx: Math.floor(zenRailPx) } : {}),
         };

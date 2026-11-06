@@ -12613,25 +12613,6 @@ textarea.ps-link-input {
    The Workflow tab shares the right block with the canvas (L1): a header row
    (definition picker, Definition | Workflows), the graph or the list, and a
    bottom panel that is closed by default (L5). The graph keeps 150px. */
-.ps-toolbar-counted { position: relative; display: inline-flex; }
-.ps-toolbar-count {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  box-sizing: border-box;
-  border-radius: 8px;
-  background: var(--ps-warning);
-  color: var(--ps-background);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 16px;
-  text-align: center;
-  pointer-events: none;
-  box-shadow: 0 0 0 2px var(--ps-surface);
-}
 
 .ps-wf-layer { display: flex; flex-direction: column; min-height: 0; }
 .ps-wf-tab {

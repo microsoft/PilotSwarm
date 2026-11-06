@@ -176,13 +176,17 @@ function mergeCanvasPrefs(local, stored, byId) {
             optedOut: storedEntry ? storedEntry.optedOut : Boolean(localEntry?.optedOut),
             lastViewedRev: Math.max(storedEntry?.lastViewedRev || 0, localEntry?.lastViewedRev || 0),
             lastViewedDataRev: Math.max(storedEntry?.lastViewedDataRev || 0, localEntry?.lastViewedDataRev || 0),
+            // The Workflow panel's receipt (owner F4) merges by MAX like the canvas's.
+            ...((storedEntry?.lastViewedWorkflowAt || localEntry?.lastViewedWorkflowAt)
+                ? { lastViewedWorkflowAt: Math.max(storedEntry?.lastViewedWorkflowAt || 0, localEntry?.lastViewedWorkflowAt || 0) }
+                : {}),
             // Latest write wins is unknowable here; the local value is the one
             // this window just dragged, so it outranks the poll.
             ...((localEntry?.zenRailPx || storedEntry?.zenRailPx)
                 ? { zenRailPx: localEntry?.zenRailPx || storedEntry?.zenRailPx }
                 : {}),
         };
-        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0 && !merged.zenRailPx) continue;
+        if (!merged.optedOut && merged.lastViewedRev === 0 && merged.lastViewedDataRev === 0 && !merged.zenRailPx && !merged.lastViewedWorkflowAt) continue;
         const session = byId?.[parseCanvasKey(sessionId).sessionId];
         if (session && session.isGroup) continue;
         out[sessionId] = merged;
@@ -4248,22 +4252,30 @@ function baseReducer(state, action) {
         }
 
         // The surface's receipt: revision `rev` (a draw) and/or `dataRev` (a
-        // tick) actually rendered on screen. Both feed the unseen badge.
+        // tick) actually rendered on screen. Both feed the unseen badge. The
+        // Workflow panel's receipt (owner F4) is `workflowAt`: the newest
+        // Workflow attention change it showed (workflowAttentionAt); it feeds
+        // the Workflow button's dot the same way.
         case "canvas/viewed": {
             const sessionId = String(action.sessionId || "").trim();
             if (!sessionId) return state;
             const rev = Number(action.rev);
             const dataRev = Number(action.dataRev);
+            const workflowAt = Number(action.workflowAt);
             const key = canvasKey(sessionId, action.slot);
             const prev = state.canvas.prefs[key] || { optedOut: false, lastViewedRev: 0, lastViewedDataRev: 0 };
             const nextRev = Number.isFinite(rev) && rev > (prev.lastViewedRev || 0) ? rev : (prev.lastViewedRev || 0);
             const nextDataRev = Number.isFinite(dataRev) && dataRev > (prev.lastViewedDataRev || 0) ? dataRev : (prev.lastViewedDataRev || 0);
-            if (nextRev === (prev.lastViewedRev || 0) && nextDataRev === (prev.lastViewedDataRev || 0)) return state;
+            const nextWorkflowAt = Number.isFinite(workflowAt) && workflowAt > (prev.lastViewedWorkflowAt || 0)
+                ? Math.floor(workflowAt) : (prev.lastViewedWorkflowAt || 0);
+            if (nextRev === (prev.lastViewedRev || 0) && nextDataRev === (prev.lastViewedDataRev || 0)
+                && nextWorkflowAt === (prev.lastViewedWorkflowAt || 0)) return state;
             return {
                 ...state,
                 canvas: {
                     ...state.canvas,
-                    prefs: { ...state.canvas.prefs, [key]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev } },
+                    prefs: { ...state.canvas.prefs, [key]: { ...prev, lastViewedRev: nextRev, lastViewedDataRev: nextDataRev,
+                        ...(nextWorkflowAt ? { lastViewedWorkflowAt: nextWorkflowAt } : {}) } },
                 },
             };
         }

@@ -16,7 +16,8 @@ import {
 } from "../../core/src/workflow-agent-log.js";
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowElapsedText, workflowFailure,
-    workflowPanelHeight, workflowPickerFace, workflowPickerGroupLabel, workflowPickerOptionLabel, workflowRunTimes, workflowStarted, workflowStateOf,
+    workflowAttentionAt, workflowPanelHeight, workflowPickerFace, workflowPickerGroupLabel, workflowPickerOptionLabel, workflowRunTimes, workflowStarted,
+    workflowStateOf,
     workflowTabButtonTip, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS,
     WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
@@ -105,6 +106,13 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null }) 
     // Owner, 2026-11-06T13:43Z: on a phone (600 px or less) the graph gets the height: two header rows, no meta line.
     const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
     const context = useControllerSelector(controller, selectWorkflowTabContext, workflowTabContextEqual);
+    // Owner, 2026-11-06T14:35Z (F4): this tab is mounted only while it is shown; it records what it showed of the
+    // Workflows needing the person, as the canvas records the revision it rendered, and the Workflow button's dot clears.
+    const attentionAt = useControllerSelector(controller, state => context.ownerId
+        ? workflowAttentionAt(state.sessions.byId, context.ownerId, state.ui.workflowViews) : 0);
+    React.useEffect(() => {
+        if (context.ownerId && attentionAt > 0) controller.dispatch({ type: "canvas/viewed", sessionId: context.ownerId, workflowAt: attentionAt });
+    }, [controller, context.ownerId, attentionAt]);
     const byId = useControllerSelector(controller, state => state.sessions.byId);
     const views = useControllerSelector(controller, state => state.ui.workflowViews);
     const tabs = useControllerSelector(controller, state => state.ui.workflowTabs);
