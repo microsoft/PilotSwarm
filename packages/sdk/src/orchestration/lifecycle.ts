@@ -654,6 +654,12 @@ export function buildContinueInput(
         // Session workspaces: a turn held by the workspace check keeps its
         // retry count, so the retry still gets the partial-changes note.
         retryCount: state.workspaceStatus?.state === "unavailable" ? state.retryCount : 0,
+        ...(state.providerRateLimitRetryCount > 0
+            ? { providerRateLimitRetryCount: state.providerRateLimitRetryCount }
+            : {}),
+        ...(state.providerRateLimitStartedAtMs !== undefined
+            ? { providerRateLimitStartedAtMs: state.providerRateLimitStartedAtMs }
+            : {}),
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
