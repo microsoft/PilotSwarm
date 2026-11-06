@@ -1041,6 +1041,9 @@ export interface OrchestrationInput {
     nextSummarizeAt?: number;
     /** How many consecutive retries have been attempted for the current prompt. */
     retryCount?: number;
+    /** Consecutive provider rate-limit retries and their first-failure time. */
+    providerRateLimitRetryCount?: number;
+    providerRateLimitStartedAtMs?: number;
     /** The user's original task-defining prompt, preserved to survive LLM truncation. */
     taskContext?: string;
     /** Original system message before task context injection (avoids double-appending). */

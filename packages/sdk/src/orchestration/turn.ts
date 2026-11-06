@@ -9,6 +9,11 @@ import { createSessionProxy } from "../session-proxy.js";
 import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { planHoldRelease } from "../wait-affinity.js";
 import {
+    isProviderRateLimitError,
+    providerRateLimitDelayMs,
+    PROVIDER_RATE_LIMIT_WAIT_BUDGET_MS,
+} from "./provider-rate-limit.js";
+import {
     buildShutdownWaitReason,
     failPendingShutdown,
     getChildResultFromStatus,
@@ -307,6 +312,12 @@ function* handleGenericRetry(
     rc: RetryContext,
 ): Generator<any, void, any> {
     const { state } = runtime;
+    if (isProviderRateLimitError(errorMessage)) {
+        yield* handleProviderRateLimitRetry(runtime, errorMessage, rc);
+        return;
+    }
+    state.providerRateLimitRetryCount = 0;
+    state.providerRateLimitStartedAtMs = undefined;
     if (state.retryCount >= MAX_RETRIES) {
         runtime.ctx.traceInfo(`[orch] max retries exhausted, waiting for user input`);
         publishStatus(runtime, "error", {
@@ -349,6 +360,60 @@ function* handleGenericRetry(
         });
     }
     yield runtime.ctx.scheduleTimer(retryDelay * 1000);
+    yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));
+}
+
+function* handleProviderRateLimitRetry(
+    runtime: DurableSessionRuntime,
+    errorMessage: string,
+    rc: RetryContext,
+): Generator<any, void, any> {
+    const { state, ctx } = runtime;
+    const now: number = yield ctx.utcNow();
+    const startedAt = state.providerRateLimitStartedAtMs ?? now;
+    const elapsedMs = Math.max(0, now - startedAt);
+    const remainingMs = PROVIDER_RATE_LIMIT_WAIT_BUDGET_MS - elapsedMs;
+
+    if (remainingMs <= 0) {
+        const exhaustedMessage = "Provider rate-limit retry budget exhausted after 30 minutes: " + errorMessage;
+        ctx.traceInfo("[orch] " + exhaustedMessage);
+        publishStatus(runtime, "error", { error: exhaustedMessage, retriesExhausted: true });
+        const closed: any = yield runtime.manager.updateCmsState(
+            runtime.input.sessionId,
+            "error",
+            exhaustedMessage,
+            null,
+            { closeControls: true },
+        );
+        yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
+        state.carriedSteers = [];
+        state.thrownTurnKey = null;
+        state.retryCount = 0;
+        state.providerRateLimitRetryCount = 0;
+        state.providerRateLimitStartedAtMs = undefined;
+        return;
+    }
+
+    const retryAttempt = state.providerRateLimitRetryCount + 1;
+    const waitMs = Math.min(
+        providerRateLimitDelayMs(runtime.input.sessionId, retryAttempt),
+        remainingMs,
+    );
+    const waitSeconds = Math.ceil(waitMs / 1000);
+    const waitReason = "Waiting for provider rate limit to reset; retry " + retryAttempt + " in " + waitSeconds + "s";
+    state.providerRateLimitRetryCount = retryAttempt;
+    state.providerRateLimitStartedAtMs = startedAt;
+    state.retryCount = 0;
+
+    ctx.traceInfo("[orch] " + waitReason);
+    publishStatus(runtime, "waiting", {
+        waitSeconds,
+        waitReason,
+        waitStartedAt: now,
+        providerRateLimitRetry: retryAttempt,
+    });
+    yield runtime.manager.updateCmsState(runtime.input.sessionId, "waiting", null, waitReason);
+    yield ctx.scheduleTimer(waitMs);
     yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));
 }
 
@@ -685,6 +750,8 @@ export function* processPrompt(
     if ((result as any)?.type !== "error"
         && !((result as any)?.type === "wait" && timerGate(result as any) === "workspace")) {
         state.retryCount = 0;
+        state.providerRateLimitRetryCount = 0;
+        state.providerRateLimitStartedAtMs = undefined;
     }
     // Lifecycle protocol: adopt the version the activity committed. The
     // returned value is authoritative even when it disagrees with the

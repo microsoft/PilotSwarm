@@ -13,6 +13,11 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+    isProviderRateLimitError,
+    providerRateLimitDelayMs,
+    PROVIDER_RATE_LIMIT_WAIT_BUDGET_MS,
+} from "../../src/orchestration/provider-rate-limit.ts";
 
 let mockSession;
 let mockManager;
@@ -22,12 +27,16 @@ vi.mock("../../src/session-proxy.js", () => ({
     createSessionManagerProxy: () => mockManager,
 }));
 
-function createThrowingHarness({ turnResults = null } = {}) {
+const INITIAL_NOW = 1_750_000_000_000;
+
+function createThrowingHarness({ turnResults = null, initialQueue, initialNow = INITIAL_NOW } = {}) {
     const turns = [];
     const cmsStateCalls = [];
     const parentMessages = [];
+    const statusSignals = [];
+    const scheduleTimers = [];
     const script = turnResults ? [...turnResults] : null;
-    const queue = [JSON.stringify({ prompt: "hello there", clientMessageIds: ["cm-x"] })];
+    const queue = initialQueue ?? [JSON.stringify({ prompt: "hello there", clientMessageIds: ["cm-x"] })];
 
     mockSession = new Proxy({}, {
         get: (_t, prop) => {
@@ -47,20 +56,23 @@ function createThrowingHarness({ turnResults = null } = {}) {
     const values = new Map();
     const ctx = {
         traceInfo: () => {},
-        setCustomStatus: () => {},
+        setCustomStatus: (value) => statusSignals.push(JSON.parse(value)),
         getValue: (k) => (values.has(k) ? values.get(k) : null),
         setValue: (k, v) => values.set(k, v),
         clearValue: (k) => values.delete(k),
         utcNow: () => ({ effect: "utcNow" }),
         newGuid: () => ({ effect: "newGuid" }),
-        scheduleTimer: (ms) => ({ effect: "scheduleTimer", ms }),
+        scheduleTimer: (ms) => {
+            scheduleTimers.push(ms);
+            return { effect: "scheduleTimer", ms };
+        },
         dequeueEvent: (name) => ({ effect: "dequeueEvent", name }),
         race: (left, right) => ({ effect: "race", left, right }),
         continueAsNewVersioned: (input, version) => ({ effect: "continueAsNew", input, version }),
         hasQueuedEvents: () => queue.length > 0,
     };
 
-    let now = 1_750_000_000_000;
+    let now = initialNow;
     // resolve returns { throwError } when the generator must see a rejection.
     const resolve = (effect) => {
         if (!effect || typeof effect !== "object") return undefined;
@@ -112,7 +124,7 @@ function createThrowingHarness({ turnResults = null } = {}) {
         }
     };
 
-    return { ctx, turns, cmsStateCalls, parentMessages, resolve };
+    return { ctx, turns, cmsStateCalls, parentMessages, statusSignals, scheduleTimers, resolve };
 }
 
 async function latestHandler() {
@@ -157,6 +169,106 @@ const INPUT = (overrides = {}) => ({
 
 describe("generic retry exhaustion (orchestration 1.0.69)", () => {
     beforeEach(() => { mockSession = null; mockManager = null; });
+
+    it("classifies provider throttling and computes stable waits beyond the reported 67-second reset", () => {
+        expect(isProviderRateLimitError("Execution failed: request returned HTTP 429")).toBe(true);
+        expect(isProviderRateLimitError("Too many requests; provider rate limit exceeded")).toBe(true);
+        expect(isProviderRateLimitError("rate_limit_exceeded")).toBe(true);
+        expect(isProviderRateLimitError("too_many_requests")).toBe(true);
+        expect(isProviderRateLimitError("provider melted (HTTP 503)")).toBe(false);
+
+        const firstWait = providerRateLimitDelayMs("session-a", 1);
+        expect(firstWait).toBe(providerRateLimitDelayMs("session-a", 1));
+        expect(firstWait).toBeGreaterThanOrEqual(67_500);
+        expect(firstWait).toBeLessThanOrEqual(5 * 60_000);
+        expect(providerRateLimitDelayMs("session-a", 2)).toBeGreaterThan(firstWait);
+    });
+
+    it("waits durably on a returned 429, recovers, and starts a fresh budget for the next prompt", async () => {
+        const handler = await latestHandler();
+        const rateLimit = {
+            type: "error",
+            message: "Execution failed: rate_limit_exceeded; token rate limit exceeded",
+        };
+        const firstHarness = createThrowingHarness({ turnResults: [rateLimit] });
+        const first = drive(handler(firstHarness.ctx, INPUT()), firstHarness);
+
+        expect(first.kind).toBe("continueAsNew");
+        expect(first.version).toBe("1.0.83");
+        expect(first.input.providerRateLimitRetryCount).toBe(1);
+        expect(first.input.providerRateLimitStartedAtMs).toBeGreaterThan(0);
+        expect(first.input.retryCount).toBe(0);
+        expect(first.input.prompt).toBe("hello there");
+        expect(first.input.clientMessageIds).toEqual(["cm-x"]);
+        expect(firstHarness.scheduleTimers.at(-1)).toBe(
+            providerRateLimitDelayMs("exhaustion-test", 1),
+        );
+        expect(firstHarness.statusSignals.find((signal) => signal.status === "waiting")).toMatchObject({
+            providerRateLimitRetry: 1,
+            waitReason: expect.stringContaining("provider rate limit"),
+        });
+        expect(firstHarness.cmsStateCalls).toContainEqual([
+            "exhaustion-test",
+            "waiting",
+            null,
+            expect.stringContaining("provider rate limit"),
+        ]);
+
+        const secondHarness = createThrowingHarness({
+            turnResults: [{ type: "completed", content: "recovered" }, rateLimit],
+            initialQueue: [JSON.stringify({ prompt: "follow-up" })],
+            initialNow: first.input.providerRateLimitStartedAtMs + 180_000,
+        });
+        const second = drive(handler(secondHarness.ctx, INPUT(first.input)), secondHarness);
+
+        expect(second.kind).toBe("continueAsNew");
+        expect(secondHarness.turns).toHaveLength(2);
+        expect(second.input.providerRateLimitRetryCount).toBe(1);
+        expect(second.input.providerRateLimitStartedAtMs).toBeGreaterThan(first.input.providerRateLimitStartedAtMs);
+        expect(secondHarness.scheduleTimers.at(-1)).toBe(
+            providerRateLimitDelayMs("exhaustion-test", 1),
+        );
+    });
+
+    it("keeps repeated 429s on the rate-limit budget instead of exhausting generic retries", async () => {
+        const handler = await latestHandler();
+        const rateLimit = {
+            type: "error",
+            message: "Execution failed: rate_limit_exceeded; token rate limit exceeded",
+        };
+        let input = INPUT();
+
+        for (let attempt = 1; attempt <= 4; attempt += 1) {
+            const harness = createThrowingHarness({ turnResults: [rateLimit] });
+            const out = drive(handler(harness.ctx, INPUT(input)), harness);
+            expect(out.kind).toBe("continueAsNew");
+            expect(out.input.providerRateLimitRetryCount).toBe(attempt);
+            expect(out.input.retryCount).toBe(0);
+            expect(harness.cmsStateCalls.some(([, state]) => state === "error")).toBe(false);
+            input = out.input;
+        }
+    });
+
+    it("stops on a thrown 429 after the 30-minute budget and persists the final error", async () => {
+        const handler = await latestHandler();
+        const harness = createThrowingHarness({
+            turnResults: [{ throwError: new Error("Request failed (HTTP 429)") }],
+        });
+        const out = drive(handler(harness.ctx, INPUT({
+            providerRateLimitRetryCount: 1,
+            providerRateLimitStartedAtMs: INITIAL_NOW - PROVIDER_RATE_LIMIT_WAIT_BUDGET_MS - 5_000,
+        })), harness);
+
+        expect(out.kind).not.toBe("continueAsNew");
+        expect(harness.scheduleTimers.some((waitMs) => waitMs >= 60_000)).toBe(false);
+        const errorWrites = harness.cmsStateCalls.filter(([, state]) => state === "error");
+        expect(errorWrites).toHaveLength(1);
+        expect(String(errorWrites[0][2])).toContain("Provider rate-limit retry budget exhausted after 30 minutes");
+        expect(String(errorWrites[0][2])).toContain("HTTP 429");
+        expect(harness.statusSignals.findLast((signal) => signal.status === "error")).toMatchObject({
+            retriesExhausted: true,
+        });
+    });
 
     it("after the last retry the failure lands on the session row, not just the status plane", async () => {
         const handler = await latestHandler();
