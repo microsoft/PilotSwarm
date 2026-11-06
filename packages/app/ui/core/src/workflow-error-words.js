@@ -19,8 +19,28 @@ function cutField(json, name) {
 }
 
 /**
+ * A JSON string literal's text, whole or cut (a preview cut at 500 characters ends with "…" and has no closing quote):
+ * { text, cut }, or null when `json` is not one. A node's runtime error is stored as its envelope's JSON text, so its
+ * preview is that text as a JSON string (HN #2 and r3's ux-boom: `"{\"code\":\"execution_failed\",…`).
+ */
+function jsonStringText(json) {
+    if (!json.startsWith("\"")) return null;
+    try {
+        const whole = JSON.parse(json);
+        return typeof whole === "string" ? { text: whole, cut: false } : null;
+    } catch { /* cut: read as much as arrived */ }
+    let body = json.slice(1).replace(/…$/u, "");
+    // Drop a cut escape at the end: an odd run of backslashes, or \u with fewer than 4 digits.
+    const unicode = /(\\+)u[0-9a-fA-F]{0,3}$/u.exec(body);
+    if (unicode && unicode[1].length % 2 === 1) body = body.slice(0, unicode.index + unicode[1].length - 1);
+    const slashes = /\\+$/u.exec(body);
+    if (slashes && slashes[0].length % 2 === 1) body = body.slice(0, -1);
+    try { return { text: JSON.parse(`"${body}"`), cut: true }; } catch { return null; }
+}
+
+/**
  * The parts of a runtime error: { code, message, exitCode, stderr, raw } (each null when absent; raw is the text as it
- * arrived). Null for no error.
+ * arrived, a JSON string's text unwrapped). Null for no error.
  */
 export function workflowErrorParts(value) {
     if (value === undefined || value === null || value === "") return null;
@@ -35,6 +55,14 @@ export function workflowErrorParts(value) {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     if (!trimmed) return null;
+    // HN #2 (5482bae3 live data): an error preview that is a JSON string of the envelope's text, cut or whole. Read the
+    // text inside; a cut keeps its "…" so the reader still knows more was recorded.
+    const literal = jsonStringText(trimmed);
+    if (literal) {
+        const inner = literal.text.trim();
+        if (inner.startsWith("{")) return workflowErrorParts(literal.cut ? `${inner}…` : inner);
+        return { code: null, message: text(inner), exitCode: null, stderr: null, raw: literal.cut ? `${inner}…` : trimmed };
+    }
     let parsed;
     try { parsed = JSON.parse(trimmed); } catch { parsed = undefined; }
     if (isRecord(parsed)) return workflowErrorParts(parsed);

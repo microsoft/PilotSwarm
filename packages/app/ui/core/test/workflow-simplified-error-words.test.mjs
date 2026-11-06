@@ -127,3 +127,34 @@ test("UI-D7: a summarized error keeps the whole error readable, in the Node pane
     const plain = workflowFailure({ status: "failed", terminalState: "poll", error: "plain words" });
     assert.equal(renderToStaticMarkup(React.createElement(WorkflowV2FailureDetails, { failure: plain, runId: "run-1" })), "");
 });
+
+// HN #2 on live data (5482bae3): a node's runtime error is stored as its envelope's JSON text, so the read's errorPreview
+// (previewJson: canonical JSON, cut at 500 characters with "…") is a JSON string of that text, escaped once more and,
+// for a long stderr, cut with no closing quote. Its words were the raw text. Read the text inside, whole or cut.
+const sorted = value => (value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sorted(value[key])])) : value);
+const previewOf = (value, max = 500) => { const json = JSON.stringify(sorted(value)); return json.length > max ? `${json.slice(0, max)}…` : json; };
+test("a node's error preview that is a JSON string of its envelope reads in words, cut or whole", () => {
+    const stderr = ["<anonymous_script>:3", "<note>Content truncated. Call the fetch tool with a start_index of 4000 to get more content.</note>", "^", "",
+        "SyntaxError: Expected ',' or ']' after array element in JSON at position 4002 (line 3 column 1)", "    at JSON.parse (<anonymous>)",
+        ...Array.from({ length: 12 }, (_, i) => `    at frame${i} (file:///tmp/pilotswarm-script-x/script.mjs:${100 + i}:15)`), "", "Node.js v24.11.0"].join("\n");
+    const envelopeText = JSON.stringify(sorted({ code: "execution_failed", message: "The script exited with code 1.", details: { exitCode: 1, stderr } }));
+    const cut = previewOf(envelopeText);
+    assert.ok(cut.startsWith("\"{\\\"code\\\":\\\"execution_failed\\\"") && cut.endsWith("…") && cut.length === 501, "the live shape");
+    assert.equal(workflowErrorWords(cut), "the script stopped with an error: Expected ',' or ']' after array element in JSON at position 4002 (line 3 column 1)");
+    assert.ok(workflowErrorDetails(cut).startsWith("{\"code\":\"execution_failed\",\"details\":{\"exitCode\":1,\"stderr\":\"<anonymous_script>:3\\n"),
+        "the details are the envelope's text, not escaped twice");
+    // r3's ux-boom: short enough to arrive whole.
+    const boomText = JSON.stringify(sorted({ code: "execution_failed", message: "The script exited with code 1.",
+        details: { exitCode: 1, stderr: "file:///tmp/s.mjs:1\nthrow new Error('ux-boom-4821');\n^\n\nError: ux-boom-4821\n    at file:///tmp/s.mjs:1:7" } }));
+    const whole = previewOf(boomText);
+    assert.ok(!whole.endsWith("…"));
+    assert.equal(workflowErrorWords(whole), "the script stopped with an error: ux-boom-4821");
+    // A plain JSON string still reads as itself; a cut that ends inside an escape keeps what arrived.
+    assert.equal(workflowErrorWords("\"no stock\""), "no stock");
+    const literal = JSON.stringify("{\"message\":\"a \\u00e9 b\"}");
+    const at = literal.indexOf("u00e9");
+    assert.equal(workflowErrorWords(`${literal.slice(0, at + 2)}…`), "a", "cut inside the text's own \\u escape");
+    assert.equal(workflowErrorWords(`${literal.slice(0, at - 1)}…`), "a", "cut between the two backslashes of the literal's escape");
+    assert.equal(workflowErrorWords(literal), "a é b");
+});

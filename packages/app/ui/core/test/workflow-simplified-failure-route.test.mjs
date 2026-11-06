@@ -44,12 +44,24 @@ test("his #2: the headline is the poll script's error, never the terminal's name
     assert.doesNotMatch(failure.headline, /failed failed/);
     // Newest first in the read (a page of executions) changes nothing.
     assert.equal(workflowFailure(run({ nodeExecutions: [...rows].reverse() })).headline, failure.headline);
-    // r3's ux-boom: a script that throws, its failure route, the terminal "failed" with no summary.
-    const boomError = JSON.stringify({ code: "execution_failed", message: "The script exited with code 1.", details: { exitCode: 1,
-        stderr: "file:///tmp/wf-script-1/script.mjs:1\nthrow new Error('ux-boom-4821');\n^\n\nError: ux-boom-4821\n    at file:///tmp/wf-script-1/script.mjs:1:7\n\nNode.js v24.11.0" } });
+    // r3's ux-boom: a script that throws, its failure route, the terminal "failed" with no summary. As the read gives it
+    // (HN #2, 5482bae3 live data): the node's error is its envelope's text, so its preview is that text as a JSON string.
+    const boomError = JSON.stringify(JSON.stringify({ code: "execution_failed", details: { exitCode: 1,
+        stderr: "file:///tmp/wf-script-1/script.mjs:1\nthrow new Error('ux-boom-4821');\n^\n\nError: ux-boom-4821\n    at file:///tmp/wf-script-1/script.mjs:1:7\n\nNode.js v24.11.0" },
+        message: "The script exited with code 1." }));
     const boom = run({ nodeExecutions: [visit("boom", 1, 0, 0.8, { outcome: "execution_failed", resultKind: "runtime_error", errorPreview: boomError }),
         visit("failed", 1, 0.9, 0.9, { outcome: "failed", resultKind: "business", outputPreview: "{}" })] });
     assert.equal(workflowFailureText(boom), "boom failed: the script stopped with an error: ux-boom-4821");
+    // HN #2 as read live: poll's error preview cut at 500 characters inside that JSON string.
+    const longError = JSON.stringify(JSON.stringify({ code: "execution_failed", details: { exitCode: 1, stderr: ["<anonymous_script>:3",
+        "<note>Content truncated. Call the fetch tool with a start_index of 4000 to get more content.</note>", "^", "",
+        "SyntaxError: Expected ',' or ']' after array element in JSON at position 4002 (line 3 column 1)",
+        ...Array.from({ length: 12 }, (_, i) => `    at frame${i} (file:///tmp/pilotswarm-script-x/script.mjs:${100 + i}:15)`)].join("\n") },
+        message: "The script exited with code 1." }));
+    const hn2 = run({ nodeExecutions: [visit("poll", 1, 0, 0.455, { outcome: "execution_failed", resultKind: "runtime_error",
+        errorPreview: `${longError.slice(0, 500)}…` }), visit("failed", 1, 0.55, 0.573, { outcome: "failed", resultKind: "business", outputPreview: "\"null\"" })] });
+    assert.equal(workflowFailureText(hn2),
+        "poll failed: the script stopped with an error: Expected ',' or ']' after array element in JSON at position 4002 (line 3 column 1)");
     // The Workflows list's reason beside the Failed chip says the same.
     const session = { sessionId: "wf-2", sessionKind: "workflow", status: "failed", parentSessionId: "owner" };
     const model = { runs: [{ runId: "run-2", mode: "live", status: "failed", outcome: "failed" }], run: run() };
