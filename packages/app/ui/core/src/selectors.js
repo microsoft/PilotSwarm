@@ -9778,7 +9778,7 @@ const KEYBINDING_HELP = [
         ["S", "workflow view: Start the definition at the revision shown (ctrl-r start, with its JSON inputs and variables · asks first · ctrl-l review it again after a change · Esc back)"],
         ["[  ]", "workflow view: the selected node's own result of an older / newer visit of the shown run (the latest by default; past the newest, the latest again)"],
         ["o  f  i", "workflow view: o reads the shown run's older history (the next, older page of its executions, messages and calls) · f reads the whole output or error of the visit the details show · i compares the variables that visit applied with the run's accepted ones"],
-        ["C  ,  .", "workflow view, a draft you may change: C compares two versions of its YAML, formatted (the one before the latest with the latest; C again closes) · , an older first version · . a newer one"],
+        ["C  ,  .", "workflow view, a definition you may change: C compares two versions of its YAML, formatted (the one before the latest with the latest; C again closes) · , an older first version · . a newer one"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],

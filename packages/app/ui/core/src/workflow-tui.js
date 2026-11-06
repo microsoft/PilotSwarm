@@ -628,9 +628,9 @@ export function workflowViewDraftRefusal(selection) {
     const viewer = isPlainRecord(commands?.viewer) ? commands.viewer : null;
     const why = !isPlainRecord(model) ? "The workflow is not loaded yet."
         : !commands ? "This deployment takes no workflow commands from people."
-            : model.definition?.state === "published" ? "The definition is published; it no longer changes. A new version needs a new workflow."
-                : model.definition?.state !== "draft" ? "The workflow has no draft."
-                    : !offered ? workflowV2RestrictionText(commands) ?? "This workflow takes no draft changes from people."
+            : model.definition?.state === "published" ? "The definition has started a Workflow, so it no longer changes. A new version needs a new workflow."
+                : model.definition?.state !== "draft" ? "The definition no longer changes."
+                    : !offered ? workflowV2RestrictionText(commands) ?? "This workflow takes no YAML changes from people."
                         : viewer?.allowed === false ? (typeof viewer.reason === "string" && viewer.reason ? viewer.reason : "You cannot command this workflow.")
                             : "Its YAML is not given to you.";
     return `The definition cannot be edited here. ${why}`;

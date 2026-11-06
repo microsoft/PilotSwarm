@@ -13,7 +13,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowPublicationModal,
+    PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectHelpModal, selectWorkflowPublicationModal,
     selectWorkflowViewModal, workflowPublicationChange, workflowPublicationConfirm, workflowPublicationPin,
 } from "../src/index.js";
 import { SUBTREE_REASON as SUBTREE, readModel, states } from "./workflow-v2-fixtures.mjs";
@@ -139,7 +139,7 @@ test("the view says what S starts; the Start form shows exactly the revision and
 
     // Publishing alone is not offered (the old ctrl-p): refused in words, the form stays, nothing is sent.
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
-    assert.equal(statusOf(h.store), "Start publishes this revision and starts it in one step; publishing alone is not offered.");
+    assert.equal(statusOf(h.store), "Only Start is offered: it starts this revision.");
     assert.equal(modalOf(h.store).type, "workflowPublish");
     assert.deepEqual(h.sent(), []);
 });
@@ -165,7 +165,7 @@ test("ctrl-r publishes and starts the live run with the typed inputs and initial
     assert.match(first.operation_id, /^ui-publish_and_start-./);
     assert.deepEqual(without(first, "operation_id"), { operation: "publish_and_start", expected_revision: 2, definition_hash: hashOf(2),
         inputs: { repo: "pilotswarm", limit: 3 }, vars: { note: "first" } });
-    assert.equal(statusOf(h.store), "Published revision 2 and started its live run run-li…0001.");
+    assert.equal(statusOf(h.store), "Started revision 2 (run run-li…0001).");
     assert.deepEqual(modalOf(h.store), view);
     await settle();
     assert.ok(!details(h.store).some(line => line.startsWith("Start:")), "a workflow with its live run offers no more Start");
@@ -297,7 +297,7 @@ test("a stale revision is refused and read again: the review says it changed and
     const [first, second] = h.sent();
     assert.deepEqual(without(second, "operation_id"), { operation: "publish_and_start", expected_revision: 3, definition_hash: hashOf(3), inputs: { repo: "a" } });
     assert.notEqual(second.operation_id, first.operation_id);
-    assert.equal(statusOf(h.store), "Published revision 3 and started its live run run-li…0001.");
+    assert.equal(statusOf(h.store), "Started revision 3 (run run-li…0001).");
     assert.deepEqual(modalOf(h.store), view);
     await settle();
 });
@@ -323,7 +323,7 @@ test("a draft published elsewhere while the review is open: nothing is sent for 
     assert.ok(texts(shown.lines).includes("ctrl-r Start"));
     assert.equal(shown.hint, "ctrl-r start · Tab inputs/variables · Esc back — each asks first");
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
-    assert.equal(statusOf(h.store), "Start publishes this revision and starts it in one step; publishing alone is not offered.");
+    assert.equal(statusOf(h.store), "Only Start is offered: it starts this revision.");
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
     const confirm = modalOf(h.store);
@@ -333,7 +333,7 @@ test("a draft published elsewhere while the review is open: nothing is sent for 
     const [first] = h.sent();
     assert.match(first.operation_id, /^ui-start-./);
     assert.deepEqual(without(first, "operation_id"), { operation: "start", definition_hash: hashOf(2), inputs: {} });
-    assert.equal(statusOf(h.store), "Started the live run run-li…0001 of published revision 2.");
+    assert.equal(statusOf(h.store), "Started revision 2 (run run-li…0001).");
     assert.deepEqual(modalOf(h.store), view);
     await settle();
 });
@@ -383,7 +383,7 @@ test("a refusal keeps what was typed, with the schema's problems; while a comman
     const [first, second, third] = h.sent();
     assert.notEqual(second.operation_id, first.operation_id);
     assert.deepEqual(third, second, "the same command, with the same operation id");
-    assert.equal(statusOf(h.store), "Published revision 2 and started its live run run-li…0001.");
+    assert.equal(statusOf(h.store), "Started revision 2 (run run-li…0001).");
     assert.deepEqual(modalOf(h.store), view);
     await settle();
 });
@@ -414,4 +414,24 @@ test("the review's pin, its change and its confirm text", () => {
     assert.equal(quoted.length, 160);
     assert.ok(quoted.endsWith("…"));
     assert.ok(!big.message.includes("initial variables"), "no variables, none named");
+});
+
+// Review UI-D11: the terminal's visible words say Start, YAML editor and definition, never draft or publish: the status
+// after a Start confirmation is canceled, after Start, and the whole help.
+test("UI-D11: canceling Start says 'Start was not sent'; the help has no draft or publish words", async () => {
+    const h = await reviewing(workflow(), [accepted("publish_and_start", 2, LIVE)]);
+    clear(h);
+    type(h, '{"repo": "pilotswarm"}');
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
+    assert.equal(modalOf(h.store).type, "confirm");
+    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    assert.equal(statusOf(h.store), "Start was not sent");
+    assert.deepEqual(h.sent(), []);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(statusOf(h.store), "Started revision 2 (run run-li…0001).");
+    assert.doesNotMatch(statusOf(h.store), /publish|draft/i);
+    const help = JSON.stringify(selectHelpModal(appReducer(h.store.getState(), { type: "ui/modal", modal: { type: "help" } }), 200).rows);
+    assert.ok(help.includes("a definition you may change: C compares two versions of its YAML"), "the Compare entry");
+    assert.doesNotMatch(help, /draft|publish/i);
 });

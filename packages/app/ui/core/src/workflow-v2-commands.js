@@ -1011,8 +1011,8 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
         const revision = Number.isSafeInteger(published) ? `revision ${published}` : "the revision";
         const started = isRecord(receipt) && isRecord(receipt.run) && typeof receipt.run.runId === "string" ? shortId(receipt.run.runId) : null;
         if (operation === "publish") return `Published ${revision}. It no longer changes; its live run starts only when someone starts it.${again}`;
-        if (operation === "publish_and_start") return `Published ${revision} and started its live run${started ? ` ${started}` : ""}.${again}`;
-        return `Started the live run${started ? ` ${started}` : ""} of published ${revision}.${again}`;
+        // Review UI-D11: Start in the words people see (spec draft 3: no publish step is shown).
+        return `Started ${revision}${started ? ` (run ${started})` : ""}.${again}`;
     }
     if (operation === "set_vars") {
         const set = isRecord(args?.set) ? Object.keys(args.set) : [];

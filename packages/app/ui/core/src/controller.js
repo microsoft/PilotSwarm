@@ -7562,7 +7562,7 @@ export class PilotSwarmUiController {
         const { sessionId, editor, buffer, edit } = context;
         if (!edit.canSave) {
             this.dispatch({ type: "ui/status", text: edit.reason
-                ?? (editor.pending ? "The draft is being saved; wait for its answer" : "Another command for this workflow is being sent.") });
+                ?? (editor.pending ? "The YAML is being saved; wait for its answer" : "Another command for this workflow is being sent.") });
             return { ok: false, reason: "invalid" };
         }
         const result = await this.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: buffer.base.revision,
@@ -7593,7 +7593,7 @@ export class PilotSwarmUiController {
         if (!context) return;
         const { sessionId, editor, buffer, edit, modal } = context;
         if (editor.pending) {
-            this.dispatch({ type: "ui/status", text: "The draft is being saved; wait for its answer" });
+            this.dispatch({ type: "ui/status", text: "The YAML is being saved; wait for its answer" });
             return;
         }
         const target = edit.conflict ? { revision: editor.revision, yaml: editor.yaml } : buffer.base;
@@ -7615,7 +7615,7 @@ export class PilotSwarmUiController {
         if (!context) return;
         const { sessionId, editor, edit, buffer } = context;
         if (editor.pending) {
-            this.dispatch({ type: "ui/status", text: "The draft is being saved; wait for its answer" });
+            this.dispatch({ type: "ui/status", text: "The YAML is being saved; wait for its answer" });
             return;
         }
         if (!edit.conflict) {
@@ -7733,7 +7733,7 @@ export class PilotSwarmUiController {
         if (change) return refuse(change);
         const pin = modal.pin;
         // Spec draft 3 (D4, F-7; review UI-4): Start only; publishing alone is not offered on any surface.
-        if (kind === "publish") return refuse("Start publishes this revision and starts it in one step; publishing alone is not offered.");
+        if (kind === "publish") return refuse("Only Start is offered: it starts this revision.");
         const operation = pin.state === "draft" ? "publish_and_start" : "start";
         const label = "Start";
         const control = publication.controls.find(item => item.operation === operation) ?? null;
@@ -10117,12 +10117,12 @@ export class PilotSwarmUiController {
         const sessionId = selection.modal.sessionId;
         const editor = selection.projection.draftEditor;
         if (!editor) {
-            this.dispatch({ type: "ui/status", text: "Only a draft you may change has versions to compare" });
+            this.dispatch({ type: "ui/status", text: "Only a definition you may change has versions to compare" });
             return;
         }
         const latest = editor.revision;
         if (latest < 2) {
-            this.dispatch({ type: "ui/status", text: "This draft has one version, so there is nothing to compare yet" });
+            this.dispatch({ type: "ui/status", text: "This definition has one version, so there is nothing to compare yet" });
             return;
         }
         const open = selection.projection.revisionCompare;
@@ -11518,7 +11518,7 @@ export class PilotSwarmUiController {
             "workflowTestAnswer", "workflowTestClock"].includes(modal.type)) {
             this.dispatch({ type: "ui/modal", modal: modal.returnModal });
             const operation = modal.type === "confirm" ? modal.workflowRunCommand?.operation : null;
-            const labels = { stop: "Stop", cancel: "Cancel", set_vars: "The removal", publish: "Publish", publish_and_start: "Publish and start", start: "Start",
+            const labels = { stop: "Stop", cancel: "Cancel", set_vars: "The removal", publish: "Start", publish_and_start: "Start", start: "Start",
                 test: "The test" };
             // An update that also sets variables is one update: none of it was sent.
             const setsToo = operation === "set_vars" && modal.workflowRunCommand?.set && typeof modal.workflowRunCommand.set === "object"
@@ -11527,7 +11527,7 @@ export class PilotSwarmUiController {
             const unsaved = modal.type === "workflowDraft" && workflowViewProjectionFor(this.getState(), modal.sessionId).draftEdit?.changed;
             this.dispatch({ type: "ui/status", text: ["workflowVariable", "workflowVariableBatch", "workflowTestAnswer", "workflowTestClock"].includes(modal.type)
                 ? "Back to the workflow view"
-                : modal.type === "workflowDraft" ? (unsaved ? "Closed the draft editor; your unsaved edits are kept (e shows them)" : "Closed the draft editor")
+                : modal.type === "workflowDraft" ? (unsaved ? "Closed the YAML editor; your unsaved edits are kept (e shows them)" : "Closed the YAML editor")
                     : modal.type === "workflowPublish" ? "Closed the Start form"
                         : modal.type === "workflowTest" ? "Closed the test review"
                             : modal.action === "discardWorkflowDraftEdits" ? "Your edits are kept" : `${label} was not sent` });

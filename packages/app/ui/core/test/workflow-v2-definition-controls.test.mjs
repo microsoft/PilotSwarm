@@ -121,9 +121,9 @@ test("the status line and notices name the revision, not a run; a refused input 
     assert.equal(workflowV2RunCommandAccepted("publish", null, { publishedRevision: 2, replayed: false }, { expectedRevision: 2, definitionHash: HASH_2 }),
         "Published revision 2. It no longer changes; its live run starts only when someone starts it.");
     assert.equal(workflowV2RunCommandAccepted("publish_and_start", null, { publishedRevision: 2, run: { runId: "run-9", mode: "live", revision: 2 } }),
-        "Published revision 2 and started its live run run-9.");
+        "Started revision 2 (run run-9).");
     assert.equal(workflowV2RunCommandAccepted("start", null, { publishedRevision: 1, run: { runId: "run-9", mode: "live", revision: 1 }, replayed: true }),
-        "Started the live run run-9 of published revision 1. It had already been accepted.");
+        "Started revision 1 (run run-9). It had already been accepted.");
     assert.equal(workflowV2RunCommandNotice({ operation: "publish", runId: null, phase: "failed", message: "The draft is at revision 3, not 2." }).text,
         "Publish was refused: The draft is at revision 3, not 2.");
     assert.equal(workflowV2RunCommandNotice({ operation: "start", runId: null, phase: "unconfirmed", message: "Failed to fetch" }).text,
@@ -178,7 +178,7 @@ test("Publish sends the exact revision and hash shown, names no run, and reads t
     // Start sends the published hash with its inputs and initial variables.
     await h.controller.sendWorkflowRunCommand(SID, { operation: "start", definitionHash: HASH_2, inputs: { repo: "r" }, vars: { note: "x" } });
     assert.deepEqual(without(h.updates[1][1], "operation_id"), { operation: "start", definition_hash: HASH_2, inputs: { repo: "r" }, vars: { note: "x" } });
-    assert.match(h.store.getState().ui.statusText, /^Started the live run run-9 of published revision 2\./);
+    assert.match(h.store.getState().ui.statusText, /^Started revision 2 \(run run-9\)\./);
     // Nothing is sent for a definition command that is not one.
     assert.deepEqual(await h.controller.sendWorkflowRunCommand(SID, { operation: "publish", expectedRevision: 2 }), { ok: false, reason: "invalid" });
     assert.equal(h.updates.length, 2);
@@ -203,7 +203,7 @@ test("a stale publish is refused, reported and read again; an unanswered one is 
     fail = null;
     assert.equal((await h.controller.retryWorkflowRunCommand(SID)).ok, true);
     assert.deepEqual(h.updates.at(-1)[1], first, "the same command, with the same operation id");
-    assert.match(h.store.getState().ui.statusText, /^Published revision 2 and started its live run run-9\./);
+    assert.match(h.store.getState().ui.statusText, /^Started revision 2 \(run run-9\)\./);
 });
 
 function mount(view) {

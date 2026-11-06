@@ -188,7 +188,7 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
 
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.deepEqual(modalOf(h.store), view, "back to the workflow view");
-    assert.equal(statusOf(h.store), "Closed the draft editor");
+    assert.equal(statusOf(h.store), "Closed the YAML editor");
     assert.ok(details(h.store).includes("Definition · revision 2 · version 1.0.0 — e edits its YAML · C compares versions"), details(h.store).join("\n"));
     assert.equal(h.sent().length, 1);
 });
@@ -384,10 +384,10 @@ test("a new version is refused and the edit stays; while a save is sent nothing 
     shown = editor(h.store);
     assert.ok(shown.statusLines.some(line => line.text === "Saving…"));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_SAVE);
-    assert.equal(statusOf(h.store), "The draft is being saved; wait for its answer");
+    assert.equal(statusOf(h.store), "The YAML is being saved; wait for its answer");
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_DISCARD);
     assert.equal(modalOf(h.store).type, "workflowDraft", "no confirm while a save is sent");
-    assert.equal(statusOf(h.store), "The draft is being saved; wait for its answer");
+    assert.equal(statusOf(h.store), "The YAML is being saved; wait for its answer");
     assert.equal(h.sent().length, 2);
 
     lose();
@@ -418,7 +418,7 @@ test("the editor is not offered for a published definition, in an agent state's 
         assert.ok(!details(h.store).some(line => line.startsWith("Draft ·")), reason);
         return h;
     };
-    await refusedWith(draft({ state: "published" }), "The definition is published; it no longer changes. A new version needs a new workflow.");
+    await refusedWith(draft({ state: "published" }), "The definition has started a Workflow, so it no longer changes. A new version needs a new workflow.");
     await refusedWith(draft({ operations: ["pause", "stop", "cancel"],
         restriction: { reason: SUBTREE, workflowSessionId: "outer", controllingSessionId: "parent-1" } }), `${SUBTREE} Its controlling agent is session parent-1.`);
     await refusedWith(draft({ yaml: null, viewer: { allowed: false, reason: "You may read this workflow but not command it." } }),
@@ -434,7 +434,7 @@ test("the editor is not offered for a published definition, in an agent state's 
     const shown = editor(gone.store);
     assert.equal(shown.title, "Definition");
     assert.equal(joined(shown.statusLines),
-        "The definition cannot be edited here. The definition is published; it no longer changes. A new version needs a new workflow.");
+        "The definition cannot be edited here. The definition has started a Workflow, so it no longer changes. A new version needs a new workflow.");
     type(gone, "x");
     await gone.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_SAVE);
     assert.deepEqual(gone.sent(), []);
@@ -458,7 +458,7 @@ test("an edit is kept when the editor closes, and the view says so; e opens it a
     type(h, "# later\n");
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.deepEqual(modalOf(h.store), view);
-    assert.equal(statusOf(h.store), "Closed the draft editor; your unsaved edits are kept (e shows them)");
+    assert.equal(statusOf(h.store), "Closed the YAML editor; your unsaved edits are kept (e shows them)");
     assert.ok(details(h.store).includes("  Unsaved edits, started from revision 1: e shows them"), details(h.store).join("\n"));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT);
     assert.equal(editOf(h.store).text, `${YAML}# later\n`);
@@ -535,12 +535,12 @@ test("q4: C compares two versions of the draft as formatted YAML in the details;
 test("q4: C says why there is nothing to compare: a draft with one version, a published definition, a draft this person may not change", async () => {
     const one = await opened(draft({ revision: 1 }));
     await one.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS);
-    assert.equal(statusOf(one.store), "This draft has one version, so there is nothing to compare yet");
+    assert.equal(statusOf(one.store), "This definition has one version, so there is nothing to compare yet");
     for (const initial of [draft({ revision: 2, state: "published" }), draft({ revision: 2, commands: false }), draft({ revision: 2, yaml: null })]) {
         const h = await opened(initial);
         const reads = h.reads();
         await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS);
-        assert.equal(statusOf(h.store), "Only a draft you may change has versions to compare");
+        assert.equal(statusOf(h.store), "Only a definition you may change has versions to compare");
         assert.equal(h.reads(), reads, "nothing is read");
         assert.ok(!details(h.store).some(line => line.includes("C compares versions")));
     }
