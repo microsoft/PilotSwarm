@@ -10,8 +10,15 @@
  * - the reminder and the completion are given the turn's own visit.
  * The store's half (readTurnVisit, the reminder and the completion bound to it) is in workflow-simplified-chat-continue.
  */
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
+import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
+import { FilesystemSessionStore } from "../../src/session-store.ts";
+import { savedTurnVisitFence } from "../../src/session-lifecycle.ts";
 
 const CHAT = "chat-continued";
 const NX1 = "nx-1111111111111111111111111111111111111111";
@@ -26,15 +33,17 @@ const control = (seq, kind, text = `${kind}-${seq}`) => ({ seq, kind, text, crea
 function fenceStore({ visit, requestIds = new Map(), failIds = false }) {
     const reads = [];
     const dropped = [];
-    return {
+    const fence = {
         reads,
         dropped,
+        // The turn visit readTurnVisit answers now (a test may change it between attempts).
+        visit,
         store: {
             readWorkflowLineage: async sessionId => ({ sessionId, level: 2,
                 agentRoot: { childSessionId: CHAT, nodeExecutionId: NX2, workflowSessionId: "wf-1", controllingSessionId: "parent", distance: 0 } }),
             readNodeExecution: async () => ({ nodeType: "agent", runId: "run-1", nodeId: "talk", nodeExecutionId: NX2 }),
             readRun: async () => ({ runId: "run-1", mode: "live", workflowSessionId: "wf-1" }),
-            readTurnVisit: async (sessionId, ids) => { reads.push(["readTurnVisit", sessionId, ids]); return visit; },
+            readTurnVisit: async (sessionId, ids) => { reads.push(["readTurnVisit", sessionId, ids]); return fence.visit; },
             readControlRequestIds: async (sessionId, seqs) => {
                 reads.push(["readControlRequestIds", sessionId, seqs]);
                 if (failIds) throw new Error("the stops' ids could not be read");
@@ -43,9 +52,11 @@ function fenceStore({ visit, requestIds = new Map(), failIds = false }) {
             recordStopNotForTurn: async (sessionId, seq, turn) => { dropped.push([sessionId, seq, turn]); return { recorded: true }; },
         },
     };
+    return fence;
 }
 
-function harness({ visit, start = { stopped: false, controls: [] }, requestIds, turn, failIds = false, writeback = false } = {}) {
+function harness({ visit, start = { stopped: false, controls: [] }, requestIds, turn, failIds = false, writeback = false, turnEnd = null,
+    lifecycle = null } = {}) {
     const fence = fenceStore({ visit, requestIds, failIds });
     const calls = [];
     const aborts = [];
@@ -55,8 +66,9 @@ function harness({ visit, start = { stopped: false, controls: [] }, requestIds, 
             workflowStore: () => fence.store,
             turnStart: vi.fn(async (...args) => { calls.push(["turnStart", ...args]); return start; }),
             completeTurnWriteback: vi.fn(async () => writeback),
-            turnEnd: vi.fn(async (...args) => { calls.push(["turnEnd", ...args]); return { stopped: false, late: [] }; }),
+            turnEnd: vi.fn(async (...args) => { calls.push(["turnEnd", ...args]); return turnEnd ? turnEnd(...args) : { stopped: false, late: [] }; }),
         },
+        ...(lifecycle ? { sessionStore: lifecycle.store, sessionStateDir: lifecycle.sessionStateDir } : {}),
         managerExtras: {
             abortWarmSessionTurn: vi.fn(async (sessionId, options) => { aborts.push([sessionId, options.reason]); return { outcome: "aborted" }; }),
         },
@@ -187,6 +199,52 @@ describe("the turn-to-visit fence of a chat that continues", () => {
             expect(none.aborts).toEqual([]);
             expect(none.fence.dropped).toEqual([[CHAT, 91, 14]]);
             expect(endArgs(none.calls)).toEqual([[CHAT, 14, 0, "other", [], { visitFence: { visit: null } }]]);
+        });
+    });
+
+    // Review O-L1 (formal t4b, C1): a turn end from a saved result fences with the visit the live turn read, saved with
+    // that result; it is not read again, so a newer named prompt recorded between the attempts cannot change it.
+    describe("O-L1: the pre-saved retry fences with the visit saved with the result", () => {
+        const roots = [];
+        afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+        const lifecycleDirs = () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-wfs-fence-"));
+            roots.push(root);
+            const sessionStateDir = path.join(root, "session-state");
+            fs.mkdirSync(sessionStateDir, { recursive: true });
+            return { sessionStateDir, store: new FilesystemSessionStore(path.join(root, "session-store"), sessionStateDir) };
+        };
+
+        it("an inherited-visit turn's saved result keeps its visit: that visit's own Stop still stops the retried end", async () => {
+            const dirs = lifecycleDirs();
+            const sessionId = `${CHAT}-${randomUUID()}`;
+            let failures = 3;
+            // Turn end as the catalog decides it: visit 1's own Stop is open; another visit's fence makes it too_late.
+            const turnEnd = (_s, _turn, _cursor, _kind, _carried, options) => {
+                if (failures > 0) { failures -= 1; throw new Error("database unavailable"); }
+                return { stopped: !options?.visitFence || options.visitFence.visit === NX1, late: [] };
+            };
+            const { h, fence, calls } = harness({ visit: { nodeExecutionId: NX1, open: true, inherited: true }, writeback: true, turnEnd,
+                lifecycle: dirs, turn: async () => { makeSessionLayout(dirs.sessionStateDir, sessionId); return { type: "error", message: "the model failed" }; } });
+            const input = { turnIndex: 15, prompt: "a sub-agent's update", snapshot: { turnKey: "k15" } };
+            await expect(h.runTurn(sessionId, input, "runTurnV5")).rejects.toThrow(/database unavailable/);
+            // Between the attempts a newer visit's prompt is recorded: the chat's inherited visit is now visit 2.
+            fence.visit = { nodeExecutionId: NX2, open: true, inherited: true };
+            const retried = await h.runTurn(sessionId, input, "runTurnV5");
+            expect(h.session.runTurn).toHaveBeenCalledTimes(1);
+            const ends = calls.filter(([name]) => name === "turnEnd").map(call => call[6]);
+            expect(ends.at(-1)).toEqual({ visitFence: { visit: NX1 } });
+            expect(retried.type).toBe("stopped");
+            expect(fence.reads.filter(([name]) => name === "readTurnVisit")).toHaveLength(1);
+        });
+
+        it("a result saved without the fence (an older build) falls back to reading the turn visit again", () => {
+            expect(savedTurnVisitFence({ type: "completed", turnVisitFence: { turn: 3, visit: NX1 } }, 3)).toEqual({ visit: NX1 });
+            expect(savedTurnVisitFence({ type: "completed", turnVisitFence: { turn: 3, visit: null } }, 3)).toEqual({ visit: null });
+            expect(savedTurnVisitFence({ type: "completed", turnVisitFence: { turn: 2, visit: NX1 } }, 3)).toBeUndefined();
+            expect(savedTurnVisitFence({ type: "completed" }, 3)).toBeUndefined();
+            expect(savedTurnVisitFence({ type: "completed", turnVisitFence: { turn: 3, visit: 7 } }, 3)).toBeUndefined();
+            expect(savedTurnVisitFence(null, 3)).toBeUndefined();
         });
     });
 });

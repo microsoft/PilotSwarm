@@ -105,6 +105,11 @@ type LateSteersCarrier = {
  */
 type ControlCursorCarrier = {
     controlCursor?: { turn: number; cursor: number };
+    /**
+     * A continued workflow chat's turn: the visit fence it read at turn start, saved with the result so a turn end from
+     * the saved result fences with the same visit (review O-L1; savedTurnVisitFence).
+     */
+    turnVisitFence?: { turn: number; visit: string | null };
 };
 
 /**

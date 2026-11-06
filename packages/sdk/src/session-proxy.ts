@@ -64,7 +64,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, type TurnLifecycleContext } from "./session-lifecycle.js";
+import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, savedTurnVisitFence, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
 import { workflowVisitOfStopRequestId, type WorkflowTurnVisit } from "./workflow/v2/store.js";
@@ -1874,9 +1874,11 @@ export function registerActivities(
             }
             throw lastErr;
         };
-        // Review RT-D2 (C1): a turn whose result an earlier attempt saved ends with the visit fence its live turn had: its
-        // turn visit read again as the live turn reads it (this input's prompt ids; a continued chat only).
-        const savedTurnVisitFence = async (): Promise<{ visit: string | null } | null> => {
+        // Review RT-D2 (C1), O-L1: a turn whose result an earlier attempt saved ends with the visit fence its live turn had,
+        // saved with that result (savedTurnVisitFence). This read is only the fallback for a result an older build saved
+        // without it: the turn visit read again as the live turn reads it (this input's prompt ids; a continued chat
+        // only). For an inherited visit that read can differ when a newer named prompt was recorded in between.
+        const rereadTurnVisitFence = async (): Promise<{ visit: string | null } | null> => {
             if (!workflowRequestTurn || !catalog?.workflowStore) return null;
             const store = catalog.workflowStore();
             const lineage = await store.readWorkflowLineage(input.sessionId);
@@ -2003,7 +2005,8 @@ export function registerActivities(
                     // An earlier attempt with this same input saved the turn:
                     // no model run, only T8 with the saved cursor.
                     tc.carriedTaken = tc.carried.length > 0;
-                    tc.visitFence = await savedTurnVisitFence();
+                    // O-L1: the fence saved with the result; an older build's result has none, so it is read again.
+                    tc.visitFence = savedTurnVisitFence(pre.result, tc.turn) ?? await rereadTurnVisitFence();
                     return await finishTurnControl(stored, savedControlCursor(pre.result, tc.turn), { alwaysEnd: true });
                 }
                 return stored;
@@ -5417,9 +5420,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const liveCursor = tc ? Math.max(tc.startCursor, tc.live?.cursor ?? 0) : 0;
         if (lifecycle && lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))) {
             // T7: the save carries the cursor only when it is not 0.
-            const toSave: TurnResult = tc && liveCursor > 0 && bodyResult.type !== "stopped"
+            let toSave: TurnResult = tc && liveCursor > 0 && bodyResult.type !== "stopped"
                 ? { ...bodyResult, controlCursor: { turn: tc.turn, cursor: liveCursor } } as TurnResult
                 : bodyResult;
+            // Review O-L1 (C1): a continued chat's turn saves the visit fence it read at T3, so a turn end from this saved
+            // result (a retry, or an adopted racing winner) fences with exactly that visit.
+            if (tc?.visitFence) toSave = { ...toSave, turnVisitFence: { turn: tc.turn, visit: tc.visitFence.visit } } as TurnResult;
             const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
             if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
@@ -5480,7 +5486,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 };
                 // Workflow intake: the winner's own witness, or none; never this losing attempt's.
                 adoptedSavedResult = true;
-                // The winner's result and cursor; T8 writes the same outcomes.
+                // The winner's result, cursor and visit fence (O-L1); T8 writes the same outcomes.
+                if (tc) {
+                    const winnerFence = savedTurnVisitFence(committed.storedResult, tc.turn);
+                    if (winnerFence !== undefined) tc.visitFence = winnerFence;
+                }
                 return tc ? await finishTurnControl(adopted, savedControlCursor(committed.storedResult, tc.turn), { alwaysEnd: true }) : adopted;
             }
             const saved: TurnResult = { ...toSave, snapshotVersion: committed.version } as TurnResult;
