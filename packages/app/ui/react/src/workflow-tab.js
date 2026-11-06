@@ -801,6 +801,7 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
     const files = useControllerSelector(controller, state => state.files.bySessionId);
     const readInstructions = ref => {
         if (!instructionsReadable) return { ownerOnly: true };
+        if (!ref?.sessionId) return null;
         const preview = files?.[ref.sessionId]?.previews?.[ref.artifact];
         if (!preview) return null;
         const text = typeof preview.content === "string" && !preview.loading ? preview.content : null;

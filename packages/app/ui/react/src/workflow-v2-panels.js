@@ -413,11 +413,13 @@ function KvApplied({ execution, runId, kv }) {
  * the runtime kept on the Workflow (`row.instructions`), or a plain line that only the summary was kept. A reader who is
  * not the Workflow's owner (`readInstructions` answers `{ ownerOnly: true }`; review SF-3) is told so, and nothing is read.
  * A text whose sha256 is not the recorded one (`{ changed: true }`; review SF-4) is not shown: the row says it changed.
+ * r4 C04: an echo recorded whole (`row.inline`) is shown from the chat itself, to the owner only, with no file read.
  */
 function BaseInstructions({ row, readInstructions, onInstructions, openBodies = false }) {
     // Review UI-11: the body (and the whole text) is mounted only while the row is open.
     const [open, setOpen] = React.useState(openBodies);
     const loaded = row.instructions && readInstructions ? readInstructions(row.instructions) : null;
+    const inlineOwnerOnly = Boolean(row.inline) && Boolean(readInstructions?.({ inline: true })?.ownerOnly);
     return h("details", { className: "ps-wf-alog-base", ...(openBodies ? { open: true } : {}), onToggle: event => {
         const nowOpen = event.currentTarget.open;
         setOpen(nowOpen);
@@ -425,6 +427,8 @@ function BaseInstructions({ row, readInstructions, onInstructions, openBodies = 
     } },
     h("summary", null, row.text),
     !open ? null
+        : row.inline ? (inlineOwnerOnly ? h("p", { className: "ps-wf-muted", "data-owner-only": "" }, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY)
+            : h("pre", { "data-base-instructions": "inline" }, row.inline.text))
         : !row.instructions ? h("p", { className: "ps-wf-muted" }, "Only this summary was kept for this chat; its whole text was not.")
         : loaded?.ownerOnly ? h("p", { className: "ps-wf-muted", "data-owner-only": "" }, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY)
         : loaded?.changed ? h("p", { role: "status", "data-changed": "" }, WORKFLOW_BASE_INSTRUCTIONS_CHANGED)
@@ -440,7 +444,6 @@ function LazyDetails({ summary, body, className = undefined, openBodies = false 
         h("summary", null, summary), open ? body() : null);
 }
 
-/** One row of an agent node's Log: its label and time, then its text (folded with Show more) or its call (to expand). */
 /** A row's text with its chat's words as a link that opens that chat (r4 C04: the Workflow's line about the agent chat). */
 function withChatLink(text, chat, onOpenChat) {
     const at = chat && onOpenChat && typeof text === "string" ? text.indexOf(chat.words) : -1;
@@ -449,6 +452,7 @@ function withChatLink(text, chat, onOpenChat) {
         "data-session": chat.sessionId, onClick: () => onOpenChat(chat.sessionId) }, chat.words), text.slice(at + chat.words.length)];
 }
 
+/** One row of an agent node's Log: its label and time, then its text (folded with Show more) or its call (to expand). */
 function AgentLogRow({ row, readInstructions = null, onInstructions = null, openBodies = false, onOpenChat = null }) {
     const [open, setOpen] = React.useState(false);
     const body = row.label === "Base instructions" && row.carriedFrom !== undefined

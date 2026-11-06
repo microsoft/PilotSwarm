@@ -42,14 +42,37 @@ export function workflowBaseInstructionsReadable(readModel) {
 
 const BASE_SUMMARY = /^\[SYSTEM: Copilot SDK rebuilt the full system prompt for model input\. Full content omitted from CMS \((\d+) chars\)\. Snippet: ([\s\S]*)\]$/;
 
+const ECHO_SNIPPET = 120;
+const echoDigests = new Map();
+const digestOf = text => {
+    let digest = echoDigests.get(text);
+    if (digest === undefined) {
+        digest = sha256Hex(text);
+        if (echoDigests.size >= 8) echoDigests.clear();
+        echoDigests.set(text, digest);
+    }
+    return digest;
+};
+
 /**
  * A recorded base-instructions summary as a row's parts: its length and snippet, and where its whole text is kept
  * (`baseInstructions`, a workflow agent chat's: { sessionId, artifact, sha256, chars }), or null for another message.
+ *
+ * r4 C04 (the live dump, agent chat events 16316 and 16380): the SDK's echo of the system prompt it composed can be
+ * recorded whole, as a system.message with the model's role "system" and its interaction id ({ content, interactionId,
+ * role }, no sender): its first words are not the ones session-proxy summarizes, so the transcript holds all of it (55,151
+ * characters each turn) and no file names it. Such an echo is the base instructions too, with its own text:
+ * `inline` { sha256, text } (ref null).
  */
 export function workflowBaseInstructions(data) {
     const content = isRecord(data) && typeof data.content === "string" ? data.content : "";
     const found = BASE_SUMMARY.exec(content);
-    if (!found) return null;
+    if (!found) {
+        if (!content.trim() || data.role !== "system" || typeof data.interactionId !== "string" || !data.interactionId) return null;
+        const flat = content.replace(/\s+/g, " ").trim();
+        const snippet = flat.length > ECHO_SNIPPET ? `${flat.slice(0, ECHO_SNIPPET).trimEnd()}...` : flat;
+        return { chars: content.length, snippet, ref: null, inline: { sha256: digestOf(content), text: content } };
+    }
     const kept = isRecord(data.baseInstructions) ? data.baseInstructions : null;
     // The whole digest is what the shown text is checked against (review SF-4); the artifact is the one it names.
     const sha256 = kept && typeof kept.sha256 === "string" && /^[0-9a-f]{64}$/.test(kept.sha256) ? kept.sha256 : null;
@@ -171,12 +194,12 @@ function chatRows(events, visitId) {
             if (instructions) {
                 // An echo of the instructions already in force (the SDK may compose them again at a later turn) adds no row;
                 // a change, also back to earlier ones, does (its text is shown once: the cross-visit pass makes repeats references).
-                const key = instructions.ref?.sha256 ?? `${instructions.chars}:${instructions.snippet}`;
+                const key = instructions.ref?.sha256 ?? instructions.inline?.sha256 ?? `${instructions.chars}:${instructions.snippet}`;
                 if (key === lastInstructions) continue;
                 lastInstructions = key;
                 rows.push({ ...base, kind: "prompt", label: "Base instructions",
                     text: `${instructions.chars.toLocaleString("en-US")} characters: ${instructions.snippet}`, instructions: instructions.ref,
-                    instructionsKept: instructions.ref !== null });
+                    instructionsKept: instructions.ref !== null || Boolean(instructions.inline), ...(instructions.inline ? { inline: instructions.inline } : {}) });
             } else if (content.trim()) rows.push({ ...base, kind: "prompt", label: "Note to the agent", ...workflowLogFold(content) });
         } else if (event.eventType === "assistant.message") {
             const content = typeof data.content === "string" ? data.content : "";
@@ -362,14 +385,15 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
     const where = from => `visit ${from.ordinal ?? "—"}${from.count > 1 ? `, its instructions ${from.number} of ${from.count}` : ""}`;
     for (const group of byOrdinal) {
         const at = group.rows.flatMap((row, index) => row.label === "Base instructions" ? [index] : []);
-        const shas = [...new Set(at.map(index => group.rows[index].instructions?.sha256 ?? null).filter(Boolean))];
+        const shaOf = row => row.instructions?.sha256 ?? row.inline?.sha256 ?? null;
+        const shas = [...new Set(at.map(index => shaOf(group.rows[index])).filter(Boolean))];
         let last = null;
         for (const index of at) {
             const own = group.rows[index];
-            const sha = own.instructions?.sha256 ?? null;
+            const sha = shaOf(own);
             if (sha && shownBySha.has(sha)) {
                 const from = shownBySha.get(sha);
-                group.rows[index] = { ...own, text: `The same as ${where(from)}.`, carriedFrom: from.ordinal, carriedNumber: from.number, instructions: null };
+                group.rows[index] = { ...own, text: `The same as ${where(from)}.`, carriedFrom: from.ordinal, carriedNumber: from.number, instructions: null, inline: null };
                 last = { row: own, from };
                 continue;
             }
