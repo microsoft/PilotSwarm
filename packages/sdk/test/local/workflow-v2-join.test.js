@@ -102,7 +102,6 @@ const WORK = "const item = context.input;\n"
     + "await new Promise(resolve => setTimeout(resolve, item.ms ?? 0));\n"
     + "await setResult(item.fail ? \"bad\" : item.seconds ? \"hold\" : \"ok\", { index: context.branch.index, ...item });\n";
 
-/** A parallel state over `items` with the join, failFast, concurrency and time limit given; its routes lead to the outer terminals. */
 /**
  * A failed branch's end as the join's report gives it (wfs-full-5d687726 classification): at its blocked terminal, or,
  * when the join decided before that terminal step committed (under load), finished at its work step with the outcome
@@ -116,6 +115,7 @@ function failedBranchEnd(branch, workId) {
     return [branch.index, "terminal", "blocked"];
 }
 
+/** A parallel state over `items` with the join, failFast, concurrency and time limit given; its routes lead to the outer terminals. */
 function joinDoc({ items = [], forEach = "${input.items}", join, failFast = false, concurrency, timeoutSeconds } = {}) {
     const timed = timeoutSeconds !== undefined;
     return {
