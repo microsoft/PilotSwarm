@@ -90,3 +90,26 @@ export function nextCrackleGapMs(random = Math.random) {
     const wait = -Math.log(1 - random() * 0.98) * 1000;
     return Math.min(4000, Math.max(120, wait));
 }
+
+/**
+ * The pre-dawn chords, as frequencies in Hz: D major 9, B minor 11,
+ * G major 7 (sharp 11) and A sus 4 add 9, voiced open and low. The voice
+ * walks them in order, one every half minute or so.
+ */
+export const DAWN_CHORDS = Object.freeze([
+    Object.freeze([73.42, 146.83, 220.0, 329.63, 369.99]),
+    Object.freeze([61.74, 123.47, 185.0, 277.18, 329.63]),
+    Object.freeze([49.0, 98.0, 196.0, 277.18, 369.99]),
+    Object.freeze([55.0, 110.0, 164.81, 246.94, 293.66]),
+]);
+
+/** The star chimes: D major pentatonic, two octaves up. */
+export const DAWN_STAR_NOTES = Object.freeze([1174.66, 1318.51, 1479.98, 1760.0, 1975.53, 2349.32]);
+
+/** Milliseconds until the next star chime: 4 to 10 seconds, irregular. */
+export function nextDawnStarGapMs(random = Math.random) {
+    return 4000 + random() * 6000;
+}
+
+/** Cue names a theme with `cues: true` answers, and the least gap between two of a kind. */
+export const THEME_SOUND_CUES = Object.freeze({ tick: 45, send: 250, done: 800 });

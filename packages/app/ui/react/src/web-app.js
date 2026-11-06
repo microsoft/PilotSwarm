@@ -10155,6 +10155,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     }, [active, mobile, autoFocus, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
+        themeSoundPlayer().cue("send");
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
             .catch(() => {})
             .finally(() => {
@@ -16578,6 +16579,31 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         });
     }, [state.themeId, state.themeSound, state.themeSoundMobile, narrowViewport]);
     React.useEffect(() => () => themeSoundPlayer().update({ enabled: false }), []);
+    // Action cues, for a theme that has them: a tick on any enabled button or
+    // tab (Send has its own), and a chime when the open session's turn ends.
+    React.useEffect(() => {
+        if (typeof document === "undefined") return undefined;
+        const onClick = (event) => {
+            const target = event.target instanceof Element
+                ? event.target.closest("button, [role='button'], [role='tab'], [role='switch'], summary, select")
+                : null;
+            if (!target || target.disabled || target.getAttribute("aria-disabled") === "true") return;
+            if (target.closest(".ps-send-button")) return;
+            themeSoundPlayer().cue("tick");
+        };
+        document.addEventListener("click", onClick, true);
+        return () => document.removeEventListener("click", onClick, true);
+    }, []);
+    const activeTurn = useControllerSelector(controller, (rootState) => {
+        const id = rootState.sessions.activeSessionId || null;
+        return { id, running: (rootState.sessions.byId[id]?.status || "") === "running" };
+    }, shallowEqualObject);
+    const lastTurnRef = React.useRef(activeTurn);
+    React.useEffect(() => {
+        const last = lastTurnRef.current;
+        lastTurnRef.current = activeTurn;
+        if (last.id && last.id === activeTurn.id && last.running && !activeTurn.running) themeSoundPlayer().cue("done");
+    }, [activeTurn]);
 
     React.useEffect(() => {
         const reading = state.chatReading;

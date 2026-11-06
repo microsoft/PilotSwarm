@@ -37,6 +37,16 @@ const horizonDawnTheme = createTheme({
             { d: "M24 109.8L52.6 85.4Q56 82.6 59.4 85.4L88 109.8A40 13 0 0 1 24 109.8Z", fill: "#8fe1fb" },
         ],
     },
+    // A pre-dawn sky: a soft, warm chord that swells and changes every half
+    // minute or so, with faint high chimes now and then, like stars. `cues`
+    // adds short sounds for actions: a soft tick on buttons, a rising pair
+    // when a message is sent, and a low chime when the agent finishes.
+    sound: {
+        id: "dawn",
+        fadeInSeconds: 4,
+        fadeOutSeconds: 3,
+        cues: true,
+    },
     page: {
         background: NIGHT,
         foreground: LIGHT,

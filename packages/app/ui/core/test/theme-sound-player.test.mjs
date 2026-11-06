@@ -25,7 +25,7 @@ function param(value = 0) {
 }
 
 function fakeAudio() {
-    const stats = { beds: 0, bedsStopped: 0, contexts: 0, resumes: 0, unlocks: 0, ctx: null };
+    const stats = { beds: 0, bedsStopped: 0, contexts: 0, resumes: 0, unlocks: 0, oscillators: 0, ctx: null };
     const node = (extra = {}) => ({ connect() {}, disconnect() {}, ...extra });
     class FakeAudioContext {
         constructor() {
@@ -64,7 +64,8 @@ function fakeAudio() {
             return source;
         }
         createBiquadFilter() { return node({ type: "", frequency: param(), Q: param() }); }
-        createOscillator() { return node({ frequency: param(), start() {}, stop() {} }); }
+        createOscillator() { stats.oscillators += 1; return node({ type: "", frequency: param(), detune: param(), start() {}, stop() {} }); }
+        createConvolver() { return node({ buffer: null }); }
         resume() { stats.resumes += 1; this.state = "running"; return Promise.resolve(); }
         close() { return Promise.resolve(); }
     }
@@ -155,5 +156,55 @@ test("a tap starts sound on iPhone: unlock inside the gesture, resume an interru
     assert.equal(audio.stats.resumes, before + 1, "an interrupted context resumes on the next tap");
     assert.equal(audio.stats.unlocks, 2, "and is unlocked inside that tap");
     assert.equal(audio.stats.ctx.state, "running");
+    player.dispose();
+});
+
+const dawn = getTheme("horizon-dawn").sound;
+
+test("the dawn sky plays, keeps changing chords, and stops cleanly", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    const audio = fakeAudio();
+    const player = createThemeSoundPlayer({ win: audio.win });
+    assert.equal(dawn?.id, "dawn");
+    player.update({ sound: dawn, enabled: true, volume: 0.4 });
+    advance(t, 3000);
+    assert.equal(audio.running(), 1, "one air bed plays under the chords");
+    const early = audio.stats.oscillators;
+    assert.ok(early >= 10, "the first chord sounds at once");
+    advance(t, 60_000);
+    assert.ok(audio.stats.oscillators > early + 10, "new chords and stars keep coming");
+    player.update({ sound: dawn, enabled: false, volume: 0.4 });
+    advance(t, 10_000);
+    assert.equal(audio.running(), 0, "the air bed stops after the fade");
+    const stopped = audio.stats.oscillators;
+    advance(t, 120_000);
+    assert.equal(audio.stats.oscillators, stopped, "no chord or star is scheduled after it stops");
+    player.dispose();
+});
+
+test("action cues sound only for a theme that has them, while its sound is on", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    const audio = fakeAudio();
+    const player = createThemeSoundPlayer({ win: audio.win });
+    assert.equal(player.cue("tick"), false, "silent before any sound is on");
+    player.update({ sound: fire, enabled: true, volume: 0.4 });
+    advance(t, 500);
+    assert.equal(player.cue("tick"), false, "the fire has no cues");
+    player.update({ sound: dawn, enabled: true, volume: 0.4 });
+    advance(t, 500);
+    assert.equal(player.cue("tick"), true, "Horizon Dawn ticks");
+    assert.equal(player.cue("tick"), false, "a second tick in the same instant is dropped");
+    advance(t, 100);
+    assert.equal(player.cue("tick"), true);
+    assert.equal(player.cue("send"), true);
+    assert.equal(player.cue("done"), true);
+    assert.equal(player.cue("nonsense"), false, "only known cues play");
+    audio.win.document.hidden = true;
+    advance(t, 1000);
+    assert.equal(player.cue("done"), false, "a hidden tab is silent");
+    audio.win.document.hidden = false;
+    player.update({ sound: dawn, enabled: false, volume: 0.4 });
+    advance(t, 1000);
+    assert.equal(player.cue("send"), false, "sounds off means cues off");
     player.dispose();
 });

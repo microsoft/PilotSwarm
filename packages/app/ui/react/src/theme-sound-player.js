@@ -9,7 +9,15 @@
 // player waits for a click or key press before it resumes its context, and a
 // settings switch can prime it directly inside its own click.
 
-import { nextCrackleGapMs, themeSoundEnvelope, themeSoundTiming } from "pilotswarm/ui-core";
+import {
+    DAWN_CHORDS,
+    DAWN_STAR_NOTES,
+    THEME_SOUND_CUES,
+    nextCrackleGapMs,
+    nextDawnStarGapMs,
+    themeSoundEnvelope,
+    themeSoundTiming,
+} from "pilotswarm/ui-core";
 
 const TICK_MS = 200;
 // Events that count as a user gesture for unlocking audio. On a touch screen
@@ -115,13 +123,187 @@ function startFire(ctx, output, cache) {
     };
 }
 
-const VOICES = { fire: startFire };
+// A synthetic room: two seconds of decaying stereo noise. Built once per
+// context; a browser without ConvolverNode gets the dry sound.
+function roomTail(ctx, cache) {
+    if (typeof ctx.createConvolver !== "function") return null;
+    if (!cache.room) {
+        const seconds = 2.6;
+        const length = Math.floor(ctx.sampleRate * seconds);
+        const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
+        for (let channel = 0; channel < 2; channel += 1) {
+            const data = buffer.getChannelData(channel);
+            for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 3);
+        }
+        cache.room = buffer;
+    }
+    const convolver = ctx.createConvolver();
+    convolver.buffer = cache.room;
+    return convolver;
+}
+
+// A bell-like note: a sine with a quieter inharmonic partial, struck and left
+// to ring. Used by the star chimes and the cues.
+function bell(ctx, output, at, frequency, peak, seconds, partial = 2.76) {
+    for (const [ratio, level] of [[1, 1], [partial, 0.28]]) {
+        const osc = ctx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.value = frequency * ratio;
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.linearRampToValueAtTime(peak * level, at + 0.006);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + seconds / ratio);
+        osc.connect(gain);
+        gain.connect(output);
+        osc.start(at);
+        osc.stop(at + seconds / ratio + 0.05);
+    }
+}
+
+// The pre-dawn sky: a warm chord that swells in over about twelve seconds,
+// holds, and gives way to the next one every half minute or so, so two
+// overlap at the change. Faint star chimes ring every 4 to 10 seconds into a
+// soft room, over a barely-there hush of air.
+function startDawn(ctx, output, cache) {
+    const wet = ctx.createGain();
+    wet.gain.value = 0.5;
+    const room = roomTail(ctx, cache);
+    if (room) { wet.connect(room); room.connect(output); } else { wet.connect(output); }
+
+    cache.air = cache.air || brownNoise(ctx, 6);
+    const air = ctx.createBufferSource();
+    air.buffer = cache.air;
+    air.loop = true;
+    const airFilter = ctx.createBiquadFilter();
+    airFilter.type = "bandpass";
+    airFilter.frequency.value = 420;
+    airFilter.Q.value = 0.4;
+    const airGain = ctx.createGain();
+    airGain.gain.value = 0.035;
+    air.connect(airFilter);
+    airFilter.connect(airGain);
+    airGain.connect(output);
+    air.start();
+
+    const padFilter = ctx.createBiquadFilter();
+    padFilter.type = "lowpass";
+    padFilter.frequency.value = 1100;
+    padFilter.Q.value = 0.3;
+    const padGain = ctx.createGain();
+    padGain.gain.value = 0.5;
+    padFilter.connect(padGain);
+    padGain.connect(output);
+    padGain.connect(wet);
+
+    const live = new Set();
+    const timers = new Set();
+    let running = true;
+    let index = 0;
+    const later = (fn, ms) => {
+        const handle = setTimeout(() => { timers.delete(handle); if (running) fn(); }, ms);
+        timers.add(handle);
+    };
+
+    const SWELL = 12;
+    const HOLD = 10;
+    const RELEASE = 14;
+    const chord = () => {
+        const notes = DAWN_CHORDS[index % DAWN_CHORDS.length];
+        index += 1;
+        const at = ctx.currentTime + 0.05;
+        const end = at + SWELL + HOLD + RELEASE;
+        notes.forEach((frequency, n) => {
+            // Two slightly detuned voices per note make it breathe.
+            for (const detune of [-4, 4]) {
+                const osc = ctx.createOscillator();
+                osc.type = n === 0 ? "sine" : "triangle";
+                osc.frequency.value = frequency;
+                osc.detune.value = detune + (Math.random() * 4 - 2);
+                const gain = ctx.createGain();
+                const peak = (n === 0 ? 0.09 : 0.055) / (1 + n * 0.15);
+                gain.gain.setValueAtTime(0.0001, at);
+                gain.gain.linearRampToValueAtTime(peak, at + SWELL);
+                gain.gain.setValueAtTime(peak, at + SWELL + HOLD);
+                gain.gain.linearRampToValueAtTime(0.0001, end);
+                osc.connect(gain);
+                gain.connect(padFilter);
+                osc.start(at);
+                osc.stop(end + 0.1);
+                const entry = { osc, gain };
+                live.add(entry);
+                osc.onended = () => { live.delete(entry); gain.disconnect(); };
+            }
+        });
+        later(chord, (SWELL + HOLD) * 1000);
+    };
+    chord();
+
+    const star = () => {
+        const at = ctx.currentTime + 0.02;
+        const note = DAWN_STAR_NOTES[Math.floor(Math.random() * DAWN_STAR_NOTES.length)];
+        bell(ctx, wet, at, note, 0.05 + Math.random() * 0.04, 2.5 + Math.random() * 1.5);
+        if (Math.random() < 0.3) {
+            const echo = DAWN_STAR_NOTES[Math.floor(Math.random() * DAWN_STAR_NOTES.length)];
+            bell(ctx, wet, at + 0.18 + Math.random() * 0.25, echo, 0.03, 2.2);
+        }
+        later(star, nextDawnStarGapMs());
+    };
+    later(star, 2500);
+
+    return () => {
+        running = false;
+        for (const handle of timers) clearTimeout(handle);
+        timers.clear();
+        try { air.stop(); } catch { /* already stopped */ }
+        for (const { osc } of live) { try { osc.stop(); } catch { /* already stopped */ } }
+        live.clear();
+        padGain.disconnect();
+        airGain.disconnect();
+        wet.disconnect();
+    };
+}
+
+// Short sounds for actions, for a theme that asks for them with `cues`.
+// tick: a soft glass tick, pitch varied so repeats do not grate.
+// send: two rising notes. done: one low, warm chime.
+function playCue(ctx, output, name, wet) {
+    const at = ctx.currentTime + 0.005;
+    if (name === "tick") {
+        bell(ctx, output, at, 2300 + Math.random() * 500, 0.07, 0.07, 2.4);
+    } else if (name === "send") {
+        bell(ctx, output, at, 880, 0.09, 0.45);
+        bell(ctx, output, at + 0.09, 1318.51, 0.09, 0.6);
+        if (wet) bell(ctx, wet, at + 0.09, 1318.51, 0.04, 0.8);
+    } else if (name === "done") {
+        bell(ctx, output, at, 293.66, 0.16, 1.8, 2.0);
+        bell(ctx, output, at, 440, 0.05, 1.4, 2.0);
+        if (wet) bell(ctx, wet, at, 293.66, 0.08, 2.2, 2.0);
+    }
+}
+
+const VOICES = { fire: startFire, dawn: startDawn };
+
+/** For offline rendering in tests: start a named voice on any context. */
+export function startThemeVoice(id, ctx, output, cache = {}) {
+    return VOICES[id] ? VOICES[id](ctx, output, cache) : null;
+}
+
+/** For offline rendering in tests: play a named cue on any context. */
+export function playThemeCue(name, ctx, output, cache = {}) {
+    const room = roomTail(ctx, cache);
+    let wet = null;
+    if (room) { wet = ctx.createGain(); wet.gain.value = 0.35; wet.connect(room); room.connect(output); }
+    playCue(ctx, output, name, wet);
+}
 
 export function createThemeSoundPlayer({ win = typeof window === "undefined" ? null : window } = {}) {
     const doc = win?.document || null;
     const AudioContextClass = win ? (win.AudioContext || win.webkitAudioContext) : null;
     let ctx = null;
     let master = null;
+    let cueBus = null;
+    let cueWet = null;
+    const lastCue = {};
     let stopVoice = null;
     let sound = null;
     let enabled = false;
@@ -162,6 +344,18 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             limiter.release.value = 0.1;
             master.connect(limiter);
             limiter.connect(ctx.destination);
+            // Cues bypass the ambient's fade: they sound at the person's
+            // volume whenever the theme's sound is on and the tab is shown.
+            cueBus = ctx.createGain();
+            cueBus.gain.value = 0;
+            cueBus.connect(limiter);
+            const room = roomTail(ctx, cache);
+            if (room) {
+                cueWet = ctx.createGain();
+                cueWet.gain.value = 0.35;
+                cueWet.connect(room);
+                room.connect(cueBus);
+            }
         } catch {
             ctx = null;
         }
@@ -257,6 +451,22 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             unlock();
             resume();
         },
+        /**
+         * Play a short action sound (see THEME_SOUND_CUES) when the current
+         * theme asks for cues and its sound is on. Silent otherwise, and
+         * never before the browser has allowed audio.
+         */
+        cue(name) {
+            const gap = THEME_SOUND_CUES[name];
+            if (gap === undefined || !enabled || !sound?.cues || !doc || doc.hidden) return false;
+            if (!ctx || ctx.state !== "running" || !cueBus) return false;
+            const now = Date.now();
+            if (now - (lastCue[name] || 0) < gap) return false;
+            lastCue[name] = now;
+            cueBus.gain.setTargetAtTime(volume * MAX_GAIN, ctx.currentTime, 0.005);
+            try { playCue(ctx, cueBus, name, cueWet); } catch { return false; }
+            return true;
+        },
         update(next = {}) {
             const nextSound = next.sound && VOICES[next.sound.id] ? next.sound : null;
             const nextEnabled = next.enabled === true && Boolean(nextSound);
@@ -284,6 +494,8 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             if (ctx) ctx.close().catch(() => {});
             ctx = null;
             master = null;
+            cueBus = null;
+            cueWet = null;
         },
     };
 }
