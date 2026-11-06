@@ -4907,7 +4907,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         const record = await reminderStore.recordAgentReminder({ childSessionId: input.sessionId, turn: input.turnIndex ?? 0 });
                         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} step reminder: ` + (record.recorded
                             ? `${record.repeat ? "again " : ""}${record.n} of ${record.max} for step ${record.nodeExecutionId}` : `none (${record.reason})`));
-                        return record.recorded ? { remind: true, n: record.n, max: record.max, stateId: record.stateId } : { remind: false, reason: record.reason };
+                        return record.recorded
+                            ? { remind: true, n: record.n, max: record.max, stateId: record.stateId, ...(record.cycle ? { cycle: record.cycle } : {}) }
+                            : { remind: false, reason: record.reason };
                     },
                 }
                 : undefined;

@@ -281,6 +281,12 @@ export interface WorkflowIRAgent {
     timeoutSeconds: number | string;
     /** Route label -> target node: the outcomes, and runtime routes (timed_out, needs_input and the others). */
     next: Record<string, string>;
+    /**
+     * Owner decision agent-node-continue-20261106: `continue` keeps ONE agent chat for this state across its visits in a
+     * run (each later visit is a new cycle prompt in the same chat); absent for `new` (the default: a new chat each visit),
+     * so the IR of a definition that does not set it is unchanged.
+     */
+    chat?: "continue";
 }
 
 /**
@@ -872,7 +878,12 @@ export function parseWorkflowInterfaceRef(text: unknown): { name: string; versio
 function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean,
     diagnostics: Diagnostics): WorkflowIRAgent | null {
     const path = `states.${id}`;
-    checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition"], path, diagnostics);
+    checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition", "chat"], path, diagnostics);
+    let chat: "continue" | null = null;
+    if (raw.chat !== undefined && raw.chat !== "new") {
+        if (raw.chat === "continue") chat = "continue";
+        else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.chat`, "chat must be new (a new agent chat for each visit, the default) or continue (one chat across the state's visits).");
+    }
     let invoke: WorkflowIRAgent["invoke"] | null = null;
     let namesInterface = false;
     if (!isJsonObject(raw.invoke)) {
@@ -958,6 +969,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     return {
         id, type: "agent", description: optionalText(raw.description, `${path}.description`, diagnostics),
         invoke, hasInput, input, inputSchema, outputSchema, outcomes, timeoutSeconds, next,
+        ...(chat !== null ? { chat } : {}),
     };
 }
 
@@ -1110,6 +1122,16 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
     // A parallel state's body is a graph of its own: its states are reached from its initial and end at its terminals.
     const bodies = Object.values(ir.nodes).flatMap(node => node.type === "parallel" ? [{ id: node.id, initial: node.body.initial, states: new Set(node.body.states) }] : []);
     const inBody = new Set(bodies.flatMap(body => [...body.states]));
+    // Owner decision agent-node-continue-20261106: items of a For each run side by side, so they cannot share one chat.
+    for (const body of bodies) {
+        for (const member of body.states) {
+            const node = ir.nodes[member];
+            if (node?.type === "agent" && node.chat === "continue") {
+                diagnostics.error("WORKFLOW_FIELD_INVALID", `states.${body.id}.body.states.${member}.chat`,
+                    `state '${member}' cannot continue its chat: it runs inside For each state '${body.id}', whose items run side by side and cannot share one chat. Use chat: new.`);
+            }
+        }
+    }
     const check = (start: string[], members: (id: string) => boolean, where: (id: string) => string, from: string): void => {
         const reachable = new Set<string>();
         const stack = [...start];
@@ -1822,7 +1844,8 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
             const timeoutSeconds = node.timeoutSeconds;
             need(irVersion >= WORKFLOW_V2_AGENT_IR_VERSION && validInvoke && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input")
                 && nullableString(node.inputSchema) && nullableString(node.outputSchema) && stringArray(node.outcomes) && node.outcomes.length > 0
-                && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next),
+                && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next)
+                && (node.chat === undefined || node.chat === "continue"),
                 `stored IR agent state ${id} is invalid`);
             const named = isJsonObject(storedInterface) ? { name: storedInterface.name as string, version: storedInterface.version as string } : null;
             nodes[id] = {
@@ -1833,6 +1856,7 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
                     : { prompt: (invoke as { prompt: string }).prompt },
                 hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 outcomes: node.outcomes, timeoutSeconds, next: node.next,
+                ...(node.chat === "continue" ? { chat: "continue" as const } : {}),
             };
         } else if (node.type === "parallel") {
             const body = node.body;

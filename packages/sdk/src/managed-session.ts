@@ -4465,7 +4465,7 @@ export class ManagedSession {
                         eventType: "runtime.workflow_step_reminded",
                         data: { stateId: reminder.stateId, n: reminder.n, max: reminder.max, sessionId: this.sessionId },
                     };
-                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId) }, {
+                    const sent = await runCorrection({ prompt: workflowAgentReminderText(reminder.stateId, reminder.cycle) }, {
                         beforeSend: () => {
                             collectedEvents.push(diagnostic);
                             finalContent = undefined;

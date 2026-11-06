@@ -159,6 +159,9 @@ for its typed result.
   final chat text does not. Three invalid completions fail the state with
   `invalid_output`.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
+- `chat: new` (default) gives each visit a new chat. `chat: continue` keeps
+  one chat across the state's visits, for memory of earlier cycles; its
+  context grows. Not in a parallel body. See workflow-reference.
 - A child whose turn would end with its state still open and nothing pending
   (no wait, schedule, sub-agent at work or question to you) is reminded once in
   that turn to call `complete_workflow_node`, at most 3 times per state. The

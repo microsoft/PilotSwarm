@@ -2,7 +2,7 @@ import { shortRunId, shortSessionId } from "./formatting.js";
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
-    compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
+    compactWorkflowV2Executions, formatSeconds, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentChatMode, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2RunRows, workflowV2ShownExecution,
     workflowV2Activity, workflowV2SessionSubtree, workflowV2VisitEnding, workflowV2WholeValue, workflowV2BranchList, workflowV2BranchNumber,
     workflowV2JoinWords,
@@ -1611,6 +1611,7 @@ function detailLines(selection, width) {
         // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
         if (node.kind === "agent") {
             add(`Agent: ${workflowV2AgentTask(node)}`);
+            add(`Chat: ${workflowV2AgentChatMode(node)}`);
             for (const [label, value] of workflowV2AgentBindingRows(node.binding)) add(`${label}: ${value}`);
         }
         for (const line of node.description || []) add(line, "gray");

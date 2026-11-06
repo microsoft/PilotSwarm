@@ -1,6 +1,6 @@
 import React from "react";
 import {
-    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2ExecutionResult,
+    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2Activity, workflowV2AgentBindingRows, workflowV2AgentChatMode, workflowV2AgentTask, workflowV2ExecutionResult,
     workflowV2ExecutionValue, workflowV2KvApplied, workflowV2KvCompare, workflowV2KvSnapshot, workflowV2RouteKind, workflowV2SessionSubtree, workflowV2ShownExecution,
     workflowV2AgentEndText, workflowV2EventTime, workflowV2ShortHash, workflowV2ShownNotices, workflowV2VisitEnding, workflowV2WholeValue,
     describeWorkflowV2Execution, workflowV2BranchChoice, workflowV2BranchList, workflowV2BranchNumber, workflowV2BranchSteps, workflowV2ForEachText,
@@ -201,7 +201,7 @@ function kindProperties(node, current) {
     }
     if (node.kind === "agent") {
         // The workflow interface the state names and what the shown run pins it to (package revision, interface digest).
-        rows.push(["Agent", workflowV2AgentTask(node)], ...workflowV2AgentBindingRows(node.binding), ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
+        rows.push(["Agent", workflowV2AgentTask(node)], ["Chat", workflowV2AgentChatMode(node)], ...workflowV2AgentBindingRows(node.binding), ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
         if (node.timeoutSeconds !== undefined) rows.push(["Deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
         if (current?.deadline) rows.push(["Deadline at", workflowV2EventTime(current.deadline) ?? current.deadline]);
     }

@@ -48,6 +48,11 @@ export const COMPLETE_WORKFLOW_NODE_TOOL_SPEC = {
                 additionalProperties: false,
             },
             operation_id: { type: "string", description: "Your idempotency id for this completion." },
+            node_execution_id: {
+                type: "string",
+                description: "The node execution your prompt names. Required when your prompt says this chat continues across cycles: give "
+                    + "the id in the cycle's prompt. A missing id there, or one that is not this chat's, is refused AGENT_NODE_NOT_FOUND.",
+            },
         },
         required: ["operation_id"],
     },
@@ -98,6 +103,7 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
         if (Object.hasOwn(args, "error")) call.error = args.error;
         const result = await context.store.completeAgentNode({
             childSessionId: context.callerSessionId, operationId: args.operation_id as string, call,
+            ...(typeof args.node_execution_id === "string" && args.node_execution_id ? { nodeExecutionId: args.node_execution_id } : {}),
         });
         const decided = result.kind === "accepted" || result.code === "OUTPUT_ATTEMPTS_EXHAUSTED";
         if (decided && context.client) {

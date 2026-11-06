@@ -139,6 +139,11 @@ export function workflowV2AgentTask(node) {
         : "Inline prompt";
 }
 
+/** An agent state's chat mode in words (owner decision agent-node-continue-20261106), the same in the portal and the TUI. */
+export function workflowV2AgentChatMode(node) {
+    return node?.chat === "continue" ? "Continues the same chat" : "New chat each visit";
+}
+
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 /** A long hash by its first 12 characters and "…" (a person reads the whole one on hover or in a copy). Pure. */
 export function workflowV2ShortHash(value) {
@@ -1930,11 +1935,23 @@ const WORKFLOW_EVENT_TEXT = {
     },
     "workflow.state_cancelled": { short: data => ({ text: `${StepOf(data)} canceled`, level: "warning" }) },
     "workflow.agent_spawned": {
-        short: data => ({ text: `Agent chat for ${stepOf(data)} created${text(data.childSessionId) ? ` (session ${shortId(data.childSessionId)})` : ""}`
+        // chat: continue (owner decision agent-node-continue-20261106): a later visit's prompt goes to the same chat.
+        short: data => ({ text: (data.chat === "continue" && Number.isSafeInteger(data.cycle) && data.cycle > 1
+            ? `Agent chat for ${stepOf(data)} given visit ${data.cycle}${text(data.childSessionId) ? ` (same chat, session ${shortId(data.childSessionId)})` : ""}`
+            : `Agent chat for ${stepOf(data)} created${text(data.childSessionId) ? ` (session ${shortId(data.childSessionId)})` : ""}`)
             + `${text(data.deadline) ? `; its time limit is ${shownTime(data.deadline)}` : ""}` }),
     },
     "workflow.agent_ended": {
-        short: data => ({ text: `Agent chat for ${stepOf(data)} ended${workflowV2AgentEndText(data.end) ? ` (${workflowV2AgentEndText(data.end)})` : ""}` }),
+        short: data => ({ text: `Agent chat for ${stepOf(data)} ended${workflowV2AgentEndText(data.end) ? ` (${workflowV2AgentEndText(data.end)})` : ""}`
+            + (data.chat === "continue" ? "; the Workflow has no more visits for it" : "") }),
+    },
+    "workflow.agent_cycle_ended": {
+        short: data => ({ text: `${StepOf(data)} visit ended; its agent chat stays open for the next visit`
+            + (data.turnStopped === true ? " (its running turn was stopped)" : "") }),
+    },
+    "workflow.agent_chat_restarted": {
+        short: data => ({ text: `The agent chat for ${stepOf(data)}${text(data.endedChatSessionId) ? ` (session ${shortId(data.endedChatSessionId)})` : ""} `
+            + `had ended, so visit ${Number.isSafeInteger(data.cycle) ? data.cycle : "this"} starts a new chat`, level: "warning" }),
     },
     "workflow.agent_end_failed": { short: data => ({ text: `Ending the agent chat for ${stepOf(data)} did not succeed yet; it is tried again`, level: "warning" }) },
     // Owner decision Q2: the agent chat ended its turn without finishing its step, and was reminded to finish it.

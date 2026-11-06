@@ -23,6 +23,7 @@ import {
     parallelBranchStates, parallelSuccesses, parallelTimeoutResult, parallelVerdict, parseBranchScope, type BranchCancelReason, type ParallelBranchState,
     type ParallelCommit,
 } from "./parallel.js";
+import { workflowAgentChatContinues } from "./agent-ids.js";
 
 /**
  * PostgreSQL persistence for workflow v2 (tables from migrations 0089 and 0091 to 0100).
@@ -709,7 +710,7 @@ export const WORKFLOW_AGENT_REMINDED_EVENT = "workflow.agent_reminded";
 
 /** The answer of recordAgentReminder: remind the child now (the n-th reminder of its step), or why not. */
 export type WorkflowAgentReminderRecord =
-    | { recorded: true; n: number; max: number; stateId: string; nodeExecutionId: string; repeat: boolean }
+    | { recorded: true; n: number; max: number; stateId: string; nodeExecutionId: string; repeat: boolean; cycle?: string }
     | { recorded: false; reason: "not_a_step" | "decided" | "expired" | "sub_agents" | "spent" };
 /** The largest details value of an agent's reported runtime error, in UTF-8 bytes of canonical JSON. */
 export const WORKFLOW_V2_AGENT_ERROR_DETAILS_MAX_BYTES = 16 * 1024;
@@ -5628,11 +5629,63 @@ export class WorkflowStore {
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
     }
 
-    /** The invocation whose child agent session is `childSessionId`, or null. */
+    /** The newest invocation whose child agent session is `childSessionId` (a chat that continues has one per visit), or null. */
     async readAgentInvocationByChild(childSessionId: string): Promise<WorkflowAgentInvocation | null> {
         if (!storableId(childSessionId)) return null;
-        const { rows } = await this.pool.query(`SELECT * FROM ${this.t.agentInvocations} WHERE child_session_id = $1`, [childSessionId]);
+        const { rows } = await this.pool.query(`SELECT * FROM ${this.t.agentInvocations} WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`, [childSessionId]);
         return rows[0] ? agentInvocationFrom(rows[0]) : null;
+    }
+
+    /** Whether session `sessionId` has a row that was deleted (false: no row, or a row not deleted). */
+    async isSessionDeleted(sessionId: string): Promise<boolean> {
+        if (!storableId(sessionId)) return false;
+        const { rows } = await this.pool.query(`SELECT deleted_at IS NOT NULL AS deleted FROM ${this.t.sessions} WHERE session_id = $1`, [sessionId]);
+        return rows[0] ? bool(rows[0], "deleted") : false;
+    }
+
+    /**
+     * The invocations of a run's state `stateId`, oldest first (its visits): a state that continues its chat (owner
+     * decision agent-node-continue-20261106) chooses its next visit's chat from them.
+     */
+    async listAgentInvocationsOfState(runId: string, stateId: string, limit = 1_000): Promise<WorkflowAgentInvocation[]> {
+        const { rows } = await this.pool.query(
+            `SELECT i.* FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+              WHERE i.run_id = $1 AND n.node_id = $2 ORDER BY i.created_at, i.node_execution_id LIMIT $3`, [runId, stateId, limit]);
+        return rows.map(agentInvocationFrom);
+    }
+
+    /**
+     * The invocation a completion by `childSessionId` binds to (owner decision agent-node-continue-20261106; formal
+     * cmp.ac-bind-current): a visit's own chat binds to its one invocation, and a node execution id it gives must be that
+     * one's; a chat that continues across a state's visits binds ONLY by the node execution id it gives, which must be one
+     * of that chat's visits. Never by "the newest": a late answer of a visit that ended must not decide the next one (it
+     * binds to its own, decided visit and is refused there). Null: not a workflow agent state's chat. A continued chat's
+     * call without the id, or with one that is not its own, is refused in words, nothing written.
+     */
+    private async agentInvocationOfCompletion(client: PoolClient, childSessionId: string, nodeExecutionId: string | undefined): Promise<Row | null> {
+        const columns = "node_execution_id, workflow_session_id, run_id";
+        const { rows } = await client.query(
+            `SELECT ${columns} FROM ${this.t.agentInvocations} WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`,
+            [childSessionId]);
+        if (!rows[0]) return null;
+        const newest = str(rows[0], "node_execution_id");
+        const named = nodeExecutionId === undefined ? null : jsonbSafeText(nodeExecutionId, 200);
+        if (!workflowAgentChatContinues({ nodeExecutionId: newest, childSessionId })) {
+            if (nodeExecutionId !== undefined && nodeExecutionId !== newest) {
+                throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `node_execution_id ${named} is not the workflow state this session runs (${newest}).`);
+            }
+            return rows[0];
+        }
+        if (nodeExecutionId === undefined) {
+            throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This chat continues across the visits of its workflow state, so a completion must "
+                + "name the cycle it finishes: give node_execution_id, the id in this cycle's prompt.");
+        }
+        const { rows: own } = !storableId(nodeExecutionId) ? { rows: [] as Row[] } : await client.query(
+            `SELECT ${columns} FROM ${this.t.agentInvocations} WHERE child_session_id = $1 AND node_execution_id = $2`, [childSessionId, nodeExecutionId]);
+        if (!own[0]) {
+            throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `node_execution_id ${named} is not a cycle of this chat; give the id in this cycle's prompt.`);
+        }
+        return own[0];
     }
 
     /**
@@ -5653,10 +5706,17 @@ export class WorkflowStore {
         if (!storableId(input.childSessionId) || !Number.isSafeInteger(input.turn) || input.turn < 0) return { recorded: false, reason: "not_a_step" };
         const max = input.max ?? WORKFLOW_V2_AGENT_MAX_REMINDERS;
         return this.transaction(async client => {
+            // A chat that continues across a state's visits (owner decision agent-node-continue-20261106) is reminded of its
+            // open visit, by that visit's node execution id (at most one is open: such a state is never inside a For each),
+            // never of "the newest" by itself; with none open, the newest is read and refused decided.
             const { rows: found } = await client.query(
-                `SELECT node_execution_id, workflow_session_id, run_id FROM ${this.t.agentInvocations} WHERE child_session_id = $1`, [input.childSessionId]);
+                `SELECT i.node_execution_id, i.workflow_session_id, i.run_id FROM ${this.t.agentInvocations} i
+                   JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                  WHERE i.child_session_id = $1 ORDER BY (n.state = 'pending') DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`,
+                [input.childSessionId]);
             if (!found[0]) return { recorded: false, reason: "not_a_step" } as const;
             const nodeExecutionId = str(found[0], "node_execution_id");
+            const cycle = workflowAgentChatContinues({ nodeExecutionId, childSessionId: input.childSessionId }) ? { cycle: nodeExecutionId } : {};
             const workflowSessionId = str(found[0], "workflow_session_id");
             const live = await this.lockLiveSession(client, workflowSessionId);
             const run = await this.lockRun(client, str(found[0], "run_id"));
@@ -5686,14 +5746,14 @@ export class WorkflowStore {
                     AND state IN ('pending', 'running', 'waiting', 'input_required') LIMIT 1`, [input.childSessionId]);
             if (busy.rows.length > 0) return { recorded: false, reason: "sub_agents" } as const;
             const same = reminders.find(item => item.turn === input.turn);
-            if (same) return { recorded: true, n: same.n, max, stateId: node.nodeId, nodeExecutionId, repeat: true } as const;
+            if (same) return { recorded: true, n: same.n, max, stateId: node.nodeId, nodeExecutionId, repeat: true, ...cycle } as const;
             if (reminders.length >= max) return { recorded: false, reason: "spent" } as const;
             const n = reminders.reduce((highest, item) => Math.max(highest, item.n), 0) + 1;
             await client.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [workflowSessionId, JSON.stringify([{
                 eventType: WORKFLOW_AGENT_REMINDED_EVENT,
                 data: { runId: invocation.runId, nodeExecutionId, stateId: node.nodeId, childSessionId: input.childSessionId, turn: input.turn, n, max },
             }]), null]);
-            return { recorded: true, n, max, stateId: node.nodeId, nodeExecutionId, repeat: false } as const;
+            return { recorded: true, n, max, stateId: node.nodeId, nodeExecutionId, repeat: false, ...cycle } as const;
         });
     }
 
@@ -5800,6 +5860,19 @@ export class WorkflowStore {
         return { remarked: rows.length > 0 };
     }
 
+    /**
+     * A chat that continues across a state's visits (owner decision agent-node-continue-20261106) was ended: its newest
+     * visit `nodeExecutionId`, whose end is recorded, is marked with `childStatus` (the runtime's ChatEnded), once;
+     * `marked` false when it was already. Its sent time is kept when it had one.
+     */
+    async markContinuedChatEnded(nodeExecutionId: string, childStatus: string): Promise<{ marked: boolean }> {
+        const { rows } = await this.pool.query(
+            `UPDATE ${this.t.agentInvocations} SET end_sent_at = coalesce(end_sent_at, clock_timestamp()), end_child_status = $2
+              WHERE node_execution_id = $1 AND end_requested IS NOT NULL AND end_child_status IS DISTINCT FROM $2 RETURNING node_execution_id`,
+            [nodeExecutionId, jsonbSafeText(childStatus, 100)]);
+        return { marked: rows.length > 0 };
+    }
+
     async markAgentEndSent(nodeExecutionId: string, childStatus: string): Promise<{ marked: boolean; invocation: WorkflowAgentInvocation }> {
         const { rows } = await this.pool.query(
             `UPDATE ${this.t.agentInvocations} SET end_sent_at = clock_timestamp(), end_child_status = $2
@@ -5893,7 +5966,7 @@ export class WorkflowStore {
      * The caller wakes the run's controller after the commit (a hint; its
      * backstop collection finds the result too).
      */
-    async completeAgentNode(input: { childSessionId: string; operationId: string; call: unknown }): Promise<WorkflowAgentCompletionResult> {
+    async completeAgentNode(input: { childSessionId: string; operationId: string; call: unknown; nodeExecutionId?: string }): Promise<WorkflowAgentCompletionResult> {
         const notFound = () => new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This session is not running a workflow agent state.");
         if (!storableId(input.childSessionId)) throw notFound();
         // 1. The call's shape and the operation id.
@@ -5935,13 +6008,12 @@ export class WorkflowStore {
         const valueText = canonicalJson(value);
         const resultSha256 = kindValueSha256(kind, valueText);
         return this.transaction(async client => {
-            const { rows: found } = await client.query(`SELECT node_execution_id, workflow_session_id, run_id FROM ${this.t.agentInvocations} WHERE child_session_id = $1`,
-                [input.childSessionId]);
-            if (!found[0]) throw notFound();
-            const nodeExecutionId = str(found[0], "node_execution_id");
+            const found = await this.agentInvocationOfCompletion(client, input.childSessionId, input.nodeExecutionId);
+            if (!found) throw notFound();
+            const nodeExecutionId = str(found, "node_execution_id");
             // 2. The locks, then a known operation decides alone.
-            const live = await this.lockLiveSession(client, str(found[0], "workflow_session_id"));
-            const run = await this.lockRun(client, str(found[0], "run_id"));
+            const live = await this.lockLiveSession(client, str(found, "workflow_session_id"));
+            const run = await this.lockRun(client, str(found, "run_id"));
             const { rows: locked } = await client.query(`SELECT * FROM ${this.t.agentInvocations} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
             const invocation = agentInvocationFrom(locked[0]);
             const { rows: nodeRows } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);

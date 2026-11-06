@@ -29,10 +29,14 @@ import { COMPLETE_WORKFLOW_NODE_TOOL } from "./agent-node-service.js";
  * wording and the limit of reminders per step bound them.
  */
 
-/** The text of a reminder (soft: a model that is still working continues). */
-export function workflowAgentReminderText(stateId: string): string {
+/**
+ * The text of a reminder (soft: a model that is still working continues). `cycle` is the open visit's node execution id
+ * when the chat continues across the state's visits (owner decision agent-node-continue-20261106): its completion must
+ * name it.
+ */
+export function workflowAgentReminderText(stateId: string, cycle?: string): string {
     return `Reminder from the workflow: step '${stateId}' is still open. If you have finished, call ${COMPLETE_WORKFLOW_NODE_TOOL} now `
-        + "with your outcome and output. If you are still working, continue.";
+        + `with your outcome and output${cycle ? ` and node_execution_id ${cycle} (this cycle's)` : ""}. If you are still working, continue.`;
 }
 
 /** Whether a turn's events show a question to another session that expects an answer (send_session_message, expects_response). */

@@ -35,6 +35,7 @@ import { workflowV2TestRunsMigration } from "./migrations/workflow-v2-0102.js";
 import { workflowV2PublicationPinsMigration } from "./migrations/workflow-v2-0103.js";
 import { workflowV2RunDeadlineMigration } from "./migrations/workflow-v2-0104.js";
 import { workflowV2TestAgentPinsMigration } from "./migrations/workflow-v2-0105.js";
+import { workflowV2AgentChatContinuesMigration } from "./migrations/workflow-v2-0106.js";
 
 function workflowSessionKindMigration(schema: string): string {
     const s = `"${schema}"`;
@@ -473,6 +474,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0103", name: "workflow_v2_publication_pins", sql: workflowV2PublicationPinsMigration(schema) },
         { version: "0104", name: "workflow_v2_run_deadline", sql: workflowV2RunDeadlineMigration(schema) },
         { version: "0105", name: "workflow_v2_test_agent_pins", sql: workflowV2TestAgentPinsMigration(schema) },
+        { version: "0106", name: "workflow_v2_agent_chat_continues", sql: workflowV2AgentChatContinuesMigration(schema) },
     ];
 }
 
