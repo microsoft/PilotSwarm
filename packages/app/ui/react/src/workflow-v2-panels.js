@@ -397,13 +397,18 @@ function KvApplied({ execution, runId, kv }) {
  * not the Workflow's owner (`readInstructions` answers `{ ownerOnly: true }`; review SF-3) is told so, and nothing is read.
  * A text whose sha256 is not the recorded one (`{ changed: true }`; review SF-4) is not shown: the row says it changed.
  */
-function BaseInstructions({ row, readInstructions, onInstructions }) {
+function BaseInstructions({ row, readInstructions, onInstructions, openBodies = false }) {
+    // Review UI-11: the body (and the whole text) is mounted only while the row is open.
+    const [open, setOpen] = React.useState(openBodies);
     const loaded = row.instructions && readInstructions ? readInstructions(row.instructions) : null;
-    return h("details", { className: "ps-wf-alog-base", onToggle: event => {
-        if (event.currentTarget.open && row.instructions && onInstructions && !loaded?.text && !loaded?.ownerOnly) onInstructions(row.instructions);
+    return h("details", { className: "ps-wf-alog-base", ...(openBodies ? { open: true } : {}), onToggle: event => {
+        const nowOpen = event.currentTarget.open;
+        setOpen(nowOpen);
+        if (nowOpen && row.instructions && onInstructions && !loaded?.text && !loaded?.ownerOnly) onInstructions(row.instructions);
     } },
     h("summary", null, row.text),
-    !row.instructions ? h("p", { className: "ps-wf-muted" }, "Only this summary was kept for this chat; its whole text was not.")
+    !open ? null
+        : !row.instructions ? h("p", { className: "ps-wf-muted" }, "Only this summary was kept for this chat; its whole text was not.")
         : loaded?.ownerOnly ? h("p", { className: "ps-wf-muted", "data-owner-only": "" }, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY)
         : loaded?.changed ? h("p", { role: "status", "data-changed": "" }, WORKFLOW_BASE_INSTRUCTIONS_CHANGED)
         : loaded?.error ? h("p", { role: "alert" }, `The base instructions could not be read: ${loaded.error}`)
@@ -411,14 +416,21 @@ function BaseInstructions({ row, readInstructions, onInstructions }) {
                 : h("p", { className: "ps-wf-muted" }, loaded?.loading ? "Reading the base instructions…" : "Open to read the whole text."));
 }
 
+/** A disclosure whose body is mounted only while it is open (review UI-11: a long Log keeps closed bodies out of the page). */
+function LazyDetails({ summary, body, className = undefined, openBodies = false }) {
+    const [open, setOpen] = React.useState(openBodies);
+    return h("details", { className, ...(openBodies ? { open: true } : {}), onToggle: event => setOpen(event.currentTarget.open) },
+        h("summary", null, summary), open ? body() : null);
+}
+
 /** One row of an agent node's Log: its label and time, then its text (folded with Show more) or its call (to expand). */
-function AgentLogRow({ row, readInstructions = null, onInstructions = null }) {
+function AgentLogRow({ row, readInstructions = null, onInstructions = null, openBodies = false }) {
     const [open, setOpen] = React.useState(false);
     const body = row.label === "Base instructions" && row.carriedFrom !== undefined
         ? h("p", { className: "ps-wf-muted", "data-carried-from": row.carriedFrom ?? "" }, row.text)
-        : row.label === "Base instructions" ? h(BaseInstructions, { row, readInstructions, onInstructions })
+        : row.label === "Base instructions" ? h(BaseInstructions, { row, readInstructions, onInstructions, openBodies })
         : row.detail !== undefined
-        ? h("details", null, h("summary", null, row.text), h("pre", null, row.detail))
+        ? h(LazyDetails, { summary: row.text, body: () => h("pre", null, row.detail), openBodies })
         : h("div", { className: "ps-wf-alog-text" },
             h("p", null, open && row.more ? row.more : row.text),
             row.more ? h("button", { type: "button", className: "ps-mini-button", "data-action": "fold", onClick: () => setOpen(!open) },
@@ -435,7 +447,7 @@ function AgentLogRow({ row, readInstructions = null, onInstructions = null }) {
  * older visits.
  */
 export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId = null, readInstructions = null, onInstructions = null,
-    onOlderChat = null, olderChatLoading = null, onOlderVisits = null }) {
+    onOlderChat = null, olderChatLoading = null, onOlderVisits = null, openBodies = false }) {
     return h("div", { className: "ps-wf-alog", "aria-label": nodeId ? `Log of node ${nodeId}` : "Agent node log" },
         h("p", { className: "ps-wf-muted ps-wf-alog-note" }, log.note),
         log.groups.length ? null : h("p", { className: "ps-wf-muted" }, "This node has not run yet."),
@@ -448,7 +460,7 @@ export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId =
                     disabled: Boolean(olderChatLoading?.has?.(group.chatId)), onClick: () => onOlderChat(group.chatId) },
                 olderChatLoading?.has?.(group.chatId) ? "Loading…" : "Load older") : null) : null,
             group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions,
-                onInstructions }))) : null)),
+                onInstructions, openBodies }))) : null)),
         log.more && onMore ? h("button", { type: "button", className: "ps-mini-button", "data-action": "older-visits", onClick: onMore }, "Show older visits") : null,
         !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits are not in the loaded history of this run. ",
             onOlderVisits ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-executions", onClick: onOlderVisits }, "Load older visits") : null)

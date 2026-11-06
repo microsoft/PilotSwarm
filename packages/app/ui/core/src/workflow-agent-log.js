@@ -281,11 +281,26 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
         };
     });
     // UI-10: a continued chat's later visits carry the base instructions the chat had at an earlier visit (one row, no text).
+    // Review UI-11: the same base instructions (by their whole digest) are shown once, at the oldest visit that has them;
+    // a later visit's row says which visit shows them.
     const byOrdinal = groups.slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
     const lastBase = new Map();
+    const shownBySha = new Map();
     for (const group of byOrdinal) {
-        const own = group.rows.find(row => row.label === "Base instructions");
-        if (own) { lastBase.set(group.chatId, { row: own, ordinal: group.ordinal }); continue; }
+        const ownAt = group.rows.findIndex(row => row.label === "Base instructions");
+        const own = ownAt >= 0 ? group.rows[ownAt] : null;
+        const sha = own?.instructions?.sha256 ?? null;
+        if (own && sha && shownBySha.has(sha)) {
+            const from = shownBySha.get(sha);
+            group.rows[ownAt] = { ...own, text: `The same as visit ${from ?? "—"}.`, carriedFrom: from, instructions: null };
+            lastBase.set(group.chatId, { row: own, ordinal: from });
+            continue;
+        }
+        if (own) {
+            if (sha) shownBySha.set(sha, group.ordinal ?? null);
+            lastBase.set(group.chatId, { row: own, ordinal: group.ordinal });
+            continue;
+        }
         const earlier = group.chatId ? lastBase.get(group.chatId) : null;
         if (!earlier || group.loading) continue;
         const prompt = group.rows.findIndex(row => row.label === "Prompt");

@@ -105,12 +105,12 @@ test("one group per visit, newest first; each visit's chat rows and Workflow row
 
 test("the portal draws each row with its label, folds long text and expands a tool call; the note says what is not recorded", () => {
     const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, chat]]), runId: "run-1", now: NOW });
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", onMore: () => {} }));
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", onMore: () => {} }));
     assert.ok(html.includes("Prompt rows are what the agent was given, its base instructions first; Agent rows are what it did."));
     assert.ok(html.includes("Visit 2 · 17:42:01 UTC") && html.includes("Visit 1 · 17:40:01 UTC"));
     assert.ok(html.indexOf("Visit 2") < html.indexOf("Visit 1"), "newest visit first");
     for (const kind of ["prompt", "agent", "result", "workflow"]) assert.ok(html.includes(`data-kind="${kind}"`), kind);
-    assert.match(html, /<details><summary>read_facts — facts\/%<\/summary><pre>Arguments/);
+    assert.match(html, /<details open=""><summary>read_facts — facts\/%<\/summary><pre>Arguments/);
     assert.ok(html.includes("Show more"));
     assert.ok(!html.includes(LONG), "the long answer is folded");
     const failed = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, {
@@ -148,10 +148,10 @@ test("the portal's Base instructions row reads the kept text when opened, and sa
     const withBase = [...chat.slice(0, 2), base(2.1, "17:40:02"), ...chat.slice(2), base(9.5, "17:42:02", null)];
     const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, withBase]]), runId: "run-1", now: NOW });
     const asked = [];
-    const render = read => renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", readInstructions: read,
+    const render = read => renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", readInstructions: read,
         onInstructions: ref => asked.push(ref) }));
     const closed = render(() => null);
-    assert.match(closed, /<details class="ps-wf-alog-base"><summary>48,210 characters: You are the GitHub Copilot CLI/);
+    assert.match(closed, /<details class="ps-wf-alog-base" open=""><summary>48,210 characters: You are the GitHub Copilot CLI/);
     assert.ok(closed.includes("Open to read the whole text."));
     assert.ok(closed.includes("Only this summary was kept for this chat; its whole text was not."), "the second visit's echo kept no text");
     const loading = render(() => ({ loading: true, text: null, error: null }));
@@ -173,9 +173,9 @@ test("a reader who is not the Workflow's owner sees the summary row only; openin
     assert.equal(workflowBaseInstructionsReadable(null), true);
     const withBase = [...chat.slice(0, 2), base(2.1, "17:40:02"), ...chat.slice(2)];
     const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, withBase]]), runId: "run-1", now: NOW });
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", readInstructions: () => ({ ownerOnly: true }),
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", readInstructions: () => ({ ownerOnly: true }),
         onInstructions: null }));
-    assert.match(html, /<details class="ps-wf-alog-base"><summary>48,210 characters: You are the GitHub Copilot CLI/);
+    assert.match(html, /<details class="ps-wf-alog-base" open=""><summary>48,210 characters: You are the GitHub Copilot CLI/);
     assert.ok(html.includes(WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY.replace("'", "&#x27;")) && html.includes("data-owner-only"));
     assert.equal(WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY, "Only this Workflow's owner can read the whole text.");
     assert.ok(!html.includes("Open to read the whole text.") && !html.includes("data-base-instructions="));
@@ -204,7 +204,7 @@ test("a Base instructions row names its file only with a whole digest that names
     assert.equal(workflowBaseInstructionsMatch(ref, null), false);
     const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, [...chat.slice(0, 2), base(2.1, "17:40:02"), ...chat.slice(2)]]]),
         runId: "run-1", now: NOW });
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", readInstructions: () => ({ changed: true }),
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", readInstructions: () => ({ changed: true }),
         onInstructions: () => {} }));
     assert.ok(html.includes("data-changed") && html.includes("These base instructions changed since they were recorded, so they are not shown."));
     assert.equal(WORKFLOW_BASE_INSTRUCTIONS_CHANGED, "These base instructions changed since they were recorded, so they are not shown.");
@@ -225,7 +225,7 @@ test("UI-10: a visit whose chat start is on an older page keeps its loaded event
     assert.ok(first.rows.some(row => row.label === "Agent" && row.text === "PostgreSQL uses MVCC."), "the loaded answer is kept");
     assert.equal(second.truncated, false, "visit 2's prompt is loaded");
     const asked = [];
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", onOlderChat: id => asked.push(id) }));
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", onOlderChat: id => asked.push(id) }));
     assert.equal((html.match(/data-truncated=""/g) || []).length, 1);
     assert.ok(html.includes("The start of this visit&#x27;s chat is not loaded.") && html.includes('data-action="older-chat"'), html);
     // The whole chat loaded (no older events): nothing is said.
@@ -236,7 +236,7 @@ test("UI-10: a visit whose chat start is on an older page keeps its loaded event
 test("UI-10: older visits not in the run's loaded history offer Load older visits", () => {
     const partial = { ...node, partial: true };
     const log = workflowAgentNodeLog({ node: partial, events, chats: new Map([[CHAT, chat]]), runId: "run-1", now: NOW });
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", onOlderVisits: () => {} }));
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", onOlderVisits: () => {} }));
     assert.ok(html.includes("Older visits are not in the loaded history of this run.") && html.includes('data-action="older-executions"'), html);
 });
 
@@ -248,6 +248,28 @@ test("UI-10: a continued chat's later visit carries the base instructions an ear
     const carried = second.rows.find(row => row.label === "Base instructions");
     assert.deepEqual({ text: carried.text, from: carried.carriedFrom, ref: carried.instructions }, { text: "The same as visit 1 (this chat continues).", from: 1, ref: null });
     assert.ok(second.rows.indexOf(carried) < second.rows.findIndex(row => row.label === "Prompt"), "before the visit's prompt");
-    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk" }));
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk" }));
     assert.ok(html.includes('data-carried-from="1"') && html.includes("The same as visit 1 (this chat continues)."));
+});
+
+// Review UI-11: a closed tool call or Base instructions row keeps its body out of the page; the same base instructions
+// (by digest) are shown once, at the oldest visit that has them.
+test("UI-11: closed bodies are not mounted; the same base instructions show once", () => {
+    const withBase = [...chat.slice(0, 2), chatEvent(2.1, "system.message", "17:40:02", { content: SUMMARY, baseInstructions: KEPT }), ...chat.slice(2)];
+    const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, withBase]]), runId: "run-1", now: NOW });
+    const closed = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", readInstructions: () => ({ loading: false,
+        text: "The whole composed text.", error: null }) }));
+    assert.ok(closed.includes("<summary>read_facts"), closed);
+    assert.ok(!closed.includes("Arguments\n") && !closed.includes("<pre>"), "no body of a closed row");
+    assert.ok(!closed.includes("The whole composed text."));
+    // Two chats (chat: new), the same instructions: the newer visit says which visit shows them.
+    const other = "chat-new-2";
+    const twoChats = { ...node, executions: [node.executions[0], { ...node.executions[1], agent: { childSessionId: other } }] };
+    const otherChat = [{ ...prompt(1, "nx-2", "17:42:02", "Tell one fact."), sessionId: other },
+        { ...chatEvent(2, "system.message", "17:42:03", { content: SUMMARY, baseInstructions: KEPT }), sessionId: other }];
+    const shared = workflowAgentNodeLog({ node: twoChats, events, chats: new Map([[CHAT, withBase], [other, otherChat]]), runId: "run-1", now: NOW });
+    const [second, first] = shared.groups;
+    assert.ok(first.rows.find(row => row.label === "Base instructions").instructions, "the oldest visit shows them");
+    const later = second.rows.find(row => row.label === "Base instructions");
+    assert.deepEqual({ text: later.text, from: later.carriedFrom, ref: later.instructions }, { text: "The same as visit 1.", from: 1, ref: null });
 });
