@@ -12153,7 +12153,7 @@ textarea.ps-link-input {
 :root[data-ps-theme="horizon-dawn"] .portal-header {
   position: relative;
   isolation: isolate;
-  min-height: 100px;
+  min-height: 97px;
   padding-bottom: 26px;
   overflow: hidden;
   border-bottom: 1px solid #5cc8f273;
@@ -12219,10 +12219,14 @@ textarea.ps-link-input {
 :root[data-ps-theme="horizon-dawn"] .portal-header-name { color: #f1fbff; font-weight: 550; }
 :root[data-ps-theme="horizon-dawn"] .portal-header-email { color: #bed0e5; }
 
-/* The HorizonDB mark, holding a light that slowly brightens and dims. */
+/* The HorizonDB mark, holding a light that slowly brightens and dims. The
+   artwork keeps room around the cylinder for its glow, so the frame is larger
+   than the row; the negative margins give the extra back and the name and the
+   header height stay where they were. */
 :root[data-ps-theme="horizon-dawn"] .portal-logo-frame {
-  width: 58px;
-  height: 62px;
+  width: 84px;
+  height: 90px;
+  margin: -14px -13px;
   border: 0;
   border-radius: 0;
   box-shadow: none;
@@ -12297,7 +12301,7 @@ textarea.ps-link-input {
 :root[data-ps-theme="horizon-dawn"] .ps-chat-call { background: #12263b; border-color: #36536e; }
 
 @media (max-width: 600px) {
-  :root[data-ps-theme="horizon-dawn"] .portal-logo-frame { width: 42px; height: 46px; }
+  :root[data-ps-theme="horizon-dawn"] .portal-logo-frame { width: 58px; height: 64px; margin: -9px -8px; }
   /* Phone: the land is a low band; Orion is in open sky above it, behind the land. */
   :root[data-ps-theme="horizon-dawn"] .portal-header::before {
     background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion-phone), var(--dawn-sky);
