@@ -11182,7 +11182,14 @@ textarea.ps-link-input {
 /* Use the SAME two rows in every mode when the rails cannot fit. Reserving
    both rows keeps the navigation's vertical position stable as well. */
 @container header-tools (max-width: 960px) {
-  .ps-toolbar:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 44px max(36px, var(--ps-control-min-height, 34px)); gap: 4px 6px; }
+  .ps-toolbar:not(.is-mobile) {
+    grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 44px max(36px, var(--ps-control-min-height, 34px)); gap: 4px 6px;
+    /* The Workflow button (Workflow Simplified, L1) took 50 px from this row; 40 px wide buttons give it back, so the
+       mode buttons on the right never run over Diagnostics (still 44 px tall). */
+    --ps-header-button: 40px;
+    --ps-header-pair: 86px;
+    --ps-header-panels: 132px;
+  }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-navigation { grid-column: 1; grid-row: 1; }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; grid-row: 2; min-height: max(36px, var(--ps-control-min-height, 34px)); }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-right { grid-column: 2; grid-row: 1; gap: 6px; }
