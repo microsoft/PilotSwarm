@@ -29,12 +29,12 @@ const horizonDawnTheme = createTheme({
     // The HorizonDB mark: a database cylinder with a white chevron and a
     // sky-cyan peak. The header shows an animated version from the portal CSS.
     icon: {
-        viewBox: "-6 -2 112 124",
+        viewBox: "0 0 112 124",
         paths: [
-            { d: "M10 18V100A40 13 0 0 0 90 100V18Z", fill: "#2b6fd1" },
-            { d: "M50 5A40 13 0 1 0 50 31A40 13 0 1 0 50 5Z", fill: "#3478d6" },
-            { d: "M10 88L50 57L90 88V77L50 46L10 77Z", fill: "#ffffff" },
-            { d: "M18 107.8L46.6 83.4Q50 80.6 53.4 83.4L82 107.8A40 13 0 0 1 18 107.8Z", fill: "#8fe1fb" },
+            { d: "M16 20V102A40 13 0 0 0 96 102V20Z", fill: "#2b6fd1" },
+            { d: "M56 7A40 13 0 1 0 56 33A40 13 0 1 0 56 7Z", fill: "#3478d6" },
+            { d: "M16 90L56 59L96 90V79L56 48L16 79Z", fill: "#ffffff" },
+            { d: "M24 109.8L52.6 85.4Q56 82.6 59.4 85.4L88 109.8A40 13 0 0 1 24 109.8Z", fill: "#8fe1fb" },
         ],
     },
     page: {

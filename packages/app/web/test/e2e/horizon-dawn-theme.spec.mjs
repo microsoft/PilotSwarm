@@ -36,7 +36,7 @@ const layers = page => page.locator(".portal-header").evaluate(header => getComp
 test("desktop: the GA line, a compact header, and every layer from the bundle", async ({ page }) => {
     const failed = await openTheme(page, { width: 1440, height: 900 });
     const header = page.locator(".portal-header");
-    expect(await header.evaluate(el => getComputedStyle(el, "::after").content)).toBe("\\"Azure HorizonDB  /  Generally Available Nov 17, 2026\\"");
+    expect(await header.evaluate(el => getComputedStyle(el, "::after").content)).toBe('"Azure HorizonDB  /  Generally Available Nov 17, 2026"');
     const box = await header.boundingBox();
     expect(box.height).toBeGreaterThanOrEqual(96);
     expect(box.height).toBeLessThanOrEqual(110);
