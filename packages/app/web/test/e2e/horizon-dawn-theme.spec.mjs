@@ -98,3 +98,17 @@ test("phone: Orion and the GA line stay on screen, nothing scrolls sideways", as
     await page.waitForTimeout(500);
     expect(failed).toEqual([]);
 });
+
+for (const width of [320, 390]) test(`phone ${width} px: the whole GA line fits inside the header`, async ({ page }) => {
+    await openTheme(page, { width, height: 760 });
+    const fit = await page.locator(".portal-header").evaluate(header => {
+        const after = getComputedStyle(header, "::after");
+        const text = after.content.replace(/^"|"$/g, "");
+        const ctx = document.createElement("canvas").getContext("2d");
+        ctx.font = `${after.fontWeight} ${after.fontSize} ${after.fontFamily}`;
+        const spacing = parseFloat(after.letterSpacing) || 0;
+        const textWidth = ctx.measureText(text).width + spacing * (text.length - 1);
+        return { left: parseFloat(after.left), textWidth, header: header.getBoundingClientRect().width };
+    });
+    expect(fit.left + fit.textWidth, JSON.stringify(fit)).toBeLessThanOrEqual(fit.header - 4);
+});

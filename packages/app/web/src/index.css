@@ -12313,3 +12313,11 @@ textarea.ps-link-input {
   }
   :root[data-ps-theme="horizon-dawn"] .ps-panel { border-radius: 12px; background: #101d31; }
 }
+/* The narrowest phones: the GA line still fits on one line. */
+@media (max-width: 360px) {
+  :root[data-ps-theme="horizon-dawn"] .portal-header::after {
+    left: 12px;
+    font-size: 10px;
+    letter-spacing: 0.01em;
+  }
+}
