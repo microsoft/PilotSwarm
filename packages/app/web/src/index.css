@@ -12691,8 +12691,9 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
    Contrast: a white square, the icon gone). */
 /* A toggle's fill changes with its icon in the same frame. The base button eases its background in over 120 ms while its
    colour changes at once, so for those frames a pressed icon sat on the old fill: in themes whose pressed icon is the page
-   colour (cobalt2, hearth) it vanished (1:1), on every press. */
-.ps-wf-tab .ps-mini-button.ps-workflow-tool-button { transition: none; }
+   colour (cobalt2, hearth) it vanished (1:1), on every press. Only the fill and edge stop easing: the hover lift keeps its
+   120 ms (dropping it too changed when a second Zoom out lands during the first one's 150 ms zoom; 997ee50c). */
+.ps-wf-tab .ps-mini-button.ps-workflow-tool-button { transition: transform 120ms ease; }
 .ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
   border-color: var(--ps-modal-selected-border);
   background: var(--ps-modal-selected-background);
