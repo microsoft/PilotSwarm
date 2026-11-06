@@ -1,4 +1,5 @@
 import { shortRunId, shortSessionId } from "./formatting.js";
+import { workflowFailure } from "./workflow-owner.js";
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import { workflowFirstSentence, workflowNodeNext, workflowNodeWhat } from "./workflow-node-summary.js";
@@ -1595,6 +1596,10 @@ function detailLines(selection, width) {
         else for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }
     for (const banner of projection.banners) add(`! ${banner.text}`, banner.level === "error" ? "red" : "yellow");
+    // Review UI-D10: a failed Workflow's failure first, in the portal's plain words (workflowFailure), wrapped.
+    const shownRun = projection.runReadModel?.run ?? null;
+    const failure = shownRun && shownRun.mode !== "test" ? workflowFailure(shownRun) : null;
+    if (failure) for (const text of wrapped(failure.headline, Math.max(20, width))) add(text, "red");
     // Why the shown run ended (owner decision q14), wrapped: it is read whole.
     if (projection.v2?.ending) for (const text of wrapped(projection.v2.ending.text, Math.max(20, width))) add(text, "yellow");
     if (projection.readError) add(`The workflow's current status could not be read: ${projection.readError}`, "red");

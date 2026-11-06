@@ -98,3 +98,24 @@ test("an agent node's chat is read-only with one plain line naming the chat that
     // Review UI-17: the server's reason first, then the short direction.
     assert.equal(selectWorkflowInputNote(store.getState(), "c1"), "This session runs a step of a workflow. To change this, message Stock check.");
 });
+
+// Review UI-D10: the terminal says a failed Workflow's failure in the portal's plain words (workflowFailure), first.
+test("UI-D10: the pane says a failed Workflow's failure in the portal's words", async () => {
+    const { workflowFailure } = await import("../src/workflow-owner.js");
+    const stderr = ["file:///tmp/s.mjs:1", "Error: Unknown model \"x:y\". Call list_available_models.", "    at main (file:///tmp/s.mjs:1:1)"].join("\n");
+    const cut = `${JSON.stringify({ code: "execution_failed", details: { exitCode: 1, stderr }, message: "The script exited with code 1." }).slice(0, 200)}…`;
+    const failed = readModel({ graph: { revision: 1, initial: "fetch", states }, revision: { name: "check-items" },
+        run: { status: "failed", terminalState: "fetch", error: JSON.stringify({ code: "execution_failed", message: "no route",
+            details: { nodeExecutionId: "nx-f" } }) },
+        nodeExecutions: [{ nodeExecutionId: "nx-f", stateId: "fetch", ordinal: 1, state: "completed", resultKind: "runtime_error",
+            outcome: "execution_failed", errorPreview: cut }] });
+    const { controller, store } = harness();
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf1", view: { readModel: failed, readModelRunId: null } });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf1" });
+    await controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    const text = selectWorkflowViewModal(store.getState(), 160, 60).detailsLines.map(line => line.text).join("\n");
+    const headline = workflowFailure(failed.run).headline;
+    assert.equal(headline, "fetch failed: the script stopped with an error: Unknown model \"x:y\". Call list_available_models.");
+    assert.ok(text.includes(headline), text);
+    assert.ok(!/exitCode|stderr/.test(text.split("\n").find(line => line.includes("fetch failed")) ?? ""));
+});
