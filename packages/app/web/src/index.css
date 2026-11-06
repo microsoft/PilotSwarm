@@ -12429,3 +12429,29 @@ textarea.ps-link-input {
   }
   .ps-mobile-canvas-layer.is-maximized .ps-canvas-pane { height: 100%; }
 }
+/* The first zoom tells you how to move around: two fingers, like a map. */
+.ps-canvas-pinch-hint {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+  padding: 7px 12px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 90%, transparent);
+  color: var(--ps-foreground);
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  animation: ps-canvas-pinch-hint 2.6s ease forwards;
+}
+@keyframes ps-canvas-pinch-hint {
+  0% { opacity: 0; }
+  10%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ps-canvas-pinch-hint { animation: none; }
+}

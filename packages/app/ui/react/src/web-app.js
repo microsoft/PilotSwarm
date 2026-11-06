@@ -3265,6 +3265,8 @@ const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.
 // fingers itself (it calls preventDefault) keeps them.
 const CANVAS_PINCH_BRIDGE = `<style>html{touch-action:pan-x pan-y}</style><script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'canvas-pinch',phase:'start',x:p.x,y:p.y,d:p.d})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'canvas-pinch',phase:'move',x:p.x,y:p.y,d:p.d})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'canvas-pinch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',end,{passive:true});addEventListener('gesturestart',function(e){e.preventDefault()});addEventListener('gesturechange',function(e){e.preventDefault()})})();</script>`;
 const CANVAS_PINCH_MAX = 5;
+// The "two fingers to move" hint shows once per page load, on the first zoom.
+let canvasPanHintShown = false;
 
 function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
@@ -8272,6 +8274,14 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // style so a moving pinch costs no React render.
     const pinchRef = React.useRef({ s: 1, tx: 0, ty: 0, start: null });
     const [pinched, setPinched] = React.useState(false);
+    const [panHint, setPanHint] = React.useState(false);
+    React.useEffect(() => {
+        if (!pinched || canvasPanHintShown) return undefined;
+        canvasPanHintShown = true;
+        setPanHint(true);
+        const timer = setTimeout(() => setPanHint(false), 2600);
+        return () => clearTimeout(timer);
+    }, [pinched]);
     const applyPinch = React.useCallback((animate = false) => {
         const el = liveIframeElRef.current;
         if (!el) return;
@@ -8714,6 +8724,9 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         : undefined;
 
     return React.createElement("div", { ref: hostRef, className: `ps-html-preview-host is-fitting${pinched ? " is-pinched" : ""}` },
+        pinched && panHint
+            ? React.createElement("span", { className: "ps-canvas-pinch-hint", role: "status" }, "Two fingers to move")
+            : null,
         pinched
             ? React.createElement("button", {
                 type: "button",

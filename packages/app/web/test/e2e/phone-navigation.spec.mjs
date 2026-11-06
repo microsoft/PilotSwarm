@@ -94,3 +94,4 @@ test("a vertical scroll is not a swipe", async ({ page, context }) => {
     await expect(page.locator(".ps-mobile-workspace")).toHaveCount(1);
     expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
 });
+
