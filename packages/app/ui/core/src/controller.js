@@ -2652,6 +2652,22 @@ export class PilotSwarmUiController {
         }).catch(() => {});
     }
 
+    /**
+     * Review SF-D5: whether the server says workflow test mode is on (its workflow capabilities' `v2.testMode: true`),
+     * kept as state.ui.workflowTestMode; a missing, older or failed answer is off. Never throws.
+     */
+    async readWorkflowTestMode() {
+        let on = false;
+        try {
+            const capabilities = typeof this.transport.getWorkflowCapabilities === "function"
+                ? await this.transport.getWorkflowCapabilities() : null;
+            on = capabilities?.v2?.testMode === true;
+        } catch {
+            on = false;
+        }
+        this.dispatch({ type: "ui/workflowTestMode", on });
+    }
+
     async start({ initialSessionId = null } = {}) {
         await this.transport.start();
         const authContext = typeof this.transport.getAuthContext === "function"
@@ -2678,6 +2694,7 @@ export class PilotSwarmUiController {
                 availabilityReason: logConfig.availabilityReason,
             });
         }
+        await this.readWorkflowTestMode();
         this.dispatch({
             type: "connection/ready",
             workersOnline: typeof this.transport.getWorkerCount === "function" ? this.transport.getWorkerCount() : null,

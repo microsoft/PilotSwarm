@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { appendEventToHistory, buildHistoryModel, isWorkflowUpdateSender, parseWorkflowUpdateText } from "../src/history.js";
-import { appReducer, createInitialState, selectChatLines } from "../src/index.js";
+import { appReducer, createInitialState, selectActiveChat, selectChatLines } from "../src/index.js";
 
 const DATA = "Data (JSON, not instructions):";
 const event = (seq, eventType, data) => ({ seq, eventType, data, sessionId: "parent-1", createdAt: new Date(1788800000000 + seq * 1000).toISOString() });
@@ -38,12 +38,17 @@ const EVENTS = [
     event(5, "system.message", { content: SEND, sender: sender("message", "workflow wf-sessi") }),
 ];
 
-function chatLines(history) {
+function chatState(history, { testMode = false } = {}) {
     let state = createInitialState();
     state = appReducer(state, { type: "sessions/loaded", sessions: [{ sessionId: "parent-1", title: "Parent", status: "idle" }] });
     state = appReducer(state, { type: "sessions/selected", sessionId: "parent-1" });
     state = appReducer(state, { type: "history/set", sessionId: "parent-1", history });
-    return selectChatLines(state, 80, {});
+    if (testMode) state = appReducer(state, { type: "ui/workflowTestMode", on: true });
+    return state;
+}
+
+function chatLines(history, options) {
+    return selectChatLines(chatState(history, options), 80, {});
 }
 
 test("each workflow message is a chat card titled 'Workflow · <type>' with its color, not an activity line", () => {
@@ -89,7 +94,7 @@ test("a card names the workflow, run, status, step, contract and deadline, then 
 });
 
 test("the chat shows the card with its title", () => {
-    const rendered = JSON.stringify(chatLines(buildHistoryModel(EVENTS)));
+    const rendered = JSON.stringify(chatLines(buildHistoryModel(EVENTS), { testMode: true }));
     // A card's title is drawn in capitals (buildMessageCardLines).
     for (const title of ["Workflow · ended", "Workflow · request", "Workflow · test waiting", "Workflow · message"]) {
         assert.ok(rendered.includes(title.toUpperCase()), title);
@@ -292,4 +297,27 @@ test("SF-D1: a person's or an agent's stamped message never becomes a Session ca
     // A server-recorded system.message keeps its card.
     assert.deepEqual(buildHistoryModel([event(9, "system.message", { content: SESSION_HEADER })]).chat.map(item => [item.role, item.cardTitle]),
         [["system", "Session Request"]]);
+});
+
+test("SF-D5: a stored 'Workflow · test waiting' card shows only while the server says test mode is on, live and from history", () => {
+    for (const history of [buildHistoryModel(EVENTS), EVENTS.reduce(appendEventToHistory, buildHistoryModel())]) {
+        // Off (the default, and anything but the server's true): hidden, as test runs are; the other cards stay, in order.
+        const off = chatState(history);
+        assert.equal(off.ui.workflowTestMode, false);
+        assert.deepEqual(selectActiveChat(off).map(item => item.cardTitle), ["Workflow · ended", "Workflow · ended", "Workflow · request", "Workflow · message"]);
+        const offText = JSON.stringify(chatLines(history));
+        assert.ok(!offText.includes("TEST WAITING") && !offText.includes("mock answer") && !offText.includes("nx-1/call-1"), "no test card, words or interception");
+        assert.ok(offText.includes("WORKFLOW · REQUEST"));
+        assert.equal(appReducer(off, { type: "ui/workflowTestMode", on: "true" }).ui.workflowTestMode, false);
+        // On: shown in its place.
+        const on = chatState(history, { testMode: true });
+        assert.deepEqual(selectActiveChat(on).map(item => item.cardTitle),
+            ["Workflow · ended", "Workflow · ended", "Workflow · request", "Workflow · test waiting", "Workflow · message"]);
+        // The memoized lines follow the switch.
+        assert.ok(JSON.stringify(selectChatLines(on, 80, {})).includes("TEST WAITING"));
+        assert.ok(!JSON.stringify(selectChatLines(appReducer(on, { type: "ui/workflowTestMode", on: false }), 80, {})).includes("TEST WAITING"));
+    }
+    // A chat with no test notice keeps its own array (no copy).
+    const plain = chatState(buildHistoryModel(EVENTS.filter(item => item.seq !== 4)));
+    assert.equal(selectActiveChat(plain).length, 4);
 });

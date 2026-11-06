@@ -7539,6 +7539,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
             inspectorTab: state.ui.inspectorTab,
             // The session's recorded input policy: its question card says whether people may answer (T116).
             activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
+            // Review SF-D5: stored workflow test notices show only while the server says test mode is on.
+            workflowTestMode: state.ui.workflowTestMode === true,
             // Whether it may be in a workflow agent state's subtree: its composer then waits for the server (q18).
             activeMayBeWorkflowStep: activeSessionId ? workflowInputPolicyApplies(state, activeSessionId) : false,
             activeSessionIsGroup: Boolean(activeSessionId && state.sessions.byId[activeSessionId]?.isGroup),
@@ -7579,6 +7581,7 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         },
         ui: {
             inspectorTab: viewState.inspectorTab,
+            workflowTestMode: viewState.workflowTestMode,
             ...(viewState.activeSessionId && viewState.activeInputPolicy
                 ? { workflowInputPolicies: { [viewState.activeSessionId]: viewState.activeInputPolicy } } : {}),
         },
@@ -7587,6 +7590,7 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
         viewState.activeSessionId,
         viewState.activeOutbox,
         viewState.activeInputPolicy,
+        viewState.workflowTestMode,
         viewState.authPrincipal,
         viewState.branding,
         viewState.connection,

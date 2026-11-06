@@ -9,6 +9,11 @@ import { workflowV2RunPickerModel } from "../src/workflow-v2-run-picker.js";
 import { workflowV2TestControls, workflowV2TestResponder, workflowV2TestRunsShown } from "../src/workflow-v2-commands.js";
 import { workflowSessionProjection } from "../src/workflow-tui.js";
 import { readModel, subtreeCommands } from "./workflow-v2-fixtures.mjs";
+import { workflowLogEvents } from "../src/workflow-v2-view.js";
+import { PilotSwarmUiController } from "../src/controller.js";
+import { createStore } from "../src/store.js";
+import { appReducer } from "../src/reducer.js";
+import { createInitialState } from "../src/state.js";
 
 const EVERY = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"];
 const RUNS = [
@@ -65,4 +70,53 @@ test("without a test operation listed, no test control and no test answers are o
     assert.equal(workflowV2TestResponder(testRun), null);
     const on = { ...draft, personCommands: { ...draft.personCommands, operations: [...EVERY, "stop", "test", "test_respond", "test_advance"] } };
     assert.notEqual(workflowV2TestControls(on), null);
+});
+
+// Review SF-D5: the Workflow Log's runs are the server's word (its read model's runs and their mode), not inferred from a
+// workflow.started that a paged window may not hold.
+test("SF-D5: the Workflow Log never lists a test run's events, also when its workflow.started is not loaded", () => {
+    const ev = (seq, eventType, data) => ({ seq, eventType, data });
+    // The loaded window starts after both runs' workflow.started events.
+    const window = [
+        ev(10, "workflow.state_completed", { runId: "run-1", stateId: "poll", outcome: "changed" }),
+        ev(11, "workflow.state_completed", { runId: "run-t", stateId: "poll", outcome: "held-1" }),
+        ev(12, "workflow.recovered", { action: "none" }),
+    ];
+    const seqs = list => list.map(event => event.seq);
+    // Test mode off: the server lists only the live run.
+    const offRuns = [{ runId: "run-1", mode: "live" }];
+    assert.deepEqual(seqs(workflowLogEvents(window, { runId: null, runs: offRuns })), [10, 12]);
+    assert.deepEqual(seqs(workflowLogEvents(window, { runId: "run-1", runs: offRuns })), [10, 12]);
+    // Test mode on: the server lists the test run with its mode; still not a Workflow, so not in its Log.
+    const onRuns = [...offRuns, { runId: "run-t", mode: "test" }];
+    assert.deepEqual(seqs(workflowLogEvents(window, { runId: null, runs: onRuns })), [10, 12]);
+    // Before the read model is loaded: only the shown run's events, and none of a run marked test by a loaded start.
+    assert.deepEqual(seqs(workflowLogEvents(window, { runId: null, runs: null })), [12]);
+    assert.deepEqual(seqs(workflowLogEvents(window, { runId: "run-1", runs: null })), [10, 12]);
+    const withStart = [ev(1, "workflow.started", { runId: "run-t", mode: "test" }), ...window];
+    assert.deepEqual(seqs(workflowLogEvents(withStart, { runId: "run-t", runs: null })), [12]);
+    // Not a list of events: nothing.
+    assert.deepEqual(workflowLogEvents(null, { runId: null, runs: offRuns }), []);
+});
+
+// Review SF-D5: the controller keeps the server's word on test mode (its bootstrap's workflows.v2.testMode).
+test("SF-D5: the controller reads the server's test mode at start; a missing, older or failed answer is off", async () => {
+    const answers = [
+        [{ v2: { testMode: true } }, true],
+        [{ v2: { read: true } }, false],
+        [{ v2: { testMode: "true" } }, false],
+        [null, false],
+        [new Error("WORKFLOW_CAPABILITIES_MALFORMED"), false],
+        [undefined, false],
+    ];
+    for (const [answer, on] of answers) {
+        const transport = answer === undefined ? {} : {
+            async getWorkflowCapabilities() { if (answer instanceof Error) throw answer; return answer; },
+        };
+        const store = createStore(appReducer, createInitialState({ mode: "local" }));
+        const controller = new PilotSwarmUiController({ store, transport });
+        if (on === false) store.dispatch({ type: "ui/workflowTestMode", on: true });
+        await controller.readWorkflowTestMode();
+        assert.equal(store.getState().ui.workflowTestMode, on, JSON.stringify(answer ?? "no getter"));
+    }
 });

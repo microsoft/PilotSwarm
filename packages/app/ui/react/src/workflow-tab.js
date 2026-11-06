@@ -2,7 +2,7 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { useControllerSelector } from "./use-controller-state.js";
 import { selectWorkflowViewSnapshotFor, workflowNodeViews, workflowParentWorking, workflowReadModelView, workflowViewSnapshotEqual } from "../../core/src/workflow-view.js";
-import { formatSeconds, projectWorkflowV2, workflowV2Activity, workflowV2BranchPickKey, workflowV2SelectionAfterBranchChange } from "../../core/src/workflow-v2-view.js";
+import { formatSeconds, projectWorkflowV2, workflowLogEvents, workflowV2Activity, workflowV2BranchPickKey, workflowV2SelectionAfterBranchChange } from "../../core/src/workflow-v2-view.js";
 import {
     WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2JsonObjectDraft, workflowV2RunCommandNotice,
     workflowV2RunControls, workflowV2RunVariables, workflowV2SampleInputs, workflowV2TestControls, workflowV2TestModeListed, workflowV2TestResponder,
@@ -602,7 +602,8 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
             onPanel: id => setTab({ runPanel: id }) },
             panel === "node" ? h(RunNodePanel, { controller, child, selected,
                 onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
-            panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId, selected, scope: logScope, onScope: setLogScope,
+            panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId,
+                runs: Array.isArray(readModel?.runs) ? readModel.runs : null, selected, scope: logScope, onScope: setLogScope,
                 instructionsReadable: workflowBaseInstructionsReadable(readModel) }) : null,
             panel === "variables" ? (variables ? h(WorkflowV2Variables, { controller, sessionId, model: variables }) : h("p", { className: "ps-wf-muted" }, "No variables."))
                 : null),
@@ -685,13 +686,13 @@ function LegacyNodePanel({ selected }) {
  * The Log panel (W10; finding 8). For an agent node: its own Log with its chat (AgentNodeLog), or, switched, the whole
  * Workflow's. For any other node: the whole Workflow's, as before.
  */
-function RunLogPanel({ controller, workflowSessionId = null, events, runId, selected, scope, onScope, instructionsReadable = true }) {
-    if (!(selected?.shape === "v2" && selected.kind === "agent")) return h(WorkflowLog, { events, runId });
+function RunLogPanel({ controller, workflowSessionId = null, events, runId, runs = null, selected, scope, onScope, instructionsReadable = true }) {
+    if (!(selected?.shape === "v2" && selected.kind === "agent")) return h(WorkflowLog, { events, runId, runs });
     return h("div", { className: "ps-wf-log-panel" },
         h("div", { className: "ps-wf-switch is-log", role: "group", "aria-label": "Log of" },
             [["node", `Node ${selected.id}`], ["all", "Whole Workflow"]].map(([id, label]) => h("button", { key: id, type: "button",
                 "aria-pressed": scope === id, className: scope === id ? "is-on" : "", onClick: () => onScope(id) }, label))),
-        scope === "all" ? h(WorkflowLog, { events, runId }) : h(AgentNodeLog, { controller, workflowSessionId, node: selected, events, runId, instructionsReadable }));
+        scope === "all" ? h(WorkflowLog, { events, runId, runs }) : h(AgentNodeLog, { controller, workflowSessionId, node: selected, events, runId, instructionsReadable }));
 }
 
 /**
@@ -750,19 +751,11 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
 /**
  * The Log panel (W10): this Workflow only, newest first, one sentence each. That is its live run's events and the
  * Workflow's own notices (no run id, such as a recovery request); a test run's events never show (test mode is hidden,
- * spec 16, and test runs are not Workflows).
+ * spec 16, and test runs are not Workflows): which runs are live is the server's word, its read model's runs
+ * (workflowLogEvents; review SF-D5).
  */
-function WorkflowLog({ events, runId }) {
-    const rows = React.useMemo(() => {
-        const list = Array.isArray(events) ? events : EMPTY_EVENTS;
-        const testRuns = new Set(list.filter(event => event?.eventType === "workflow.started" && event.data?.mode && event.data.mode !== "live")
-            .map(event => event.data.runId));
-        const own = list.filter(event => {
-            const id = event?.data?.runId ?? null;
-            return id === null || (!testRuns.has(id) && (runId === null || id === runId));
-        });
-        return workflowV2Activity(own, { runId: null, limit: 200 });
-    }, [events, runId]);
+function WorkflowLog({ events, runId, runs = null }) {
+    const rows = React.useMemo(() => workflowV2Activity(workflowLogEvents(events, { runId, runs }), { runId: null, limit: 200 }), [events, runId, runs]);
     if (!rows.length) return h("p", { className: "ps-wf-muted" }, "Nothing has happened yet.");
     return h("ol", { className: "ps-wf-log", "aria-label": "Workflow log" },
         rows.map((row, index) => h("li", { key: row.seq ?? index, "data-level": row.level },

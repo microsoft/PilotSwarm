@@ -363,6 +363,8 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             activeOutbox: activeSessionId ? state.outbox?.bySessionId?.[activeSessionId] || null : null,
             // The session's recorded input policy: its question card says whether people may answer (T116).
             activeInputPolicy: activeSessionId ? state.ui.workflowInputPolicies?.[activeSessionId] || null : null,
+            // Review SF-D5: stored workflow test notices show only while the server says test mode is on.
+            workflowTestMode: state.ui.workflowTestMode === true,
             // Viewer identity — so the transcript can say "You" for the viewer's
             // own messages (and tag the owner) in shared sessions.
             authPrincipal: state.auth?.principal || null,
@@ -387,9 +389,11 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
                 error: chatView.connectionError,
                 mode: chatView.connectionMode,
             },
-            ui: chatView.activeSessionId && chatView.activeInputPolicy
-                ? { workflowInputPolicies: { [chatView.activeSessionId]: chatView.activeInputPolicy } }
-                : {},
+            ui: {
+                workflowTestMode: chatView.workflowTestMode,
+                ...(chatView.activeSessionId && chatView.activeInputPolicy
+                    ? { workflowInputPolicies: { [chatView.activeSessionId]: chatView.activeInputPolicy } } : {}),
+            },
             sessions: {
                 activeSessionId: chatView.activeSessionId,
                 byId: buildSingleSessionMap(chatView.activeSessionId, chatView.activeSession),
@@ -413,6 +417,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.activeSession,
         chatView.activeOutbox,
         chatView.activeInputPolicy,
+        chatView.workflowTestMode,
         chatView.authPrincipal,
         chatView.branding,
         chatView.connectionError,

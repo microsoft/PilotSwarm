@@ -111,6 +111,8 @@ test("with the test-only option, it advertises the controller version and the op
                 const { workflows } = await h.bootstrap();
                 assert.deepEqual(workflows.v2.commands, { available: true, controllerVersion, operations }, JSON.stringify(config));
                 assert.equal(workflows.v2.read, true);
+                // Review SF-D5: the server's word that test mode is on, only then.
+                assert.equal(workflows.v2.testMode, config.workflowCommands.testMode === true ? true : undefined, JSON.stringify(config));
                 assert.ok(!workflows.v2.commands.operations.includes("recover"), "recover stays the agent's");
                 assert.deepEqual(workflows.legacyCreate, { workflowVersion: 1, draft: false });
             } finally {
@@ -124,8 +126,18 @@ test("with the test-only option, it advertises the controller version and the op
             try {
                 const { workflows } = await h.bootstrap();
                 assert.deepEqual(workflows.v2.commands.operations, listed ? [...EVERY_HOST, ...MILESTONE] : [...EVERY_HOST, "stop"], value);
+                assert.equal(workflows.v2.testMode, listed ? true : undefined, value);
             } finally {
                 await h.close();
+            }
+            // Review SF-D5: also without a person's commands (the default portal), the flag alone says it.
+            const plain = await bootstrapHarness({ config: {} });
+            try {
+                const { workflows } = await plain.bootstrap();
+                assert.equal(workflows.v2.commands.available, false);
+                assert.equal(workflows.v2.testMode, listed ? true : undefined, value);
+            } finally {
+                await plain.close();
             }
         }
         // A test operation sent anyway, while test mode is off, answers as an operation that does not exist (owner answer

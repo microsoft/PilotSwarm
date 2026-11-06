@@ -2023,6 +2023,28 @@ export function workflowV2Activity(events, { runId = null, nodeExecutionId = nul
     return rows.reverse().slice(0, Math.max(0, limit));
 }
 
+/**
+ * The events the Workflow Log panel lists (W10; review SF-D5): the Workflow's own notices (no run id) and, of its runs,
+ * the shown run's (`runId`, when there is one). A run's events show only when the server's read model lists that run
+ * as live (`runs`, each with its `mode`; with test mode off the server lists no test run), so a test run's events stay
+ * hidden even when its workflow.started is not in the loaded window. Before the read model is loaded (`runs` not a
+ * list): only the shown run's events, never a run a loaded workflow.started marks as a test. Pure.
+ */
+export function workflowLogEvents(events, { runId = null, runs = null } = {}) {
+    const list = Array.isArray(events) ? events : [];
+    const live = Array.isArray(runs)
+        ? new Set(runs.filter(run => isRecord(run) && run.mode === "live" && typeof run.runId === "string").map(run => run.runId))
+        : null;
+    const tests = new Set(list.filter(event => event?.eventType === "workflow.started" && isRecord(event.data) && event.data.mode
+        && event.data.mode !== "live").map(event => event.data.runId));
+    return list.filter(event => {
+        const id = isRecord(event) && isRecord(event.data) ? event.data.runId ?? null : null;
+        if (id === null) return true;
+        if (runId !== null && id !== runId) return false;
+        return live !== null ? live.has(id) : runId !== null && !tests.has(id);
+    });
+}
+
 const ENDED_STATUSES = new Set(["completed", "failed", "cancelled", "stopped"]);
 
 /**

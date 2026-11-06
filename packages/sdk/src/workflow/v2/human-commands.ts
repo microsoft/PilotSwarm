@@ -83,7 +83,8 @@ export const WORKFLOW_CAPABILITIES_SCHEMA = 1;
  *   not moved to draft-by-default.
  * - The test operations are listed only while workflow test mode is on
  *   (`commands.testMode`, or else the deployment flag; spec 16): off, a client
- *   offers no test control and shows no test run.
+ *   offers no test control and shows no test run. `v2.testMode: true` says it
+ *   is on (absent when off), with or without commands (review SF-D5).
  */
 export function workflowCapabilities(options: { read: boolean; commands: { requests?: boolean; testMode?: boolean } | null | undefined }): { [key: string]: JsonValue } {
     const commands = options.commands ?? null;
@@ -93,6 +94,9 @@ export function workflowCapabilities(options: { read: boolean; commands: { reque
         v2: {
             apiVersion: WORKFLOW_V2_API_VERSION,
             read: options.read === true,
+            // Review SF-D5: the server's word that workflow test mode is on, only then, so a client shows stored test
+            // notices (a parent chat's "test waiting" card) only while it is; absent: hidden.
+            ...(resolveWorkflowTestMode(commands?.testMode) ? { testMode: true } : {}),
             create: false,
             input: false,
             commands: commands

@@ -3725,6 +3725,12 @@ function baseReducer(state, action) {
             } } };
         }
 
+        // Review SF-D5: the server's word on workflow test mode (bootstrap); anything but true is off.
+        case "ui/workflowTestMode": {
+            const on = action.on === true;
+            return state.ui.workflowTestMode === on ? state : { ...state, ui: { ...state.ui, workflowTestMode: on } };
+        }
+
         // A session's input policy as the server reported it (workflow agent states' human-input denial). A session's
         // lineage never changes, so the policy read once is kept for it.
         case "ui/workflowInputPolicy": {

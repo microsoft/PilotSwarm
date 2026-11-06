@@ -2050,6 +2050,20 @@ function buildLiveProgressState(session, history, chat = [], outboxItems = []) {
     return null;
 }
 
+/** A stored workflow test notice (a parent chat's "Workflow · test waiting" card). */
+function isWorkflowTestNotice(item) {
+    return item?.workflowUpdate?.type === "test_waiting";
+}
+
+/**
+ * Review SF-D5: a chat shows a stored workflow test notice only while the server says workflow test mode is on
+ * (state.ui.workflowTestMode); otherwise it is hidden, as test runs are. The same chat array when nothing is hidden.
+ */
+function withoutHiddenWorkflowTestNotices(state, chat) {
+    if (state?.ui?.workflowTestMode === true || !chat.some(isWorkflowTestNotice)) return chat;
+    return chat.filter(item => !isWorkflowTestNotice(item));
+}
+
 export function selectActiveChat(state) {
     const sessionId = state.sessions.activeSessionId;
     const session = sessionId ? state.sessions.byId[sessionId] || null : null;
@@ -2095,7 +2109,7 @@ export function selectActiveChat(state) {
         }];
     }
     const history = state.history.bySessionId.get(sessionId);
-    const chat = history?.chat || [];
+    const chat = withoutHiddenWorkflowTestNotices(state, history?.chat || []);
     if (!chat.length && history?.loadState === "loading") {
         const splash = createSplashCard(state.branding, session, { loading: true });
         if (splash.length) return splash;
@@ -3268,6 +3282,8 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
         principal: state?.auth?.principal ?? null,
         // A pending question's card says whether people may answer it (the session's recorded input policy).
         inputPolicy: memoSession?.pendingQuestion ? state?.ui?.workflowInputPolicies?.[memoSessionId] ?? null : null,
+        // Review SF-D5: stored workflow test notices show only with test mode on.
+        workflowTestMode: state?.ui?.workflowTestMode === true,
         maxWidth,
         tableMode: options?.tableMode ?? null,
     };
@@ -3278,6 +3294,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             && entry.chat === memoKey.chat
             && entry.events === memoKey.events
             && entry.inputPolicy === memoKey.inputPolicy
+            && entry.workflowTestMode === memoKey.workflowTestMode
             && entry.viewMode === memoKey.viewMode
             && entry.branding === memoKey.branding
             && entry.principal === memoKey.principal
