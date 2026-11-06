@@ -9,9 +9,11 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-    WORKFLOW_AGENT_LOG_FOLD, WORKFLOW_AGENT_LOG_NOTE, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY, workflowAgentLogChats, workflowAgentNodeLog,
-    workflowBaseInstructions, workflowBaseInstructionsReadable, workflowLogFold, workflowPromptVisit,
+    WORKFLOW_AGENT_LOG_FOLD, WORKFLOW_AGENT_LOG_NOTE, WORKFLOW_BASE_INSTRUCTIONS_CHANGED, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY, workflowAgentLogChats,
+    workflowAgentNodeLog, workflowBaseInstructions, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable, workflowLogFold, workflowPromptVisit,
 } from "../src/workflow-agent-log.js";
+import { sha256Hex } from "../src/sha256.js";
+import { createHash } from "node:crypto";
 import { WorkflowV2AgentLog } from "../../react/src/workflow-v2-panels.js";
 
 process.env.TZ = "UTC";
@@ -177,4 +179,34 @@ test("a reader who is not the Workflow's owner sees the summary row only; openin
     assert.ok(html.includes(WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY.replace("'", "&#x27;")) && html.includes("data-owner-only"));
     assert.equal(WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY, "Only this Workflow's owner can read the whole text.");
     assert.ok(!html.includes("Open to read the whole text.") && !html.includes("data-base-instructions="));
+});
+
+// Review SF-4: the text read from the file is shown only when its sha256 is the one the runtime recorded in the event
+// (the whole digest); otherwise the row says the instructions changed since they were recorded, and shows nothing of them.
+test("the page's SHA-256 is the standard one, for any text", () => {
+    const digest = text => createHash("sha256").update(text, "utf8").digest("hex");
+    for (const text of ["", "abc", "a".repeat(55), "a".repeat(56), "a".repeat(64), "a".repeat(1_000), "Füße — 日本語 — 🙂\n".repeat(300)]) {
+        assert.equal(sha256Hex(text), digest(text), `length ${text.length}`);
+    }
+});
+
+test("a Base instructions row names its file only with a whole digest that names it; its text is shown only when it has that digest", () => {
+    assert.equal(workflowBaseInstructions({ content: SUMMARY, baseInstructions: { ...KEPT, sha256: undefined } }).ref, null, "no whole digest");
+    assert.equal(workflowBaseInstructions({ content: SUMMARY, baseInstructions: { ...KEPT, sha256: SHA.slice(0, 16) } }).ref, null);
+    assert.equal(workflowBaseInstructions({ content: SUMMARY, baseInstructions: { ...KEPT, artifact: "base-instructions-fedcba9876543210.md" } }).ref, null,
+        "a file the digest does not name");
+    const whole = "You are the GitHub Copilot CLI, a terminal assistant built by GitHub.\n\nThe whole composed text.";
+    const sha = sha256Hex(whole);
+    const ref = { sessionId: "wf-1", artifact: `base-instructions-${sha.slice(0, 16)}.md`, sha256: sha };
+    assert.equal(workflowBaseInstructionsMatch(ref, whole), true);
+    assert.equal(workflowBaseInstructionsMatch(ref, `${whole} Changed.`), false);
+    assert.equal(workflowBaseInstructionsMatch({ ...ref, sha256: null }, whole), false);
+    assert.equal(workflowBaseInstructionsMatch(ref, null), false);
+    const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, [...chat.slice(0, 2), base(2.1, "17:40:02"), ...chat.slice(2)]]]),
+        runId: "run-1", now: NOW });
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", readInstructions: () => ({ changed: true }),
+        onInstructions: () => {} }));
+    assert.ok(html.includes("data-changed") && html.includes("These base instructions changed since they were recorded, so they are not shown."));
+    assert.equal(WORKFLOW_BASE_INSTRUCTIONS_CHANGED, "These base instructions changed since they were recorded, so they are not shown.");
+    assert.ok(!html.includes("data-base-instructions="));
 });

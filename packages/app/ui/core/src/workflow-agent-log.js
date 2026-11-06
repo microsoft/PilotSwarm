@@ -14,6 +14,7 @@
 import { callText, firstCallLine } from "./chat-activity.js";
 import { workflowEventText } from "./workflow-v2-view.js";
 import { workflowNodeClock, workflowNodeNow } from "./workflow-node-summary.js";
+import { sha256Hex } from "./sha256.js";
 
 /** How many visits the Log shows before "Show older visits"; how long a text is before it folds. */
 export const WORKFLOW_AGENT_LOG_VISITS = 10;
@@ -47,9 +48,32 @@ export function workflowBaseInstructions(data) {
     const found = BASE_SUMMARY.exec(content);
     if (!found) return null;
     const kept = isRecord(data.baseInstructions) ? data.baseInstructions : null;
-    const ref = kept && typeof kept.sessionId === "string" && typeof kept.artifact === "string" && /^base-instructions-[0-9a-f]{16}\.md$/.test(kept.artifact)
-        ? { sessionId: kept.sessionId, artifact: kept.artifact, sha256: typeof kept.sha256 === "string" ? kept.sha256 : null } : null;
+    // The whole digest is what the shown text is checked against (review SF-4); the artifact is the one it names.
+    const sha256 = kept && typeof kept.sha256 === "string" && /^[0-9a-f]{64}$/.test(kept.sha256) ? kept.sha256 : null;
+    const ref = kept && sha256 && typeof kept.sessionId === "string" && kept.artifact === `base-instructions-${sha256.slice(0, 16)}.md`
+        ? { sessionId: kept.sessionId, artifact: kept.artifact, sha256 } : null;
     return { chars: Number(found[1]), snippet: found[2], ref };
+}
+
+/** What an opened Base instructions row says when the file no longer holds the recorded text (review SF-4). */
+export const WORKFLOW_BASE_INSTRUCTIONS_CHANGED = "These base instructions changed since they were recorded, so they are not shown.";
+
+const checkedTexts = new Map();
+
+/**
+ * Whether `text`, read from the file a Base instructions row names, is the text the runtime recorded: its sha256 is the
+ * row's (`ref.sha256`, the whole digest; review SF-4). The text is shown only then. Pure (the digests of the last few
+ * texts are remembered).
+ */
+export function workflowBaseInstructionsMatch(ref, text) {
+    if (!isRecord(ref) || typeof ref.sha256 !== "string" || typeof text !== "string") return false;
+    let digest = checkedTexts.get(text);
+    if (digest === undefined) {
+        digest = sha256Hex(text);
+        if (checkedTexts.size >= 16) checkedTexts.clear();
+        checkedTexts.set(text, digest);
+    }
+    return digest === ref.sha256;
 }
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);

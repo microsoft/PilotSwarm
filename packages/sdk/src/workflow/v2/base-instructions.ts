@@ -57,23 +57,41 @@ export interface BaseInstructionsStore {
     uploadArtifact(sessionId: string, filename: string, content: string, contentType?: string): Promise<unknown>;
 }
 
-/** The texts this worker already knows are kept (bounded; a forgotten one is checked in the store again). */
-const KEPT = new Set<string>();
+/**
+ * The texts this worker kept lately, and until when it trusts that they are still in the store unchanged (review SF-4).
+ * After that, or once forgotten, the store is asked again: a missing artifact, or one whose sha256 is not the text's
+ * (replaced since), is written again. Bounded; a forgotten entry only costs a check.
+ */
+const KEPT = new Map<string, number>();
 const KEPT_MAX = 5_000;
+export const WORKFLOW_BASE_INSTRUCTIONS_KEPT_TTL_MS = 10 * 60_000;
+
+const keptKey = (ref: WorkflowBaseInstructionsRef) => `${ref.sessionId}/${ref.artifact}`;
+
+/** Forget that `ref`'s text is kept: the next keep checks the store again (review SF-4). */
+export function forgetWorkflowBaseInstructions(ref: WorkflowBaseInstructionsRef): void {
+    KEPT.delete(keptKey(ref));
+}
 
 /**
- * Keep a text once: when the store has no artifact by its name yet, write it. Returns whether this call wrote it. Two
- * workers that write the same text at once write the same bytes under the same name.
+ * Keep a text once: unless this worker kept it lately, the store is asked for the artifact by its name, and it is written
+ * when it is missing or holds other bytes (its sha256 is not `ref.sha256`; review SF-4). Returns whether this call wrote
+ * it. Two workers that write the same text at once write the same bytes under the same name.
  */
-export async function keepWorkflowBaseInstructions(store: BaseInstructionsStore, ref: WorkflowBaseInstructionsRef, content: string): Promise<boolean> {
-    const key = `${ref.sessionId}/${ref.artifact}`;
-    if (KEPT.has(key)) return false;
+export async function keepWorkflowBaseInstructions(store: BaseInstructionsStore, ref: WorkflowBaseInstructionsRef, content: string,
+    now: number = Date.now()): Promise<boolean> {
+    const key = keptKey(ref);
+    const until = KEPT.get(key);
+    if (until !== undefined && until > now) return false;
+    KEPT.delete(key);
+    const stat = await store.statArtifact(ref.sessionId, ref.artifact);
+    const storedSha256 = stat && typeof stat === "object" ? (stat as { sha256?: unknown }).sha256 : undefined;
     let wrote = false;
-    if (!(await store.statArtifact(ref.sessionId, ref.artifact))) {
+    if (!stat || storedSha256 !== ref.sha256) {
         await store.uploadArtifact(ref.sessionId, ref.artifact, content, "text/markdown");
         wrote = true;
     }
     if (KEPT.size >= KEPT_MAX) KEPT.clear();
-    KEPT.add(key);
+    KEPT.set(key, now + WORKFLOW_BASE_INSTRUCTIONS_KEPT_TTL_MS);
     return wrote;
 }

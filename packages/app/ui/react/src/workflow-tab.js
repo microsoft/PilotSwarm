@@ -9,7 +9,9 @@ import {
 } from "../../core/src/workflow-v2-commands.js";
 import { formatLocalTime } from "../../core/src/formatting.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
-import { WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsReadable } from "../../core/src/workflow-agent-log.js";
+import {
+    WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
+} from "../../core/src/workflow-agent-log.js";
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowFailureText, workflowStarted,
     workflowPanelHeight, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
@@ -699,14 +701,19 @@ function AgentNodeLog({ controller, node, events, runId, instructionsReadable = 
     const failed = React.useMemo(() => new Set(chatIds.filter(id => histories?.get?.(id)?.loadState === "failed")), [chatKey, histories]);
     const log = React.useMemo(() => workflowAgentNodeLog({ node, events, chats, runId, limit }), [node, events, chats, runId, limit]);
     // The base instructions are read like any file of a session (the Workflow's), when a person opens their row; only by
-    // the Workflow's owner (review SF-3): anyone else sees the summary row and is told so.
+    // the Workflow's owner (review SF-3): anyone else sees the summary row and is told so. The text read is shown only
+    // when its sha256 is the recorded one (review SF-4); opened again, it is read again.
     const files = useControllerSelector(controller, state => state.files.bySessionId);
     const readInstructions = ref => {
         if (!instructionsReadable) return { ownerOnly: true };
         const preview = files?.[ref.sessionId]?.previews?.[ref.artifact];
-        return preview ? { loading: Boolean(preview.loading), text: typeof preview.content === "string" ? preview.content : null, error: preview.error ?? null } : null;
+        if (!preview) return null;
+        const text = typeof preview.content === "string" && !preview.loading ? preview.content : null;
+        if (text !== null && !workflowBaseInstructionsMatch(ref, text)) return { changed: true };
+        return { loading: Boolean(preview.loading), text, error: preview.error ?? null };
     };
-    const onInstructions = instructionsReadable ? ref => { controller.ensureFilePreview(ref.sessionId, ref.artifact).catch(() => {}); } : null;
+    const onInstructions = instructionsReadable
+        ? ref => { controller.ensureFilePreview(ref.sessionId, ref.artifact, { force: true }).catch(() => {}); } : null;
     return h(WorkflowV2AgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions,
         onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS) });
 }
