@@ -722,14 +722,12 @@ function agentVersionText(pin) {
 
 /**
  * Whether a screen shows test runs of this workflow (Workflow Simplified, spec 16: test mode is hidden unless the
- * deployment turns it on). The server lists a test operation in `personCommands.operations` only while its test mode
- * is on. A read model without `personCommands` (a deployment that takes no person's commands, where no test run can
- * start), or of a workflow in an agent step's subtree (it takes only brakes from people, so the list cannot tell),
- * keeps showing what it lists. Never throws.
+ * deployment turns it on). Review UI-5: only the server's explicit word decides, independent of what commands the reader
+ * may send: the read model's `testMode: true`, which a server sends only while its test mode is on (and its reads then
+ * list test runs). Absent, false or anything else: hidden, also for a commandless or restricted read. Never throws.
  */
 export function workflowV2TestRunsShown(model) {
-    if (!isRecord(model) || !isRecord(model.personCommands) || isRecord(model.personCommands.restriction)) return true;
-    return workflowV2TestModeListed(model);
+    return isRecord(model) && model.testMode === true;
 }
 
 /**

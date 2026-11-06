@@ -1210,6 +1210,9 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
         graph: ir ? { revision: graphRevision, initial: ir.initial, states: describeWorkflowV2States(ir).map(state => withStateAbout(state, ir)),
             inputsSchema: workflowV2ResolvedInputsSchema(ir) } : null,
         runs: runs.map(run => ({ runId: run.runId, mode: run.mode, status: run.status, revision: run.revision, outcome: run.terminalOutcome })),
+        // Review UI-5: whether test runs are shown (the deployment's test mode is on), said explicitly and only then;
+        // a screen shows test runs only where it reads this (absent: hidden), whatever commands the reader may send.
+        ...(options.hideTestRuns === false ? { testMode: true } : {}),
         run: selected && sections ? {
             runId: selected.runId, mode: selected.mode, status: selected.status, outcome: selected.terminalOutcome,
             ...(selected.pausedFrom !== null ? { pausedFrom: selected.pausedFrom, pauseSettled } : {}),

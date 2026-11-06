@@ -1,6 +1,6 @@
-// Workflow Simplified, spec 16 (E1, O2): test mode is hidden unless the deployment turns it on. The server lists a test
-// operation in a read model's personCommands only while its test mode is on; the portal and the terminal UI then show
-// no test run in a run picker, no test controls and no test calls. With it on, they show them as before.
+// Workflow Simplified, spec 16 (E1, O2): test mode is hidden unless the deployment turns it on. The server says so in its
+// read (`testMode: true`, review UI-5) and lists a test operation in personCommands only while it is on; otherwise the
+// portal and the terminal UI show no test run in a run picker, no test controls and no test calls.
 //
 // Run: node --test packages/app/ui/core/test/workflow-simplified-test-mode.test.mjs
 import test from "node:test";
@@ -18,16 +18,17 @@ const RUNS = [
 ];
 const withCommands = (operations, extra = {}) => ({ ...readModel({ runs: RUNS }), personCommands: { operations, restriction: null, run: null, ...extra } });
 
-test("test runs are shown only while the server lists a test operation", () => {
-    assert.equal(workflowV2TestRunsShown(withCommands([...EVERY, "stop"])), false, "test mode off: stop only");
+// Review UI-5: whether test runs are shown is the server's explicit word (`testMode: true`, sent only while its test mode is
+// on), never inferred from the commands a reader may send: a read without it shows none, a commandless or restricted one too.
+test("test runs are shown only where the server says its test mode is on", () => {
+    const hidden = model => ({ ...model, testMode: undefined });
+    assert.equal(workflowV2TestRunsShown(hidden(withCommands([...EVERY, "stop", "test", "test_respond", "test_advance"]))), false,
+        "test operations listed, but no word that test runs are shown");
     assert.equal(workflowV2TestRunsShown(withCommands([...EVERY, "stop", "test", "test_respond", "test_advance"])), true);
-    // A published workflow takes no new test, but its test runs' answers stay offered while test mode is on.
-    assert.equal(workflowV2TestRunsShown(withCommands([...EVERY, "stop", "test_respond", "test_advance"])), true);
-    // A deployment that takes no person's commands (no test run can start there), and a workflow in an agent step's
-    // subtree (only brakes, so the list cannot tell), keep what they list.
-    assert.equal(workflowV2TestRunsShown(readModel({ runs: RUNS })), true);
+    assert.equal(workflowV2TestRunsShown(hidden(readModel({ runs: RUNS }))), false, "a commandless read");
+    assert.equal(workflowV2TestRunsShown(hidden({ ...readModel({ runs: RUNS }), personCommands: subtreeCommands() })), false, "a restricted read");
     assert.equal(workflowV2TestRunsShown({ ...readModel({ runs: RUNS }), personCommands: subtreeCommands() }), true);
-    for (const value of [null, undefined, 5, "x", []]) assert.equal(workflowV2TestRunsShown(value), true, String(value));
+    for (const value of [null, undefined, 5, "x", [], { testMode: "true" }, { testMode: 1 }]) assert.equal(workflowV2TestRunsShown(value), false, JSON.stringify(value));
 });
 
 test("the run picker leaves test runs out with tests: false, and lists them by default", () => {
@@ -46,9 +47,11 @@ test("the run picker leaves test runs out with tests: false, and lists them by d
 test("the terminal UI's projection lists test runs only while the server's test mode is on", () => {
     const session = { sessionId: "wf", sessionKind: "workflow", status: "running" };
     const project = model => workflowSessionProjection({ session, view: { readModel: model, readModelRunId: null } });
-    const off = project(withCommands([...EVERY, "stop"]));
+    const off = project({ ...withCommands([...EVERY, "stop"]), testMode: undefined });
     assert.deepEqual(off.runPicker.options.map(option => option.value), [""]);
     assert.equal(off.testControls, null, "no Test control");
+    // UI-5: a commandless read with test runs and no word of test mode lists none either.
+    assert.deepEqual(project({ ...readModel({ runs: RUNS }), testMode: undefined }).runPicker.options.map(option => option.value), [""]);
     const on = project(withCommands([...EVERY, "stop", "test", "test_respond", "test_advance"]));
     assert.deepEqual(on.runPicker.options.map(option => option.value), ["", "run-t1", "run-t2"]);
 });

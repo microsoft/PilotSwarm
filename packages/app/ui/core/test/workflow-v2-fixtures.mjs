@@ -76,5 +76,8 @@ export function readModel({ run = {}, nodeExecutions = [], inbox = [], outbox = 
         run: noRun ? null : { runId: RUN, mode: "live", status, outcome: null, terminalState: null, output: null, error: null,
             kvRevision: 1, kv: "{}", nodeExecutions, inbox, outbox, ...run },
     };
+    // A server lists test runs only while its test mode is on, and then says so (review UI-5): a fixture with a test run
+    // is such a server's read.
+    if (model.runs.some(item => item?.mode === "test") || model.run?.mode === "test") model.testMode = true;
     return model;
 }

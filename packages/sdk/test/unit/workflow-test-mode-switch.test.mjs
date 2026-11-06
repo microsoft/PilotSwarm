@@ -293,6 +293,9 @@ test("server reads: with test mode off, test runs are not listed, and a test run
     // Off by default (no host value, no flag); on, by the host's value or the flag, the test run is listed as before.
     assert.deepEqual((await read({}, undefined)).runs, []);
     assert.deepEqual((await read({}, true)).runs, [{ runId: "run-t", mode: "test", status: "completed", revision: 1, outcome: "done" }]);
+    // Review UI-5: the view says test runs are shown only while test mode is on; off, it says nothing (hidden by default).
+    assert.equal((await read({}, true)).testMode, true);
+    assert.equal(Object.hasOwn(view, "testMode"), false);
     await withFlag("on", async () => { assert.equal((await read({}, undefined)).runs.length, 1); });
     // A caller cannot turn the filter off through the request.
     assert.deepEqual((await read({ hideTestRuns: false }, false)).runs, []);

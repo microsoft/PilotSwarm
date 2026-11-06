@@ -632,6 +632,8 @@ export function projectWorkflowV2ReadModel(model, { older = null, now = Date.now
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
         // What publication pinned each named agent state to (migration 0103; only a definition with any has them).
         publishedAgentPins: isRecord(lifecycle.publishedAgentPins) ? lifecycle.publishedAgentPins : null,
+        // The server's word that its test runs are shown (review UI-5; workflowV2TestRunsShown).
+        ...(model.testMode === true ? { testMode: true } : {}),
     };
 }
 

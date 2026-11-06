@@ -1051,6 +1051,8 @@ const V2_TEST_MODEL = {
     runs: [{ runId: "run-1", mode: "test", status: "running", revision: 1, outcome: null }],
     run: { ...V2_READ_MODEL.run, mode: "test", test: { interceptions: [], virtualClock: { elapsedSeconds: 0 } } },
     personCommands: { operations: ["test_advance"], viewer: { allowed: true } },
+    // The server says its test mode is on (review UI-5); without it no screen shows a test run.
+    testMode: true,
 };
 test("v2 commands: the virtual clock refuses an invalid advance locally and sends one exact advance", async ({ page }) => {
     const errors = [];
