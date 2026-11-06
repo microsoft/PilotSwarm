@@ -1,7 +1,7 @@
 /**
  * Horizon Dawn: the Azure HorizonDB GA theme's header scenery.
  *
- * The GA line reads exactly; the header stays compact; every layer (sky,
+ * The header carries no words (the scenery speaks); it stays compact; every layer (sky,
  * Orion, mountains, the animated mark) and the bundled Sora font load from the
  * bundle, not the network; reduced motion swaps in the still art; the sky sits
  * behind the land; and the phone header keeps Orion and the line on screen.
@@ -37,10 +37,10 @@ const layers = page => page.locator(".portal-header").evaluate(header => getComp
 const art = name => new RegExp(`hd-${name}(?![-a-z])|/${name}-[A-Za-z0-9_-]{8}\\.svg`);
 const where = (images, name) => images.search(art(name));
 
-test("desktop: the GA line, a compact header, and every layer from the bundle", async ({ page }) => {
+test("desktop: no words in the scenery, a compact header, and every layer from the bundle", async ({ page }) => {
     const failed = await openTheme(page, { width: 1440, height: 900 });
     const header = page.locator(".portal-header");
-    expect(await header.evaluate(el => getComputedStyle(el, "::after").content)).toBe('"Azure HorizonDB  /  Generally Available Nov 17, 2026"');
+    expect(await header.evaluate(el => getComputedStyle(el, "::after").content)).toBe("none");
     const box = await header.boundingBox();
     expect(box.height).toBeGreaterThanOrEqual(96);
     expect(box.height).toBeLessThanOrEqual(110);
@@ -88,7 +88,7 @@ test("reduced motion: still art for the mark, Orion and the sky", async ({ page 
     expect(await page.locator(".portal-logo-frame").evaluate(el => getComputedStyle(el).backgroundImage)).toMatch(art("logo-still"));
 });
 
-test("phone: Orion and the GA line stay on screen, nothing scrolls sideways", async ({ page }) => {
+test("phone: Orion stays on screen, nothing scrolls sideways", async ({ page }) => {
     const failed = await openTheme(page, { width: 390, height: 844 });
     const images = await layers(page);
     expect(images).toMatch(art("orion-phone"));
@@ -99,16 +99,3 @@ test("phone: Orion and the GA line stay on screen, nothing scrolls sideways", as
     expect(failed).toEqual([]);
 });
 
-for (const width of [320, 390]) test(`phone ${width} px: the whole GA line fits inside the header`, async ({ page }) => {
-    await openTheme(page, { width, height: 760 });
-    const fit = await page.locator(".portal-header").evaluate(header => {
-        const after = getComputedStyle(header, "::after");
-        const text = after.content.replace(/^"|"$/g, "");
-        const ctx = document.createElement("canvas").getContext("2d");
-        ctx.font = `${after.fontWeight} ${after.fontSize} ${after.fontFamily}`;
-        const spacing = parseFloat(after.letterSpacing) || 0;
-        const textWidth = ctx.measureText(text).width + spacing * (text.length - 1);
-        return { left: parseFloat(after.left), textWidth, header: header.getBoundingClientRect().width };
-    });
-    expect(fit.left + fit.textWidth, JSON.stringify(fit)).toBeLessThanOrEqual(fit.header - 4);
-});

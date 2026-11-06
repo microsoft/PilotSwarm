@@ -12124,7 +12124,7 @@ textarea.ps-link-input {
    HORIZON DAWN — Azure HorizonDB, generally available on 17 November 2026.
    Scoped to [data-ps-theme="horizon-dawn"]. A pre-dawn Azure sky full of
    stars, Orion above a range of mountains, the HorizonDB cylinder holding a
-   light that slowly brightens and dims, and the GA line on the horizon.
+   light that slowly brightens and dims. No words: the scenery says it.
    The sky always sits behind the land: the mountains are opaque and drawn on
    top of the star field and the constellation. Art in ./assets/horizon-dawn.
    Sora is bundled (SIL OFL 1.1, ./assets/horizon-dawn/Sora-OFL.txt).
@@ -12148,7 +12148,7 @@ textarea.ps-link-input {
 }
 :root[data-ps-theme="horizon-dawn"] {
   /* Text and controls use the portal's mono face; Sora stays for the display
-     lines (the kicker and the GA line). */
+     line (the kicker above the person's name). */
   --dawn-ui: var(--ps-mono);
   --dawn-display: "PS Sora", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
   --dawn-logo: url("./assets/horizon-dawn/logo.svg");
@@ -12223,37 +12223,6 @@ textarea.ps-link-input {
   background-size: 100% 100%, 100% 100%, 300px 100px, 2000px 100px;
   background-position: center bottom, center bottom, left 400px top, left top;
   background-repeat: no-repeat, no-repeat, no-repeat, repeat;
-}
-/* The GA line, set on the horizon. */
-:root[data-ps-theme="horizon-dawn"] .portal-header::after {
-  content: "Azure HorizonDB  /  Generally Available Nov 17, 2026";
-  position: absolute;
-  left: 24px;
-  bottom: 8px;
-  z-index: 1;
-  pointer-events: none;
-  font: 500 13px/18px var(--dawn-display);
-  letter-spacing: 0.06em;
-  white-space: pre;
-  color: #d8f5ff;
-  text-shadow: 0 0 6px #5cc8f266, 0 1px 2px #071125;
-}
-@supports ((background-clip: text) or (-webkit-background-clip: text)) {
-  :root[data-ps-theme="horizon-dawn"] .portal-header::after {
-    background: linear-gradient(90deg, #ffffff 0%, #d8f5ff 30%, #8fe1fb 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    text-shadow: none;
-    filter: drop-shadow(0 0 6px #5cc8f266) drop-shadow(0 1px 2px #071125);
-  }
-}
-@media (forced-colors: active), print {
-  :root[data-ps-theme="horizon-dawn"] .portal-header::after {
-    background: none;
-    color: CanvasText;
-    filter: none;
-  }
 }
 :root[data-ps-theme="horizon-dawn"] :is(.portal-header-brand, .portal-header-slot) {
   position: relative;
@@ -12358,19 +12327,5 @@ textarea.ps-link-input {
     background-position: center bottom, center bottom, center top, center top;
     background-repeat: no-repeat, no-repeat, no-repeat, repeat;
   }
-  :root[data-ps-theme="horizon-dawn"] .portal-header::after {
-    left: 16px;
-    bottom: 7px;
-    font-size: 11px;
-    letter-spacing: 0.036em;
-  }
   :root[data-ps-theme="horizon-dawn"] .ps-panel { border-radius: 12px; background: #101d31; }
-}
-/* The narrowest phones: the GA line still fits on one line. */
-@media (max-width: 360px) {
-  :root[data-ps-theme="horizon-dawn"] .portal-header::after {
-    left: 12px;
-    font-size: 10px;
-    letter-spacing: 0.01em;
-  }
 }
