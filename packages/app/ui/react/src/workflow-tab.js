@@ -14,7 +14,7 @@ import {
     WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
 } from "../../core/src/workflow-agent-log.js";
 import {
-    selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowFailureText, workflowStarted,
+    selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowFailure, workflowStarted,
     workflowPanelHeight, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
@@ -503,7 +503,7 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
                     const model = workflowChildModel(view);
                     const live = Array.isArray(model?.runs) ? model.runs.find(run => run?.mode === "live") ?? null : null;
                     const times = workflowTimes(histories?.get?.(row.sessionId)?.events, live?.runId ?? null);
-                    const reason = state?.key === "failed" && model?.run && model.run.mode !== "test" ? workflowFailureText(model.run) : null;
+                    const reason = state?.key === "failed" && model?.run && model.run.mode !== "test" ? workflowFailure(model.run)?.reason ?? null : null;
                     // Review UI-16: a real row with cells; its action is a named button in its first cell (a click anywhere on
                     // the row does the same).
                     return h("div", { key: row.sessionId, role: "row", className: "ps-wf-list-row is-action", "data-session-id": row.sessionId,
@@ -512,7 +512,7 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
                             h("button", { type: "button", className: "ps-link-button", "aria-label": `Open ${definition.name} #${row.number}`,
                                 onClick: () => onOpen(row.sessionId) }, `#${row.number}`)),
                         h("span", { role: "cell", className: "ps-wf-list-state" }, h(StateChip, { state }),
-                            reason ? h("span", { className: "ps-wf-list-reason" }, reason.replace(/^Failed /u, "")) : null),
+                            reason ? h("span", { className: "ps-wf-list-reason" }, reason) : null),
                         h("span", { role: "cell" }, Number.isSafeInteger(live?.revision) ? String(live.revision) : "—"),
                         h("span", { role: "cell" }, times.started !== null ? shownTime(times.started) : "—"),
                         h("span", { role: "cell" }, times.took !== null ? tookText(times.took) : "—"));
@@ -548,7 +548,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
     const runId = projection?.runId ?? readModel?.run?.runId ?? null;
     const times = workflowTimes(events, runId);
     const revision = Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null;
-    const failure = state?.key === "failed" && readModel?.run && readModel.run.mode !== "test" ? workflowFailureText(readModel.run) : null;
+    const failure = state?.key === "failed" && readModel?.run && readModel.run.mode !== "test" ? workflowFailure(readModel.run) : null;
     const [stopping, setStopping] = React.useState(false);
     // An agent node's Log shows its chat (finding 8); "Whole Workflow" shows every line of this Workflow.
     const [logScope, setLogScope] = React.useState("node");
@@ -578,7 +578,12 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
                     onClick: () => controller.sendWorkflowRunCommand(sessionId, { operation: "resume", runId: runControls.runId }) }, resume.label) : null,
                 stop || cancel ? h("button", { type: "button", className: "ps-mini-button", "data-action": "stop-dialog",
                     disabled: !(stop?.enabled || cancel?.enabled), onClick: () => setStopping(true) }, "Stop…") : null)),
-        failure ? h("p", { className: "ps-wf-line is-error", role: "status" }, failure) : null,
+        // Failure first, in plain words; the error as it arrived is folded under it (coordinator 2026-11-06).
+        failure ? h("div", { className: "ps-wf-failure" },
+            h("p", { className: "ps-wf-line is-error", role: "status" }, failure.headline),
+            failure.details && failure.details !== failure.words
+                ? h("details", { className: "ps-wf-failure-details" }, h("summary", null, "Details"), h("pre", null, failure.details))
+                : null) : null,
         readError ? h("p", { className: "ps-wf-line is-error", role: "alert" }, `This Workflow could not be read: ${readError} `,
             h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry")) : null,
         notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,

@@ -7,6 +7,7 @@
  */
 import { formatLocalTime, shortSessionId } from "./formatting.js";
 import { formatSeconds, workflowV2AgentChatMode, workflowV2AgentTask, workflowV2RouteKind } from "./workflow-v2-view.js";
+import { workflowErrorParts, workflowErrorWords } from "./workflow-error-words.js";
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const text = value => (typeof value === "string" && value.trim() ? value.trim() : null);
@@ -72,11 +73,6 @@ export function workflowNodeWhat(node) {
     }
 }
 
-const errorOf = preview => {
-    if (typeof preview !== "string") return isRecord(preview) ? preview : null;
-    try { const parsed = JSON.parse(preview); return isRecord(parsed) ? parsed : null; } catch { return null; }
-};
-
 /**
  * A result preview as people read it (owner: "the fact text, not only 'produced'"): a string as itself; an object with
  * one text field as that text; a few plain fields as "name: value" lines; anything else as indented JSON. A preview that
@@ -139,8 +135,8 @@ export function workflowNodeNow(node, execution, now = Date.now()) {
     if (node.type === "terminal") return `Reached${ended}`;
     if (execution.resultKind === "runtime_error") {
         if (ENDED_WORDS[execution.outcome]) return `${ENDED_WORDS[execution.outcome]}${ended}`;
-        const error = errorOf(execution.errorPreview);
-        const why = text(error?.message) ?? (execution.effectStatus ? `the action ${execution.effectStatus}` : null);
+        // In plain words, never the error's raw JSON (a script's: "the script stopped with an error: …").
+        const why = workflowErrorWords(execution.errorPreview) ?? (execution.effectStatus ? `the action ${execution.effectStatus}` : null);
         return `Failed${ended}${why ? ` · ${workflowFirstSentence(why, 160)}` : ""}`;
     }
     return `Done${ended}${execution.outcome ? ` · ${execution.outcome}` : ""}`;
@@ -164,9 +160,10 @@ export function workflowNodeResult(node, execution, { ended: itemEnded = undefin
     const ended = lastEnded(node, execution, itemEnded);
     if (!ended) return null;
     if (ended.resultKind === "runtime_error") {
-        const error = errorOf(ended.errorPreview);
-        const message = text(error?.message);
-        const value = message ? { text: `${message}${text(error?.code) ? ` (${error.code})` : ""}`, truncated: false }
+        // In plain words (workflowErrorWords), with the error's code; the whole error is read on request.
+        const parts = workflowErrorParts(ended.errorPreview);
+        const words = workflowErrorWords(ended.errorPreview);
+        const value = words ? { text: `${words}${parts?.code && parts.code !== words ? ` (${parts.code})` : ""}`, truncated: false }
             : workflowReadableValue(ended.errorPreview);
         return value ? { label: ended.outcome === "cancelled" ? "Why it was canceled" : "What went wrong", ...value, executionId: ended.id ?? null, error: true } : null;
     }

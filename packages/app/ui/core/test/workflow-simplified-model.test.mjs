@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 
 import { appReducer, createInitialState, selectSessionRows } from "../src/index.js";
 import {
-    selectWorkflowTabContext, workflowBadgeCount, workflowDefinitionsOf, workflowFailureText, workflowHighlightedSessionId, workflowNodeChatTitle,
+    selectWorkflowTabContext, workflowBadgeCount, workflowDefinitionsOf, workflowFailure, workflowFailureText, workflowHighlightedSessionId, workflowNodeChatTitle,
     workflowRowTitle, workflowSelectionTarget, workflowStarted, workflowStateOf, WORKFLOW_SIDE_TAB,
 } from "../src/workflow-owner.js";
 import { buildSessionTree } from "../src/session-tree.js";
@@ -88,17 +88,18 @@ test("a failed Workflow says where and why first (W4), from the run's own end, n
             { nodeExecutionId: "nx-check-3", stateId: "check", state: "completed", resultKind: "runtime_error", errorPreview: "{\"message\":\"cherry is out of stock\"}",
                 branch: { parallelNodeExecutionId: "nx-fan-1", index: 2 } },
         ] };
-    assert.equal(workflowFailureText(run), "Failed at check · item 3: cherry is out of stock");
-    assert.equal(workflowFailureText(run, { itemOf: () => "cherry" }), "Failed at check · item cherry: cherry is out of stock");
+    assert.equal(workflowFailureText(run), "check failed on item 3: cherry is out of stock");
+    assert.equal(workflowFailureText(run, { itemOf: () => "cherry" }), "check failed on item cherry: cherry is out of stock");
+    assert.equal(workflowFailure(run).reason, "at check on item 3: cherry is out of stock");
     // Newest first or oldest first: the same cause.
-    assert.equal(workflowFailureText({ ...run, nodeExecutions: [...run.nodeExecutions].reverse() }), "Failed at check · item 3: cherry is out of stock");
+    assert.equal(workflowFailureText({ ...run, nodeExecutions: [...run.nodeExecutions].reverse() }), "check failed on item 3: cherry is out of stock");
     // The causing execution not loaded: the run's own error, never the older recovered one.
     const unloaded = workflowFailureText({ ...run, nodeExecutions: [run.nodeExecutions[0]] });
-    assert.equal(unloaded, "Failed at check: State 'check' ended with runtime error 'execution_failed' and has no route for it.");
+    assert.equal(unloaded, "check failed: State 'check' ended with runtime error 'execution_failed' and has no route for it.");
     // A run whose error names no execution (its deadline, the controller): its own error, no guess among historical errors.
     assert.equal(workflowFailureText({ status: "failed", terminalState: null, error: JSON.stringify({ code: "timed_out", message: "The run reached its deadline." }),
         nodeExecutions: run.nodeExecutions }), "Failed: The run reached its deadline.");
-    assert.equal(workflowFailureText({ status: "failed", terminalState: "stuck", error: "\"no stock\"" }), "Failed at stuck: no stock");
+    assert.equal(workflowFailureText({ status: "failed", terminalState: "stuck", error: "\"no stock\"" }), "stuck failed: no stock");
     assert.equal(workflowFailureText({ status: "failed", terminalState: null, error: null, nodeExecutions: run.nodeExecutions }), null);
     assert.equal(workflowFailureText({ status: "completed" }), null);
 });

@@ -17,6 +17,8 @@
  * `cancelled` reads "Canceled").
  */
 
+import { workflowErrorDetails, workflowErrorWords } from "./workflow-error-words.js";
+
 /** The side pane's Workflow tab (L1): it shares the right block with the canvas, one at a time. */
 export const WORKFLOW_SIDE_TAB = "workflow";
 
@@ -192,36 +194,38 @@ export function workflowStateOf(session, view = null) {
     return { key, label, tone, outcome, reason };
 }
 
-/** A short plain text of a JSON-ish error value: its message when it has one, else the value itself. */
-function errorText(value) {
-    if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (!trimmed) return null;
-        try { return errorText(JSON.parse(trimmed)) ?? trimmed; } catch { return trimmed; }
-    }
-    if (isRecord(value)) return text(value.message) ?? text(value.error) ?? text(value.code) ?? null;
-    return null;
-}
-
 /**
- * Why a failed run failed (W4, failure first): "Failed at check · item 3: cherry is out of stock". Review UI-15: from the
- * run's own record of its end, never a guess among older errors: the run's error names the execution that ended it
- * (details.nodeExecutionId); that execution's own error says why (else the run's message), and its For each item (its
- * branch, `itemOf` or the item's number) says where. A run whose error names no execution says its own error. Null
- * when nothing says.
+ * Why a failed run failed (W4, failure first), in plain words: { stateId, item, words, details, headline, reason }.
+ * Review UI-15: from the run's own record of its end, never a guess among older errors: the run's error names the
+ * execution that ended it (details.nodeExecutionId); that execution's own error says why (else the run's), and its For
+ * each item (its branch, `itemOf` or the item's number) says where. Coordinator 2026-11-06: the words, never the raw error
+ * JSON (workflowErrorWords: "the script stopped with an error: Unknown model …"); the error as it arrived is `details`, for
+ * a folded block. `headline` reads "poll failed: …" ("check failed on item 3: …"); `reason`, beside a Failed chip, reads
+ * "at poll: …". Null when nothing says.
  */
-export function workflowFailureText(run, { itemOf = null } = {}) {
+export function workflowFailure(run, { itemOf = null } = {}) {
     if (!isRecord(run) || run.status !== "failed") return null;
     const envelope = jsonRecord(run.error);
     const causeId = text(envelope?.details?.nodeExecutionId);
     const rows = [...(Array.isArray(run.nodeExecutions) ? run.nodeExecutions : []), ...(Array.isArray(run.openExecutions) ? run.openExecutions : [])];
     const cause = causeId ? rows.find(row => isRecord(row) && (row.nodeExecutionId === causeId || row.id === causeId)) ?? null : null;
     const stateId = text(run.terminalState) ?? text(cause?.stateId);
-    const message = (cause ? errorText(cause.errorPreview) : null) ?? errorText(run.error);
+    const source = cause && workflowErrorWords(cause.errorPreview) ? cause.errorPreview : run.error;
+    const words = workflowErrorWords(source);
     const item = !cause ? null : typeof itemOf === "function" ? itemOf(cause)
         : Number.isSafeInteger(cause.branch?.index) ? String(cause.branch.index + 1) : null;
-    if (!stateId && !message) return null;
-    return `Failed${stateId ? ` at ${stateId}` : ""}${item ? ` · item ${item}` : ""}${message ? `: ${message}` : ""}`;
+    if (!stateId && !words) return null;
+    const where = `${stateId ?? ""}${item ? `${stateId ? " " : ""}on item ${item}` : ""}`;
+    return {
+        stateId, item, words, details: workflowErrorDetails(source),
+        headline: `${stateId ? `${stateId} failed${item ? ` on item ${item}` : ""}` : `Failed${item ? ` on item ${item}` : ""}`}${words ? `: ${words}` : ""}`,
+        reason: `${where ? `at ${where}` : ""}${where && words ? ": " : ""}${words ?? ""}`,
+    };
+}
+
+/** workflowFailure's headline ("poll failed: the script stopped with an error: …"); null when nothing says. */
+export function workflowFailureText(run, options = {}) {
+    return workflowFailure(run, options)?.headline ?? null;
 }
 
 /** A JSON object given as itself or as its text; null otherwise. */

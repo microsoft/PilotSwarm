@@ -12691,6 +12691,14 @@ textarea.ps-link-input {
   background: color-mix(in srgb, var(--ps-danger) 10%, transparent);
 }
 .ps-wf-line.is-quiet { color: var(--ps-muted); }
+/* A failed Workflow's error as it arrived, folded under its plain-words headline. */
+.ps-wf-failure { flex: none; }
+.ps-wf-failure-details { padding: 4px 10px 6px; border-bottom: 1px solid var(--ps-border); }
+.ps-wf-failure-details > summary { cursor: pointer; color: var(--ps-muted); }
+.ps-wf-failure-details > pre {
+  margin: 6px 0 0; max-height: 12em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 12px; color: var(--ps-muted);
+}
 .ps-wf-errors { padding: 6px 10px; overflow: auto; align-self: flex-start; }
 .ps-wf-errors > summary { cursor: pointer; color: var(--ps-muted); }
 .ps-wf-test { display: flex; flex-direction: column; gap: 8px; }
