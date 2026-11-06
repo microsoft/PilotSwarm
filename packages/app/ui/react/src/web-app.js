@@ -10170,7 +10170,14 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     }, [active, mobile, autoFocus, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
-        themeSoundPlayer().cue("send");
+        // The send cue confirms something will go out: text, a staged image,
+        // or a queued batch that an empty send flushes. An empty send is silent.
+        const sendState = controller.getState();
+        const sendSessionId = sendState.sessions.activeSessionId;
+        const willSend = String(sendState.ui.prompt || "").trim()
+            || controller.getPromptAttachments?.().some((attachment) => attachment?.kind === "image")
+            || (sendSessionId && controller.getPendingOutboxItems?.(sendSessionId)?.length > 0);
+        if (willSend) themeSoundPlayer().cue("send");
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
             .catch(() => {})
             .finally(() => {

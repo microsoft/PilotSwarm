@@ -143,8 +143,9 @@ function roomTail(ctx, cache) {
 }
 
 // A bell-like note: a sine with a quieter inharmonic partial, struck and left
-// to ring. Used by the star chimes and the cues.
-function bell(ctx, output, at, frequency, peak, seconds, partial = 2.76) {
+// to ring. Used by the star chimes and the cues. `track`, when given, holds
+// every ringing oscillator until it ends, so its owner can stop them early.
+function bell(ctx, output, at, frequency, peak, seconds, partial = 2.76, track = null) {
     for (const [ratio, level] of [[1, 1], [partial, 0.28]]) {
         const osc = ctx.createOscillator();
         osc.type = "sine";
@@ -157,7 +158,20 @@ function bell(ctx, output, at, frequency, peak, seconds, partial = 2.76) {
         gain.connect(output);
         osc.start(at);
         osc.stop(at + seconds / ratio + 0.05);
+        const entry = { osc, gain };
+        track?.add(entry);
+        osc.onended = () => { track?.delete(entry); gain.disconnect(); };
     }
+}
+
+// Stop every oscillator in `track` and forget them: now, or at `when` (in
+// context time) so a fade already under way can finish without a click.
+function stopAll(track, when) {
+    for (const { osc, gain } of track) {
+        try { if (when === undefined) osc.stop(); else osc.stop(when); } catch { /* already stopped */ }
+        if (when === undefined) { try { gain.disconnect(); } catch { /* already disconnected */ } }
+    }
+    track.clear();
 }
 
 // The pre-dawn sky: a warm chord that swells in over about twelve seconds,
@@ -241,10 +255,10 @@ function startDawn(ctx, output, cache) {
     const star = () => {
         const at = ctx.currentTime + 0.02;
         const note = DAWN_STAR_NOTES[Math.floor(Math.random() * DAWN_STAR_NOTES.length)];
-        bell(ctx, wet, at, note, 0.05 + Math.random() * 0.04, 2.5 + Math.random() * 1.5);
+        bell(ctx, wet, at, note, 0.05 + Math.random() * 0.04, 2.5 + Math.random() * 1.5, 2.76, live);
         if (Math.random() < 0.3) {
             const echo = DAWN_STAR_NOTES[Math.floor(Math.random() * DAWN_STAR_NOTES.length)];
-            bell(ctx, wet, at + 0.18 + Math.random() * 0.25, echo, 0.03, 2.2);
+            bell(ctx, wet, at + 0.18 + Math.random() * 0.25, echo, 0.03, 2.2, 2.76, live);
         }
         later(star, nextDawnStarGapMs());
     };
@@ -255,29 +269,29 @@ function startDawn(ctx, output, cache) {
         for (const handle of timers) clearTimeout(handle);
         timers.clear();
         try { air.stop(); } catch { /* already stopped */ }
-        for (const { osc } of live) { try { osc.stop(); } catch { /* already stopped */ } }
-        live.clear();
+        stopAll(live);
         padGain.disconnect();
         airGain.disconnect();
         wet.disconnect();
+        if (room) room.disconnect();
     };
 }
 
 // Short sounds for actions, for a theme that asks for them with `cues`.
 // tick: a soft glass tick, pitch varied so repeats do not grate.
 // send: two rising notes. done: one low, warm chime.
-function playCue(ctx, output, name, wet) {
+function playCue(ctx, output, name, wet, track = null) {
     const at = ctx.currentTime + 0.005;
     if (name === "tick") {
-        bell(ctx, output, at, 2300 + Math.random() * 500, 0.07, 0.07, 2.4);
+        bell(ctx, output, at, 2300 + Math.random() * 500, 0.07, 0.07, 2.4, track);
     } else if (name === "send") {
-        bell(ctx, output, at, 880, 0.09, 0.45);
-        bell(ctx, output, at + 0.09, 1318.51, 0.09, 0.6);
-        if (wet) bell(ctx, wet, at + 0.09, 1318.51, 0.04, 0.8);
+        bell(ctx, output, at, 880, 0.09, 0.45, 2.76, track);
+        bell(ctx, output, at + 0.09, 1318.51, 0.09, 0.6, 2.76, track);
+        if (wet) bell(ctx, wet, at + 0.09, 1318.51, 0.04, 0.8, 2.76, track);
     } else if (name === "done") {
-        bell(ctx, output, at, 293.66, 0.16, 1.8, 2.0);
-        bell(ctx, output, at, 440, 0.05, 1.4, 2.0);
-        if (wet) bell(ctx, wet, at, 293.66, 0.08, 2.2, 2.0);
+        bell(ctx, output, at, 293.66, 0.16, 1.8, 2.0, track);
+        bell(ctx, output, at, 440, 0.05, 1.4, 2.0, track);
+        if (wet) bell(ctx, wet, at, 293.66, 0.08, 2.2, 2.0, track);
     }
 }
 
@@ -303,6 +317,9 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
     let master = null;
     let cueBus = null;
     let cueWet = null;
+    // Cue notes still ringing, so turning sound off, hiding the tab or a
+    // theme without cues cuts them instead of letting them finish.
+    const cueNotes = new Set();
     const lastCue = {};
     let stopVoice = null;
     let sound = null;
@@ -385,8 +402,24 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
         resume();
     };
 
+    // Cues follow the same rules as the ambient: their bus is at the person's
+    // volume only while the theme's sound is active and the theme has cues.
+    // Muting fades the bus in a few ms and cuts the notes still ringing, so
+    // nothing plays on after sound off, a hidden tab or a theme change.
+    const setCueLevel = (level) => {
+        if (!cueBus || !ctx) return;
+        if (level > 0) {
+            cueBus.gain.setTargetAtTime(level, ctx.currentTime, 0.02);
+            return;
+        }
+        cueBus.gain.cancelScheduledValues(ctx.currentTime);
+        cueBus.gain.setTargetAtTime(0, ctx.currentTime, 0.012);
+        stopAll(cueNotes, ctx.currentTime + 0.08);
+    };
+
     // Fade to silence over `seconds`, then stop the voice so it costs nothing.
     const silence = (seconds = 0.3) => {
+        setCueLevel(0);
         if (master && ctx) {
             master.gain.cancelScheduledValues(ctx.currentTime);
             master.gain.setTargetAtTime(0, ctx.currentTime, Math.max(0.02, seconds / 4));
@@ -428,6 +461,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             stopVoice = null;
         }
         master.gain.setTargetAtTime(level * volume * MAX_GAIN, ctx.currentTime, 0.12);
+        setCueLevel(sound.cues ? volume * MAX_GAIN : 0);
         setMarker(level > 0 ? "playing" : "resting");
     };
 
@@ -462,9 +496,10 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             if (!ctx || ctx.state !== "running" || !cueBus) return false;
             const now = Date.now();
             if (now - (lastCue[name] || 0) < gap) return false;
+            if (!(volume > 0)) return false;
             lastCue[name] = now;
             cueBus.gain.setTargetAtTime(volume * MAX_GAIN, ctx.currentTime, 0.005);
-            try { playCue(ctx, cueBus, name, cueWet); } catch { return false; }
+            try { playCue(ctx, cueBus, name, cueWet, cueNotes); } catch { return false; }
             return true;
         },
         update(next = {}) {
@@ -491,6 +526,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             stopFadingNow();
             setMarker(null);
             unschedule();
+            stopAll(cueNotes);
             if (ctx) ctx.close().catch(() => {});
             ctx = null;
             master = null;
