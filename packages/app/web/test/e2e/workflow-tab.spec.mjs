@@ -3310,6 +3310,39 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
     });
 }
 
+// Review UI2-F1 (short UI re-review, high): a Workflow the panel showed once (its model read and cached as Running) fails
+// in the background while the panel is closed. The catalog read brings its Failed row; the dot must come back, although
+// the cached model still says Running and no panel reads it.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI2-F1" (from packages/app/web, after build).
+test("UI2-F1: a Workflow shown once fails in the background, the panel closed: the dot comes back", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const models = { ...OWNED_MODELS };
+    const { rows } = await routeOwned(page, { models });
+    const profile = await routeProfileSaves(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    const named = (name) => page.getByRole("button", { name, exact: true });
+    const dot = page.locator(".ps-canvas-toggle").filter({ has: page.getByRole("button", { name: /^Workflow( —|$)/ }) }).locator(".ps-canvas-badge");
+    // #1 is shown (Running): its model is read and kept. Showing the panel clears the dot #2's failure had put on.
+    await revealRow(page, "watch-v2 #1");
+    await sessionRow(page, "watch-v2 #1").click();
+    await expect(workflowTab(page)).toBeVisible();
+    await expect(workflowTab(page).locator(".ps-wf-bar.is-run .ps-wf-state")).toHaveText("Running");
+    await expect(dot).toHaveCount(0);
+    await expect.poll(() => profile.stored?.canvasPrefs?.[AGENT_ID]?.lastViewedWorkflowAt ?? 0, { timeout: 15_000 }).toBeGreaterThan(0);
+    await page.getByRole("button", { name: /^Hide the Workflow tab/ }).click();
+    await expect(named("Workflow")).toBeVisible();
+    await expect(dot).toHaveCount(0);
+    // In the background #1 fails: its row and its model say so; no panel shows it.
+    models[OWNED.running] = { ...OWNED_MODELS[OWNED.failed], workflowId: OWNED.running };
+    rows[0] = { ...rows[0], status: "failed", updatedAt: Date.now() };
+    await expect(named("Workflow — needs attention")).toBeVisible({ timeout: 15_000 });
+    await expect(dot).toHaveCount(1);
+    await expect(sessionRow(page, "watch-v2 #1").locator(".ps-session-row-workflow-state")).toHaveText("Failed");
+    expect(errors).toEqual([]);
+});
+
 /** sRGB relative luminance and the WCAG contrast of two "rgb(…)" colours (alpha already composited). */
 const luminance = ({ r, g, b }) => [r, g, b].map(v => v / 255).map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
     .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);

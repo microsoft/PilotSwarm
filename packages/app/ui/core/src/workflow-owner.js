@@ -162,9 +162,25 @@ function stateFromRow(session) {
     }
 }
 
+const msOf = value => (typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value ?? ""));
+
+/**
+ * Review UI2-F1: the session row's ended state (Completed, Failed, Canceled) when the row changed after the read model was
+ * read (the read's `readModelAttempt.sessionUpdatedAt`): a catalog read that says the Workflow ended is newer than a
+ * cached model that says it runs. Null otherwise.
+ */
+function rowEndedAfterRead(session, view) {
+    const key = stateFromRow(session);
+    if (key !== "completed" && key !== "failed" && key !== "canceled") return null;
+    const updated = msOf(session?.updatedAt);
+    const read = msOf(view?.readModelAttempt?.sessionUpdatedAt ?? null);
+    return Number.isFinite(updated) && Number.isFinite(read) && updated > read ? key : null;
+}
+
 /**
  * A Workflow's state as a person reads it (05): Running, Waiting for input, Paused, Canceling…, Canceled, Failed or
- * Completed, from its live run in the read model when one is loaded, else from its session row. Returns
+ * Completed, from its live run in the read model when one is loaded, else from its session row. Review UI2-F1: a row
+ * that ended after the model was read wins over a model whose run has not ended (the model is read again). Returns
  * { key, label, tone, outcome, reason }: `label` adds a completed end's outcome when it is not succeeded
  * ("Completed · blocked"); `reason` says why a Canceled run ended (after started nodes finished, or immediately) and
  * where a Failed run failed, when the read model says it. Null for a session that is not a started workflow child.
@@ -178,8 +194,11 @@ export function workflowStateOf(session, view = null) {
     let key = null;
     let outcome = null;
     let reason = null;
-    if (live || full) {
-        const status = full?.status ?? live.status;
+    const status = live || full ? full?.status ?? live.status : null;
+    const ended = ["completed", "failed", "cancelled", "stopped"].includes(status);
+    const rowEnded = status && !ended ? rowEndedAfterRead(session, view) : null;
+    if (rowEnded) key = rowEnded;
+    else if (live || full) {
         const stopping = Boolean(full && isRecord(full.stop) && ["admitted", "running", "paused"].includes(status));
         key = stateFromStatus(status, { stopping, waiting: Boolean(full) && !stopping && waitsForInput(model, full) });
         outcome = text(full?.outcome) ?? text(live?.outcome);
@@ -530,8 +549,7 @@ export function workflowAttentionAt(byId, ownerId, views = {}) {
         if (!workflowStarted(session, view)) continue;
         const key = workflowStateOf(session, view)?.key;
         if (key !== "waiting" && key !== "failed") continue;
-        const value = session.updatedAt;
-        const updated = typeof value === "number" ? value : value instanceof Date ? value.getTime() : Date.parse(value ?? "");
+        const updated = msOf(session.updatedAt);
         if (Number.isFinite(updated) && updated > at) at = updated;
     }
     return at;
@@ -560,6 +578,24 @@ export function workflowHighlightedSessionId(sessions) {
 export function workflowActiveChildIds(byId, ownerId, limit = 10) {
     return workflowChildrenOf(byId, ownerId)
         .filter(session => !["completed", "failed", "cancelled", "error"].includes(session.status))
+        .map(session => session.sessionId)
+        .reverse()
+        .slice(0, limit);
+}
+
+/**
+ * Review UI2-F1: the Workflows of a session whose read models the Workflow button's dot needs read again, newest first,
+ * at most `limit`: those still running (an input wait shows only in the model), and those whose row changed after their
+ * loaded model was read (a run that ended, or reached an input wait, while no panel showed it). A read of an unchanged
+ * Workflow is skipped by ensureWorkflowReadModel itself.
+ */
+export function workflowAttentionChildIds(byId, ownerId, views = {}, limit = 10) {
+    return workflowChildrenOf(byId, ownerId)
+        .filter(session => {
+            if (!["completed", "failed", "cancelled", "error"].includes(session.status)) return true;
+            const attempt = views?.[session.sessionId]?.readModelAttempt;
+            return Boolean(attempt) && (attempt.sessionUpdatedAt ?? null) !== (session.updatedAt ?? null);
+        })
         .map(session => session.sessionId)
         .reverse()
         .slice(0, limit);

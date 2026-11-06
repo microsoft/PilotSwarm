@@ -79,7 +79,7 @@ import {
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
 import {
-    workflowActiveChildIds, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowHighlightedSessionId, workflowNumberOf, workflowOwnerId,
+    selectWorkflowTabContext, workflowActiveChildIds, workflowAttentionChildIds, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowHighlightedSessionId, workflowNumberOf, workflowOwnerId,
     workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStartAnotherText, workflowStateOf,
 } from "./workflow-owner.js";
 import { getTheme, listThemes } from "./themes/index.js";
@@ -2969,6 +2969,8 @@ export class PilotSwarmUiController {
             }
             await this.syncSessionDetail(selected).catch(() => {});
             await this.syncSessionEvents(selected).catch(() => {});
+            // Review UI2-F1: the Workflow button's dot reads the Workflows' models; read changed ones whether or not shown.
+            this.refreshWorkflowAttention();
             syncedIds.add(selected);
             const state = this.getState();
             const activeSession = state.sessions.byId[selected] || null;
@@ -6560,6 +6562,18 @@ export class PilotSwarmUiController {
      * so its Workflow badge (O6) and the Workflow rows say which wait for input. Each read is the shared, deduplicated
      * read of that Workflow (ensureWorkflowReadModel); nothing is awaited. `ids` reads those Workflows instead.
      */
+    /**
+     * Review UI2-F1: read again the models of the active chat's Workflows that the Workflow button's dot depends on
+     * (workflowAttentionChildIds: those still running, and those whose row changed after their model was read), whether
+     * or not a Workflow panel shows them. Each read is the shared one, and an unchanged Workflow's is skipped. Never throws.
+     */
+    refreshWorkflowAttention() {
+        const state = this.getState();
+        const ownerId = selectWorkflowTabContext(state).ownerId;
+        if (!ownerId) return;
+        this.ensureWorkflowChildModels(ownerId, workflowAttentionChildIds(state.sessions.byId, ownerId, state.ui.workflowViews));
+    }
+
     ensureWorkflowChildModels(ownerId, ids = null) {
         if (!ownerId) return;
         const list = Array.isArray(ids) ? ids : workflowActiveChildIds(this.getState().sessions.byId, ownerId);
