@@ -227,6 +227,30 @@ test("selecting an agent node's chat selects that node in its Workflow and opens
     assert.equal(other.ui.workflowViews["wf-3"].selectedNodeId, "fetch");
 });
 
+// Review UI-D2: an agent chat's navigation shows its own Workflow's definition and the Workflows view, whatever definition
+// or view was left chosen in the owner's Workflow tab; a later choice in the tab chooses again.
+test("UI-D2: selecting an agent node's chat shows its Workflow's definition, the Workflows view, that Workflow and node", () => {
+    let state = loaded();
+    // Left on the other definition's Definition view.
+    state = appReducer(state, { type: "ui/workflowTab", ownerId: OWNER, patch: { view: "definition", definition: "nightly-report", workflowId: null } });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "agent-1" });
+    assert.deepEqual(state.ui.workflowTabs[OWNER], { view: "workflows", definition: "check-items", workflowId: "wf-3" });
+    assert.equal(state.ui.workflowViews["wf-3"].selectedNodeId, "summarize");
+    assert.deepEqual(selectWorkflowTabContext(state), { ownerId: OWNER, workflowId: "wf-3", nodeSessionId: "agent-1", nodeStateId: "summarize" });
+    assert.equal(Number(state.ui.workflowOpenSeq) || 0, 0, "the phone keeps showing the chat that was tapped");
+    // A later deliberate choice in the tab stands.
+    state = appReducer(state, { type: "ui/workflowTab", ownerId: OWNER, patch: { view: "definition" } });
+    assert.equal(state.ui.workflowTabs[OWNER].view, "definition");
+    // Selecting the chat again chooses again.
+    state = appReducer(state, { type: "sessions/selected", sessionId: OWNER });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "agent-1" });
+    assert.equal(state.ui.workflowTabs[OWNER].view, "workflows");
+    // An ordinary chat's selection leaves the tab as it is.
+    const other = appReducer(state, { type: "ui/workflowTab", ownerId: OWNER, patch: { view: "definition", definition: "nightly-report" } });
+    const plain = appReducer(other, { type: "sessions/selected", sessionId: "other" });
+    assert.deepEqual(plain.ui.workflowTabs[OWNER], other.ui.workflowTabs[OWNER]);
+});
+
 test("a Workflow whose session is not loaded stays the active session and is the tab's Workflow", () => {
     const alone = [workflow("wf-x", "check-items", 1, "running", { parentSessionId: "missing" })];
     const state = appReducer(loaded(alone), { type: "sessions/selected", sessionId: "wf-x" });

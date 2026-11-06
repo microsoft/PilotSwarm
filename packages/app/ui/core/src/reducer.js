@@ -11,7 +11,8 @@ import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selecto
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
 import {
-    normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfChat, workflowSelectionTarget,
+    normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfChat, workflowOwnerId,
+    workflowSelectionTarget,
 } from "./workflow-owner.js";
 import {
     normalizeArtifactEntries,
@@ -886,16 +887,27 @@ export function appReducer(state, action) {
     if (workflowTarget) return openWorkflowTab(reconciled);
     // Review UI-9: selecting an agent node's chat (or one of its sub-agents) is a choice of its Workflow and that node, made
     // now: the node is selected in its Workflow (a later click on the graph chooses again) and the Workflow tab opens.
+    // Review UI-D2: in the same step, its owner's Workflow tab shows that Workflow's definition, the Workflows view and that
+    // Workflow, whatever definition or view was chosen there before (a later choice in the tab chooses again).
     if (effective.type === "sessions/selected") {
         const agentNode = agentNodeOfSelection(reconciled);
         if (agentNode) {
             const chosen = agentNode.nodeStateId
                 ? baseReducer(reconciled, { type: "ui/workflowView", sessionId: agentNode.workflowId, view: { selectedNodeId: agentNode.nodeStateId } })
                 : reconciled;
-            return openWorkflowTab(chosen, { phone: false });
+            return openWorkflowTab(showWorkflowInOwnerTab(chosen, agentNode.workflowId), { phone: false });
         }
     }
     return reconciled;
+}
+
+/** Review UI-D2: the owner's Workflow tab on this Workflow: its definition, the Workflows view and the Workflow. */
+function showWorkflowInOwnerTab(state, workflowId) {
+    const workflow = state.sessions?.byId?.[workflowId];
+    const ownerId = workflow ? workflowOwnerId(workflow) : null;
+    const key = ownerId || workflowId;
+    return baseReducer(state, { type: "ui/workflowTab", ownerId: key, patch: { view: "workflows", workflowId,
+        definition: workflowDefinitionName(workflow, state.ui.workflowViews?.[workflowId]) } });
 }
 
 /** The Workflow and node of a selected agent node chat or its sub-agent (S6): { workflowId, nodeStateId }, else null. */
