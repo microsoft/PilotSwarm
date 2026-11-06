@@ -12362,6 +12362,8 @@ textarea.ps-link-input {
 .ps-swipe-hint-arrow { font-size: 22px; line-height: 1; color: var(--ps-accent); }
 .ps-swipe-hint-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 @media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
+  /* No will-change here: a lasting transform would make the workspace the
+     containing block of its fixed overlays. The swipe sets one only while a
+     finger is down, and clears it after. */
   .ps-web-shell { overflow-x: clip; }
-  .ps-workspace { will-change: transform; }
 }
