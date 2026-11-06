@@ -77,9 +77,22 @@ value stays `cancelled`.
   idle chat at once. If the chat ended on its own, the next open visit starts
   a new chat and says so. `continue` is refused inside a For each. Migration
   0106 drops the UNIQUE on `workflow_agent_invocations.child_session_id`.
-  **Known limit:** after a visit times out, the next visit's prompt can wait
+  Each turn of a continued chat works for one visit, its turn visit: the
+  open visit its prompt names, or, for a turn a timer or a sub-agent's update
+  starts, the visit of the chat's newest visit prompt. A turn whose visit is
+  already decided does not run (no model call). A decided visit's Stop
+  (request id `workflow-cycle-stop:<visit>`) is applied only to a turn of that
+  visit; a person's Stop applies as always. The step reminder and the
+  completion name only the turn's own visit. When the run ends before the
+  chat exists, but a spawn attempt began, the chat's end stays owed; the next
+  check that finds the chat (the spawn's own, the run's cleanup, recovery)
+  ends it.
+  **Known limits:** after a visit times out, the next visit's prompt can wait
   behind the old turn until its abort lands, and the next visit's time limit
   runs during that wait. Results stay correct: each binds to its own visit.
+  An update from a sub-agent or a timer that arrives between visits is
+  recorded in the chat but is not given to the model; the next visit's prompt
+  carries the current state.
 - **Removed:** the Notices bell and the Publish review. Each notice moved to
   where it applies (the revision line, one line over the graph, the Workflow
   state, the Log) or went away.

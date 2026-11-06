@@ -711,7 +711,33 @@ export const WORKFLOW_AGENT_REMINDED_EVENT = "workflow.agent_reminded";
 /** The answer of recordAgentReminder: remind the child now (the n-th reminder of its step), or why not. */
 export type WorkflowAgentReminderRecord =
     | { recorded: true; n: number; max: number; stateId: string; nodeExecutionId: string; repeat: boolean; cycle?: string }
-    | { recorded: false; reason: "not_a_step" | "decided" | "expired" | "sub_agents" | "spent" };
+    | { recorded: false; reason: "not_a_step" | "decided" | "expired" | "sub_agents" | "spent" | "no_visit" };
+
+/**
+ * The visit a turn of a chat that continues works for (review RT-1..RT-3, the turn-to-visit fence; readTurnVisit):
+ * `nodeExecutionId` (null: the chat has no recorded visit prompt), whether that visit is still open (pending), and
+ * whether it was inherited from an earlier turn's prompt (a turn a timer or a sub-agent's update started).
+ */
+export interface WorkflowTurnVisit {
+    nodeExecutionId: string | null;
+    open: boolean;
+    inherited: boolean;
+}
+
+/** The node execution a workflow agent visit's prompt id names (`workflow:<wf>:<run>:agent:<nx>`), or null. Pure. */
+export function workflowVisitOfPromptId(clientMessageId: unknown): string | null {
+    if (typeof clientMessageId !== "string" || !clientMessageId.startsWith("workflow:")) return null;
+    const at = clientMessageId.lastIndexOf(":agent:");
+    const id = at > 0 ? clientMessageId.slice(at + ":agent:".length) : "";
+    return /^nx-[0-9a-f]{1,64}$/.test(id) ? id : null;
+}
+
+/** The visit a continued chat's turn Stop names (`workflow-cycle-stop:<nx>`, with `:sent` after a late send), or null. Pure. */
+export function workflowVisitOfStopRequestId(requestId: unknown): string | null {
+    if (typeof requestId !== "string") return null;
+    const found = /^workflow-cycle-stop:(nx-[0-9a-f]{1,64})(?::sent)?$/.exec(requestId);
+    return found ? found[1] : null;
+}
 /** The largest details value of an agent's reported runtime error, in UTF-8 bytes of canonical JSON. */
 export const WORKFLOW_V2_AGENT_ERROR_DETAILS_MAX_BYTES = 16 * 1024;
 
@@ -5651,6 +5677,66 @@ export class WorkflowStore {
     }
 
     /**
+     * The turn visit of a chat that continues (the turn-to-visit fence; review RT-2, RT-3): the visit whose prompt the
+     * turn received. `promptClientMessageIds` are the turn's prompt ids: among the visits they name that are this chat's,
+     * the open one, else the newest. A turn whose prompt names none of them (a timer, a sub-agent's update) inherits the
+     * visit of this chat's newest recorded prompt that names one. Null when the session is not a chat that continues (no
+     * invocation, or a visit's own chat: chat: new is untouched).
+     */
+    async readTurnVisit(childSessionId: string, promptClientMessageIds: readonly string[]): Promise<WorkflowTurnVisit | null> {
+        if (!storableId(childSessionId)) return null;
+        const { rows: any } = await this.pool.query(
+            `SELECT node_execution_id FROM ${this.t.agentInvocations} WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`,
+            [childSessionId]);
+        if (!any[0] || !workflowAgentChatContinues({ nodeExecutionId: str(any[0], "node_execution_id"), childSessionId })) return null;
+        const visitsOf = async (ids: readonly string[]): Promise<{ id: string; open: boolean } | null> => {
+            if (ids.length === 0) return null;
+            const { rows } = await this.pool.query(
+                `SELECT i.node_execution_id, n.state FROM ${this.t.agentInvocations} i JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                  WHERE i.child_session_id = $1 AND i.node_execution_id = ANY($2::text[])
+                  ORDER BY (n.state = 'pending') DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`, [childSessionId, [...new Set(ids)]]);
+            return rows[0] ? { id: str(rows[0], "node_execution_id"), open: str(rows[0], "state") === "pending" } : null;
+        };
+        const own = await visitsOf(promptClientMessageIds.map(workflowVisitOfPromptId).filter((id): id is string => id !== null));
+        if (own) return { nodeExecutionId: own.id, open: own.open, inherited: false };
+        // Inherited: the newest recorded prompt of this chat that names a visit.
+        const { rows: prompts } = await this.pool.query(
+            `SELECT e.data->'clientMessageIds' AS ids FROM ${this.t.sessionEvents} e
+              WHERE e.session_id = $1 AND e.event_type IN ('user.message', 'system.message')
+                AND jsonb_typeof(e.data->'clientMessageIds') = 'array'
+                AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(e.data->'clientMessageIds') x(id) WHERE x.id LIKE 'workflow:%:agent:%')
+              ORDER BY e.seq DESC LIMIT 1`, [childSessionId]);
+        const named = Array.isArray(prompts[0]?.ids) ? (prompts[0].ids as unknown[]).map(workflowVisitOfPromptId).filter((id): id is string => id !== null) : [];
+        const inherited = await visitsOf(named);
+        return inherited ? { nodeExecutionId: inherited.id, open: inherited.open, inherited: true } : { nodeExecutionId: null, open: false, inherited: true };
+    }
+
+    /** The request id of each turn control (a session event at `seq`) of session `sessionId`: seq -> requestId (null: none). */
+    async readControlRequestIds(sessionId: string, seqs: readonly number[]): Promise<Map<number, string | null>> {
+        const wanted = [...new Set(seqs.filter(seq => Number.isSafeInteger(seq) && seq > 0))];
+        const found = new Map<number, string | null>();
+        if (!storableId(sessionId) || wanted.length === 0) return found;
+        const { rows } = await this.pool.query(
+            `SELECT seq, data->>'requestId' AS request_id FROM ${this.t.sessionEvents}
+              WHERE session_id = $1 AND seq = ANY($2::bigint[]) AND event_type IN ('user.steer', 'user.stop')`, [sessionId, wanted]);
+        for (const row of rows) found.set(Number(row.seq), strOrNull(row, "request_id"));
+        return found;
+    }
+
+    /**
+     * Whether any visit of chat `childSessionId` began a spawn attempt (review RT-1, t2): such an attempt may still create
+     * the chat, so a run's end that finds no chat leaves its end owed. beginAgentSpawn records each attempt in the
+     * transaction that checks its node is pending, under the workflow session's lock, and a run's end decides its pending
+     * nodes under that lock: no attempt here after the run ended means no chat is created later.
+     */
+    async chatHasSpawnAttempt(childSessionId: string): Promise<boolean> {
+        if (!storableId(childSessionId)) return false;
+        const { rows } = await this.pool.query(
+            `SELECT EXISTS (SELECT 1 FROM ${this.t.agentInvocations} WHERE child_session_id = $1 AND spawn_attempts > 0) AS attempted`, [childSessionId]);
+        return bool(rows[0], "attempted");
+    }
+
+    /**
      * The visits of a run's state `stateId` before visit `beforeNodeExecutionId` (every visit, when null), in the order
      * they were admitted: how many there are, and the last of them (null when none). A state that continues its chat
      * (owner decision agent-node-continue-20261106) numbers a visit's cycle and finds its previous visit, and chooses a
@@ -5688,7 +5774,8 @@ export class WorkflowStore {
      * binds to its own, decided visit and is refused there). Null: not a workflow agent state's chat. A continued chat's
      * call without the id, or with one that is not its own, is refused in words, nothing written.
      */
-    private async agentInvocationOfCompletion(client: PoolClient, childSessionId: string, nodeExecutionId: string | undefined): Promise<Row | null> {
+    private async agentInvocationOfCompletion(client: PoolClient, childSessionId: string, nodeExecutionId: string | undefined,
+        turnVisit: string | null = null): Promise<Row | null> {
         const columns = "node_execution_id, workflow_session_id, run_id";
         const { rows } = await client.query(
             `SELECT ${columns} FROM ${this.t.agentInvocations} WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`,
@@ -5708,6 +5795,11 @@ export class WorkflowStore {
         if (!own[0]) {
             throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `node_execution_id ${named} is not a cycle of this chat; give the id in this cycle's prompt.`);
         }
+        // The turn-to-visit fence (review RT-3): a turn completes only the visit whose prompt it received.
+        if (turnVisit !== null && nodeExecutionId !== turnVisit) {
+            throw new WorkflowStoreError("AGENT_NODE_NOT_FOUND", `This turn works on cycle ${turnVisit}, not ${named}; `
+                + `give node_execution_id ${turnVisit}, the id in the prompt this turn received.`);
+        }
         return own[0];
     }
 
@@ -5725,21 +5817,29 @@ export class WorkflowStore {
      * number, and counts nothing more, after the same checks (a closed step or a sub-agent at work refuses it too).
      * Every refusal records nothing.
      */
-    async recordAgentReminder(input: { childSessionId: string; turn: number; max?: number }): Promise<WorkflowAgentReminderRecord> {
+    async recordAgentReminder(input: { childSessionId: string; turn: number; max?: number; visit?: string | null }): Promise<WorkflowAgentReminderRecord> {
         if (!storableId(input.childSessionId) || !Number.isSafeInteger(input.turn) || input.turn < 0) return { recorded: false, reason: "not_a_step" };
         const max = input.max ?? WORKFLOW_V2_AGENT_MAX_REMINDERS;
         return this.transaction(async client => {
-            // A chat that continues across a state's visits (owner decision agent-node-continue-20261106) is reminded of its
-            // open visit, by that visit's node execution id (at most one is open: such a state is never inside a For each),
-            // never of "the newest" by itself; with none open, the newest is read and refused decided.
-            const { rows: found } = await client.query(
-                `SELECT i.node_execution_id, i.workflow_session_id, i.run_id FROM ${this.t.agentInvocations} i
-                   JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
-                  WHERE i.child_session_id = $1 ORDER BY (n.state = 'pending') DESC, i.created_at DESC, i.node_execution_id DESC LIMIT 1`,
-                [input.childSessionId]);
-            if (!found[0]) return { recorded: false, reason: "not_a_step" } as const;
+            // A chat that continues across a state's visits (owner decision agent-node-continue-20261106) is reminded only of
+            // its turn's own visit (`visit`: the visit whose prompt the reminded turn received; review RT-3), checked below
+            // like any step, never of the chat's open or newest visit: a turn with no visit of its own gets no reminder.
+            // A visit's own chat (chat: new) is reminded of its one invocation, as before.
+            const { rows: newest } = await client.query(
+                `SELECT node_execution_id, workflow_session_id, run_id FROM ${this.t.agentInvocations}
+                  WHERE child_session_id = $1 ORDER BY created_at DESC, node_execution_id DESC LIMIT 1`, [input.childSessionId]);
+            if (!newest[0]) return { recorded: false, reason: "not_a_step" } as const;
+            const continued = workflowAgentChatContinues({ nodeExecutionId: str(newest[0], "node_execution_id"), childSessionId: input.childSessionId });
+            let found = newest;
+            if (continued) {
+                if (typeof input.visit !== "string" || !storableId(input.visit)) return { recorded: false, reason: "no_visit" } as const;
+                ({ rows: found } = await client.query(
+                    `SELECT node_execution_id, workflow_session_id, run_id FROM ${this.t.agentInvocations} WHERE child_session_id = $1 AND node_execution_id = $2`,
+                    [input.childSessionId, input.visit]));
+                if (!found[0]) return { recorded: false, reason: "no_visit" } as const;
+            }
             const nodeExecutionId = str(found[0], "node_execution_id");
-            const cycle = workflowAgentChatContinues({ nodeExecutionId, childSessionId: input.childSessionId }) ? { cycle: nodeExecutionId } : {};
+            const cycle = continued ? { cycle: nodeExecutionId } : {};
             const workflowSessionId = str(found[0], "workflow_session_id");
             const live = await this.lockLiveSession(client, workflowSessionId);
             const run = await this.lockRun(client, str(found[0], "run_id"));
@@ -5795,10 +5895,12 @@ export class WorkflowStore {
      */
     async listOwedAgentInvocations(runId: string, afterNodeExecutionId: string | null, limit = 200): Promise<WorkflowAgentInvocation[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.t.agentInvocations}
-              WHERE run_id = $1 AND (end_sent_at IS NULL OR (end_child_status = 'NotFound' AND spawn_attempts > 0))
-                AND ($2::text IS NULL OR node_execution_id > $2)
-              ORDER BY node_execution_id LIMIT $3`, [runId, afterNodeExecutionId, limit]);
+            `SELECT i.* FROM ${this.t.agentInvocations} i
+              WHERE i.run_id = $1 AND (i.end_sent_at IS NULL OR (i.end_child_status = 'NotFound' AND (i.spawn_attempts > 0
+                    -- A continued chat's end is owed on its newest visit when any of its visits began a spawn (review RT-1).
+                    OR EXISTS (SELECT 1 FROM ${this.t.agentInvocations} o WHERE o.child_session_id = i.child_session_id AND o.spawn_attempts > 0))))
+                AND ($2::text IS NULL OR i.node_execution_id > $2)
+              ORDER BY i.node_execution_id LIMIT $3`, [runId, afterNodeExecutionId, limit]);
         return rows.map(agentInvocationFrom);
     }
 
@@ -5989,7 +6091,8 @@ export class WorkflowStore {
      * The caller wakes the run's controller after the commit (a hint; its
      * backstop collection finds the result too).
      */
-    async completeAgentNode(input: { childSessionId: string; operationId: string; call: unknown; nodeExecutionId?: string }): Promise<WorkflowAgentCompletionResult> {
+    async completeAgentNode(input: { childSessionId: string; operationId: string; call: unknown; nodeExecutionId?: string; turnVisit?: string | null })
+        : Promise<WorkflowAgentCompletionResult> {
         const notFound = () => new WorkflowStoreError("AGENT_NODE_NOT_FOUND", "This session is not running a workflow agent state.");
         if (!storableId(input.childSessionId)) throw notFound();
         // 1. The call's shape and the operation id.
@@ -6031,7 +6134,8 @@ export class WorkflowStore {
         const valueText = canonicalJson(value);
         const resultSha256 = kindValueSha256(kind, valueText);
         return this.transaction(async client => {
-            const found = await this.agentInvocationOfCompletion(client, input.childSessionId, input.nodeExecutionId);
+            const found = await this.agentInvocationOfCompletion(client, input.childSessionId, input.nodeExecutionId,
+                typeof input.turnVisit === "string" ? input.turnVisit : null);
             if (!found) throw notFound();
             const nodeExecutionId = str(found, "node_execution_id");
             // 2. The locks, then a known operation decides alone.

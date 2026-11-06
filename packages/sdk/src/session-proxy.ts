@@ -28,7 +28,7 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, INTAKE_ENDED_BEFORE_SEND_MESSAGE, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type TurnOptions, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, INTAKE_ENDED_BEFORE_SEND_MESSAGE, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type TurnOptions, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord, type TurnControl } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -67,6 +67,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LiveTurnControl } from "./turn-control.js";
+import { workflowVisitOfStopRequestId, type WorkflowTurnVisit } from "./workflow/v2/store.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
 import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
 import { faultPoint, faultPointAsync } from "./fault-injection.js";
@@ -2424,6 +2425,12 @@ export function registerActivities(
         const workflowTestScope = workflowLineage?.agentRoot && catalog?.workflowStore
             ? await workflowTestAgentScope(catalog.workflowStore(), workflowLineage)
             : null;
+        // The turn-to-visit fence (review RT-1..RT-3; design wfs-rt1-3-fence-design.md, accepted with the parent's decisions):
+        // a turn of an agent state's chat that continues works for one visit, its turn visit (store.readTurnVisit), read
+        // right after the turn starts: a turn whose visit is decided does not run, only a Stop naming that visit stops it,
+        // and its reminder and completion name only that visit. Null for every other session (chat: new included).
+        const workflowFenceStore = workflowAgentChild && catalog?.workflowStore ? catalog.workflowStore() : null;
+        let workflowTurnVisit: WorkflowTurnVisit | null = null;
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -3046,7 +3053,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // Adversarial review R2-RT-3: a host that cannot be made is the tool's coded answer, never the error's own text.
                     let host: Awaited<ReturnType<typeof workflowBridgeHost>>;
                     try { host = await workflowBridgeHost(); } catch (error) { return workflowCompletionFailure(error); }
-                    return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient });
+                    return completeWorkflowNodeFromTool(args, { callerSessionId: input.sessionId, store: host.store, client: host.duroxideClient,
+                        // A continued chat's turn completes only the visit whose prompt it received (RT-3).
+                        ...(workflowTurnVisit?.nodeExecutionId ? { turnVisit: workflowTurnVisit.nodeExecutionId } : {}) });
                 },
             } : {}),
 
@@ -4680,6 +4689,33 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }
             }
 
+            // The turn-to-visit fence (RT-1..RT-3): the turn visit, read after the turn started (so a Stop recorded after the read
+            // binds to this turn), a read that fails failing the turn (it is retried); and the controls such a turn takes: a
+            // Stop that names another visit of the chat (its request id, workflow-cycle-stop:<nx>) is not this turn's.
+            const readWorkflowTurnVisit = async (): Promise<WorkflowTurnVisit | null> => workflowFenceStore
+                ? cmsRetryCritical(`runTurn.turnVisit session=${input.sessionId}`,
+                    () => workflowFenceStore.readTurnVisit(input.sessionId, incomingClientMessageIds), (msg) => activityCtx.traceInfo(msg))
+                : null;
+            const admitTurnControls = async (controls: TurnControl[]): Promise<TurnControl[]> => {
+                const visit = workflowTurnVisit?.nodeExecutionId ?? null;
+                if (!workflowFenceStore || !workflowTurnVisit || !controls.some((c) => c.kind === "stop")) return controls;
+                let ids: Map<number, string | null>;
+                try {
+                    ids = await workflowFenceStore.readControlRequestIds(input.sessionId, controls.filter((c) => c.kind === "stop").map((c) => c.seq));
+                } catch {
+                    return controls;    // unknown: a Stop is applied, as before the fence
+                }
+                return controls.filter((c) => {
+                    if (c.kind !== "stop") return true;
+                    const target = workflowVisitOfStopRequestId(ids.get(c.seq) ?? null);
+                    const kept = target === null || target === visit;
+                    if (!kept) activityCtx.traceInfo(`[turn-control] session=${input.sessionId} seq=${c.seq} stop for visit ${target} is not this turn's (${visit ?? "none"})`);
+                    return kept;
+                });
+            };
+            const decidedTurnVisit = (): string | null =>
+                workflowTurnVisit?.nodeExecutionId && !workflowTurnVisit.open ? workflowTurnVisit.nodeExecutionId : null;
+
             // ── Turn control T3: turn start (replaces setActiveTurnIndex) ──
             // Not best-effort: without it no control could reach this turn,
             // so a failure throws and the turn retries (plan P21).
@@ -4694,24 +4730,31 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if ("stale" in started) {
                     throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
                 }
+                workflowTurnVisit = await readWorkflowTurnVisit();
+                const decided = decidedTurnVisit();
                 let start = 0;
                 if (lifecycle && (started.stopped || started.controls.length > 0)) {
                     // The saved cursor is read only when needed. A session
                     // without a store saves nothing (D4): cursor 0.
                     start = savedControlCursor(readTurnCommitFile(sessionDirOf())?.result, tc.turn);
                 }
-                const open = started.controls.filter((c) => c.seq > start);
+                const open = await admitTurnControls(started.controls.filter((c) => c.seq > start));
                 const openStop = open.find((c) => c.kind === "stop");
-                if (started.stopped || openStop) {
+                if (started.stopped || openStop || decided) {
                     // A Stop reached this turn before the model ran: end it
                     // without a model run. Carried steers are taken by the
-                    // stopped turn (D6).
+                    // stopped turn (D6). A continued chat's turn whose visit
+                    // is decided is ended the same way (the fence: its Stop
+                    // may have found no turn and is not sent again).
                     tc.earlyStop = true;
                     tc.startCursor = start;
                     tc.carriedTaken = tc.carried.length > 0;
                     await Promise.allSettled(pendingEventWrites.splice(0));
-                    activityCtx.traceInfo(`[turn-control] session=${input.sessionId} turn=${tc.turn} stopped at turn start`);
-                    return { type: "stopped", reason: openStop?.text || "Stopped by user" } as TurnResult;
+                    activityCtx.traceInfo(decided && !started.stopped && !openStop
+                        ? `[turn-control] session=${input.sessionId} turn=${tc.turn} not run: its workflow visit ${decided} is decided`
+                        : `[turn-control] session=${input.sessionId} turn=${tc.turn} stopped at turn start`);
+                    return { type: "stopped", reason: openStop?.text
+                        || (decided ? `The workflow already ended cycle ${decided}; this turn was not run.` : "Stopped by user") } as TurnResult;
                 }
                 // Fold carried steers (before the prompt; they replace the
                 // carried-steers wake prompt) and steers accepted for this
@@ -4731,6 +4774,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     sessionId: input.sessionId,
                     turn: tc.turn,
                     start,
+                    ...(workflowTurnVisit ? { admit: admitTurnControls } : {}),
                     abort: (reason) => sessionManager.abortWarmSessionTurn(input.sessionId, {
                         reason,
                         ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
@@ -4743,6 +4787,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     trace: (message) => activityCtx.traceInfo(message),
                 });
                 void sessionManager.getTurnControlHub?.()?.register(tc.live);
+            } else if (workflowFenceStore) {
+                // No turn control: no Stop reaches a turn, but a turn whose visit is decided still does not run (the fence).
+                workflowTurnVisit = await readWorkflowTurnVisit();
+                const decided = decidedTurnVisit();
+                if (decided) {
+                    await Promise.allSettled(pendingEventWrites.splice(0));
+                    activityCtx.traceInfo(`[runTurn] session=${input.sessionId} not run: its workflow visit ${decided} is decided`);
+                    return { type: "stopped", reason: `The workflow already ended cycle ${decided}; this turn was not run.` } as TurnResult;
+                }
             }
 
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
@@ -4933,7 +4986,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 return { remind: false, reason: "schedule" };
                             }
                         }
-                        const record = await reminderStore.recordAgentReminder({ childSessionId: input.sessionId, turn: input.turnIndex ?? 0 });
+                        // A continued chat's turn is reminded only of its own visit (RT-3): the turn visit read at its start.
+                        const record = await reminderStore.recordAgentReminder({ childSessionId: input.sessionId, turn: input.turnIndex ?? 0,
+                            ...(workflowTurnVisit ? { visit: workflowTurnVisit.nodeExecutionId } : {}) });
                         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} step reminder: ` + (record.recorded
                             ? `${record.repeat ? "again " : ""}${record.n} of ${record.max} for step ${record.nodeExecutionId}` : `none (${record.reason})`));
                         return record.recorded

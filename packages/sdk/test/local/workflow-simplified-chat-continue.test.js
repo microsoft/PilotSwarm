@@ -165,16 +165,46 @@ describe("chat: continue in the store (migration 0106)", () => {
             const all = await store.readAgentVisitsBefore(runId, "talk", null);
             expect([all.count, all.previous.nodeExecutionId]).toEqual([copies + 2, second]);
             expect(await store.readAgentVisitsBefore(runId, "talk", "rt5-1001")).toEqual({ count: 0, previous: null });
+
+            // RT-2/RT-3, the turn-to-visit fence: a turn's visit is the open one its prompt names, else the newest it names;
+            // a prompt that names none inherits the chat's newest recorded visit prompt; a session that does not continue a
+            // chat has none.
+            const pid = nx => `workflow:${workflowSessionId}:${runId}:agent:${nx}`;
+            expect(await store.readTurnVisit(chat, [pid(second)])).toEqual({ nodeExecutionId: second, open: true, inherited: false });
+            expect(await store.readTurnVisit(chat, [pid(first)])).toEqual({ nodeExecutionId: first, open: false, inherited: false });
+            expect(await store.readTurnVisit(chat, [pid(first), pid(second)])).toEqual({ nodeExecutionId: second, open: true, inherited: false });
+            expect(await store.readTurnVisit(chat, [])).toEqual({ nodeExecutionId: null, open: false, inherited: true });
+            await catalog.recordEvents(chat, [{ eventType: "user.message", data: { content: "cycle 2", clientMessageIds: [pid(second)] } }]);
+            await catalog.recordEvents(chat, [{ eventType: "user.message", data: { content: "a sub-agent's update" } }]);
+            expect(await store.readTurnVisit(chat, ["some-other-id"])).toEqual({ nodeExecutionId: second, open: true, inherited: true });
+            expect(await store.readTurnVisit(mini, [pid(second)])).toBeNull();
+            // A Stop's request id names its visit; the worker reads it by the Stop's position.
+            const { rows: [stopRow] } = await direct.query(
+                `INSERT INTO "${env.cmsSchema}".session_events (session_id, event_type, data) VALUES ($1, 'user.stop', $2) RETURNING seq`,
+                [chat, JSON.stringify({ turn: 3, text: "cycle ended", requestId: `workflow-cycle-stop:${first}:sent` })]);
+            expect(await store.readControlRequestIds(chat, [Number(stopRow.seq), 999_999_999]))
+                .toEqual(new Map([[Number(stopRow.seq), `workflow-cycle-stop:${first}:sent`]]));
+            // RT-1: whether any visit of the chat began a spawn attempt.
+            expect(await store.chatHasSpawnAttempt(chat)).toBe(false);
+            expect((await store.beginAgentSpawn(second)).action).toBe("spawn");
+            expect(await store.chatHasSpawnAttempt(chat)).toBe(true);
             // A late answer of the first visit binds to it, never to the open one, and is refused there.
             expect(await store.completeAgentNode({ childSessionId: chat, operationId: "late-1", call: { outcome: "finish", output: { fact: "late" } },
                 nodeExecutionId: first })).toMatchObject({ kind: "refused", code: "COMPLETION_CONFLICT" });
             expect(await store.readNodeExecution(second)).toMatchObject({ state: "pending" });
-            // A reminder binds to the open visit and names it.
-            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7 }))
+            // A reminder binds to the reminded turn's own visit and names it (RT-3); a turn with no visit, or with a decided
+            // one, is not reminded, whatever visit is open.
+            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7 })).toEqual({ recorded: false, reason: "no_visit" });
+            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: first })).toEqual({ recorded: false, reason: "decided" });
+            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 7, visit: second }))
                 .toMatchObject({ recorded: true, nodeExecutionId: second, cycle: second, stateId: "talk", n: 1 });
+            // A turn completes only its own visit (RT-3).
+            await expect(store.completeAgentNode({ childSessionId: chat, operationId: "op-other-turn", call: { outcome: "finish", output: { fact: "x" } },
+                nodeExecutionId: second, turnVisit: first }))
+                .rejects.toMatchObject({ code: "AGENT_NODE_NOT_FOUND", message: expect.stringContaining(`This turn works on cycle ${first}`) });
             expect(await store.completeAgentNode({ childSessionId: chat, operationId: "op-2", call: { outcome: "finish", output: { fact: "two" } },
                 nodeExecutionId: second })).toMatchObject({ kind: "accepted", receipt: { nodeExecutionId: second, outcome: "finish" } });
-            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 8 })).toMatchObject({ recorded: false, reason: "decided" });
+            expect(await store.recordAgentReminder({ childSessionId: chat, turn: 8, visit: second })).toMatchObject({ recorded: false, reason: "decided" });
             // With no visit open, the lineage's agent root is the newest visit, still one row.
             expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, nodeExecutionId: second, distance: 1 } });
         } finally {
@@ -234,17 +264,19 @@ function* chatChild(ctx) {
  * (its catalog row and its orchestration) and gives it each visit's prompt; the catalog's turn control is a spy that
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
-async function harness(env, { storeHooks = null } = {}) {
+async function harness(env, { storeHooks = null, storeBefore = null, beforeCreate = null } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
     // `storeHooks[name](result, args)` runs after the controller's call of that store method returns, before its caller
-    // goes on (a race a test sets up at an exact point); every other method is the store's own.
-    const controllerStore = storeHooks ? new Proxy(store, {
+    // goes on, and `storeBefore[name](args)` before the call (a race a test sets up at an exact point); every other method
+    // is the store's own.
+    const controllerStore = storeHooks || storeBefore ? new Proxy(store, {
         get(target, key) {
             const value = Reflect.get(target, key, target);
             if (typeof value !== "function") return value;
-            if (Object.hasOwn(storeHooks, key)) return async (...args) => storeHooks[key](await value.apply(target, args), args);
+            if (storeHooks && Object.hasOwn(storeHooks, key)) return async (...args) => storeHooks[key](await value.apply(target, args), args);
+            if (storeBefore && Object.hasOwn(storeBefore, key)) return async (...args) => { await storeBefore[key](args); return value.apply(target, args); };
             return value.bind(target);
         },
     }) : store;
@@ -259,6 +291,8 @@ async function harness(env, { storeHooks = null } = {}) {
     const agentNodes = {
         async spawn(request) {
             spawns.push(request);
+            // A spawn that passed its open check and has not created the chat yet (a test holds it here).
+            if (beforeCreate) await beforeCreate(request);
             const instanceId = `session-${request.childSessionId}`;
             if ((await client.getStatus(instanceId)).status === "NotFound") {
                 await catalog.createSession(request.childSessionId, {}).catch(() => {});
@@ -523,6 +557,91 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
             await h.stop();
         }
     });
+    for (const [label, finish] of [
+        ["the run completes", async (h, run, chat, nx) => {
+            expect(await completeAs(h, chat, { outcome: "finish", output: { fact: "one" }, operation_id: "op-1", node_execution_id: nx }))
+                .toMatchObject({ ok: true });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "completed" });
+            return "done";
+        }],
+        ["the run is canceled", async (h, run) => {
+            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "enough" }, { actor: ACTOR, operationId: "cancel-rt1" });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
+            return "cancel";
+        }],
+    ]) {
+        it(`RT-1: ${label} while a spawn that passed its check has not created the chat: the end stays owed, and the after-send check ends the chat once`, { timeout: TIMEOUT }, async () => {
+            let release;
+            const held = new Promise(resolve => { release = resolve; });
+            const h = await harness(getEnv(), { beforeCreate: () => held });
+            try {
+                const run = await started(h, CHAT_YAML());
+                const chat = workflowAgentChatSessionId(run.runId, "talk");
+                const first = await visit(h, 1);
+                const end = await finish(h, run, chat, first.nodeExecutionId);
+                // The run's cleanup found no chat, and an attempt that may still create it: the end is owed, not ChatEnded.
+                await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "NotFound", "the owed end");
+                expect((await h.client.getStatus(`session-${chat}`)).status).toBe("NotFound");
+                release();
+                expect(await chatEnd(h, chat)).toMatchObject({ type: "cmd", cmd: end, id: `workflow-agent-chat-end:${chat}`, requestedBy: run.workflowSessionId });
+                await until(async () => (await h.store.readAgentInvocation(first.nodeExecutionId))?.endChildStatus === "ChatEnded", "the chat ended");
+                await pause(1_000);
+                expect(await commandsOf(h, chat)).toHaveLength(1);
+                expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_ended")).map(data => [data.sent, data.childStatus]))
+                    .toEqual([[false, "NotFound"], [true, expect.any(String)]]);
+            } finally {
+                release?.();
+                await h.stop();
+            }
+        });
+    }
+
+    it("RT-1 (formal t2): an older visit's late send creates the chat after the run ended while the newest visit had no attempt: the chat is ended", { timeout: TIMEOUT }, async () => {
+        let release;
+        const held = new Promise(resolve => { release = resolve; });
+        let h = null;
+        let firstVisit = null;
+        const secondVisit = [];
+        h = await harness(getEnv(), {
+            // Visit 1's spawn passed its check and holds before it creates the chat.
+            beforeCreate: request => {
+                firstVisit ??= request.nodeExecutionId;
+                return request.nodeExecutionId === firstVisit ? held : undefined;
+            },
+            storeBefore: {
+                // Visit 2 is admitted; before its spawn attempt begins, the run is canceled and its cleanup runs.
+                async beginAgentSpawn([nodeExecutionId]) {
+                    if (firstVisit === null || nodeExecutionId === firstVisit || secondVisit.length > 0) return;
+                    secondVisit.push(nodeExecutionId);
+                    const { workflowSessionId } = await h.store.readAgentInvocation(nodeExecutionId);
+                    await controlWorkflowV2Run(h.host, workflowSessionId, { operation: "cancel", runId: null, reason: "enough" },
+                        { actor: ACTOR, operationId: "cancel-t2" });
+                    await until(async () => (await h.store.readAgentInvocation(nodeExecutionId))?.endChildStatus === "NotFound",
+                        "the owed end on the newest visit");
+                },
+            },
+        });
+        try {
+            const run = await started(h, CHAT_YAML({ limit: "1", wait: 1 }));
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const first = await visit(h, 1);
+            // Visit 1 times out while its send is held; visit 2 is admitted to the same chat (never created yet).
+            await until(async () => (secondVisit.length > 0 ? secondVisit : null), "visit 2's spawn");
+            expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
+            const newest = await h.store.readAgentInvocation(secondVisit[0]);
+            expect(newest).toMatchObject({ childSessionId: chat, spawnAttempts: 0, endChildStatus: "NotFound" });
+            // Visit 1's host now creates the chat; its after-send check finds the run ended and ends the chat.
+            release();
+            expect(await chatEnd(h, chat)).toMatchObject({ type: "cmd", cmd: "cancel", id: `workflow-agent-chat-end:${chat}` });
+            await pause(1_000);
+            expect(await commandsOf(h, chat)).toHaveLength(1);
+            expect(h.spawns.map(request => request.nodeExecutionId)).toEqual([first.nodeExecutionId]);
+        } finally {
+            release?.();
+            await h.stop();
+        }
+    });
+
     it("formal review: a retried spawn of a visit whose result arrived creates no replacement chat and logs no new chat", { timeout: TIMEOUT }, async () => {
         let h = null;
         let watched = null;

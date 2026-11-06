@@ -95,6 +95,8 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
     callerSessionId: string;
     store: Pick<WorkflowStore, "completeAgentNode">;
     client?: WorkflowAgentWakeClient | null;
+    /** A continued chat's turn visit (the turn-to-visit fence; review RT-3): only that visit may be completed in this turn. */
+    turnVisit?: string | null;
 }): Promise<string> {
     try {
         const call: Record<string, unknown> = {};
@@ -104,6 +106,7 @@ export async function completeWorkflowNodeFromTool(args: Record<string, unknown>
         const result = await context.store.completeAgentNode({
             childSessionId: context.callerSessionId, operationId: args.operation_id as string, call,
             ...(typeof args.node_execution_id === "string" && args.node_execution_id ? { nodeExecutionId: args.node_execution_id } : {}),
+            ...(typeof context.turnVisit === "string" ? { turnVisit: context.turnVisit } : {}),
         });
         const decided = result.kind === "accepted" || result.code === "OUTPUT_ATTEMPTS_EXHAUSTED";
         if (decided && context.client) {

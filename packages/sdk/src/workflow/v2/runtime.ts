@@ -2840,7 +2840,10 @@ export async function endWorkflowV2RunAgents(store: WorkflowStore, client: Workf
         for (const invocation of page) {
             // WFO-2: an end marked sent when the child did not exist yet, after a spawn attempt began, is sent again: the
             // attempt may have created the child since (its record failed, so nothing else ends it).
-            const recheck = invocation.endSentAt !== null && invocation.endChildStatus === "NotFound" && invocation.spawnAttempts > 0;
+            // A continued chat's owed end is on its newest visit, whose own attempts may be none (RT-1): the list returns it only
+            // when one of the chat's visits began an attempt.
+            const recheck = invocation.endSentAt !== null && invocation.endChildStatus === "NotFound"
+                && (invocation.spawnAttempts > 0 || workflowAgentChatContinues(invocation));
             if (invocation.endSentAt !== null && !recheck) continue;
             try {
                 await endWorkflowV2AgentChild(store, client, invocation.nodeExecutionId, recheck ? { afterSpawn: true } : {});
@@ -2885,22 +2888,23 @@ export type WorkflowV2AgentTurnStop = (childSessionId: string, reason: string, r
 
 /**
  * A decided visit of a state that continues its chat (chat: continue; owner decision agent-node-continue-20261106;
- * formal Q2 and Q5):
+ * formal Q2 and Q5; the turn-to-visit fence, review RT-1..RT-3):
  * - while the run is active, the visit's turn is stopped if it still runs (a time limit, a cancel of the visit, or the
- *   agent's own result that its turn goes on after), never the chat, and only while the visit is the chat's newest (a
- *   later visit's turn is not this one's). A spawn that sent the prompt after the visit was decided (a stale send) stops
- *   it again (afterSpawn);
+ *   agent's own result that its turn goes on after), never the chat. The Stop names the visit (its request id); the chat's
+ *   worker applies it only to a turn of that visit, so a later visit's turn is never stopped by it, and a turn of this
+ *   visit that starts later does not run (its visit is decided: the fence checked at turn start). A spawn that sent the
+ *   prompt after the visit was decided (a stale send) asks again (afterSpawn);
  * - the visit's end is settled without a command (WORKFLOW_AGENT_CHAT_CONTINUES): the chat stays open for the next visit;
- * - when the run is stopping or has ended, the chat gets no more visits and is ended now (endContinuedChat).
+ * - when the run is stopping or has ended, the chat gets no more visits and is ended now (endContinuedChat), whichever
+ *   of its visits this is: an older visit's late send can be the one that finds the chat open (review RT-1, t2).
  */
 async function endContinuedVisit(store: WorkflowStore, client: WorkflowV2AgentEndClient, invocation: WorkflowAgentInvocation,
     node: WorkflowNodeExecutionRow, end: "done" | "cancel", options: { afterSpawn?: boolean; stopTurn?: WorkflowV2AgentTurnStop })
     : Promise<{ end: "done" | "cancel"; sent: boolean }> {
     const run = await store.readRun(invocation.runId);
     const active = run !== null && ACTIVE_RUN_STATUSES.includes(run.status);
-    const newest = (await store.readAgentInvocationByChild(invocation.childSessionId))?.nodeExecutionId === invocation.nodeExecutionId;
     let turnStopped = false;
-    if (active && newest && options.stopTurn && (invocation.endSentAt === null || options.afterSpawn === true)) {
+    if (active && options.stopTurn && (invocation.endSentAt === null || options.afterSpawn === true)) {
         await options.stopTurn(invocation.childSessionId, `The workflow ended this cycle of step ${node.nodeId} (${node.outcome ?? end}).`,
             // A stale send's stop is another Stop: the first may have been recorded for an earlier turn.
             `workflow-cycle-stop:${invocation.nodeExecutionId}${options.afterSpawn === true ? ":sent" : ""}`);
@@ -2916,7 +2920,7 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowV2AgentEn
             } }]);
         }
     }
-    if (run !== null && newest && (!active || Boolean(run.stop))) {
+    if (run !== null && (!active || Boolean(run.stop))) {
         const chatEnd = await endContinuedChat(store, client, run, invocation.childSessionId);
         if (chatEnd !== null) return chatEnd;
     }
@@ -2929,6 +2933,11 @@ async function endContinuedVisit(store: WorkflowStore, client: WorkflowV2AgentEn
  * it, else "cancel"), sent while the chat's session runs, once (its newest visit is marked WORKFLOW_AGENT_CHAT_ENDED),
  * with a stable id per chat. A chat whose newest visit is still running is left to finish (a stopping run's started
  * work); the run's end ends it. Null when nothing was ended now.
+ *
+ * Review RT-1: a chat with no session yet, when any of its visits began a spawn attempt (that attempt may still create
+ * it), keeps its end owed: its newest visit is marked NotFound, as a chat: new child's is, so the after-spawn and
+ * after-send checks of every visit, the run's cleanup and recovery look again and end it once it exists. ChatEnded is
+ * marked only after the end was sent, or when no attempt began (nothing can create the chat later).
  */
 async function endContinuedChat(store: WorkflowStore, client: WorkflowV2AgentEndClient, run: WorkflowRunRow, childSessionId: string)
     : Promise<{ end: "done" | "cancel"; sent: boolean } | null> {
@@ -2940,6 +2949,18 @@ async function endContinuedChat(store: WorkflowStore, client: WorkflowV2AgentEnd
     const sessionInstance = `session-${childSessionId}`;
     const status = (await client.getStatus(sessionInstance)).status;
     const sent = status !== "NotFound" && !TERMINAL_ORCHESTRATION_STATUSES.includes(status);
+    if (status === "NotFound" && await store.chatHasSpawnAttempt(childSessionId)) {
+        // Not created yet, but an attempt may still create it: the end stays owed (RT-1).
+        await store.recordAgentEnd(last.nodeExecutionId, end);
+        const { marked } = await store.markContinuedChatEnded(last.nodeExecutionId, "NotFound");
+        if (marked) {
+            await store.recordSessionEvents(last.workflowSessionId, [{ eventType: "workflow.agent_ended", data: {
+                runId: run.runId, nodeExecutionId: last.nodeExecutionId, stateId: node.nodeId, childSessionId, end, outcome: node.outcome,
+                sent: false, childStatus: status, chat: "continue",
+            } }]);
+        }
+        return { end, sent: false };
+    }
     if (sent) {
         const why = ACTIVE_RUN_STATUSES.includes(run.status) ? "is stopping, so this chat gets no more cycles" : `ended (${run.status})`;
         await client.enqueueEvent(sessionInstance, "messages", JSON.stringify({

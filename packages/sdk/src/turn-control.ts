@@ -67,6 +67,12 @@ export interface LiveTurnControlOptions {
     abort: (reason: string) => Promise<unknown>;
     /** Best-effort durable record of a confirmed steer (session.steer_confirmed). */
     record?: (eventType: string, data: Record<string, unknown>) => Promise<void>;
+    /**
+     * The controls this turn takes, from those taken from the CMS (all, when absent). A continued workflow chat's turn
+     * keeps only the Stops that name its own visit, and every other control (the turn-to-visit fence; review RT-2). A
+     * dropped control is still taken (`sent` moves past it) and is labelled by turn end as it would be.
+     */
+    admit?: (controls: TurnControl[]) => Promise<TurnControl[]>;
     trace?: (message: string) => void;
 }
 
@@ -119,11 +125,33 @@ export class LiveTurnControl implements TurnControlBinding {
     /** Take new controls; they are applied one at a time, in position order. */
     enqueue(controls: TurnControl[]): Promise<void> {
         if (this.retired) return this.chain;
+        const fresh: TurnControl[] = [];
         for (const control of [...controls].sort((a, b) => a.seq - b.seq)) {
             if (control.seq <= this.sent) continue;              // a duplicate wake-up
             this.sent = control.seq;
-            this.queue.push(control);
+            fresh.push(control);
         }
+        const admit = this.opts.admit;
+        if (!admit || fresh.length === 0) {
+            this.queue.push(...fresh);
+            return this.takeQueued();
+        }
+        // Admitted in order with earlier takes (the chain), so the queue keeps position order.
+        this.chain = this.chain
+            .then(async () => {
+                const kept = await admit(fresh);
+                if (this.retired) return;
+                this.queue.push(...kept.sort((a, b) => a.seq - b.seq));
+            })
+            .catch((err) => {
+                const port = this.port;
+                if (!this.retired && !this.stopping && port) port.failTurn(err);
+            });
+        return this.chain.then(() => this.takeQueued());
+    }
+
+    /** Apply a queued Stop at once while the gate is open, else drain what is queued. */
+    private takeQueued(): Promise<void> {
         const stop = this.queue.find((c) => c.kind === "stop");
         if (stop && this.gate() === "open") return this.applyStop(stop);
         return this.drainSoon();
