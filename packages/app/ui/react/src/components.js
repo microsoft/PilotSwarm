@@ -352,6 +352,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             // own messages (and tag the owner) in shared sessions.
             authPrincipal: state.auth?.principal || null,
             branding: state.branding,
+            agentTitles: state.agentTitles,
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
             chatScroll: state.ui.scroll.chat,
@@ -367,6 +368,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         }
         return {
             branding: chatView.branding,
+            agentTitles: chatView.agentTitles,
             auth: { principal: chatView.authPrincipal },
             connection: {
                 error: chatView.connectionError,
@@ -397,6 +399,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         chatView.activeOutbox,
         chatView.authPrincipal,
         chatView.branding,
+        chatView.agentTitles,
         chatView.connectionError,
         chatView.connectionMode,
     ]);

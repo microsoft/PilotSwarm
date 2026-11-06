@@ -5422,6 +5422,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // three sessions stopped for three different reasons all read
         // "waiting".
         budgetPaused: state.budget?.paused,
+        // Agent display titles order a named agent session's title (the
+        // person's title first). Same trap again: leave it out and every
+        // "DeepWiki Code Explorer: <title>" row keeps the agent name first.
+        agentTitles: state.agentTitles,
     }), shallowEqualObject);
     // Picker state is local React state, not controller state. Reading these
     // props inside the subscription selector delays changes until the next
@@ -5460,7 +5464,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             prefs: viewState.canvasPrefs,
         },
         budget: { paused: viewState.budgetPaused },
-    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+        agentTitles: viewState.agentTitles,
+    }), [viewState.activeSessionId, viewState.agentTitles, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
@@ -7277,6 +7282,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
                 ? state.outbox.bySessionId[activeSessionId]
                 : EMPTY_ARRAY,
             branding: state.branding,
+            agentTitles: state.agentTitles,
             connection: state.connection,
             sessionsById: state.sessions.byId,
             sessionsFlat: state.sessions.flat,
@@ -7294,6 +7300,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     }, shallowEqualObject);
     const selectorState = React.useMemo(() => ({
         branding: viewState.branding,
+        agentTitles: viewState.agentTitles,
         connection: viewState.connection,
         auth: { principal: viewState.authPrincipal },
         sessions: {
@@ -7318,6 +7325,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         viewState.activeHistory,
         viewState.activeSessionId,
         viewState.activeOutbox,
+        viewState.agentTitles,
         viewState.authPrincipal,
         viewState.branding,
         viewState.connection,
