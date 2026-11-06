@@ -3477,6 +3477,33 @@ test("r3 C02 phone: a failed Workflow's failure is one line with Details beside 
     expect(errors).toEqual([]);
 });
 
+// Usability re-test r3, C09 at 1440: after a reload with a Workflow row selected under its chat, in zen, the Workflow showed
+// alone in the middle (no chat, no zen): the profile's stored row was applied before the session list answered and could
+// not be mapped to its chat. Once the list answers, the chat is selected with that row, in its own view (zen).
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "r3 C09" (from packages/app/web, after build).
+test("r3 C09: a reload with a Workflow row selected and the session list late keeps the chat, the Workflow tab and zen", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeOwned(page);
+    const profile = await routeProfileSaves(page);
+    profile.stored = { sessionOwnerFilter: { all: true }, activeSessionId: OWNED.failed, rightPaneMode: "canvas",
+        desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: true, sideTab: "workflow" },
+        sessionViews: { [AGENT_ID]: { desktop: { at: 1, canvasOpen: true, diagnosticsOpen: false, zen: true, layout: {} } } } };
+    await routeViewer(page, TEST_OWNER);
+    await page.route(url => url.pathname.endsWith("/management/sessions"), async (route) => {
+        await new Promise(resolve => setTimeout(resolve, 1_500));
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/`);
+    const main = workflowTab(page);
+    await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed, { timeout: 15_000 });
+    // The chat is in the middle, the Workflow in the right block's tab, in zen.
+    await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
+    await expect(main.locator(".ps-wf-tab-head").getByRole("button", { name: "Leave zen mode", exact: true })).toBeVisible();
+    expect(errors).toEqual([]);
+});
+
 test("layout: on a phone the Workflow pane lies over the chat, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];

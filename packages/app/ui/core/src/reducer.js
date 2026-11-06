@@ -874,6 +874,29 @@ function normalizePromptAttachments(prompt, attachments) {
 }
 
 export function appReducer(state, action) {
+    const next = appReducerStep(state, action);
+    return next === state ? next : selectWorkflowOwnerOnceLoaded(next);
+}
+
+/**
+ * Usability re-test r3, C09: a Workflow row saved as the selection (the profile's activeSessionId is the highlighted row,
+ * UI-8) and applied before the catalog answered could not be mapped to its session then, so it stayed the active session
+ * itself: after a reload the Workflow showed alone in the middle, with no chat, zen or full screen. A workflow child is
+ * the active session only while its session is not loaded (selectWorkflowTabContext); once that session's row is
+ * loaded, select its chat with the Workflow row, as a click on the row or a link does, and apply that chat's own view
+ * (its columns and zen). A link still resolving maps itself.
+ */
+function selectWorkflowOwnerOnceLoaded(state) {
+    const sessions = state.sessions;
+    const active = sessions?.activeSessionId ?? null;
+    if (!active || sessions.workflowRowId || sessions.navigationIntent?.status === "pending") return state;
+    const target = workflowSelectionTarget(sessions.byId, active);
+    if (!target) return state;
+    const remapped = { ...state, sessions: { ...sessions, activeSessionId: target.ownerId, workflowRowId: target.workflowId } };
+    return rememberWorkflowRow(reconcileSessionView(state, remapped, { type: "sessions/workflowOwnerLoaded" }));
+}
+
+function appReducerStep(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
     const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
