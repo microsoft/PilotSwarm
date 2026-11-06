@@ -629,7 +629,8 @@ export function workflowViewDraftRefusal(selection) {
     const viewer = isPlainRecord(commands?.viewer) ? commands.viewer : null;
     const why = !isPlainRecord(model) ? "The workflow is not loaded yet."
         : !commands ? "This deployment takes no workflow commands from people."
-            : model.definition?.state === "published" ? "The definition has started a Workflow, so it no longer changes. A new version needs a new workflow."
+            // Review UI-F7: true also for a definition fixed by publication without a run: no claim that a Workflow started.
+            : model.definition?.state === "published" ? "The definition no longer changes. A new version needs a new workflow."
                 : model.definition?.state !== "draft" ? "The definition no longer changes."
                     : !offered ? workflowV2RestrictionText(commands) ?? "This workflow takes no YAML changes from people."
                         : viewer?.allowed === false ? (typeof viewer.reason === "string" && viewer.reason ? viewer.reason : "You cannot command this workflow.")

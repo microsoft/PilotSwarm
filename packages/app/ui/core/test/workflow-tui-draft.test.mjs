@@ -418,7 +418,11 @@ test("the editor is not offered for a published definition, in an agent state's 
         assert.ok(!details(h.store).some(line => line.startsWith("Draft ·")), reason);
         return h;
     };
-    await refusedWith(draft({ state: "published" }), "The definition has started a Workflow, so it no longer changes. A new version needs a new workflow.");
+    // Review UI-F7: a definition published without a run (draft() has none) stays non-editable, and the refusal does not
+    // say a Workflow started.
+    const unstarted = await refusedWith(draft({ state: "published" }), "The definition no longer changes. A new version needs a new workflow.");
+    assert.deepEqual(draft({ state: "published" }).runs, []);
+    assert.doesNotMatch(statusOf(unstarted.store), /start|publish/i);
     await refusedWith(draft({ operations: ["pause", "stop", "cancel"],
         restriction: { reason: SUBTREE, workflowSessionId: "outer", controllingSessionId: "parent-1" } }), `${SUBTREE} Its controlling agent is session parent-1.`);
     await refusedWith(draft({ yaml: null, viewer: { allowed: false, reason: "You may read this workflow but not command it." } }),
@@ -434,7 +438,7 @@ test("the editor is not offered for a published definition, in an agent state's 
     const shown = editor(gone.store);
     assert.equal(shown.title, "Definition");
     assert.equal(joined(shown.statusLines),
-        "The definition cannot be edited here. The definition has started a Workflow, so it no longer changes. A new version needs a new workflow.");
+        "The definition cannot be edited here. The definition no longer changes. A new version needs a new workflow.");
     type(gone, "x");
     await gone.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_SAVE);
     assert.deepEqual(gone.sent(), []);
