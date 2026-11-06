@@ -5080,9 +5080,14 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const unsettled = (targetSession as { takeUnsettledRun?: () => boolean }).takeUnsettledRun;
                 if (typeof unsettled === "function" && unsettled.call(targetSession)) {
                     traceWarn(`[runTurn] session=${input.sessionId}: the model run aborted after a turn-control failure did not settle; dropping its warm session`);
-                    await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true }).catch((err: any) => {
-                        activityCtx.traceInfo(`[runTurn] warm-session invalidation failed (non-fatal): ${err?.message ?? err}`);
-                    });
+                    try {
+                        await sessionManager.invalidateWarmSession(input.sessionId, { lockHeld: true });
+                    } catch (err: any) {
+                        // Review RT-F1-L1: the unsettled session is never committed or reused. invalidateWarmSession forgets
+                        // the handle whatever fails; this attempt fails (retryable) so nothing of it is saved.
+                        throw new Error(`The model run aborted after a turn-control failure did not settle, and its warm session `
+                            + `could not be dropped cleanly: ${err?.message ?? err}. The turn is retried.`);
+                    }
                 }
                 return ran;
             };

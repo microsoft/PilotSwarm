@@ -3596,11 +3596,15 @@ export class SessionManager {
         }
         const session = this.sessions.get(sessionId);
         if (!session) return;
-        await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
+        // Review RT-F1-L1: an invalidated handle is forgotten whatever fails on the way, so it is never reused.
         try {
-            await session.destroy();
-        } catch {}
-        this._forgetWarmSession(sessionId);
+            await this._cancelWorkspaceShells(sessionId, session, "an invalidation");
+            try {
+                await session.destroy();
+            } catch {}
+        } finally {
+            this._forgetWarmSession(sessionId);
+        }
     }
 
     /**

@@ -266,5 +266,19 @@ describe("the turn-to-visit fence of a chat that continues", () => {
             if (dropped) expect(order[0].slice(1)).toEqual([CHAT, { lockHeld: true }]);
         }
     });
+
+    // Review RT-F1-L1: when dropping the unsettled warm session fails, the attempt fails (retryable) before any turn end or
+    // save, so nothing of the unsettled run is committed; the manager forgets the handle whatever fails (session-manager).
+    it("RT-F1-L1: a failed drop of the unsettled warm session fails the attempt before turn end; nothing is committed", async () => {
+        const { h, calls } = harness({ visit: { nodeExecutionId: NX2, open: true, inherited: false }, writeback: true,
+            turn: async () => ({ type: "error", message: "canceling statement due to statement timeout" }) });
+        h.session.takeUnsettledRun = vi.fn(() => true);
+        h.sessionManager.invalidateWarmSession = vi.fn(async () => { throw new Error("the CLI did not answer the disconnect"); });
+        await expect(h.runTurn(CHAT, { turnIndex: 17, clientMessageIds: [promptId(NX2)] }, "runTurnV5"))
+            .rejects.toThrow(/could not be dropped cleanly: the CLI did not answer the disconnect\. The turn is retried\./);
+        expect(h.sessionManager.invalidateWarmSession).toHaveBeenCalledTimes(1);
+        expect(calls.filter(([name]) => name === "turnEnd")).toEqual([]);
+        expect(h.catalog.completeTurnWriteback).not.toHaveBeenCalled();
+    });
 });
 
