@@ -495,7 +495,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             if (gap === undefined || !enabled || !sound?.cues || !doc || doc.hidden) return false;
             if (!ctx || ctx.state !== "running" || !cueBus) return false;
             const now = Date.now();
-            if (now - (lastCue[name] || 0) < gap) return false;
+            if (now - (lastCue[name] ?? -Infinity) < gap) return false;
             if (!(volume > 0)) return false;
             lastCue[name] = now;
             cueBus.gain.setTargetAtTime(volume * MAX_GAIN, ctx.currentTime, 0.005);
