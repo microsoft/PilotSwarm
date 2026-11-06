@@ -11,11 +11,16 @@ const text = value => (typeof value === "string" && value.trim() ? value.trim() 
 
 /** A string field's value in cut JSON text: its whole value, or as much of it as arrived. Null when absent. */
 function cutField(json, name) {
-    const match = new RegExp(`"${name}":"((?:[^"\\\\]|\\\\.)*)`, "u").exec(json);
+    return cutFieldOf(json, name)?.value ?? null;
+}
+
+/** cutField with whether the value was cut ({ value, cut }); null when absent. */
+function cutFieldOf(json, name) {
+    const match = new RegExp(`"${name}":"((?:[^"\\\\]|\\\\.)*)(")?`, "u").exec(json);
     if (!match) return null;
     // Drop a cut escape at the end (a lone backslash, or \u with fewer than 4 digits).
     const raw = match[1].replace(/\\(u[0-9a-fA-F]{0,3})?$/u, "");
-    try { return JSON.parse(`"${raw}"`); } catch { return null; }
+    try { return { value: JSON.parse(`"${raw}"`), cut: match[2] === undefined }; } catch { return null; }
 }
 
 /**
@@ -70,18 +75,27 @@ export function workflowErrorParts(value) {
     if (!trimmed.startsWith("{")) return { code: null, message: trimmed, exitCode: null, stderr: null, raw: trimmed };
     const cut = trimmed.replace(/…$/u, "");
     const exit = /"exitCode":(-?\d+)/u.exec(cut);
+    const stderr = cutFieldOf(cut, "stderr");
     return {
         code: text(cutField(cut, "code")), message: text(cutField(cut, "message")),
-        exitCode: exit ? Number(exit[1]) : null, stderr: text(cutField(cut, "stderr")), raw: trimmed,
+        exitCode: exit ? Number(exit[1]) : null, stderr: text(stderr?.value), raw: trimmed,
+        // Whether the stderr arrived cut: an error line that is its last line is then shown ending in "…".
+        ...(stderr?.cut ? { stderrCut: true } : {}),
     };
 }
 
 /** The error a script's stderr reports ("Error: Unknown model …" → "Unknown model …"), its first such line; else null. */
 export function workflowScriptErrorLine(stderr) {
+    return scriptErrorLineOf(stderr)?.text ?? null;
+}
+
+/** workflowScriptErrorLine with whether that line is the last of the stderr: { text, last }; null when there is none. */
+function scriptErrorLineOf(stderr) {
     if (typeof stderr !== "string") return null;
-    for (const line of stderr.split(/\r?\n/u)) {
-        const match = /^\s*(?:Uncaught\s+)?(?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$]*(?:Error|Exception)(?:\s*\[[^\]]*\])?:\s*(\S.*)$/u.exec(line);
-        if (match) return match[1].trim();
+    const lines = stderr.split(/\r?\n/u);
+    for (let at = 0; at < lines.length; at += 1) {
+        const match = /^\s*(?:Uncaught\s+)?(?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$]*(?:Error|Exception)(?:\s*\[[^\]]*\])?:\s*(\S.*)$/u.exec(lines[at]);
+        if (match) return { text: match[1].trim(), last: lines.slice(at + 1).every(line => !line.trim()) };
     }
     return null;
 }
@@ -96,7 +110,9 @@ export function workflowErrorWords(value) {
     const parts = workflowErrorParts(value);
     if (!parts) return null;
     if (parts.code === "execution_failed" && (parts.stderr !== null || parts.exitCode !== null)) {
-        const line = workflowScriptErrorLine(parts.stderr);
+        const found = scriptErrorLineOf(parts.stderr);
+        // A line the cut ended inside says so (HN #2: a long stderr cut at the preview's 500 characters).
+        const line = found && parts.stderrCut && found.last && !found.text.endsWith("…") ? `${found.text}…` : found?.text;
         if (line) return `the script stopped with an error: ${bounded(line)}`;
         if (parts.exitCode !== null) return `the script exited with code ${parts.exitCode}`;
     }

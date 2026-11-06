@@ -32,7 +32,7 @@ test("a script error reads as the error its script raised, whole or cut", () => 
         assert.doesNotMatch(workflowErrorWords(value), /exitCode|stderr|"code"|\bat callTool/);
     }
     assert.deepEqual({ ...workflowErrorParts(CUT), raw: undefined }, {
-        code: "execution_failed", message: null, exitCode: 1, stderr: workflowErrorParts(CUT).stderr, raw: undefined,
+        code: "execution_failed", message: null, exitCode: 1, stderr: workflowErrorParts(CUT).stderr, raw: undefined, stderrCut: true,
     });
     // The details keep the error as it arrived: indented when whole, its text when cut.
     assert.equal(workflowErrorDetails(WHOLE), JSON.stringify(JSON.parse(WHOLE), null, 2));
@@ -157,4 +157,23 @@ test("a node's error preview that is a JSON string of its envelope reads in word
     assert.equal(workflowErrorWords(`${literal.slice(0, at + 2)}…`), "a", "cut inside the text's own \\u escape");
     assert.equal(workflowErrorWords(`${literal.slice(0, at - 1)}…`), "a", "cut between the two backslashes of the literal's escape");
     assert.equal(workflowErrorWords(literal), "a é b");
+});
+
+// HN #2's poll, exactly as the read gave it on wfsimp at 5482bae3 (run fae01890; executor's redacted read model): 501
+// characters, a JSON string of the envelope's text, cut inside its stderr's stack.
+const HN2_PREVIEW = "\"{\\\"code\\\":\\\"execution_failed\\\",\\\"details\\\":{\\\"exitCode\\\":1,\\\"stderr\\\":\\\"<anonymous_script>:3\\\\n<note>Content truncated. Call the fetch tool with a start_index of 4000 to get more content.</note>\\\\n^\\\\n\\\\nSyntaxError: Expected ',' or ']' after array element in JSON at position 4002 (line 3 column 1)\\\\n    at JSON.parse (<anonymous>)\\\\n    at parseToolJson (file:///tmp/pilotswarm-script-Ue71gI/script.mjs:134:15)\\\\n    at file:///tmp/pilotswarm-script-Ue71gI/script.mjs:137:13\\\\n    at process.proc…";
+test("HN #2's exact error preview reads as its SyntaxError; a line the cut ends in ends with '…'; a short JSON error is unchanged", () => {
+    assert.equal(HN2_PREVIEW.length, 501);
+    assert.equal(workflowErrorWords(HN2_PREVIEW),
+        "the script stopped with an error: Expected ',' or ']' after array element in JSON at position 4002 (line 3 column 1)",
+        "its SyntaxError line arrived whole");
+    // Cut inside that line, the words say so.
+    const inLine = `${HN2_PREVIEW.slice(0, HN2_PREVIEW.indexOf("after array element") + 3)}…`;
+    assert.equal(workflowErrorWords(inLine), "the script stopped with an error: Expected ',' or ']' aft…");
+    // The existing paths: a whole short JSON error, and a plain envelope's JSON text, read as before.
+    assert.equal(workflowErrorWords(JSON.stringify({ code: "timed_out", message: "The script ran past its 30s timeout." })), "The script ran past its 30s timeout.");
+    assert.equal(workflowErrorWords(JSON.stringify({ code: "execution_failed", details: { exitCode: 1, stderr: "Error: ux-boom-4821\n    at x" },
+        message: "The script exited with code 1." })), "the script stopped with an error: ux-boom-4821");
+    assert.equal(workflowErrorWords(WHOLE), WORDS);
+    assert.equal(workflowErrorWords(CUT), WORDS, "a cut plain preview whose error line arrived whole has no '…'");
 });
