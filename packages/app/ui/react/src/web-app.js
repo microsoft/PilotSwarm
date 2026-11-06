@@ -110,10 +110,10 @@ import {
     workflowInputNoteText,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
+import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 
 const MOBILE_BREAKPOINT = 920;
-// Phones: the one-line composer (no "you" label, the blue button steers).
-const PHONE_MEDIA_QUERY = "(max-width: 600px)";
+// Phones (PHONE_MEDIA_QUERY, use-media-query.js): the one-line composer (no "you" label, the blue button steers).
 // A touch keyboard (no hover, coarse pointer): its return key adds a line and
 // the button sends. With a physical keyboard Enter sends at every width.
 const TOUCH_KEYBOARD_MEDIA_QUERY = "(hover: none) and (pointer: coarse)";
@@ -5087,22 +5087,6 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
  * fleet. That only holds while every prop is referentially stable — hence the
  * hoisted click handler and ref setter rather than closures built per row.
  */
-/** Subscribe to viewport or input changes without remounting the pane. */
-function useMediaQuery(query) {
-    const read = () => (typeof window !== "undefined" && typeof window.matchMedia === "function"
-        ? window.matchMedia(query).matches
-        : false);
-    const [matches, setMatches] = React.useState(read);
-    React.useEffect(() => {
-        if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
-        const media = window.matchMedia(query);
-        const onChange = (event) => setMatches(event.matches);
-        setMatches(media.matches);
-        media.addEventListener?.("change", onChange);
-        return () => media.removeEventListener?.("change", onChange);
-    }, [query]);
-    return matches;
-}
 
 // Withhold drag-to-folder on touch screens so finger drags can scroll the list.
 function useCoarsePointer() { return useMediaQuery("(pointer: coarse)"); }
