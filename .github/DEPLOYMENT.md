@@ -32,7 +32,7 @@ against the managed environment.
 | Provision/register or deallocate the dedicated CI runner | **Manage Azure CI runner** (`provision-ci-runner.yml`) |
 | Full PostgreSQL baseline plus additive HDB coverage, on main or a reviewed PR head | **Tests** (`tests.yml`), `providers=all`, optional `pr_number`; or maintainer PR comment `/test all` |
 | Optional complete suite physically on HDB | **Tests**, `providers=horizondb` |
-| Publish a new release and deploy its tested source | **Create release** (`release-tarballs.yml`) |
+| Publish a stable release and deploy its tested source, or publish a dev prerelease without deployment | **Create release** (`release-tarballs.yml`) |
 | Add the copyright/permission notice to an existing release without changing packages or deploying | **Add release license notice** (`release-notices.yml`) |
 
 Use `--repo microsoft/PilotSwarm` for this repository's GitHub commands.
@@ -52,7 +52,10 @@ and provider. Six or more failures fail without sequential verification. Both
 results remain visible; incomplete/setup/unhandled failures still block release.
 Release assets are three npm-format tarballs, checksums and `LICENSE`. Each new
 tarball embeds the same copyright and permission notice. There is no npm
-publication or starter-image publication. The Azure workflows build and push
+publication or starter-image publication. Prepared `X.Y.Z-dev.N` versions use
+the same release qualification and assets, but publish as immutable prereleases
+without becoming latest or deploying. See [development snapshots](CI.md#development-snapshots).
+The Azure workflows build and push
 worker/portal images to the configured ACR for deployment, including optional
 updates from main before a release.
 

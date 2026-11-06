@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Prepared package version on main (without v)
+        description: Prepared package version on main (X.Y.Z or X.Y.Z-dev.N, without v)
         required: true
         default: 0.6.0
 permissions:
@@ -67,12 +67,14 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Refresh Azure login for deployment
+        if: ${{ !contains(inputs.version, '-dev.') }}
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Deploy released source to test environment
+        if: ${{ !contains(inputs.version, '-dev.') }}
         uses: ./.github/actions/deploy-azure
         env:
           AZURE_DEPLOY_ENV: ${{ secrets.AZURE_DEPLOY_ENV }}

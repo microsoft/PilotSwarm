@@ -22,6 +22,30 @@ standalone `LICENSE`. **Add release license notice** is a separate manual,
 main-only protected workflow for additive notice maintenance on an existing
 release. It preserves existing asset identities/digests and performs no deploy.
 
+## Development snapshots
+
+Use the existing **Create release** (`release-tarballs.yml`) workflow for both
+stable and dev releases. Prepare a version such as `0.8.10-dev.1` on `main`:
+update all three package versions, internal dependency versions, workspace
+lockfile entries, and the changelog, exactly as for a stable release. Dispatch
+the existing `version` input with that value, without a leading `v`.
+
+The `-dev.N` suffix selects a GitHub prerelease, tagged `v0.8.10-dev.1`, that
+does not become the latest stable release. The same protected environment,
+Azure login, full provider qualification, package/license checks, and release
+assets still apply. Only the post-publication Azure login refresh and deployment
+are skipped. There is no separate workflow, channel input, automatic version
+stamping, or npm publication.
+
+Each dev version is immutable. Prepare a new version (`-dev.2`, for example)
+for another snapshot; rerunning does not overwrite an existing tag or release.
+Stable versions retain the existing publication and deployment behavior.
+
+The existing install helper accepts an exact dev version; its default selects
+the latest stable release. The stable deployment workflow does not accept dev
+tags.
+See [package installation](../docs/quickstart/packages.md#development-snapshots).
+
 ## Maintainer-triggered tests before merging a PR
 
 The quickest route is a **new PR conversation comment containing only**:

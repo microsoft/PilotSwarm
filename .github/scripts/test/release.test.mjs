@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateRelease, validatePackageLicenses, validatePackedLicense, addReleaseLicense } from '../release.mjs';
+import { releaseOptions, validateRelease, validatePackageLicenses, validatePackedLicense, addReleaseLicense } from '../release.mjs';
 const version = '0.6.0';
 const manifests = [{ name: 'pilotswarm-sdk', version, peerDependencies: { 'pilotswarm-horizon-store': version } }, { name: 'pilotswarm-horizon-store', version, peerDependencies: { 'pilotswarm-sdk': version } }, { name: 'pilotswarm', version, dependencies: { 'pilotswarm-sdk': version } }];
 const lock = { packages: Object.fromEntries(['sdk', 'horizon-store', 'app'].map(p => [`packages/${p}`, { version }])) };
@@ -121,6 +121,41 @@ test('release requires matching versions, lockfile, internal dependencies and ch
   assert.throws(() => validateRelease(version, manifests, { packages: {} }, '## 0.6.0'));
   assert.throws(() => validateRelease(version, manifests.map((p, i) => i === 2 ? { ...p, dependencies: { 'pilotswarm-sdk': '0.5.79' } } : p), lock, '## 0.6.0'));
 });
+test('dev releases use matching prepared versions and preserve stable publication options', () => {
+  assert.deepEqual(releaseOptions(version), { development: false, create: [], publish: ['--latest'] });
+  for (const dev of ['0.6.1-dev.0', '0.6.1-dev.1', '0.6.1-dev.42']) {
+    assert.deepEqual(releaseOptions(dev), {
+      development: true, create: ['--prerelease', '--latest=false'],
+      publish: ['--prerelease', '--latest=false'],
+    });
+    const devManifests = JSON.parse(JSON.stringify(manifests).replaceAll(version, dev));
+    const devLock = JSON.parse(JSON.stringify(lock).replaceAll(version, dev));
+    assert.doesNotThrow(() => validateRelease(dev, devManifests, devLock, `## [${dev}]`));
+    assert.throws(() => validateRelease(dev, manifests, devLock, `## [${dev}]`), /versions must match/);
+    assert.throws(() => validateRelease(dev, devManifests, lock, `## [${dev}]`), /versions must match/);
+    assert.throws(() => validateRelease(dev, devManifests, devLock, `## [${version}]`), /CHANGELOG/);
+    devManifests[2].dependencies['pilotswarm-sdk'] = version;
+    assert.throws(() => validateRelease(dev, devManifests, devLock, `## [${dev}]`), /Internal package dependencies/);
+  }
+  for (const invalid of ['', 'v0.6.1', '00.6.1', '0.6.1-dev', '0.6.1-dev.01',
+    '0.6.1-dev.-1', '0.6.1-dev.1.extra', '0.6.1-rc.1', '0.6.1+build', '0.6.1-dev.1;echo']) {
+    assert.throws(() => releaseOptions(invalid), /Release version/);
+  }
+});
+test('same workflow retains dev qualification and skips only deployment steps', () => {
+  const workflow = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const condition = "if: ${{ !contains(inputs.version, '-dev.') }}";
+  assert.equal(workflow.split(condition).length - 1, 2);
+  for (const name of ['Refresh Azure login for deployment', 'Deploy released source to test environment']) {
+    assert(workflow.includes(`- name: ${name}\n        ${condition}`));
+  }
+  const qualification = workflow.slice(workflow.indexOf('- uses: azure/login@v3'),
+    workflow.indexOf('- name: Refresh Azure login for deployment'));
+  assert.doesNotMatch(qualification, /if:/);
+  assert.match(qualification, /providers: all\s+mode: parallel\s+qualify-failures: "true"/);
+  assert.match(workflow, /github.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /environment: azure-deploy/);
+});
 test('release and additive coverage use hosted runners; regional routing is full-HDB only', () => {
   const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
   const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
@@ -209,7 +244,7 @@ test('release configuration uses current templates; ordinary redeploy checks out
     assert.equal(result.output.trim(), 'image-tag=0123456789ab');
     assert.equal(result.calls.includes('checkout --detach v0.6.0'), mode === 'false');
   }
-  for (const tag of ['', 'main', 'v0.6.0;command']) {
+  for (const tag of ['', 'main', 'v0.6.0-dev.1', 'v0.6.0;command']) {
     const invalid = shellFixture(t, script, { RELEASE_TAG: tag, RECONCILE_RELEASE_CONFIG: 'true' });
     assert.notEqual(invalid.status, 0);
     assert.equal(invalid.calls, '');

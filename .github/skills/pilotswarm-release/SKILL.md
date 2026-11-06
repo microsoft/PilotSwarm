@@ -22,6 +22,10 @@ Run `npm run check:privacy` after staging release changes.
   an ordinary release.
 - **Create release** (`release-tarballs.yml`) is a manual GitHub Action on `main`.
   Merging a PR or pushing a tag does not publish a release.
+- Prepared `X.Y.Z-dev.N` versions use that same workflow and full qualification,
+  but publish as immutable GitHub prereleases with `--latest=false`. Only the
+  post-publication Azure login refresh and deployment are skipped. Prepare a new
+  dev version for each snapshot; stable deployment retries do not accept dev tags.
 - One protected-environment approval precedes all cloud work. The Action captures
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
@@ -39,7 +43,7 @@ Run `npm run check:privacy` after staging release changes.
   `"license": "MIT"` metadata.
 - The Action creates an annotated tag, a draft release, uploads the three `.tgz`
   files plus `SHA256SUMS` and `LICENSE`, verifies assets, and publishes the release.
-- It then automatically deploys the **same tested source commit** to the test
+- For stable versions, it then automatically deploys the **same tested source commit** to the test
   stamp using the shared Azure Action. This builds worker/portal deployment
   images in Azure Container Registry; it does not install the release tarballs.
   Refresh Azure OIDC login after the long test gate and immediately before
