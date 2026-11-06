@@ -12124,8 +12124,11 @@ textarea.ps-link-input {
 
 :root[data-ps-theme="horizon-dawn"] :is(body, #root) {
   font-family: var(--dawn-ui);
-  /* Sora's hinted advances at fractional sizes open gaps inside words
-     ("Pilo tSwarm") on Linux; geometric precision keeps the designed spacing. */
+}
+/* Sora's hinted advances at fractional sizes open gaps inside words
+   ("Pilo tSwarm") on Linux; geometric precision keeps the designed spacing.
+   Set on every element: a `font:` shorthand on an ancestor resets it. */
+:root[data-ps-theme="horizon-dawn"] * {
   text-rendering: geometricPrecision;
 }
 :root[data-ps-theme="horizon-dawn"] body {
