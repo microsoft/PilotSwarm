@@ -875,7 +875,9 @@ function normalizePromptAttachments(prompt, attachments) {
 
 export function appReducer(state, action) {
     const next = appReducerStep(state, action);
-    return next === state ? next : selectWorkflowOwnerOnceLoaded(next);
+    // Only a change to the sessions slice can make a stored Workflow row mappable; streamed history, canvas and the rest
+    // leave it as it was (one reference comparison on that path).
+    return next === state || next.sessions === state.sessions ? next : selectWorkflowOwnerOnceLoaded(next);
 }
 
 /**
@@ -884,7 +886,7 @@ export function appReducer(state, action) {
  * itself: after a reload the Workflow showed alone in the middle, with no chat, zen or full screen. A workflow child is
  * the active session only while its session is not loaded (selectWorkflowTabContext); once that session's row is
  * loaded, select its chat with the Workflow row, as a click on the row or a link does, and apply that chat's own view
- * (its columns and zen). A link still resolving maps itself.
+ * (its columns and zen). A link still resolving maps itself. O(1): two lookups in the session map.
  */
 function selectWorkflowOwnerOnceLoaded(state) {
     const sessions = state.sessions;

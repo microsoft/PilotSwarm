@@ -47,3 +47,14 @@ test("a Workflow whose session is not loaded stays the active session; a link st
     linked.dispatch({ type: "sessions/loaded", sessions: rows });
     assert.deepEqual([linked.getState().sessions.activeSessionId, linked.getState().sessions.workflowRowId], ["owner", "wf-1"]);
 });
+
+test("the mapping runs only when the sessions slice changes: streamed history leaves the slice as it was", () => {
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
+    store.dispatch({ type: "sessions/loaded", sessions: rows });
+    store.dispatch({ type: "sessions/selected", sessionId: "owner" });
+    const before = store.getState();
+    for (let i = 0; i < 50; i += 1) store.dispatch({ type: "history/loadState", sessionId: "owner", loadState: i % 2 ? "loaded" : "loading" });
+    assert.equal(store.getState().sessions, before.sessions, "no history action replaces the sessions slice");
+    // The rule it relies on: a state the reducer made is already mapped, so skipping unchanged sessions misses nothing.
+    assert.deepEqual([store.getState().sessions.activeSessionId, store.getState().sessions.workflowRowId], ["owner", null]);
+});
