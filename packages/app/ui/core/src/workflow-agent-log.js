@@ -93,9 +93,13 @@ export function workflowLogFold(value, max = WORKFLOW_AGENT_LOG_FOLD) {
     return { text: `${whole.slice(0, max).trimEnd()}…`, more: whole };
 }
 
-/** The node execution a prompt was sent for: its client message id ends in ":agent:<node execution>" (workflowAgentClientMessageId). */
+/**
+ * The node execution a prompt was sent for: its client message id ends in ":agent:<node execution>" (workflowAgentClientMessageId).
+ * r4 C04: the runtime records a prompt that starts with "[SYSTEM:" as a system.message (session-proxy isInternalSystemPrompt),
+ * and a visit's prompt does ("[SYSTEM: WORKFLOW NODE INVOCATION…"), with its client message id and its sender; so both kinds count.
+ */
 export function workflowPromptVisit(event) {
-    if (event?.eventType !== "user.message") return null;
+    if (event?.eventType !== "user.message" && event?.eventType !== "system.message") return null;
     const ids = Array.isArray(event.data?.clientMessageIds) ? event.data.clientMessageIds : [];
     for (const id of ids) {
         const found = typeof id === "string" ? /:agent:([^:]+)$/.exec(id) : null;
@@ -154,10 +158,11 @@ function chatRows(events, visitId) {
         const data = isRecord(event.data) ? event.data : {};
         const at = timeOf(event.createdAt);
         const base = { key: `chat:${event.sessionId ?? ""}:${event.seq}`, seq: event.seq ?? 0, at };
-        if (event.eventType === "user.message") {
+        const prompted = workflowPromptVisit(event);
+        if (event.eventType === "user.message" || prompted) {
             const content = typeof data.content === "string" ? data.content : "";
             if (!content.trim()) continue;
-            const own = workflowPromptVisit(event) === visitId;
+            const own = prompted !== null && prompted === visitId;
             const from = typeof data.sender?.display === "string" && data.sender.display ? data.sender.display : null;
             rows.push({ ...base, kind: "prompt", label: own ? "Prompt" : `Message${from ? ` from ${from}` : ""}`, ...workflowLogFold(content) });
         } else if (event.eventType === "system.message") {
@@ -252,10 +257,13 @@ const EARLIER = Symbol("earlier in this chat");
  *   next one). Review UI-F3: a visit before it that never got its prompt (spawned false, e.g. it timed out first) is no
  *   evidence, so the rows are not given to it, nor guessed further back.
  * - Otherwise a chat that serves one visit: that visit.
+ * - r4 C04: a window that starts where the chat starts (`complete`: no older events) holds every prompt the chat got, so
+ *   its rows before the first prompt are of that prompt's turn (the turn's note to the agent is recorded just before its
+ *   prompt): that visit, or none when it is a visit the Log does not show.
  * - Otherwise which visit they belong to is not known: EARLIER (the Log shows them apart until their prompt is loaded),
  *   never guessed from the newest visit.
  */
-function leadingVisit(events, own, single) {
+function leadingVisit(events, own, single, complete = false) {
     const sorted = (Array.isArray(events) ? events : []).filter(isRecord).slice().sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
     const ids = own.map(visit => visit.id);
     for (const event of sorted) {
@@ -263,6 +271,7 @@ function leadingVisit(events, own, single) {
         if (!prompted) continue;
         if (sorted[0] === event) return null;
         const at = ids.indexOf(prompted);
+        if (complete) return at >= 0 ? ids[at] : null;
         if (at > 0) return own[at - 1].agent?.spawned === true ? ids[at - 1] : EARLIER;
         return at === 0 && single ? ids[0] : EARLIER;
     }
@@ -294,7 +303,9 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
         const single = node?.chat !== "continue"
             || (all.filter(visit => visit.agent?.childSessionId === chatId).length === 1 && !node?.partial);
         const loaded = read.get(chatId);
-        if (Array.isArray(loaded)) cut.set(chatId, chatByVisit(loaded, new Set(own.map(visit => visit.id)), leadingVisit(loaded, own, single)));
+        // r4 C04: the chat's coverage says its window starts where the chat starts (a read with no older events).
+        const complete = covered.has(chatId) && covered.get(chatId)?.hasOlder === false;
+        if (Array.isArray(loaded)) cut.set(chatId, chatByVisit(loaded, new Set(own.map(visit => visit.id)), leadingVisit(loaded, own, single, complete)));
     }
     let loading = false;
     const groups = visits.map(visit => {

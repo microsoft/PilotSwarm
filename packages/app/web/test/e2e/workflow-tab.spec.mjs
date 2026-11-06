@@ -3793,8 +3793,10 @@ async function routeAgentNode(page) {
                 attempts: 0, kvRevision: 1, enteredAt: ago(110), endedAt: ago(100), outputPreview: "{\"fact\":\"PostgreSQL keeps old row versions (MVCC).\"}", agent },
         ] } };
     await routeV2(page, { events, readModel: () => model, onCommand: (route, command) => accept(route, command) });
-    const prompt = (seq, nx, seconds, text) => ({ sessionId: AGENT_CHAT, seq, eventType: "user.message", createdAt: ago(seconds),
-        data: { content: text, clientMessageIds: [`workflow:${WORKFLOW_ID}:run-1:agent:${nx}`], sender: { kind: "agent", display: "workflow node invocation" } } });
+    // r4 C04: as session-proxy records it: a "[SYSTEM:" prompt is a system.message, with its client id and sender.
+    const prompt = (seq, nx, seconds, text) => ({ sessionId: AGENT_CHAT, seq, eventType: "system.message", createdAt: ago(seconds),
+        data: { content: text, clientMessageIds: [`workflow:${WORKFLOW_ID}:run-1:agent:${nx}`],
+            sender: { kind: "agent", sessionId: WORKFLOW_ID, display: "workflow node invocation" } } });
     const said = (seq, eventType, seconds, data) => ({ sessionId: AGENT_CHAT, seq, eventType, createdAt: ago(seconds), data });
     const chat = [
         prompt(1, "nx-fact-1", 108, "[SYSTEM: WORKFLOW NODE INVOCATION.]\n{\"input\":null}\n[SYSTEM: The task of this state:]\nTell one new fact about PostgreSQL."),
@@ -3901,6 +3903,10 @@ test("agent node: a chat: continue node's Log shows one chat across two visits",
     await expect(second.locator("h3")).toContainText(/^Visit 2 · /);
     await expect(first.locator("h3")).toContainText(/^Visit 1 · /);
     // One chat, cut at each visit's prompt: each visit has its own prompt and its own agent rows.
+    // r4 C04: the prompts are recorded as system.message (live shape); each is its visit's Prompt, nothing is "Earlier".
+    await expect(log.locator("[data-earlier]")).toHaveCount(0);
+    await expect(first.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION.]" }).locator(".ps-wf-alog-label")).toHaveText("Prompt");
+    await expect(second.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION, CYCLE 2" }).locator(".ps-wf-alog-label")).toHaveText("Prompt");
     await expect(first.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION.]" })).toHaveCount(1);
     await expect(first.locator('[data-kind="result"]')).toContainText("produced");
     await expect(second.locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION, CYCLE 2" })).toHaveCount(1);
