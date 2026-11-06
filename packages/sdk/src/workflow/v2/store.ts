@@ -5594,7 +5594,14 @@ export class WorkflowStore {
                    ${withInvocations ? "invocation.node_execution_id, invocation.workflow_session_id, invocation.controlling_session_id"
                        : "NULL::text AS node_execution_id, NULL::text AS workflow_session_id, NULL::text AS controlling_session_id"}
               FROM lineage
-              ${withInvocations ? `LEFT JOIN ${this.t.agentInvocations} invocation ON invocation.child_session_id = lineage.session_id` : ""}
+              ${withInvocations ? `LEFT JOIN LATERAL (
+                  -- One row per lineage session (review RT-4): a chat that continues has one invocation per visit (0106), and
+                  -- a join of them all repeated the session (read as a cycle). Its open visit, else its newest.
+                  SELECT i.node_execution_id, i.workflow_session_id, i.controlling_session_id
+                    FROM ${this.t.agentInvocations} i LEFT JOIN ${this.t.nodes} n ON n.node_execution_id = i.node_execution_id
+                   WHERE i.child_session_id = lineage.session_id
+                   ORDER BY COALESCE(n.state = 'pending', false) DESC, i.created_at DESC, i.node_execution_id DESC
+                   LIMIT 1) invocation ON true` : ""}
              ORDER BY lineage.distance`;
         let rows: Row[];
         try {

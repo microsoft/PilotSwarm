@@ -32,6 +32,7 @@ import {
     registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowAgentChatSessionId, workflowLiveControllerInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
+import { spawnNesting, WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "../../src/workflow/v2/input-policy.ts";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -137,6 +138,17 @@ describe("chat: continue in the store (migration 0106)", () => {
             expect((await store.listAgentInvocationsOfState(runId, "talk")).map(item => [item.nodeExecutionId, item.childSessionId]))
                 .toEqual([[first, chat], [second, chat]]);
             expect((await store.readAgentInvocationByChild(chat)).nodeExecutionId).toBe(second);
+            // RT-4: a chat with two visits is one lineage row, not a cycle: level 2 (its sub-agent level 3, the workflow
+            // nesting maximum), its agent root the open visit.
+            await catalog.createSession(chat, { parentSessionId: workflowSessionId });
+            const mini = randomUUID();
+            await catalog.createSession(mini, { parentSessionId: chat });
+            const root = { childSessionId: chat, nodeExecutionId: second, workflowSessionId, controllingSessionId: parent };
+            expect(await store.readWorkflowLineage(chat)).toEqual({ sessionId: chat, level: 2, agentRoot: { ...root, distance: 0 } });
+            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, distance: 1 } });
+            expect(spawnNesting(1, 2, await store.readWorkflowLineage(chat)))
+                .toEqual({ childNestingLevel: 3, maxNestingLevel: WORKFLOW_V2_MAX_DESCENDANT_LEVEL });
+            // A real-agent test's scope (workflowTestAgentScope) is the agent root's visit: the open one, not the first.
             // A late answer of the first visit binds to it, never to the open one, and is refused there.
             expect(await store.completeAgentNode({ childSessionId: chat, operationId: "late-1", call: { outcome: "finish", output: { fact: "late" } },
                 nodeExecutionId: first })).toMatchObject({ kind: "refused", code: "COMPLETION_CONFLICT" });
@@ -147,6 +159,8 @@ describe("chat: continue in the store (migration 0106)", () => {
             expect(await store.completeAgentNode({ childSessionId: chat, operationId: "op-2", call: { outcome: "finish", output: { fact: "two" } },
                 nodeExecutionId: second })).toMatchObject({ kind: "accepted", receipt: { nodeExecutionId: second, outcome: "finish" } });
             expect(await store.recordAgentReminder({ childSessionId: chat, turn: 8 })).toMatchObject({ recorded: false, reason: "decided" });
+            // With no visit open, the lineage's agent root is the newest visit, still one row.
+            expect(await store.readWorkflowLineage(mini)).toEqual({ sessionId: mini, level: 3, agentRoot: { ...root, nodeExecutionId: second, distance: 1 } });
         } finally {
             await catalog.close();
             await direct.end();
