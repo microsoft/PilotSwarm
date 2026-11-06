@@ -583,7 +583,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
     const took = times.took !== null ? workflowElapsedText(times.took) : null;
     return h("div", { className: "ps-wf-body", "data-session-id": sessionId },
         h("div", { className: "ps-wf-bar is-run" },
-            h(WorkflowNumberPicker, { controller, definition, chosen: sessionId, onOpen }),
+            h(WorkflowNumberPicker, { controller, definition, chosen: sessionId, onOpen, phone }),
             // A phone's second header row: the time taken joins the state ("Running · 2:45"); its start and revision move to
             // the state's tooltip and the picker's options (owner, 2026-11-06T13:43Z: relocated, not removed).
             phone
@@ -639,7 +639,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
  * select keeps the name "Workflow" and its value. The newest Workflows' states and starts come from their read models
  * and events, read as the Workflows list reads them (the shown one by its own view).
  */
-function WorkflowNumberPicker({ controller, definition, chosen, onOpen }) {
+function WorkflowNumberPicker({ controller, definition, chosen, onOpen, phone = false }) {
     const id = `wf-number-${React.useId().replace(/:/g, "")}`;
     const byId = useControllerSelector(controller, state => state.sessions.byId);
     const views = useControllerSelector(controller, state => state.ui.workflowViews);
@@ -662,7 +662,7 @@ function WorkflowNumberPicker({ controller, definition, chosen, onOpen }) {
         const live = Array.isArray(model?.runs) ? model.runs.find(run => run?.mode === "live") ?? null : null;
         const times = workflowRunTimes(histories?.get?.(row.sessionId)?.events, live?.runId ?? null);
         return workflowPickerOptionLabel({ number: row.number, state: workflowStateOf(byId?.[row.sessionId], view)?.label ?? null,
-            started: times.started !== null ? shownTime(times.started) : null });
+            started: times.started !== null ? shownTime(times.started) : null, revision: phone ? live?.revision ?? null : null });
     };
     return h("span", { className: "ps-wf-picker is-number" },
         h("label", { htmlFor: id, className: "ps-sr-only" }, "Workflow"),

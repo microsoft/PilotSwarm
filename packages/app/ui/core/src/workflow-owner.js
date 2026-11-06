@@ -652,9 +652,12 @@ export function workflowPickerGroupLabel(count) {
     return `${n} ${n === 1 ? "Workflow" : "Workflows"}`;
 }
 
-/** One option of the Workflow picker: `#number · state · started` (state and started as a person reads them, or null). */
-export function workflowPickerOptionLabel({ number, state = null, started = null }) {
-    return [`#${number}`, text(state), text(started)].filter(Boolean).join(" · ");
+/**
+ * One option of the Workflow picker: `#number · state · started` (state and started as a person reads them, or null).
+ * Review UI2-F5: on a phone, where no meta line shows it, its run's revision follows (`· revision 2`) when known.
+ */
+export function workflowPickerOptionLabel({ number, state = null, started = null, revision = null }) {
+    return [`#${number}`, text(state), text(started), Number.isSafeInteger(revision) ? `revision ${revision}` : null].filter(Boolean).join(" · ");
 }
 
 /** The closed Workflow picker: `#7 of 7`. */

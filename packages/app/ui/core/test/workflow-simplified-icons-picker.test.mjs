@@ -20,6 +20,9 @@ test("the Workflow picker's group says the count, each option its number, state 
     // A part not known yet is left out, never shown as a placeholder.
     assert.equal(workflowPickerOptionLabel({ number: 3, state: "Completed" }), "#3 · Completed");
     assert.equal(workflowPickerOptionLabel({ number: 2, state: null, started: "" }), "#2");
+    // Review UI2-F5: on a phone the run's revision follows, when known.
+    assert.equal(workflowPickerOptionLabel({ number: 7, state: "Running", started: "05:38:01", revision: 2 }), "#7 · Running · 05:38:01 · revision 2");
+    assert.equal(workflowPickerOptionLabel({ number: 7, state: "Running", revision: null }), "#7 · Running");
     assert.equal(workflowPickerFace(7, 7), "#7 of 7");
     assert.equal(workflowPickerFace(2, 7), "#2 of 7");
     assert.equal(workflowPickerFace(1, 0), "#1");

@@ -3218,6 +3218,9 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
             await expect(bar.locator(".ps-wf-bar-text")).toHaveCount(0);
             await expect(bar.locator(".ps-wf-state")).toHaveText(/^Running · \d+(:\d{2}){1,2}$/);
             await expect(bar.locator(".ps-wf-state")).toHaveAttribute("title", /^Started \d.* · revision 1$/);
+            // Review UI2-F5: a phone's Workflow picker options also say each run's revision (the title is not touch-readable).
+            await expect.poll(() => shown.locator("optgroup option").allTextContents())
+                .toEqual([expect.stringMatching(/ · revision \d+$/), expect.stringMatching(/ · revision \d+$/)]);
             for (const control of [main.getByRole("combobox", { name: "Workflow definition", exact: true }), shown]) {
                 expect(await control.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
             }
