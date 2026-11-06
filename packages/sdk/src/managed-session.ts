@@ -3746,7 +3746,8 @@ export class ManagedSession {
         let lastPublishedReasoning = "";
         let lastReasoningPublishAt = 0;
         let deferredSessionError: CapturedEvent | null = null;
-        // F-C3 (opts.quietEmptyAnswer): the empty-answer error of a root session's system-only turn, held back until the
+        // F-C3 (opts.quietEmptyAnswer): the empty-answer error of a root session's system-only turn, or of its turn that
+        // answers only workflow notices that need no answer, held back until the
         // turn is over. It is dropped only when the turn made no tool call, sent no steer and has no content; otherwise
         // it is recorded as before.
         // (Typed by an assertion: it is set in the event handler, so its type must not narrow to null here.)
@@ -4691,14 +4692,18 @@ export class ManagedSession {
 
         // F-C3: a root session's system-only turn (a child digest or a wake) that the model answered with nothing is a
         // completed turn with no content: no error status, no retry, no chat warning. The activity list shows one line
-        // (session.empty_answer), and the worker trace says so.
+        // (session.empty_answer), and the worker trace says so. The same for a root session's turn that answers only
+        // workflow notices that say they need no answer (quietEmptyAnswerKind "workflow_notice", owner dump 2026-11-06).
         if (quietedEmptyAnswer !== null) {
             const cliMessage = String((quietedEmptyAnswer.data as any)?.message ?? "").slice(0, 200);
-            opts?.trace?.(`[runTurn] session=${this.sessionId} the model answered a system-only turn with nothing; `
+            const notice = opts?.quietEmptyAnswerKind === "workflow_notice";
+            const what = notice ? "a workflow notice that needs no answer" : "a system-only turn";
+            opts?.trace?.(`[runTurn] session=${this.sessionId} the model answered ${what} with nothing; `
                 + `the turn is completed without an answer (${cliMessage})`);
             const note: CapturedEvent = {
                 eventType: "session.empty_answer",
-                data: { text: "The model answered a system-only turn with nothing; the turn ended without an answer.", cliMessage },
+                data: { text: `The model answered ${what} with nothing; the turn ended without an answer.`, cliMessage,
+                    ...(notice ? { kind: "workflow_notice" } : {}) },
             };
             collectedEvents.push(note);
             if (opts?.onEvent) { try { opts.onEvent(note); } catch {} }

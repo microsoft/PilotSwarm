@@ -560,6 +560,42 @@ export function isQuietSystemOnlyTurn(input: {
 }
 
 /**
+ * The workflow notices that say they need no answer: a send state's message (WORKFLOW_UPDATE type `message`, "Use it as
+ * the user asked; it needs no answer"). The run's end asks for a report and a request for an answer, so neither is one.
+ */
+const NO_ANSWER_WORKFLOW_UPDATE_TYPES: ReadonlySet<string> = new Set(["message"]);
+
+/**
+ * Owner "No response" dump (2026-11-06): whether a turn answers only workflow notices that say they need no answer, in
+ * a ROOT session, with no person's words folded in (held prompts, carried or open steers), no attachments and no
+ * required tool. Two ways such a notice arrives:
+ * - queued (the legacy delivery): the turn's prompt is the notice, and its server-stamped sender is the runtime's own for
+ *   that notice type (SF-2; the queue keeps a sender only when every merged message had it), with no intake items;
+ * - durable intake: the turn's own prompt is the runtime's system-only prompt, and every intake item is such a notice
+ *   (an intake item is a send state's message the runtime stored itself).
+ * Its empty answer is completed quietly, as F-C3's (TurnOptions.quietEmptyAnswer); every other empty answer keeps the
+ * error and its retries. A child session never is: its empty completion would be reported to its parent.
+ */
+export function isQuietWorkflowNoticeTurn(input: {
+    prompt?: string; parentSessionId?: string; requiredTool?: string; systemContextInPrompt?: boolean; sender?: unknown;
+    stashedPrompts?: unknown; foldedText?: boolean; intakeTexts?: readonly string[] | null; attachments?: number;
+}): boolean {
+    if (input.parentSessionId || input.requiredTool || input.foldedText === true || (input.attachments ?? 0) !== 0) return false;
+    if (Array.isArray(input.stashedPrompts) && input.stashedPrompts.length > 0) return false;
+    const bare = (input.systemContextInPrompt ? splitSystemContextBlock(input.prompt ?? "").prompt : (input.prompt ?? "")).trim();
+    const noAnswerType = (text: unknown): string | null => {
+        const header = parseWorkflowUpdateHeader(typeof text === "string" ? normalizePromptText(text) : null);
+        return header && NO_ANSWER_WORKFLOW_UPDATE_TYPES.has(header.type) ? header.type : null;
+    };
+    const intakeTexts = input.intakeTexts ?? null;
+    if (intakeTexts !== null && intakeTexts.length > 0) {
+        return bare === SYSTEM_ONLY_TURN_PROMPT && intakeTexts.every(text => noAnswerType(text) !== null);
+    }
+    const type = noAnswerType(bare);
+    return type !== null && isWorkflowRuntimeSender(input.sender, type);
+}
+
+/**
  * Whether a prompt is the runtime's own notice, recorded as a system.message. A workflow's message is one only when the
  * runtime queued it with its own sender (`sender`, the queued message's server-stamped sender; SF-2).
  */
@@ -4997,12 +5033,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
 
             // F-C3: a root session's system-only turn (a child digest, a wake) whose model answers nothing ends completed.
-            const quietEmptyAnswer = isQuietSystemOnlyTurn({
+            const quietSystemOnly = isQuietSystemOnlyTurn({
                 prompt: input.prompt, bootstrap: input.bootstrap, parentSessionId: input.parentSessionId, requiredTool: input.requiredTool,
                 systemContextInPrompt: input.config?.systemContextInPrompt === true, stashedPrompts: (input as any).stashedPrompts,
                 foldedText: Boolean(tc?.carriedText || tc?.foldedSteerText), intake: turnIntake !== null,
                 attachments: requestedAttachments.length,
             });
+            // Owner "No response" dump (2026-11-06): so does a root session's turn that answers only workflow notices that
+            // say they need no answer.
+            const quietWorkflowNotice = !quietSystemOnly && isQuietWorkflowNoticeTurn({
+                prompt: input.prompt, parentSessionId: input.parentSessionId, requiredTool: input.requiredTool,
+                systemContextInPrompt: input.config?.systemContextInPrompt === true, sender: (input as any).sender,
+                stashedPrompts: (input as any).stashedPrompts, foldedText: Boolean(tc?.carriedText || tc?.foldedSteerText),
+                intakeTexts: turnIntake ? turnIntake.items.map(item => item.text) : null, attachments: requestedAttachments.length,
+            });
+            const quietEmptyAnswer = quietSystemOnly || quietWorkflowNotice;
             // Owner decision Q2 (workflow/v2/agent-reminder.ts): an agent state's own child is reminded inside its turn
             // when the turn would end with nothing pending. The gate ManagedSession asks: no cron or cron_at schedule is
             // active (this session's published status, unless the turn queued a cancel), then the store checks the step
@@ -5067,6 +5112,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     modelSummary,
                     bootstrap: input.bootstrap,
                     ...(quietEmptyAnswer ? { quietEmptyAnswer: true } : {}),
+                    ...(quietWorkflowNotice ? { quietEmptyAnswerKind: "workflow_notice" as const } : {}),
                     requiredTool: input.requiredTool,
                     ...(stepReminder ? { stepReminder } : {}),
                     cycleOrigin: input.cycleOrigin,

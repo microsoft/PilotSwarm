@@ -1367,6 +1367,25 @@ describe("inline control tool execution", () => {
             expect(recorded).toContain("session.error");
             expect(recorded).not.toContain("session.empty_answer");
         });
+
+        // Owner "No response" dump (2026-11-06): a root session's turn that answers only workflow notices that need no answer
+        // (isQuietWorkflowNoticeTurn, test/local/workflow-notice-empty-answer.test.js) is quiet the same way; its line says so.
+        it("a workflow notice that needs no answer, answered with nothing, is completed and its activity line names it", async () => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.assistantContent = null;
+            fakeSession.scriptedEvents = [{ type: "session.error", data: EMPTY }];
+            const onEvent = vi.fn();
+            const trace = vi.fn();
+            const managed = new ManagedSession("quiet-notice-turn", fakeSession, {});
+            const result = await managed.runTurn("[WORKFLOW_UPDATE from=wf-1 workflow=monitor@1.0.0 run=run-1 type=message state=send]\nNo change.",
+                { onEvent, trace, quietEmptyAnswer: true, quietEmptyAnswerKind: "workflow_notice" });
+            const recorded = onEvent.mock.calls.map(([event]) => event?.eventType);
+            expect(result).toMatchObject({ type: "completed", content: "" });
+            expect(recorded).not.toContain("session.error");
+            expect(result.events.find(event => event.eventType === "session.empty_answer").data).toEqual({ kind: "workflow_notice",
+                text: "The model answered a workflow notice that needs no answer with nothing; the turn ended without an answer.", cliMessage: EMPTY.message });
+            expect(trace.mock.calls.some(([line]) => /answered a workflow notice that needs no answer with nothing/.test(line))).toBe(true);
+        });
     });
 
     it("does not capture empty assistant messages at wait_for_agents boundaries", async () => {

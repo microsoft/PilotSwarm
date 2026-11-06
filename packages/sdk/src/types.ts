@@ -251,6 +251,12 @@ export interface TurnOptions {
      * completed with empty content: no error, no retry, no chat warning. Set by the runTurn activity only.
      */
     quietEmptyAnswer?: boolean;
+    /**
+     * With quietEmptyAnswer: what the quiet turn answered. "workflow_notice": a ROOT session's turn that answers only
+     * workflow notices that say they need no answer (isQuietWorkflowNoticeTurn); its activity line says so. Absent: the
+     * F-C3 system-only turn.
+     */
+    quietEmptyAnswerKind?: "workflow_notice";
     /** Require a real execution event for this tool; correct once, then fail the turn if still absent. */
     requiredTool?: string;
     /**
