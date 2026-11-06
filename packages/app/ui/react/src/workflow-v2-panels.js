@@ -441,6 +441,21 @@ function AgentLogRow({ row, readInstructions = null, onInstructions = null, open
 }
 
 /**
+ * What the Log offers for a chat's older lines (workflowAgentLogOlder; review UI-D6): Load older; or the last read's
+ * error, said, with Retry; or, at the history window's limit, that plain fact and no button.
+ */
+function OlderChat({ older, chatId, onOlderChat, olderChatLoading }) {
+    if (!older) return null;
+    const loading = Boolean(olderChatLoading?.has?.(chatId));
+    const button = older.action && onOlderChat ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-chat",
+        disabled: loading, onClick: () => onOlderChat(chatId) }, loading ? "Loading…" : older.action === "retry" ? "Retry" : "Load older") : null;
+    return h(React.Fragment, null,
+        older.text ? h("span", { "data-older": older.action === "retry" ? "failed" : "limit", role: older.action === "retry" ? "alert" : undefined },
+            `${older.text} `) : null,
+        button);
+}
+
+/**
  * An agent node's Log (finding 8; workflowAgentNodeLog): what is not recorded, said once; then one group per visit,
  * newest first ("Visit 4 · 17:42:01" and where it ended), with its Prompt, Agent and Workflow rows in time order, told
  * apart by their label and the colour of their edge. `failed` names the chats that could not be read; `onMore` shows
@@ -456,18 +471,14 @@ export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId =
             group.loading ? h("p", { className: "ps-wf-muted" }, failed?.has?.(group.chatId) ? "Its agent chat could not be read." : "Reading its agent chat…") : null,
             // Review UI-10: the start of this visit's chat is not loaded; it is not shown as complete.
             group.truncated ? h("p", { className: "ps-wf-muted", "data-truncated": "" }, "The start of this visit's chat is not loaded. ",
-                onOlderChat ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-chat",
-                    disabled: Boolean(olderChatLoading?.has?.(group.chatId)), onClick: () => onOlderChat(group.chatId) },
-                olderChatLoading?.has?.(group.chatId) ? "Loading…" : "Load older") : null) : null,
+                h(OlderChat, { older: group.older, chatId: group.chatId, onOlderChat, olderChatLoading })) : null,
             group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions,
                 onInstructions, openBodies }))) : null)),
         // Review UI-D5: a continued chat's loaded lines whose visit is not known yet, shown apart until their prompt is loaded.
         (log.earlier ?? []).map(part => h("section", { key: `earlier:${part.chatId}`, className: "ps-wf-alog-visit is-earlier", "data-earlier": "" },
             h("h3", null, part.header),
             h("p", { className: "ps-wf-muted" }, "Which visit these lines belong to is known once the chat's earlier prompt is loaded. ",
-                part.hasOlder && onOlderChat ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-chat",
-                    disabled: Boolean(olderChatLoading?.has?.(part.chatId)), onClick: () => onOlderChat(part.chatId) },
-                olderChatLoading?.has?.(part.chatId) ? "Loading…" : "Load older") : null),
+                h(OlderChat, { older: part.older, chatId: part.chatId, onOlderChat, olderChatLoading })),
             h("ol", { className: "ps-wf-alog-rows" }, part.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions, onInstructions, openBodies }))))),
         log.more && onMore ? h("button", { type: "button", className: "ps-mini-button", "data-action": "older-visits", onClick: onMore }, "Show older visits") : null,
         !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits are not in the loaded history of this run. ",

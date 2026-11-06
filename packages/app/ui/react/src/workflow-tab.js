@@ -9,6 +9,7 @@ import {
     workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs,
 } from "../../core/src/workflow-v2-commands.js";
 import { formatLocalTime } from "../../core/src/formatting.js";
+import { AUTO_HISTORY_EVENT_SOFT_CAP } from "../../core/src/controller.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import {
     WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
@@ -720,12 +721,22 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
     const chats = React.useMemo(() => new Map(chatIds.map(id => [id, histories?.get?.(id)?.events])), [chatKey, histories]);
     const failed = React.useMemo(() => new Set(chatIds.filter(id => histories?.get?.(id)?.loadState === "failed")), [chatKey, histories]);
     // Review UI-10: each chat's coverage (older events exist), and Load older for one chat or the run's older visits.
-    const coverage = React.useMemo(() => new Map(chatIds.map(id => [id, { hasOlder: histories?.get?.(id)?.hasOlderEvents === true }])), [chatKey, histories]);
+    // Review UI-D6: at the history window's limit Load older makes no progress, so the Log says so; a failed older-page
+    // read is kept and shown, with Retry.
+    const [olderChatErrors, setOlderChatErrors] = React.useState(() => new Map());
+    const coverage = React.useMemo(() => new Map(chatIds.map(id => {
+        const history = histories?.get?.(id);
+        const capped = history?.hasOlderEvents === true && Number(history?.loadedEventCount || 0) >= AUTO_HISTORY_EVENT_SOFT_CAP;
+        return [id, { hasOlder: history?.hasOlderEvents === true, ...(capped ? { cap: AUTO_HISTORY_EVENT_SOFT_CAP } : {}),
+            ...(olderChatErrors.has(id) ? { error: olderChatErrors.get(id) } : {}) }];
+    })), [chatKey, histories, olderChatErrors]);
     const [olderChatLoading, setOlderChatLoading] = React.useState(() => new Set());
     const onOlderChat = chatId => {
         setOlderChatLoading(current => new Set([...current, chatId]));
-        Promise.resolve(controller.expandSessionHistory(chatId)).catch(() => {}).finally(() =>
-            setOlderChatLoading(current => { const next = new Set(current); next.delete(chatId); return next; }));
+        setOlderChatErrors(current => { if (!current.has(chatId)) return current; const next = new Map(current); next.delete(chatId); return next; });
+        Promise.resolve(controller.expandSessionHistory(chatId))
+            .catch(error => setOlderChatErrors(current => new Map(current).set(chatId, String(error?.message || error || "the read failed"))))
+            .finally(() => setOlderChatLoading(current => { const next = new Set(current); next.delete(chatId); return next; }));
     };
     const onOlderVisits = workflowSessionId && typeof controller.loadOlderWorkflowHistory === "function"
         ? () => { controller.loadOlderWorkflowHistory(workflowSessionId).catch(() => {}); } : null;

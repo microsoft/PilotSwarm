@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-    WORKFLOW_AGENT_LOG_FOLD, WORKFLOW_AGENT_LOG_NOTE, WORKFLOW_BASE_INSTRUCTIONS_CHANGED, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY, workflowAgentLogChats,
+    WORKFLOW_AGENT_LOG_FOLD, WORKFLOW_AGENT_LOG_NOTE, WORKFLOW_BASE_INSTRUCTIONS_CHANGED, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY, workflowAgentLogChats, workflowAgentLogOlder,
     workflowAgentNodeLog, workflowBaseInstructions, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable, workflowLogFold, workflowPromptVisit,
 } from "../src/workflow-agent-log.js";
 import { sha256Hex } from "../src/sha256.js";
@@ -275,6 +275,34 @@ test("UI-D5: a prompt-free window of a continued chat is shown apart, never unde
         runId: "run-1", now: NOW });
     assert.deepEqual(single.earlier, []);
     assert.deepEqual(chatRowsOf(single.groups[0]).map(row => row.label), ["Tool", "Agent", "Typed result"]);
+});
+
+// Review UI-D6: a failed older-page read is said, with Retry; at the history window's limit the Log says so plainly and
+// offers no Load older that cannot make progress.
+test("UI-D6: an older-page read failure shows with Retry; at the 3,000-event limit the Log says so and offers no Load older", () => {
+    assert.equal(workflowAgentLogOlder({ hasOlder: false, cap: 3000, error: "x" }), null, "nothing older: nothing said");
+    assert.deepEqual(workflowAgentLogOlder({ hasOlder: true }), { action: "load", text: null });
+    assert.deepEqual(workflowAgentLogOlder({ hasOlder: true, error: "HTTP 503 Service Unavailable" }),
+        { action: "retry", text: "Older lines could not be read: HTTP 503 Service Unavailable" });
+    assert.deepEqual(workflowAgentLogOlder({ hasOlder: true, cap: 3000, error: "HTTP 503" }),
+        { action: null, text: "The Log reads at most the newest 3,000 events of a chat, so this chat's older lines are not shown." });
+    const window = chat.slice(2);
+    const render = entry => {
+        const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, window]]), coverage: new Map([[CHAT, entry]]), runId: "run-1", now: NOW });
+        return renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", onOlderChat: () => {} }));
+    };
+    const failed = render({ hasOlder: true, error: "HTTP 503 Service Unavailable" });
+    assert.ok(failed.includes("Older lines could not be read: HTTP 503 Service Unavailable") && failed.includes('data-older="failed"'), failed);
+    assert.ok(/data-action="older-chat"[^>]*>Retry</.test(failed), failed);
+    const capped = render({ hasOlder: true, cap: 3000 });
+    assert.ok(capped.includes("The Log reads at most the newest 3,000 events of a chat, so this chat&#x27;s older lines are not shown."), capped);
+    assert.ok(!capped.includes('data-action="older-chat"'), "no Load older at the limit");
+    const open = render({ hasOlder: true });
+    assert.ok(/data-action="older-chat"[^>]*>Load older</.test(open) && !open.includes("data-older="), open);
+    // The same for lines shown apart (UI-D5).
+    const apart = workflowAgentNodeLog({ node: { ...node, chat: "continue" }, events, chats: new Map([[CHAT, chat.slice(2, 7)]]),
+        coverage: new Map([[CHAT, { hasOlder: true, cap: 3000 }]]), runId: "run-1", now: NOW });
+    assert.equal(apart.earlier[0].older.action, null);
 });
 
 test("UI-10: older visits not in the run's loaded history offer Load older visits", () => {

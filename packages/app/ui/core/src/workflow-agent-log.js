@@ -221,6 +221,21 @@ function workflowRows(events, runId, visitId) {
     return rows;
 }
 
+/**
+ * Review UI-D6: what the Log offers for a chat's older lines, from its coverage entry { hasOlder, cap?, error? }: null
+ * when nothing older exists; else { action: "load" | "retry" | null, text }. `cap`: the history window's limit, reached
+ * (Load older makes no progress past it, so it is not offered and the Log says so); `error`: the last older-page read
+ * failed (shown, with Retry).
+ */
+export function workflowAgentLogOlder(entry) {
+    if (!isRecord(entry) || entry.hasOlder !== true) return null;
+    if (Number.isSafeInteger(entry.cap) && entry.cap > 0) {
+        return { action: null, text: `The Log reads at most the newest ${entry.cap.toLocaleString("en-US")} events of a chat, so this chat's older lines are not shown.` };
+    }
+    if (typeof entry.error === "string" && entry.error.trim()) return { action: "retry", text: `Older lines could not be read: ${entry.error.trim()}` };
+    return { action: "load", text: null };
+}
+
 /** The key of a chat's rows whose visit is not known (review UI-D5): they come before the first prompt loaded. */
 const EARLIER = Symbol("earlier in this chat");
 
@@ -251,7 +266,8 @@ function leadingVisit(events, own, single) {
 
 /**
  * The Log of an agent node: { groups, earlier, more, partial, loading, note }. `chats` maps an agent chat's session id to its loaded events
- * (undefined: not read yet); `coverage` maps it to { hasOlder } (the chat has events older than those loaded). Each
+ * (undefined: not read yet); `coverage` maps it to { hasOlder, cap?, error? } (the chat has events older than those loaded;
+ * the history window's limit, reached; the last older-page read's error: workflowAgentLogOlder, review UI-D6). Each
  * group is { visitId, ordinal, header, status, rows, loading, truncated }: `truncated` when the start of the visit's
  * chat (its prompt) is not loaded and older chat events exist (review UI-10: the Log says so and offers Load older,
  * never shows such a group as a complete visit). rows are { key, kind (prompt, agent, result or workflow), label, text,
@@ -293,7 +309,7 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
         // UI-10: the visit's start (its prompt) is not loaded while the chat has older events: the group is not complete.
         const truncated = !waiting && Boolean(chatId) && covered.get(chatId)?.hasOlder === true && !rows.some(row => row.label === "Prompt");
         return {
-            visitId: visit.id, ordinal: visit.ordinal ?? null, chatId, loading: waiting, truncated,
+            visitId: visit.id, ordinal: visit.ordinal ?? null, chatId, loading: waiting, truncated, older: truncated ? workflowAgentLogOlder(covered.get(chatId)) : null,
             header: `Visit ${visit.ordinal ?? "—"}${started ? ` · ${started}` : ""}`, status: workflowNodeNow(node, visit, now), rows,
         };
     });
@@ -331,6 +347,7 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
     const earlier = [...cut.entries()].flatMap(([chatId, byVisit]) => {
         const rows = byVisit.has(EARLIER) ? chatRows(byVisit.get(EARLIER), null) : [];
         return rows.length ? [{ chatId, header: "Earlier in this chat · visit not loaded", hasOlder: covered.get(chatId)?.hasOlder === true,
+            older: workflowAgentLogOlder(covered.get(chatId)),
             rows: rows.map(row => ({ ...row, time: row.at === null ? null : workflowNodeClock(row.at, now) })) }] : [];
     });
     // `more`: older visits are loaded but not shown ("Show older visits"); `partial`: the run's loaded history has no older ones.
