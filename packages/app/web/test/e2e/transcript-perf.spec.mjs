@@ -85,7 +85,9 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
             void panel.offsetHeight;
             return performance.now() - t0;
         };
-        return Math.min(measure(), measure());
+        // The best of five: the cost is the layout's, not the machine's scheduling under a loaded suite (wfs-full-5d687726
+        // read 20.7 ms as the best of two); the ceiling is unchanged.
+        return Math.min(measure(), measure(), measure(), measure(), measure());
     });
 
     // HONEST NUMBER: 6-8ms at this size. The transcript is not virtualised and
