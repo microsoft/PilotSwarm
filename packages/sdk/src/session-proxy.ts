@@ -623,6 +623,16 @@ function normalizeEventData(eventData?: Record<string, unknown>): Record<string,
     return eventData && typeof eventData === "object" ? eventData : null;
 }
 
+/**
+ * How many messages a turn without a sender was merged from (review SF-1), or null: the orchestration's queue merges
+ * consecutive queued prompts into one turn and gives it no sender when their senders differ, with every message's
+ * client id. Two or more ids without a sender is such a turn. Pure.
+ */
+export function mergedTurnMessages(sender: unknown, clientMessageIds: readonly string[]): number | null {
+    if (sender && typeof sender === "object") return null;
+    return clientMessageIds.length >= 2 ? clientMessageIds.length : null;
+}
+
 function summarizeSdkSystemPromptEchoEvent(
     event: { eventType: string; data: unknown },
 ): { eventType: string; data: unknown } | null {
@@ -4613,6 +4623,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if ((input as any).sender && typeof (input as any).sender === "object") {
                     eventData.sender = (input as any).sender;
                 }
+                // Review SF-1: a turn the queue merged from messages of different senders reaches this activity with no
+                // sender and every message's client id (orchestration queue decide(); constituent senders are not passed).
+                // It is recorded as what it is: several messages, of no one sender. The UI shows it neutrally, never as one
+                // person's words and never as a workflow card.
+                const merged = mergedTurnMessages((input as any).sender, incomingClientMessageIds);
+                if (merged !== null) eventData.mergedMessages = merged;
                 // A workflow's message (batch 7, w-4) is recorded as the workflow's: sender kind "workflow", its name, and
                 // the header's type, so the portal and the terminal show it with a workflow badge. Only the record changes;
                 // the queue payload (and the orchestration that reads it) keeps its system sender. Only a message the

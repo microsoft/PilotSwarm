@@ -2212,7 +2212,10 @@ function describeChatMessageHeader(message, options = {}) {
     );
     const ownerSuffix = senderIsOwner ? " (owner)" : "";
 
-    const roleLabel = isAgentKickoffMessage(message)
+    // Review SF-1: a turn merged from messages of different senders (a server-stamped count, no sender) is no one
+    // person's words: it is labelled as such, never "You".
+    const mergedMessages = isUser && !sender && Number.isSafeInteger(message?.mergedMessages) && message.mergedMessages >= 2;
+    const roleLabel = mergedMessages ? "Several messages arrived together" : isAgentKickoffMessage(message)
         // Belt and braces: the chat pane collapses a kickoff before it reaches
         // here, but the TUI and any other renderer share this labeling, and
         // "You" is the one label this message must never carry.

@@ -645,54 +645,20 @@ function workflowUpdateCardOf(event, parsed, sender, id) {
     };
 }
 
-const SESSION_ID_TOKEN = /^[A-Za-z0-9][A-Za-z0-9-]{7,}$/;
-const LEADING_FROM_LINE = /^\[FROM:[^\]\n]*\]\n/;
-
 /**
- * A prompt the session's queue merged from a workflow's message and a person's words (owner feedback 2026-11-06; the
- * orchestration's decide() batches consecutive queued prompts into one turn, orchestration_1_0_82/queue.ts:1468-1499,
- * and records a turn of mixed senders with no sender). Shown split: each workflow message as its card ("Workflow ·
- * message"), and the person's words alone as theirs. Only for a recorded user.message WITHOUT a sender (a prompt of one
- * sender keeps its sender and is never split), whose paragraphs hold at least one whole workflow message (its header,
- * naming a session in `from`, its sentence, its data line and one line of JSON) and something else. Returns the items
- * in order, or null when nothing is split. Pure.
+ * A user.message's chat items (review SF-1). A card comes only from a server-stamped sender (buildWorkflowUpdateChatCard),
+ * never from text. A turn the session's queue merged from messages of different senders is recorded with no sender and
+ * a server-stamped count (`mergedMessages`, session-proxy mergedTurnMessages): it is one message, shown neutrally as
+ * several messages that arrived together, with its raw text; it is never shown as one person's words nor split into a
+ * workflow card. Pure.
  */
-function splitMergedWorkflowPrompt(event) {
-    if (event?.eventType !== "user.message" || (event.data && typeof event.data === "object" && event.data.sender)) return null;
-    const source = normalizeMessageText(messageTextFromEvent(event));
-    if (!source.includes("[WORKFLOW_UPDATE ")) return null;
-    const groups = [];
-    for (const paragraph of source.split("\n\n")) {
-        const body = paragraph.replace(LEADING_FROM_LINE, "");
-        const parsed = parseWorkflowUpdateText(body);
-        const at = body.indexOf(`\n${WORKFLOW_UPDATE_DATA_LINE}\n`);
-        const whole = parsed && at >= 0 && !body.slice(at + WORKFLOW_UPDATE_DATA_LINE.length + 2).includes("\n")
-            && SESSION_ID_TOKEN.test(String(parsed.fields.from ?? "")) && Object.hasOwn(WORKFLOW_UPDATE_TITLES, parsed.type);
-        if (whole) groups.push({ workflow: parsed });
-        else if (groups.length && groups.at(-1).text !== undefined) groups.at(-1).text += `\n\n${paragraph}`;
-        else groups.push({ text: paragraph });
-    }
-    if (groups.length < 2 || !groups.some(group => group.workflow)) return null;
-    const items = [];
-    let cards = 0;
-    for (const group of groups) {
-        if (group.workflow) {
-            cards += 1;
-            items.push({ ...workflowUpdateCardOf(event, group.workflow, null, `${event.sessionId}:${event.seq}:workflow-${cards}`), mergedFromPrompt: true });
-        } else {
-            const message = buildChatMessage({ ...event, data: { ...(event.data && typeof event.data === "object" ? event.data : {}), content: group.text } }, "user");
-            if (message) items.push(message);
-        }
-    }
-    return items;
-}
-
-/** A user.message's chat items: one message, or a merged prompt split (splitMergedWorkflowPrompt). */
 function buildUserMessageItems(event) {
-    const split = splitMergedWorkflowPrompt(event);
-    if (split) return split;
     const message = buildChatMessage(event, "user");
-    return message ? [message] : [];
+    if (!message) return [];
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const merged = data.mergedMessages;
+    if (message.role === "user" && !data.sender && Number.isSafeInteger(merged) && merged >= 2) return [{ ...message, mergedMessages: merged }];
+    return [message];
 }
 
 function buildSessionMessageChatCard(event, text) {
