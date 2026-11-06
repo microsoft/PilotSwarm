@@ -842,6 +842,17 @@ function getPortalInspectorContentWidth(paneWidth, inspectorTab, mobile = false)
     return Math.max(20, paneWidth - (mobile ? 6 : 4));
 }
 
+// The portal's mono face is a bundled web font with font-display: swap, so the
+// first paint can measure the fallback face. Every column probe re-measures
+// when a font finishes loading; the fallback (Consolas on Windows) is narrower
+// than the real face, and a stale count wraps lines past the pane edge.
+function onWebFontsLoaded(callback) {
+    const fonts = typeof document !== "undefined" ? document.fonts : null;
+    if (!fonts || typeof fonts.addEventListener !== "function") return () => {};
+    fonts.addEventListener("loadingdone", callback);
+    return () => fonts.removeEventListener("loadingdone", callback);
+}
+
 /**
  * The pane's own truth for content width, in character columns.
  *
@@ -862,10 +873,11 @@ function getPortalInspectorContentWidth(paneWidth, inspectorTab, mobile = false)
  */
 function useMeasuredPaneColumns({ slack = 1, debounceMs = 120 } = {}) {
     const [cols, setCols] = React.useState(null);
-    const stateRef = React.useRef({ node: null, observer: null, timer: null, frame: null });
+    const stateRef = React.useRef({ node: null, observer: null, timer: null, frame: null, unfonts: null });
     const attachRef = React.useCallback((node) => {
         const st = stateRef.current;
         if (st.observer) { st.observer.disconnect(); st.observer = null; }
+        if (st.unfonts) { st.unfonts(); st.unfonts = null; }
         if (st.timer) { window.clearTimeout(st.timer); st.timer = null; }
         if (st.frame) { cancelAnimationFrame(st.frame); st.frame = null; }
         st.node = node;
@@ -900,6 +912,7 @@ function useMeasuredPaneColumns({ slack = 1, debounceMs = 120 } = {}) {
             st.timer = window.setTimeout(measure, debounceMs);
         };
         st.frame = requestAnimationFrame(measure);
+        st.unfonts = onWebFontsLoaded(schedule);
         st.observer = new ResizeObserver(schedule);
         // content-box: a classic (non-overlay) vertical scrollbar appearing
         // shrinks the content box without touching the border box — observe
@@ -9466,6 +9479,8 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     // republishes from those measurements. Runs after paint on mount and tab
     // switches; the ±2 tolerance keeps it from ping-ponging with publish().
     const clampFrameRef = React.useRef(null);
+    const [fontsLoadedSeq, setFontsLoadedSeq] = React.useState(0);
+    React.useEffect(() => onWebFontsLoaded(() => setFontsLoadedSeq((n) => n + 1)), []);
     React.useEffect(() => {
         if (!mobile) return undefined;
         clampFrameRef.current = requestAnimationFrame(() => {
@@ -9504,7 +9519,7 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
         return () => {
             if (clampFrameRef.current) cancelAnimationFrame(clampFrameRef.current);
         };
-    }, [controller, mobile, viewState.inspectorTab, viewState.activeSessionId]);
+    }, [controller, mobile, viewState.inspectorTab, viewState.activeSessionId, fontsLoadedSeq]);
 
     if (viewState.inspectorTab === "files" && !inspector.disabled) {
         return React.createElement(FilesPane, { controller, focused: viewState.focused, mobile });
@@ -16159,8 +16174,10 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         const onResize = () => { clearTimeout(timer); timer = setTimeout(publish, 150); };
         window.addEventListener("resize", onResize);
         window.addEventListener("orientationchange", onResize);
+        const unfonts = onWebFontsLoaded(onResize);
         return () => {
             clearTimeout(timer);
+            unfonts();
             window.removeEventListener("resize", onResize);
             window.removeEventListener("orientationchange", onResize);
         };

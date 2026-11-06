@@ -1,3 +1,40 @@
+/* JetBrains Mono ships with the portal, so the mono face is the same on every
+   device instead of whatever ui-monospace resolves to (Consolas on Windows,
+   DejaVu on Linux, SF Mono on Apple). One variable file per subset covers
+   weights 100-800. SIL OFL 1.1; the full text ships in THIRD-PARTY-NOTICES. */
+@font-face {
+  font-family: "PS JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono/jetbrains-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "PS JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono/jetbrains-mono-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "PS JetBrains Mono";
+  font-style: italic;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono/jetbrains-mono-italic-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "PS JetBrains Mono";
+  font-style: italic;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono/jetbrains-mono-italic-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
   --ps-page-background: #0d1117;
   --ps-page-foreground: #f0f6fc;
@@ -35,7 +72,7 @@
   /* The one monospace stack, named. Several rules asked for it by variable
      and every one of them carried its own inline fallback, so "the mono face"
      was really four slightly different lists. */
-  --ps-mono: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  --ps-mono: "PS JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
   /* Scroll-past-end room at the foot of the session list. At the bottom of a
      long list the last row otherwise sits flush against the detail box below
      it, which reads as "the list is cut off" rather than "this is the end".
@@ -219,7 +256,7 @@ body,
   height: 100%;
   background: var(--ps-page-background);
   color: var(--ps-page-foreground);
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-family: var(--ps-mono);
   font-size: var(--ps-font-size-base);
   line-height: var(--ps-line-height-base);
 }
@@ -275,6 +312,16 @@ button,
 input,
 textarea {
   font: inherit;
+}
+
+/* The user-agent sheet gives these the bare generic "monospace", which is the
+   browser's own default face, not the portal's. Point them at the bundled one;
+   any theme rule that names a font is more specific and still wins. */
+pre,
+code,
+kbd,
+samp {
+  font-family: var(--ps-mono);
 }
 
 button {
@@ -1579,7 +1626,7 @@ body.is-resizing-pane-y iframe {
   padding: 8px 10px;
   border-left: 2px solid var(--ps-accent);
   color: var(--ps-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--ps-mono);
   font-size: 0.96rem;
   line-height: 1.5;
 }
@@ -8111,8 +8158,8 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
      still a clear break from the system stack every other theme uses. */
   --ps-ui-font: "Fira Sans", "Source Sans 3", "Source Sans Pro", -apple-system,
     BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --ps-mono: "Fira Code", "Fira Mono", ui-monospace, SFMono-Regular, Menlo,
-    Consolas, monospace;
+  --ps-mono: "Fira Code", "Fira Mono", "PS JetBrains Mono", ui-monospace,
+    SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 /* Chrome goes proportional; the transcript and every technical surface stay
@@ -12146,7 +12193,7 @@ textarea.ps-link-input {
   font-family: var(--dawn-ui);
 }
 :root[data-ps-theme="horizon-dawn"] :is(pre, code, kbd, samp) {
-  font-family: ui-monospace, "Cascadia Code", SFMono-Regular, Consolas, monospace;
+  font-family: var(--ps-mono);
 }
 
 /* The header: sky, Orion and mountains, back to front. */

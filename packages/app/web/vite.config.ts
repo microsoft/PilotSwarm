@@ -20,6 +20,12 @@ const BUNDLED_ASSETS = [
     source: "https://github.com/sora-xor/sora-font",
     licenseFile: new URL("./src/assets/horizon-dawn/Sora-OFL.txt", import.meta.url),
   },
+  {
+    name: "JetBrains Mono (the portal's monospace font)",
+    license: "OFL-1.1",
+    source: "https://github.com/JetBrains/JetBrainsMono",
+    licenseFile: new URL("./src/assets/fonts/jetbrains-mono/JetBrainsMono-OFL.txt", import.meta.url),
+  },
 ];
 
 function thirdPartyNotices(dependencies) {
