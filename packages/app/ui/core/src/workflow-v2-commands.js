@@ -1591,12 +1591,13 @@ export function workflowV2InputsShape(schema) {
 }
 
 /**
- * The Start form's shape for Start another (review UI-D8): the definition's (workflowV2InputsShape), except that with no
- * schema the inputs its Workflow had, when known and not empty, stay: a JSON box filled with them, never "none". Pure.
+ * The Start form's shape for Start another (reviews UI-D8, UI-F4): the definition's (workflowV2InputsShape) when its schema
+ * is known. A missing schema (the read could not give it) is no contract at all, never proof that no inputs exist: a JSON
+ * box, filled with the inputs its Workflow had when they are known (also {}), else the same-inputs fallback. "none" is
+ * only for an explicitly closed empty contract. Pure.
  */
-export function workflowV2StartAnotherShape(schema, sourceInputs) {
-    const declared = workflowV2InputsShape(schema);
-    return declared === "none" && !isRecord(schema) && isRecord(sourceInputs) && Object.keys(sourceInputs).length > 0 ? "json" : declared;
+export function workflowV2StartAnotherShape(schema) {
+    return isRecord(schema) ? workflowV2InputsShape(schema) : "json";
 }
 
 /**

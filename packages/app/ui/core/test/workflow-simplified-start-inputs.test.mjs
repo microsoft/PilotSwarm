@@ -80,17 +80,17 @@ test("UI-D8: Start another keeps known inputs for an open, additionalProperties 
     const original = { region: "east", limit: 3 };
     for (const schema of [{ type: "object" }, { type: "object", additionalProperties: true }, null]) {
         const label = JSON.stringify(schema);
-        assert.equal(workflowV2StartAnotherShape(schema, original), "json", label);
+        assert.equal(workflowV2StartAnotherShape(schema), "json", label);
         const html = render({ publication: publication(schema), onAsk: async () => ({ ok: true }), source: { number: 2, inputs: original } });
         assert.ok(!html.includes("Takes no inputs.") && html.includes("Inputs (JSON)") && html.includes("Filled with the inputs of #2."), html);
         // The JSON box holds the original object exactly: what Ask sends.
         const box = /<textarea[^>]*>([^<]*)<\/textarea>/.exec(html);
         assert.deepEqual(JSON.parse(box[1].replaceAll("&quot;", "\"")), original, label);
     }
-    // No schema and no known inputs, or a closed empty contract: takes none.
-    assert.equal(workflowV2StartAnotherShape(null, null), "none");
-    assert.equal(workflowV2StartAnotherShape(null, {}), "none");
-    assert.equal(workflowV2StartAnotherShape({ type: "object", additionalProperties: false }, original), "none");
+    // Only a closed empty contract takes none (review UI-F4: a missing schema is not that).
+    assert.equal(workflowV2StartAnotherShape(null), "json");
+    assert.equal(workflowV2StartAnotherShape(undefined), "json");
+    assert.equal(workflowV2StartAnotherShape({ type: "object", additionalProperties: false }), "none");
     // The message: the inputs as given, "It takes no inputs." only for a contract that takes none.
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: original }), /\nInputs \(data, JSON\): \{"region":"east","limit":3\}$/);
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: {} }), /\nInputs \(data, JSON\): \{\}$/);
@@ -109,3 +109,21 @@ test("UI-D8: Start another keeps known inputs for an open, additionalProperties 
     assert.match(sent.at(-1).prompt, /\nInputs \(data, JSON\): \{"region":"east","limit":3\}$/);
     assert.doesNotMatch(sent.at(-1).prompt, /takes no inputs/);
 });
+
+// Review UI-F4: Start another whose schema the read could not give: with the source inputs unavailable, the same-inputs
+// fallback (the chat uses the ones it started it with); with them known to be empty, a JSON box with {}; never "Takes no
+// inputs", and the message never says it takes none.
+test("UI-F4: a missing schema with unavailable or empty source inputs offers the same inputs or JSON, never 'Takes no inputs'", async () => {
+    const unavailable = render({ publication: publication(null), onAsk: async () => ({ ok: true }), source: { number: 2, inputs: null } });
+    assert.ok(!unavailable.includes("Takes no inputs."), unavailable);
+    assert.ok(unavailable.includes("The same as #2. This screen cannot read them; the chat uses the ones it started it with.")
+        && unavailable.includes('data-action="other-inputs"'), unavailable);
+    const empty = render({ publication: publication(null), onAsk: async () => ({ ok: true }), source: { number: 2, inputs: {} } });
+    assert.ok(!empty.includes("Takes no inputs.") && empty.includes("Inputs (JSON)"), empty);
+    const box = /<textarea[^>]*>([^<]*)<\/textarea>/.exec(empty);
+    assert.deepEqual(JSON.parse(box[1]), {});
+    // What each asks the chat: the same inputs (unavailable), the empty object (known); never "It takes no inputs."
+    assert.match(workflowStartAnotherText({ name: "check-items" }), /\nUse the same inputs as before\.$/);
+    assert.match(workflowStartAnotherText({ name: "check-items", inputs: {}, noInputs: false }), /\nInputs \(data, JSON\): \{\}$/);
+});
+

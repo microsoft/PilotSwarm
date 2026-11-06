@@ -3062,7 +3062,9 @@ test("Run again: Start another… asks the chat once to start the same definitio
     await main.getByRole("button", { name: "Start another…", exact: true }).click();
     const form = page.getByRole("dialog", { name: "Start another watch-v2", exact: true });
     await expect(form).toBeVisible();
-    await expect(form.locator('[data-field="no-inputs"]')).toHaveText("Takes no inputs.");
+    // Review UI-F4: this read gives no input schema and no inputs of #2: never "Takes no inputs", the same inputs instead.
+    await expect(form.locator('[data-field="no-inputs"]')).toHaveCount(0);
+    await expect(form.locator('[data-field="same-inputs"]')).toContainText("The same as #2.");
     await expect(form).toContainText("The chat starts watch-v2 #3 from the same definition.");
     await shot(page, "run-again-form");
     await form.getByRole("button", { name: "Ask the chat to start #3", exact: true }).click();
@@ -3078,7 +3080,8 @@ test("Run again: Start another… asks the chat once to start the same definitio
     expect(prompt).toContain("Call spawn_workflow with the same YAML as #2 of that definition, unchanged: the same metadata.name and version.");
     expect(prompt).toContain("Pass no key, or a new key. Do not rename the definition.");
     expect(prompt).toContain(`workflow_id ${JSON.stringify(OWNED.failed)}, include_yaml true`);
-    expect(prompt).toContain("It takes no inputs.");
+    expect(prompt).toContain("Use the same inputs as before.");
+    expect(prompt).not.toContain("It takes no inputs.");
     await expect(composer).toHaveValue("my own draft");
     // The chat's new Workflow arrives with the next session-list read: #3, under the same definition.
     await viewSwitch(main, "Workflows").click();

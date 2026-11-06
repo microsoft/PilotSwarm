@@ -882,7 +882,7 @@ export function StartDialog({ controller, sessionId, publication, control = null
     const required = new Set(Array.isArray(schema?.required) ? schema.required : []);
     const repeated = onAsk && source?.inputs && typeof source.inputs === "object" ? source.inputs : null;
     // Review UI-D8: Start another never erases the inputs its Workflow had: with no schema, its known inputs stay, as JSON.
-    const shape = onAsk ? workflowV2StartAnotherShape(schema, repeated) : workflowV2InputsShape(schema);
+    const shape = onAsk ? workflowV2StartAnotherShape(schema) : workflowV2InputsShape(schema);
     const sample = React.useMemo(() => (onAsk ? repeated ?? {} : workflowV2SampleInputs(schema) ?? {}),
         [JSON.stringify(schema ?? null), JSON.stringify(repeated)]);
     const [asJson, setAsJson] = React.useState(shape === "json");
