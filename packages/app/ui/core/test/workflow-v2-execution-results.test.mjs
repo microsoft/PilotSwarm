@@ -210,7 +210,7 @@ test("a runtime error is that visit's own, with its code; a preview the read cut
     const h = await viewing(failing, "poll");
     let lines = details(h.store);
     assert.ok(lines.includes("Result of visit 3 (latest; [ older · ] newer)"), lines.join("\n"));
-    assert.ok(lines.includes("  Failed · timed_out: {\"code\":\"timed_out\",\"message\":\"The script did not finish.\"}"));
+    assert.ok(lines.includes("  Runtime error · timed_out: {\"code\":\"timed_out\",\"message\":\"The script did not finish.\"}"), lines.join("\n"));
     await older(h);
     lines = details(h.store);
     assert.ok(lines.some(line => line.startsWith("  Output: {\"text\":\"xxx")));

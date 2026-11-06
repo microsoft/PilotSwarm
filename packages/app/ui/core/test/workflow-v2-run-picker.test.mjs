@@ -111,7 +111,8 @@ test("no runs, a legacy workflow and a model that is not v2 show no picker or an
         /<select aria-label="Workflow run"/);
     const legacy = pane(seed({ view: { definition: workflowDefinition(legacyStartedData) } }).controller);
     assert.ok(!legacy.includes("Workflow run"));
-    assert.ok(legacy.includes("node · idle"), "the legacy graph is unchanged");
+    // Words (Workflow Simplified 03, 10): the node's type in a word.
+    assert.ok(legacy.includes("Script · idle"), "the legacy graph is unchanged");
     const legacyJunk = pane(seed({ view: { definition: workflowDefinition(legacyStartedData), readModel: { nope: true }, readModelRunId: null } }).controller);
     assert.ok(!legacyJunk.includes("Workflow run"));
     assert.ok(!pane(seed({ view: {} }).controller).includes("Workflow run"), "no definition and no model: nothing to pick from");

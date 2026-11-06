@@ -254,7 +254,8 @@ test("R2-UI-6: a graceful stop is logged from its request to its end, and closes
     const stopped = describeWorkflowEvent(rows.at(-1));
     assert.deepEqual([stopped.kind, stopped.title, stopped.color], ["card", "Workflow stopped", "yellow"]);
     assert.equal(formatWorkflowEventText(rows.at(-1)),
-        "⏹ Workflow stopped: `done for today`; 1 step was still running when the time to finish ended, so it was cancelled.");
+        // Words (Workflow Simplified 03, O8): a node, "canceled".
+        "⏹ Workflow stopped: `done for today`; 1 node was still running when the time to finish ended, so it was canceled.");
     assert.match(formatWorkflowEventText(rows.at(-2)), /^⏹ Stop asked by `agent session abcdef12`: started nodes may finish\.$/);
     // A live append gives the same transcript.
     let live = buildHistoryModel(rows.slice(0, 3));

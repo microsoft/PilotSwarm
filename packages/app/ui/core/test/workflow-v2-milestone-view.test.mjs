@@ -61,7 +61,8 @@ test("a stopping run says what may still settle; a stopped run is ended, and the
     const stopped = projectWorkflowV2({ readModel: readModel({ graph, run: { status: "stopped" }, nodeExecutions: [done("review", 1, "accepted")] }) });
     assert.equal(stopped.status.phase, "stopped");
     assert.equal(stopped.status.ended, true);
-    assert.match(stopped.status.label, /^Stopped/);
+    // Words (Workflow Simplified 05, O8): a graceful stop reads Canceled, with how it stopped.
+    assert.match(stopped.status.label, /^Canceled · after started nodes finished$/);
     const picker = workflowV2RunPickerModel({ workflowModel: readModel({ graph, run: { status: "stopped" } }) });
     assert.match(picker.options[0].label, /^Live run · stopped/);
 });

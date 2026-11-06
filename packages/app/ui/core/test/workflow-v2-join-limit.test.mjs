@@ -114,7 +114,8 @@ test("a visit that timed out: the bar says so with its time limit; the branches 
     assert.deepEqual(parallel.joinBar, {
         id: "join:fan", state: "timed_out", rule: "all required", label: "Continues when all items succeed", stateText: "time limit passed",
         limit: { text: "time limit 30 s", title: "The time limit is 30 s from the step's start. It passed before the join, at 2026-11-04 20:30:00 UTC." },
-        group: { label: "For each item", counts: null, text: null },
+        // Workflow Simplified (W5, W6): the For each box says how many of its items succeeded once the visit ended.
+        group: { label: "For each item", counts: null, text: "1 of 3 succeeded" },
     });
     assert.deepEqual(parallel.evidence.rows.map(row => [row.index, row.status, row.why]), [
         [0, "succeeded", null],

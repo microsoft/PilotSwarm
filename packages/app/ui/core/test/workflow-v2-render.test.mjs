@@ -27,7 +27,8 @@ const node = controller => renderToStaticMarkup(React.createElement(WorkflowNode
 
 test("the legacy graph renders as before, without v2 marks", () => {
     const html = main(mount({ view: { definition: workflowDefinition(legacyStartedData) } }));
-    assert.ok(html.includes("node · idle"));
+    // Words (Workflow Simplified 03, 10): a node's type in a word, never the Node.js runtime as "node".
+    assert.ok(html.includes("Script · idle"));
     assert.ok(!html.includes("data-kind"));
     assert.ok(!html.includes("data-phase=\"waiting\""));
     assert.equal(html.split(">Workflow session<").length - 1, 0, "no static composer bar (flow-09)");
@@ -58,7 +59,7 @@ test("a v2 graph is drawn from durable events alone, and an unrecognized read mo
     assert.ok(refused.includes("No workflow graph to show"));
     assert.ok(refused.includes("workflow data has an unknown format"));
     const legacyKept = main(mount({ view: { definition: workflowDefinition(legacyStartedData), readModel: { nope: true } } }));
-    assert.ok(legacyKept.includes("node · idle"), "a bad read model never hides a legacy definition");
+    assert.ok(legacyKept.includes("Script · idle"), "a bad read model never hides a legacy definition");
 });
 
 test("an invalid draft shows its diagnostics as text, and a draft with a graph says it is a draft", () => {

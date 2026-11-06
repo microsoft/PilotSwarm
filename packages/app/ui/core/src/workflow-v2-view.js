@@ -1662,7 +1662,8 @@ export function workflowV2JoinView(view, context) {
     const groupText = counts === null
         ? (ended ? `${Math.min(ended.succeeded ?? 0, visit.branches)} of ${visit.branches} succeeded` : null)
         : counts.partial
-            ? `${counts.runningExact ? "" : "at least "}${counts.done} done · ${counts.running} running · ${counts.unknown} not known`
+            // History not all loaded: done is a lower bound, and running is one too unless every open row is listed.
+            ? `at least ${counts.done} done · ${counts.runningExact ? "" : "at least "}${counts.running} running · ${counts.unknown} not known`
             : [`${counts.done} done`, `${counts.running} running`, counts.queued ? `${counts.queued} waiting` : null].filter(Boolean).join(" · ");
     return {
         id: `join:${view.id}`, state, rule, label: workflowV2ContinueWords(view, visit), stateText: blockedAtLimit ? "blocked · time limit passed" : JOIN_WORDS[state] ?? null,

@@ -72,7 +72,8 @@ test("while it runs: the box counts its branches and the bar waits; once joined 
     assert.equal(byId(projection, "review").joinBar, undefined);
     assert.equal(byId(projection, "pause").branches, undefined);
     const ended = outcome => byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: [done("fan", 1, outcome, { branches: 3 })] }) }), "fan").joinBar;
-    assert.deepEqual([ended("joined").state, ended("joined").stateText, ended("joined").group.counts], ["joined", "joined", null]);
+    // Words (Workflow Simplified W6): a joined For each node "continued".
+    assert.deepEqual([ended("joined").state, ended("joined").stateText, ended("joined").group.counts], ["joined", "continued", null]);
     assert.deepEqual([ended("blocked").state, ended("blocked").stateText], ["blocked", "blocked"]);
     const idle = byId(projectWorkflowV2({ readModel: readModel({ graph, noRun: true }) }), "fan").joinBar;
     assert.deepEqual([idle.state, idle.stateText, idle.group.text, idle.label], ["idle", null, null, "Continues when all items succeed"]);

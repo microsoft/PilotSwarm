@@ -82,7 +82,8 @@ test("Q2: a step's reminder has a line in the workflow's activity and in the age
     // In the step's details, for its visit only.
     assert.equal(workflowV2Activity([reminded], { runId: RUN, nodeExecutionId: "nx-review-1" }).length, 1);
     assert.equal(workflowV2Activity([reminded], { runId: RUN, nodeExecutionId: "nx-other" }).length, 0);
-    assert.equal(workflowEventText("workflow.agent_reminded", {}, "short").text, "A step reminded to finish");
+    // Words (Workflow Simplified 03): a node, not a step.
+    assert.equal(workflowEventText("workflow.agent_reminded", {}, "short").text, "A node reminded to finish");
     // The agent chat's own activity: the reminder it got inside its turn, one gray line.
     const { activity, chat } = buildHistoryModel([{ seq: 7, sessionId: "child-1", eventType: "runtime.workflow_step_reminded", createdAt: at(7),
         data: { stateId: "review", n: 2, max: 3, sessionId: "child-1" } }]);
@@ -136,7 +137,8 @@ test("a run that ended says why: completed, failed, cancelled with its reason an
         event(1, "workflow.stop_requested", { actor: ALICE, reason: "release freeze" }),
         event(2, "workflow.stopped", { reason: "release freeze", graceExpired: true, cancelledCount: 1 }),
     ]);
-    assert.equal(stopped.text, "Why it ended: It was stopped: release freeze; 1 step was still running when the time to finish ended, so it was cancelled. "
+    // Words (Workflow Simplified 03, O8): a node, "canceled".
+    assert.equal(stopped.text, "Why it ended: It was stopped: release freeze; 1 node was still running when the time to finish ended, so it was canceled. "
         + "Asked by Alice. (2026-11-03 08:02:00 UTC)");
 });
 

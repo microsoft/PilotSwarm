@@ -97,7 +97,7 @@ test("w opens the view on the pending agent state: its state, transitions with t
     // A branch's end says so; the parallel step is followed by its branch steps, then its join line, then its continuations
     // (owner batch 7, H2; review UI7-4).
     assert.deepEqual(view.rows.map(rowText).map(text => text.trim().split(/\s+/).slice(0, 3).join(" ")), [
-        "▶ ● review", "✓ fix script", "○ fan parallel", "○ work script", "○ branch_done branch", "⋯ join ·", "○ done ends", "○ failed ends",
+        "▶ ● review", "✓ fix Script", "○ fan For", "○ work Script", "○ branch_done Item", "⋯ Continues when", "○ done End", "○ failed End",
     ]);
     assert.equal(rowText(view.rows[5]).trim(), "⋯ Continues when all items succeed");
     assert.equal(view.selectedRowIndex, 0);
@@ -132,8 +132,8 @@ test("↑↓ select states in graph order; the loop's other state, a parallel st
     view = selectWorkflowViewModal(store.getState(), 110);
     assert.ok(lineTexts(view).includes("  each branch → work · where each branch starts"));
     assert.ok(lineTexts(view).includes("  joined → done"));
-    // The parallel step's details name its join (H2); no time limit is shown for it.
-    assert.ok(lineTexts(view).includes("Join: all required"), lineTexts(view).join("\n"));
+    // The parallel step's details say when it continues, in words (H2; Workflow Simplified W6); no time limit is shown for it.
+    assert.ok(lineTexts(view).includes("Continues when all items succeed"), lineTexts(view).join("\n"));
     assert.ok(!lineTexts(view).some(line => line.includes("⏱")), lineTexts(view).join("\n"));
     // Its branch steps come next; ↓ passes over the join line to the continuation.
     await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
@@ -173,9 +173,9 @@ test("two parallel steps: each is followed by its branch steps and its join line
     let view = selectWorkflowViewModal(store.getState(), 110);
     const words = view.rows.map(rowText).map(text => text.trim().split(/\s+/).slice(0, 3).join(" "));
     assert.deepEqual(words.slice(0, 8), [
-        "▶ ○ a", "○ a_work script", "○ a_end branch", "⋯ join ·", "○ b parallel", "○ b_work script", "○ b_end branch", "⋯ join ·",
+        "▶ ○ a", "○ a_work Script", "○ a_end Item", "⋯ Continues when", "○ b For", "○ b_work Script", "○ b_end Item", "⋯ Continues when",
     ], words.join("\n"));
-    assert.deepEqual(words.slice(8).sort(), ["○ done ends", "○ failed ends"]);
+    assert.deepEqual(words.slice(8).sort(), ["○ done End", "○ failed End"]);
     assert.equal(view.selectedRowIndex, 0);
     const rowOfNext = async () => {
         await controller.handleCommand(UI_COMMANDS.MODAL_NEXT);

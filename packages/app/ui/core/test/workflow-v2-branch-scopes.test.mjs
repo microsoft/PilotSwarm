@@ -194,18 +194,19 @@ test("R2-UI-7: a long run's branch counts are marked partial: at least N done, t
     // Re-check UI-RC2-5: with history not all loaded, only branches with a step at work now count as running; the 22 between
     // two checks may have gone on in rows not loaded, so they are unknown with the 40 not seen.
     assert.deepEqual(partial.joinBar.group.counts, { running: 2, done: 0, unknown: 62, partial: true, runningExact: true });
-    assert.equal(partial.joinBar.group.text, "2 running · at least 0 done · 62 unknown");
+    // Words (Workflow Simplified W5): the For each box counts its items with nouns, done first.
+    assert.equal(partial.joinBar.group.text, "at least 0 done · 2 running · 62 not known");
     assert.ok(partial.description.includes("Branches now (in the loaded history): 2 active, at least 0 ended, "
         + "62 not known from the loaded history (queued, between two steps, or ended earlier)."), partial.description.join("\n"));
     // Open rows not all listed: the running count is a lower bound too.
     const unlisted = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
         run: { pages: { executions: { nextCursor: cursor, openComplete: false } } } }) }), "fan");
-    assert.equal(unlisted.joinBar.group.text, "at least 2 running · at least 0 done · 62 unknown");
+    assert.equal(unlisted.joinBar.group.text, "at least 0 done · at least 2 running · 62 not known");
     // Every execution loaded (no older page): the counts are exact, and the branches not seen are queued.
     const whole = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
         run: { pages: { executions: { openComplete: true } } } }) }), "fan");
     assert.deepEqual(whole.joinBar.group.counts, { running: 24, queued: 40, done: 0 });
-    assert.equal(whole.joinBar.group.text, "24 running · 40 queued · 0 done");
+    assert.equal(whole.joinBar.group.text, "0 done · 24 running · 40 waiting");
 });
 
 // Re-check RC-8: a branch is ended only by a recorded end (a terminal, a cancellation, a result no route takes), as its
@@ -289,7 +290,7 @@ test("UI-RC2-5: in partial history a branch between steps is unknown, not runnin
     const partial = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
         run: { pages: { executions: { nextCursor: cursor, openComplete: true } } } }) }), "fan");
     assert.deepEqual(partial.joinBar.group.counts, { running: 1, done: 1, unknown: 1, partial: true, runningExact: true });
-    assert.equal(partial.joinBar.group.text, "1 running · at least 1 done · 1 unknown");
+    assert.equal(partial.joinBar.group.text, "at least 1 done · 1 running · 1 not known");
     const whole = byId(projectWorkflowV2({ readModel: readModel({ graph, nodeExecutions: rows,
         run: { pages: { executions: { openComplete: true } } } }) }), "fan");
     assert.deepEqual(whole.joinBar.group.counts, { running: 2, queued: 0, done: 1 });

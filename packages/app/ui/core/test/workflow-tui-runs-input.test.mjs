@@ -396,6 +396,7 @@ test("a refusal in the session access the portal read is recorded: send, answer 
     store.dispatch({ type: "sessions/merged", session: { sessionId: "g1", pendingQuestion: { question: "Ship it?" } } });
     assert.ok(text().includes("Type your answer in the prompt below and press Enter."), text());
     controller.recordWorkflowInputAccess("g1", { ...refused, sessionId: "g1" });
-    assert.ok(text().includes("Its controlling agent is session r1."), text());
+    // Words (spec 09, S7): the note names the session to message.
+    assert.ok(text().includes(NOTE), text());
     assert.ok(!text().includes("Type your answer in the prompt below"), text());
 });
