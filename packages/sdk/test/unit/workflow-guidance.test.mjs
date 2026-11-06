@@ -64,3 +64,29 @@ test("another Workflow from the same definition: the same YAML, no key or a new 
     assert.match(key, /^Optional idempotency key\./);
     assert.match(key, /pass the same YAML \(the same metadata\.name and version\) with no key or a new key; never rename the definition to start another\.$/);
 });
+
+// Owner feedback 2026-11-06 (finding 5): told "one live run", the agent refused to run a second Workflow and stopped it.
+// One live run belongs to each Workflow (each spawn_workflow call); one definition may have many Workflows at once.
+test("one live run is each Workflow's, never the definition's: the four texts agents read say so", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { WORKFLOW_V2_SKILLS_DIR } = await import("../../dist/workflow/guidance.js");
+    const { UPDATE_WORKFLOW_TOOL_SPEC } = await import("../../dist/workflow/v2/tools.js");
+    const skill = name => fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, name, "SKILL.md"), "utf8").replace(/\s+/g, " ");
+    const texts = {
+        "base guidance": WORKFLOW_SESSION_GUIDANCE,
+        "spawn_workflow": SPAWN_WORKFLOW_TOOL_SPEC.description,
+        "update_workflow": UPDATE_WORKFLOW_TOOL_SPEC.description,
+        "workflow-authoring": skill("workflow-authoring"),
+        "workflow-reference": skill("workflow-reference"),
+    };
+    for (const [where, text] of Object.entries(texts)) {
+        for (const old of ["one live run per workflow", "its one live run", "A workflow child has one live run", "Starts the one live run"]) {
+            assert.ok(!text.includes(old), `${where} still says: ${old}`);
+        }
+        assert.match(text, /each `?spawn_workflow`? call/i, where);
+        assert.match(text, /many Workflows (of one definition may run at once|running at once)/, where);
+    }
+    assert.ok(texts.update_workflow.includes("to run it again, call spawn_workflow with the same YAML and no key"));
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("so a second one never needs the first stopped"));
+});

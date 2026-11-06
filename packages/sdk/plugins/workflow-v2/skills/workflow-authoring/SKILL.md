@@ -222,7 +222,8 @@ the branches.
    and its `definition_hash`. A published definition never changes; a new
    version needs a new workflow child.
 4. Start the live run explicitly: `start` (or `publish_and_start`) with
-   `inputs` and optional `vars`. A workflow child has one live run.
+   `inputs` and optional `vars`. Each Workflow (each `spawn_workflow` call)
+   has one live run; one definition may have many Workflows running at once.
    To start another Workflow from a definition, call `spawn_workflow` again
    with the same YAML, unchanged (the same `metadata.name` and `version`) and
    no `key` or a new one. Never rename the definition: a new name makes a

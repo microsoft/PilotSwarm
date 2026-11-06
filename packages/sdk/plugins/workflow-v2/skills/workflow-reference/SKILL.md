@@ -232,7 +232,7 @@ and the route `timeout`, and text around a binding.
 | `replace_definition` | `yaml`, `expected_revision` | New draft revision; drafts only; same `metadata.version`. |
 | `publish` | `expected_revision`, `definition_hash` | Publishes that exact revision and pins the exact version of every named agent; does not start. A run keeps the pinned agent version after its package is republished; publish a new workflow child to move to the new version. |
 | `publish_and_start` | publish arguments, `inputs`, `vars?`, `notify_on_completion?` | Publishes and starts the live run. |
-| `start` | `definition_hash`, `inputs`, `vars?`, `notify_on_completion?` | Starts the one live run of the published revision. |
+| `start` | `definition_hash`, `inputs`, `vars?`, `notify_on_completion?` | Starts this Workflow's live run of the published revision. Each Workflow (each `spawn_workflow` call) has one live run; one definition may have many Workflows running at once. |
 | `set_vars` | `set?`, `delete?`, `expected_kv_revision`, `run_id?` | One atomic KV change. |
 | `pause`, `resume`, `cancel` | `reason?`, `run_id?` | Run control. |
 | `stop` | `reason?`, `grace_seconds?` (0 to 3,600, default 60), `run_id?` | Admits nothing new; admitted work settles; then the run ends `stopped`. |

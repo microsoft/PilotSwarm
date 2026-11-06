@@ -83,7 +83,7 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         "Change a workflow child you created with spawn_workflow (apiVersion pilotswarm.dev/v2-draft). "
         + "operation: replace_definition (yaml + expected_revision; drafts only, same metadata.version); "
         + "publish (expected_revision + definition_hash of the exact revision you reviewed; starts nothing); "
-        + "publish_and_start (the publish fields + inputs, optional vars); start (definition_hash + inputs, optional vars; one live run per workflow); "
+        + "publish_and_start (the publish fields + inputs, optional vars); start (definition_hash + inputs, optional vars; each Workflow, that is each spawn_workflow call, has one live run, and one definition may have many Workflows running at once: to run it again, call spawn_workflow with the same YAML and no key); "
         + "starting a live run (publish_and_start, start) tells you its result when it ends unless notify_on_completion is false; "
         + "set_vars (set: {key: JSON value} and/or delete: [keys], with expected_kv_revision from read_workflow: one atomic change to the run's "
         + "variables; null is a value, deleting is explicit; a step that starts later reads them as context.kv, ${kv.key} or ${kv[\"any key\"]}, "
