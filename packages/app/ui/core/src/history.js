@@ -607,8 +607,13 @@ function buildWorkflowUpdateChatCard(event, text) {
     if (!parsed) return null;
     const sender = event?.data?.sender;
     if (!isWorkflowUpdateSender(sender, parsed.type)) return null;
+    return workflowUpdateCardOf(event, parsed, sender, `${event.sessionId}:${event.seq}`);
+}
+
+/** The card of one parsed workflow message (buildWorkflowUpdateChatCard), with its item id. */
+function workflowUpdateCardOf(event, parsed, sender, id) {
     const { type, sentence, data } = parsed;
-    const recorded = sender.kind === "workflow" ? sender.workflow : null;
+    const recorded = sender?.kind === "workflow" ? sender.workflow : null;
     const fields = {
         ...parsed.fields,
         ...(typeof recorded?.sessionId === "string" && recorded.sessionId ? { from: recorded.sessionId } : {}),
@@ -626,7 +631,7 @@ function buildWorkflowUpdateChatCard(event, text) {
     ].filter(Boolean);
     const lines = [...meta, ...(meta.length ? [""] : []), sentence, ...(data ? [`Data: ${data}`] : [])];
     return {
-        id: `${event.sessionId}:${event.seq}`,
+        id,
         role: "system",
         text: lines.join("\n").trim(),
         time: formatTimestamp(event.createdAt),
@@ -638,6 +643,56 @@ function buildWorkflowUpdateChatCard(event, text) {
         sender,
         workflowUpdate: { type, ...fields },
     };
+}
+
+const SESSION_ID_TOKEN = /^[A-Za-z0-9][A-Za-z0-9-]{7,}$/;
+const LEADING_FROM_LINE = /^\[FROM:[^\]\n]*\]\n/;
+
+/**
+ * A prompt the session's queue merged from a workflow's message and a person's words (owner feedback 2026-11-06; the
+ * orchestration's decide() batches consecutive queued prompts into one turn, orchestration_1_0_82/queue.ts:1468-1499,
+ * and records a turn of mixed senders with no sender). Shown split: each workflow message as its card ("Workflow ·
+ * message"), and the person's words alone as theirs. Only for a recorded user.message WITHOUT a sender (a prompt of one
+ * sender keeps its sender and is never split), whose paragraphs hold at least one whole workflow message (its header,
+ * naming a session in `from`, its sentence, its data line and one line of JSON) and something else. Returns the items
+ * in order, or null when nothing is split. Pure.
+ */
+function splitMergedWorkflowPrompt(event) {
+    if (event?.eventType !== "user.message" || (event.data && typeof event.data === "object" && event.data.sender)) return null;
+    const source = normalizeMessageText(messageTextFromEvent(event));
+    if (!source.includes("[WORKFLOW_UPDATE ")) return null;
+    const groups = [];
+    for (const paragraph of source.split("\n\n")) {
+        const body = paragraph.replace(LEADING_FROM_LINE, "");
+        const parsed = parseWorkflowUpdateText(body);
+        const at = body.indexOf(`\n${WORKFLOW_UPDATE_DATA_LINE}\n`);
+        const whole = parsed && at >= 0 && !body.slice(at + WORKFLOW_UPDATE_DATA_LINE.length + 2).includes("\n")
+            && SESSION_ID_TOKEN.test(String(parsed.fields.from ?? "")) && Object.hasOwn(WORKFLOW_UPDATE_TITLES, parsed.type);
+        if (whole) groups.push({ workflow: parsed });
+        else if (groups.length && groups.at(-1).text !== undefined) groups.at(-1).text += `\n\n${paragraph}`;
+        else groups.push({ text: paragraph });
+    }
+    if (groups.length < 2 || !groups.some(group => group.workflow)) return null;
+    const items = [];
+    let cards = 0;
+    for (const group of groups) {
+        if (group.workflow) {
+            cards += 1;
+            items.push({ ...workflowUpdateCardOf(event, group.workflow, null, `${event.sessionId}:${event.seq}:workflow-${cards}`), mergedFromPrompt: true });
+        } else {
+            const message = buildChatMessage({ ...event, data: { ...(event.data && typeof event.data === "object" ? event.data : {}), content: group.text } }, "user");
+            if (message) items.push(message);
+        }
+    }
+    return items;
+}
+
+/** A user.message's chat items: one message, or a merged prompt split (splitMergedWorkflowPrompt). */
+function buildUserMessageItems(event) {
+    const split = splitMergedWorkflowPrompt(event);
+    if (split) return split;
+    const message = buildChatMessage(event, "user");
+    return message ? [message] : [];
 }
 
 function buildSessionMessageChatCard(event, text) {
@@ -1616,8 +1671,9 @@ export function buildHistoryModel(events = [], options = {}) {
         }
         if (event.eventType === "user.message") {
             activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
-            const message = buildChatMessage(event, "user");
-            if (message) chat.push(message);
+            const items = buildUserMessageItems(event);
+            chat.push(...items);
+            const message = items.find(item => item.role === "user") ?? null;
             if (message?.kind === "canvas-action") {
                 const actionActivity = buildCanvasActionActivity(event, message);
                 if (actionActivity) activity.push(actionActivity);
@@ -1781,21 +1837,22 @@ export function appendEventToHistory(history, event) {
 
     if (event.eventType === "user.message") {
         next.activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
-        const message = buildChatMessage(event, "user");
+        const items = buildUserMessageItems(event);
+        const message = items.find(item => item.role === "user") ?? null;
         if (message?.kind === "canvas-action") {
             const actionActivity = buildCanvasActionActivity(event, message);
             if (actionActivity) next.activity.push(actionActivity);
         }
         next.activity = clampHistoryItems(next.activity, loadedEventLimit);
-        if (!message) return next;
+        if (!items.length) return next;
         // Prospective flag: covers a bulk load where the stop event arrived
         // before this message in the reduce order.
-        if (Array.isArray(message.clientMessageIds)
+        if (message && Array.isArray(message.clientMessageIds)
             && message.clientMessageIds.some((id) => next.stoppedMessageIds.includes(id))) {
             message.stopped = true;
         }
-        next.chat = reconcileOptimisticMessage(next.chat, message);
-        next.chat.push(message);
+        if (message) next.chat = reconcileOptimisticMessage(next.chat, message);
+        next.chat.push(...items);
         next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
         return next;
     }

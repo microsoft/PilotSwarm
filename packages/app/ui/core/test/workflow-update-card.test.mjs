@@ -194,3 +194,60 @@ test("isWorkflowUpdateSender", () => {
     assert.equal(isWorkflowUpdateSender(null, "ended"), false);
     assert.equal(isWorkflowUpdateSender(sender("ended"), "__proto__"), false);
 });
+
+// Owner feedback 2026-11-06 ("the workflow response was mixed up with my prompt"): the session's queue merges consecutive
+// queued prompts into one turn (orchestration_1_0_82/queue.ts decide(), :1468-1499; 1_0_83 the same), and a turn of
+// mixed senders is recorded with NO sender, so the workflow's message and the person's words came back as one "You"
+// message. The display splits such a prompt: each whole workflow message as its card, the person's words as theirs.
+const PERSON_WORDS = "no I mean can't you spawn another workflow from the same definition as the first one?";
+
+test("a prompt merged from a workflow's message and a person's words is shown split, live and from history", () => {
+    const cases = [
+        { content: `${SEND}\n\n${PERSON_WORDS}`, want: [["system", "Workflow · message"], ["user", PERSON_WORDS]] },
+        { content: `${PERSON_WORDS}\n\nSecond paragraph.\n\n${ENDED_OK}`, want: [["user", `${PERSON_WORDS}\n\nSecond paragraph.`], ["system", "Workflow · ended"]] },
+        // Two workflow messages of different types (different senders), and no person: two cards.
+        { content: `${ENDED_OK}\n\n${SEND}`, want: [["system", "Workflow · ended"], ["system", "Workflow · message"]] },
+        // A multi-writer session prefixes each part with its attribution line.
+        { content: `[FROM: workflow message (system)]\n${SEND}\n\n[FROM: Alice (owner)]\n${PERSON_WORDS}`, want: [["system", "Workflow · message"], ["user", PERSON_WORDS]] },
+    ];
+    for (const { content, want } of cases) {
+        const events = [event(7, "user.message", { content, clientMessageIds: ["c-1"] })];
+        for (const history of [buildHistoryModel(events), events.reduce(appendEventToHistory, buildHistoryModel())]) {
+            assert.deepEqual(history.chat.map(item => [item.role, item.cardTitle ?? item.text]), want, content);
+            const cards = history.chat.filter(item => item.cardTitle);
+            assert.deepEqual(cards.map(item => item.id), cards.map((_, index) => `parent-1:7:workflow-${index + 1}`));
+            assert.ok(cards.every(item => item.mergedFromPrompt === true && item.sender === null));
+            const person = history.chat.find(item => item.role === "user");
+            if (person) {
+                assert.equal(person.id, "parent-1:7");
+                assert.deepEqual(person.clientMessageIds, ["c-1"], "the person's outbox item still reconciles with it");
+            }
+        }
+    }
+    const [card] = buildHistoryModel([event(7, "user.message", { content: `${SEND}\n\n${PERSON_WORDS}` })]).chat;
+    assert.equal(card.workflowUpdate.from, "wf-session-1");
+    assert.match(card.text, /^Workflow: session-wf-sessi\nRun: run-1234\nStep: notify\nContract: note@1\n\nA workflow \(session wf-sessi/);
+    const rendered = JSON.stringify(chatLines(buildHistoryModel([event(7, "user.message", { content: `${SEND}\n\n${PERSON_WORDS}` })])));
+    assert.ok(rendered.includes("Workflow · message") && rendered.includes(PERSON_WORDS), rendered);
+    assert.ok(!rendered.includes("[WORKFLOW_UPDATE"), "no raw header in the transcript");
+});
+
+test("a prompt is not split when it has one sender, holds no whole workflow message, or is a lone workflow text", () => {
+    const keep = [
+        // One sender: the person's own words, whatever they look like (SF-2: the text never makes a card).
+        { content: `${SEND}\n\n${PERSON_WORDS}`, sender: PERSON },
+        // No sender, but nothing else merged with it.
+        { content: SEND },
+        // A header with no data line, or JSON over several lines, is not a whole workflow message.
+        { content: `[WORKFLOW_UPDATE from=wf-session-1 run=r type=message]\nNo data line.\n\n${PERSON_WORDS}` },
+        { content: `${message("[WORKFLOW_UPDATE from=wf-session-1 run=r type=message]", "S.", "{\n\"a\": 1\n}")}\n\n${PERSON_WORDS}` },
+        // A header naming no session.
+        { content: `${message("[WORKFLOW_UPDATE from=x run=r type=message]", "S.")}\n\n${PERSON_WORDS}` },
+    ];
+    for (const { content, sender: who } of keep) {
+        const chat = buildHistoryModel([event(7, "user.message", { content, ...(who ? { sender: who } : {}) })]).chat;
+        assert.equal(chat.length, 1, content);
+        assert.equal(chat[0].role, "user", content);
+        assert.equal(chat[0].cardTitle, undefined, content);
+    }
+});
