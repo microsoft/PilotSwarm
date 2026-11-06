@@ -1043,13 +1043,19 @@ describe("workflow v2 parallel time limits: controller 1.9.0 (inactive, test-onl
     });
 
     it("carries a pending time limit across continue-as-new and decides it once at its deadline", { timeout: TIMEOUT }, async () => {
-        // A 100 ms backstop makes 50 idle waits (the continue-as-new bound) pass long before the 9-second time limit.
+        // A 100 ms backstop makes 50 idle waits (the continue-as-new bound, about 5 s) pass before the 24-second time limit,
+        // also under a loaded suite (a 9-second limit was missed once under load: 6f98773e DEV). The precondition is that
+        // the continue-as-new came while the time limit was pending; seen only after the deadline, the case is VOID (as the
+        // restart cases below say it), not a pass or a product failure.
         const h = await harness(getEnv(), { wakeBackstopMs: 100 });
         try {
-            const { workflowSessionId, runId, fan } = await started(h, joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: 9 }));
+            const { workflowSessionId, runId, fan } = await started(h, joinDoc({ items: [{ seconds: 600 }], timeoutSeconds: 24 }));
             const instanceId = workflowLiveControllerInstanceId(workflowSessionId);
-            await until(async () => (await h.client.listExecutions(instanceId)).length >= 2
-                && (await h.store.readNodeExecution(fan))?.state === "pending", "a continue-as-new while the time limit is pending", 30_000);
+            await until(async () => (await h.client.listExecutions(instanceId)).length >= 2, "a continue-as-new", 60_000);
+            const seenAt = Date.now();
+            const atContinue = await h.store.readNodeExecution(fan);
+            expect(seenAt, "VOID (not a product result): the continue-as-new was seen only after the time limit; run the case again")
+                .toBeLessThan(atContinue.deadlineAt.getTime());
             const run = await ended(h, runId);
             expect(run).toMatchObject({ terminalNodeId: "late" });
             const fanRow = await h.store.readNodeExecution(fan);
