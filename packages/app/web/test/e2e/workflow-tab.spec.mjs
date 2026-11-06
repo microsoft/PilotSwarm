@@ -2973,7 +2973,8 @@ test("the right block stays on the Workflow tab through profile reads, and the p
     for (let poll = 0; poll < 3; poll++) {
         await page.waitForTimeout(5_500);
         await expect(page.locator(".ps-wf-tab").filter({ visible: true })).toHaveCount(1);
-        await expect(page.getByText("Nothing on the canvas yet.", { exact: true }).filter({ visible: true })).toHaveCount(0);
+        // The chat's canvas is parked beside the Workflow tab (UI-6: kept mounted, off to the side), never shown.
+        await expect(page.locator(".ps-side-pane-layer:not(.is-parked)").getByText("Nothing on the canvas yet.", { exact: true })).toHaveCount(0);
     }
     expect(errors).toEqual([]);
 });

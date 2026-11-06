@@ -121,9 +121,11 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
                     testAgentMode: null },
             });
 
-            // The live run by default, or the run named; the YAML is not included.
+            // The live run by default, or the run named; the YAML is not included. These tests run with test mode on, so the
+            // read lists test runs and says so (testMode, review UI-5), as the store's view does when asked to show them.
             const view = await mgmt.readWorkflow(workflowSessionId);
-            expect(view).toEqual(await readWorkflowV2View(store, workflowSessionId, { runId: null }));
+            expect(view).toEqual(await readWorkflowV2View(store, workflowSessionId, { runId: null, hideTestRuns: false }));
+            expect(view.testMode).toBe(true);
             expect(view).toMatchObject({ workflowId: workflowSessionId, definition: { state: "published", currentRevision: 1 },
                 revision: { revision: 1, valid: true }, run: { runId, mode: "live" } });
             expect(view.revision).not.toHaveProperty("yaml");

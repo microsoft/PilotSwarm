@@ -1977,7 +1977,8 @@ describe("J3 robust joins, part 8: reads and the portal's projection of real res
             for (const run of Object.values(cases)) await endOf(base, run.runId);
 
             for (const [name, run] of Object.entries(cases)) {
-                const direct = await readWorkflowV2View(base.store, run.workflowSessionId);
+                // Test mode is on in these tests: the read through the management client says so (testMode, review UI-5).
+                const direct = await readWorkflowV2View(base.store, run.workflowSessionId, { hideTestRuns: false });
                 const fanOf = view => view.run.nodeExecutions.find(node => node.nodeExecutionId === run.fan);
                 const fan = fanOf(direct);
                 const row = await base.store.readNodeExecution(run.fan);
