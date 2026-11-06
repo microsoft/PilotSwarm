@@ -5086,6 +5086,10 @@ button.ps-session-detail-value.ps-session-detail-link:focus-visible { outline: 2
   min-height: 32px;
   padding: 4px 6px;
   touch-action: manipulation;
+  /* A long-press shows the tooltip (as .ps-icon-button): no iOS loupe or callout over it. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .ps-workflow-tool-glyph { display: inline-flex; line-height: 1; }
 .ps-mini-button.ps-workflow-tool-button[aria-expanded="true"] {

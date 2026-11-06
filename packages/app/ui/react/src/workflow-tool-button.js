@@ -3,6 +3,10 @@ import { createPortal } from "react-dom";
 
 const h = React.createElement;
 const HOVER_TOOLTIP_MS = 400;
+/** How long a finger holds a button before its tooltip shows (the top bar's IconButton). */
+const LONG_PRESS_MS = 450;
+/** How long a long-press tooltip stays after the finger lifts (the top bar's IconButton). */
+const LONG_PRESS_LINGER_MS = 3_000;
 
 /** A 24-unit stroked glyph in the app's icon style (the top bar's SVG icon buttons). */
 function glyph(...children) {
@@ -56,27 +60,69 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
  * it as before. A tooltip with the label (and `title`, the reason or explanation the button used to carry, when there is
  * one) shows on mouse hover and on keyboard focus, and Escape or leaving hides it. The tooltip is portaled to <body>, as
  * the top bar's is, so a clipping pane cannot hide it. The wrapper takes the hover, so a disabled button still explains
- * why. `data-title` keeps that explanation readable to tests. On touch, the button only acts (no tooltip). `badge` (a
- * count) shows on the icon, tinted by `badgeLevel`; the count is said in `title` too, for screen readers.
+ * why. `data-title` keeps that explanation readable to tests. On touch, as the top bar's icon buttons do (IconButton):
+ * a tap acts; holding the button about half a second shows the tooltip above it instead (the click that follows is not
+ * acted on), and it stays about 3 s after the finger lifts (owner, 2026-11-06T13:43Z: icons only, on the phone too).
+ * `badge` (a count) shows on the icon, tinted by `badgeLevel`; the count is said in `title` too, for screen readers.
  */
 export function WorkflowToolButton({ label, glyph: glyphName, title = null, danger = false, disabled = false, badge = null, badgeLevel = null, onClick, ...rest }) {
     const [tip, setTip] = React.useState(null);
     const buttonRef = React.useRef(null);
     const timerRef = React.useRef(null);
+    const hideTimerRef = React.useRef(null);
+    const longPressRef = React.useRef(false);
+    const pressOriginRef = React.useRef(null);
     const describedId = `wf-tool-${React.useId().replace(/:/g, "")}`;
     const explain = typeof title === "string" && title && title !== label ? title : null;
-    const show = () => {
+    // A finger covers what is below it: a long-press prefers above. Either flips when there is no room.
+    const show = (preferAbove = false) => {
         const element = buttonRef.current;
         if (!element || typeof window === "undefined") return;
         const box = element.getBoundingClientRect();
-        const below = box.bottom + 56 < window.innerHeight;
+        const below = preferAbove ? box.top - 56 < 0 : box.bottom + 56 < window.innerHeight;
         setTip({ x: box.left + box.width / 2, y: below ? box.bottom + 6 : box.top - 6, placement: below ? "below" : "above" });
     };
     const hide = () => {
         clearTimeout(timerRef.current);
+        clearTimeout(hideTimerRef.current);
         setTip(null);
     };
-    React.useEffect(() => () => clearTimeout(timerRef.current), []);
+    React.useEffect(() => () => { clearTimeout(timerRef.current); clearTimeout(hideTimerRef.current); }, []);
+    // Touch (IconButton's long-press): hold to see the tooltip; a real move (a scroll) cancels it.
+    const startPress = event => {
+        if (event.pointerType === "mouse") return;
+        longPressRef.current = false;
+        pressOriginRef.current = { x: event.clientX, y: event.clientY };
+        clearTimeout(timerRef.current);
+        clearTimeout(hideTimerRef.current);
+        timerRef.current = setTimeout(() => { longPressRef.current = true; show(true); }, LONG_PRESS_MS);
+    };
+    const movePress = event => {
+        if (event.pointerType === "mouse" || !pressOriginRef.current) return;
+        const dx = event.clientX - pressOriginRef.current.x;
+        const dy = event.clientY - pressOriginRef.current.y;
+        if (dx * dx + dy * dy > 100) {
+            pressOriginRef.current = null;
+            clearTimeout(timerRef.current);
+            setTip(null);
+        }
+    };
+    const endPress = event => {
+        if (event.pointerType === "mouse") return;
+        pressOriginRef.current = null;
+        clearTimeout(timerRef.current);
+        if (longPressRef.current) {
+            clearTimeout(hideTimerRef.current);
+            hideTimerRef.current = setTimeout(() => setTip(null), LONG_PRESS_LINGER_MS);
+            // The click that follows a long-press usually consumes the flag; clear it shortly after in case it never comes.
+            setTimeout(() => { longPressRef.current = false; }, 250);
+        } else setTip(null);
+    };
+    const act = event => {
+        // The click after a long-press only showed the tooltip.
+        if (longPressRef.current) { longPressRef.current = false; event.preventDefault?.(); return; }
+        onClick?.(event);
+    };
     const focusVisible = element => {
         try { return element.matches(":focus-visible"); } catch { return true; }
     };
@@ -91,11 +137,14 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
             clearTimeout(timerRef.current);
             timerRef.current = setTimeout(show, HOVER_TOOLTIP_MS);
         },
-        onPointerLeave: hide },
+        onPointerLeave: event => { if (event.pointerType === "mouse") hide(); },
+        onPointerDown: startPress, onPointerMove: movePress, onPointerUp: endPress, onPointerCancel: endPress,
+        // iOS opens its callout on a long-press without this (and the touch-callout CSS on the button).
+        onContextMenu: event => { if (longPressRef.current || pressOriginRef.current) event.preventDefault?.(); } },
     h("button", { ref: buttonRef, type: "button", disabled,
         className: `ps-mini-button ps-workflow-tool-button${danger ? " is-danger" : ""}`,
         "aria-label": label, "data-title": explain ?? undefined, "aria-describedby": explain ? describedId : undefined,
-        onClick, onFocus: event => { if (focusVisible(event.currentTarget)) show(); }, onBlur: hide,
+        onClick: act, onFocus: event => { if (focusVisible(event.currentTarget)) show(); }, onBlur: hide,
         onKeyDown: event => { if (event.key === "Escape" && tip) { event.stopPropagation(); hide(); } },
         ...rest },
     h("span", { className: "ps-workflow-tool-glyph", "aria-hidden": "true" }, icon()),
