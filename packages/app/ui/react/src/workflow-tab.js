@@ -616,7 +616,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
  * Workflows, newest first, in one group that says how many ("7 Workflows"), each "#7 · Running · 05:38:01", then the list
  * of all of them. The closed picker is a face over the native select (the native list still opens, on a phone too); the
  * select keeps the name "Workflow" and its value. The newest Workflows' states and starts come from their read models
- * and events, read as the Workflows list reads them.
+ * and events, read as the Workflows list reads them (the shown one by its own view).
  */
 function WorkflowNumberPicker({ controller, definition, chosen, onOpen }) {
     const id = `wf-number-${React.useId().replace(/:/g, "")}`;
@@ -625,12 +625,14 @@ function WorkflowNumberPicker({ controller, definition, chosen, onOpen }) {
     const histories = useControllerSelector(controller, state => state.history.bySessionId);
     const rows = [...definition.workflows].reverse();
     const stamp = rows.map(row => `${row.sessionId}:${byId?.[row.sessionId]?.updatedAt ?? ""}`).join(",");
+    // The shown Workflow is read by its own view; a second ask while that read is in flight would read it once more.
     React.useEffect(() => {
         for (const row of rows.slice(0, LIST_READ_LIMIT)) {
+            if (row.sessionId === chosen) continue;
             controller.ensureSessionHistory(row.sessionId).catch(() => {});
             controller.ensureWorkflowReadModel(row.sessionId).catch(() => {});
         }
-    }, [controller, stamp]);
+    }, [controller, stamp, chosen]);
     const count = rows.length;
     const shown = rows.find(row => row.sessionId === chosen) ?? null;
     const label = row => {
