@@ -17,7 +17,7 @@
  * `cancelled` reads "Canceled").
  */
 
-import { workflowErrorDetails, workflowErrorWords } from "./workflow-error-words.js";
+import { workflowErrorDetails, workflowErrorLeavesOut, workflowErrorWords } from "./workflow-error-words.js";
 
 /** The side pane's Workflow tab (L1): it shares the right block with the canvas, one at a time. */
 export const WORKFLOW_SIDE_TAB = "workflow";
@@ -216,8 +216,11 @@ export function workflowFailure(run, { itemOf = null } = {}) {
         : Number.isSafeInteger(cause.branch?.index) ? String(cause.branch.index + 1) : null;
     if (!stateId && !words) return null;
     const where = `${stateId ?? ""}${item ? `${stateId ? " " : ""}on item ${item}` : ""}`;
+    // Review UI-D7: when the words and the folded details leave out recorded detail, the failed visit's whole error is
+    // readable (`executionId`: the visit; `leavesOut`).
+    const executionId = source === cause?.errorPreview ? text(cause?.nodeExecutionId) ?? text(cause?.id) : null;
     return {
-        stateId, item, words, details: workflowErrorDetails(source),
+        stateId, item, words, details: workflowErrorDetails(source), leavesOut: workflowErrorLeavesOut(source, words), executionId,
         headline: `${stateId ? `${stateId} failed${item ? ` on item ${item}` : ""}` : `Failed${item ? ` on item ${item}` : ""}`}${words ? `: ${words}` : ""}`,
         reason: `${where ? `at ${where}` : ""}${where && words ? ": " : ""}${words ?? ""}`,
     };

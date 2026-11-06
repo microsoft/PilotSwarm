@@ -76,6 +76,24 @@ export function workflowErrorWords(value) {
     return said ? bounded(said) : null;
 }
 
+/**
+ * Review UI-D7: whether the plain words (workflowErrorWords) leave out recorded detail of the error, so the whole error
+ * must stay readable: the stored preview is cut (it ends with "…"), the words are shortened, the error has fields beyond
+ * its code and message (its details: a script's stderr, exit code, stack), or a text error is said differently. Pure.
+ */
+export function workflowErrorLeavesOut(value, words = workflowErrorWords(value)) {
+    const parts = workflowErrorParts(value);
+    if (!parts) return false;
+    if (/…$/u.test(parts.raw) || (typeof words === "string" && words.endsWith("…"))) return true;
+    let parsed = isRecord(value) ? value : undefined;
+    if (parsed === undefined && typeof value === "string") {
+        try { parsed = JSON.parse(value.trim()); } catch { parsed = undefined; }
+    }
+    if (isRecord(parsed)) return Object.keys(parsed).some(key => key !== "code" && key !== "message");
+    if (parts.raw.trim().startsWith("{")) return true;
+    return text(parts.raw) !== text(words);
+}
+
 /** The error as it arrived, for a folded Details block: indented JSON when it is whole JSON, else its text. Null for none. */
 export function workflowErrorDetails(value) {
     return workflowErrorParts(value)?.raw ?? null;

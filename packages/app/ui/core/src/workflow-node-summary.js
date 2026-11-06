@@ -7,7 +7,7 @@
  */
 import { formatLocalTime, shortSessionId } from "./formatting.js";
 import { formatSeconds, workflowV2AgentChatMode, workflowV2AgentTask, workflowV2RouteKind } from "./workflow-v2-view.js";
-import { workflowErrorParts, workflowErrorWords } from "./workflow-error-words.js";
+import { workflowErrorParts, workflowErrorLeavesOut, workflowErrorWords } from "./workflow-error-words.js";
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const text = value => (typeof value === "string" && value.trim() ? value.trim() : null);
@@ -160,10 +160,13 @@ export function workflowNodeResult(node, execution, { ended: itemEnded = undefin
     const ended = lastEnded(node, execution, itemEnded);
     if (!ended) return null;
     if (ended.resultKind === "runtime_error") {
-        // In plain words (workflowErrorWords), with the error's code; the whole error is read on request.
+        // In plain words (workflowErrorWords), with the error's code; the whole error is read on request. Review UI-D7:
+        // words that leave out recorded detail are a summary, and the whole error stays readable (`truncated`, `summary`).
         const parts = workflowErrorParts(ended.errorPreview);
         const words = workflowErrorWords(ended.errorPreview);
-        const value = words ? { text: `${words}${parts?.code && parts.code !== words ? ` (${parts.code})` : ""}`, truncated: false }
+        const leavesOut = words ? workflowErrorLeavesOut(ended.errorPreview, words) : false;
+        const value = words ? { text: `${words}${parts?.code && parts.code !== words ? ` (${parts.code})` : ""}`, truncated: leavesOut,
+            ...(leavesOut ? { summary: true } : {}) }
             : workflowReadableValue(ended.errorPreview);
         return value ? { label: ended.outcome === "cancelled" ? "Why it was canceled" : "What went wrong", ...value, executionId: ended.id ?? null, error: true } : null;
     }

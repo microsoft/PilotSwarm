@@ -19,7 +19,7 @@ import {
     workflowPanelHeight, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
-    WorkflowV2AgentLog, WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2NoGraph, WorkflowV2NodeSummary, WorkflowV2RevisionCompare,
+    WorkflowV2AgentLog, WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2FailureDetails, WorkflowV2NoGraph, WorkflowV2NodeSummary, WorkflowV2RevisionCompare,
     WorkflowV2RunCommandNotice,
     WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock, WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2Variables,
     WorkflowV2YamlView,
@@ -588,9 +588,8 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
         // Failure first, in plain words; the error as it arrived is folded under it (coordinator 2026-11-06).
         failure ? h("div", { className: "ps-wf-failure" },
             h("p", { className: "ps-wf-line is-error", role: "status" }, failure.headline),
-            failure.details && failure.details !== failure.words
-                ? h("details", { className: "ps-wf-failure-details" }, h("summary", null, "Details"), h("pre", null, failure.details))
-                : null) : null,
+            h(WorkflowV2FailureDetails, { failure, runId, executionValues: view.executionValues ?? null,
+                onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); } })) : null,
         readError ? h("p", { className: "ps-wf-line is-error", role: "alert" }, `This Workflow could not be read: ${readError} `,
             h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry")) : null,
         notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,

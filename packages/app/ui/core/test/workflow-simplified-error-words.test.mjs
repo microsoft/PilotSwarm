@@ -72,3 +72,58 @@ test("the failed Workflow's headline, reason and details, and the Node panel, us
     assert.equal(workflowNodeResult(node, execution)?.text, `${WORDS} (execution_failed)`);
     assert.doesNotMatch(workflowNodeNow(node, execution) ?? "", /exitCode|stderr/);
 });
+
+// Review UI-D7: readable words are a summary, not the whole error. Whenever they leave out recorded detail (a cut preview,
+// a script's stderr), the whole error stays readable: Read the whole value in the Node panel (also for an error the
+// Workflow handled and then went on) and Read the whole error under a failed Workflow's headline.
+test("UI-D7: a summarized error keeps the whole error readable, in the Node panel and under the headline", async () => {
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { WorkflowV2FailureDetails, WorkflowV2NodeSummary } = await import("../../react/src/workflow-v2-panels.js");
+    const { workflowV2ExecutionValueKey } = await import("../src/workflow-v2-view.js");
+    const { workflowErrorLeavesOut } = await import("../src/workflow-error-words.js");
+    assert.equal(workflowErrorLeavesOut(CUT), true, "a cut preview");
+    assert.equal(workflowErrorLeavesOut(WHOLE), true, "a script's stderr and exit code");
+    assert.equal(workflowErrorLeavesOut(JSON.stringify({ code: "timed_out", message: "The script ran past its 30s timeout." })), false);
+    assert.equal(workflowErrorLeavesOut("plain words"), false);
+    assert.equal(workflowErrorLeavesOut(JSON.stringify({ message: "x".repeat(300) })), true, "words shortened to 240 characters");
+
+    // The Node panel: a handled error (the Workflow took its route and went on) and a failed run's visit alike.
+    const values = { [workflowV2ExecutionValueKey("run-1", "nx-poll-7")]: { runId: "run-1", executionId: "nx-poll-7", phase: "loaded",
+        result: { kind: "error", whole: true, bytes: WHOLE.length, value: JSON.parse(WHOLE) } } };
+    for (const outcome of ["execution_failed", "handled"]) {
+        const execution = { id: "nx-poll-7", status: "completed", resultKind: "runtime_error", outcome, errorPreview: CUT, ordinal: 7 };
+        const node = { id: "poll", type: "script", kind: "script", runs: 7, executions: [execution], next: {}, current: execution };
+        const result = workflowNodeResult(node, execution);
+        assert.deepEqual({ truncated: result.truncated, summary: result.summary }, { truncated: true, summary: true }, outcome);
+        const asked = [];
+        const render = executionValues => renderToStaticMarkup(React.createElement(WorkflowV2NodeSummary, { selected: node, nodes: [node], select: () => {},
+            runId: "run-1", executionValues, onReadWholeValue: id => asked.push(id) }));
+        const before = render(null);
+        assert.ok(before.includes("This is a summary of the error; Read the whole value shows all of it."), before);
+        assert.ok(/data-action="whole-value"[^>]*data-execution="nx-poll-7"/.test(before), before);
+        const after = render(values);
+        assert.ok(after.includes("Whole runtime error") && after.includes("Node.js v24.11.0"), "the tail of the stored stderr is reachable");
+    }
+    // A short whole error said fully by its words: nothing more to read.
+    const short = { id: "nx-1", status: "completed", resultKind: "runtime_error", outcome: "timed_out",
+        errorPreview: JSON.stringify({ code: "timed_out", message: "The script ran past its 30s timeout." }) };
+    assert.equal(workflowNodeResult({ id: "poll", type: "script", runs: 1 }, short).truncated, false);
+
+    // Under the headline of a failed run: the folded details are the cut preview; Read the whole error reads the visit's.
+    const run = { status: "failed", terminalState: "poll", error: JSON.stringify({ code: "execution_failed", message: "no route",
+        details: { nodeExecutionId: "nx-poll-7" } }),
+    nodeExecutions: [{ nodeExecutionId: "nx-poll-7", stateId: "poll", state: "completed", resultKind: "runtime_error", outcome: "execution_failed",
+        errorPreview: CUT }] };
+    const failure = workflowFailure(run);
+    assert.deepEqual({ leavesOut: failure.leavesOut, executionId: failure.executionId }, { leavesOut: true, executionId: "nx-poll-7" });
+    const asked = [];
+    const details = executionValues => renderToStaticMarkup(React.createElement(WorkflowV2FailureDetails, { failure, runId: "run-1", executionValues,
+        onReadWholeValue: id => asked.push(id) }));
+    const folded = details(null);
+    assert.ok(folded.includes("<summary>Details</summary>") && /data-action="whole-error"[^>]*>Read the whole error</.test(folded), folded);
+    assert.ok(details(values).includes("Node.js v24.11.0"));
+    // A failure whose words say it all, with nothing more recorded: no Details at all.
+    const plain = workflowFailure({ status: "failed", terminalState: "poll", error: "plain words" });
+    assert.equal(renderToStaticMarkup(React.createElement(WorkflowV2FailureDetails, { failure: plain, runId: "run-1" })), "");
+});

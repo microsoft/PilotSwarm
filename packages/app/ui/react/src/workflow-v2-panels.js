@@ -153,6 +153,22 @@ function WholeValue({ whole }) {
 }
 
 /**
+ * A failed Workflow's error as it arrived, folded under its headline (coordinator 2026-11-06; workflowFailure). Review
+ * UI-D7: when the words and that text leave out recorded detail (a cut preview, a script's stderr), Read the whole error
+ * reads the failed visit's whole stored error and shows it here.
+ */
+export function WorkflowV2FailureDetails({ failure, runId = null, executionValues = null, onReadWholeValue = null }) {
+    if (!failure?.details || (failure.details === failure.words && !failure.leavesOut)) return null;
+    const canRead = Boolean(failure.leavesOut && failure.executionId && runId && onReadWholeValue);
+    const whole = canRead ? workflowV2WholeValue(workflowV2ExecutionValue(executionValues, runId, failure.executionId)) : null;
+    return h("details", { className: "ps-wf-failure-details" }, h("summary", null, "Details"), h("pre", null, failure.details),
+        canRead ? h("button", { type: "button", className: "ps-mini-button", "data-action": "whole-error", "data-execution": failure.executionId,
+            disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(failure.executionId) },
+        whole && whole.kind !== "loading" ? "Read the whole error again" : "Read the whole error") : null,
+        whole ? h(WholeValue, { whole }) : null);
+}
+
+/**
  * The shown run's older history (design 04 read_workflow "Bounded history pagination"): Load older history reads the
  * next, older page of its executions, messages and held calls; after loaded rows changed it reads them again from
  * the start. Nothing when the whole history is loaded and nothing changed.
@@ -515,7 +531,9 @@ export function WorkflowV2NodeSummary({ selected, nodes, select, openSession = n
         result ? h("div", { className: `ps-wf-result${result.error ? " is-error" : ""}`, "data-fact": "result" },
             h("h3", null, result.label),
             h("pre", null, result.text),
-            result.truncated ? h("p", { className: "ps-wf-muted" }, canRead ? "This is its start; Read the whole value shows all of it." : "This is its start.") : null,
+            result.truncated ? h("p", { className: "ps-wf-muted" }, result.summary
+                ? canRead ? "This is a summary of the error; Read the whole value shows all of it." : "This is a summary of the error."
+                : canRead ? "This is its start; Read the whole value shows all of it." : "This is its start.") : null,
             canRead ? h("button", { type: "button", className: "ps-mini-button", "data-action": "whole-value", "data-execution": result.executionId,
                 disabled: whole?.kind === "loading", onClick: () => onReadWholeValue(result.executionId) },
             whole && whole.kind !== "loading" ? "Read the whole value again" : "Read the whole value") : null,
