@@ -189,6 +189,9 @@ test("the guidance every agent reads explains both chat modes and when to choose
     const authoring = skill("workflow-authoring");
     assert.ok(authoring.includes("`chat: new` (default) gives each visit a new chat. `chat: continue` keeps one chat across the state's visits, "
         + "for memory of earlier cycles; its context grows. Not in a parallel body."));
+    // The formal review's known limit, in plain words.
+    assert.ok(authoring.includes("Limit: after a visit times out, the next visit's prompt can wait behind the old turn until its abort lands, "
+        + "and the next visit's time limit runs during that wait."));
     const reference = skill("workflow-reference");
     assert.ok(reference.includes("| `chat` | Optional. `new` (default) or `continue`. Refused in a parallel body. |"));
     assert.ok(reference.includes("`chat: new` gives each visit a new chat: clean, cheaper, no drift; use it when visits are independent."));

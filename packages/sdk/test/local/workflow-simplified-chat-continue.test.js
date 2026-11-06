@@ -171,10 +171,20 @@ function* chatChild(ctx) {
  * (its catalog row and its orchestration) and gives it each visit's prompt; the catalog's turn control is a spy that
  * records each Stop (the double runs no turns, so it answers no_turn).
  */
-async function harness(env) {
+async function harness(env, { storeHooks = null } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
+    // `storeHooks[name](result, args)` runs after the controller's call of that store method returns, before its caller
+    // goes on (a race a test sets up at an exact point); every other method is the store's own.
+    const controllerStore = storeHooks ? new Proxy(store, {
+        get(target, key) {
+            const value = Reflect.get(target, key, target);
+            if (typeof value !== "function") return value;
+            if (Object.hasOwn(storeHooks, key)) return async (...args) => storeHooks[key](await value.apply(target, args), args);
+            return value.bind(target);
+        },
+    }) : store;
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
     const runtime = new Runtime(provider, {
@@ -211,7 +221,7 @@ async function harness(env) {
         registerActivity: (name, fn) => runtime.registerActivity(name, fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
-        store, catalog: spied, enabled: () => true,
+        store: controllerStore, catalog: spied, enabled: () => true,
         resolveToolBinding: async () => null,
         openToolExecutor: async () => { throw new Error("These workflows call no tools."); },
         authorizeParentNotification: async () => false,
@@ -411,6 +421,43 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
                 .toMatchObject({ ok: true });
             expect(await ended(h, run.runId)).toMatchObject({ status: "completed" });
             expect(await chatEnd(h, replacement)).toMatchObject({ cmd: "done", id: `workflow-agent-chat-end:${replacement}` });
+        } finally {
+            await h.stop();
+        }
+    });
+    it("formal review: a retried spawn of a visit whose result arrived creates no replacement chat and logs no new chat", { timeout: TIMEOUT }, async () => {
+        let h = null;
+        let watched = null;
+        const decided = [];
+        h = await harness(getEnv(), { storeHooks: {
+            // The spawn of visit 2 reads the state's visits (its cycle); its result arrives right then, before the send.
+            async listAgentInvocationsOfState(visits, [runId]) {
+                if (watched && runId === watched && visits.length === 2 && decided.length === 0) {
+                    const second = visits[1];
+                    decided.push(second.nodeExecutionId);
+                    expect(await completeAs(h, second.childSessionId, { outcome: "finish", output: { fact: "two" }, operation_id: "early",
+                        node_execution_id: second.nodeExecutionId })).toMatchObject({ ok: true });
+                }
+                return visits;
+            },
+        } });
+        try {
+            const run = await started(h, CHAT_YAML({ wait: 1 }));
+            watched = run.runId;
+            const chat = workflowAgentChatSessionId(run.runId, "talk");
+            const first = await spawnedVisit(h, 1);
+            // The chat ended on its own, so visit 2 is admitted to a replacement chat; its result arrives before its spawn sends.
+            await h.catalog.softDeleteSession(chat);
+            expect(await completeAs(h, chat, { outcome: "again", output: { fact: "one" }, operation_id: "op-1", node_execution_id: first.nodeExecutionId }))
+                .toMatchObject({ ok: true });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+            const replacement = workflowAgentChatSessionId(run.runId, "talk", 2);
+            expect(decided).toHaveLength(1);
+            expect((await h.store.readAgentInvocation(decided[0])).childSessionId).toBe(replacement);
+            expect(h.spawns).toHaveLength(1);
+            expect((await h.client.getStatus(`session-${replacement}`)).status).toBe("NotFound");
+            expect(await eventsOf(h, run.workflowSessionId, "workflow.agent_chat_restarted")).toEqual([]);
+            expect((await eventsOf(h, run.workflowSessionId, "workflow.agent_spawned")).map(data => data.nodeExecutionId)).toEqual([first.nodeExecutionId]);
         } finally {
             await h.stop();
         }

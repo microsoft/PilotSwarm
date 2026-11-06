@@ -56,6 +56,30 @@ value stays `cancelled`.
 - **Nodes** show their type by icon, the start node, end rings, unreached
   nodes dimmed, For each counts with nouns (`2 ok · 1 failed`), failures in
   red and `ran 3 times` where a node repeated.
+- **The Node panel** says, in plain words: what the node does in one
+  sentence; **Now** (`Agent working since 17:43:01 · time limit 17:44:34`,
+  `Done 17:42:05 · produced`); **Runs** (`Ran 3 times · last
+  17:42:01–17:42:05 (4 s)`); its **Last result** as readable text; for an
+  agent node its chat mode, **What the agent is told** (folded) and **Open
+  the agent chat**; and **Next**, one line per outcome naming the next node,
+  then what happens when it fails (`If it fails: the Workflow stops.`). It has
+  no tabs of its own; the Log has the visits. The read model gives each graph
+  state its `about` (description, inline prompt) and each visit its
+  `enteredAt` and `endedAt` for this.
+- **Agent node chats: `chat: new | continue`.** `new` (the default) gives
+  each visit of an agent node a new chat. `continue` keeps one chat per
+  Workflow and node (its id derived from the run and the node): each later
+  visit's prompt arrives in that chat as cycle N, with the input, the
+  variables now, which changed and the previous result. Every completion of
+  a continued chat must name its visit (`node_execution_id`); a missing or
+  foreign id is refused. A decided visit stops the chat's running turn, not
+  the chat; the chat ends when the run ends, and a graceful stop ends an
+  idle chat at once. If the chat ended on its own, the next open visit starts
+  a new chat and says so. `continue` is refused inside a For each. Migration
+  0106 drops the UNIQUE on `workflow_agent_invocations.child_session_id`.
+  **Known limit:** after a visit times out, the next visit's prompt can wait
+  behind the old turn until its abort lands, and the next visit's time limit
+  runs during that wait. Results stay correct: each binds to its own visit.
 - **Removed:** the Notices bell and the Publish review. Each notice moved to
   where it applies (the revision line, one line over the graph, the Workflow
   state, the Log) or went away.

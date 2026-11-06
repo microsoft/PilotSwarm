@@ -4567,6 +4567,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             const continues = workflowAgentChatContinues(invocation);
             cycle = continues ? await agentChatCycle(run.runId, invocation, begun.node) : null;
             const restartFrom = cycle?.endedChatSessionId ?? null;
+            // Formal review of continue mode: a continued chat gets a visit's prompt, and a replacement chat is created, only
+            // while the visit is open. A retried spawn of a visit whose result arrived meanwhile sends nothing and creates no
+            // new chat (so the log shows no "new chat" for a visit already done); the controller's collection ends the visit.
+            if (continues && (await store.readNodeExecution(input.nodeExecutionId))?.state !== "pending") return { wake: false };
             const spawned = await host.spawn({
                 childSessionId: invocation.childSessionId, workflowSessionId: run.workflowSessionId, controllingSessionId: invocation.controllingSessionId,
                 runId: run.runId, nodeExecutionId: input.nodeExecutionId, stateId: state.id, task: invocation.task, deadlineAt,

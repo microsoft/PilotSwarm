@@ -149,9 +149,8 @@ for its typed result.
 
 - The task is `invoke: { prompt: "..." }` or a named agent:
   `invoke: { agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }`.
-  A version needs its package. Publication can pin each named agent to the
-  package version it resolves; `read_workflow` then shows
-  `publishedAgentPins`, and a live run uses those versions.
+  A version needs its package. Publication pins each named agent's version
+  (`publishedAgentPins`); a live run uses it.
 - The child receives a host-generated wrapper with its input, schemas,
   outcomes, deadline and controlling parent agent (you). Only its
   `complete_workflow_node` call finishes the state: one of the declared
@@ -161,11 +160,12 @@ for its typed result.
 - `timeoutSeconds` (1 to 86,400) is the outer deadline (`timed_out`).
 - `chat: new` (default) gives each visit a new chat. `chat: continue` keeps
   one chat across the state's visits, for memory of earlier cycles; its
-  context grows. Not in a parallel body. See workflow-reference.
-- A child whose turn would end with its state still open and nothing pending
-  (no wait, schedule, sub-agent at work or question to you) is reminded once in
-  that turn to call `complete_workflow_node`, at most 3 times per state. The
-  deadline still applies.
+  context grows. Not in a parallel body. See workflow-reference. Limit:
+  after a visit times out, the next visit's prompt can wait behind the old
+  turn until its abort lands, and the next visit's time limit runs during
+  that wait.
+- A child whose turn ends with its state open and nothing pending is
+  reminded to call `complete_workflow_node`, at most 3 times per state.
 - You may message the child with `message_agent`. That does not complete the
   state and does not move the deadline. The child may message you.
 - People can read the child's chat. They cannot prompt, answer or steer it,
