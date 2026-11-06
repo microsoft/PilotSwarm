@@ -3009,6 +3009,47 @@ test("UI-D3: the Workflow shown under its parent, the tab's definition and view 
     expect(errors).toEqual([]);
 });
 
+// ------------------------------------------------------------------------------------------------------------
+// Review UI-F2: the reload's saved view is kept until the initial session is selected. The parent's URL is reloaded with
+// the profile answering at once and the session list 1.5 s later (the deep link waits for it, so no session is selected
+// when the history starts): the Workflow shown under the parent (#2) still comes back, and the saved view is not
+// overwritten by the unready startup view.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI-F2" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("UI-F2: a reload whose session list arrives after the profile still shows the Workflow under its parent", async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeOwned(page);
+    const profile = await routeProfileSaves(page);
+    profile.stored = { sessionOwnerFilter: { all: true }, activeSessionId: AGENT_ID, rightPaneMode: "canvas",
+        desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "workflow" } };
+    await routeViewer(page, TEST_OWNER);
+    // The tab's saved history, as a reload finds it: the parent's view showing #2 of watch-v2.
+    const key = `pilotswarm.view-history.v1:${JSON.stringify([TEST_OWNER.provider, TEST_OWNER.subject])}`;
+    const entry = { mode: "workspace", sessionId: AGENT_ID, dashboardId: null, panelId: null, moaZen: false, canvasOpen: true,
+        canvasMaximized: false, canvasZen: false, canvasSlot: 1, diagnosticsOpen: false, artifactSessionId: null, artifactFilename: null,
+        workflowRowId: null, sidePaneTab: "workflow",
+        workflowTab: { ownerId: AGENT_ID, workflowId: OWNED.failed, definition: "watch-v2", view: "workflows" } };
+    await page.addInitScript(([name, value]) => {
+        if (window === window.top && !sessionStorage.getItem(name)) sessionStorage.setItem(name, value);
+    }, [key, JSON.stringify({ version: 1, entries: [entry], index: 0 })]);
+    // The session list answers late; the profile and the principal answer at once.
+    let listed = 0;
+    await page.route(url => url.pathname.endsWith("/management/sessions"), async (route) => {
+        listed += 1;
+        await new Promise(resolve => setTimeout(resolve, 1_500));
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed, { timeout: 15_000 });
+    expect(listed).toBeGreaterThan(0);
+    const saved = await page.evaluate((name) => JSON.parse(sessionStorage.getItem(name)), key);
+    expect(saved.entries[saved.index]).toMatchObject({ sessionId: AGENT_ID, workflowTab: { workflowId: OWNED.failed, definition: "watch-v2" } });
+    expect(errors).toEqual([]);
+});
+
 test("layout: on a phone the Workflow pane lies over the chat, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];
