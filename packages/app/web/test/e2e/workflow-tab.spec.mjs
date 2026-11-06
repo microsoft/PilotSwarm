@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { startStubServer } from "./stub-server.mjs";
+import { listThemes } from "../../../ui/core/src/themes/index.js";
 import { buildWorkflowCanvasHtml, compileWorkflow, foldWorkflowCanvasState } from "../../../../sdk/dist/workflow/index.js";
 
 const AGENT_ID = "11111110-2222-3333-4444-555555555550";
@@ -3301,6 +3302,73 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
         await expect(named("Workflow — needs attention")).toBeVisible({ timeout: 15_000 });
         await expect(dot).toHaveCount(1);
         expect(errors).toEqual([]);
+    });
+}
+
+/** sRGB relative luminance and the WCAG contrast of two "rgb(…)" colours (alpha already composited). */
+const luminance = ({ r, g, b }) => [r, g, b].map(v => v / 255).map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+    .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+const contrast = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+/**
+ * A button's icon colour and every colour behind it: its own background (each colour of a gradient fill, as win95's
+ * dither), composited over its ancestors' until an opaque one.
+ */
+const iconAndBackgrounds = (button) => button.evaluate((element) => {
+    const parse = (value) => {
+        const match = /rgba?\(([^)]+)\)/.exec(value ?? "");
+        if (!match) return null;
+        const parts = match[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+        return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+    };
+    const over = (top, under) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a),
+        b: top.b * top.a + under.b * (1 - top.a), a: 1 });
+    const chain = [];
+    for (let at = element; at; at = at.parentElement) {
+        const color = parse(getComputedStyle(at).backgroundColor);
+        if (color && color.a > 0) chain.push(color);
+        if (color && color.a >= 1) break;
+    }
+    let behind = { r: 255, g: 255, b: 255, a: 1 };
+    for (const color of chain.reverse()) behind = over(color, behind);
+    const own = getComputedStyle(element).backgroundImage;
+    const dither = own && own !== "none" ? [...own.matchAll(/rgba?\([^)]+\)/g)].map(m => over(parse(m[0]), behind)) : [];
+    const svg = element.querySelector("svg");
+    const stroke = parse(getComputedStyle(svg).stroke) ?? parse(getComputedStyle(element).color);
+    return { icon: over(stroke, behind), backgrounds: dither.length ? dither : [behind] };
+});
+for (const theme of listThemes()) {
+    test(`owner 14:35Z F5: a pressed Workflow tab toggle keeps its icon at 3:1 or more, ${theme.id}`, async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await routeOwned(page, { models: OWNED_MODELS_WITH_CONTROLS });
+        const profile = await routeProfileSaves(page);
+        profile.stored = { themeId: theme.id };
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
+        await expect(page.locator("html")).toHaveAttribute("data-ps-theme", theme.id);
+        const main = workflowTab(page);
+        await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
+        const check = async (button, what) => {
+            await expect(button).toHaveAttribute("aria-pressed", "true");
+            await page.mouse.move(2, 400);
+            const { icon, backgrounds } = await iconAndBackgrounds(button);
+            for (const background of backgrounds) {
+                const ratio = contrast(icon, background);
+                expect(ratio, `${theme.id}: ${what}, icon rgb(${[icon.r, icon.g, icon.b].map(Math.round)}) on rgb(${[background.r, background.g, background.b].map(Math.round)})`)
+                    .toBeGreaterThanOrEqual(3);
+            }
+        };
+        // The Workflows view (a Workflow shown), then the Definition (graph) view, then Move the graph in it.
+        await check(viewSwitch(main, "Workflows"), "Workflows pressed");
+        if (["high-contrast-mono", "workspace-dark", "github-light", "win95"].includes(theme.id)) {
+            if (SHOTS) {
+                fs.mkdirSync(SHOTS, { recursive: true });
+                await main.locator(".ps-wf-tab-head").screenshot({ path: path.join(SHOTS, `owner-1435-header-${theme.id}.png`) });
+            }
+        }
+        await viewSwitch(main, "Definition").click();
+        await check(viewSwitch(main, "Definition"), "Definition (graph) pressed");
+        const hand = main.getByRole("button", { name: "Move the graph", exact: true });
+        if ((await hand.getAttribute("aria-pressed")) !== "true") await hand.click();
+        await check(hand, "Move the graph pressed");
     });
 }
 

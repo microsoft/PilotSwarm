@@ -12665,7 +12665,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   border-radius: var(--ps-radius-sm);
   overflow: hidden;
 }
-.ps-wf-switch button,
+.ps-wf-switch:not(.is-icons) button,
 .ps-wf-panel-tabs button,
 .ps-wf-node-tabs button {
   appearance: none;
@@ -12683,21 +12683,29 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   color: var(--ps-foreground);
 }
 /* Owner, 2026-11-06T13:43Z (F1): the Definition | Workflows switch is two icon toggles, and the header's and toolbars'
-   buttons are icons (Workflow tool buttons, 32 px; a phone's are 44 px, below). The one shown is pressed. */
+   buttons are icons (Workflow tool buttons, 32 px; a phone's are 44 px, below), in each theme's own button look. */
 .ps-wf-switch.is-icons { gap: 2px; border: 0; border-radius: 0; overflow: visible; }
-.ps-wf-switch.is-icons .ps-mini-button.ps-workflow-tool-button {
-  border: 1px solid var(--ps-border);
-  background: var(--ps-chrome);
-  color: var(--ps-muted);
-  padding: 4px 6px;
-}
+/* Owner, 2026-11-06T14:35Z (F5): a pressed toggle (the view shown, YAML, Compare, Move the graph) is the top bar's
+   pressed button: the selected tokens every theme defines for it (a fill with its own foreground), and win95's latched
+   and ms-dos's reverse-video looks. The selection colour it used before equals the accent in some themes (High
+   Contrast: a white square, the icon gone). */
 .ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
-  color: var(--ps-accent);
-  border-color: var(--ps-accent);
-  background: var(--ps-selection-background, var(--ps-highlight-background));
+  border-color: var(--ps-modal-selected-border);
+  background: var(--ps-modal-selected-background);
+  color: var(--ps-modal-selected-foreground);
 }
-.ps-wf-bar-actions .ps-mini-button.ps-workflow-tool-button,
-.ps-wf-bar.is-foot .ps-mini-button.ps-workflow-tool-button { color: var(--ps-foreground); }
+:root[data-ps-theme="win95"] .ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  box-shadow: none;
+  background:
+    repeating-conic-gradient(var(--w95-face) 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px 2px;
+  color: var(--w95-dark);
+}
+:root[data-ps-theme="ms-dos"] .ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
+  background: var(--dos-fg);
+  color: #000000;
+  border-color: var(--dos-bright);
+}
 .ps-wf-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .ps-wf-bar {
   display: flex;
