@@ -1758,9 +1758,11 @@ function boundedWorkflowReadError(error) {
 }
 
 export class PilotSwarmUiController {
-    constructor({ store, transport }) {
+    constructor({ store, transport, terminal = false }) {
         this.store = store;
         this.transport = transport;
+        /** Hosted by the terminal UI, which draws no Terminate picker: its row shortcuts use the confirm dialog (review UI-D1). */
+        this.terminalHost = terminal === true;
         this.catalogTimer = null;
         this.activeSessionUnsub = null;
         this.activeSessionSubscriptionId = null;
@@ -10987,10 +10989,54 @@ export class PilotSwarmUiController {
         if (!workflowId) return false;
         if (action === "delete") {
             await this.terminateWorkflowRow(workflowId, "delete", workflowRowTitle(state.sessions.byId, state.sessions.byId[workflowId], state.ui.workflowViews));
+        } else if (this.terminalHost) {
+            // The terminal UI has no Terminate picker: d stops the Workflow (started nodes finish), c cancels it now, each
+            // through the confirm dialog the terminal draws (review UI-D1).
+            this.confirmWorkflowRowRun(workflowId, action === "done" ? "stop" : "cancel");
         } else {
             await this.openTerminatePickerModal();
         }
         return true;
+    }
+
+    /**
+     * Review UI-D1: the terminal UI's c (cancel now) or d (stop: started nodes finish) on a highlighted Workflow row: the
+     * confirm dialog (Enter or y sends, Esc or n closes), bound to that Workflow's id and its live run, as the portal's
+     * Stop dialog sends it. An ended Workflow, or one not read yet, says so on the status line.
+     */
+    confirmWorkflowRowRun(workflowId, operation) {
+        const state = this.getState();
+        const row = state.sessions.byId[workflowId];
+        if (!row || (operation !== "stop" && operation !== "cancel")) return;
+        const name = workflowRowTitle(state.sessions.byId, row, state.ui.workflowViews);
+        const view = state.ui.workflowViews?.[workflowId] ?? null;
+        if (["completed", "failed", "canceled"].includes(workflowStateOf(row, view)?.key)) {
+            this.dispatch({ type: "ui/status", text: `${name} has already ended.` });
+            return;
+        }
+        const model = view?.readModel ?? null;
+        const live = model?.run && model.run.mode !== "test" ? model.run.runId
+            : Array.isArray(model?.runs) ? model.runs.find((run) => run?.mode === "live")?.runId : null;
+        if (typeof live !== "string" || !live) {
+            this.dispatch({ type: "ui/status", text: `${name} is not read yet. Try again in a moment.` });
+            this.ensureWorkflowReadModel(workflowId, { force: true }).catch(() => {});
+            return;
+        }
+        const stop = operation === "stop";
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "confirm",
+                title: stop ? "Stop Workflow" : "Cancel Workflow",
+                message: stop
+                    ? `Stop ${name}? No new node starts; nodes already started may finish, then it ends. Effects that already happened stay.`
+                    : `Cancel ${name} now? Nodes still running are interrupted. Effects that already happened stay.`,
+                confirmLabel: stop ? "Let started nodes finish" : "Cancel now",
+                action: "workflowRunCommand",
+                workflowRunCommand: { sessionId: workflowId, operation, runId: live },
+                previousFocus: state.ui.focusRegion,
+            },
+        });
     }
 
     /**

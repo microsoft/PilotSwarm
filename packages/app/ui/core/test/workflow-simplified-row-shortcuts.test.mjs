@@ -85,3 +85,69 @@ test("the portal and the terminal UI send c, d and D to the same controller comm
         assert.ok(tui.includes(`controller.handleCommand(UI_COMMANDS.${command})`), `terminal UI ${command}`);
     }
 });
+
+// Review UI-D1: the terminal UI draws no Terminate picker, so its c and d on a highlighted Workflow open the confirm dialog
+// it draws and handles (Enter or y sends, Esc or n closes): d stops the Workflow (started nodes finish), c cancels it now,
+// each bound to that Workflow's id and its live run only.
+function terminalHarness({ status = "running" } = {}) {
+    const calls = [];
+    const record = name => async (...args) => { calls.push([name, ...args]); return { receipt: { status: "running" } }; };
+    const transport = {
+        cancelSession: record("cancelSession"), completeSession: record("completeSession"), deleteSession: record("deleteSession"),
+        updateWorkflow: record("updateWorkflow"),
+        readWorkflow: async () => null, getSessionEvents: async () => [], getSessionEventsBefore: async () => [],
+    };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport, terminal: true });
+    store.dispatch({ type: "sessions/loaded", sessions: [SESSIONS[0], workflow("wf-1", 1), workflow("wf-2", 2, status)] });
+    store.dispatch({ type: "sessions/expand", sessionId: OWNER });
+    for (const [id, runId] of [["wf-1", "run-a"], ["wf-2", "run-b"]]) {
+        store.dispatch({ type: "ui/workflowView", sessionId: id, view: { readModel: {
+            workflowId: id, runs: [{ runId, mode: "live", status }], run: { runId, mode: "live", status } } } });
+    }
+    store.dispatch({ type: "sessions/selected", sessionId: "wf-2" });
+    return { controller, store, calls };
+}
+
+for (const [key, command, operation, label] of [
+    ["d", UI_COMMANDS.DONE_SESSION, "stop", "Let started nodes finish"],
+    ["c", UI_COMMANDS.CANCEL_SESSION, "cancel", "Cancel now"],
+]) {
+    test(`terminal UI: ${key} on a highlighted Workflow confirms in the terminal, then sends ${operation} for its live run only`, async () => {
+        const { controller, store, calls } = terminalHarness();
+        await controller.handleCommand(command);
+        const modal = store.getState().ui.modal;
+        assert.equal(modal?.type, "confirm", "a dialog the terminal draws and handles");
+        assert.equal(modal.confirmLabel, label);
+        assert.match(modal.message, /check-items #2/);
+        assert.deepEqual(modal.workflowRunCommand, { sessionId: "wf-2", operation, runId: "run-b" });
+        assert.deepEqual(calls, [], "nothing before the confirm");
+        await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+        assert.deepEqual(calls.map(([name, id, body]) => [name, id, body?.operation, body?.run_id]), [["updateWorkflow", "wf-2", operation, "run-b"]]);
+        assert.ok(!calls.some(([name]) => name !== "updateWorkflow"), "nothing to the owner chat");
+    });
+}
+
+test("terminal UI: Esc closes the dialog without a command; an ended Workflow says so and opens nothing", async () => {
+    const open = terminalHarness();
+    await open.controller.handleCommand(UI_COMMANDS.CANCEL_SESSION);
+    await open.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    assert.equal(open.store.getState().ui.modal, null);
+    assert.deepEqual(open.calls, []);
+    const ended = terminalHarness({ status: "completed" });
+    await ended.controller.handleCommand(UI_COMMANDS.DONE_SESSION);
+    assert.equal(ended.store.getState().ui.modal, null);
+    assert.match(ended.store.getState().ui.statusText ?? "", /check-items #2 has already ended/);
+    assert.deepEqual(ended.calls, []);
+});
+
+test("terminal UI: the host makes a terminal controller, draws the confirm dialog and takes Enter, y, Esc and n in it", () => {
+    const index = fs.readFileSync(new URL("../../../tui/src/index.js", import.meta.url), "utf8");
+    const app = fs.readFileSync(new URL("../../../tui/src/app.js", import.meta.url), "utf8");
+    const components = fs.readFileSync(new URL("../../react/src/components.js", import.meta.url), "utf8");
+    assert.match(index, /new PilotSwarmUiController\(\{ store, transport, terminal: true \}\)/);
+    assert.match(app, /if \(modal\.type === "confirm"\) \{\s*if \(key\.escape \|\| input === "n" \|\| input === "q"\) \{\s*controller\.handleCommand\(UI_COMMANDS\.CLOSE_MODAL\)/);
+    assert.match(app, /if \(key\.return \|\| input === "y"\) \{\s*controller\.handleCommand\(UI_COMMANDS\.MODAL_CONFIRM\)/);
+    assert.match(components, /React\.createElement\(ConfirmModalContainer, \{ controller \}\)/);
+    assert.doesNotMatch(components, /terminatePicker/, "the terminal has no Terminate picker, so it must never open one");
+});
