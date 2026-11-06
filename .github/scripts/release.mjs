@@ -91,7 +91,8 @@ export function main(command) {
   validateRelease(version, manifests, JSON.parse(readFileSync('package-lock.json', 'utf8')), readFileSync('CHANGELOG.md', 'utf8'));
   const license = validatePackageLicenses();
   const sha = run('git', ['rev-parse', 'HEAD']);
-  if (sha !== process.env.GITHUB_SHA) throw new Error('Checkout differs from the workflow candidate commit.');
+  const expectedSha = options.development ? process.env.RELEASE_SOURCE_SHA : process.env.GITHUB_SHA;
+  if (!/^[a-f0-9]{40}$/.test(expectedSha || '') || sha !== expectedSha) throw new Error('Checkout differs from the workflow candidate commit.');
   const tag = `v${version}`;
   const existing = run('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`]);
   if (existing) throw new Error('Release tag already exists. Never republish an existing version; prepare a new dev version or use the deploy workflow for a stable deployment retry.');
@@ -109,8 +110,12 @@ export function main(command) {
   run('git', ['config', 'user.name', 'github-actions[bot]']);
   run('git', ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
   run('git', ['tag', '-a', tag, sha, '-m', `PilotSwarm ${tag}`]);
+  run('gh', ['auth', 'setup-git']);
   run('git', ['push', 'origin', `refs/tags/${tag}`]);
-  run('gh', ['release', 'create', tag, '--verify-tag', '--draft', ...options.create, '--title', `PilotSwarm ${tag}`, '--generate-notes', ...actual.map(f => `dist-tarballs/${f}`), 'dist-tarballs/SHA256SUMS', 'dist-tarballs/LICENSE']);
+  const notes = options.development
+    ? ['--notes', `Development snapshot ${tag}.\n\nSelected source commit: ${run('git', ['rev-parse', 'HEAD^'])}\nTested version-stamped commit: ${sha}\n\nNo deployment was triggered.`]
+    : ['--generate-notes'];
+  run('gh', ['release', 'create', tag, '--verify-tag', '--draft', ...options.create, '--title', `PilotSwarm ${tag}`, ...notes, ...actual.map(f => `dist-tarballs/${f}`), 'dist-tarballs/SHA256SUMS', 'dist-tarballs/LICENSE']);
   const release = JSON.parse(run('gh', ['release', 'view', tag, '--json', 'assets,isDraft,isPrerelease']));
   const assets = release.assets.map(a => a.name).sort();
   if (!release.isDraft || release.isPrerelease !== options.development || JSON.stringify(assets) !== JSON.stringify([...expected, 'SHA256SUMS', 'LICENSE'].sort())) throw new Error('Draft release assets or prerelease status are incorrect; publication stopped.');

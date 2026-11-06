@@ -22,10 +22,17 @@ Run `npm run check:privacy` after staging release changes.
   an ordinary release.
 - **Create release** (`release-tarballs.yml`) is a manual GitHub Action on `main`.
   Merging a PR or pushing a tag does not publish a release.
-- Prepared `X.Y.Z-dev.N` versions use that same workflow and full qualification,
-  but publish as immutable GitHub prereleases with `--latest=false`. Only the
-  post-publication Azure login refresh and deployment are skipped. Prepare a new
-  dev version for each snapshot; stable deployment retries do not accept dev tags.
+- Dev releases select `dev_release=true` and a repository `source_branch`,
+  while the workflow itself stays on main. Trusted main controls resolve and
+  display the immutable source SHA before approval. Approval trusts candidate
+  install/build/test code with CI credentials; separate controls are not a sandbox.
+  The serialized release job allocates the next `0.0.0-dev.N` (starting at 1)
+  beyond existing tags and releases, including drafts, and creates a version-only
+  snapshot commit without modifying the source branch. It tests and tags that
+  commit, recording both source and snapshot SHAs in release notes.
+  Prereleases use `--latest=false`; only post-publication login refresh and
+  deployment are skipped. Dispatch a new run instead of rerunning dev selection
+  or preparation. Stable releases require main and a prepared stable version.
 - One protected-environment approval precedes all cloud work. The Action captures
   the triggering main commit, validates package versions, runs the complete
   PostgreSQL baseline plus additive HorizonDB storage coverage, then builds the three npm-format tarballs.
@@ -56,6 +63,11 @@ Run `npm run check:privacy` after staging release changes.
   release** only when the user requests publication.
 
 ## Preparation
+
+The steps below prepare a stable release. For dev snapshots, keep **Use workflow
+from** on `main`, enable `dev_release`, and enter `source_branch`; the workflow
+stamps versions automatically. Inspect the selected SHA before environment
+approval. See [development snapshots](../../CI.md#development-snapshots).
 
 1. Check working tree, remote tags/releases and the changes since the last
    release. Report the proposed version before publication.

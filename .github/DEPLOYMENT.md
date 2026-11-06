@@ -52,9 +52,12 @@ and provider. Six or more failures fail without sequential verification. Both
 results remain visible; incomplete/setup/unhandled failures still block release.
 Release assets are three npm-format tarballs, checksums and `LICENSE`. Each new
 tarball embeds the same copyright and permission notice. There is no npm
-publication or starter-image publication. Prepared `X.Y.Z-dev.N` versions use
-the same release qualification and assets, but publish as immutable prereleases
-without becoming latest or deploying. See [development snapshots](CI.md#development-snapshots).
+publication or starter-image publication. Selecting `dev_release` snapshots a
+repository branch pinned before approval and automatically allocates the next
+`0.0.0-dev.N` version. It uses the same release qualification and assets, but
+publishes an immutable version-stamped snapshot without becoming latest or
+deploying. Stable releases remain prepared, main-only versions.
+See [development snapshots](CI.md#development-snapshots).
 The Azure workflows build and push
 worker/portal images to the configured ACR for deployment, including optional
 updates from main before a release.

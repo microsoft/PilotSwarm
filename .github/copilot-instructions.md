@@ -620,10 +620,16 @@ or an existing published `release_tag`. All Azure mutations for deployments and
 CI infrastructure run through GitHub Actions; local commands are for read-only
 inspection and local development only.
 
-**Create release** validates the prepared package version, requires the complete
+**Create release** validates the prepared stable package version on main, requires the complete
 baseline and real HorizonDB coverage, publishes three GitHub Release package tarballs
 plus checksums, then deploys the same tested source commit to the Azure test
-environment. One environment approval precedes testing; no second gate separates
+environment. Its optional `dev_release` mode pins a repository `source_branch`
+before approval, then allocates the next `0.0.0-dev.N` beyond remote tags and
+releases (including drafts) under release concurrency. Trusted main controls
+create a version-only snapshot commit, test and tag that commit, and publish it
+as a non-latest prerelease without deploying or modifying the source branch.
+Dev reruns must be new dispatches; stable releases remain main-only.
+One environment approval precedes testing; no second gate separates
 publication from the automatic deployment. A missing/skipped HorizonDB preflight
 fails CI. Keep `scripts/run-tests.sh` general-purpose for external users. See
 `.github/CI.md` and the release skill. Never publish npm packages or starter

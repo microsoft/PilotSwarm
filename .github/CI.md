@@ -25,21 +25,42 @@ release. It preserves existing asset identities/digests and performs no deploy.
 ## Development snapshots
 
 Use the existing **Create release** (`release-tarballs.yml`) workflow for both
-stable and dev releases. Prepare a version such as `0.8.10-dev.1` on `main`:
-update all three package versions, internal dependency versions, workspace
-lockfile entries, and the changelog, exactly as for a stable release. Dispatch
-the existing `version` input with that value, without a leading `v`.
+stable and dev releases. Keep **Use workflow from** set to `main`, select
+`dev_release`, and enter a repository branch in `source_branch` (default `main`).
+The stable `version` input is ignored for dev releases; no version-preparation
+commit is needed on the selected branch.
 
-The `-dev.N` suffix selects a GitHub prerelease, tagged `v0.8.10-dev.1`, that
+The workflow resolves the branch to an immutable SHA before protected-environment
+approval and displays it in the selection summary. Approval trusts that source's
+install/build/test code with CI credentials and the Azure CI identity; the
+separate main controls are not a sandbox. Branch movement after selection does
+not change the captured source.
+
+After approval, the serialized release job allocates `0.0.0-dev.N`, starting at
+`N=1`, using one greater than the highest existing number across remote tags
+and releases (including drafts). It does not fill old gaps or overwrite tags.
+The runner creates a version-only snapshot commit on top of the selected SHA,
+updating the three manifests, internal dependencies, lockfile entries, and
+changelog. It tests and tags that snapshot commit, without pushing changes to
+the source branch. Release notes record both the selected and tested SHAs.
+
+```bash
+gh workflow run release-tarballs.yml --repo microsoft/PilotSwarm --ref main \
+  -f dev_release=true -f source_branch=feature/my-change
+```
+
+The generated tag, such as `v0.0.0-dev.1`, is a GitHub prerelease that
 does not become the latest stable release. The same protected environment,
 Azure login, full provider qualification, package/license checks, and release
 assets still apply. Only the post-publication Azure login refresh and deployment
-are skipped. There is no separate workflow, channel input, automatic version
-stamping, or npm publication.
+are skipped. There is no separate workflow or npm publication.
 
-Each dev version is immutable. Prepare a new version (`-dev.2`, for example)
-for another snapshot; rerunning does not overwrite an existing tag or release.
-Stable versions retain the existing publication and deployment behavior.
+Each dev version is immutable. Dispatch a new run for another snapshot; dev
+selection/preparation reruns are rejected rather than changing source/version
+within an approved run. A failed run before tag creation does not consume a
+number; a retained tag or draft does. Stable versions retain the existing
+prepared-version publication and deployment behavior, require `main` as the
+source branch, and leave `dev_release` unchecked.
 
 The existing install helper accepts an exact dev version; its default selects
 the latest stable release. The stable deployment workflow does not accept dev
