@@ -117,8 +117,8 @@ export function workflowAgentLogChats(node, limit = WORKFLOW_AGENT_LOG_VISITS) {
 
 /**
  * A chat's events by the visit they belong to: each event goes to the visit whose prompt came last before it. Events
- * loaded before any prompt of a shown visit belong to `firstVisit` (review UI-10: the visit before the first prompt in
- * the window, when that prompt is on an older page), never dropped.
+ * loaded before any prompt of a shown visit belong to `firstVisit` (leadingVisit; reviews UI-10, UI-D5: a visit only on
+ * evidence, else EARLIER), never dropped.
  */
 function chatByVisit(events, visitIds, firstVisit) {
     const byVisit = new Map();
@@ -221,25 +221,36 @@ function workflowRows(events, runId, visitId) {
     return rows;
 }
 
+/** The key of a chat's rows whose visit is not known (review UI-D5): they come before the first prompt loaded. */
+const EARLIER = Symbol("earlier in this chat");
+
 /**
- * The visit whose events start a continued chat's loaded window (review UI-10): the shown visit just before the first
- * shown visit whose prompt is loaded, when the window starts after that earlier visit's prompt (it is on an older page);
- * else null (the window starts at a prompt, or with no shown visit before it).
+ * The visit the rows that start a chat's loaded window belong to, before its first loaded prompt (reviews UI-10, UI-D5).
+ * `own`: the shown visits of the chat, oldest first; `single`: the chat serves one visit only (a new chat each visit, or
+ * the run's whole history holds one visit of it).
+ * - The window starts at a prompt: none (null).
+ * - A shown visit's prompt comes first, with a shown visit before it: that earlier visit (the rows come after its prompt,
+ *   which is on an older page, and before the next one).
+ * - Otherwise a chat that serves one visit: that visit.
+ * - Otherwise which visit they belong to is not known: EARLIER (the Log shows them apart until their prompt is loaded),
+ *   never guessed from the newest visit.
  */
-function leadingVisit(events, own) {
+function leadingVisit(events, own, single) {
     const sorted = (Array.isArray(events) ? events : []).filter(isRecord).slice().sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
     const ids = own.map(visit => visit.id);
     for (const event of sorted) {
         const prompted = workflowPromptVisit(event);
         if (!prompted) continue;
+        if (sorted[0] === event) return null;
         const at = ids.indexOf(prompted);
-        return at > 0 && sorted[0] !== event ? ids[at - 1] : null;
+        if (at > 0) return ids[at - 1];
+        return at === 0 && single ? ids[0] : EARLIER;
     }
-    return own.length ? own[own.length - 1].id : null;
+    return single && ids.length === 1 ? ids[0] : EARLIER;
 }
 
 /**
- * The Log of an agent node: { groups, more, partial, loading, note }. `chats` maps an agent chat's session id to its loaded events
+ * The Log of an agent node: { groups, earlier, more, partial, loading, note }. `chats` maps an agent chat's session id to its loaded events
  * (undefined: not read yet); `coverage` maps it to { hasOlder } (the chat has events older than those loaded). Each
  * group is { visitId, ordinal, header, status, rows, loading, truncated }: `truncated` when the start of the visit's
  * chat (its prompt) is not loaded and older chat events exist (review UI-10: the Log says so and offers Load older,
@@ -254,12 +265,15 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
     const shownIds = new Set(visits.map(visit => visit.id));
     const read = typeof chats?.get === "function" ? chats : new Map(Object.entries(chats ?? {}));
     const covered = typeof coverage?.get === "function" ? coverage : new Map(Object.entries(coverage ?? {}));
-    // Each chat is cut once by the prompts of the visits shown; a visit with its own chat takes all of it.
+    // Each chat is cut once by the prompts of the visits shown; a visit with its own chat takes all of it. Review UI-D5: a
+    // continued chat's rows before its first loaded prompt go to a visit only on evidence; otherwise they are shown apart.
     const cut = new Map();
     for (const chatId of new Set(visits.map(visit => visit.agent?.childSessionId).filter(Boolean))) {
         const own = visits.filter(visit => visit.agent?.childSessionId === chatId).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
+        const single = node?.chat !== "continue"
+            || (all.filter(visit => visit.agent?.childSessionId === chatId).length === 1 && !node?.partial);
         const loaded = read.get(chatId);
-        if (Array.isArray(loaded)) cut.set(chatId, chatByVisit(loaded, new Set(own.map(visit => visit.id)), own.length === 1 ? own[0].id : leadingVisit(loaded, own)));
+        if (Array.isArray(loaded)) cut.set(chatId, chatByVisit(loaded, new Set(own.map(visit => visit.id)), leadingVisit(loaded, own, single)));
     }
     let loading = false;
     const groups = visits.map(visit => {
@@ -312,6 +326,13 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), cov
             instructions: null, instructionsKept: earlier.row.instructionsKept === true };
         group.rows.splice(prompt >= 0 ? prompt : 0, 0, carried);
     }
+    // Review UI-D5: a continued chat's loaded rows whose visit is not known yet (its prompt is on an older page): shown
+    // apart, oldest last, until Load older reaches a prompt. { chatId, header, rows, hasOlder }.
+    const earlier = [...cut.entries()].flatMap(([chatId, byVisit]) => {
+        const rows = byVisit.has(EARLIER) ? chatRows(byVisit.get(EARLIER), null) : [];
+        return rows.length ? [{ chatId, header: "Earlier in this chat · visit not loaded", hasOlder: covered.get(chatId)?.hasOlder === true,
+            rows: rows.map(row => ({ ...row, time: row.at === null ? null : workflowNodeClock(row.at, now) })) }] : [];
+    });
     // `more`: older visits are loaded but not shown ("Show older visits"); `partial`: the run's loaded history has no older ones.
-    return { groups, more: all.length > visits.length, partial: Boolean(node?.partial), loading, note: WORKFLOW_AGENT_LOG_NOTE };
+    return { groups, earlier, more: all.length > visits.length, partial: Boolean(node?.partial), loading, note: WORKFLOW_AGENT_LOG_NOTE };
 }

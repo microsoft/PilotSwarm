@@ -238,6 +238,45 @@ test("UI-10: a visit whose chat start is on an older page keeps its loaded event
     assert.ok(whole.groups.every(group => !group.truncated));
 });
 
+// Review UI-D5: a continued chat's loaded window with no prompt in it (visit 1's tool call and answer, while visit 2's prompt
+// is not recorded yet) is never given to the newest visit: its lines are shown apart until a prompt is loaded.
+test("UI-D5: a prompt-free window of a continued chat is shown apart, never under the newest visit; a loaded prompt places it", () => {
+    const continued = { ...node, chat: "continue" };
+    const window = chat.slice(2, 7); // visit 1's tool call, answer and completion call; no prompt
+    const coverage = new Map([[CHAT, { hasOlder: true }]]);
+    const log = workflowAgentNodeLog({ node: continued, events, chats: new Map([[CHAT, window]]), coverage, runId: "run-1", now: NOW });
+    const [second, first] = log.groups;
+    const chatRowsOf = group => group.rows.filter(row => row.key.startsWith("chat:"));
+    assert.deepEqual(chatRowsOf(second), [], "nothing of visit 1 under visit 2");
+    assert.deepEqual(chatRowsOf(first), [], "nor guessed for visit 1");
+    assert.equal(log.earlier.length, 1);
+    const [part] = log.earlier;
+    assert.equal(part.chatId, CHAT);
+    assert.equal(part.header, "Earlier in this chat · visit not loaded");
+    assert.equal(part.hasOlder, true);
+    assert.deepEqual(part.rows.map(row => row.label), ["Tool", "Agent", "Typed result"]);
+    const asked = [];
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", onOlderChat: id => asked.push(id) }));
+    assert.ok(html.includes("data-earlier=\"\"") && html.includes("Earlier in this chat · visit not loaded"), html);
+    assert.ok(html.indexOf("Visit 1") < html.indexOf("Earlier in this chat"), "after the visits, oldest last");
+    // Load older reaches visit 1's prompt: the lines are visit 1's, in place; nothing is shown apart.
+    const placed = workflowAgentNodeLog({ node: continued, events, chats: new Map([[CHAT, chat.slice(1, 7)]]), coverage, runId: "run-1", now: NOW });
+    assert.deepEqual(placed.earlier, []);
+    assert.deepEqual(chatRowsOf(placed.groups[1]).map(row => row.label), ["Prompt", "Tool", "Agent", "Typed result"]);
+    assert.deepEqual(chatRowsOf(placed.groups[0]), []);
+    // A window that starts after visit 1's prompt and holds visit 2's: the lines before it are visit 1's (UI-10), as before.
+    const bounded = workflowAgentNodeLog({ node: continued, events, chats: new Map([[CHAT, chat.slice(2)]]), coverage, runId: "run-1", now: NOW });
+    assert.deepEqual(bounded.earlier, []);
+    assert.ok(chatRowsOf(bounded.groups[1]).some(row => row.text === "PostgreSQL uses MVCC."));
+    // A chat that serves one visit (a new chat each visit) needs no prompt to place its lines.
+    const fresh = { ...node, executions: [{ ...node.executions[0], agent: { childSessionId: "chat-new" } }], current: null };
+    const own = window.map(item => ({ ...item, sessionId: "chat-new" }));
+    const single = workflowAgentNodeLog({ node: fresh, events, chats: new Map([["chat-new", own]]), coverage: new Map([["chat-new", { hasOlder: true }]]),
+        runId: "run-1", now: NOW });
+    assert.deepEqual(single.earlier, []);
+    assert.deepEqual(chatRowsOf(single.groups[0]).map(row => row.label), ["Tool", "Agent", "Typed result"]);
+});
+
 test("UI-10: older visits not in the run's loaded history offer Load older visits", () => {
     const partial = { ...node, partial: true };
     const log = workflowAgentNodeLog({ node: partial, events, chats: new Map([[CHAT, chat]]), runId: "run-1", now: NOW });

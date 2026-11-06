@@ -461,6 +461,14 @@ export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId =
                 olderChatLoading?.has?.(group.chatId) ? "Loading…" : "Load older") : null) : null,
             group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions,
                 onInstructions, openBodies }))) : null)),
+        // Review UI-D5: a continued chat's loaded lines whose visit is not known yet, shown apart until their prompt is loaded.
+        (log.earlier ?? []).map(part => h("section", { key: `earlier:${part.chatId}`, className: "ps-wf-alog-visit is-earlier", "data-earlier": "" },
+            h("h3", null, part.header),
+            h("p", { className: "ps-wf-muted" }, "Which visit these lines belong to is known once the chat's earlier prompt is loaded. ",
+                part.hasOlder && onOlderChat ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-chat",
+                    disabled: Boolean(olderChatLoading?.has?.(part.chatId)), onClick: () => onOlderChat(part.chatId) },
+                olderChatLoading?.has?.(part.chatId) ? "Loading…" : "Load older") : null),
+            h("ol", { className: "ps-wf-alog-rows" }, part.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions, onInstructions, openBodies }))))),
         log.more && onMore ? h("button", { type: "button", className: "ps-mini-button", "data-action": "older-visits", onClick: onMore }, "Show older visits") : null,
         !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits are not in the loaded history of this run. ",
             onOlderVisits ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-executions", onClick: onOlderVisits }, "Load older visits") : null)
