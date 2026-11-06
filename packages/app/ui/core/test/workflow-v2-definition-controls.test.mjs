@@ -276,7 +276,7 @@ test("the review names each named agent and what is pinned for it, and the tests
     assert.deepEqual(draft.tests, [{ runId: "test-run-0001", status: "completed", outcome: "succeeded" }, { runId: "test-run-0002", status: "running", outcome: null }],
         "a test of another revision is not this revision's evidence");
     assert.deepEqual(workflowV2PublicationEvidenceRows(draft), [
-        ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · its exact package revision is locked when this revision is published"],
+        ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · its exact package revision is locked when this revision starts"],
         ["  Interface", "ReviewResult@1"],
         ["Tests of this revision", "test-r…0001 completed · succeeded; test-r…0002 running"],
     ]);
@@ -289,8 +289,7 @@ test("the review names each named agent and what is pinned for it, and the tests
         ["Agent in 'review'", "code-reviewer · review-kit 1.2.0 · locked: review-kit 1.2.0 · revision bbbbbbbbbbbb…"],
         ["  Interface", "ReviewResult@1"],
         ["  Interface fingerprint", "ReviewResult@1 · cccccccccccc…"],
-        ["Tests of this revision", "None run. Publishing does not require a test"],
-    ]);
+    ], "no test row without a test run (test mode is hidden)");
     // Without a graph, nothing is said about agents; a revision with no named agent says so.
     assert.deepEqual(workflowV2PublicationEvidenceRows(workflowV2DefinitionControls({ ...draftModel(), graph: null, runs: [] }))[0],
         ["Agents", "Not known: the revision has no graph to read"]);
@@ -299,7 +298,7 @@ test("the review names each named agent and what is pinned for it, and the tests
     const open = main(mount({ readModel: { ...draftModel(), graph: { revision: 2, initial: "review", states: AGENT_STATES }, runs: testRuns },
         readModelRunId: null, sidePanel: "definition" }));
     assert.ok(open.includes("data-evidence=\"Agent in &#x27;review&#x27;\""), open);
-    assert.ok(open.includes("its exact package revision is locked when this revision is published"));
+    assert.ok(open.includes("its exact package revision is locked when this revision starts"));
     assert.ok(open.includes("test-r…0001 completed · succeeded; test-r…0002 running"));
     // Mock M03 "Back to draft" (accounting row 13): the review has its Close. Mock M28 "Fit" (row 91): the graph opens fitted,
     // by React Flow in the browser (workflow-session.spec.mjs, batch 5); the server's plain picture has no zoom buttons of its own.
@@ -319,17 +318,17 @@ test("the draft review shows the agent versions publishing would lock now, or wh
     const agentLine = versions => workflowV2PublicationEvidenceRows(draft, versions).find(([label]) => label === "Agent in 'review'")[1];
     assert.equal(agentLine(read({ agents: [{ stateId: "review", name: "code-reviewer", package: "review-kit", version: "1.2.0", packageId: "p",
         revision: REVISION_PIN, interface: { name: "ReviewResult", version: "1", digest: DIGEST } }] })),
-    "code-reviewer · review-kit 1.2.0 · version now: review-kit 1.2.0 (revision bbbbbbbbbbbb) · interface ReviewResult@1; publishing locks it");
+    "code-reviewer · review-kit 1.2.0 · version now: review-kit 1.2.0 (revision bbbbbbbbbbbb) · interface ReviewResult@1; Start locks it");
     assert.equal(agentLine({ revision: 2, phase: "loading", value: null, error: null }),
-        "code-reviewer · review-kit 1.2.0 · reading the version publishing would lock…");
+        "code-reviewer · review-kit 1.2.0 · reading the version Start would lock…");
     assert.equal(agentLine({ revision: 2, phase: "failed", value: null, error: "Gateway timeout" }),
         "code-reviewer · review-kit 1.2.0 · the version now could not be read: Gateway timeout");
     const message = "Agent \"code-reviewer\" of state 'review' is not available at version 1.2.0 (it is at 1.3.0).";
     assert.deepEqual(workflowV2PublicationEvidenceRows(draft, read({ problem: { code: "AGENT_UNAVAILABLE", message, details: {} } })).slice(0, 2),
-        [["Publishing would be refused", message], ["Agent in 'review'", "code-reviewer · review-kit 1.2.0"]]);
+        [["Start would be refused", message], ["Agent in 'review'", "code-reviewer · review-kit 1.2.0"]]);
     assert.deepEqual(workflowV2PublicationEvidenceRows(draft, read({ resolves: false }))[0],
-        ["Agent versions", "This deployment locks no agent versions when publishing: each agent step uses the version current when it starts."]);
-    const plain = "code-reviewer · review-kit 1.2.0 · its exact package revision is locked when this revision is published";
+        ["Agent versions", "This deployment locks no agent versions at Start: each agent step uses the version current when it starts."]);
+    const plain = "code-reviewer · review-kit 1.2.0 · its exact package revision is locked when this revision starts";
     assert.equal(agentLine(null), plain);
     assert.equal(agentLine({ ...read({}), revision: 3 }), plain, "a read of another revision");
     assert.equal(agentLine(read({ definitionHash: "d".repeat(64) })), plain, "a read of another definition hash");

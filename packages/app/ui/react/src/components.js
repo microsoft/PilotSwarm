@@ -2000,7 +2000,7 @@ export function WorkflowDraftModal({ state }) {
                 fillColor: "surface",
             }),
             React.createElement(platform.Panel, {
-                title: "Draft",
+                title: "Definition",
                 color: "cyan",
                 focused: false,
                 width,

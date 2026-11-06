@@ -66,8 +66,8 @@ export function isPlainShortcutKey(key = {}) {
 /**
  * The workflow view's run controls for the run it shows (p pause · r resume · s stop · c cancel; stop and cancel ask
  * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, V, which
- * opens the form for several of them in one update, e, which opens the draft editor, P, which opens the publication
- * review (publish, publish and start, or start; each asks first), t, which opens the test review (a test run of the
+ * opens the form for several of them in one update, e, which opens the YAML editor, S, which opens the Start form (it
+ * asks first; no publish-only step, review UI-4), t, which opens the test review (a test run of the
  * current revision; it asks first), and, for a test run shown, a, which answers one of its intercepted effects that
  * waits, and +, which advances its virtual clock. [ and ] show the selected state's result of an older or newer visit
  * (the latest by default), o reads the shown run's older history, f reads the whole value of the visit shown, and i
@@ -85,7 +85,7 @@ const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     v: UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES,
     V: UI_COMMANDS.WORKFLOW_VIEW_UPDATE_VARIABLES,
     e: UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT,
-    P: UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW,
+    S: UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW,
     t: UI_COMMANDS.WORKFLOW_VIEW_TEST_REVIEW,
     a: UI_COMMANDS.WORKFLOW_VIEW_TEST_ANSWER,
     "+": UI_COMMANDS.WORKFLOW_VIEW_TEST_CLOCK,
@@ -614,17 +614,13 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 if (!key.ctrl && !key.meta && input) controller.editWorkflowDraft({ type: "insert", text: input });
                 return;
             }
-            // The publication review: two text fields for a live run, its inputs and initial variables (JSON objects); Tab
-            // switches them. ctrl-p publishes only, ctrl-r publishes and starts (or starts a published definition's live
-            // run), each after the confirm dialog; ctrl-l reviews a workflow that changed meanwhile again; Enter sends
+            // The Start form (spec draft 3, no publish-only step; review UI-4): two text fields, the inputs and initial
+            // variables (JSON objects); Tab switches them. ctrl-r starts (a definition's revision is published and started
+            // in one step) after the confirm dialog; ctrl-l reviews a workflow that changed meanwhile again; Enter sends
             // nothing; Esc goes back to the workflow view.
             if (modal.type === "workflowPublish") {
                 if (key.escape) {
                     controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
-                    return;
-                }
-                if (matchesCtrlKey("p", "\u0010")) {
-                    controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH).catch(() => {});
                     return;
                 }
                 if (matchesCtrlKey("r", "\u0012")) {

@@ -157,15 +157,15 @@ const main = controller => renderToStaticMarkup(React.createElement(WorkflowMain
 test("the YAML tab edits the draft's YAML; without it, for a published definition or in a subtree, it shows the YAML read-only", () => {
     const closed = main(mount({ readModel: modelOf(), readModelRunId: null }));
     assert.match(closed, /role="tab" aria-selected="false"[^>]*>YAML<\/button>/, "Graph | YAML (batch 6, r-1); the Edit draft button is gone");
-    assert.ok(!closed.includes("Edit draft") && !closed.includes("Draft editor"));
+    assert.ok(!closed.includes("Edit draft") && !closed.includes("YAML editor"));
 
     const open = main(mount({ readModel: modelOf(), readModelRunId: null, mainTab: "yaml" }));
     assert.match(open, /role="tab" aria-selected="true"[^>]*>YAML<\/button>/);
     assert.match(open, /<div id="[^"]+-yaml-panel" class="ps-workflow-yaml-tab" role="tabpanel"/);
     assert.match(open, /<div id="[^"]+-graph-panel" class="ps-workflow-graph-region" hidden=""/, "the graph stays, hidden");
-    assert.ok(open.includes("aria-label=\"Draft editor\""));
-    assert.ok(open.includes("aria-label=\"Draft tools\""), "the draft's tools open in the side pane");
-    assert.ok(open.includes("Draft · editing revision 2"));
+    assert.ok(open.includes("aria-label=\"YAML editor\""));
+    assert.ok(open.includes("aria-label=\"YAML tools\""), "the draft's tools open in the side pane");
+    assert.ok(open.includes("Definition · editing revision 2"));
     assert.ok(open.includes(`>${YAML}</textarea>`), "the YAML is in the editor");
     assert.ok(open.includes("The version stays 1.0.0: a new version needs a new workflow."));
     assert.match(open, /data-operation="replace_definition" disabled="" title="Nothing changed\."/);
@@ -173,7 +173,7 @@ test("the YAML tab edits the draft's YAML; without it, for a published definitio
     for (const [label, model] of [["no YAML", modelOf({ draft: null })], ["published", modelOf({ definition: { state: "published", currentRevision: 1 } })],
         ["subtree", modelOf({ operations: ["pause", "stop", "cancel"] })]]) {
         const html = main(mount({ readModel: model, readModelRunId: null, mainTab: "yaml" }));
-        assert.ok(!html.includes("Edit draft") && !html.includes("Draft editor"), label);
+        assert.ok(!html.includes("Edit draft") && !html.includes("YAML editor"), label);
         assert.ok(html.includes("aria-label=\"Workflow YAML\""), `${label}: the YAML read-only`);
     }
     // A published revision: its YAML from the revision read, in the same box, read-only, with one muted note.

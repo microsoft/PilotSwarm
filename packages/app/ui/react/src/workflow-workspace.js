@@ -26,7 +26,7 @@ const EMPTY_EVENTS = [];
  * run, nothing to publish) shows Step details instead.
  */
 export const WORKFLOW_SIDE_PANEL_TITLES = Object.freeze({
-    definition: "Publish review", test: "Test review", calls: "Test calls", variables: "Variables", draft: "Draft tools",
+    definition: "Publish review", test: "Test review", calls: "Test calls", variables: "Variables", draft: "YAML tools",
     activity: "Run activity", notices: "Notices", log: "Step log",
 });
 
@@ -253,7 +253,7 @@ export function WorkflowMainPane({ controller, icon, onNodeSelected, mobile = fa
             draftEditor
                 ? h(WorkflowV2DraftEditor, { key: sessionId, controller, sessionId, model: draftEditor, savedEdit: view.draftEdit ?? null,
                     notice: noticeInYaml ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice: runNotice }) : null,
-                    tools: panelButton("draft", { label: "Draft tools", glyph: "tools",
+                    tools: panelButton("draft", { label: "YAML tools", glyph: "tools",
                         title: "Compare saved versions, and change an agent step's inputs without writing YAML." }) })
                 : h(WorkflowV2YamlView, { key: sessionId, controller, sessionId, model: definitionModel, reads: view.definitionRevisions ?? null })) : null);
 }

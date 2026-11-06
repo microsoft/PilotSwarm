@@ -7477,7 +7477,7 @@ export class PilotSwarmUiController {
         }
         this.dispatch({ type: "ui/modal", modal: { type: "workflowDraft", sessionId: selection.modal.sessionId, returnModal: selection.modal,
             previousFocus: state.ui.focusRegion } });
-        this.dispatch({ type: "ui/status", text: "Draft editor — ctrl-o save · ctrl-r discard edits · Esc close (edits kept)" });
+        this.dispatch({ type: "ui/status", text: "YAML editor — ctrl-o save · ctrl-r discard edits · Esc close (edits kept)" });
     }
 
     /** The open draft editor's session, editor model, effective edit and what that edit is; null when it is not open or has no draft. */
@@ -7579,7 +7579,7 @@ export class PilotSwarmUiController {
         }
         const target = edit.conflict ? { revision: editor.revision, yaml: editor.yaml } : buffer.base;
         if (!confirmed && (edit.changed || edit.conflict)) {
-            this.dispatch({ type: "ui/modal", modal: { type: "confirm", title: edit.conflict ? `Load Revision ${target.revision}` : "Discard Draft Edits",
+            this.dispatch({ type: "ui/modal", modal: { type: "confirm", title: edit.conflict ? `Load Revision ${target.revision}` : "Discard Edits",
                 confirmLabel: edit.conflict ? "Load" : "Discard",
                 message: `Discard your edits and show revision ${target.revision} as it is saved? Nothing is sent, and no saved revision changes.`,
                 action: "discardWorkflowDraftEdits", returnModal: modal, previousFocus: this.getState().ui.focusRegion } });
@@ -7630,8 +7630,8 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/modal", modal: { type: "workflowPublish", sessionId: selection.modal.sessionId, pin: workflowPublicationPin(publication),
             field: "inputs", inputs: "{}", inputsCursor: 2, vars: "", varsCursor: 0, error: null,
             returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
-        const actions = publication.controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} ${control.label.toLowerCase()}`);
-        this.dispatch({ type: "ui/status", text: `${publication.state === "draft" ? "Publish review" : "Start review"} — ${actions.join(" · ")} (each asks first) · Esc back` });
+        // The Start form (UI-4): no publish-only action.
+        this.dispatch({ type: "ui/status", text: "Start — ctrl-r start (asks first) · Tab inputs/variables · Esc back" });
         // A draft's named agents: the versions publishing would lock now (owner decision q1).
         if (publication.state === "draft" && publication.agents?.length) {
             this.loadWorkflowAgentVersions(selection.modal.sessionId, { revision: publication.revision }).catch(() => {});
@@ -7713,8 +7713,10 @@ export class PilotSwarmUiController {
         const change = workflowPublicationChange(modal.pin, publication);
         if (change) return refuse(change);
         const pin = modal.pin;
-        const operation = kind === "publish" ? "publish" : pin.state === "draft" ? "publish_and_start" : "start";
-        const label = operation === "publish" ? "Publish only" : operation === "publish_and_start" ? "Publish and start" : "Start live run";
+        // Spec draft 3 (D4, F-7; review UI-4): Start only; publishing alone is not offered on any surface.
+        if (kind === "publish") return refuse("Start publishes this revision and starts it in one step; publishing alone is not offered.");
+        const operation = pin.state === "draft" ? "publish_and_start" : "start";
+        const label = "Start";
         const control = publication.controls.find(item => item.operation === operation) ?? null;
         if (!control) return refuse(`${label} is not offered here.${publication.note ? ` ${publication.note}` : ""}`);
         if (!control.enabled) return refuse(`${label} is not available now. ${control.title}`);
@@ -7748,11 +7750,11 @@ export class PilotSwarmUiController {
         }
         const pin = workflowPublicationPin(publication);
         if (!pin) {
-            this.dispatch({ type: "ui/status", text: "The workflow can no longer be published or started here" });
+            this.dispatch({ type: "ui/status", text: "The workflow can no longer be started here" });
             return;
         }
         this.updateWorkflowPublicationReview({ pin, error: null });
-        this.dispatch({ type: "ui/status", text: `Reviewing ${pin.state === "draft" ? "revision" : "published revision"} ${pin.revision ?? "not known"} as it is now` });
+        this.dispatch({ type: "ui/status", text: `Reviewing revision ${pin.revision ?? "not known"} as it is now` });
     }
 
     /**
@@ -11463,7 +11465,7 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: ["workflowVariable", "workflowVariableBatch", "workflowTestAnswer", "workflowTestClock"].includes(modal.type)
                 ? "Back to the workflow view"
                 : modal.type === "workflowDraft" ? (unsaved ? "Closed the draft editor; your unsaved edits are kept (e shows them)" : "Closed the draft editor")
-                    : modal.type === "workflowPublish" ? "Closed the publication review"
+                    : modal.type === "workflowPublish" ? "Closed the Start form"
                         : modal.type === "workflowTest" ? "Closed the test review"
                             : modal.action === "discardWorkflowDraftEdits" ? "Your edits are kept" : `${label} was not sent` });
             return;

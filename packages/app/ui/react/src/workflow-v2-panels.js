@@ -1063,11 +1063,12 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model: givenModel
         if (!edit.canSave || base.sessionId !== sessionId || model.sessionId !== sessionId) return;
         controller.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: base.revision, yaml: textValue });
     };
-    return h("section", { id, className: "ps-workflow-draft-editor", "aria-label": "Draft editor", "data-revision": base.revision },
+    // Plain words (spec draft 3; review UI-4): a definition and its revisions, saved; no draft or publish words.
+    return h("section", { id, className: "ps-workflow-draft-editor", "aria-label": "YAML editor", "data-revision": base.revision },
     h("div", { className: "ps-workflow-yaml-strip" },
-        h("h3", null, `Draft · editing revision ${base.revision}`),
+        h("h3", null, `Definition · editing revision ${base.revision}`),
         h("button", { type: "button", className: "ps-mini-button", "data-operation": "replace_definition", disabled: !edit.canSave,
-            title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save draft"),
+            title: edit.reason ?? `Save as a new revision after revision ${base.revision}.`, onClick: save }, model.pending ? "Saving…" : "Save"),
         h("button", { type: "button", className: "ps-mini-button", "data-action": "discard", disabled: !edit.changed,
             // VR-6: a discarded edit is dropped from the view too, so nothing brings it back.
             onClick: () => {
@@ -1098,7 +1099,7 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model: givenModel
 export function WorkflowV2DraftTools({ controller, sessionId, model, revisionReads = null, agentSteps = [], stepInput = null, stepInputPreview = null, unsaved = false }) {
     const [comparing, setComparing] = React.useState(false);
     if (!model) return null;
-    return h("section", { className: "ps-workflow-draft-tools", "aria-label": "Draft tools", "data-revision": model.revision },
+    return h("section", { className: "ps-workflow-draft-tools", "aria-label": "YAML tools", "data-revision": model.revision },
     h("div", { className: "ps-workflow-panel-actions" },
         h("button", { type: "button", className: "ps-mini-button", "data-action": "compare", "aria-expanded": comparing,
             disabled: model.revision < 2, title: model.revision < 2 ? "There is only one version so far." : "Compare two saved versions of this draft.",

@@ -633,14 +633,14 @@ export function workflowViewDraftRefusal(selection) {
                     : !offered ? workflowV2RestrictionText(commands) ?? "This workflow takes no draft changes from people."
                         : viewer?.allowed === false ? (typeof viewer.reason === "string" && viewer.reason ? viewer.reason : "You cannot command this workflow.")
                             : "Its YAML is not given to you.";
-    return `The draft cannot be edited here. ${why}`;
+    return `The definition cannot be edited here. ${why}`;
 }
 
 /** The draft's place in the view's details: its revision and how to edit it, and an edit kept unsaved. */
 function draftLines(projection) {
     const editor = projection.draftEditor;
     if (!editor) return [];
-    const lines = [{ text: `Draft · revision ${editor.revision}${editor.semver ? ` · version ${editor.semver}` : ""} — e edits its YAML`
+    const lines = [{ text: `Definition · revision ${editor.revision}${editor.semver ? ` · version ${editor.semver}` : ""} — e edits its YAML`
         + `${editor.revision > 1 ? " · C compares versions" : ""}`, color: "cyan", indent: "" }];
     if (projection.draftEdit?.changed) {
         lines.push({ text: `Unsaved edits, started from revision ${projection.draftBuffer.base.revision}: e shows them`, color: "yellow", indent: "  " });
@@ -750,8 +750,8 @@ export function selectWorkflowDraftModal(state, maxWidth = 100, viewportHeight =
         return { hint, hintLines, hintHeight: hintLines.length + 2 };
     };
     if (!editor || !buffer) {
-        add(workflowViewDraftRefusal({ projection }) ?? "The draft cannot be edited here.", "yellow");
-        return { title: "Draft", lines: [], editorHeight: 3, scrollOffset: 0, statusLines: status, statusHeight: Math.min(8, status.length + 2),
+        add(workflowViewDraftRefusal({ projection }) ?? "The definition cannot be edited here.", "yellow");
+        return { title: "Definition", lines: [], editorHeight: 3, scrollOffset: 0, statusLines: status, statusHeight: Math.min(8, status.length + 2),
             ...keys("Esc close"), idealWidth: width, changed: false };
     }
     const edit = projection.draftEdit;
@@ -793,7 +793,7 @@ export function selectWorkflowDraftModal(state, maxWidth = 100, viewportHeight =
         if (diagnostics.length > 5) add(`… ${diagnostics.length - 5} more`, "gray", "  ");
     }
     return {
-        title: `Draft · editing revision ${buffer.base.revision}${editor.semver ? ` · version ${editor.semver} (it cannot change)` : ""} · line ${at.line + 1}, column ${at.column + 1}`,
+        title: `Definition · editing revision ${buffer.base.revision}${editor.semver ? ` · version ${editor.semver} (it cannot change)` : ""} · line ${at.line + 1}, column ${at.column + 1}`,
         lines, editorHeight, scrollOffset, statusLines: status, statusHeight: Math.max(3, Math.min(10, status.length + 2)),
         ...keys(edit.conflict
             ? `ctrl-r load revision ${editor.revision} (asks first) · ctrl-k keep my edits on revision ${editor.revision} · Esc close (edits kept)`
@@ -802,8 +802,14 @@ export function selectWorkflowDraftModal(state, maxWidth = 100, viewportHeight =
     };
 }
 
-/** The keys of a publication review's actions; each asks first. */
-export const WORKFLOW_PUBLICATION_KEYS = Object.freeze({ publish: "ctrl-p", publish_and_start: "ctrl-r", start: "ctrl-r" });
+/**
+ * The keys of the Start form's action; it asks first. Spec draft 3 (D4, F-7; review UI-4): there is no publish-only step on
+ * any surface: Start publishes a definition's revision and starts it (publish_and_start), or starts a published one.
+ */
+export const WORKFLOW_PUBLICATION_KEYS = Object.freeze({ publish_and_start: "ctrl-r", start: "ctrl-r" });
+
+/** The Start form's actions of a definition's controls: never publish only (UI-4). */
+const startControls = controls => (Array.isArray(controls) ? controls.filter(control => control?.operation !== "publish") : []);
 const PUBLICATION_OPERATIONS = new Set(Object.keys(WORKFLOW_PUBLICATION_KEYS));
 
 /**
@@ -849,9 +855,9 @@ export function workflowPublicationChange(pin, publication) {
 /** The sentence of workflowPublicationChange for a review of `pin` whose workflow now shows `current` (a pin, or null). */
 function publicationChange(pin, current) {
     const was = `revision ${pin?.revision ?? "not known"}`;
-    if (!current) return "The workflow can no longer be published or started here, so nothing is sent. Esc goes back.";
+    if (!current) return "The workflow can no longer be started here, so nothing is sent. Esc goes back.";
     if (pin?.state === "draft" && current.state === "published") {
-        return `The workflow was published meanwhile (revision ${current.revision ?? "not known"}); this review is of draft ${was}, so nothing is sent for it. ctrl-l reviews the workflow as it is now.`;
+        return `Someone else made ${was} final meanwhile, so nothing is sent for this form. ctrl-l shows the workflow as it is now.`;
     }
     return `The workflow now shows revision ${current.revision ?? "not known"} (definition hash ${shortHash(current.definitionHash)}); this review is of ${was}, so nothing is sent for it. ctrl-l reviews revision ${current.revision ?? "not known"}.`;
 }
@@ -871,11 +877,11 @@ export function workflowPublicationConfirm(operation, pin, publication, args = {
             message: `Publish ${what}? It no longer changes afterwards, and no run starts. Publication approves no repository write and grants no tool.` };
     }
     if (operation === "publish_and_start") {
-        return { title: `Publish and Start Revision ${pin?.revision ?? ""}`.trim(), confirmLabel: "Publish and Start",
-            message: `Publish ${what} and start its live run${given}? It no longer changes afterwards, and the live run's effects are real.` };
+        return { title: `Start Revision ${pin?.revision ?? ""}`.trim(), confirmLabel: "Start",
+            message: `Start ${what}${given}? This revision no longer changes after it starts, and its effects are real.` };
     }
-    return { title: "Start the Live Run", confirmLabel: "Start",
-        message: `Start the live run of published ${what}${given}? Its effects are real, and a workflow has one live run.` };
+    return { title: `Start Revision ${pin?.revision ?? ""}`.trim(), confirmLabel: "Start",
+        message: `Start ${what}${given}? Its effects are real.` };
 }
 
 /**
@@ -885,24 +891,22 @@ export function workflowPublicationConfirm(operation, pin, publication, args = {
 export function workflowViewPublicationRefusal(selection) {
     const projection = selection?.projection ?? null;
     const publication = projection?.publication ?? null;
-    if (publication?.controls?.length) return null;
+    if (startControls(publication?.controls).length) return null;
     const model = projection?.definitionModel ?? null;
     const why = !isPlainRecord(model) ? "The workflow is not loaded yet."
         : !isPlainRecord(model.personCommands) ? "This deployment takes no workflow commands from people."
             : !publication ? `The definition is ${typeof model.definition?.state === "string" && model.definition.state ? model.definition.state : "in no known state"}.`
-                : publication.note ?? "This workflow takes no publication commands from people.";
-    return `Publication cannot be reviewed here. ${why}`;
+                : publication.note ?? "This workflow takes no Start from people.";
+    return `Nothing can be started here. ${why}`;
 }
 
-/** The definition's publication in the view's details: what P reviews, when the workflow takes any of it from people. */
+/** The definition's Start in the view's details: what S starts, when the workflow takes it from people (UI-4). */
 function publicationLines(projection) {
     const publication = projection.publication;
-    if (!publication?.controls?.length) return [];
-    const subject = publication.state === "draft"
-        ? `draft revision ${publication.revision ?? "not known"}${publication.valid ? "" : " (it has errors)"}`
-        : `published revision ${publication.publishedRevision ?? "not known"}, no live run yet`;
-    const actions = publication.controls.map(control => control.label.toLowerCase()).join(" or ");
-    return [{ text: `Publication: ${subject} — P reviews: ${actions}`, color: publication.busy ? "yellow" : "cyan", indent: "" }];
+    if (!startControls(publication?.controls).length) return [];
+    const revision = publication.state === "draft" ? publication.revision : publication.publishedRevision;
+    const subject = `revision ${revision ?? "not known"}${publication.state === "draft" && !publication.valid ? " (it has errors)" : ""}, not started yet`;
+    return [{ text: `Start: ${subject} — S starts it`, color: publication.busy ? "yellow" : "cyan", indent: "" }];
 }
 
 /**
@@ -927,28 +931,28 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
     const contentWidth = width - 4;
     const lines = [];
     const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) lines.push({ text: piece, color }); };
-    const controls = changed ? [] : publication?.controls ?? [];
-    const runs = Boolean(publication?.controls?.some(control => control.operation !== "publish"));
+    const controls = changed ? [] : startControls(publication?.controls);
+    const runs = startControls(publication?.controls).length > 0;
     add(`Definition: ${[publication?.name, publication?.semver].filter(Boolean).join(" ") || "Not named"}`);
-    add(`${draft ? "Revision" : "Published revision"}: ${pin?.revision ?? "Not known"}`);
+    add(`Revision: ${pin?.revision ?? "Not known"}`);
     add(`Definition hash: ${pin?.definitionHash ?? "Not known"}`);
     if (draft && !changed && publication) {
-        add(`Validity: ${publication.valid ? "Valid" : `${publication.errors || "Unlisted"} error${publication.errors === 1 ? "" : "s"}: it cannot be published`}`,
+        add(`Validity: ${publication.valid ? "Valid" : `${publication.errors || "Unlisted"} error${publication.errors === 1 ? "" : "s"}: it cannot start`}`,
             publication.valid ? "white" : "red");
     }
-    add(`Live effects: ${runs ? "Only when its live run starts" : "None until a live run starts"}`);
+    add(`Effects: ${runs ? "Real, once it starts" : "None until it starts"}`);
     // What publication pins for each named agent, and the tests of exactly this revision (as the portal's review says them).
     const versionsNow = state.ui?.workflowViews?.[modal.sessionId]?.agentVersions ?? null;
     if (!changed && publication) for (const [label, value] of workflowV2PublicationEvidenceRows(publication, versionsNow)) add(`${label.trim()}: ${value}`, "white", label.startsWith(" ") ? "  " : "");
     add(draft
-        ? "Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. Publication starts no run, approves no repository write and grants no tool."
-        : "Starting runs the published revision with real effects. A workflow has one live run.", "gray");
+        ? "Start runs this exact revision with real effects; the revision no longer changes after it starts."
+        : "Start runs this revision with real effects.", "gray");
     if (changed) add(change, "yellow");
     for (const control of controls) {
-        add(`${WORKFLOW_PUBLICATION_KEYS[control.operation]} ${control.label}${control.enabled || control.pending ? "" : ` — not now: ${control.title}`}`,
+        add(`${WORKFLOW_PUBLICATION_KEYS[control.operation]} ${control.pending ? "Starting…" : "Start"}${control.enabled || control.pending ? "" : ` — not now: ${control.title}`}`,
             control.enabled ? "cyan" : "gray");
     }
-    if (!changed && publication && !publication.controls.length && publication.note) add(publication.note, "yellow");
+    if (!changed && publication && !startControls(publication.controls).length && publication.note) add(publication.note, "yellow");
     const notice = projection.runNotice && PUBLICATION_OPERATIONS.has(projection.runNotice.operation) ? projection.runNotice : null;
     if (notice) {
         add(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
@@ -958,11 +962,11 @@ export function selectWorkflowPublicationModal(state, maxWidth = 100, viewportHe
     const fields = runs && !changed;
     const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
     const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, height - (fields ? 18 : 10))));
-    const keys = changed ? ["ctrl-l review it as it is now"] : controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} ${control.label.toLowerCase()}`);
+    const keys = changed ? ["ctrl-l review it as it is now"] : controls.map(control => `${WORKFLOW_PUBLICATION_KEYS[control.operation]} start`);
     const hint = `${[...keys, ...(fields ? ["Tab inputs/variables"] : []), "Esc back"].join(" · ")}${!changed && controls.length ? " — each asks first" : ""}`;
     const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
     return {
-        title: draft ? `Publish review · revision ${pin?.revision ?? "not known"}` : `Start the live run · published revision ${pin?.revision ?? "not known"}`,
+        title: `Start · revision ${pin?.revision ?? "not known"}`,
         lines, listHeight, scrollOffset: 0, changed, fields,
         field: modal.field === "vars" ? "vars" : "inputs",
         inputs: String(modal.inputs ?? ""), inputsCursor: Number(modal.inputsCursor) || 0,

@@ -1,7 +1,7 @@
 // The TUI's workflow view (design 02 "Portal/TUI: graph, observed state, read-only child chats"; T115): `w` opens it
 // outside the prompt (the prompt keeps typing w), the shared Ink app draws it from the shared view model, `?` lists it,
 // and inside it p r s c send a person's run controls for the shown run, d dismisses their notice, v opens the shown
-// run's variables form, V the form for several of them in one update, e the draft editor, P the publication review, t
+// run's variables form, V the form for several of them in one update, e the YAML editor, S the Start form (no publish-only step), t
 // the test review, and for a shown test run a its answer form and + its virtual clock (INACTIVE: only a deployment that
 // takes a person's workflow commands offers any).
 import test from "node:test";
@@ -109,12 +109,13 @@ test("the help lists the Workflow pane, and no test keys (test mode hidden, spec
     assert.match(text, /stop and cancel ask first/);
     assert.match(text, /workflow view: the shown run's variables/);
     assert.match(text, /ctrl-r remove/);
-    assert.match(text, /workflow view: edit the draft's YAML/);
+    assert.match(text, /workflow view: edit the definition's YAML/);
     assert.match(text, /ctrl-o save as a new revision/);
     assert.match(text, /ctrl-k keep edits on a newer revision/);
-    assert.match(text, /workflow view: publication review of the exact revision and hash shown/);
-    assert.match(text, /ctrl-p publish only · ctrl-r publish and start/);
-    assert.match(text, /each asks first/);
+    // Review UI-4: Start, with no publish-only step and no publish words.
+    assert.match(text, /workflow view: Start the definition at the revision shown/);
+    assert.match(text, /ctrl-r start, with its JSON inputs and variables · asks first/);
+    assert.doesNotMatch(text, /publication review|publish only|ctrl-p publish/);
     assert.doesNotMatch(text, /test review|a test run shown|virtual clock|agents mocked\/real/);
     assert.match(text, /workflow view: the selected node's own result of an older \/ newer visit of the shown run/);
     assert.match(text, /workflow view: o reads the shown run.s older history/);
@@ -280,16 +281,16 @@ test("the shared Ink app draws the draft editor: the revision, the YAML with lin
     controller.editWorkflowDraft({ type: "insert", text: "# " });
     const html = renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform },
         React.createElement(WorkflowDraftModal, { state: store.getState() })));
-    assert.match(html, /data-title="Draft · editing revision 2 · version 1\.0\.0 \(it cannot change\) · line 2, column 3"/);
+    assert.match(html, /data-title="Definition · editing revision 2 · version 1\.0\.0 \(it cannot change\) · line 2, column 3"/);
     assert.match(html, /<p>1 apiVersion: pilotswarm\.dev\/v2-draft<\/p>/);
     assert.match(html, /<p>2 # kind: Workflow<\/p>/);
     assert.match(html, /<p>3 <\/p>/, "the empty line after the last newline");
-    assert.match(html, /data-title="Draft"><p>Unsaved edits\. ctrl-o saves them as a new revision after revision 2\.<\/p>/);
+    assert.match(html, /data-title="Definition"><p>Unsaved edits\. ctrl-o saves them as a new revision after revision 2\.<\/p>/);
     assert.match(html, /data-title="Keys"><p>ctrl-o save · ctrl-r discard edits \(asks first\) · Enter new line · Tab two spaces · Esc close \(edits kept\)<\/p>/);
     assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
 });
 
-test("the publication review takes typed JSON, q included; ctrl-p, ctrl-r, ctrl-l, Tab, the cursor keys and Esc are its own keys; Enter sends nothing", () => {
+test("the Start form takes typed JSON, q included; ctrl-r, ctrl-l, Tab, the cursor keys and Esc are its own keys; Enter sends nothing; no ctrl-p", () => {
     assert.match(APP, TYPING_IN_FORM);
     const modalBranch = APP.indexOf("if (modal) {");
     const review = APP.indexOf('if (modal.type === "workflowPublish") {');
@@ -299,7 +300,6 @@ test("the publication review takes typed JSON, q included; ctrl-p, ctrl-r, ctrl-
     assert.ok(review < APP.indexOf('if (key.escape || input === "q" ||'), "before q closes a modal");
     const branch = APP.slice(review, APP.indexOf('if (modal.type === "workflowTest") {'));
     for (const binding of [/key\.escape[\s\S]*?UI_COMMANDS\.CLOSE_MODAL/,
-        /matchesCtrlKey\("p", "\\u0010"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_PUBLICATION_PUBLISH/,
         /matchesCtrlKey\("r", "\\u0012"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_PUBLICATION_RUN/,
         /matchesCtrlKey\("l", "\\u000c"\)[\s\S]*?UI_COMMANDS\.WORKFLOW_PUBLICATION_RELOAD/,
         /if \(key\.return\) return;/,
@@ -310,12 +310,13 @@ test("the publication review takes typed JSON, q included; ctrl-p, ctrl-r, ctrl-
         /if \(!key\.ctrl && !key\.meta && input\) controller\.editWorkflowPublicationField\(\{ type: "insert", text: input \}\);/]) {
         assert.match(branch, binding);
     }
-    for (const command of ["WORKFLOW_VIEW_PUBLICATION_REVIEW", "WORKFLOW_PUBLICATION_PUBLISH", "WORKFLOW_PUBLICATION_RUN", "WORKFLOW_PUBLICATION_RELOAD"]) {
+    assert.doesNotMatch(branch, /WORKFLOW_PUBLICATION_PUBLISH/, "publishing alone has no key (review UI-4)");
+    for (const command of ["WORKFLOW_VIEW_PUBLICATION_REVIEW", "WORKFLOW_PUBLICATION_RUN", "WORKFLOW_PUBLICATION_RELOAD"]) {
         assert.equal(typeof UI_COMMANDS[command], "string", command);
     }
 });
 
-test("the shared Ink app draws the publication review: what is published, its actions and keys, and the live run's two fields", async () => {
+test("the shared Ink app draws the Start form: what starts, its key, and the run's two fields", async () => {
     const draft = { ...readModel({ noRun: true, graph: { revision: 2, initial: "review", states },
         definition: { state: "draft", currentRevision: 2, publishedRevision: null, publishedDefinitionHash: null },
         revision: { revision: 2, definitionHash: "hash-2", name: "review-once" } }),
@@ -338,14 +339,14 @@ test("the shared Ink app draws the publication review: what is published, its ac
         return React.createElement("label", { "data-focused": String(focused) }, `${label}: ${value}`); } };
     const html = renderToStaticMarkup(React.createElement(UiPlatformProvider, { platform: formPlatform },
         React.createElement(WorkflowPublicationModal, { state: store.getState() })));
-    assert.match(html, /data-title="Publish review · revision 2"/);
+    assert.match(html, /data-title="Start · revision 2"/);
     assert.match(html, /<p>Definition: review-once 1\.0\.0<\/p>/);
     assert.match(html, /<p>Definition hash: hash-2<\/p>/);
-    assert.match(html, /<p>ctrl-p Publish only<\/p>/);
-    assert.match(html, /<p>ctrl-r Publish and start<\/p>/);
+    assert.match(html, /<p>ctrl-r Start<\/p>/);
+    assert.doesNotMatch(html, /Publish/);
     assert.deepEqual(inputs.map(input => [input.label, input.value, input.focused]),
         [["inputs (JSON object)", "{}", false], ["initial variables (JSON object, optional)", '{"limit": 3}', true]]);
-    assert.match(html, /data-title="Keys"><p>ctrl-p publish only · ctrl-r publish and start · Tab inputs\/variables · Esc back — each asks first<\/p>/);
+    assert.match(html, /data-title="Keys"><p>ctrl-r start · Tab inputs\/variables · Esc back — each asks first<\/p>/);
     assert.deepEqual(calls.map(call => call[0]).filter(name => name !== "readWorkflow"), [], "it reads and sends nothing");
 });
 
@@ -510,7 +511,7 @@ test("p r s c in the open workflow view send its run controls and d dismisses th
     const keys = APP.slice(APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS"), APP.indexOf("});", APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS")));
     for (const [key, command] of [["p", "WORKFLOW_VIEW_PAUSE_RUN"], ["r", "WORKFLOW_VIEW_RESUME_RUN"], ["s", "WORKFLOW_VIEW_STOP_RUN"],
         ["c", "WORKFLOW_VIEW_CANCEL_RUN"], ["d", "WORKFLOW_VIEW_DISMISS_NOTICE"], ["v", "WORKFLOW_VIEW_EDIT_VARIABLES"],
-        ["V", "WORKFLOW_VIEW_UPDATE_VARIABLES"], ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["P", "WORKFLOW_VIEW_PUBLICATION_REVIEW"],
+        ["V", "WORKFLOW_VIEW_UPDATE_VARIABLES"], ["e", "WORKFLOW_VIEW_EDIT_DRAFT"], ["S", "WORKFLOW_VIEW_PUBLICATION_REVIEW"],
         ["t", "WORKFLOW_VIEW_TEST_REVIEW"], ["a", "WORKFLOW_VIEW_TEST_ANSWER"], ["o", "WORKFLOW_VIEW_OLDER_HISTORY"], ["f", "WORKFLOW_VIEW_WHOLE_VALUE"],
         ["i", "WORKFLOW_VIEW_INSPECT_VARIABLES"], ["C", "WORKFLOW_VIEW_COMPARE_VERSIONS"]]) {
         assert.match(keys, new RegExp(`${key}: UI_COMMANDS\\.${command},`), key);

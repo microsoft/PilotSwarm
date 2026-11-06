@@ -1,8 +1,8 @@
-// The definition's publication in the TUI's workflow view (design 04 publish, publish_and_start, start; mocks M01 and
-// M03; R17, R18, R26, R28; INACTIVE: only where the portal's publication panel offers a person a command): P opens a
-// review of exactly the revision and definition hash the view shows (the portal's workflowV2DefinitionControls): publish
-// only (ctrl-p), publish and start its live run (ctrl-r), or start a published definition's live run (ctrl-r), with the
-// run's inputs and initial variables as JSON objects. Each asks first in a confirm dialog that names the revision, the
+// The definition's Start in the TUI's workflow view (design 04 publish_and_start, start; spec draft 3: no publish-only
+// step on any surface, review UI-4; INACTIVE: only where the portal offers a person a command): S opens a Start form of
+// exactly the revision and definition hash the view shows (the portal's workflowV2DefinitionControls): ctrl-r starts it
+// (a draft's revision is published and started in one step, a published one is started), with the run's inputs and
+// initial variables as JSON objects; publishing alone is refused in words. Each asks first in a confirm dialog that names the revision, the
 // hash and the inputs, and returns to the review; confirmed, the command is sent as the portal sends it (the shared
 // controller's sendWorkflowRunCommand). Nothing is sent for a review whose workflow changed meanwhile (ctrl-l reviews it
 // again), for an action not offered or not available now, or for inputs that are not JSON objects; a refusal and an
@@ -113,9 +113,9 @@ async function reviewing(initial, answers = []) {
     return h;
 }
 
-test("the view says what P reviews; the review shows exactly the revision and hash; ctrl-p asks first, then publishes only that revision", async () => {
-    const h = await opened(workflow(), [accepted("publish", 2)]);
-    assert.ok(details(h.store).includes("Publication: draft revision 2 — P reviews: publish only or publish and start"), details(h.store).join("\n"));
+test("the view says what S starts; the Start form shows exactly the revision and hash; publishing alone is refused and nothing is sent", async () => {
+    const h = await opened(workflow());
+    assert.ok(details(h.store).includes("Start: revision 2, not started yet — S starts it"), details(h.store).join("\n"));
     const view = modalOf(h.store);
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
@@ -123,45 +123,25 @@ test("the view says what P reviews; the review shows exactly the revision and ha
     assert.equal(opener.type, "workflowPublish");
     assert.deepEqual(opener.returnModal, view);
     assert.deepEqual(opener.pin, { state: "draft", revision: 2, definitionHash: hashOf(2) });
-    assert.equal(statusOf(h.store), "Publish review — ctrl-p publish only · ctrl-r publish and start (each asks first) · Esc back");
+    assert.equal(statusOf(h.store), "Start — ctrl-r start (asks first) · Tab inputs/variables · Esc back");
     const shown = review(h.store);
-    assert.equal(shown.title, "Publish review · revision 2");
+    assert.equal(shown.title, "Start · revision 2");
     assert.deepEqual(texts(shown.lines).slice(0, 5), ["Definition: watch-v2 1.0.0", "Revision: 2", `Definition hash: ${hashOf(2)}`, "Validity: Valid",
-        "Live effects: Only when its live run starts"]);
-    // The review's evidence rows, as the portal's (mock M03): no named agent here, and no test of this revision (none is required).
-    assert.deepEqual(texts(shown.lines).slice(5, 7), ["Agents: None: no step runs a named agent", "Tests of this revision: None run. Publishing does not require a test"]);
-    assert.ok(joined(shown.lines).includes("Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. "
-        + "Publication starts no run, approves no repository write and grants no tool."));
-    assert.ok(texts(shown.lines).includes("ctrl-p Publish only"));
-    assert.ok(texts(shown.lines).includes("ctrl-r Publish and start"));
+        "Effects: Real, once it starts"]);
+    // The evidence rows: no named agent here; no test row (test mode is hidden, and no test run is read).
+    assert.deepEqual(texts(shown.lines).slice(5, 6), ["Agents: None: no step runs a named agent"]);
+    assert.ok(!texts(shown.lines).some(line => line.startsWith("Tests of this revision")));
+    assert.ok(joined(shown.lines).includes("Start runs this exact revision with real effects; the revision no longer changes after it starts."));
+    assert.ok(texts(shown.lines).includes("ctrl-r Start"));
+    assert.doesNotMatch(joined(shown.lines), /publish/i, "no publish words");
     assert.deepEqual([shown.fields, shown.field, shown.inputs, shown.vars, shown.changed], [true, "inputs", "{}", "", false]);
-    assert.equal(shown.hint, "ctrl-p publish only · ctrl-r publish and start · Tab inputs/variables · Esc back — each asks first");
+    assert.equal(shown.hint, "ctrl-r start · Tab inputs/variables · Esc back — each asks first");
 
+    // Publishing alone is not offered (the old ctrl-p): refused in words, the form stays, nothing is sent.
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
-    let confirm = modalOf(h.store);
-    assert.equal(confirm.type, "confirm");
-    assert.equal(confirm.title, "Publish Revision 2");
-    assert.equal(confirm.confirmLabel, "Publish");
-    assert.equal(confirm.message, `Publish revision 2 of watch-v2 1.0.0 (definition hash ${hashOf(2).slice(0, 12)}…)? It no longer changes afterwards, `
-        + "and no run starts. Publication approves no repository write and grants no tool.");
-    assert.deepEqual(confirm.workflowRunCommand, { sessionId: "wf", operation: "publish", runId: null, expectedRevision: 2, definitionHash: hashOf(2) });
-    assert.equal(confirm.returnModal.type, "workflowPublish");
-    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
-    assert.equal(modalOf(h.store).type, "workflowPublish", "back to the review");
-    assert.equal(statusOf(h.store), "Publish was not sent");
+    assert.equal(statusOf(h.store), "Start publishes this revision and starts it in one step; publishing alone is not offered.");
+    assert.equal(modalOf(h.store).type, "workflowPublish");
     assert.deepEqual(h.sent(), []);
-
-    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
-    confirm = modalOf(h.store);
-    assert.equal(confirm.type, "confirm");
-    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
-    const [first] = h.sent();
-    assert.match(first.operation_id, /^ui-publish-./);
-    assert.deepEqual(without(first, "operation_id"), { operation: "publish", expected_revision: 2, definition_hash: hashOf(2) });
-    assert.equal(statusOf(h.store), "Published revision 2. It no longer changes; its live run starts only when someone starts it.");
-    assert.deepEqual(modalOf(h.store), view, "accepted: back to the workflow view");
-    await settle();
-    assert.ok(details(h.store).includes("Publication: published revision 2, no live run yet — P reviews: start live run"), details(h.store).join("\n"));
 });
 
 test("ctrl-r publishes and starts the live run with the typed inputs and initial variables, after a confirm that names them", async () => {
@@ -176,10 +156,10 @@ test("ctrl-r publishes and starts the live run with the typed inputs and initial
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
     const confirm = modalOf(h.store);
-    assert.equal(confirm.title, "Publish and Start Revision 2");
-    assert.equal(confirm.confirmLabel, "Publish and Start");
-    assert.equal(confirm.message, `Publish revision 2 of watch-v2 1.0.0 (definition hash ${hashOf(2).slice(0, 12)}…) and start its live run with inputs `
-        + '{"repo":"pilotswarm","limit":3} and initial variables {"note":"first"}? It no longer changes afterwards, and the live run\'s effects are real.');
+    assert.equal(confirm.title, "Start Revision 2");
+    assert.equal(confirm.confirmLabel, "Start");
+    assert.equal(confirm.message, `Start revision 2 of watch-v2 1.0.0 (definition hash ${hashOf(2).slice(0, 12)}…) with inputs `
+        + '{"repo":"pilotswarm","limit":3} and initial variables {"note":"first"}? This revision no longer changes after it starts, and its effects are real.');
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     const [first] = h.sent();
     assert.match(first.operation_id, /^ui-publish_and_start-./);
@@ -188,7 +168,7 @@ test("ctrl-r publishes and starts the live run with the typed inputs and initial
     assert.equal(statusOf(h.store), "Published revision 2 and started its live run run-li…0001.");
     assert.deepEqual(modalOf(h.store), view);
     await settle();
-    assert.ok(!details(h.store).some(line => line.startsWith("Publication:")), "a workflow with its live run offers no more publication");
+    assert.ok(!details(h.store).some(line => line.startsWith("Start:")), "a workflow with its live run offers no more Start");
 });
 
 test("what is typed is checked first: the inputs and initial variables must be JSON objects; nothing is sent and the text stays", async () => {
@@ -213,10 +193,8 @@ test("what is typed is checked first: the inputs and initial variables must be J
     assert.equal(errorOf(), 'Initial variables must be a JSON object, for example {"repo": "name"}.');
     assert.equal(modalOf(h.store).type, "workflowPublish", "no confirm");
 
-    // Publish only takes no inputs: they are not checked, and the confirm still asks first.
+    // Publishing alone is refused; what was typed stays.
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
-    assert.equal(modalOf(h.store).type, "confirm");
-    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     const kept = modalOf(h.store);
     assert.deepEqual([kept.type, kept.inputs, kept.vars], ["workflowPublish", "", "3"]);
 
@@ -234,30 +212,30 @@ test("what is typed is checked first: the inputs and initial variables must be J
 
 test("an action not available now is not sent and the review says why: compile errors, a viewer the portal refuses, another command being sent", async () => {
     const broken = await opened(workflow({ valid: false, diagnostics: [{ severity: "error", code: "STATE_UNKNOWN", path: "states.poll", message: "No state." }] }));
-    assert.ok(details(broken.store).includes("Publication: draft revision 2 (it has errors) — P reviews: publish only or publish and start"));
+    assert.ok(details(broken.store).includes("Start: revision 2 (it has errors), not started yet — S starts it"));
     await broken.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
     assert.equal(modalOf(broken.store).type, "workflowPublish", "offered, so the review says why its actions are not available");
     let shown = review(broken.store);
-    assert.deepEqual(shown.lines.find(line => line.text.startsWith("Validity")), { text: "Validity: 1 error: it cannot be published", color: "red" });
-    const why = "Revision 2 has 1 error and cannot be published; fix them first.";
-    assert.ok(texts(shown.lines).includes(`ctrl-p Publish only — not now: ${why}`));
-    await broken.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
-    assert.equal(statusOf(broken.store), `Publish only is not available now. ${why}`);
+    assert.deepEqual(shown.lines.find(line => line.text.startsWith("Validity")), { text: "Validity: 1 error: it cannot start", color: "red" });
+    const why = shown.lines.find(line => line.text.startsWith("ctrl-r Start — not now: ")).text.slice("ctrl-r Start — not now: ".length);
+    assert.match(why, /^Revision 2 has 1 error/);
+    await broken.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
+    assert.equal(statusOf(broken.store), `Start is not available now. ${why}`);
     assert.equal(modalOf(broken.store).type, "workflowPublish");
 
     const viewer = { allowed: false, reason: "You may read this workflow but not command it." };
     const denied = await reviewing(workflow({ viewer }));
     await denied.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
-    assert.equal(statusOf(denied.store), "Publish and start is not available now. You may read this workflow but not command it.");
-    assert.equal(modalOf(denied.store).error, "Publish and start is not available now. You may read this workflow but not command it.");
+    assert.equal(statusOf(denied.store), "Start is not available now. You may read this workflow but not command it.");
+    assert.equal(modalOf(denied.store).error, "Start is not available now. You may read this workflow but not command it.");
 
     const busy = await reviewing(workflow());
     busy.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { runCommand: { operation: "pause", runId: "run-x", operationId: "op-1", args: null,
         phase: "pending", message: null, code: null } } });
     shown = review(busy.store);
     assert.equal(shown.busy, true);
-    await busy.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
-    assert.equal(statusOf(busy.store), "Publish only is not available now. Another command for this workflow is being sent.");
+    await busy.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
+    assert.equal(statusOf(busy.store), "Start is not available now. Another command for this workflow is being sent.");
     for (const h of [broken, denied, busy]) assert.deepEqual(h.sent(), []);
 });
 
@@ -266,8 +244,8 @@ test("the review is not offered in an agent state's subtree, for a workflow with
         const h = await opened(initial);
         await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_PUBLICATION_REVIEW);
         assert.equal(modalOf(h.store).type, "workflowView");
-        assert.equal(statusOf(h.store), `Publication cannot be reviewed here. ${reason}`);
-        assert.ok(!details(h.store).some(line => line.startsWith("Publication:")), reason);
+        assert.equal(statusOf(h.store), `Nothing can be started here. ${reason}`);
+        assert.ok(!details(h.store).some(line => line.startsWith("Start:")), reason);
         assert.deepEqual(h.sent(), []);
     };
     await refusedWith(workflow({ operations: ["pause", "stop", "cancel"],
@@ -307,14 +285,14 @@ test("a stale revision is refused and read again: the review says it changed and
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RELOAD);
     assert.equal(statusOf(h.store), "Reviewing revision 3 as it is now");
     shown = review(h.store);
-    assert.equal(shown.title, "Publish review · revision 3");
+    assert.equal(shown.title, "Start · revision 3");
     assert.ok(texts(shown.lines).includes(`Definition hash: ${hashOf(3)}`));
     assert.equal(shown.inputs, '{"repo": "a"}');
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RELOAD);
     assert.equal(statusOf(h.store), "This review already shows the workflow as it is now");
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
-    assert.equal(modalOf(h.store).title, "Publish and Start Revision 3");
+    assert.equal(modalOf(h.store).title, "Start Revision 3");
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     const [first, second] = h.sent();
     assert.deepEqual(without(second, "operation_id"), { operation: "publish_and_start", expected_revision: 3, definition_hash: hashOf(3), inputs: { repo: "a" } });
@@ -329,30 +307,28 @@ test("a draft published elsewhere while the review is open: nothing is sent for 
     const view = modalOf(h.store).returnModal;
     h.serve(workflow({ state: "published" }));
     await h.controller.ensureWorkflowReadModel("wf", { force: true });
-    const change = "The workflow was published meanwhile (revision 2); this review is of draft revision 2, so nothing is sent for it. "
-        + "ctrl-l reviews the workflow as it is now.";
+    const change = "Someone else made revision 2 final meanwhile, so nothing is sent for this form. ctrl-l shows the workflow as it is now.";
     assert.ok(joined(review(h.store).lines).includes(change));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
     assert.equal(statusOf(h.store), change);
     assert.deepEqual(h.sent(), []);
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RELOAD);
-    assert.equal(statusOf(h.store), "Reviewing published revision 2 as it is now");
+    assert.equal(statusOf(h.store), "Reviewing revision 2 as it is now");
     const shown = review(h.store);
-    assert.equal(shown.title, "Start the live run · published revision 2");
-    assert.deepEqual(texts(shown.lines).slice(0, 4), ["Definition: watch-v2 1.0.0", "Published revision: 2", `Definition hash: ${hashOf(2)}`,
-        "Live effects: Only when its live run starts"]);
-    assert.ok(joined(shown.lines).includes("Starting runs the published revision with real effects. A workflow has one live run."));
-    assert.ok(texts(shown.lines).includes("ctrl-r Start live run"));
-    assert.equal(shown.hint, "ctrl-r start live run · Tab inputs/variables · Esc back — each asks first");
+    assert.equal(shown.title, "Start · revision 2");
+    assert.deepEqual(texts(shown.lines).slice(0, 4), ["Definition: watch-v2 1.0.0", "Revision: 2", `Definition hash: ${hashOf(2)}`,
+        "Effects: Real, once it starts"]);
+    assert.ok(joined(shown.lines).includes("Start runs this revision with real effects."));
+    assert.ok(texts(shown.lines).includes("ctrl-r Start"));
+    assert.equal(shown.hint, "ctrl-r start · Tab inputs/variables · Esc back — each asks first");
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_PUBLISH);
-    assert.equal(statusOf(h.store), "Publish only is not offered here.");
+    assert.equal(statusOf(h.store), "Start publishes this revision and starts it in one step; publishing alone is not offered.");
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
     const confirm = modalOf(h.store);
-    assert.deepEqual([confirm.title, confirm.confirmLabel], ["Start the Live Run", "Start"]);
-    assert.equal(confirm.message, `Start the live run of published revision 2 of watch-v2 1.0.0 (definition hash ${hashOf(2).slice(0, 12)}…) with inputs {}? `
-        + "Its effects are real, and a workflow has one live run.");
+    assert.deepEqual([confirm.title, confirm.confirmLabel], ["Start Revision 2", "Start"]);
+    assert.equal(confirm.message, `Start revision 2 of watch-v2 1.0.0 (definition hash ${hashOf(2).slice(0, 12)}…) with inputs {}? Its effects are real.`);
     await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     const [first] = h.sent();
     assert.match(first.operation_id, /^ui-start-./);
@@ -388,9 +364,9 @@ test("a refusal keeps what was typed, with the schema's problems; while a comman
     let shown = review(h.store);
     assert.equal(modalOf(h.store).type, "workflowPublish", "the review shows the command being sent");
     assert.equal(shown.busy, true);
-    assert.ok(texts(shown.lines).includes("ctrl-r Publishing…"));
+    assert.ok(texts(shown.lines).includes("ctrl-r Starting…"));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_PUBLICATION_RUN);
-    assert.equal(statusOf(h.store), "Publish and start is not available now. This command is being sent.");
+    assert.equal(statusOf(h.store), "Start is not available now. This command is being sent.");
     assert.equal(h.sent().length, 2);
 
     lose();
@@ -418,7 +394,7 @@ test("Esc closes the review back to the view; nothing is sent", async () => {
     type(h, "x");
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.deepEqual(modalOf(h.store), view);
-    assert.equal(statusOf(h.store), "Closed the publication review");
+    assert.equal(statusOf(h.store), "Closed the Start form");
     assert.deepEqual(h.sent(), []);
 });
 
@@ -431,10 +407,10 @@ test("the review's pin, its change and its confirm text", () => {
     assert.deepEqual(workflowPublicationPin(publishedModel), { state: "published", revision: 4, definitionHash: hashOf(4) });
     assert.equal(workflowPublicationChange(workflowPublicationPin(draftModel), draftModel), null);
     assert.equal(workflowPublicationChange(workflowPublicationPin(draftModel), null),
-        "The workflow can no longer be published or started here, so nothing is sent. Esc goes back.");
+        "The workflow can no longer be started here, so nothing is sent. Esc goes back.");
     assert.match(workflowPublicationChange(null, draftModel), /^The workflow now shows revision 4 /);
     const big = workflowPublicationConfirm("publish_and_start", workflowPublicationPin(draftModel), draftModel, { inputs: { text: "x".repeat(400) } });
-    const quoted = big.message.slice(big.message.indexOf("with inputs ") + "with inputs ".length, big.message.indexOf("? It no longer"));
+    const quoted = big.message.slice(big.message.indexOf("with inputs ") + "with inputs ".length, big.message.indexOf("? This revision"));
     assert.equal(quoted.length, 160);
     assert.ok(quoted.endsWith("…"));
     assert.ok(!big.message.includes("initial variables"), "no variables, none named");

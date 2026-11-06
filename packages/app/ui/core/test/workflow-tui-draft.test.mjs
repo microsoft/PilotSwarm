@@ -116,7 +116,7 @@ async function editing(initial, answers = []) {
 
 test("the view names the draft's revision; e opens the editor on its YAML, and ctrl-o saves the edit as one replace_definition at the revision it started from", async () => {
     const h = await opened(draft(), [saved(2)]);
-    assert.ok(details(h.store).includes("Draft · revision 1 · version 1.0.0 — e edits its YAML"), details(h.store).join("\n"));
+    assert.ok(details(h.store).includes("Definition · revision 1 · version 1.0.0 — e edits its YAML"), details(h.store).join("\n"));
     const view = modalOf(h.store);
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT);
@@ -124,7 +124,7 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
     assert.equal(opener.type, "workflowDraft");
     assert.deepEqual(opener.returnModal, view);
     let shown = editor(h.store);
-    assert.equal(shown.title, "Draft · editing revision 1 · version 1.0.0 (it cannot change) · line 1, column 1");
+    assert.equal(shown.title, "Definition · editing revision 1 · version 1.0.0 (it cannot change) · line 1, column 1");
     assert.equal(shown.lines.length, 6);
     assert.equal(rowText(shown.lines[0]), "1 apiVersion: pilotswarm.dev/v2-draft");
     assert.deepEqual(shown.lines[0][1], { text: "", color: "white" });
@@ -153,7 +153,7 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
     const edited = `${YAML}# !a note\n`;
     assert.deepEqual(editOf(h.store), { base: { revision: 1, yaml: YAML }, text: edited, cursor: edited.length });
     shown = editor(h.store);
-    assert.equal(shown.title, "Draft · editing revision 1 · version 1.0.0 (it cannot change) · line 7, column 1");
+    assert.equal(shown.title, "Definition · editing revision 1 · version 1.0.0 (it cannot change) · line 7, column 1");
     assert.equal(rowText(shown.lines[5]), "6 # !a note");
     assert.equal(rowText(shown.lines[6]), "7  ", "the cursor after the last line is a blank cell");
     assert.ok(joined(shown.statusLines).includes("Unsaved edits. ctrl-o saves them as a new revision after revision 1."));
@@ -169,7 +169,7 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
     assert.equal(statusOf(h.store), "Saved the draft as revision 2.");
     assert.equal(modalOf(h.store).type, "workflowDraft", "the editor stays open");
     shown = editor(h.store);
-    assert.match(shown.title, /^Draft · editing revision 2 · /);
+    assert.match(shown.title, /^Definition · editing revision 2 · /);
     assert.ok(joined(shown.statusLines).includes("No unsaved edits."));
     assert.ok(joined(shown.statusLines).includes("Saved as revision 2; the view has not read it yet."));
     assert.equal(rowText(shown.lines[5]), "6 # !a note");
@@ -180,7 +180,7 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
     release();
     await settle();
     shown = editor(h.store);
-    assert.match(shown.title, /^Draft · editing revision 2 · version 1\.0\.0 \(it cannot change\) · line 7, column 2$/);
+    assert.match(shown.title, /^Definition · editing revision 2 · version 1\.0\.0 \(it cannot change\) · line 7, column 2$/);
     assert.ok(!joined(shown.statusLines).includes("has not read it yet"));
     assert.deepEqual(editOf(h.store).base, { revision: 2, yaml: edited });
     h.controller.editWorkflowDraft({ type: "backspace" });
@@ -189,7 +189,7 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.deepEqual(modalOf(h.store), view, "back to the workflow view");
     assert.equal(statusOf(h.store), "Closed the draft editor");
-    assert.ok(details(h.store).includes("Draft · revision 2 · version 1.0.0 — e edits its YAML · C compares versions"), details(h.store).join("\n"));
+    assert.ok(details(h.store).includes("Definition · revision 2 · version 1.0.0 — e edits its YAML · C compares versions"), details(h.store).join("\n"));
     assert.equal(h.sent().length, 1);
 });
 
@@ -236,7 +236,7 @@ test("a saved revision with compile errors keeps what was typed and lists its di
     assert.equal(statusOf(h.store), "Saved the draft as revision 2. It has 1 error, so it cannot be published until they are fixed.");
     await settle();
     const shown = editor(h.store);
-    assert.match(shown.title, /^Draft · editing revision 2 · /);
+    assert.match(shown.title, /^Definition · editing revision 2 · /);
     assert.equal(editOf(h.store).text, `${YAML}# broken on purpose\n`);
     const status = shown.statusLines.map(line => line.text);
     assert.deepEqual(status, [
@@ -272,7 +272,7 @@ test("a draft someone else saved meanwhile is refused, never overwritten: the ed
     assert.equal(h.sent()[0].expected_revision, 1);
     assert.equal(statusOf(h.store), "Saving the draft was refused: The draft is at revision 2, not 1.");
     let shown = editor(h.store);
-    assert.match(shown.title, /^Draft · editing revision 1 · /, "the edit still starts from revision 1");
+    assert.match(shown.title, /^Definition · editing revision 1 · /, "the edit still starts from revision 1");
     const conflict = "The draft is now at revision 2; this edit started from revision 1. Load revision 2, or keep your edits on it, before saving.";
     assert.ok(joined(shown.statusLines).includes(conflict));
     assert.ok(joined(shown.statusLines).includes("! Saving the draft was refused: The draft is at revision 2, not 1."));
@@ -299,7 +299,7 @@ test("a draft someone else saved meanwhile is refused, never overwritten: the ed
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_KEEP);
     assert.equal(statusOf(h.store), "Your edits now apply to revision 2; ctrl-o saves them as a new revision after it");
     shown = editor(h.store);
-    assert.match(shown.title, /^Draft · editing revision 2 · /);
+    assert.match(shown.title, /^Definition · editing revision 2 · /);
     assert.ok(joined(shown.statusLines).includes("Unsaved edits. ctrl-o saves them as a new revision after revision 2."));
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_KEEP);
     assert.equal(statusOf(h.store), "There is no newer revision to move your edits onto");
@@ -311,7 +311,7 @@ test("a draft someone else saved meanwhile is refused, never overwritten: the ed
     assert.notEqual(second.operation_id, first.operation_id);
     assert.equal(statusOf(h.store), "Saved the draft as revision 3.");
     await settle();
-    assert.match(editor(h.store).title, /^Draft · editing revision 3 · /);
+    assert.match(editor(h.store).title, /^Definition · editing revision 3 · /);
     assert.deepEqual(editor(h.store).statusLines.map(line => line.text), ["No unsaved edits."]);
 });
 
@@ -324,7 +324,7 @@ test("in a conflict, ctrl-r loads the newer revision after asking; without edits
     assert.deepEqual(editOf(h.store).base, { revision: 2, yaml: THEIRS });
     assert.equal(editOf(h.store).text, THEIRS);
     const shown = editor(h.store);
-    assert.match(shown.title, /^Draft · editing revision 2 · /);
+    assert.match(shown.title, /^Definition · editing revision 2 · /);
     assert.equal(shown.changed, false);
     assert.equal(h.sent().length, 1);
 
@@ -333,7 +333,7 @@ test("in a conflict, ctrl-r loads the newer revision after asking; without edits
     quiet.serve(draft({ revision: 2, yaml: THEIRS }));
     await quiet.controller.ensureWorkflowReadModel("wf", { force: true });
     const fresh = editor(quiet.store);
-    assert.match(fresh.title, /^Draft · editing revision 2 · /);
+    assert.match(fresh.title, /^Definition · editing revision 2 · /);
     assert.equal(rowText(fresh.lines[5]), "6 # someone else's line");
     assert.deepEqual(fresh.statusLines.map(line => line.text), ["No unsaved edits."]);
 });
@@ -345,7 +345,7 @@ test("ctrl-r discards an edit after asking, back to the revision it started from
     type(h, "# scratch\n");
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_DISCARD);
     let confirm = modalOf(h.store);
-    assert.deepEqual([confirm.type, confirm.title, confirm.confirmLabel, confirm.action], ["confirm", "Discard Draft Edits", "Discard", "discardWorkflowDraftEdits"]);
+    assert.deepEqual([confirm.type, confirm.title, confirm.confirmLabel, confirm.action], ["confirm", "Discard Edits", "Discard", "discardWorkflowDraftEdits"]);
     assert.deepEqual(confirm.returnModal, editorModal);
     await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
     assert.equal(statusOf(h.store), "Your edits are kept");
@@ -414,7 +414,7 @@ test("the editor is not offered for a published definition, in an agent state's 
         all.push(h);
         await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT);
         assert.equal(modalOf(h.store).type, "workflowView");
-        assert.equal(statusOf(h.store), `The draft cannot be edited here. ${reason}`);
+        assert.equal(statusOf(h.store), `The definition cannot be edited here. ${reason}`);
         assert.ok(!details(h.store).some(line => line.startsWith("Draft ·")), reason);
         return h;
     };
@@ -432,9 +432,9 @@ test("the editor is not offered for a published definition, in an agent state's 
     gone.serve(draft({ state: "published" }));
     await gone.controller.ensureWorkflowReadModel("wf", { force: true });
     const shown = editor(gone.store);
-    assert.equal(shown.title, "Draft");
+    assert.equal(shown.title, "Definition");
     assert.equal(joined(shown.statusLines),
-        "The draft cannot be edited here. The definition is published; it no longer changes. A new version needs a new workflow.");
+        "The definition cannot be edited here. The definition is published; it no longer changes. A new version needs a new workflow.");
     type(gone, "x");
     await gone.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_SAVE);
     assert.deepEqual(gone.sent(), []);
@@ -499,7 +499,7 @@ test("q4: C compares two versions of the draft as formatted YAML in the details;
         return { workflowId: "wf-1", definitionRevision: { revision, definitionHash: `hash-${revision}`, diagnostics: [], current: revision === 3,
             published: false, ...revisions[revision] } };
     };
-    assert.ok(details(h.store).includes("Draft · revision 3 · version 1.0.0 — e edits its YAML · C compares versions"), details(h.store).join("\n"));
+    assert.ok(details(h.store).includes("Definition · revision 3 · version 1.0.0 — e edits its YAML · C compares versions"), details(h.store).join("\n"));
 
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_COMPARE_VERSIONS);
     assert.deepEqual(asked, [2, 3]);

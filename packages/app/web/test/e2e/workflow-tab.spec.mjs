@@ -1354,8 +1354,8 @@ test("v2 commands: a failed access check says it could not check, with Retry, an
 // replace_definition (same operation id, expected_revision and YAML); the replayed receipt and the new read model
 // (revision 2) settle the editor. Negative control: an unchanged draft cannot be saved (button disabled, reason title).
 // Source: workflow-workspace.js the YAML tab (batch 6, r-2) / workflow-v2-panels.js WorkflowV2DraftEditor
-// (section aria-label "Draft editor" data-revision; textarea aria-label "Workflow YAML"; button
-// [data-operation=replace_definition] "Save draft"/"Saving…", title = reason; status "Unsaved changes");
+// (section aria-label "YAML editor" data-revision; textarea aria-label "Workflow YAML"; button
+// [data-operation=replace_definition] "Save"/"Saving…", title = reason; status "Unsaved changes");
 // workflow-v2-commands.js workflowV2DraftEditor (needs definition.state "draft", personCommands.draft
 // {revision, yaml, definitionHash} and operations incl. replace_definition), workflowV2DraftEdit ("Nothing changed."),
 // workflowV2RunCommandWire (definition command: operation, operation_id, expected_revision, yaml), NOTICE_LABELS
@@ -1390,7 +1390,7 @@ test("v2 commands: a draft save whose answer is lost keeps the edit and Retry se
     await expect(yamlTab).toHaveAttribute("aria-pressed", "false");
     await yamlTab.click();
     await expect(yamlTab).toHaveAttribute("aria-pressed", "true");
-    const editor = main.getByRole("region", { name: "Draft editor", exact: true });
+    const editor = main.getByRole("region", { name: "YAML editor", exact: true });
     await expect(editor).toHaveAttribute("data-revision", "1");
     const save = editor.locator('[data-operation="replace_definition"]');
     // Negative control: nothing changed -> cannot save, and the title says why.
@@ -1693,7 +1693,7 @@ test("r-2: a definition is edited in the Definition view's YAML, and an unsaved 
         const tab = workflowTab(page);
         await viewSwitch(tab, "Definition").click();
         await tab.getByRole("button", { name: "YAML", exact: true }).click();
-        return tab.getByRole("region", { name: "Draft editor", exact: true });
+        return tab.getByRole("region", { name: "YAML editor", exact: true });
     };
     const editor = await openYaml();
     const yaml = editor.getByRole("textbox", { name: "Workflow YAML", exact: true });
@@ -1711,7 +1711,7 @@ test("r-2: a definition is edited in the Definition view's YAML, and an unsaved 
     const main = workflowTab(page);
     await main.getByRole("button", { name: "YAML", exact: true }).click();
     await main.getByRole("button", { name: "YAML", exact: true }).click();
-    await expect(main.getByRole("region", { name: "Draft editor", exact: true }).getByRole("textbox", { name: "Workflow YAML", exact: true })).toHaveValue(DRAFT_YAML_2);
+    await expect(main.getByRole("region", { name: "YAML editor", exact: true }).getByRole("textbox", { name: "Workflow YAML", exact: true })).toHaveValue(DRAFT_YAML_2);
     await viewSwitch(main, "Workflows").click();
     await openAgent(page);
     await openSession(page, "watch-v2 #1");
@@ -1749,7 +1749,7 @@ test("r-2: a revision's YAML is read-only where it cannot change, and a person w
     await expect(box).toHaveValue(PUBLISHED_YAML);
     await expect(box).toHaveAttribute("readonly", "");
     expect(reads).toContain("1");
-    await expect(workflowTab(page).getByRole("region", { name: "Draft editor", exact: true })).toHaveCount(0);
+    await expect(workflowTab(page).getByRole("region", { name: "YAML editor", exact: true })).toHaveCount(0);
 
     allowed = false;
     await page.reload();
@@ -2298,7 +2298,7 @@ test("M-13: switching A -> B -> A at equal revisions never shows or saves one wo
         return route.fallback();
     });
     const main = workflowTab(page);
-    const editor = main.getByRole("region", { name: "Draft editor", exact: true });
+    const editor = main.getByRole("region", { name: "YAML editor", exact: true });
     const box = editor.getByRole("textbox", { name: "Workflow YAML", exact: true });
     // D5: each definition's YAML is in its Definition view.
     const yamlTab = () => ({ click: async () => {
