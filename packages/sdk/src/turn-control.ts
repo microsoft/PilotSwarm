@@ -48,6 +48,12 @@ export interface TurnControlBinding {
     /** The reason of a Stop that arrived before the initial send, if any. ManagedSession then does not send. */
     heldStop(): string | null;
     /**
+     * Review RT-D3: the error of a control admission that failed (the turn-to-visit fence could not read a Stop's visit),
+     * kept whether or not a run was attached. ManagedSession checks it beside heldStop() before the initial send and
+     * before every corrective or reminder send, and fails the turn with it instead of sending.
+     */
+    heldFailure?(): Error | null;
+    /**
      * Whether controls wait while the send gate is not open (a steer that arrived after the run settled): pending work
      * of the turn. ManagedSession then sends no workflow step reminder (owner decision Q2).
      */
@@ -91,7 +97,9 @@ export interface LiveTurnControlOptions {
  *
  * Review RT-D1: admission (a continued chat's turn-to-visit fence) runs on its own chain, in position order, never behind
  * a steer's send: a Stop is applied as soon as it is admitted. It can still wait for an earlier batch's admission (its
- * request-id read, bounded by the CMS retry), never for a send.
+ * request-id read, bounded by the CMS retry), never for a send. Review RT-D3: an admission that fails is kept
+ * (heldFailure), fails the attached run, and the batch is not taken: `sent` goes back before it and later controls are
+ * not taken, so turn end and the retry see them open; nothing more is sent.
  */
 export class LiveTurnControl implements TurnControlBinding {
     readonly sessionId: string;
@@ -104,6 +112,8 @@ export class LiveTurnControl implements TurnControlBinding {
     private chain: Promise<void> = Promise.resolve();
     /** Review RT-D1: admissions, in position order, apart from the send chain. */
     private admitChain: Promise<void> = Promise.resolve();
+    /** Review RT-D3: the admission that failed; the turn fails with it. */
+    private admissionFailure: Error | null = null;
     private readonly queue: TurnControl[] = [];
     private port: TurnControlSessionPort | null = null;
     private runEnded = false;
@@ -131,7 +141,7 @@ export class LiveTurnControl implements TurnControlBinding {
 
     /** Take new controls; they are applied one at a time, in position order. */
     enqueue(controls: TurnControl[]): Promise<void> {
-        if (this.retired) return Promise.resolve();
+        if (this.retired || this.admissionFailure) return Promise.resolve();
         const fresh: TurnControl[] = [];
         for (const control of [...controls].sort((a, b) => a.seq - b.seq)) {
             if (control.seq <= this.sent) continue;              // a duplicate wake-up
@@ -146,20 +156,38 @@ export class LiveTurnControl implements TurnControlBinding {
         // RT-D1: admitted in order with earlier admissions (admitChain, never the send chain), so the queue keeps position
         // order and a Stop is applied once admitted, also while a steer's send has not returned.
         let taken: Promise<void> = Promise.resolve();
-        const step = this.admitChain
-            .then(async () => {
-                if (this.retired) return;
-                const kept = await admit(fresh);
-                if (this.retired) return;
-                this.queue.push(...kept.sort((a, b) => a.seq - b.seq));
-                taken = this.takeQueued();
-            })
-            .catch((err) => {
-                const port = this.port;
-                if (!this.retired && !this.stopping && port) port.failTurn(err);
-            });
+        const step = this.admitChain.then(async () => {
+            if (this.retired || this.admissionFailure) return;
+            let kept: TurnControl[];
+            try {
+                kept = await admit(fresh);
+            } catch (err) {
+                this.admissionFailed(err, fresh[0].seq);
+                return;
+            }
+            if (this.retired || this.admissionFailure) return;
+            this.queue.push(...kept.sort((a, b) => a.seq - b.seq));
+            taken = this.takeQueued();
+        });
         this.admitChain = step;
         return step.then(() => taken);
+    }
+
+    /**
+     * RT-D3: an admission failed. The batch from `first` on is not taken (`sent` goes back before it, and later controls are
+     * not taken), nothing more is sent, and the turn fails: now when a run is attached, else at its first send (heldFailure).
+     */
+    private admissionFailed(err: unknown, first: number): void {
+        if (this.retired) return;
+        this.admissionFailure = err instanceof Error ? err : new Error(String(err));
+        this.sent = Math.min(this.sent, first - 1);
+        this.opts.trace?.(`[turn-control] admission failed session=${this.sessionId} turn=${this.turn} from seq=${first}: ${this.admissionFailure.message}`);
+        const port = this.port;
+        if (!this.stopping && port) port.failTurn(this.admissionFailure);
+    }
+
+    heldFailure(): Error | null {
+        return this.retired ? null : this.admissionFailure;
     }
 
     /** Apply a queued Stop at once while the gate is open, else drain what is queued. */
@@ -223,7 +251,7 @@ export class LiveTurnControl implements TurnControlBinding {
     }
 
     private async drain(): Promise<void> {
-        while (this.queue.length > 0 && !this.stopping) {
+        while (this.queue.length > 0 && !this.stopping && !this.admissionFailure) {
             // Pending: before a send (P21). Closed: settling, or the run ended;
             // held until a corrective run opens the gate again, else turn end
             // labels them.

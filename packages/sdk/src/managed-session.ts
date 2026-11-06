@@ -4207,6 +4207,13 @@ export class ManagedSession {
         let guardExpired = false as boolean;
         for (const guard of guards) guard.catch(() => { guardExpired = true; });
 
+        // Review RT-D3 (C5): the error of a control admission that failed (kept by the turn's binding); thrown so the turn
+        // fails as a failed send does, before any prompt is sent.
+        const throwHeldFailure = (): void => {
+            const failure = opts?.turnControl?.heldFailure?.() ?? null;
+            if (failure) throw failure;
+        };
+
         // A corrective model run inside this turn (the tool-call-as-text and
         // required-tool guards). It runs like the first run: turn control holds
         // controls until the corrective prompt is sent, then applies steers and
@@ -4221,6 +4228,8 @@ export class ManagedSession {
             const heldStop = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
             if (heldStop !== null && !this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
             if (this.stopRequest) return false;
+            // Review RT-D3 (C5): a control admission that failed fails the turn; no corrective or reminder prompt is sent.
+            throwHeldFailure();
             // Workflow intake (runTurnV5; review of c1bda7a2, W3): a run that was aborted (the activity's cancellation), or
             // whose activity may no longer send, sends no corrective prompt either. A run neither aborted nor cancelled
             // still corrects. Every other turn is unchanged.
@@ -4265,6 +4274,8 @@ export class ManagedSession {
                 if (!this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
                 return { type: "stopped", reason: heldStop };
             }
+            // Review RT-D3 (C5): a control admission that failed before the run started fails the turn; no model run.
+            throwHeldFailure();
 
             // Workflow intake (runTurnV5; exposure protocol revision 2,
             // section 4): every check that ends this run without a send is
@@ -4290,6 +4301,8 @@ export class ManagedSession {
                         ? { type: "stopped", reason: this.stopRequest.reason }
                         : { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE };
                 }
+                // RT-D3 (C5): an admission that failed while the intake was decided fails the turn before the send.
+                throwHeldFailure();
                 if (admitted.kind === "omit") {
                     initialPrompt = withRequiredTool(intake.promptWithoutIntake);
                     initialDisplay = initialPrompt !== intake.promptWithoutIntake ? intake.promptWithoutIntake : null;

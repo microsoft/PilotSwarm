@@ -1,14 +1,18 @@
 /**
- * Workflow Simplified, delta review of 5d687726 (RT-D1; formal t4b, design note + C1-C5): a continued workflow
+ * Workflow Simplified, delta review of 5d687726 (RT-D1, RT-D3; formal t4b, design note + C1-C5): a continued workflow
  * chat's live turn control admits its controls (the turn-to-visit fence) on its own chain.
  *
  * - RT-D1: a Stop is admitted and applied while an earlier steer's send has not returned: an own-visit Stop and a
  *   person's Stop abort at once; a stale Stop of another visit is dropped by admission and never queued or applied.
  *   Steers still go out in queue order. A Stop can wait for an earlier batch's admission, never for a send (C4).
+ * - RT-D3: an admission that fails is kept whatever the port (heldFailure), fails an attached run, takes nothing from
+ *   the failed batch on (`sent` goes back before it), takes no later control and sends nothing more. ManagedSession
+ *   checks it before the initial send and before every corrective or reminder send (C5): no model send.
  *
- * No live model, database, or duroxide runtime.
+ * A fake Copilot session stands in for the CLI. No live model, database, or duroxide runtime.
  */
 import { describe, it, expect } from "vitest";
+import { ManagedSession } from "../../src/managed-session.js";
 import { LiveTurnControl } from "../../src/turn-control.js";
 
 function deferred() {
@@ -43,12 +47,13 @@ function manualPort() {
  * The fence's admission as session-proxy builds it: keeps a Stop with no visit (a person's) and the turn visit's own;
  * drops another visit's. `ids` maps seq -> visit; `gate` (optional) holds the read until released.
  */
-function fence(visit, ids, { gate = null } = {}) {
+function fence(visit, ids, { gate = null, fail = null } = {}) {
     const calls = [];
     const dropped = [];
     const admit = async (controls) => {
         calls.push(controls.map((c) => c.seq));
         if (gate) await gate.promise;
+        if (fail) throw fail;
         return controls.filter((c) => {
             if (c.kind !== "stop") return true;
             const target = ids[c.seq] ?? null;
@@ -81,6 +86,7 @@ describe("RT-D1: a Stop's admission never waits for a steer's send", () => {
             port.pending.shift()();
             await flush();
             expect(port.sends).toEqual(["slow"]);                   // nothing after the Stop
+            expect(live.heldFailure()).toBeNull();
         });
     }
 
@@ -122,5 +128,120 @@ describe("RT-D1: a Stop's admission never waits for a steer's send", () => {
         gate.resolve();
         await stop;
         expect(aborts).toEqual(["halt"]);
+    });
+});
+
+describe("RT-D3: an admission that fails is kept, fails the turn and takes nothing from its batch on", () => {
+    it("before attach: kept (heldFailure), sent goes back before the batch, later controls are not taken", async () => {
+        const failure = new Error("could not read the Stop's request id");
+        let fail = null;
+        const admit = async (controls) => { if (fail) throw fail; return controls; };
+        const live = newLive(admit);
+        await live.enqueue([control(1, "steer", "folded later")]);
+        expect(live.sent).toBe(1);
+        fail = failure;
+        await live.enqueue([control(4, "stop", "halt"), control(5, "steer", "five")]);
+        expect(live.heldFailure()).toBe(failure);
+        expect(live.sent).toBe(3);                                // before the failed batch (seq 4)
+        await live.enqueue([control(6, "steer", "six")]);
+        expect(live.sent).toBe(3);                                // later controls are not taken
+        expect(live.lookArgs()).toEqual({ sessionId: "chat", turn: 3, after: 3 });
+        // Attached later: nothing is sent; the queued steer of the admitted batch is not sent to a failing turn.
+        const port = manualPort();
+        live.attach(port);
+        live.gateOpened();
+        await flush();
+        expect(port.sends).toEqual([]);
+    });
+
+    it("after attach: the run fails with it, and nothing more is sent", async () => {
+        const failure = new Error("id read failed");
+        let fail = null;
+        const admit = async (controls) => { if (fail) throw fail; return controls; };
+        const live = newLive(admit);
+        const port = manualPort();
+        port.state = "pending";
+        live.attach(port);
+        await live.enqueue([control(1, "steer", "one")]);
+        fail = failure;
+        await live.enqueue([control(2, "stop", "halt")]);
+        expect(port.failures).toEqual([failure]);
+        port.state = "open";
+        live.gateOpened();
+        await flush();
+        expect(port.sends).toEqual([]);
+        expect(live.sent).toBe(1);
+    });
+});
+
+/** A fake Copilot session (as in turn-control-live.test.js): the test drives every event. */
+function createFakeCopilotSession() {
+    const handlers = [];
+    const emit = (type, data = {}) => { for (const h of [...handlers]) if (h.type === null || h.type === type) h.fn({ type, data }); };
+    let n = 0;
+    const fake = {
+        sent: [],
+        abortCalls: 0,
+        registerTools() {},
+        on(a, b) {
+            const h = typeof a === "function" ? { type: null, fn: a } : { type: a, fn: b };
+            handlers.push(h);
+            return () => { const i = handlers.indexOf(h); if (i >= 0) handlers.splice(i, 1); };
+        },
+        async send(msg) { const id = `msg-${++n}`; fake.sent.push({ ...msg, id }); return id; },
+        abort() { fake.abortCalls++; queueMicrotask(() => emit("session.idle")); },
+        async disconnect() {},
+        getMessages() { return []; },
+        _emit: emit,
+    };
+    return fake;
+}
+
+function binding(live, { portFails = true } = {}) {
+    const opened = deferred();
+    const b = {
+        port: null,
+        // portFails false: the run's port cannot fail it (a failure that lands while no run can take it).
+        attach: (port) => { b.port = port; live.attach(portFails ? port : { ...port, failTurn: () => {} }); },
+        heldStop: () => live.heldStop(),
+        heldFailure: () => live.heldFailure(),
+        gateOpened: () => { live.gateOpened(); opened.resolve(); },
+        detach: () => live.detach(),
+    };
+    return { b, opened: opened.promise };
+}
+
+describe("RT-D3 (C5): ManagedSession sends no prompt while an admission failure is held", () => {
+    it("before the initial send: the turn fails with it and the model is sent nothing", async () => {
+        const fake = createFakeCopilotSession();
+        const managed = new ManagedSession("chat", fake, { waitThreshold: 30 });
+        const failure = new Error("the turn-to-visit fence could not read a Stop");
+        const live = newLive(async () => { throw failure; });
+        await live.enqueue([control(1, "stop", "halt")]);
+        const { b } = binding(live);
+        const result = await managed.runTurn("work", { turnIndex: 3, turnControl: b });
+        expect(fake.sent).toEqual([]);
+        expect(result).toMatchObject({ type: "error" });
+        expect(String(result.message)).toContain("could not read a Stop");
+    });
+
+    it("before a corrective send: no corrective prompt is sent after the failure", async () => {
+        const fake = createFakeCopilotSession();
+        const managed = new ManagedSession("chat", fake, { waitThreshold: 30 });
+        const failure = new Error("id read failed during the run");
+        let fail = null;
+        const live = newLive(async (controls) => { if (fail) throw fail; return controls; });
+        const { b, opened } = binding(live, { portFails: false });
+        const turn = managed.runTurn("work", { turnIndex: 3, turnControl: b, requiredTool: "wait" });
+        await opened;
+        expect(fake.sent).toHaveLength(1);
+        fail = failure;
+        await live.enqueue([control(9, "stop", "halt")]);
+        expect(live.heldFailure()).toBe(failure);
+        fake._emit("session.idle");                               // the first run ends without the required tool
+        const result = await turn;
+        expect(fake.sent).toHaveLength(1);                        // no required-tool correction
+        expect(result).toMatchObject({ type: "error" });
+        expect(String(result.message)).toContain("id read failed");
     });
 });
