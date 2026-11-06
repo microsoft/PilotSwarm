@@ -25,10 +25,12 @@ test("the Workflow tab gets the canvas's own buttons, and the toolbar keeps full
     for (const name of ["zenButton", "fullScreenButton", "phoneMaximizeButton"]) {
         assert.equal((webApp.match(new RegExp(`const ${name} = \\(\\) =>`, "g")) ?? []).length, 1, name);
     }
-    assert.match(webApp, /React\.createElement\(WorkflowTab, \{ controller, mobile, modeButtons: workflowModeButtons \}\)/);
+    // Owner, 2026-11-06T19:40Z: the tab also gets the display mode (F8), and in full screen its own Exit full screen (F7).
+    assert.match(webApp, /React\.createElement\(WorkflowTab, \{ controller, mobile, modeButtons: workflowModeButtons,\n[^\n]*\n\s*displayMode: maximized \? "full" : !mobile && zenOn \? "zen" : "normal" \}\)/);
+    assert.match(webApp, /: maximized \? React\.createElement\(WorkflowToolButton, \{ label: "Exit full screen", glyph: "exit-full-screen"/);
     assert.match(webApp, /const header = onWorkflow && \(mobile \|\| !maximized\) \? null/, "full screen promotes the Workflow tab's controls too");
     assert.match(webApp, /def\.key === "canvas" \|\| def\.key === "workflow"/, "Canvas and Workflow switch without leaving full screen");
-    assert.match(workflowTab, /export function WorkflowTab\(\{ controller, mobile = false, modeButtons = null \}\)/);
+    assert.match(workflowTab, /export function WorkflowTab\(\{ controller, mobile = false, modeButtons = null, displayMode = "normal" \}\)/);
     assert.match(workflowTab, /modeButtons \? h\("span", \{ className: "ps-wf-tab-modes" \}, modeButtons\) : null\),/);
     // The labels are the canvas's.
     for (const label of ['"aria-label": zenOn ? "Leave zen mode" : "Zen mode"', '"aria-label": "Full screen canvas"',

@@ -9227,7 +9227,9 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
         // tab left mounted would keep reading its Workflows); its state lives in the store.
         onWorkflow && visible
             ? React.createElement("div", { className: "ps-side-pane-layer ps-wf-layer" },
-                React.createElement(WorkflowTab, { controller, mobile, modeButtons: workflowModeButtons }))
+                React.createElement(WorkflowTab, { controller, mobile, modeButtons: workflowModeButtons,
+                    // F8: the graph fits again when the display mode changes its size (owner, 2026-11-06T19:40Z).
+                    displayMode: maximized ? "full" : !mobile && zenOn ? "zen" : "normal" }))
             : null),
         shareOpen && view.exists
             ? React.createElement(CanvasShareDialog, {

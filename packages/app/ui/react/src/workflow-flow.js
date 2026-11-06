@@ -38,6 +38,11 @@ const h = React.createElement;
  * graph (definition or revision) mounts a new flow; without a remembered view of its own it is fitted once. A run's
  * progress never moves the view.
  *
+ * Owner, 2026-11-06T19:40Z (F8): a change of display mode (normal, zen, full screen: `mode`) fits the view again, while
+ * the person has not panned or zoomed it since it was last fitted (by the first fit, Fit to screen or a mode change). The
+ * remembered view says whether it was still the fitted one and in which mode, so a flow mounted in another mode from a
+ * fitted view is fitted again too. A view the person moved is kept, as f-06 keeps it.
+ *
  * Owner batch 7 (H2): a parallel step's branch box is a React Flow parent node; its steps and its join bar are its
  * children, placed relative to it, so dragging the box by its label row moves them all. A step inside it can still be
  * dragged on its own; its place is saved relative to its box ('<parallel id>/<step id>', workflowPlaceKey) and the box's
@@ -47,6 +52,8 @@ const h = React.createElement;
 
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
+/** F8: how long after a change of display mode the area's new size (measured as it settles) fits the view again. */
+const MODE_REFIT_MS = 1000;
 /** The fitted view never enlarges the steps past their own size, and leaves this share of the area around the graph. */
 const FIT_MAX_ZOOM = 1;
 const FIT_PADDING = 0.06;
@@ -183,25 +190,36 @@ const NODE_TYPES = { workflowStep: StepNode, workflowGroup: GroupNode, workflowJ
 const EDGE_TYPES = { workflowEdge: StepEdge };
 const panZoomReady = state => Boolean(state.panZoom);
 
-/** The controls, and the one automatic fit: `fitted` is true once the view was fitted or started from a remembered one. */
-function GraphView({ bounds, area, fitted, hand, onHand, onReset, refit = 0, onInteract = null }) {
+/**
+ * The controls, and the automatic fits: `fitted` is true once the view was fitted or started from a remembered one;
+ * `touched` is true while the person has panned or zoomed since the last fit; `modeChanged` is when the display mode last
+ * changed (F8): until MODE_REFIT_MS after it, the area's new size fits the view again unless it was touched.
+ */
+function GraphView({ bounds, area, fitted, touched, modeChanged, hand, onHand, onReset, refit = 0, onInteract = null }) {
     const flow = useReactFlow();
     const ready = useStore(panZoomReady);
     const fit = React.useCallback(options => {
         if (!area) return;
+        touched.current = false;
         flow.setViewport(workflowFitViewport(bounds, area), options);
-    }, [flow, bounds, area]);
+    }, [flow, bounds, area, touched]);
     React.useEffect(() => {
         if (!ready || !area || fitted.current) return;
         fitted.current = true;
         fit();
     }, [ready, area, fit, fitted]);
+    // F8: the area's size after a change of display mode.
+    React.useEffect(() => {
+        if (!ready || !area || !fitted.current || touched.current) return;
+        if (Date.now() - modeChanged.current < MODE_REFIT_MS) fit();
+    }, [ready, area]);
     // UI-6: the one hydration fit, when the person's saved places arrived after the first fit (see WorkflowFlow).
     React.useEffect(() => {
         if (refit > 0 && ready && area) fit();
     }, [refit]);
     const zoom = by => {
         onInteract?.();
+        touched.current = true;
         if (by > 0) flow.zoomIn({ duration: ZOOM_DURATION_MS });
         else flow.zoomOut({ duration: ZOOM_DURATION_MS });
     };
@@ -219,13 +237,26 @@ function GraphView({ bounds, area, fitted, hand, onHand, onReset, refit = 0, onI
 /**
  * `layout` from layoutWorkflowGraphTB; `nodes` the step views; `select(id)` selects a step (and may open its details);
  * `viewport` the remembered view this flow starts from (read when it mounts), `onViewport(view)` told each view once it
- * settles; `places` the person's saved step places and `onPlaces(places | null)` told them at the end of each drag.
+ * settles; `places` the person's saved step places and `onPlaces(places | null)` told them at the end of each drag;
+ * `mode` the display mode the graph is shown in ("normal", "zen" or "full"; F8).
  */
-export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null }) {
+export function WorkflowFlow({ layout, nodes, selected, select, viewport = null, onViewport = null, places = null, onPlaces = null, mode = "normal" }) {
     const [hand, setHand] = React.useState(true);
     const hostRef = React.useRef(null);
     const [start] = React.useState(() => workflowViewportOf(viewport));
-    const fitted = React.useRef(start !== null);
+    // F8: a remembered view that was still the fitted one, taken in another display mode, is fitted again at once. A view
+    // remembered without the word (taken before F8) counts as the person's.
+    const [startFitted] = React.useState(() => start !== null && viewport?.fitted === true);
+    const [startStale] = React.useState(() => startFitted && typeof viewport?.mode === "string" && viewport.mode !== mode);
+    const fitted = React.useRef(start !== null && !startStale);
+    const touched = React.useRef(start !== null && !startFitted);
+    const modeNow = React.useRef(mode);
+    const modeChanged = React.useRef(0);
+    React.useLayoutEffect(() => {
+        if (modeNow.current === mode) return;
+        modeNow.current = mode;
+        modeChanged.current = Date.now();
+    }, [mode]);
     const [area, setArea] = React.useState(null);
     React.useEffect(() => {
         const host = hostRef.current;
@@ -375,12 +406,13 @@ export function WorkflowFlow({ layout, nodes, selected, select, viewport = null,
         ...(start ? { defaultViewport: start } : {}),
         // Every settled view, the person's or a button's, so it can be restored exactly. A move the person starts (it has
         // an event) or a box they drag counts as touching the view (UI-6).
-        onMoveStart: event => { if (event) interacted.current = true; },
+        onMoveStart: event => { if (event) { interacted.current = true; touched.current = true; } },
         onNodeDragStart: () => { interacted.current = true; },
-        onMoveEnd: (_event, view) => { onViewport?.({ x: view.x, y: view.y, zoom: view.zoom }); },
+        // F8: with it, whether it is still the fitted view and the display mode it was taken in.
+        onMoveEnd: (_event, view) => { onViewport?.({ x: view.x, y: view.y, zoom: view.zoom, fitted: !touched.current, mode: modeNow.current }); },
         defaultMarkerColor: null,
         className: `ps-workflow-flow${hand ? " is-hand" : " is-still"}`,
     },
     h(Background, { variant: BackgroundVariant.Dots, gap: 18, size: 1 }),
-    h(GraphView, { bounds, area, fitted, hand, onHand: setHand, onReset: moved.size ? reset : null, refit, onInteract }));
+    h(GraphView, { bounds, area, fitted, touched, modeChanged, hand, onHand: setHand, onReset: moved.size ? reset : null, refit, onInteract }));
 }

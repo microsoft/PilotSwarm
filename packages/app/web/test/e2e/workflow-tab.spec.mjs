@@ -1977,6 +1977,87 @@ for (const width of [1440, 2000]) {
     });
 }
 
+// Owner, 2026-11-06T19:40Z (F8): "on zen mode -> full screen -> normal transitions recenter the workflow diagram in the
+// middle". f-06 kept the fitted view's zoom and top-left through every size change, so full screen left the graph at the
+// left of the wide area (his screenshot). Now a change of display mode fits the view again, while the person has not
+// panned or zoomed it since its last fit; a view the person moved stays (f-06). The proof of a fit: Fit to screen right
+// after changes nothing.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "owner 19:40Z F8" (from packages/app/web, after build).
+test("owner 19:40Z F8: zen, full screen and normal fit the graph again, until the person moves it; a moved view stays", async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page, { workflowEvents: QUALITY_EVENTS, workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const head = page.locator(".ps-wf-tab-head").filter({ visible: true });
+    const graph = workflowTab(page).getByRole("group", { name: "Workflow graph" });
+    const maximizedLayer = page.locator(".ps-canvas-layer.is-maximized");
+    const rail = async () => Math.round(await page.locator(".ps-workspace-main-grid").evaluate((element) => element.getBoundingClientRect().width));
+    await flowReady(graph);
+    const first = await settledView(graph);
+    await expectFitted(graph);
+    // The view after a mode change is the fitted view of the new area: Fit to screen right after moves nothing.
+    const expectRefitted = async (label, before) => {
+        const now = await settledView(graph);
+        expect(Math.abs(now.x - before.x) > 1 || Math.abs(now.y - before.y) > 1 || Math.abs(now.scale - before.scale) > 0.001, `${label}: the view moved`).toBe(true);
+        await expectFitted(graph);
+        await graph.getByRole("button", { name: "Fit to screen", exact: true }).click();
+        sameView(await settledView(graph), now);
+        return now;
+    };
+    await head.getByRole("button", { name: "Zen mode", exact: true }).click();
+    await expect.poll(rail).toBe(380);
+    const zen = await expectRefitted("zen", first);
+    await head.getByRole("button", { name: "Full screen canvas", exact: true }).click();
+    await expect(maximizedLayer).toHaveCount(1);
+    const full = await expectRefitted("full screen", zen);
+    await shot(page, "owner-1940-f8-full-screen-1440");
+    await head.getByRole("button", { name: "Exit full screen", exact: true }).click();
+    await expect(maximizedLayer).toHaveCount(0);
+    const backInZen = await expectRefitted("back to zen", full);
+    sameView(backInZen, zen);
+    await head.getByRole("button", { name: "Leave zen mode", exact: true }).click();
+    await expect.poll(rail).not.toBe(380);
+    sameView(await expectRefitted("normal", backInZen), first);
+    // The Workflow tab hidden and shown again in another mode: its fitted view is fitted there too.
+    await page.getByRole("button", { name: /^Hide the Workflow tab/ }).click();
+    await expect(page.locator(".ps-wf-tab")).toHaveCount(0);
+    await page.getByRole("button", { name: "Show canvas", exact: true }).click();
+    await page.getByRole("region", { name: "Session canvas" }).getByRole("button", { name: "Zen mode", exact: true }).click();
+    await expect.poll(rail).toBe(380);
+    await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
+    await flowReady(graph);
+    sameView(await settledView(graph), zen);
+    await head.getByRole("button", { name: "Leave zen mode", exact: true }).click();
+    await expect.poll(rail).not.toBe(380);
+    sameView(await settledView(graph), first);
+    // A view the person moved stays through the modes (f-06): zoom in and drag, then zen, full screen and back.
+    await graph.getByRole("button", { name: "Zoom in", exact: true }).click();
+    const area = await graph.boundingBox();
+    await page.mouse.move(area.x + 10, area.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(area.x + 40, area.y + 30, { steps: 4 });
+    await page.mouse.up();
+    const chosen = await settledView(graph);
+    await head.getByRole("button", { name: "Zen mode", exact: true }).click();
+    await expect.poll(rail).toBe(380);
+    sameView(await settledView(graph), chosen);
+    await head.getByRole("button", { name: "Full screen canvas", exact: true }).click();
+    await expect(maximizedLayer).toHaveCount(1);
+    sameView(await settledView(graph), chosen);
+    await head.getByRole("button", { name: "Exit full screen", exact: true }).click();
+    await head.getByRole("button", { name: "Leave zen mode", exact: true }).click();
+    sameView(await settledView(graph), chosen);
+    // Fit to screen makes it the fitted view again: the next mode change fits it again.
+    await graph.getByRole("button", { name: "Fit to screen", exact: true }).click();
+    const refitted = await settledView(graph);
+    await head.getByRole("button", { name: "Zen mode", exact: true }).click();
+    await expect.poll(rail).toBe(380);
+    sameView(await expectRefitted("zen after Fit to screen", refitted), zen);
+    expect(errors).toEqual([]);
+});
+
 // Removed (spec draft 3, D4 and F-7; 21 stage 1 "Publish removed"): the f-04 tests of the compact Publish review. The
 // draft fixture stays for the tests that use it.
 const PUBLISH_MODEL = {

@@ -102,7 +102,7 @@ function StateChip({ state, className = "", text = null, title = null }) {
  * The Workflow tab (06). `modeButtons`: zen and full screen (a phone: maximize), the canvas's own, at the right end of the
  * tab's header when the tab is in the right block (owner, 2026-11-06T06:28Z); none where it is shown in the middle.
  */
-export function WorkflowTab({ controller, mobile = false, modeButtons = null }) {
+export function WorkflowTab({ controller, mobile = false, modeButtons = null, displayMode = "normal" }) {
     // Owner, 2026-11-06T13:43Z: on a phone (600 px or less) the graph gets the height: two header rows, no meta line.
     const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
     const context = useControllerSelector(controller, selectWorkflowTabContext, workflowTabContextEqual);
@@ -176,10 +176,10 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null }) 
                     "aria-pressed": view === "workflows", onClick: () => setTab({ view: "workflows" }) })),
             modeButtons ? h("span", { className: "ps-wf-tab-modes" }, modeButtons) : null),
         view === "definition"
-            ? h(DefinitionView, { key: definition.newestId, controller, definition, tab, setTab, mobile, ownerTitle: byId?.[ownerId]?.title ?? null,
+            ? h(DefinitionView, { key: definition.newestId, controller, definition, tab, setTab, mobile, displayMode, ownerTitle: byId?.[ownerId]?.title ?? null,
                 ownerWorking: ownerId ? workflowParentWorking(byId?.[ownerId]) : false, onStarted: id => openWorkflow(id), askChat })
             : workflow
-                ? h(WorkflowRunView, { key: workflow.sessionId, controller, definition, workflow, tab, setTab, mobile, phone, onOpen: openWorkflow,
+                ? h(WorkflowRunView, { key: workflow.sessionId, controller, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen: openWorkflow,
                     nodeStateId: context.nodeStateId })
                 : h(WorkflowList, { controller, definition, byId, views, onOpen: openWorkflow, onStart: () => setTab({ view: "definition", start: true }),
                     onAnother: () => setTab({ view: "definition", another: true }) }));
@@ -347,7 +347,7 @@ function BottomPanel({ controller, panels, panel, onPanel, mobile, children, ext
 }
 
 /** The Definition view (07). `definition.newestId` is the workflow child whose definition it shows. */
-function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted, ownerTitle = null, ownerWorking = false }) {
+function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted, ownerTitle = null, ownerWorking = false, displayMode = "normal" }) {
     const child = useWorkflowChild(controller, definition.newestId);
     const { sessionId, view, workflowModel, places } = child;
     const projection = useDefinitionProjection(child);
@@ -416,7 +416,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,
         h("div", { className: "ps-wf-main", hidden: mode !== "graph" || undefined },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
-                places: places ?? null, onPlaces, mobile })
+                places: places ?? null, onPlaces, mobile, mode: displayMode })
                 // No graph to draw: the line above says why; its errors are listed under it (folded while the chat writes).
                 : projection && line ? (line.calm
                     ? h("details", { className: "ps-wf-errors" }, h("summary", null, "Errors so far"), h(WorkflowV2Diagnostics, { diagnostics: projection.diagnostics }))
@@ -530,7 +530,7 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
 }
 
 /** One Workflow (08): its header, controls by state, its failure first, its graph and its bottom panel. */
-function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, phone = false, onOpen, nodeStateId = null }) {
+function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, phone = false, onOpen, nodeStateId = null, displayMode = "normal" }) {
     const child = useWorkflowChild(controller, workflow.sessionId);
     const { sessionId, session, view, places, events, projection, readModel, readError } = child;
     // Live while it is shown, also when its session's chat is the active session (the companion subscription).
@@ -616,7 +616,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
         notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,
         h("div", { className: "ps-wf-main" },
             graph ? h(WorkflowGraph, { definition: graph, nodes, selected, select, scope: sessionId, viewport: view.graphView ?? null, onViewport: onGraphView,
-                places: places ?? null, onPlaces, mobile })
+                places: places ?? null, onPlaces, mobile, mode: displayMode })
                 : projection ? h(WorkflowV2NoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"), panel, mobile,
