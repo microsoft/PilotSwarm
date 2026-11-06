@@ -1959,7 +1959,14 @@ const WORKFLOW_EVENT_TEXT = {
         short: data => ({ text: `The agent chat for ${stepOf(data)}${text(data.endedChatSessionId) ? ` (session ${shortId(data.endedChatSessionId)})` : ""} `
             + `had ended, so visit ${Number.isSafeInteger(data.cycle) ? data.cycle : "this"} starts a new chat`, level: "warning" }),
     },
-    "workflow.agent_end_failed": { short: data => ({ text: `Ending the agent chat for ${stepOf(data)} did not succeed yet; it is tried again`, level: "warning" }) },
+    // A continued chat's owed end (formal t3): its last look found the chat never seen, or another look holding its end (O2).
+    "workflow.agent_end_failed": {
+        short: data => (data.reason === "held_elsewhere"
+            ? { text: `Another look holds the end of the agent chat for ${stepOf(data)}; it sends the end` }
+            : data.reason === "not_visible"
+                ? { text: `The agent chat for ${stepOf(data)} was never seen, so its end was not sent; a recover looks again`, level: "warning" }
+                : { text: `Ending the agent chat for ${stepOf(data)} did not succeed yet; it is tried again`, level: "warning" }),
+    },
     // Owner decision Q2: the agent chat ended its turn without finishing its step, and was reminded to finish it.
     "workflow.agent_reminded": {
         short: data => ({ text: `${StepOf(data)} reminded to finish`

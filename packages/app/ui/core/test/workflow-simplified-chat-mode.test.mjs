@@ -69,4 +69,11 @@ test("the Workflow log says a later visit reuses the chat, a visit ended with it
         + "; the Workflow has no more visits for it");
     const restarted = workflowEventText("workflow.agent_chat_restarted", { stateId: "talk", endedChatSessionId: "old-chat-123456", cycle: 2 }, "short");
     assert.deepEqual(restarted, { text: "The agent chat for node talk (session old-chat) had ended, so visit 2 starts a new chat", level: "warning" });
+    // A continued chat's owed end, its last look (formal t3; review O2): another look holds it, or the chat was never seen.
+    assert.deepEqual(workflowEventText("workflow.agent_end_failed", { stateId: "talk", reason: "held_elsewhere" }, "short"),
+        { text: "Another look holds the end of the agent chat for node talk; it sends the end" });
+    assert.deepEqual(workflowEventText("workflow.agent_end_failed", { stateId: "talk", reason: "not_visible" }, "short"),
+        { text: "The agent chat for node talk was never seen, so its end was not sent; a recover looks again", level: "warning" });
+    assert.deepEqual(workflowEventText("workflow.agent_end_failed", { stateId: "talk", error: "x" }, "short"),
+        { text: "Ending the agent chat for node talk did not succeed yet; it is tried again", level: "warning" });
 });
