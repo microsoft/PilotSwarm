@@ -7622,17 +7622,49 @@ function ArtifactTakeoverPane({ controller, onClose }) {
 function MobileCanvasLayer({ controller, visible = true }) {
     const [maximized, setMaximized] = React.useState(false);
     const toggleMaximized = React.useCallback(() => setMaximized((current) => !current), []);
+    // Turning the phone sideways with the canvas showing takes the canvas full
+    // screen: in landscape the portal's chrome would leave it a strip. Turning
+    // back restores the inset view, unless the person chose full screen.
+    const landscape = useMediaQuery(PHONE_LANDSCAPE_MEDIA_QUERY);
+    const autoMaximizedRef = React.useRef(false);
+    React.useEffect(() => {
+        if (!visible) return;
+        if (landscape) {
+            setMaximized((current) => {
+                if (!current) autoMaximizedRef.current = true;
+                return true;
+            });
+        } else if (autoMaximizedRef.current) {
+            autoMaximizedRef.current = false;
+            setMaximized(false);
+        }
+    }, [landscape, visible]);
+    // A pinch that starts on the canvas's own chrome must not zoom the page
+    // (iOS reports a page pinch as gesture events on the top document).
+    const layerRef = React.useRef(null);
+    React.useEffect(() => {
+        const el = layerRef.current;
+        if (!el) return undefined;
+        const stop = (event) => event.preventDefault();
+        el.addEventListener("gesturestart", stop);
+        el.addEventListener("gesturechange", stop);
+        return () => {
+            el.removeEventListener("gesturestart", stop);
+            el.removeEventListener("gesturechange", stop);
+        };
+    }, []);
     // Leaving the canvas drops full-screen, so coming back lands in the inset
     // presentation rather than a takeover the user has to undo before they can
     // reach the toolbar again.
     React.useEffect(() => {
-        if (!visible) setMaximized(false);
+        if (!visible) { setMaximized(false); autoMaximizedRef.current = false; }
     }, [visible]);
     // Kept MOUNTED while hidden: unmounting destroys the sandboxed document,
     // and with it everything the user typed and scrolled. The hidden state is
     // an off-screen transform (see .ps-mobile-canvas-layer.is-hidden), so the
     // frame keeps a real, unchanged box and no settle-reload fires on re-show.
     return React.createElement("div", {
+        ref: layerRef,
         className: `ps-mobile-canvas-layer${maximized ? " is-maximized" : ""}${visible ? "" : " is-hidden"}`,
         ...(visible ? {} : { inert: true, "aria-hidden": "true" }),
     },
