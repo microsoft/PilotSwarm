@@ -96,3 +96,50 @@ test("a shutdown whose steps finish in time waits for each, and returns as soon 
     assert.deepEqual(calls, ["drain", "release", "sweep", "stopped"]);
     assert.ok(Date.now() - started < 1_000);
 });
+
+// Review RT-D4: the draining report (sent first, with an agent-packages cache) ran under its own fixed 5 s, so a shorter
+// drain budget plus grace did not bound it, and its timer stayed scheduled after a fast report. It now runs under the
+// earlier of its 5 s and the shared deadline, and clears its timer.
+test("the draining report is bounded by the shared deadline when that comes first, and leaves no timer behind", async (t) => {
+    const { PilotSwarmWorker } = await import("../../dist/worker.js");
+    t.mock.method(console, "error", () => {});
+    t.mock.method(console, "warn", () => {});
+    for (const [drain, grace] of [["100", "100"], ["0", "0"]]) {
+        const { worker, calls, heartbeat } = hungWorker();
+        clearInterval(heartbeat);
+        worker._agentPackagesCacheDir = "/tmp/agent-packages";
+        worker._reportAgentWorkerState = () => { calls.push("draining report"); return hang(); };
+        await withEnv({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: drain, PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS: grace }, async () => {
+            const started = Date.now();
+            await PilotSwarmWorker.prototype.gracefulShutdown.call(worker);
+            const took = Date.now() - started;
+            assert.ok(took < Number(drain) + Number(grace) + 500, `drain ${drain} + grace ${grace}: took ${took} ms, not the report's 5 s`);
+        });
+        assert.equal(calls[0], "polling stopped");
+        assert.ok(calls.includes("draining report"));
+    }
+});
+
+test("a fast draining report leaves no timer scheduled", async (t) => {
+    const { PilotSwarmWorker } = await import("../../dist/worker.js");
+    t.mock.method(console, "error", () => {});
+    const scheduled = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const live = new Set();
+    t.mock.method(globalThis, "setTimeout", (fn, ms, ...args) => {
+        const handle = realSetTimeout(fn, ms, ...args);
+        scheduled.push(ms);
+        live.add(handle);
+        return handle;
+    });
+    t.mock.method(globalThis, "clearTimeout", (handle) => { live.delete(handle); return realClearTimeout(handle); });
+    const worker = {
+        config: {}, _stopProviderPolling() {}, _agentPackagesCacheDir: "/tmp/agent-packages", _reportAgentWorkerState: async () => {},
+        _agentPackagesTimer: null, _evictionTimer: null, _runtimeStartup: null, runtime: null, sessionStore: null,
+        sessionManager: { releaseIdleWorkspaces: async () => 0 }, stop: async () => {},
+    };
+    await withEnv({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "60000" }, () => PilotSwarmWorker.prototype.gracefulShutdown.call(worker));
+    assert.ok(scheduled.includes(5_000), "the report's own 5 s cap (the deadline is later)");
+    assert.equal(live.size, 0, "every step's timer was cleared");
+});

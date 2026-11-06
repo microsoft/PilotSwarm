@@ -1306,32 +1306,37 @@ export class PilotSwarmWorker {
         const graceMs = Number.isFinite(rawGraceMs) && rawGraceMs >= 0 ? rawGraceMs : 15_000;
         const deadline = Date.now() + drainBudgetMs + graceMs;
         // One step of the shutdown, waited for until the deadline at most; a failure is the step's own to report.
-        const bounded = async (step: string, work: () => Promise<unknown>): Promise<void> => {
+        // `capMs`: a step's own shorter limit, if any; the earlier of it and the deadline applies (review RT-D4).
+        const bounded = async (step: string, work: () => Promise<unknown>, capMs: number | null = null): Promise<void> => {
             let timer: ReturnType<typeof setTimeout> | undefined;
+            const untilDeadline = Math.max(0, deadline - Date.now());
+            const limitMs = capMs === null ? untilDeadline : Math.min(capMs, untilDeadline);
             const late = await Promise.race([
                 Promise.resolve().then(work).then(() => false, (err: any) => {
                     console.warn(`[PilotSwarmWorker] shutdown: ${step} failed: ${err?.message ?? err}`);
                     return false;
                 }),
                 new Promise<boolean>((resolve) => {
-                    timer = setTimeout(() => resolve(true), Math.max(0, deadline - Date.now()));
+                    timer = setTimeout(() => resolve(true), limitMs);
                     timer.unref?.();
                 }),
             ]);
             if (timer) clearTimeout(timer);
-            if (late) console.error(`[PilotSwarmWorker] shutdown: ${step} did not finish by the drain deadline; exiting without it`);
+            if (late) {
+                console.error(limitMs < untilDeadline
+                    ? `[PilotSwarmWorker] shutdown: ${step} did not finish within ${limitMs}ms; going on without it`
+                    : `[PilotSwarmWorker] shutdown: ${step} did not finish by the drain deadline; exiting without it`);
+            }
         };
 
         // Advertise draining before the runtime drain so operators see the
         // phase for the duration of the drain window. Best-effort AND
         // bounded: a black-holed CMS socket must not eat the drain budget
         // (SIGKILL at grace-period expiry would crash in-flight turns).
+        // Review RT-D4: under the shared deadline too (the earlier of its own 5 s and the deadline), its timer cleared.
         this._workerPhase = "draining";
         if (this._agentPackagesCacheDir) {
-            await Promise.race([
-                this._reportAgentWorkerState(),
-                new Promise<void>((resolve) => { setTimeout(resolve, 5_000).unref?.(); }),
-            ]);
+            await bounded("the draining report", () => this._reportAgentWorkerState(), 5_000);
         }
 
         if (this.runtime) {
