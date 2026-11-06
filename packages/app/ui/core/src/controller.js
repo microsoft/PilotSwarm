@@ -2914,7 +2914,7 @@ export class PilotSwarmUiController {
                     const selectedIntent = this.getState().sessions.navigationIntent;
                     if (selectedIntent && selectedIntent.sessionId === selected && selectedIntent.status !== "failed") {
                         try {
-                            await this.loadSession(selected);
+                            await this.loadSession(selected, { keepWorkflowRow: true });
                         } catch (error) {
                             this.dispatch({
                                 type: "sessions/navigationIntentFailed",
@@ -2923,7 +2923,7 @@ export class PilotSwarmUiController {
                             });
                         }
                     } else {
-                        await this.loadSession(selected);
+                        await this.loadSession(selected, { keepWorkflowRow: true });
                     }
                 }
                 return;
@@ -6230,19 +6230,21 @@ export class PilotSwarmUiController {
         }
     }
 
-    async loadSession(requestedId) {
+    async loadSession(requestedId, { keepWorkflowRow = false } = {}) {
         if (!requestedId) return;
         const navigationGeneration = this.navigationGeneration = (this.navigationGeneration || 0) + 1;
         // MoA panel controllers run no catalog loop: a panel reads the
         // viewer's steering decision when it loads its session.
         void this.refreshSteeringFeature();
         // Workflow Simplified (S4): a Workflow row loads the chat of the session that owns it; the reducer maps the
-        // selection (the Workflow shows in that session's Workflow tab). Choosing the session itself again clears the row.
+        // selection (the Workflow shows in that session's Workflow tab). Choosing the session itself again clears the row;
+        // `keepWorkflowRow` loads the selected session without choosing it again (the list's own reload of the selection,
+        // after a link to a Workflow mapped it to its session).
         const before = this.getState().sessions;
         const target = workflowSelectionTarget(before.byId, requestedId);
         const sessionId = target ? target.ownerId : requestedId;
         const active = before.activeSessionId;
-        const rowChanged = target ? before.workflowRowId !== requestedId : Boolean(before.workflowRowId);
+        const rowChanged = target ? before.workflowRowId !== requestedId : Boolean(before.workflowRowId) && !keepWorkflowRow;
         if (active !== sessionId || rowChanged) {
             if (active !== sessionId && this.getState().ui.promptEdit) {
                 this.exitPendingPromptEdit({ restoreDraft: true });

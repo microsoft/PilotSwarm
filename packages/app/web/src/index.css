@@ -11154,12 +11154,14 @@ textarea.ps-link-input {
   .ps-toolbar:not(.is-mobile) {
     --ps-header-button: 44px;
     --ps-header-pair: 94px;
+    /* Canvas, Workflow and Diagnostics (Workflow Simplified, L1): three buttons after Back and Forward. */
+    --ps-header-panels: 144px;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     column-gap: 12px;
   }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: 0; min-height: 44px; }
   .ps-toolbar-navigation {
-    display: grid; grid-template-columns: repeat(3, var(--ps-header-pair));
+    display: grid; grid-template-columns: var(--ps-header-pair) var(--ps-header-pair) var(--ps-header-panels);
     gap: 6px; height: 44px; flex-wrap: nowrap;
   }
   .ps-toolbar-context, .ps-toolbar-history { display: flex; align-items: center; gap: 6px; min-width: 0; }

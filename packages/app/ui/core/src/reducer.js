@@ -878,8 +878,20 @@ export function appReducer(state, action) {
     const next = baseReducer(state, effective);
     if (next === state) return next;
     const reconciled = reconcileSessionView(state, reconcileSessionSort(state, next, effective), effective);
-    // A link to a Workflow (S8, `?session=<workflow>`) opens its session's Workflow tab once, when the link resolves.
-    return workflowTarget || workflowLinkResolved(state, reconciled) ? openWorkflowTab(reconciled) : reconciled;
+    // A link to a Workflow (S8, `?session=<workflow>`) opens its session's Workflow tab once, when the link resolves, on
+    // that Workflow (remembered as a row selection is, so a later reload of the session keeps it).
+    if (workflowLinkResolved(state, reconciled)) return openWorkflowTab(rememberWorkflowRow(reconciled));
+    return workflowTarget ? openWorkflowTab(reconciled) : reconciled;
+}
+
+/** The session's Workflow tab on its selected Workflow row (S4, S5): the Workflows view of that Workflow. */
+function rememberWorkflowRow(state) {
+    const ownerId = state.sessions?.activeSessionId ?? null;
+    const rowId = state.sessions?.workflowRowId ?? null;
+    if (!ownerId || !rowId) return state;
+    const tabs = state.ui.workflowTabs || {};
+    return { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [ownerId]: { ...(tabs[ownerId] || {}), view: "workflows", workflowId: rowId,
+        definition: workflowDefinitionName(state.sessions.byId?.[rowId], state.ui.workflowViews?.[rowId]) } } } };
 }
 
 /** Whether this action resolved a deep link to a Workflow row (the link's target is now the selected Workflow row). */

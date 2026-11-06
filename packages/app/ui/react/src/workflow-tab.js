@@ -732,7 +732,8 @@ function StartDialog({ controller, sessionId, publication, control, name, number
         footer: [
             h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-operation": control.operation,
                 disabled: busy || !control.enabled, title: control.enabled ? undefined : control.title, onClick: send }, busy ? "Starting…" : `Start #${number}`),
-            h("button", { key: "close", type: "button", className: "ps-mini-button", onClick: onClose }, "Close"),
+            // One way to leave without starting in words (the ✕ is the dialog's Close).
+            h("button", { key: "cancel", type: "button", className: "ps-mini-button", onClick: onClose }, "Cancel"),
             h("span", { key: "note", className: "ps-wf-muted" }, `Workflow #${number} runs revision ${revision ?? "—"}.`),
         ] },
         h("p", { className: "ps-wf-muted ps-wf-dialog-sub" }, `revision ${revision ?? "—"} · ${publication.valid ? "valid" : "not valid"}`),

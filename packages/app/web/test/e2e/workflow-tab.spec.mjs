@@ -111,6 +111,9 @@ async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSo
         if (pathname.includes(`/sessions/${WORKFLOW_ID}/events`)) return answer(workflowEvents);
         if (pathname.includes(`/sessions/${CREATED_ID}/events`)) return answer([]);
         if (pathname.endsWith(`/sessions/${WORKFLOW_ID}`)) return answer({ ...sessions[1], events: [], messages: [] });
+        // The session that owns the Workflow: a link to the Workflow shows its chat (S4). Its own row, and a quiet chat.
+        if (pathname.includes(`/sessions/${AGENT_ID}/events`)) return answer([]);
+        if (pathname.endsWith(`/sessions/${AGENT_ID}`)) return answer({ ...sessions[0], events: [], messages: [] });
         if (pathname.endsWith(`/sessions/${CREATED_ID}`)) {
             return answer({ sessionId: CREATED_ID, sessionKind: "workflow", title: "Workflow: example-workflow", status: "running", events: [], messages: [] });
         }
@@ -1619,15 +1622,26 @@ async function routeV2Revisions(page, model, yaml = PUBLISHED_YAML) {
     await page.route(`**${V2_COMMANDS_PATH}`, (route) => accept(route, route.request().postDataJSON().command));
     return reads;
 }
-/** A session-list row by its text: a Workflow row reads `name #n` (S2). */
-const openSession = (page, title) => page.locator(".ps-session-row-content", { hasText: title }).first().click();
 /**
- * The chat the workflows belong to, opened by its id, not its title. routeApi lists it as "Release triage agent", but its
- * own read (GET /sessions/<id>, which the portal makes for a workflow's parent on each list refresh, every 4 s) comes
- * from the stub server, whose title for that id differs. After the first refresh the row shows that title, except for a
- * few milliseconds after each list, so a title locator waited up to 22 s for that window (f-06).
+ * The chat the workflows belong to, opened by its id, not its title. With a Workflow row highlighted, a click selects
+ * the session; on the selected session a click opens or folds its rows (as for sub-agents).
  */
 const openAgent = (page) => page.locator(`.ps-session-list-button[data-session-id="${AGENT_ID}"] .ps-session-row-content`).first().click();
+/**
+ * A session-list row by its text: a Workflow row reads `name #n` (S2). Workflow rows sit under their session, folded as
+ * sub-agent rows are (S1): when the row is not shown, the session's row is clicked (it selects, then opens) until it is.
+ */
+async function revealRow(page, title) {
+    const row = page.locator(".ps-session-row-content", { hasText: title }).first();
+    for (let tries = 0; tries < 3 && !(await row.isVisible().catch(() => false)); tries++) {
+        await openAgent(page);
+        await page.waitForTimeout(250);
+    }
+    return row;
+}
+async function openSession(page, title) {
+    await (await revealRow(page, title)).click();
+}
 
 test("r-1: the Definition view's YAML button shows the YAML and back, and the graph keeps its view", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -2104,7 +2118,8 @@ test("f-05: Start shows one field per input, filled from the schema, and Edit as
     const json = form.getByRole("textbox", { name: "Inputs (JSON)", exact: true });
     await expect.poll(async () => JSON.parse(await json.inputValue())).toEqual(SAMPLE);
     // Nothing is sent until Start.
-    await form.getByRole("button", { name: "Close", exact: true }).click();
+    await form.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(form).toHaveCount(0);
     expect(commands).toEqual([]);
     expect(errors).toEqual([]);
 });
@@ -2210,7 +2225,8 @@ test("UI-6: saved places that arrive after the first fit are fitted once", async
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await routeV2(page, { onCommand: (route, command) => accept(route, command) });
-    const saved = { workflowLayouts: { [LAYOUT_KEY]: { at: Date.now(), steps: { done: [4000, 2400] } } } };
+    // Far, yet within what the Workflow tab's right block shows at the smallest zoom (0.2).
+    const saved = { workflowLayouts: { [LAYOUT_KEY]: { at: Date.now(), steps: { done: [2400, 1600] } } } };
     await page.route("**/api/v1/**", async (route) => {
         const pathname = new URL(route.request().url()).pathname;
         if (pathname.endsWith("/me/profile")) {
@@ -2224,7 +2240,7 @@ test("UI-6: saved places that arrive after the first fit are fitted once", async
     const graph = workflowTab(page).getByRole("group", { name: "Workflow graph" });
     await flowReady(graph);
     // The places arrive: the box moves far away, and the graph is fitted again to show it.
-    await expect.poll(async () => (await flowNodeAt(graph, "done")).x, { timeout: 15_000 }).toBe(4000);
+    await expect.poll(async () => (await flowNodeAt(graph, "done")).x, { timeout: 15_000 }).toBe(2400);
     await settledView(graph);
     await expectFitted(graph);
     expect(errors).toEqual([]);
@@ -2757,6 +2773,8 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await routeOwned(page);
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
 
+    // S1: Workflow rows sit under their session, folded as sub-agent rows are; the session's row opens them.
+    await revealRow(page, "watch-v2 #1");
     // S2: rows read `name #n`, numbered per definition by start (#1 is the oldest), each with its state as a chip.
     await expect(sessionRow(page, "watch-v2 #1").locator(".ps-session-row-workflow-state")).toHaveText("Running");
     await expect(sessionRow(page, "watch-v2 #2").locator(".ps-session-row-workflow-state")).toHaveText("Failed");
@@ -2814,7 +2832,7 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
     await expect(page.locator(".ps-toolbar-count")).toHaveCount(0);
     // A Workflow row in the session list does the same: the chat stays, the tab shows #1.
-    await sessionRow(page, "watch-v2 #1").click();
+    await openSession(page, "watch-v2 #1");
     await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
     await expect(main.locator(".ps-wf-bar .ps-wf-state").first()).toHaveText("Running");
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();

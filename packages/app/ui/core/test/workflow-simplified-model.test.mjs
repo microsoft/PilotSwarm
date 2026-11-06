@@ -168,8 +168,15 @@ test("a link to a Workflow opens its session's chat with the Workflow shown (S8)
     assert.equal(state.ui.sidePaneTab, WORKFLOW_SIDE_TAB);
     const seq = state.ui.workflowOpenSeq;
     assert.ok(seq >= 1);
+    // The tab remembers the Workflow as a row selection does, so a later reload of the session keeps showing it.
+    assert.deepEqual(state.ui.workflowTabs[OWNER], { view: "workflows", workflowId: "wf-2", definition: "check-items" });
     state = appReducer(state, { type: "sessions/loaded", sessions: SESSIONS });
     assert.equal(state.ui.workflowOpenSeq, seq, "a refresh does not open it again");
+    assert.equal(state.sessions.workflowRowId, "wf-2", "a refresh keeps the Workflow row");
+    // Choosing the session itself clears the row; its tab keeps the Workflow it showed last (S5).
+    const chosen = appReducer(state, { type: "sessions/selected", sessionId: OWNER });
+    assert.equal(chosen.sessions.workflowRowId, null);
+    assert.equal(selectWorkflowTabContext(chosen).workflowId, "wf-2");
     // A link to an ordinary session does not open the Workflow tab.
     let plain = appReducer(createInitialState({ mode: "local" }), { type: "sessions/navigationIntent", sessionId: "other" });
     plain = appReducer(plain, { type: "sessions/loaded", sessions: SESSIONS });

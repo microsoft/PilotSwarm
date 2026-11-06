@@ -8983,6 +8983,9 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // Workflow Simplified (L1): the right block shows the canvas, the Workspace or the Workflow tab, one at a time. The
     // Workflow tab carries its own header (L4); the toolbar's Canvas and Workflow buttons switch between them.
     const onWorkflow = paneMode === WORKFLOW_SIDE_TAB;
+    // A Workflow that is the active session itself (its session is not loaded) shows in the middle; the engine's canvas of
+    // its run is not shown beside it (as the old workflow screen did not).
+    const activeWorkflow = useControllerSelector(controller, activeSessionIsWorkflow);
     const isWorkflow = onWorkflow;
     const onCanvas = !onWorkflow && (!workspaceTab || paneMode === "canvas");
     const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
@@ -9164,7 +9167,9 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // note on .ps-canvas-pane .ps-html-preview-frame).
     React.createElement("div", { className: "ps-artifact-pane-body ps-side-pane-body" },
         React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas },
-            view.exists
+            activeWorkflow
+                ? React.createElement("div", { className: "ps-canvas-blank" }, React.createElement("p", null, "This Workflow is shown in the middle."))
+                : view.exists
                 ? React.createElement(CanvasFrame, {
                     key: `slot:${view.slot}`,
                     controller,
