@@ -2,7 +2,7 @@
  * Workflow test mode, hidden (Workflow Simplified, spec 16; owner decisions E1, O2): off unless the deployment flag
  * PILOTSWARM_WORKFLOW_TEST_MODE is exactly `on`. Off, on every surface:
  * - the agent tool: update_workflow and read_workflow of a 1.9.0 turn declare no test operation, argument or field, and
- *   the handler refuses a test operation in words, before anything is read;
+ *   the handler answers a test operation exactly as an unknown operation, before anything is read (review SF-7);
  * - a person's commands (the Web API and MCP run them): a test operation answers as one that does not exist; the
  *   bootstrap capabilities and a read model's personCommands do not list them, so the portal and the terminal UI offer
  *   no test control and no test run;
@@ -143,27 +143,28 @@ function hostOf(fields = {}) {
     };
 }
 
-const OFF_REFUSAL = /^Testing workflows is turned off on this server\. operation must be replace_definition, .* or stop\.$/;
-
-test("agent tool: with test mode off, the handler refuses each test operation in words before anything is read", async () => {
+test("agent tool: with test mode off, a test operation gets exactly the unknown operation's answer, before anything is read (review SF-7)", async () => {
+    const answerOf = async (operation, fields = {}) => {
+        const { host, reads } = hostOf(fields);
+        const answer = JSON.parse(await updateWorkflowFromTool({ workflow_id: "wf", operation_id: "op-1", operation, run_id: "run-1" },
+            { callerSessionId: "parent", host }));
+        return { answer, reads };
+    };
+    // An unknown operation names stop, and no test operation.
+    const unknown = await answerOf("teleport");
+    assert.equal(unknown.answer.ok, false);
+    assert.match(unknown.answer.error.message, /^operation must be replace_definition, .* or stop\.$/);
+    assert.ok(!/test/i.test(unknown.answer.error.message));
+    assert.deepEqual(unknown.reads, []);
     for (const fields of [{}, { testMode: false }]) {
         for (const operation of ["test", "test_respond", "test_advance"]) {
-            const { host, reads } = hostOf(fields);
-            const answer = JSON.parse(await updateWorkflowFromTool({ workflow_id: "wf", operation_id: "op-1", operation, run_id: "run-1" },
-                { callerSessionId: "parent", host }));
-            assert.equal(answer.ok, false, operation);
-            assert.equal(answer.error.code, "WORKFLOW_COMMAND_INVALID", operation);
-            assert.match(answer.error.message, OFF_REFUSAL, operation);
-            assert.ok(answer.error.message.startsWith(WORKFLOW_TEST_MODE_OFF_TEXT));
-            for (const word of ["test,", "test_respond", "test_advance"]) assert.ok(!answer.error.message.slice(WORKFLOW_TEST_MODE_OFF_TEXT.length).includes(word), word);
-            assert.deepEqual(reads, [], `${operation}: nothing read`);
+            const off = await answerOf(operation, fields);
+            assert.deepEqual(off.answer, unknown.answer, operation);
+            assert.ok(!JSON.stringify(off.answer).includes(WORKFLOW_TEST_MODE_OFF_TEXT), operation);
+            assert.deepEqual(off.reads, [], `${operation}: nothing read`);
         }
     }
-    // An unknown operation names stop, and no test operation.
     const { host } = hostOf();
-    const unknown = JSON.parse(await updateWorkflowFromTool({ workflow_id: "wf", operation_id: "op-1", operation: "teleport" }, { callerSessionId: "parent", host }));
-    assert.match(unknown.error.message, /^operation must be replace_definition, .* or stop\.$/);
-    assert.ok(!unknown.error.message.includes("test_respond"));
     // stop is still taken: its own arguments are read and checked.
     const stop = JSON.parse(await updateWorkflowFromTool({ workflow_id: "wf", operation_id: "op-1", operation: "stop", grace_seconds: -1 },
         { callerSessionId: "parent", host }));

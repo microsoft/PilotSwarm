@@ -6,7 +6,8 @@
  * shows it again: PILOTSWARM_WORKFLOW_TEST_MODE, exactly `on`. Unset, empty or any other value: off.
  *
  * Off:
- * - the agent tool declares no test operation and the handler refuses one, in words (tools.ts);
+ * - the agent tool declares no test operation, and the handler answers one as an operation that does not exist (the unknown
+ *   operation's refusal, with no word of testing; review SF-7; tools.ts);
  * - a person's commands (Web API, MCP) answer them as operations that do not exist (the unknown operation's refusal,
  *   with no word of testing), the bootstrap capabilities and a read model's personCommands do not list them
  *   (human-commands.ts), so the portal and the terminal UI show no test controls and no test runs;
@@ -24,7 +25,7 @@ export const WORKFLOW_TEST_MODE_ENABLED = "on";
 /** The operations test mode adds to update_workflow (with stop, the milestone operations of a 1.9.0 host). */
 export const WORKFLOW_TEST_MODE_OPERATIONS: readonly string[] = ["test", "test_respond", "test_advance"];
 
-/** The refusal a test operation gets while test mode is off. */
+/** Words about testing being off, for an operator's log line; no surface answers a test operation with them (review SF-7). */
 export const WORKFLOW_TEST_MODE_OFF_TEXT = "Testing workflows is turned off on this server.";
 
 /** Whether test mode is on in `env`: exactly `on`. Pure. */

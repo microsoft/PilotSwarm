@@ -18,7 +18,7 @@ import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtim
 import { workflowStoreFailure } from "./failure.js";
 import { redactWorkflowErrorValue } from "./redact.js";
 import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
-import { resolveWorkflowTestMode, WORKFLOW_TEST_MODE_OFF_TEXT } from "./test-mode-switch.js";
+import { resolveWorkflowTestMode } from "./test-mode-switch.js";
 import {
     advanceWorkflowV2Test,
     compileWorkflowV2ForHost,
@@ -462,15 +462,13 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>, options: 
 
 /**
  * The refusal of an operation this host does not take. A host that takes the milestone operations names them too, as
- * its tool description does: stop, and the test operations only while workflow test mode is on (test-mode-switch.ts);
- * a test operation while it is off is refused in words.
+ * its tool description does: stop, and the test operations only while workflow test mode is on (test-mode-switch.ts).
+ * A test operation while it is off gets this same refusal, with no word of testing (review SF-7).
  */
-function unknownOperationError(operation: unknown, options: { milestone?: boolean; testing?: boolean }): WorkflowStoreError {
+function unknownOperationError(_operation: unknown, options: { milestone?: boolean; testing?: boolean }): WorkflowStoreError {
     const { definition, run, agent, milestone } = UPDATE_WORKFLOW_OPERATIONS;
     const extra = options.milestone !== true ? [] : options.testing === false ? milestone.filter(item => !TEST_OPERATIONS.has(item)) : milestone;
-    const off = options.milestone === true && options.testing === false && typeof operation === "string" && TEST_OPERATIONS.has(operation);
-    return new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
-        `${off ? `${WORKFLOW_TEST_MODE_OFF_TEXT} ` : ""}operation must be ${operationWords([...definition, ...run, ...agent, ...extra])}.`);
+    return new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `operation must be ${operationWords([...definition, ...run, ...agent, ...extra])}.`);
 }
 
 const RUN_COMMANDS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.run);
@@ -489,7 +487,8 @@ const TEST_OPERATIONS: ReadonlySet<string> = new Set(UPDATE_WORKFLOW_OPERATIONS.
 
 /**
  * The refusal of a test operation on a host that runs controller 1.9.0 while workflow test mode is off (spec 16;
- * test-mode-switch.ts), in words, before any workflow is read; null for every other operation and host.
+ * test-mode-switch.ts), before any workflow is read: the refusal an unknown operation gets, with no word of testing
+ * (review SF-7). Null for every other operation and host.
  */
 export function workflowTestModeRefusal(operation: unknown, host: Pick<WorkflowToolHost, "requests" | "testMode">): WorkflowStoreError | null {
     if (host.requests !== true || typeof operation !== "string" || !TEST_OPERATIONS.has(operation) || resolveWorkflowTestMode(host.testMode)) return null;
