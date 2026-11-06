@@ -2840,9 +2840,9 @@ const OWNED_MODELS = {
 /**
  * The session and its Workflows (OWNED_ROWS), with each Workflow's read model and events. Messages a person sends to the
  * session are recorded (`messages`: { prompt, options }), and `onMessage` may answer one (Run again: the chat starts
- * another Workflow, here by adding its row to `rows`).
+ * another Workflow, here by adding its row to `rows`). `models` replaces OWNED_MODELS (each Workflow's read model).
  */
-async function routeOwned(page, { onMessage = null } = {}) {
+async function routeOwned(page, { onMessage = null, models = OWNED_MODELS } = {}) {
     const rows = [...OWNED_ROWS];
     const messages = [];
     await routeApi(page, { workflowEvents: V2_EVENTS, onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: V2_READ_MODEL } }) });
@@ -2860,7 +2860,7 @@ async function routeOwned(page, { onMessage = null } = {}) {
             return answer({ accepted: true });
         }
         for (const row of rows) {
-            const model = OWNED_MODELS[row.sessionId] ?? { ...V2_READ_MODEL, workflowId: row.sessionId };
+            const model = models[row.sessionId] ?? { ...V2_READ_MODEL, workflowId: row.sessionId };
             if (pathname.endsWith(`/sessions/${row.sessionId}/workflow`) && req.method() === "GET") return answer(model);
             if (pathname.includes(`/sessions/${row.sessionId}/events`)) {
                 return answer(row.sessionId === OWNED.unstarted ? [] : [{ ...V2_EVENTS[0], sessionId: row.sessionId,
@@ -3062,6 +3062,146 @@ test("UI-F2: a reload whose session list arrives after the profile still shows t
     expect(saved.entries[saved.index]).toMatchObject({ sessionId: AGENT_ID, workflowTab: { workflowId: OWNED.failed, definition: "watch-v2" } });
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// Owner feedback 2026-11-06T13:43Z (from his iPhone, a running hacker-news-top-trends #7): "Optimize a bit for mobile
+// screen. The buttons should be icons not text (both mobile and desktop). No text, just hover tooltip. No point in having
+// a workflow count next to the definition. Just have the drop down with list of workflows. Count can be represented
+// within that drop down somehow." Coordinator decisions: F1 every header and toolbar button an icon with an aria-label
+// (its old words) and a "name — explanation" tooltip (hover; a long-press on touch, as the top bar's icons); the
+// Definition | Workflows switch two icon toggles (aria-pressed); F2 no count on the switch, the count in the Workflow
+// picker (one group "N Workflows", newest first, "#n · state · start"; closed "#n of N"); a phone (≤ 600 px) gets two
+// header rows above the graph (graph top within about 150 px of the tab's top), the meta line relocated to the state
+// (time taken) and its tooltip (start, revision). The first test only measures and takes the screenshots, so it also
+// runs against an older build (the "before" numbers); the second asserts.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "owner 13:43Z" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+/** The owner's case: a running Workflow its person may pause and stop (#1 of watch-v2's two). */
+const OWNED_MODELS_WITH_CONTROLS = {
+    ...OWNED_MODELS,
+    [OWNED.running]: { ...OWNED_MODELS[OWNED.running],
+        personCommands: { operations: ["pause", "resume", "stop", "cancel"], viewer: { allowed: true }, run: { runId: "run-1", stop: true } } },
+};
+const OWNER_1343_VIEWPORTS = [{ width: 1440, height: 900 }, { width: 390, height: 844 }];
+/** How far the graph's top is below the Workflow tab's top, in px. */
+const graphTopBelowTab = async (page) => {
+    const tab = await workflowTab(page).boundingBox();
+    const graph = await workflowTab(page).getByRole("group", { name: "Workflow graph" }).boundingBox();
+    return Math.round(graph.y - tab.y);
+};
+for (const viewport of OWNER_1343_VIEWPORTS) {
+    test(`owner 13:43Z measure: how far the graph starts below the Workflow tab's top, Workflow and Definition views, at ${viewport.width}px`, async ({ page }, testInfo) => {
+        await page.setViewportSize(viewport);
+        await routeOwned(page, { models: OWNED_MODELS_WITH_CONTROLS });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
+        const main = workflowTab(page);
+        await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
+        await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+        await expect(main.locator(".ps-wf-bar [data-operation='pause']")).toBeVisible();
+        const run = await graphTopBelowTab(page);
+        testInfo.annotations.push({ type: `graph-top-${viewport.width}-workflow`, description: `${run} px` });
+        console.log(`[owner 13:43Z] ${viewport.width}px Workflow view: graph top ${run} px below the tab's top`);
+        await shot(page, `owner-1343-workflow-${viewport.width}`);
+        await main.getByRole("button", { name: /^Definition$/ }).or(main.getByRole("tab", { name: /^Definition$/ })).first().click();
+        await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+        const definition = await graphTopBelowTab(page);
+        testInfo.annotations.push({ type: `graph-top-${viewport.width}-definition`, description: `${definition} px` });
+        console.log(`[owner 13:43Z] ${viewport.width}px Definition view: graph top ${definition} px below the tab's top`);
+        await shot(page, `owner-1343-definition-${viewport.width}`);
+    });
+
+    test(`owner 13:43Z: the header and toolbar buttons are icons with names and tooltips; the count is in the Workflow picker; a phone's graph starts high, at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const phone = viewport.width <= 600;
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await routeOwned(page, { models: OWNED_MODELS_WITH_CONTROLS });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
+        const main = workflowTab(page);
+        const shown = main.getByRole("combobox", { name: "Workflow", exact: true });
+        await expect(shown).toHaveValue(OWNED.running);
+        const bar = main.locator(".ps-wf-bar").first();
+        await expect(bar.locator("[data-operation='pause']")).toBeVisible();
+
+        // F1: no words on a header or toolbar button; each has a name; a Workflow tool button explains itself in its tooltip.
+        const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const checkIcons = async (names) => {
+            const buttons = main.locator(".ps-wf-tab-head button, .ps-wf-bar button");
+            const seen = await buttons.evaluateAll(elements => elements.filter(element => element.offsetParent !== null)
+                .map(element => ({ name: element.getAttribute("aria-label") ?? "", text: element.innerText.trim(), tool: element.classList.contains("ps-workflow-tool-button"),
+                    title: element.getAttribute("title") ?? "" })));
+            expect(seen.length).toBeGreaterThan(0);
+            for (const button of seen) {
+                expect(button.text, `${button.name}: no words on the button`).toBe("");
+                expect(button.name.length, "each has a name").toBeGreaterThan(0);
+                if (!button.tool) expect(button.title.length, `${button.name}: the canvas's own buttons keep their title`).toBeGreaterThan(0);
+            }
+            expect(seen.filter(button => button.tool).map(button => button.name)).toEqual(names);
+            for (const name of names) {
+                const button = main.getByRole("button", { name, exact: true });
+                if (phone) {
+                    // Touch, as the top bar's icons: a long-press shows the tooltip above the button; the target is 44 px.
+                    const box = await button.boundingBox();
+                    expect(Math.round(box.height)).toBeGreaterThanOrEqual(44);
+                    expect(Math.round(box.width)).toBeGreaterThanOrEqual(44);
+                    await button.dispatchEvent("pointerdown", { pointerType: "touch", clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 });
+                    await expect(page.getByRole("tooltip").filter({ hasText: new RegExp(`^${escape(name)} — .+`) })).toBeVisible();
+                    await button.dispatchEvent("pointerup", { pointerType: "touch" });
+                } else {
+                    await button.hover();
+                    await expect(page.getByRole("tooltip")).toHaveText(new RegExp(`^${escape(name)} — .+`));
+                    await page.mouse.move(2, 2);
+                    await expect(page.getByRole("tooltip")).toHaveCount(0);
+                }
+            }
+        };
+        await checkIcons(["Definition", "Workflows", "Pause", "Stop…"]);
+        await expect(viewSwitch(main, "Workflows")).toHaveAttribute("aria-pressed", "true");
+        await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "false");
+
+        // F2: no count on the switch or beside the definition; the Workflow picker has it: "2 Workflows", newest first, each
+        // "#n · state · start"; closed, "#1 of 2".
+        await expect(viewSwitch(main, "Workflows")).toHaveText("");
+        await expect.poll(() => main.getByRole("combobox", { name: "Workflow definition", exact: true }).locator("option").allTextContents())
+            .toEqual([expect.stringMatching(/^report-v2( · revision \d+)?$/), expect.stringMatching(/^watch-v2( · revision \d+)?$/), "New definition… (asks the chat)"]);
+        await expect(shown.locator("optgroup")).toHaveAttribute("label", "2 Workflows");
+        await expect.poll(() => shown.locator("optgroup option").allTextContents())
+            .toEqual([expect.stringMatching(/^#2 · Failed · \d/), expect.stringMatching(/^#1 · Running · \d/)]);
+        await expect(main.locator(".ps-wf-picker-face")).toHaveText("#1 of 2");
+
+        if (phone) {
+            // Two rows above the graph; the meta line is relocated: the time taken joins the state, its start and revision
+            // are in the state's tooltip.
+            expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(150);
+            await expect(bar.locator(".ps-wf-bar-text")).toHaveCount(0);
+            await expect(bar.locator(".ps-wf-state")).toHaveText(/^Running · \d+(:\d{2}){1,2}$/);
+            await expect(bar.locator(".ps-wf-state")).toHaveAttribute("title", /^Started \d.* · revision 1$/);
+            for (const control of [main.getByRole("combobox", { name: "Workflow definition", exact: true }), shown]) {
+                expect(await control.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
+            }
+            const rows = await main.locator(".ps-wf-tab-head, .ps-wf-bar.is-run").evaluateAll(elements => elements.map(element => element.getBoundingClientRect().height));
+            for (const height of rows) expect(height).toBeLessThan(60);
+        } else {
+            await expect(bar.locator(".ps-wf-bar-text")).toHaveText(/^revision 1 · \d/);
+            await expect(bar.locator(".ps-wf-state")).toHaveText("Running");
+        }
+        await shot(page, `owner-1343-icons-workflow-${viewport.width}`);
+
+        // The Definition view's toolbar: Start another… (watch-v2 has started), YAML and Compare, icons too.
+        await viewSwitch(main, "Definition").click();
+        await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+        await checkIcons(["Definition", "Workflows", "Start another…", "YAML", "Compare"]);
+        if (phone) expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(150);
+        await shot(page, `owner-1343-icons-definition-${viewport.width}`);
+        // Stop's dialog keeps its words.
+        await viewSwitch(main, "Workflows").click();
+        await main.getByRole("button", { name: "Stop…", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: /^Stop watch-v2 #1$/ });
+        await expect(dialog.getByRole("button", { name: "Keep running", exact: true })).toHaveText("Keep running");
+        await dialog.getByRole("button", { name: "Keep running", exact: true }).click();
+        expect(errors).toEqual([]);
+    });
+}
 
 test("layout: on a phone the Workflow pane lies over the chat, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });

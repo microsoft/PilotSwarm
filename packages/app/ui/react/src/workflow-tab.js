@@ -28,6 +28,7 @@ import {
 } from "./workflow-v2-panels.js";
 import { WorkflowGraph } from "./workflow-graph.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
+import { PHONE_MEDIA_QUERY, useMediaQuery } from "./use-media-query.js";
 import { ModalDialog } from "./modal-dialog.js";
 
 const h = React.createElement;
@@ -89,10 +90,11 @@ function shownTime(value) {
     return formatLocalTime(ms, { clock: today });
 }
 
-/** The tone class of a state chip. */
-function StateChip({ state, className = "" }) {
+/** The tone class of a state chip. `text` replaces its label (a phone adds the time taken); `title` says more on hover. */
+function StateChip({ state, className = "", text = null, title = null }) {
     if (!state) return null;
-    return h("span", { className: `ps-wf-state is-${state.tone}${className ? ` ${className}` : ""}`, "data-state": state.key }, state.label);
+    return h("span", { className: `ps-wf-state is-${state.tone}${className ? ` ${className}` : ""}`, "data-state": state.key, title: title || undefined },
+        text ?? state.label);
 }
 
 /**
@@ -100,6 +102,8 @@ function StateChip({ state, className = "" }) {
  * tab's header when the tab is in the right block (owner, 2026-11-06T06:28Z); none where it is shown in the middle.
  */
 export function WorkflowTab({ controller, mobile = false, modeButtons = null }) {
+    // Owner, 2026-11-06T13:43Z: on a phone (600 px or less) the graph gets the height: two header rows, no meta line.
+    const phone = useMediaQuery(PHONE_MEDIA_QUERY) && mobile;
     const context = useControllerSelector(controller, selectWorkflowTabContext, workflowTabContextEqual);
     const byId = useControllerSelector(controller, state => state.sessions.byId);
     const views = useControllerSelector(controller, state => state.ui.workflowViews);
@@ -150,7 +154,8 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null }) 
                 h("p", { className: "ps-wf-empty-title" }, "No workflow definitions."),
                 h("p", null, "Ask the chat to create one.")));
     }
-    return h("section", { className: `ps-wf-tab${mobile ? " is-mobile" : ""}`, "aria-label": "Workflow", "data-view": view, "data-definition": definition.name },
+    return h("section", { className: `ps-wf-tab${mobile ? " is-mobile" : ""}${phone ? " is-phone" : ""}`, "aria-label": "Workflow", "data-view": view,
+        "data-definition": definition.name },
         h("header", { className: "ps-wf-tab-head" },
             h(DefinitionPicker, { definitions, chosen: definition.name, views,
                 onChoose: name => setTab({ definition: name, workflowId: null }), onNew: () => askChat("Create a new workflow definition: ") }),
@@ -166,7 +171,7 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null }) 
             ? h(DefinitionView, { key: definition.newestId, controller, definition, tab, setTab, mobile, ownerTitle: byId?.[ownerId]?.title ?? null,
                 ownerWorking: ownerId ? workflowParentWorking(byId?.[ownerId]) : false, onStarted: id => openWorkflow(id), askChat })
             : workflow
-                ? h(WorkflowRunView, { key: workflow.sessionId, controller, definition, workflow, tab, setTab, mobile, onOpen: openWorkflow,
+                ? h(WorkflowRunView, { key: workflow.sessionId, controller, definition, workflow, tab, setTab, mobile, phone, onOpen: openWorkflow,
                     nodeStateId: context.nodeStateId })
                 : h(WorkflowList, { controller, definition, byId, views, onOpen: openWorkflow, onStart: () => setTab({ view: "definition", start: true }),
                     onAnother: () => setTab({ view: "definition", another: true }) }));
@@ -517,7 +522,7 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
 }
 
 /** One Workflow (08): its header, controls by state, its failure first, its graph and its bottom panel. */
-function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, onOpen, nodeStateId = null }) {
+function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile, phone = false, onOpen, nodeStateId = null }) {
     const child = useWorkflowChild(controller, workflow.sessionId);
     const { sessionId, session, view, places, events, projection, readModel, readError } = child;
     // Live while it is shown, also when its session's chat is the active session (the companion subscription).
@@ -556,12 +561,18 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
         [controller, sessionId]);
     const onGraphView = React.useCallback(graphView => controller.dispatch({ type: "ui/workflowView", sessionId, view: { graphView } }), [controller, sessionId]);
     const number = workflow.number;
+    const started = times.started !== null ? shownTime(times.started) : null;
+    const took = times.took !== null ? workflowElapsedText(times.took) : null;
     return h("div", { className: "ps-wf-body", "data-session-id": sessionId },
-        h("div", { className: "ps-wf-bar" },
+        h("div", { className: "ps-wf-bar is-run" },
             h(WorkflowNumberPicker, { controller, definition, chosen: sessionId, onOpen }),
-            h(StateChip, { state }),
-            h("span", { className: "ps-wf-bar-text" }, [revision !== null ? `revision ${revision}` : null,
-                times.started !== null ? shownTime(times.started) : null, times.took !== null ? workflowElapsedText(times.took) : null].filter(Boolean).join(" · ")),
+            // A phone's second header row: the time taken joins the state ("Running · 2:45"); its start and revision move to
+            // the state's tooltip and the picker's options (owner, 2026-11-06T13:43Z: relocated, not removed).
+            phone
+                ? h(StateChip, { state, text: state ? [state.label, took].filter(Boolean).join(" · ") : null,
+                    title: [started ? `Started ${started}` : null, revision !== null ? `revision ${revision}` : null].filter(Boolean).join(" · ") })
+                : h(StateChip, { state }),
+            phone ? null : h("span", { className: "ps-wf-bar-text" }, [revision !== null ? `revision ${revision}` : null, started, took].filter(Boolean).join(" · ")),
             // Owner, 2026-11-06T13:43Z (F1): icons; a refused or waiting control explains why in its tooltip.
             h("span", { className: "ps-wf-bar-actions" },
                 pause ? h(WorkflowToolButton, { label: pause.label, glyph: "pause", "data-operation": "pause", disabled: !pause.enabled,

@@ -12940,6 +12940,29 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-tab.is-mobile { position: relative; }
 .ps-wf-back { min-height: 44px; }
 .ps-wf-tab.is-mobile .ps-workflow-input { font-size: 16px; }
+/* Owner, 2026-11-06T13:43Z: on a phone (600 px or less) the graph gets the height. Two header rows: the definition
+   picker (it gives way, with an ellipsis), the view icons and the full screen icon; then the Workflow picker, its state
+   (with the time taken) and the action icons. No meta line (its start and revision are in the state's tooltip and the
+   picker's options). Buttons and pickers are 44 px targets; pickers keep 16 px text (iOS does not zoom). */
+.ps-wf-tab.is-phone .ps-wf-tab-head,
+.ps-wf-tab.is-phone .ps-wf-bar.is-run,
+.ps-wf-tab.is-phone .ps-wf-body > .ps-wf-bar:first-child { flex-wrap: nowrap; gap: 6px; padding: 4px 8px; }
+.ps-wf-tab.is-phone .ps-wf-tab-head > .ps-wf-picker { flex: 1 1 auto; min-width: 0; }
+.ps-wf-tab.is-phone .ps-wf-picker-select { width: 100%; min-height: 44px; text-overflow: ellipsis; }
+.ps-wf-tab.is-phone .ps-wf-picker-face { min-height: 44px; }
+.ps-wf-tab.is-phone .ps-wf-switch,
+.ps-wf-tab.is-phone .ps-wf-bar-actions { flex: none; }
+.ps-wf-tab.is-phone .ps-wf-tab-modes { flex: none; margin-left: 0; }
+.ps-wf-tab.is-phone .ps-wf-bar .ps-wf-state {
+  display: inline-block;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-wf-tab.is-phone .ps-wf-bar-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-wf-tab.is-phone .ps-wf-tab-head .ps-mini-button.ps-workflow-tool-button,
+.ps-wf-tab.is-phone .ps-wf-bar .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
 
 /* Dialogs: Start (11) and Stop (W9). */
 .ps-wf-dialog-body { display: grid; gap: 12px; padding: 12px 20px; }
