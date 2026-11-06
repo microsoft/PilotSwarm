@@ -833,8 +833,17 @@ export class PortalRuntime {
                 }
                 const read = await this.transport.readWorkflow(safeParams.sessionId, readOptions);
                 const viewer = this._workflowCommandViewer(gate.snapshot, isAdmin);
-                const view = viewer.allowed ? read : workflowV2ReaderView(read);
-                if (!view || typeof view !== "object" || !view.personCommands || typeof view.personCommands !== "object") return view;
+                const readerView = viewer.allowed ? read : workflowV2ReaderView(read);
+                if (!readerView || typeof readerView !== "object" || Array.isArray(readerView)) return readerView;
+                // Review SF-D4: whether this viewer may read the Workflow's owner-only files (its whole base instructions),
+                // on every Workflow read, whether or not the deployment takes a person's workflow commands; the portal shows
+                // the owner-only summary otherwise. The file stays gated on each read of it.
+                const overview = !["cursor", "executionId", "kvRevision", "kvKey", "agentVersions", "definitionRevision", "stepInput"]
+                    .some((key) => readOptions[key] !== undefined);
+                const view = overview
+                    ? { ...readerView, ownerOnlyArtifacts: { readable: this._ownerOnlyArtifactsReadable(gate?.snapshot ?? null, isAdmin) } }
+                    : readerView;
+                if (!view.personCommands || typeof view.personCommands !== "object") return view;
                 const { draft, ...personCommands } = view.personCommands;
                 return { ...view, personCommands: { ...personCommands, ...(viewer.allowed && draft !== undefined ? { draft } : {}), viewer } };
             }

@@ -80,7 +80,8 @@ test("the session:read gate decides before the workflow is read, with not-found 
     assert.equal(runtime.authz.enforce, true);
 
     // The owner reads it, with and without a run; the run is passed to the transport's lookup only after the gate.
-    assert.deepEqual(await runtime.call("readWorkflow", { sessionId: "s1" }, as("alice")), { workflowId: "s1", run: null });
+    // An overview read also says whether the viewer may read the Workflow's owner-only files (review SF-D4).
+    assert.deepEqual(await runtime.call("readWorkflow", { sessionId: "s1" }, as("alice")), { workflowId: "s1", run: null, ownerOnlyArtifacts: { readable: true } });
     await runtime.call("readWorkflow", { sessionId: "s1", runId: "run-1" }, as("alice"));
     await assert.rejects(runtime.call("readWorkflow", { sessionId: "s1", runId: "not-a-run" }, as("alice")),
         (error) => error.code === "RUN_NOT_FOUND" && error.status === 404);
@@ -515,7 +516,7 @@ test("R2-SF-2 and S-SF-F2: a reader who cannot change the workflow gets only its
     try {
         // The owner: the whole view, by the runtime and by the web-backed client (the MCP server's web mode).
         for (const view of [await runtime.call("readWorkflow", { sessionId: "wf1" }, as("alice")), await client("alice").readWorkflow("wf1")]) {
-            assert.deepEqual(view, sentinelView("wf1"));
+            assert.deepEqual(view, { ...sentinelView("wf1"), ownerOnlyArtifacts: { readable: true } });
         }
         // A reader: no sentinel anywhere, by the runtime, the GET route and the web-backed client.
         const reads = [
@@ -541,8 +542,9 @@ test("R2-SF-2 and S-SF-F2: a reader who cannot change the workflow gets only its
                 { severity: "error", code: "WORKFLOW_SCHEMA_INVALID", message: "This version has an error. People who can change this workflow see where and why." },
                 { severity: "warning", code: "WORKFLOW_FAILURE_UNHANDLED", message: "This version has a warning. People who can change this workflow see where and why." },
             ]);
-            // The rest is as read.
-            assert.deepEqual({ ...view, graph: undefined, revision: undefined }, { ...sentinelView("wf1"), graph: undefined, revision: undefined });
+            // The rest is as read, with the reader's owner-only decision (review SF-D4: a reader it is shared with may not).
+            assert.deepEqual({ ...view, graph: undefined, revision: undefined },
+                { ...sentinelView("wf1"), graph: undefined, revision: undefined, ownerOnlyArtifacts: { readable: false } });
             assert.equal(view.revision.valid, false);
         }
     } finally {

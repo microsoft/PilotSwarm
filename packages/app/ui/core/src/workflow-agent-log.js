@@ -28,13 +28,16 @@ export const WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY = "Only this Workflow's owner
 
 /**
  * Whether the signed-in viewer may read a Workflow's whole base instructions: its owner or an admin (session:manage),
- * as the portal's Workflow read reports it (`personCommands.viewer`, the decision that also gates its commands). A
- * share reads the summary row only (review SF-3); the server refuses the file to it whatever this says. A read model
- * with no viewer (the terminal UI, or one not read yet) refuses nothing here.
+ * as the portal's Workflow read reports it on every read (`ownerOnlyArtifacts.readable`, review SF-D4; earlier reads
+ * carried only `personCommands.viewer`, present when the deployment takes a person's commands). A share reads the
+ * summary row only (review SF-3); the server refuses the file to it whatever this says. Fail closed: a read with no
+ * decision (not read yet, an older server) shows the owner-only summary and asks for no file.
  */
 export function workflowBaseInstructionsReadable(readModel) {
-    const viewer = isRecord(readModel) && isRecord(readModel.personCommands) ? readModel.personCommands.viewer : null;
-    return !(isRecord(viewer) && viewer.allowed === false);
+    if (!isRecord(readModel)) return false;
+    if (isRecord(readModel.ownerOnlyArtifacts) && typeof readModel.ownerOnlyArtifacts.readable === "boolean") return readModel.ownerOnlyArtifacts.readable;
+    const viewer = isRecord(readModel.personCommands) ? readModel.personCommands.viewer : null;
+    return isRecord(viewer) && viewer.allowed === true;
 }
 
 const BASE_SUMMARY = /^\[SYSTEM: Copilot SDK rebuilt the full system prompt for model input\. Full content omitted from CMS \((\d+) chars\)\. Snippet: ([\s\S]*)\]$/;

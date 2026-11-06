@@ -169,8 +169,13 @@ test("the portal's Base instructions row reads the kept text when opened, and sa
 test("a reader who is not the Workflow's owner sees the summary row only; opening it reads nothing", () => {
     assert.equal(workflowBaseInstructionsReadable({ personCommands: { viewer: { allowed: true, reason: null } } }), true);
     assert.equal(workflowBaseInstructionsReadable({ personCommands: { viewer: { allowed: false, reason: "Only the session owner (Alice) can do this." } } }), false);
-    assert.equal(workflowBaseInstructionsReadable({ personCommands: {} }), true, "no viewer decision (the terminal UI): the server decides");
-    assert.equal(workflowBaseInstructionsReadable(null), true);
+    // Review SF-D4: the decision every portal Workflow read carries, whether or not commands are on; none is a no (fail closed).
+    assert.equal(workflowBaseInstructionsReadable({ ownerOnlyArtifacts: { readable: true } }), true);
+    assert.equal(workflowBaseInstructionsReadable({ ownerOnlyArtifacts: { readable: false }, personCommands: { viewer: { allowed: true } } }), false,
+        "the owner-only decision wins over the command decision");
+    assert.equal(workflowBaseInstructionsReadable({ personCommands: {} }), false, "no decision: the owner-only summary, no file asked for");
+    assert.equal(workflowBaseInstructionsReadable({}), false);
+    assert.equal(workflowBaseInstructionsReadable(null), false);
     const withBase = [...chat.slice(0, 2), base(2.1, "17:40:02"), ...chat.slice(2)];
     const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, withBase]]), runId: "run-1", now: NOW });
     const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { openBodies: true, log, nodeId: "talk", readInstructions: () => ({ ownerOnly: true }),

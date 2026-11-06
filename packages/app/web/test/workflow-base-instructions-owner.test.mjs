@@ -105,3 +105,19 @@ for (const enforce of [true, false]) {
         assert.deepEqual(writes, [["upload", "wfw", "notes.md"], ["upload", "wfw", NAME]]);
     });
 }
+
+// Review SF-D4: with a person's workflow commands off (no personCommands in the read), a shared reader was still offered
+// the whole base instructions (the portal read a missing viewer decision as yes) and got a 403. Every Workflow read now
+// carries the viewer's owner-only decision, whether or not commands are on.
+for (const enforce of [true, false]) {
+    test(`every Workflow read says whether the viewer may read its owner-only files, with commands off (ownership switch ${enforce ? "on" : "off"})`, async () => {
+        const { runtime } = runtimeWith({ enforce });
+        runtime.transport.readWorkflow = async (sessionId) => ({ workflowId: sessionId, runs: [], run: null });
+        const read = (subject, role) => runtime.call("readWorkflow", { sessionId: "wf" }, as(subject, role));
+        assert.deepEqual((await read("alice")).ownerOnlyArtifacts, { readable: true }, "the owner");
+        assert.deepEqual((await read("ada", "admin")).ownerOnlyArtifacts, { readable: true }, "an admin");
+        const shared = await read("bob");
+        assert.deepEqual(shared.ownerOnlyArtifacts, { readable: false }, "a reader it is shared with");
+        assert.equal(shared.personCommands, undefined, "commands are off");
+    });
+}

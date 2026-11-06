@@ -196,10 +196,11 @@ for (const enforce of [true, false]) {
         assert.equal(Object.hasOwn(reader, "draft"), false, "a reader gets no YAML");
         assert.deepEqual(reader.operations, ["replace_definition", "publish"]);
         assert.equal(reader.viewer.allowed, false);
-        // A read model without it (the deployment takes no person's commands) is returned as it is.
+        // A read model without it (the deployment takes no person's commands) is returned as it is, with the viewer's
+        // owner-only decision that every overview read carries (review SF-D4).
         personCommands = null;
         const plain = await runtime.call("readWorkflow", { sessionId: "s1" }, as("alice"));
-        assert.deepEqual(plain, { workflowId: "s1", runs: [], run: null });
+        assert.deepEqual(plain, { workflowId: "s1", runs: [], run: null, ownerOnlyArtifacts: { readable: true } });
         assert.equal(reads.length, 7);
         assert.equal(calls.length, 0, "reading sends no command");
     });
