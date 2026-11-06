@@ -12363,5 +12363,5 @@ textarea.ps-link-input {
 .ps-swipe-hint-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 @media (max-width: 920px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-web-shell { overflow-x: clip; }
-  .ps-workspace { will-change: transform; touch-action: pan-y pinch-zoom; }
+  .ps-workspace { will-change: transform; }
 }
