@@ -1289,12 +1289,38 @@ export class PilotSwarmWorker {
      *      unmarked sessions whose local files may be the only copy.
      *   4. Exit — anything still leased lapses within the duroxide session
      *      lock timeout.
+     *
+     * Bounded (FU-11): every step races one deadline, the drain budget plus
+     * PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS (15 s by default) for the release
+     * and the closes. A step still waiting then (a database or blob call that
+     * hangs, as under a cluster DNS fault) is left behind and this returns,
+     * so the caller exits whatever the database does. The configuration and
+     * heartbeat timer stops once the runtime has drained.
      */
     async gracefulShutdown(): Promise<void> {
         this._stopRequested = true;
         this._stopProviderPolling();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
+        const rawGraceMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS || "", 10);
+        const graceMs = Number.isFinite(rawGraceMs) && rawGraceMs >= 0 ? rawGraceMs : 15_000;
+        const deadline = Date.now() + drainBudgetMs + graceMs;
+        // One step of the shutdown, waited for until the deadline at most; a failure is the step's own to report.
+        const bounded = async (step: string, work: () => Promise<unknown>): Promise<void> => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const late = await Promise.race([
+                Promise.resolve().then(work).then(() => false, (err: any) => {
+                    console.warn(`[PilotSwarmWorker] shutdown: ${step} failed: ${err?.message ?? err}`);
+                    return false;
+                }),
+                new Promise<boolean>((resolve) => {
+                    timer = setTimeout(() => resolve(true), Math.max(0, deadline - Date.now()));
+                    timer.unref?.();
+                }),
+            ]);
+            if (timer) clearTimeout(timer);
+            if (late) console.error(`[PilotSwarmWorker] shutdown: ${step} did not finish by the drain deadline; exiting without it`);
+        };
 
         // Advertise draining before the runtime drain so operators see the
         // phase for the duration of the drain window. Best-effort AND
@@ -1309,26 +1335,41 @@ export class PilotSwarmWorker {
         }
 
         if (this.runtime) {
-            try { await this._runtimeStartup; } catch {}
+            const runtime = this.runtime;
             console.error(`[PilotSwarmWorker] draining: waiting up to ${drainBudgetMs}ms for in-flight turns...`);
-            await this.runtime.shutdown(drainBudgetMs);
+            await bounded("the runtime drain", async () => {
+                try { await this._runtimeStartup; } catch {}
+                await runtime.shutdown(drainBudgetMs);
+            });
             this.runtime = null;
             this._runtimeStartup = null;
+        }
+        // The heartbeat (configuration poll) and the eviction clock stop here, not at stop(): a release that hangs
+        // must not keep a draining worker reporting itself.
+        if (this._agentPackagesTimer) {
+            clearInterval(this._agentPackagesTimer);
+            this._agentPackagesTimer = null;
+        }
+        if (this._evictionTimer) {
+            clearInterval(this._evictionTimer);
+            this._evictionTimer = null;
         }
 
         // Session workspaces: idle workspace sessions tell their provider
         // they left before this worker goes (section 4.5). Sessions whose
         // turn the drain cut are skipped; the provider sees the dead holder
         // at the next attach.
-        try {
-            const released = await this.sessionManager.releaseIdleWorkspaces({
-                reason: "worker_shutdown",
-                workerNodeId: this.config.workerNodeId ?? os.hostname(),
-            });
-            if (released > 0) console.error(`[PilotSwarmWorker] drain released ${released} workspace session(s)`);
-        } catch (err: any) {
-            console.warn(`[PilotSwarmWorker] drain workspace release failed: ${err?.message ?? err}`);
-        }
+        await bounded("the workspace release", async () => {
+            try {
+                const released = await this.sessionManager.releaseIdleWorkspaces({
+                    reason: "worker_shutdown",
+                    workerNodeId: this.config.workerNodeId ?? os.hostname(),
+                });
+                if (released > 0) console.error(`[PilotSwarmWorker] drain released ${released} workspace session(s)`);
+            } catch (err: any) {
+                console.warn(`[PilotSwarmWorker] drain workspace release failed: ${err?.message ?? err}`);
+            }
+        });
 
         // Release everything this worker served, via the same lock-aware
         // sweep the eviction clock uses: committed sessions are deleted
@@ -1338,14 +1379,16 @@ export class PilotSwarmWorker {
         // dirs must not be deleted or archived out from under a still-
         // running body; the post-deploy retry self-validates instead.
         if (this.sessionStore) {
-            try {
-                const released = await this.sessionManager.sweepIdleSessions(1);
-                console.error(`[PilotSwarmWorker] drain released ${released} warm session(s)`);
-            } catch (err: any) {
-                console.warn(`[PilotSwarmWorker] drain release sweep failed: ${err?.message ?? err}`);
-            }
+            await bounded("the release sweep", async () => {
+                try {
+                    const released = await this.sessionManager.sweepIdleSessions(1);
+                    console.error(`[PilotSwarmWorker] drain released ${released} warm session(s)`);
+                } catch (err: any) {
+                    console.warn(`[PilotSwarmWorker] drain release sweep failed: ${err?.message ?? err}`);
+                }
+            });
         }
-        await this.stop();
+        await bounded("closing the worker", () => this.stop());
     }
 
     /** Destroy a session on this worker. */

@@ -176,7 +176,10 @@ if (mcpNames.length > 0) {
 // Graceful drain (lifecycle protocol §3.8): stop fetching, let in-flight
 // turns finish and commit within the drain budget, release warm sessions,
 // then exit. PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS sets the budget (60s
-// default); the pod's terminationGracePeriodSeconds must exceed it.
+// default); PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS (15s default) bounds the
+// release and closes after it, so the process exits by budget + grace even
+// when the database does not answer. The pod's terminationGracePeriodSeconds
+// (90s) must exceed both together.
 async function shutdown(signal) {
     console.log(`[worker] ${signal} received, draining...`);
     await worker.gracefulShutdown();
