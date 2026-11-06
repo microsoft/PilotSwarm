@@ -237,13 +237,24 @@ export function workflowFailure(run, { itemOf = null, summary = null } = {}) {
 }
 
 /**
- * F6: the execution that took a failure route to the run's terminal `terminal`: the step just before the terminal's own
- * (by step number), when it ended with a runtime error whose words say why; null otherwise.
+ * F6: the execution that took a failure route to the run's terminal `terminal`: the visit that ended last before the
+ * terminal's visit began, when it ended with a runtime error whose words say why; null otherwise. A row's `ordinal` is its
+ * visit number of that node (every node's first visit is 1), not a step number of the run, so the order is the visits'
+ * times (enteredAt, endedAt); a branch row's predecessorId names its visit before when the read gives it (r3, C17).
  */
 function failureRouteCause(rows, terminal) {
-    const steps = rows.filter(row => isRecord(row) && Number.isSafeInteger(row.ordinal)).sort((a, b) => a.ordinal - b.ordinal);
-    const end = [...steps].reverse().find(row => row.stateId === terminal) ?? null;
-    const before = (end ? steps.filter(row => row.ordinal < end.ordinal) : steps).at(-1) ?? null;
+    const at = value => { const ms = typeof value === "string" ? Date.parse(value) : NaN; return Number.isFinite(ms) ? ms : null; };
+    const visits = rows.filter(isRecord);
+    const ends = visits.filter(row => row.stateId === terminal);
+    const end = ends.sort((a, b) => (at(b.enteredAt) ?? 0) - (at(a.enteredAt) ?? 0))[0] ?? null;
+    let before = null;
+    if (end && typeof end.predecessorId === "string") before = visits.find(row => row.nodeExecutionId === end.predecessorId) ?? null;
+    if (!before) {
+        const endAt = end ? at(end.enteredAt) : null;
+        const candidates = visits.filter(row => row.stateId !== terminal && at(row.endedAt) !== null
+            && (endAt === null || at(row.endedAt) <= endAt));
+        before = candidates.sort((a, b) => (at(b.endedAt) - at(a.endedAt)) || ((at(b.enteredAt) ?? 0) - (at(a.enteredAt) ?? 0)))[0] ?? null;
+    }
     return before && before.stateId !== terminal && before.resultKind === "runtime_error" && workflowErrorWords(before.errorPreview) ? before : null;
 }
 
