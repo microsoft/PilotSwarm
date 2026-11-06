@@ -146,7 +146,8 @@ test("with the ownership switch off, other session:read operations are still onl
  * The actual HTTP route, end to end in-process: the generated Express route, the real PortalRuntime gate, the real
  * NodeSdkTransport.readWorkflow and the real PilotSwarmManagementClient.readWorkflow adapter (its runId validation, its
  * session lookup and readWorkflowV2View), over a stand-in catalog and workflow store (no database): alice owns every
- * session; wf1 is a version 2 workflow with a live run and run R; any other session is an agent session. The adapter has
+ * session; wf1 is a version 2 workflow with a live run, an earlier run R and a test run T kept from while test mode was on
+ * (which the read hides while it is off: review SF-5); any other session is an agent session. The adapter has
  * no options unless `config` is given (the test-only workflowCommands option, INACTIVE).
  */
 async function routeHarness({ config, enforce = true, shared = [] } = {}) {
@@ -157,7 +158,7 @@ async function routeHarness({ config, enforce = true, shared = [] } = {}) {
     const run = (runId, mode, status) => ({ runId, workflowSessionId: "wf1", mode, status, revision: 1, irSha256: "i", terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
         terminalOutput: null, terminalError: null, kvRevision: 0, kv: {}, controllerVersion: null, stop: null,
         testAgentMode: mode === "test" ? "mocked" : null, virtualNow: null, testScenario: null, deadlineAt: null });
-    const runs = [run("run-live", "live", "running"), run("R", "test", "running")];
+    const runs = [run("run-live", "live", "running"), run("R", "live", "completed"), run("T", "test", "running")];
     const store = {
         readDefinition: async () => ({ state: "published", semver: "1.0.0", currentRevision: 1, publishedRevision: 1, publishedYamlSha256: "h",
             publishedAgentPins: null }),
@@ -332,12 +333,19 @@ test("with the test-only workflowCommands option, the real adapter says which co
         // The run that was asked for is the one described.
         const test = await h.get("/sessions/wf1/workflow?runId=R");
         assert.deepEqual(test.body.result.personCommands.run, { runId: "R", stop: false });
+        // With test mode off (the default), a test run kept from while it was on is not listed, and its id is refused as an
+        // unknown run's is, over the route too (review SF-5).
+        assert.deepEqual(read.body.result.runs.map(item => item.runId), ["run-live", "R"]);
+        const hiddenTest = await h.get("/sessions/wf1/workflow?runId=T");
+        const unknown = await h.get("/sessions/wf1/workflow?runId=nope");
+        assert.deepEqual([hiddenTest.status, hiddenTest.body.error.code], [unknown.status, unknown.body.error.code]);
+        assert.deepEqual([hiddenTest.status, hiddenTest.body.error.code], [404, "RUN_NOT_FOUND"]);
         // An invalid run is still refused after the gate (400), and a reader without access still gets not-found.
         const invalid = await h.get("/sessions/wf1/workflow?runId=");
         assert.deepEqual([invalid.status, invalid.body.error.code], [400, "INVALID_REQUEST"]);
         const hidden = await h.get("/sessions/wf1/workflow", "bob");
         assert.deepEqual([hidden.status, hidden.body.error.code], [404, "NOT_FOUND"]);
-        assert.deepEqual(h.adapterCalls, [["wf1", {}], ["wf1", { runId: "R" }], ["wf1", { runId: "" }]]);
+        assert.deepEqual(h.adapterCalls, [["wf1", {}], ["wf1", { runId: "R" }], ["wf1", { runId: "T" }], ["wf1", { runId: "nope" }], ["wf1", { runId: "" }]]);
     } finally {
         await h.close();
     }
