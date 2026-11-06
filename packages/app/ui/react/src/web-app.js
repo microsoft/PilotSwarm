@@ -3259,6 +3259,13 @@ function useElementBox(ref) {
 // click handlers, and leaves "#" links, targets and downloads alone.
 const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[href],area[href]');if(!a||e.defaultPrevented||a.hasAttribute('download'))return;var h=a.getAttribute('href')||'';if(!h||h.charAt(0)==='#'||/^javascript:/i.test(h))return;var t=a.getAttribute('target');if(t&&t!=='_self')return;e.preventDefault();try{window.open(new URL(h,document.baseURI).href,'_blank','noopener')}catch(x){}});</script>`;
 
+// A pinch on a canvas zooms the canvas, not the page. Inside the frame the
+// browser's own pinch is switched off and the two fingers are reported to the
+// portal, which magnifies the frame within its box. A page that handles two
+// fingers itself (it calls preventDefault) keeps them.
+const CANVAS_PINCH_BRIDGE = `<style>html{touch-action:pan-x pan-y}</style><script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'canvas-pinch',phase:'start',x:p.x,y:p.y,d:p.d})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'canvas-pinch',phase:'move',x:p.x,y:p.y,d:p.d})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'canvas-pinch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',end,{passive:true});addEventListener('gesturestart',function(e){e.preventDefault()});addEventListener('gesturechange',function(e){e.preventDefault()})})();</script>`;
+const CANVAS_PINCH_MAX = 5;
+
 function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") {
@@ -3276,7 +3283,7 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             // retain native Tab behavior. A canvas gets the link guard; an
             // artifact preview keeps its exact document bytes.
             const bridge = (panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "")
-                + (linkGuard ? CANVAS_LINK_GUARD : "");
+                + (linkGuard ? CANVAS_LINK_GUARD + CANVAS_PINCH_BRIDGE : "");
             let parts = [bytes];
             if (bridge) {
                 const html = new TextDecoder().decode(bytes);
@@ -8228,6 +8235,31 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     const loadedBoxRef = React.useRef(null);
     const zoomRef = React.useRef(zoom);
     zoomRef.current = zoom;
+    // Pinch magnification of the live frame within its box: scale s about a
+    // translation (tx, ty), in host pixels. Applied straight to the frame's
+    // style so a moving pinch costs no React render.
+    const pinchRef = React.useRef({ s: 1, tx: 0, ty: 0, start: null });
+    const [pinched, setPinched] = React.useState(false);
+    const applyPinch = React.useCallback((animate = false) => {
+        const el = liveIframeElRef.current;
+        if (!el) return;
+        const { s: scale, tx, ty } = pinchRef.current;
+        const z = zoomRef.current || 1;
+        const base = z !== 1 ? ` scale(${z})` : "";
+        el.style.transition = animate ? "transform 180ms ease-out" : "";
+        el.style.transformOrigin = "top left";
+        el.style.transform = scale === 1 && !tx && !ty ? (base ? base.trim() : "") : `translate(${tx}px, ${ty}px) scale(${scale})${base}`;
+    }, []);
+    const resetPinch = React.useCallback(() => {
+        pinchRef.current = { s: 1, tx: 0, ty: 0, start: null };
+        applyPinch(true);
+        setPinched(false);
+    }, [applyPinch]);
+    // A new revision, or a change of the zoom setting, starts unmagnified.
+    React.useEffect(() => {
+        pinchRef.current = { s: 1, tx: 0, ty: 0, start: null };
+        setPinched(false);
+    }, [live?.url, zoom]);
     const visibleRef = React.useRef(visible);
     visibleRef.current = visible;
 
@@ -8255,6 +8287,41 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             // window that asked). Writes and actions stay live-frame only.
             const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow && stagingIframeElRef.current.dataset.session === sessionId);
             if (!fromLive && !fromStaging) return;
+            if (payload.type === "canvas-pinch") {
+                if (!fromLive) return;
+                const pinch = pinchRef.current;
+                const z = zoomRef.current || 1;
+                const box = hostRef.current?.getBoundingClientRect();
+                if (payload.phase === "start") {
+                    pinch.start = { s: pinch.s, x: Number(payload.x) || 0, y: Number(payload.y) || 0, d: Math.max(1, Number(payload.d) || 1) * pinch.s * z };
+                    return;
+                }
+                if (payload.phase === "move" && pinch.start && box) {
+                    // Where the fingers are on the host now, under the current
+                    // transform, and how far apart: keep the point first
+                    // touched under them while the scale follows their spread.
+                    const hx = pinch.tx + pinch.s * z * (Number(payload.x) || 0);
+                    const hy = pinch.ty + pinch.s * z * (Number(payload.y) || 0);
+                    const d = Math.max(1, Number(payload.d) || 1) * pinch.s * z;
+                    const next = Math.min(CANVAS_PINCH_MAX, Math.max(1, pinch.start.s * d / pinch.start.d));
+                    let tx = hx - next * z * pinch.start.x;
+                    let ty = hy - next * z * pinch.start.y;
+                    // Never let the page slide off its box: the magnified frame
+                    // always covers it edge to edge.
+                    tx = Math.min(0, Math.max(box.width * (1 - next), tx));
+                    ty = Math.min(0, Math.max(box.height * (1 - next), ty));
+                    Object.assign(pinch, { s: next, tx: next === 1 ? 0 : tx, ty: next === 1 ? 0 : ty });
+                    applyPinch(false);
+                    if (next > 1.02 && !pinched) setPinched(true);
+                    return;
+                }
+                if (payload.phase === "end") {
+                    pinch.start = null;
+                    if (pinch.s < 1.08) resetPinch();
+                    return;
+                }
+                return;
+            }
             if (payload.type === "moa-panel-key") {
                 if (fromLive && document.activeElement === frameEl && ["Tab", "Escape"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
                 return;
@@ -8614,7 +8681,16 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         }
         : undefined;
 
-    return React.createElement("div", { ref: hostRef, className: "ps-html-preview-host is-fitting" },
+    return React.createElement("div", { ref: hostRef, className: `ps-html-preview-host is-fitting${pinched ? " is-pinched" : ""}` },
+        pinched
+            ? React.createElement("button", {
+                type: "button",
+                className: "ps-canvas-pinch-reset",
+                onClick: resetPinch,
+                "aria-label": "Reset canvas zoom",
+                title: "Reset canvas zoom",
+            }, "1:1")
+            : null,
         [live, staging].filter(Boolean).map((frame) => React.createElement("iframe", {
             key: `canvas:${frame.rev}:${frame.url}`,
             ref: frame === live

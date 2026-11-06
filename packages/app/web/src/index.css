@@ -12367,3 +12367,24 @@ textarea.ps-link-input {
      finger is down, and clears it after. */
   .ps-web-shell { overflow-x: clip; }
 }
+
+/* ═══ Canvas pinch: zoom inside the canvas box, never the page ═══════════════ */
+.ps-html-preview-host.is-pinched { overflow: hidden; }
+.ps-canvas-pinch-reset {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  min-width: 44px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 88%, transparent);
+  color: var(--ps-foreground);
+  font: 600 13px/1 var(--ps-font-ui, system-ui, sans-serif);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+/* A pinch that starts on the canvas's own chrome must not zoom the page. */
+.ps-mobile-canvas-layer,
+.ps-canvas-pane { touch-action: pan-x pan-y; }
