@@ -18,13 +18,26 @@ const TITLE = "Investigate the nightly replication lag regression on the westus3
 
 test("a renamed agent session leads with the person's title in the list and the header", async ({ page }) => {
     await page.route("**/api/v1/agents", (route) => route.fulfill({ json: { ok: true, result: [{ name: "deepwiki", title: "DeepWiki Code Explorer" }] } }));
-    await page.route("**/management/sessions", async (route) => {
+    // Rewrite session 1 in whatever session list the page reads.
+    const relabel = (sessions) => sessions.map((session, index) => (index === 1
+        ? { ...session, agentId: "deepwiki", title: `DeepWiki Code Explorer: ${TITLE}` }
+        : session));
+    await page.route((url) => /\/api\//.test(url.pathname) && /sessions$/.test(url.pathname), async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
         const response = await route.fetch();
-        const json = await response.json();
-        const sessions = json.result.sessions.map((session, index) => (index === 1
-            ? { ...session, agentId: "deepwiki", title: `DeepWiki Code Explorer: ${TITLE}` }
-            : session));
-        return route.fulfill({ response, json: { ...json, result: { ...json.result, sessions } } });
+        const json = await response.json().catch(() => null);
+        const result = json?.result;
+        if (Array.isArray(result?.sessions)) return route.fulfill({ response, json: { ...json, result: { ...result, sessions: relabel(result.sessions) } } });
+        if (Array.isArray(json?.sessions)) return route.fulfill({ response, json: { ...json, sessions: relabel(json.sessions) } });
+        return route.fulfill({ response });
+    });
+    // The session's own detail read must agree, or it overwrites the row.
+    await page.route((url) => /\/api\/.*\/sessions\/11111111-[^/]+$/.test(url.pathname), async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        const response = await route.fetch();
+        const json = await response.json().catch(() => null);
+        if (!json?.result || typeof json.result !== "object") return route.fulfill({ response });
+        return route.fulfill({ response, json: { ...json, result: { ...json.result, agentId: "deepwiki", title: `DeepWiki Code Explorer: ${TITLE}` } } });
     });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(base);
