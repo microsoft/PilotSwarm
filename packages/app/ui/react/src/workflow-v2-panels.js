@@ -8,6 +8,7 @@ import {
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
+import { WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY } from "../../core/src/workflow-agent-log.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
@@ -392,15 +393,17 @@ function KvApplied({ execution, runId, kv }) {
 
 /**
  * A Base instructions row (finding 8): their length and first words; opened, their whole text, read from the artifact
- * the runtime kept on the Workflow (`row.instructions`), or a plain line that only the summary was kept.
+ * the runtime kept on the Workflow (`row.instructions`), or a plain line that only the summary was kept. A reader who is
+ * not the Workflow's owner (`readInstructions` answers `{ ownerOnly: true }`; review SF-3) is told so, and nothing is read.
  */
 function BaseInstructions({ row, readInstructions, onInstructions }) {
     const loaded = row.instructions && readInstructions ? readInstructions(row.instructions) : null;
     return h("details", { className: "ps-wf-alog-base", onToggle: event => {
-        if (event.currentTarget.open && row.instructions && onInstructions && !loaded?.text) onInstructions(row.instructions);
+        if (event.currentTarget.open && row.instructions && onInstructions && !loaded?.text && !loaded?.ownerOnly) onInstructions(row.instructions);
     } },
     h("summary", null, row.text),
     !row.instructions ? h("p", { className: "ps-wf-muted" }, "Only this summary was kept for this chat; its whole text was not.")
+        : loaded?.ownerOnly ? h("p", { className: "ps-wf-muted", "data-owner-only": "" }, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY)
         : loaded?.error ? h("p", { role: "alert" }, `The base instructions could not be read: ${loaded.error}`)
             : loaded?.text ? h("pre", { "data-base-instructions": row.instructions.artifact }, loaded.text)
                 : h("p", { className: "ps-wf-muted" }, loaded?.loading ? "Reading the base instructions…" : "Open to read the whole text."));

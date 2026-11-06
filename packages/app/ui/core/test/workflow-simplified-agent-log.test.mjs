@@ -9,8 +9,8 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-    WORKFLOW_AGENT_LOG_FOLD, WORKFLOW_AGENT_LOG_NOTE, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructions, workflowLogFold,
-    workflowPromptVisit,
+    WORKFLOW_AGENT_LOG_FOLD, WORKFLOW_AGENT_LOG_NOTE, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY, workflowAgentLogChats, workflowAgentNodeLog,
+    workflowBaseInstructions, workflowBaseInstructionsReadable, workflowLogFold, workflowPromptVisit,
 } from "../src/workflow-agent-log.js";
 import { WorkflowV2AgentLog } from "../../react/src/workflow-v2-panels.js";
 
@@ -159,4 +159,22 @@ test("the portal's Base instructions row reads the kept text when opened, and sa
     assert.ok(read.includes(`data-base-instructions="${KEPT.artifact}"`) && read.includes("The whole composed text."));
     const failed = render(() => ({ loading: false, text: null, error: "Forbidden" }));
     assert.ok(failed.includes("The base instructions could not be read: Forbidden"));
+});
+
+// Review SF-3: only the Workflow's owner (or an admin; session:manage, the decision the portal's Workflow read reports as
+// personCommands.viewer) reads the whole base instructions. A reader it is shared with sees the summary row; opened, it
+// says who can read the whole text, and nothing is read. The server refuses the file to that reader whatever the page does.
+test("a reader who is not the Workflow's owner sees the summary row only; opening it reads nothing", () => {
+    assert.equal(workflowBaseInstructionsReadable({ personCommands: { viewer: { allowed: true, reason: null } } }), true);
+    assert.equal(workflowBaseInstructionsReadable({ personCommands: { viewer: { allowed: false, reason: "Only the session owner (Alice) can do this." } } }), false);
+    assert.equal(workflowBaseInstructionsReadable({ personCommands: {} }), true, "no viewer decision (the terminal UI): the server decides");
+    assert.equal(workflowBaseInstructionsReadable(null), true);
+    const withBase = [...chat.slice(0, 2), base(2.1, "17:40:02"), ...chat.slice(2)];
+    const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, withBase]]), runId: "run-1", now: NOW });
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", readInstructions: () => ({ ownerOnly: true }),
+        onInstructions: null }));
+    assert.match(html, /<details class="ps-wf-alog-base"><summary>48,210 characters: You are the GitHub Copilot CLI/);
+    assert.ok(html.includes(WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY.replace("'", "&#x27;")) && html.includes("data-owner-only"));
+    assert.equal(WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY, "Only this Workflow's owner can read the whole text.");
+    assert.ok(!html.includes("Open to read the whole text.") && !html.includes("data-base-instructions="));
 });

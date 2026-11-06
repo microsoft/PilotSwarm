@@ -22,6 +22,20 @@ export const WORKFLOW_AGENT_LOG_FOLD = 600;
 export const WORKFLOW_AGENT_LOG_NOTE = "Prompt rows are what the agent was given, its base instructions first; Agent rows are what it did.";
 
 /** The summary the runtime records for the SDK's echo of the full system prompt (session-proxy summarizeSdkSystemPromptEchoEvent). */
+/** What a reader who is not the Workflow's owner sees in an opened Base instructions row (review SF-3). */
+export const WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY = "Only this Workflow's owner can read the whole text.";
+
+/**
+ * Whether the signed-in viewer may read a Workflow's whole base instructions: its owner or an admin (session:manage),
+ * as the portal's Workflow read reports it (`personCommands.viewer`, the decision that also gates its commands). A
+ * share reads the summary row only (review SF-3); the server refuses the file to it whatever this says. A read model
+ * with no viewer (the terminal UI, or one not read yet) refuses nothing here.
+ */
+export function workflowBaseInstructionsReadable(readModel) {
+    const viewer = isRecord(readModel) && isRecord(readModel.personCommands) ? readModel.personCommands.viewer : null;
+    return !(isRecord(viewer) && viewer.allowed === false);
+}
+
 const BASE_SUMMARY = /^\[SYSTEM: Copilot SDK rebuilt the full system prompt for model input\. Full content omitted from CMS \((\d+) chars\)\. Snippet: ([\s\S]*)\]$/;
 
 /**

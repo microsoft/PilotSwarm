@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactWorkflowSecrets } from "./redact.js";
 
 /**
  * A workflow agent node chat's base instructions (owner feedback 2026-11-06, finding 8: the agent node's Log shows "the
@@ -9,6 +10,10 @@ import { createHash } from "node:crypto";
  * that continues) and every node with the same instructions share one copy. The summary event names it
  * (`baseInstructions`), and the Log reads it when a person opens the row. No schema change: artifacts are the
  * existing blob store.
+ *
+ * Review SF-3: the kept text is the echo with its secrets hidden (redactWorkflowSecrets: secret-shaped values, a URL's
+ * user part), and only the Workflow's owner reads it (session:manage; isOwnerOnlyArtifact names such a file on every
+ * surface); a share sees the summary row only.
  */
 
 /** The first words of the system prompt the Copilot SDK composes (its echo is recognised by them). */
@@ -20,6 +25,11 @@ export function sdkSystemPromptEchoContent(event: { eventType: string; data: unk
     const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : null;
     const content = typeof data?.content === "string" ? data.content : "";
     return content.startsWith(SDK_SYSTEM_PROMPT_PREFIX) ? content : null;
+}
+
+/** The text that is kept for an echo: its secrets hidden (SF-3). The artifact holds it, and its sha256 names it. */
+export function workflowBaseInstructionsText(echoed: string): string {
+    return redactWorkflowSecrets(echoed);
 }
 
 /** Where a kept text is: the Workflow's session, the artifact named by its sha256, the hash and its length. */

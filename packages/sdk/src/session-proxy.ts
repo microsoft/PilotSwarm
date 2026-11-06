@@ -79,7 +79,7 @@ import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool
 import { isWorkflowRuntimeSender, parseWorkflowUpdateHeader, workflowRuntimeSender } from "./workflow/v2/parent-messages.js";
 import { respondSessionRequestFromTool, WorkflowResponseWakeDispatcher, workflowRespondFailure } from "./workflow/v2/request-service.js";
 import { completeWorkflowNodeFromTool, workflowCompletionFailure } from "./workflow/v2/agent-node-service.js";
-import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef } from "./workflow/v2/base-instructions.js";
+import { keepWorkflowBaseInstructions, sdkSystemPromptEchoContent, workflowBaseInstructionsRef, workflowBaseInstructionsText } from "./workflow/v2/base-instructions.js";
 import { publishedScheduleActive } from "./workflow/v2/agent-reminder.js";
 import { createWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { workflowTestModeFromEnv } from "./workflow/v2/test-mode-switch.js";
@@ -4476,11 +4476,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     if (!persistedEvent) return;
                     // A workflow agent node's chat keeps its whole base instructions (finding 8): once per distinct text, as an
                     // artifact of its Workflow, named in the summary event; the transcript still records only the summary.
+                    // The kept text has its secrets hidden, and only the Workflow's owner reads it (review SF-3).
                     const echoed = workflowAgentChild && artifactStore && workflowLineage?.agentRoot ? sdkSystemPromptEchoContent(event) : null;
                     if (echoed !== null && artifactStore && workflowLineage?.agentRoot) {
-                        const ref = workflowBaseInstructionsRef(workflowLineage.agentRoot.workflowSessionId, echoed);
+                        const kept = workflowBaseInstructionsText(echoed);
+                        const ref = workflowBaseInstructionsRef(workflowLineage.agentRoot.workflowSessionId, kept);
                         persistedEvent = { ...persistedEvent, data: { ...(persistedEvent.data as Record<string, unknown>), baseInstructions: ref } };
-                        trackEventWrite(keepWorkflowBaseInstructions(artifactStore, ref, echoed).then(() => undefined, (error: unknown) => {
+                        trackEventWrite(keepWorkflowBaseInstructions(artifactStore, ref, kept).then(() => undefined, (error: unknown) => {
                             activityCtx.traceInfo(`[runTurn] session=${input.sessionId} base instructions not kept: ${errorMessage(error)}`);
                         }));
                     }
