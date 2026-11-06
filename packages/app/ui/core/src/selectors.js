@@ -699,37 +699,35 @@ function splitAgentPrefixedSessionTitle(session) {
         const displayTitle = currentTitle.slice(0, suffixIndex).trim();
         const agentTitle = currentTitle.slice(suffixIndex + suffixSeparator.length).trim();
         if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session)) {
+            // The older stored shape "<type>: <title> · <persona>".
+            const typeIndex = displayTitle.indexOf(": ");
+            const typeTitle = typeIndex > 0 ? displayTitle.slice(0, typeIndex).trim() : "";
+            const userTitle = typeIndex > 0 ? displayTitle.slice(typeIndex + 2).trim() : "";
+            if (typeTitle && userTitle) return { displayTitle: userTitle, agentTitle, typeTitle };
             return { displayTitle, agentTitle };
         }
     }
 
-    const dashMatch = /^(.+?)\s+[–—-]\s+(.+)$/u.exec(currentTitle);
-    if (dashMatch) {
-        const agentTitle = dashMatch[1].trim();
-        const displayTitle = dashMatch[2].trim();
-        if (agentTitle && displayTitle) return { displayTitle, agentTitle };
-    }
-
+    // A named agent's title is stored "<agent name>: <title>". Only the part
+    // before the FIRST ": " can be the agent's name; everything after it is
+    // the title the person gave (or the session id) and is shown whole, in
+    // order — a " - " or ": " the person typed is never read as structure.
     const separatorIndex = currentTitle.indexOf(": ");
     if (separatorIndex > 0) {
-        const agentTitle = currentTitle.slice(0, separatorIndex).trim();
+        const prefix = currentTitle.slice(0, separatorIndex).trim();
         const displayTitle = currentTitle.slice(separatorIndex + 2).trim();
-        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session)) {
-            return { displayTitle, agentTitle };
+        if (displayTitle && isLikelyAgentTitlePrefix(prefix, session)) {
+            return { displayTitle, agentTitle: prefix };
+        }
+        // "Persona - Type" agent names lead with the title, then the type,
+        // then the persona: "M61 Conductor · R2D Train Watcher · Mad-Eye Moody".
+        const persona = /^(.+?)\s+[–—-]\s+(.+)$/u.exec(prefix);
+        if (displayTitle && persona && persona[1].trim() && persona[2].trim()) {
+            return { displayTitle, agentTitle: persona[1].trim(), typeTitle: persona[2].trim() };
         }
     }
 
     return null;
-}
-
-function splitTypedSessionTitle(displayTitle) {
-    const title = String(displayTitle || "");
-    const separatorIndex = title.indexOf(": ");
-    if (separatorIndex <= 0) return null;
-    const typeTitle = title.slice(0, separatorIndex).trim();
-    const userTitle = title.slice(separatorIndex + 2).trim();
-    if (!typeTitle || !userTitle) return null;
-    return { userTitle, typeTitle };
 }
 
 // Titles are plain text everywhere they are rendered (terminal runs, DOM
@@ -767,9 +765,8 @@ function buildRawSessionDisplayTitle(session) {
     const title = String(session?.title || "").trim();
     const splitTitle = splitAgentPrefixedSessionTitle(session);
     if (!splitTitle) return title;
-    const typedTitle = splitTypedSessionTitle(splitTitle.displayTitle);
-    if (typedTitle) {
-        return `${typedTitle.userTitle} · ${typedTitle.typeTitle} · ${splitTitle.agentTitle}`;
+    if (splitTitle.typeTitle) {
+        return `${splitTitle.displayTitle} · ${splitTitle.typeTitle} · ${splitTitle.agentTitle}`;
     }
     return `${splitTitle.displayTitle} · ${splitTitle.agentTitle}`;
 }
@@ -7849,6 +7846,20 @@ export function selectRenameSessionModal(state, maxWidth = 76) {
             color: "white",
             bold: true,
         }],
+        // The limit is on the person's text only, so the count never
+        // includes the agent-name prefix. At the limit, say so: the box
+        // stops taking characters and that must not look like a fault.
+        ...(Number(modal.maxLength) > 0
+            ? [[{
+                text: "Length: ",
+                color: "gray",
+            }, {
+                text: value.length >= Number(modal.maxLength)
+                    ? `${value.length} / ${Number(modal.maxLength)}, the limit`
+                    : `${value.length} / ${Number(modal.maxLength)}`,
+                color: value.length >= Number(modal.maxLength) ? "yellow" : "gray",
+            }]]
+            : []),
         ...(agentTitlePrefix
             ? [[{
                 text: "Named-agent prefix stays fixed.",

@@ -182,7 +182,9 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, Client } = require("duroxide");
 
 const STATUS_WAIT_SLICE_MS = 10_000;
-const MAX_SESSION_TITLE_LENGTH = 60;
+// The longest title a person may give a session. A named agent's prefix
+// ("Agent Smith: ") is extra: it never shortens what the person typed.
+const MAX_SESSION_TITLE_LENGTH = 100;
 const SESSION_COMMAND_SETTLE_TIMEOUT_MS = 65_000;
 const SESSION_STATE_POLL_MS = 500;
 const DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD = 30;
@@ -261,29 +263,43 @@ function normalizeSessionTitleInput(title: string, maxLength = MAX_SESSION_TITLE
     return String(title || "").trim().slice(0, maxLength);
 }
 
-function getNamedAgentTitlePrefix(session: { agentId?: string | null; title?: string | null } | null | undefined): string | null {
-    if (!session?.agentId) return null;
-    const currentTitle = String(session.title || "").trim();
-    if (!currentTitle) return null;
-    const separatorIndex = currentTitle.indexOf(": ");
-    if (separatorIndex > 0) {
-        return currentTitle.slice(0, separatorIndex).trim() || null;
-    }
-    return null;
+function comparableAgentTitle(value: unknown): string {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
 }
 
-function buildStoredSessionTitle(
+/**
+ * The named-agent prefix a rename keeps: the text before the first ": " of an
+ * agent session's title, but only when it IS the agent's name — its id, or
+ * one of `agentTitles` (the agent's display title from the catalog). Without
+ * a catalog entry, a "Persona - Type" form is accepted too. Anything else is
+ * the person's own text and a rename replaces it.
+ */
+export function getNamedAgentTitlePrefix(
+    session: { agentId?: string | null; title?: string | null } | null | undefined,
+    agentTitles: readonly string[] = [],
+): string | null {
+    if (!session?.agentId) return null;
+    const currentTitle = String(session.title || "").trim();
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex <= 0) return null;
+    const prefix = currentTitle.slice(0, separatorIndex).trim();
+    const comparable = comparableAgentTitle(prefix);
+    if (!comparable) return null;
+    if (comparable === comparableAgentTitle(session.agentId)) return prefix;
+    const known = agentTitles.map(comparableAgentTitle).filter(Boolean);
+    if (known.length > 0) return known.includes(comparable) ? prefix : null;
+    return /\S\s+[–—-]\s+\S/u.test(prefix) ? prefix : null;
+}
+
+export function buildStoredSessionTitle(
     session: { agentId?: string | null; title?: string | null } | null | undefined,
     requestedTitle: string,
+    agentTitles: readonly string[] = [],
 ): string {
     const normalizedTitle = normalizeSessionTitleInput(requestedTitle);
-    const prefix = getNamedAgentTitlePrefix(session);
-    if (!prefix) return normalizedTitle;
-
-    const prefixLabel = `${prefix}: `;
-    const maxSuffixLength = Math.max(0, MAX_SESSION_TITLE_LENGTH - prefixLabel.length);
-    if (maxSuffixLength <= 0) return prefix.slice(0, MAX_SESSION_TITLE_LENGTH);
-    return `${prefixLabel}${normalizedTitle.slice(0, maxSuffixLength)}`;
+    if (!normalizedTitle) return "";
+    const prefix = getNamedAgentTitlePrefix(session, agentTitles);
+    return prefix ? `${prefix}: ${normalizedTitle}` : normalizedTitle;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
@@ -1600,9 +1616,11 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * Rename a session. Updates the title in CMS.
+     * Rename a session. Updates the title in CMS. A named agent session keeps
+     * its agent-name prefix; pass the agent's catalog title in
+     * `options.agentTitles` so a custom display title is recognized as one.
      */
-    async renameSession(sessionId: string, title: string): Promise<void> {
+    async renameSession(sessionId: string, title: string, options: { agentTitles?: readonly string[] } = {}): Promise<void> {
         this._ensureStarted();
         const session = await this._catalog!.getSession(sessionId);
         if (!session) {
@@ -1612,7 +1630,7 @@ export class PilotSwarmManagementClient {
             throw systemSessionProtectedError("rename");
         }
 
-        const storedTitle = buildStoredSessionTitle(session, title);
+        const storedTitle = buildStoredSessionTitle(session, title, options.agentTitles ?? []);
         if (!storedTitle) {
             throw new Error("Title cannot be empty");
         }

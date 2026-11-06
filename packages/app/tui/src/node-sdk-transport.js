@@ -1518,7 +1518,24 @@ export class NodeSdkTransport {
     }
 
     async renameSession(sessionId, title) {
-        await this.mgmt.renameSession(sessionId, title);
+        // The agent's display title (for example "Agent Smith") is how a named
+        // session's fixed prefix is recognized; without it only the agent id
+        // would count, and a rename would drop a custom agent name.
+        let agentTitles = [];
+        try {
+            const session = await this.mgmt.getSession(sessionId);
+            if (session?.agentId) {
+                const agents = await this.listCreatableAgents(null, true);
+                const wanted = normalizeAgentName(session.agentId);
+                agentTitles = agents
+                    .filter((agent) => normalizeAgentName(agent?.name) === wanted)
+                    .map((agent) => agent.title)
+                    .filter(Boolean);
+            }
+        } catch {
+            // Best effort: the rename still keeps an agent-id prefix.
+        }
+        await this.mgmt.renameSession(sessionId, title, { agentTitles });
     }
 
     async cancelSession(sessionId) {
