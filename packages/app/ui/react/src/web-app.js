@@ -13875,7 +13875,7 @@ function ProviderBudgetView({ controller }) {
         sheetEl);
 }
 
-function ModalLayer({ controller }) {
+export function ModalLayer({ controller }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, (state) => Boolean(state.ui.touchScale));
     // The confirm box's title and message ids, for its dialog name and description (ModalDialog).
@@ -14389,10 +14389,13 @@ function ModalLayer({ controller }) {
             style: { width: "100%", justifyContent: "space-between", display: "flex", gap: 8 },
             onClick: pick(action),
         }, React.createElement("span", null, label), note ? React.createElement("span", { style: { color: "#94a3b8" } }, note) : null);
+        // Review UI-14: a real modal dialog (ModalDialog): it takes focus and gives it back to its opener, Tab stays among
+        // its choices and Enter or Space presses one; Escape closes it (the portal's modal keys), as the Stop dialog does.
+        const titleId = `${confirmDialogId}-wf-terminate`;
         return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
-            React.createElement("div", { className: "ps-modal is-narrow", role: "dialog", "aria-label": modal.title || "Workflow", onClick: (event) => event.stopPropagation() },
+            React.createElement(ModalDialog, { className: "ps-modal is-narrow", titleId },
                 React.createElement("div", { className: "ps-modal-header" },
-                    React.createElement("div", { className: "ps-modal-title" }, modal.title || "Workflow"),
+                    React.createElement("div", { className: "ps-modal-title", id: titleId }, modal.title || "Workflow"),
                     React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕")),
                 React.createElement("div", { className: "ps-modal-body", style: { padding: "10px 16px 16px", display: "flex", flexDirection: "column", gap: 8 } },
                     item("stop", "Let started nodes finish", ended ? "it has ended" : "Stop…", ended),
