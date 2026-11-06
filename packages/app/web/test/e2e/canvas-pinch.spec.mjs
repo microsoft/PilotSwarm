@@ -4,6 +4,8 @@
 // WHY THIS EXISTS: the canvas is live HTML, so one finger belongs to the page
 // (buttons, scrolling, games). The portal takes only two-finger gestures, the
 // way maps do, and keeps the magnified page covering its box edge to edge.
+// Two fingers sideways at 1x are the phone's back and forward, as on every
+// other screen.
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
@@ -66,4 +68,41 @@ test("pinch zooms inside the box, two fingers move it, 1:1 resets", async ({ pag
 
     await page.locator(".ps-canvas-pinch-reset").click();
     await expect.poll(transform).toBe("");
+});
+
+test("two fingers sideways on an unmagnified canvas go back, like everywhere else", async ({ page, context }) => {
+    test.skip(browserName !== "chromium", "multi-touch input needs the Chromium protocol");
+    await page.route("**/api/v1/**", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname.endsWith("/bootstrap")) return route.fulfill({ json: { ok: true, result: { auth: { principal: { provider: "none", subject: "test", email: "test@example.com" }, authorization: { allowed: true, role: "user" } } } } });
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
+            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: PAGE.length, name: "pinch-test" } }] } });
+        }
+        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) return route.fulfill({ contentType: "text/html", body: PAGE });
+        return route.fallback();
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+    await page.waitForFunction(() => Object.keys(sessionStorage).some((key) => key.startsWith("pilotswarm.view-history.v1:")));
+    const canvasButton = page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first();
+    await canvasButton.click();
+    const layer = page.locator(".ps-mobile-canvas-layer");
+    await expect(layer).not.toHaveClass(/is-hidden/);
+    const frameEl = page.locator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)");
+    await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas");
+    const box = await frameEl.boundingBox();
+    const cy = box.y + box.height / 2;
+    const cdp = await context.newCDPSession(page);
+    const touch = (type, points) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
+    await touch("touchStart", [[box.x + 80, cy - 40], [box.x + 80, cy + 40]]);
+    for (let i = 1; i <= 12; i++) {
+        await touch("touchMove", [[box.x + 80 + i * 18, cy - 40], [box.x + 80 + i * 18, cy + 40]]);
+        await page.waitForTimeout(16);
+        if (i === 9) await expect(page.locator(".ps-swipe-hint")).toHaveAttribute("data-ready", "true");
+    }
+    await touch("touchEnd", []);
+    // Back to the chat, and the canvas was never magnified on the way.
+    await expect(layer).toHaveClass(/is-hidden/);
+    await expect(page.locator(".ps-mobile-chat-pane textarea")).toBeVisible();
+    expect(await frameEl.evaluate((el) => el.style.transform)).toBe("");
 });

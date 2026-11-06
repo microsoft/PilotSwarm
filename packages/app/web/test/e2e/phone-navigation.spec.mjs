@@ -1,9 +1,12 @@
-// The phone keeps its layout sideways, and moves back and forward by swipe.
+// The phone keeps its layout sideways, and moves back and forward by a
+// two-finger swipe.
 //
 // WHY THIS EXISTS: a phone held in landscape is wider than the 920 px
 // breakpoint, so it used to switch to the desktop layout. And the desktop's
-// back and forward history had no way in on a phone; now a swipe right goes
-// back and a swipe left goes forward, with the screen following the finger.
+// back and forward history had no way in on a phone; now two fingers to the
+// right go back and two to the left go forward, with the screen following
+// them. Two fingers everywhere, because one finger belongs to the screen:
+// scrolling the chat, and using a canvas page.
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
@@ -40,7 +43,7 @@ test("a tablet-sized landscape window stays desktop", async ({ page }) => {
     await expect(page.locator(".ps-toolbar.is-mobile")).toHaveCount(0);
 });
 
-test("swipe right goes back, swipe left goes forward, and the screen follows the finger", async ({ page, context }) => {
+test("two fingers right go back, two left go forward, and the screen follows them", async ({ page, context }) => {
     test.skip(browserName !== "chromium", "real touch events need the Chromium protocol");
     await signedIn(page);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -54,9 +57,10 @@ test("swipe right goes back, swipe left goes forward, and the screen follows the
     const cdp = await context.newCDPSession(page);
     const touch = (type, points) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
     async function swipe(from, to, check = null) {
-        await touch("touchStart", [[from, 560]]);
+        await touch("touchStart", [[from, 520], [from, 600]]);
         for (let i = 1; i <= 10; i++) {
-            await touch("touchMove", [[from + (to - from) * i / 10, 560]]);
+            const x = from + (to - from) * i / 10;
+            await touch("touchMove", [[x, 520], [x, 600]]);
             if (i === 8 && check) await check();
         }
         await touch("touchEnd", []);
@@ -76,6 +80,32 @@ test("swipe right goes back, swipe left goes forward, and the screen follows the
         await expect(page.locator(".ps-swipe-hint")).toHaveAttribute("data-blocked", "true");
     });
     await expect(page.locator(".ps-mobile-workspace")).toHaveCount(1);
+    expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
+});
+
+test("one finger sideways and two fingers spreading do not navigate", async ({ page, context }) => {
+    test.skip(browserName !== "chromium", "real touch events need the Chromium protocol");
+    await signedIn(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(base);
+    await expect(page.locator(".ps-mobile-chat-pane textarea")).toBeVisible();
+    await historyReady(page);
+    await diagnostics(page).click();
+    await expect(diagnostics(page)).toHaveAttribute("aria-label", "Diagnostics — back to the chat");
+    const cdp = await context.newCDPSession(page);
+    const touch = (type, points) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
+    // One finger, far enough that two fingers would have gone back.
+    await touch("touchStart", [[80, 560]]);
+    for (let i = 1; i <= 10; i++) await touch("touchMove", [[80 + i * 25, 560]]);
+    await touch("touchEnd", []);
+    await page.waitForTimeout(500);
+    await expect(diagnostics(page)).toHaveAttribute("aria-label", "Diagnostics — back to the chat");
+    // Two fingers spreading, drifting right as they do.
+    await touch("touchStart", [[180, 560], [220, 560]]);
+    for (let i = 1; i <= 10; i++) await touch("touchMove", [[180 - i * 8 + i * 4, 560], [220 + i * 8 + i * 4, 560]]);
+    await touch("touchEnd", []);
+    await page.waitForTimeout(500);
+    await expect(diagnostics(page)).toHaveAttribute("aria-label", "Diagnostics — back to the chat");
     expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
 });
 

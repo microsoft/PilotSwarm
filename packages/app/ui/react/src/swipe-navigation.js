@@ -1,30 +1,42 @@
-// Phone back and forward by swipe: the desktop's view history, under a finger.
+// Phone back and forward by a two-finger swipe: the desktop's view history.
 //
-// Swipe right goes back, swipe left goes forward. The screen follows the
-// finger, the next screen's name shows on the side it comes from, and a
+// Two fingers, everywhere, so one finger always belongs to the screen under
+// it: scrolling the chat, and tapping, dragging and drawing on a canvas.
+// Two fingers to the right go back, to the left go forward. The screen follows
+// the fingers, the next screen's name shows on the side it comes from, and a
 // release past the threshold slides the old screen out and the new one in.
 // With nothing in that direction the screen only gives a little and springs
-// back. Master of Agents keeps its own swipes (it does not render this
-// surface), and horizontally scrolling content keeps its own pans.
+// back. Spreading or pinching the fingers is a zoom, not a swipe. Master of
+// Agents keeps its own swipes (it does not render this surface).
+//
+// A canvas page runs in a sandboxed frame, so its touches never reach this
+// document. The canvas forwards a two-finger swipe it has classified as one
+// (see CanvasFrame) as a `ps-two-finger-swipe` window event in page
+// coordinates; it goes through the same gesture as a touch on the page.
 import React from "react";
 
-const DECIDE_PX = 12;          // movement before the gesture picks an axis
+export const TWO_FINGER_SWIPE_EVENT = "ps-two-finger-swipe";
+
+const DECIDE_PX = 12;          // movement before the gesture picks a kind
 const COMMIT_PX = 84;          // distance that commits a navigation
 const COMMIT_VELOCITY = 0.45;  // or a quick flick, in px per ms
-const EDGE_PX = 22;            // the browser owns swipes that start at the screen edge
 const RESIST = 0.22;           // how far the screen gives with nowhere to go
 
-function blockedBy(target, root, direction) {
-    if (target?.closest?.("input,textarea,select,iframe,[contenteditable='true'],[contenteditable=''],.ps-swipe-ignore")) return true;
-    for (let node = target; node && node !== root; node = node.parentElement) {
-        if (node.scrollWidth <= node.clientWidth + 2) continue;
-        if (!/auto|scroll/.test(getComputedStyle(node).overflowX)) continue;
-        // A horizontal scroller keeps the pan while it can still move that way.
-        const atStart = node.scrollLeft <= 1;
-        const atEnd = node.scrollLeft + node.clientWidth >= node.scrollWidth - 1;
-        if (direction > 0 ? !atStart : !atEnd) return true;
-    }
-    return Boolean(globalThis.getSelection?.()?.toString());
+/**
+ * What two fingers are doing, from how far their midpoint moved (dx, dy) and
+ * how much the gap between them changed (dd), all in px: "swipe" (sideways,
+ * together), "pinch" (spreading or closing), "scroll" (up or down), or null
+ * while it is too early to tell.
+ */
+export function classifyTwoFinger(dx, dy, dd) {
+    const ax = Math.abs(dx);
+    const ay = Math.abs(dy);
+    const ad = Math.abs(dd);
+    if (ax < DECIDE_PX && ay < DECIDE_PX && ad < DECIDE_PX) return null;
+    if (ad >= DECIDE_PX && ad > ax * 0.6) return "pinch";
+    if (ax >= DECIDE_PX && ax > ay * 1.4) return "swipe";
+    if (ay >= DECIDE_PX) return "scroll";
+    return null;
 }
 
 function ensureHint(root) {
@@ -39,6 +51,11 @@ function ensureHint(root) {
     return hint;
 }
 
+function twoFingers(event) {
+    const [a, b] = event.touches;
+    return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2, d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) };
+}
+
 export function useSwipeNavigation(ref, { enabled = true, navigation = null } = {}) {
     const navRef = React.useRef(navigation);
     navRef.current = navigation;
@@ -50,8 +67,7 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
         const hint = ensureHint(root);
         const setHint = (dx, label, can) => {
             if (!hint) return;
-            const side = dx > 0 ? "left" : "right";
-            hint.dataset.side = side;
+            hint.dataset.side = dx > 0 ? "left" : "right";
             hint.dataset.ready = String(Math.abs(dx) >= COMMIT_PX && can);
             hint.dataset.blocked = String(!can);
             hint.querySelector(".ps-swipe-hint-arrow").textContent = dx > 0 ? "‹" : "›";
@@ -59,33 +75,31 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
             hint.style.opacity = String(Math.min(1, Math.abs(dx) / COMMIT_PX));
         };
         const clearHint = () => { if (hint) hint.style.opacity = "0"; };
+        // What moves: the workspace, or a full-screen canvas on its own. A
+        // transform on the workspace would make it the containing block of
+        // the fixed full-screen layer, which would jump into the content box.
+        let moved = null;
+        const surface = () => root.querySelector(":scope > .ps-mobile-canvas-layer.is-maximized:not(.is-hidden)") || root;
         const move = (x, transition = "") => {
-            root.style.transition = transition;
-            root.style.transform = x ? `translate3d(${x}px,0,0)` : "";
-        };
-        const finish = () => {
-            gesture = null;
-            clearHint();
+            const el = surface();
+            if (moved && moved !== el) { moved.style.transition = ""; moved.style.transform = ""; }
+            el.style.transition = transition;
+            el.style.transform = x ? `translate3d(${x}px,0,0)` : "";
+            moved = x || transition ? el : null;
         };
 
-        const onStart = (event) => {
-            if (event.touches.length !== 1) { gesture = null; return; }
-            const t = event.touches[0];
-            if (t.clientX < EDGE_PX || t.clientX > window.innerWidth - EDGE_PX) return;
-            gesture = { x: t.clientX, y: t.clientY, time: Date.now(), axis: null, dx: 0, target: event.target };
+        const begin = (x, y, d, decided = false) => {
+            gesture = { x, y, d, time: Date.now(), kind: decided ? "swipe" : null, dx: 0, can: false };
         };
-        const onMove = (event) => {
-            if (!gesture || event.touches.length !== 1) return;
-            const t = event.touches[0];
-            const dx = t.clientX - gesture.x;
-            const dy = t.clientY - gesture.y;
-            if (!gesture.axis) {
-                if (Math.abs(dx) < DECIDE_PX && Math.abs(dy) < DECIDE_PX) return;
-                const horizontal = Math.abs(dx) > Math.abs(dy) * 1.4;
-                if (!horizontal || blockedBy(gesture.target, root, dx)) { gesture = null; return; }
-                gesture.axis = "x";
+        // Returns true while the gesture is (or may become) a swipe.
+        const update = (x, y, d) => {
+            if (!gesture) return false;
+            const dx = x - gesture.x;
+            if (!gesture.kind) {
+                gesture.kind = classifyTwoFinger(dx, y - gesture.y, d - gesture.d);
+                if (!gesture.kind) return true;
+                if (gesture.kind !== "swipe") { gesture = null; return false; }
             }
-            if (event.cancelable) event.preventDefault();
             const nav = navRef.current;
             const can = dx > 0 ? Boolean(nav?.canBack) : Boolean(nav?.canForward);
             const label = dx > 0 ? nav?.backTitle : nav?.forwardTitle;
@@ -93,12 +107,14 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
             gesture.can = can;
             move(can ? dx : dx * RESIST);
             setHint(dx, label || (dx > 0 ? "Back" : "Forward"), can);
+            return true;
         };
-        const onEnd = () => {
+        const end = () => {
             if (!gesture) return;
-            const { dx, can, axis, time } = gesture;
-            finish();
-            if (axis !== "x") return;
+            const { dx, can, kind, time } = gesture;
+            gesture = null;
+            clearHint();
+            if (kind !== "swipe") return;
             const velocity = Math.abs(dx) / Math.max(1, Date.now() - time);
             const commit = can && (Math.abs(dx) >= COMMIT_PX || (velocity >= COMMIT_VELOCITY && Math.abs(dx) > 30));
             if (!commit) { move(0, reduced ? "" : "transform 180ms ease-out"); return; }
@@ -114,20 +130,46 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
                 requestAnimationFrame(() => requestAnimationFrame(() => move(0, "transform 220ms cubic-bezier(.2,.8,.2,1)")));
             }, 150);
         };
-        const onCancel = () => { if (gesture?.axis === "x") move(0, "transform 180ms ease-out"); finish(); };
-        const onTransitionEnd = () => { root.style.transition = ""; };
+        const cancel = () => {
+            if (gesture?.kind === "swipe") move(0, "transform 180ms ease-out");
+            gesture = null;
+            clearHint();
+        };
+
+        const onStart = (event) => {
+            if (event.touches.length === 2) { const p = twoFingers(event); begin(p.x, p.y, p.d); return; }
+            if (event.touches.length > 2) cancel();
+        };
+        const onMove = (event) => {
+            if (!gesture || event.touches.length !== 2) return;
+            const p = twoFingers(event);
+            // Claimed from the first move: iOS decides on the first move
+            // whether the page pinches or scrolls, and ignores a later refusal.
+            if (update(p.x, p.y, p.d) && event.cancelable) event.preventDefault();
+        };
+        const onEnd = (event) => { if (gesture && event.touches.length < 2) end(); };
+        const onFrameSwipe = (event) => {
+            const { phase, x, y } = event.detail || {};
+            if (phase === "start") begin(Number(x) || 0, Number(y) || 0, 0, true);
+            else if (phase === "move") update(Number(x) || 0, Number(y) || 0, 0);
+            else if (phase === "end") end();
+            else cancel();
+        };
+        const onTransitionEnd = (event) => { if (event.target === moved && !moved.style.transform) { moved.style.transition = ""; moved = null; } };
 
         root.addEventListener("touchstart", onStart, { passive: true });
         root.addEventListener("touchmove", onMove, { passive: false });
         root.addEventListener("touchend", onEnd, { passive: true });
-        root.addEventListener("touchcancel", onCancel, { passive: true });
+        root.addEventListener("touchcancel", cancel, { passive: true });
         root.addEventListener("transitionend", onTransitionEnd);
+        window.addEventListener(TWO_FINGER_SWIPE_EVENT, onFrameSwipe);
         return () => {
             root.removeEventListener("touchstart", onStart);
             root.removeEventListener("touchmove", onMove);
             root.removeEventListener("touchend", onEnd);
-            root.removeEventListener("touchcancel", onCancel);
+            root.removeEventListener("touchcancel", cancel);
             root.removeEventListener("transitionend", onTransitionEnd);
+            window.removeEventListener(TWO_FINGER_SWIPE_EVENT, onFrameSwipe);
             move(0);
             hint?.remove();
         };

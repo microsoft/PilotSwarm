@@ -12332,10 +12332,15 @@ textarea.ps-link-input {
 /* ═══ Phone: back and forward by swipe ═══════════════════════════════════════
    The workspace follows the finger; the destination's name shows on the side
    it will come from, and lights up once a release would navigate. */
+/* ═══ Phone: back and forward by a two-finger swipe ═════════════════════════
+   The workspace (or a full-screen canvas) follows the fingers; the
+   destination's name shows on the side it will come from, and lights up once
+   a release would navigate. */
 .ps-swipe-hint {
   position: fixed;
   top: 46%;
-  z-index: 60;
+  /* Above a full-screen canvas (70): a two-finger swipe works there too. */
+  z-index: 75;
   display: flex;
   align-items: center;
   gap: 8px;

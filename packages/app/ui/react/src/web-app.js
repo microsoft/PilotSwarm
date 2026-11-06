@@ -7,7 +7,7 @@ import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { themeSoundPlayer } from "./theme-sound-player.js";
-import { useSwipeNavigation } from "./swipe-navigation.js";
+import { TWO_FINGER_SWIPE_EVENT, classifyTwoFinger, useSwipeNavigation } from "./swipe-navigation.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -8347,18 +8347,38 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 for (let i = pinch.seen.length - 1; i >= 0; i--) {
                     if (pinch.seen[i].at <= when) { shown = pinch.seen[i]; break; }
                 }
+                // Where the fingers are on the host, and how far apart.
+                const hx = shown.tx + shown.s * z * (Number(payload.x) || 0);
+                const hy = shown.ty + shown.s * z * (Number(payload.y) || 0);
+                const d = Math.max(1, Number(payload.d) || 1) * shown.s * z;
+                const swipe = (phase, x = hx, y = hy) => {
+                    if (!box || typeof window === "undefined") return;
+                    window.dispatchEvent(new CustomEvent(TWO_FINGER_SWIPE_EVENT, { detail: { phase, x: box.left + x, y: box.top + y } }));
+                };
                 if (payload.phase === "start") {
-                    pinch.start = { s: pinch.s, x: Number(payload.x) || 0, y: Number(payload.y) || 0, d: Math.max(1, Number(payload.d) || 1) * shown.s * z };
+                    pinch.start = { s: pinch.s, x: Number(payload.x) || 0, y: Number(payload.y) || 0, d };
+                    // Two fingers sideways at 1x are the phone's back and
+                    // forward, as everywhere else. A magnified page keeps
+                    // two fingers for moving it.
+                    pinch.mode = pinch.s > 1.001 ? "pinch" : null;
+                    pinch.origin = { x: hx, y: hy, d };
+                    return;
+                }
+                if (payload.phase === "move" && pinch.start && !pinch.mode && pinch.origin) {
+                    const kind = classifyTwoFinger(hx - pinch.origin.x, hy - pinch.origin.y, d - pinch.origin.d);
+                    if (!kind) return;
+                    pinch.mode = kind === "swipe" ? "swipe" : "pinch";
+                    if (pinch.mode === "swipe") swipe("start", pinch.origin.x, pinch.origin.y);
+                }
+                if (pinch.mode === "swipe") {
+                    if (payload.phase === "move") swipe("move");
+                    else if (payload.phase === "end") { swipe("end"); pinch.mode = null; pinch.start = null; }
                     return;
                 }
                 if (payload.phase === "move" && pinch.start && box) {
-                    // Where the fingers are on the host, and how far apart:
-                    // keep the point first touched under them while the scale
-                    // follows their spread. Moving both fingers together
-                    // moves the page; spreading them zooms.
-                    const hx = shown.tx + shown.s * z * (Number(payload.x) || 0);
-                    const hy = shown.ty + shown.s * z * (Number(payload.y) || 0);
-                    const d = Math.max(1, Number(payload.d) || 1) * shown.s * z;
+                    // Keep the point first touched under the fingers while the
+                    // scale follows their spread. Moving both fingers together
+                    // moves a magnified page; spreading them zooms.
                     const next = Math.min(CANVAS_PINCH_MAX, Math.max(1, pinch.start.s * d / pinch.start.d));
                     let tx = hx - next * z * pinch.start.x;
                     let ty = hy - next * z * pinch.start.y;
@@ -8373,6 +8393,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 }
                 if (payload.phase === "end") {
                     pinch.start = null;
+                    pinch.mode = null;
                     if (pinch.s < 1.08) resetPinch();
                     return;
                 }
