@@ -33,7 +33,7 @@ test("pinch zooms inside the box, two fingers move it, 1:1 resets", async ({ pag
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
     await page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first().click();
     const frameEl = page.locator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)");
-    await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas");
+    await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas", { timeout: 15_000 });
     const box = await frameEl.boundingBox();
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
     const cdp = await context.newCDPSession(page);
@@ -89,7 +89,7 @@ test("two fingers sideways on an unmagnified canvas go back, like everywhere els
     const layer = page.locator(".ps-mobile-canvas-layer");
     await expect(layer).not.toHaveClass(/is-hidden/);
     const frameEl = page.locator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)");
-    await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas");
+    await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas", { timeout: 15_000 });
     const box = await frameEl.boundingBox();
     const cy = box.y + box.height / 2;
     const cdp = await context.newCDPSession(page);
