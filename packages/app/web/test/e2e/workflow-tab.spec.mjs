@@ -3091,7 +3091,8 @@ test("on a phone the bottom panel's sheet keeps one height across its tabs", asy
 // ordinary session history reads (its events route below). Screenshots: node-agent-1440, agent-log-1440.
 // Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "agent node:" (from packages/app/web, after build).
 // ------------------------------------------------------------------------------------------------------------
-const AGENT_CHAT = "77777777-2222-3333-4444-555555555555";
+// Its own id: WORKFLOW_ID is 77777777-…, and the chat's events must not answer for the Workflow's.
+const AGENT_CHAT = "abababab-2222-3333-4444-555555555555";
 const BASE_ARTIFACT = "base-instructions-0123456789abcdef.md";
 const AGENT_STATES = [
     { id: "fact", type: "agent", invoke: { source: "prompt" }, about: { prompt: "Tell one new fact about PostgreSQL. Keep it to one sentence." },
