@@ -97,9 +97,11 @@ export interface LiveTurnControlOptions {
  *
  * Review RT-D1: admission (a continued chat's turn-to-visit fence) runs on its own chain, in position order, never behind
  * a steer's send: a Stop is applied as soon as it is admitted. It can still wait for an earlier batch's admission (its
- * request-id read, bounded by the CMS retry), never for a send. Review RT-D3: an admission that fails is kept
- * (heldFailure), fails the attached run, and the batch is not taken: `sent` goes back before it and later controls are
- * not taken, so turn end and the retry see them open; nothing more is sent.
+ * request-id read), never for a send. Review RT-F2: that read has a finite number of CMS retry attempts and delays, each
+ * subject to its query finishing; no elapsed-time bound is claimed (a query that never answers holds the chain).
+ * Review RT-D3: an admission that fails is kept (heldFailure), fails the attached run (which ManagedSession then aborts and
+ * settles, review RT-F1), and the batch is not taken: `sent` goes back before it and later controls are not taken, so
+ * turn end and the retry see them open; nothing more is sent.
  */
 export class LiveTurnControl implements TurnControlBinding {
     readonly sessionId: string;
