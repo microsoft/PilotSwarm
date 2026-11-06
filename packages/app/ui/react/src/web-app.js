@@ -3263,7 +3263,7 @@ const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.
 // browser's own pinch is switched off and the two fingers are reported to the
 // portal, which magnifies the frame within its box. A page that handles two
 // fingers itself (it calls preventDefault) keeps them.
-const CANVAS_PINCH_BRIDGE = `<style>html{touch-action:pan-x pan-y}</style><script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'canvas-pinch',phase:'start',x:p.x,y:p.y,d:p.d})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'canvas-pinch',phase:'move',x:p.x,y:p.y,d:p.d})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'canvas-pinch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',end,{passive:true});addEventListener('gesturestart',function(e){e.preventDefault()});addEventListener('gesturechange',function(e){e.preventDefault()})})();</script>`;
+const CANVAS_PINCH_BRIDGE = `<style>html{touch-action:pan-x pan-y}</style><script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'canvas-pinch',phase:'start',x:p.x,y:p.y,d:p.d,t:performance.timeOrigin+e.timeStamp})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'canvas-pinch',phase:'move',x:p.x,y:p.y,d:p.d,t:performance.timeOrigin+e.timeStamp})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'canvas-pinch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',end,{passive:true});addEventListener('gesturestart',function(e){e.preventDefault()});addEventListener('gesturechange',function(e){e.preventDefault()})})();</script>`;
 const CANVAS_PINCH_MAX = 5;
 // The "two fingers to move" hint shows once per page load, on the first zoom.
 let canvasPanHintShown = false;
@@ -8272,7 +8272,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // Pinch magnification of the live frame within its box: scale s about a
     // translation (tx, ty), in host pixels. Applied straight to the frame's
     // style so a moving pinch costs no React render.
-    const pinchRef = React.useRef({ s: 1, tx: 0, ty: 0, start: null });
+    const pinchRef = React.useRef({ s: 1, tx: 0, ty: 0, start: null, seen: [] });
     const [pinched, setPinched] = React.useState(false);
     const [panHint, setPanHint] = React.useState(false);
     React.useEffect(() => {
@@ -8291,15 +8291,23 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         el.style.transition = animate ? "transform 180ms ease-out" : "";
         el.style.transformOrigin = "top left";
         el.style.transform = scale === 1 && !tx && !ty ? (base ? base.trim() : "") : `translate(${tx}px, ${ty}px) scale(${scale})${base}`;
+        // A touch inside the frame is located against the frame as last DRAWN,
+        // which trails this style by a frame or two. Note when this transform
+        // is on screen, so each touch is read against the one it was found in.
+        const seen = pinchRef.current.seen;
+        const entry = { at: Infinity, s: scale, tx, ty };
+        seen.push(entry);
+        if (seen.length > 40) seen.splice(0, seen.length - 40);
+        requestAnimationFrame(() => requestAnimationFrame(() => { entry.at = performance.timeOrigin + performance.now(); }));
     }, []);
     const resetPinch = React.useCallback(() => {
-        pinchRef.current = { s: 1, tx: 0, ty: 0, start: null };
+        pinchRef.current = { s: 1, tx: 0, ty: 0, start: null, seen: [] };
         applyPinch(true);
         setPinched(false);
     }, [applyPinch]);
     // A new revision, or a change of the zoom setting, starts unmagnified.
     React.useEffect(() => {
-        pinchRef.current = { s: 1, tx: 0, ty: 0, start: null };
+        pinchRef.current = { s: 1, tx: 0, ty: 0, start: null, seen: [] };
         setPinched(false);
     }, [live?.url, zoom]);
     const visibleRef = React.useRef(visible);
@@ -8334,17 +8342,24 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 const pinch = pinchRef.current;
                 const z = zoomRef.current || 1;
                 const box = hostRef.current?.getBoundingClientRect();
+                // The transform this touch was located against.
+                const when = Number(payload.t) || Infinity;
+                let shown = { s: 1, tx: 0, ty: 0 };
+                for (let i = pinch.seen.length - 1; i >= 0; i--) {
+                    if (pinch.seen[i].at <= when) { shown = pinch.seen[i]; break; }
+                }
                 if (payload.phase === "start") {
-                    pinch.start = { s: pinch.s, x: Number(payload.x) || 0, y: Number(payload.y) || 0, d: Math.max(1, Number(payload.d) || 1) * pinch.s * z };
+                    pinch.start = { s: pinch.s, x: Number(payload.x) || 0, y: Number(payload.y) || 0, d: Math.max(1, Number(payload.d) || 1) * shown.s * z };
                     return;
                 }
                 if (payload.phase === "move" && pinch.start && box) {
-                    // Where the fingers are on the host now, under the current
-                    // transform, and how far apart: keep the point first
-                    // touched under them while the scale follows their spread.
-                    const hx = pinch.tx + pinch.s * z * (Number(payload.x) || 0);
-                    const hy = pinch.ty + pinch.s * z * (Number(payload.y) || 0);
-                    const d = Math.max(1, Number(payload.d) || 1) * pinch.s * z;
+                    // Where the fingers are on the host, and how far apart:
+                    // keep the point first touched under them while the scale
+                    // follows their spread. Moving both fingers together
+                    // moves the page; spreading them zooms.
+                    const hx = shown.tx + shown.s * z * (Number(payload.x) || 0);
+                    const hy = shown.ty + shown.s * z * (Number(payload.y) || 0);
+                    const d = Math.max(1, Number(payload.d) || 1) * shown.s * z;
                     const next = Math.min(CANVAS_PINCH_MAX, Math.max(1, pinch.start.s * d / pinch.start.d));
                     let tx = hx - next * z * pinch.start.x;
                     let ty = hy - next * z * pinch.start.y;

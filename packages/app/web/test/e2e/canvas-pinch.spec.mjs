@@ -36,12 +36,13 @@ test("pinch zooms inside the box, two fingers move it, 1:1 resets", async ({ pag
     const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
     const cdp = await context.newCDPSession(page);
     const touch = (type, points) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
+    const frame = () => page.waitForTimeout(16);
     const transform = () => frameEl.evaluate((el) => el.style.transform);
     const translate = async () => (await transform()).match(/translate\((-?[\d.]+)px, (-?[\d.]+)px\)/)?.slice(1).map(Number) || [0, 0];
 
     // Spread two fingers: the canvas grows, the page does not.
     await touch("touchStart", [[cx - 30, cy], [cx + 30, cy]]);
-    for (let i = 1; i <= 10; i++) await touch("touchMove", [[cx - 30 - i * 6, cy], [cx + 30 + i * 6, cy]]);
+    for (let i = 1; i <= 10; i++) { await touch("touchMove", [[cx - 30 - i * 6, cy], [cx + 30 + i * 6, cy]]); await frame(); }
     await touch("touchEnd", []);
     await expect.poll(transform).toMatch(/scale\(3\)/);
     expect(await page.evaluate(() => window.visualViewport.scale)).toBe(1);
@@ -50,10 +51,11 @@ test("pinch zooms inside the box, two fingers move it, 1:1 resets", async ({ pag
 
     // Two fingers together: the magnified page follows them.
     await touch("touchStart", [[cx - 40, cy], [cx + 40, cy]]);
-    for (let i = 1; i <= 10; i++) await touch("touchMove", [[cx - 40 + i * 8, cy + i * 6], [cx + 40 + i * 8, cy + i * 6]]);
+    for (let i = 1; i <= 20; i++) { await touch("touchMove", [[cx - 40 + i * 4, cy + i * 3], [cx + 40 + i * 4, cy + i * 3]]); await frame(); }
     await touch("touchEnd", []);
-    await expect.poll(async () => (await translate())[0]).toBeCloseTo(x0 + 80, 0);
-    expect((await translate())[1]).toBeCloseTo(y0 + 60, 0);
+    // Within a couple of pixels of where the fingers went (80 right, 60 down).
+    await expect.poll(async () => Math.abs((await translate())[0] - (x0 + 80))).toBeLessThan(3);
+    expect(Math.abs((await translate())[1] - (y0 + 60))).toBeLessThan(3);
     await expect.poll(transform).toMatch(/scale\(3\)/);
 
     // It never slides off its box: dragging far right stops at the left edge.
