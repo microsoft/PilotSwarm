@@ -3377,6 +3377,74 @@ for (const theme of listThemes()) {
     });
 }
 
+// ------------------------------------------------------------------------------------------------------------
+// Usability re-test r3, C15: the Workflow tab's text reads 4.5:1 or more in every shipped theme. r3 measured 1.65:1 in
+// Workspace Dark and 3.04:1 in GitHub Light on the tab shown ("Node"); state pills and an end's words in several themes'
+// own state colours, and win95's teal behind the whole tab, read lower still. The text measured is r3's: the bar's line,
+// the state pill, node names and words, the bottom panel's tabs and the Node panel's words. A failed Workflow with its
+// Node panel open, as r3 had it.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "r3 C15" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const R3_TEXT = ".ps-wf-bar-text, .ps-wf-state, .ps-workflow-node-name, .ps-workflow-node-meta, .ps-wf-panel-tabs button, .ps-wf-what, .ps-wf-fact span, .ps-wf-fact strong";
+/** The lowest contrast of the visible text of `selector` in the Workflow tab against what is behind it (r3's measure). */
+const textContrast = (page, selector) => page.evaluate((sel) => {
+    const parse = (value) => {
+        const match = /rgba?\(([^)]+)\)/.exec(value ?? "");
+        if (!match) return null;
+        const parts = match[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+        return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
+    };
+    const over = (top, under) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a),
+        b: top.b * top.a + under.b * (1 - top.a), a: 1 });
+    const lum = (c) => [c.r, c.g, c.b].map(v => v / 255).map(v => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+        .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+    const tab = [...document.querySelectorAll(".ps-wf-tab")].find(t => t.getBoundingClientRect().width > 0);
+    const out = [];
+    for (const element of tab ? tab.querySelectorAll(sel) : []) {
+        const box = element.getBoundingClientRect();
+        if (!box.width || !box.height || !(element.textContent || "").trim()) continue;
+        const chain = [];
+        let gradient = false;
+        for (let at = element; at; at = at.parentElement) {
+            const style = getComputedStyle(at);
+            if (style.backgroundImage && style.backgroundImage !== "none") gradient = true;
+            const color = parse(style.backgroundColor);
+            if (color && color.a > 0) { chain.push(color); if (color.a >= 1) break; }
+        }
+        if (gradient) continue;
+        let behind = { r: 255, g: 255, b: 255, a: 1 };
+        for (const color of chain.reverse()) behind = over(color, behind);
+        const fg = parse(getComputedStyle(element).color);
+        if (!fg) continue;
+        out.push({ text: (element.textContent || "").trim().slice(0, 30), ratio: Math.round(ratio(over(fg, behind), behind) * 100) / 100 });
+    }
+    return out;
+}, selector);
+for (const theme of listThemes()) {
+    test(`r3 C15: the Workflow tab's text reads 4.5:1 or more, ${theme.id}`, async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await routeOwned(page);
+        const profile = await routeProfileSaves(page);
+        profile.stored = { themeId: theme.id };
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.failed}`);
+        await expect(page.locator("html")).toHaveAttribute("data-ps-theme", theme.id);
+        const main = workflowTab(page);
+        await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
+        await main.getByRole("group", { name: "Workflow graph" }).getByRole("button", { name: "Inspect poll", exact: true }).click();
+        await expect(nodeDetails(page).locator(NODE_NAME)).toHaveText("poll");
+        await expect(panelTab(main, "Node")).toHaveAttribute("aria-selected", "true");
+        const measured = await textContrast(page, R3_TEXT);
+        expect(measured.length).toBeGreaterThan(5);
+        const low = measured.filter(item => item.ratio < 4.5);
+        expect(low, `${theme.id}: text under 4.5:1`).toEqual([]);
+        if (["workspace-dark", "github-light", "win95"].includes(theme.id) && SHOTS) {
+            fs.mkdirSync(SHOTS, { recursive: true });
+            await main.screenshot({ path: path.join(SHOTS, `r3-c15-${theme.id}.png`) });
+        }
+    });
+}
+
 test("layout: on a phone the Workflow pane lies over the chat, a panel opens as a sheet, and Back closes the sheet first", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = [];

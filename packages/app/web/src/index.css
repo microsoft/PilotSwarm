@@ -12153,6 +12153,10 @@ textarea.ps-link-input {
   box-shadow: inset 1px 1px 0 var(--w95-face), inset -1px -1px 0 var(--w95-shadow);
   background: var(--w95-face);
 }
+:root[data-ps-theme="win95"] .ps-wf-tab {
+  /* r3 C15: the Workflow tab is the canvas pane's window face, not the teal desktop its text read 4.4:1 (muted 1.9:1) on. */
+  background: var(--w95-face);
+}
 :root[data-ps-theme="win95"] .ps-mobile-canvas-layer .ps-canvas-pane {
   border: 0;
   box-shadow: none;
@@ -12676,11 +12680,14 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
   padding: 4px 10px;
   cursor: pointer;
 }
+/* r3 C15: the tab shown (Node, Log, Variables) takes the top bar's selected tokens, each theme's fill with its own
+   foreground (6.3:1 or more in every theme). The selection colour with the page's foreground on it read 1.65:1 in
+   Workspace Dark and 3.04:1 in GitHub Light ("Node"). */
 .ps-wf-switch button.is-on,
 .ps-wf-panel-tabs button.is-on,
 .ps-wf-node-tabs button.is-on {
-  background: var(--ps-selection-background, var(--ps-highlight-background));
-  color: var(--ps-foreground);
+  background: var(--ps-modal-selected-background);
+  color: var(--ps-modal-selected-foreground);
 }
 /* Owner, 2026-11-06T13:43Z (F1): the Definition | Workflows switch is two icon toggles, and the header's and toolbars'
    buttons are icons (Workflow tool buttons, 32 px; a phone's are 44 px, below), in each theme's own button look. */
@@ -12773,22 +12780,27 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 
 /* A Workflow's state (05): in the tab, the list and the session rows. */
 .ps-wf-state {
+  --ps-wf-tone: var(--ps-muted);
   display: inline-flex;
   align-items: center;
   padding: 1px 8px;
-  border: 1px solid currentColor;
+  border: 1px solid var(--ps-wf-tone);
   border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-wf-tone) 14%, transparent);
+  /* r3 C15: the words in the theme's foreground, the state's colour in the edge and a light fill. Several themes' state
+     colours read under 4.5:1 as text (gruvbox's red 2.7:1, ms-dos's 2.7:1, win95's cyan 2.6:1). */
+  color: var(--ps-foreground);
   font-size: 0.92em;
   line-height: 1.5;
   white-space: nowrap;
 }
-.ps-wf-state.is-running { color: var(--ps-accent); }
-.ps-wf-state.is-waiting { color: var(--ps-warning); }
+.ps-wf-state.is-running { --ps-wf-tone: var(--ps-accent); }
+.ps-wf-state.is-waiting { --ps-wf-tone: var(--ps-warning); }
 .ps-wf-state.is-paused,
 .ps-wf-state.is-canceling,
-.ps-wf-state.is-canceled { color: var(--ps-muted); }
-.ps-wf-state.is-failed { color: var(--ps-danger); }
-.ps-wf-state.is-completed { color: var(--ps-success); }
+.ps-wf-state.is-canceled { --ps-wf-tone: var(--ps-muted); }
+.ps-wf-state.is-failed { --ps-wf-tone: var(--ps-danger); }
+.ps-wf-state.is-completed { --ps-wf-tone: var(--ps-success); }
 .ps-session-row-workflow-state { margin-left: auto; flex: none; font-size: 0.85em; }
 .ps-session-row-content.is-chat-owner,
 .ps-session-list-button.is-chat-owner {
@@ -13009,6 +13021,10 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-workflow-node.is-kind-receive .ps-workflow-node-icon { color: #22d3ee; }
 .ps-workflow-node-runs { position: static; }
 .ps-workflow-node-meta.is-state { color: var(--ps-foreground); }
+/* r3 C15 (and C02): a node's type line was the muted colour on the node's face, 4.2:1 to 4.3:1 on a running node in
+   Workspace Dark and on any node in win95. A third of the foreground in it keeps it quieter than the name and reads 5:1 or
+   more on every theme's node face and running tint. */
+.ps-workflow-node-meta:not(.is-state) { color: color-mix(in srgb, var(--ps-muted) 70%, var(--ps-foreground)); }
 .ps-workflow-node.is-running { border-color: var(--ps-accent); }
 .ps-workflow-node.is-cancelled { border-color: var(--ps-muted); }
 .ps-workflow-node.is-not-reached { opacity: 0.55; }
@@ -13083,7 +13099,8 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-workflow-node.is-terminal.is-reached .ps-workflow-node-ring::after { background: var(--ps-end); }
 .ps-workflow-node.is-terminal .ps-workflow-node-text { justify-items: center; }
 .ps-workflow-node.is-terminal .ps-workflow-node-meta { display: none; }
-.ps-workflow-node.is-terminal.is-reached .ps-workflow-node-meta.is-state { display: block; color: var(--ps-end); }
+/* r3 C15: the end's words in the theme's foreground; its colour is the ring's (a red under 4.5:1 as text in some themes). */
+.ps-workflow-node.is-terminal.is-reached .ps-workflow-node-meta.is-state { display: block; color: var(--ps-foreground); }
 .ps-workflow-node.is-terminal.is-selected,
 .ps-workflow-node.is-terminal:focus-visible { box-shadow: none; }
 .ps-workflow-node.is-terminal.is-selected .ps-workflow-node-ring,
