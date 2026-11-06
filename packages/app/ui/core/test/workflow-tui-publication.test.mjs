@@ -435,3 +435,18 @@ test("UI-D11: canceling Start says 'Start was not sent'; the help has no draft o
     assert.ok(help.includes("a definition you may change: C compares two versions of its YAML"), "the Compare entry");
     assert.doesNotMatch(help, /draft|publish/i);
 });
+
+// Review UI-F6: the status after saving YAML, valid or not, says the definition was saved and, with errors, that it cannot
+// be started; no draft or publish words.
+test("UI-F6: a YAML save's status says 'Saved the definition', and an invalid one 'cannot be started'", async () => {
+    const { workflowV2RunCommandAccepted } = await import("../src/workflow-v2-commands.js");
+    const valid = workflowV2RunCommandAccepted("replace_definition", null, { revision: 4, valid: true, diagnostics: [] });
+    const invalid = workflowV2RunCommandAccepted("replace_definition", null, { revision: 5, valid: false,
+        diagnostics: [{ severity: "error", message: "x" }, { severity: "warning", message: "y" }] });
+    const replayed = workflowV2RunCommandAccepted("replace_definition", null, { revision: 4, valid: true, replayed: true });
+    assert.equal(valid, "Saved the definition as revision 4.");
+    assert.equal(invalid, "Saved the definition as revision 5. It has 1 error, so it cannot be started until they are fixed.");
+    assert.equal(replayed, "Saved the definition as revision 4. It had already been accepted.");
+    for (const text of [valid, invalid, replayed]) assert.doesNotMatch(text, /draft|publish/i);
+});
+

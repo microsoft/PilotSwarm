@@ -622,7 +622,7 @@ export function workflowV2DefinitionControls(model, command = null) {
         const pending = busy && command.operation === operation;
         const known = operation === "start" ? publishedDefinitionHash !== null : revision !== null && definitionHash !== null;
         const reason = busy ? (pending ? "This command is being sent." : "Another command for this workflow is being sent.")
-            : denied ?? (operation !== "start" && !valid ? `Revision ${revision ?? "shown"} has ${errors || "unlisted"} error${errors === 1 ? "" : "s"} and cannot be published; fix them first.`
+            : denied ?? (operation !== "start" && !valid ? `Revision ${revision ?? "shown"} has ${errors || "unlisted"} error${errors === 1 ? "" : "s"} and cannot be started; fix them first.`
                 : !known ? "The revision or its definition hash is not known; read the workflow again." : null);
         const label = operation === "publish" ? "Publish only" : operation === "publish_and_start" ? "Publish and start" : "Start live run";
         return { operation, label: pending ? (operation === "start" ? "Starting…" : "Publishing…") : label, enabled: reason === null, pending,
@@ -985,8 +985,9 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
         const errors = isRecord(receipt) && Array.isArray(receipt.diagnostics)
             ? receipt.diagnostics.filter(item => isRecord(item) && item.severity !== "warning").length : 0;
         const valid = isRecord(receipt) && receipt.valid === false
-            ? ` It has ${errors || "unlisted"} error${errors === 1 ? "" : "s"}, so it cannot be published until they are fixed.` : "";
-        return `Saved the draft as ${saved}.${valid}${again}`;
+            ? ` It has ${errors || "unlisted"} error${errors === 1 ? "" : "s"}, so it cannot be started until they are fixed.` : "";
+        // Review UI-F6: the words people see: a definition is saved and started, not drafted or published.
+        return `Saved the definition as ${saved}.${valid}${again}`;
     }
     if (operation === "test_respond") {
         const interception = shortId(String(args?.interceptionId ?? receipt?.interceptionId ?? ""));

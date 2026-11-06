@@ -64,7 +64,7 @@ test("a draft offers Publish only and Publish and start for the exact revision s
         { severity: "error", code: "E1", path: "states.a", message: "x" }, { severity: "error", code: "E2", path: "states.b", message: "y" },
         { severity: "warning", code: "W1", path: "states.c", message: "z" }] }));
     assert.ok(invalid.controls.every(control => !control.enabled
-        && control.title === "Revision 2 has 2 errors and cannot be published; fix them first."));
+        && control.title === "Revision 2 has 2 errors and cannot be started; fix them first."));
     const unknown = workflowV2DefinitionControls(draftModel({ definitionHash: undefined }));
     assert.ok(unknown.controls.every(control => !control.enabled && /definition hash is not known/.test(control.title)));
 });

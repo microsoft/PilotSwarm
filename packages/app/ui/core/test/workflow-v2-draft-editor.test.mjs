@@ -76,10 +76,10 @@ test("the save names no run, carries the whole YAML at the revision the edit sta
     }
     assert.deepEqual(workflowV2RunCommandWire("replace_definition", null, "op-1", { expectedRevision: 2, yaml: YAML }),
         { operation: "replace_definition", operation_id: "op-1", expected_revision: 2, yaml: YAML });
-    assert.equal(workflowV2RunCommandAccepted("replace_definition", null, { revision: 3, valid: true, diagnostics: [] }), "Saved the draft as revision 3.");
+    assert.equal(workflowV2RunCommandAccepted("replace_definition", null, { revision: 3, valid: true, diagnostics: [] }), "Saved the definition as revision 3.");
     assert.equal(workflowV2RunCommandAccepted("replace_definition", null, { revision: 3, valid: false, diagnostics: [
         { severity: "error", code: "E1" }, { severity: "error", code: "E2" }, { severity: "warning", code: "W1" }] }),
-    "Saved the draft as revision 3. It has 2 errors, so it cannot be published until they are fixed.");
+    "Saved the definition as revision 3. It has 2 errors, so it cannot be started until they are fixed.");
     assert.equal(workflowV2RunCommandNotice({ operation: "replace_definition", runId: null, phase: "failed", message: "The draft is at revision 3, not 2." }).text,
         "Saving the draft was refused: The draft is at revision 3, not 2.");
 });
@@ -125,7 +125,7 @@ test("a save sends replace_definition at the revision the edit started from; a c
     assert.equal(sessionId, SID);
     assert.match(command.operation_id, /^ui-replace_definition-./);
     assert.deepEqual(without(command, "operation_id"), { operation: "replace_definition", expected_revision: 2, yaml: EDITED });
-    assert.equal(h.store.getState().ui.statusText, "Saved the draft as revision 3.");
+    assert.equal(h.store.getState().ui.statusText, "Saved the definition as revision 3.");
     await until(() => h.reads.length === 1, "the read model read again");
 
     fail = Object.assign(new Error("The draft is at revision 3, not 2."), { status: 409, code: "REVISION_CONFLICT", details: { currentRevision: 3 } });

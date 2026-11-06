@@ -166,7 +166,7 @@ test("the view names the draft's revision; e opens the editor on its YAML, and c
     const { operation_id: operationId, ...wire } = first;
     assert.match(operationId, /^ui-replace_definition-./);
     assert.deepEqual(wire, { operation: "replace_definition", expected_revision: 1, yaml: edited });
-    assert.equal(statusOf(h.store), "Saved the draft as revision 2.");
+    assert.equal(statusOf(h.store), "Saved the definition as revision 2.");
     assert.equal(modalOf(h.store).type, "workflowDraft", "the editor stays open");
     shown = editor(h.store);
     assert.match(shown.title, /^Definition · editing revision 2 · /);
@@ -233,7 +233,7 @@ test("a saved revision with compile errors keeps what was typed and lists its di
     toEnd(h);
     type(h, "# broken on purpose\n");
     await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_SAVE);
-    assert.equal(statusOf(h.store), "Saved the draft as revision 2. It has 1 error, so it cannot be published until they are fixed.");
+    assert.equal(statusOf(h.store), "Saved the definition as revision 2. It has 1 error, so it cannot be started until they are fixed.");
     await settle();
     const shown = editor(h.store);
     assert.match(shown.title, /^Definition · editing revision 2 · /);
@@ -309,7 +309,7 @@ test("a draft someone else saved meanwhile is refused, never overwritten: the ed
     assert.equal(second.expected_revision, 2);
     assert.equal(second.yaml, mine);
     assert.notEqual(second.operation_id, first.operation_id);
-    assert.equal(statusOf(h.store), "Saved the draft as revision 3.");
+    assert.equal(statusOf(h.store), "Saved the definition as revision 3.");
     await settle();
     assert.match(editor(h.store).title, /^Definition · editing revision 3 · /);
     assert.deepEqual(editor(h.store).statusLines.map(line => line.text), ["No unsaved edits."]);
@@ -402,7 +402,7 @@ test("a new version is refused and the edit stays; while a save is sent nothing 
     const [first, second, third] = h.sent();
     assert.notEqual(second.operation_id, first.operation_id);
     assert.deepEqual(third, second, "the same command, with the same operation id");
-    assert.equal(statusOf(h.store), "Saved the draft as revision 2.");
+    assert.equal(statusOf(h.store), "Saved the definition as revision 2.");
     await settle();
     assert.deepEqual(editor(h.store).statusLines.map(line => line.text), ["No unsaved edits."], "the notice went with the accepted save");
 });
