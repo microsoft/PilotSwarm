@@ -244,8 +244,10 @@ const EARLIER = Symbol("earlier in this chat");
  * `own`: the shown visits of the chat, oldest first; `single`: the chat serves one visit only (a new chat each visit, or
  * the run's whole history holds one visit of it).
  * - The window starts at a prompt: none (null).
- * - A shown visit's prompt comes first, with a shown visit before it: that earlier visit (the rows come after its prompt,
- *   which is on an older page, and before the next one).
+ * - A shown visit's prompt comes first, with a shown visit before it whose prompt was given to the chat (its invocation
+ *   is recorded spawned): that earlier visit (the rows come after its prompt, which is on an older page, and before the
+ *   next one). Review UI-F3: a visit before it that never got its prompt (spawned false, e.g. it timed out first) is no
+ *   evidence, so the rows are not given to it, nor guessed further back.
  * - Otherwise a chat that serves one visit: that visit.
  * - Otherwise which visit they belong to is not known: EARLIER (the Log shows them apart until their prompt is loaded),
  *   never guessed from the newest visit.
@@ -258,7 +260,7 @@ function leadingVisit(events, own, single) {
         if (!prompted) continue;
         if (sorted[0] === event) return null;
         const at = ids.indexOf(prompted);
-        if (at > 0) return ids[at - 1];
+        if (at > 0) return own[at - 1].agent?.spawned === true ? ids[at - 1] : EARLIER;
         return at === 0 && single ? ids[0] : EARLIER;
     }
     return single && ids.length === 1 ? ids[0] : EARLIER;

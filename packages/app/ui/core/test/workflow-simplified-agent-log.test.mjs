@@ -29,8 +29,8 @@ const node = {
     id: "talk", kind: "agent", type: "agent", runs: 2, outcomes: ["again", "finish"], next: { again: "pause", finish: "done" },
     executions: [
         { id: "nx-1", ordinal: 1, status: "completed", outcome: "again", resultKind: "business", enteredAt: at("17:40:01"), endedAt: at("17:40:09"),
-            agent: { childSessionId: CHAT } },
-        { id: "nx-2", ordinal: 2, status: "pending", enteredAt: at("17:42:01"), deadline: at("17:43:01"), agent: { childSessionId: CHAT } },
+            agent: { childSessionId: CHAT, spawned: true } },
+        { id: "nx-2", ordinal: 2, status: "pending", enteredAt: at("17:42:01"), deadline: at("17:43:01"), agent: { childSessionId: CHAT, spawned: true } },
     ],
 };
 node.current = node.executions[1];
@@ -303,6 +303,39 @@ test("UI-D6: an older-page read failure shows with Retry; at the 3,000-event lim
     const apart = workflowAgentNodeLog({ node: { ...node, chat: "continue" }, events, chats: new Map([[CHAT, chat.slice(2, 7)]]),
         coverage: new Map([[CHAT, { hasOlder: true, cap: 3000 }]]), runId: "run-1", now: NOW });
     assert.equal(apart.earlier[0].older.action, null);
+});
+
+// Review UI-F3: a visit between two others that never got its prompt (it timed out before its send; its invocation still
+// names the chat, unspawned) is no evidence: the lines before the next loaded prompt are not given to it.
+test("UI-F3: lines before a later prompt are not given to an intervening visit that never got its prompt", () => {
+    const three = { ...node, chat: "continue", runs: 3, executions: [
+        { ...node.executions[0] },
+        { id: "nx-2", ordinal: 2, status: "completed", outcome: "timed_out", resultKind: "runtime_error", enteredAt: at("17:42:01"), endedAt: at("17:43:01"),
+            agent: { childSessionId: CHAT, spawned: false } },
+        { id: "nx-3", ordinal: 3, status: "pending", enteredAt: at("17:44:01"), agent: { childSessionId: CHAT, spawned: true } },
+    ] };
+    three.current = three.executions[2];
+    const visit3Prompt = prompt(11, "nx-3", "17:44:02", "[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 3.]\n{}");
+    const coverage = new Map([[CHAT, { hasOlder: true }]]);
+    const chatRowsOf = group => group.rows.filter(row => row.key.startsWith("chat:"));
+    // Visit 1's tail (tool, answer, completion) then visit 3's prompt; visit 1's prompt is on an older page.
+    const tail = workflowAgentNodeLog({ node: three, events, chats: new Map([[CHAT, [...chat.slice(2, 7), visit3Prompt]]]), coverage, runId: "run-1", now: NOW });
+    const [third, second, first] = tail.groups;
+    assert.deepEqual(chatRowsOf(second), [], "nothing for visit 2, which never got its prompt");
+    assert.deepEqual(chatRowsOf(first), [], "nor guessed for visit 1");
+    assert.deepEqual(tail.earlier[0].rows.map(row => row.label), ["Tool", "Agent", "Typed result"]);
+    assert.deepEqual(chatRowsOf(third).map(row => row.label), ["Prompt"]);
+    // Visit 1's prompt loaded: the lines are visit 1's, never visit 2's.
+    const whole = workflowAgentNodeLog({ node: three, events, chats: new Map([[CHAT, [...chat.slice(1, 7), visit3Prompt]]]), coverage, runId: "run-1", now: NOW });
+    assert.deepEqual(whole.earlier, []);
+    assert.deepEqual(chatRowsOf(whole.groups[2]).map(row => row.label), ["Prompt", "Tool", "Agent", "Typed result"]);
+    assert.deepEqual(chatRowsOf(whole.groups[1]), []);
+    // The visit before the loaded prompt got its own prompt (spawned): the lines are its, as before (UI-10).
+    const spawned = { ...three, executions: three.executions.map(item => item.id === "nx-2" ? { ...item, agent: { ...item.agent, spawned: true } } : item) };
+    spawned.current = spawned.executions[2];
+    const bounded = workflowAgentNodeLog({ node: spawned, events, chats: new Map([[CHAT, [...chat.slice(2, 7), visit3Prompt]]]), coverage, runId: "run-1", now: NOW });
+    assert.deepEqual(bounded.earlier, []);
+    assert.deepEqual(chatRowsOf(bounded.groups[1]).map(row => row.label), ["Tool", "Agent", "Typed result"]);
 });
 
 test("UI-10: older visits not in the run's loaded history offer Load older visits", () => {
