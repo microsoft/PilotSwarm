@@ -3354,9 +3354,6 @@ for (const theme of listThemes()) {
         const check = async (button, what) => {
             await expect(button).toHaveAttribute("aria-pressed", "true");
             await page.mouse.move(2, 400);
-            // A button's background eases in (120 ms) while its icon colour changes at once: measure the pressed look, not
-            // the first frame of the change (cobalt2 and hearth read 1:1 there).
-            await button.evaluate(element => Promise.all(element.getAnimations({ subtree: true }).map(animation => animation.finished)));
             const { icon, backgrounds } = await iconAndBackgrounds(button);
             for (const background of backgrounds) {
                 const ratio = contrast(icon, background);

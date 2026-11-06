@@ -12689,6 +12689,10 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
    pressed button: the selected tokens every theme defines for it (a fill with its own foreground), and win95's latched
    and ms-dos's reverse-video looks. The selection colour it used before equals the accent in some themes (High
    Contrast: a white square, the icon gone). */
+/* A toggle's fill changes with its icon in the same frame. The base button eases its background in over 120 ms while its
+   colour changes at once, so for those frames a pressed icon sat on the old fill: in themes whose pressed icon is the page
+   colour (cobalt2, hearth) it vanished (1:1), on every press. */
+.ps-wf-tab .ps-mini-button.ps-workflow-tool-button { transition: none; }
 .ps-wf-tab .ps-mini-button.ps-workflow-tool-button[aria-pressed="true"] {
   border-color: var(--ps-modal-selected-border);
   background: var(--ps-modal-selected-background);
