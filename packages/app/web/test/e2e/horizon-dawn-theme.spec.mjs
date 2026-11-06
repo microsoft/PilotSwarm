@@ -72,7 +72,7 @@ test("state signals survive the theme: focused pane, focused composer, pressed t
     expect(states.focused, "a pane is focused at start").toBeTruthy();
     expect(states.focused).not.toBe(states.unfocused);
     expect(states.pressed).not.toBe(states.rest);
-    expect(states.tabShadow).toMatch(/inset 0px -2px 0px/);
+    expect(states.tabShadow).toMatch(/0px -2px 0px 0px inset/);
     const input = page.locator(".ps-prompt-input").first();
     await input.focus();
     expect(await input.evaluate(el => getComputedStyle(el).borderTopColor)).toBe("rgb(92, 200, 242)");
