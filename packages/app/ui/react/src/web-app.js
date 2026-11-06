@@ -7470,8 +7470,16 @@ function ChatReadingControl({ reading, onChange }) {
  * loaded) a workflow is the active session. Neither has zen or full screen (batch 6, f-02).
  */
 function activeSessionIsWorkflow(state) {
-    return state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow"
+    return activeSessionIsWorkflowSession(state)
         || (state?.ui?.canvasOpen === true && state?.ui?.sidePaneTab === WORKFLOW_SIDE_TAB);
+}
+
+/**
+ * Whether the active session itself is a workflow (its session is not loaded, so it shows in the middle). The Workflow
+ * tab beside an ordinary chat is not (review UI-6): that chat's canvas stays mounted, parked, with its page state.
+ */
+export function activeSessionIsWorkflowSession(state) {
+    return state?.sessions?.byId?.[state?.sessions?.activeSessionId]?.sessionKind === "workflow";
 }
 
 /**
@@ -9003,7 +9011,8 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     const onWorkflow = paneMode === WORKFLOW_SIDE_TAB;
     // A Workflow that is the active session itself (its session is not loaded) shows in the middle; the engine's canvas of
     // its run is not shown beside it (as the old workflow screen did not).
-    const activeWorkflow = useControllerSelector(controller, activeSessionIsWorkflow);
+    // Only a workflow that is the active session replaces the canvas frame; the Workflow tab parks it (UI-6).
+    const activeWorkflow = useControllerSelector(controller, activeSessionIsWorkflowSession);
     const isWorkflow = onWorkflow;
     const onCanvas = !onWorkflow && (!workspaceTab || paneMode === "canvas");
     const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
