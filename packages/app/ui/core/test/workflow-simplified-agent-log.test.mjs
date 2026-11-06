@@ -210,3 +210,44 @@ test("a Base instructions row names its file only with a whole digest that names
     assert.equal(WORKFLOW_BASE_INSTRUCTIONS_CHANGED, "These base instructions changed since they were recorded, so they are not shown.");
     assert.ok(!html.includes("data-base-instructions="));
 });
+
+// Review UI-10: the Log knows what of each chat is loaded. A visit whose chat start (its prompt) is on an older page,
+// while older chat events exist, is not shown as complete: it says so and offers Load older (that chat's next older
+// page); its loaded answer is kept, never dropped for want of its prompt. Older visits the run's loaded history lacks
+// offer Load older visits. A continued chat's later visit carries the base instructions an earlier visit had.
+test("UI-10: a visit whose chat start is on an older page keeps its loaded events, says so and offers Load older", () => {
+    // The loaded window starts after visit 1's prompt (seq 2): its tool call and answer, then visit 2's prompt.
+    const window = chat.slice(2);
+    const coverage = new Map([[CHAT, { hasOlder: true }]]);
+    const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, window]]), coverage, runId: "run-1", now: NOW });
+    const [second, first] = log.groups;
+    assert.equal(first.truncated, true);
+    assert.ok(first.rows.some(row => row.label === "Agent" && row.text === "PostgreSQL uses MVCC."), "the loaded answer is kept");
+    assert.equal(second.truncated, false, "visit 2's prompt is loaded");
+    const asked = [];
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", onOlderChat: id => asked.push(id) }));
+    assert.equal((html.match(/data-truncated=""/g) || []).length, 1);
+    assert.ok(html.includes("The start of this visit&#x27;s chat is not loaded.") && html.includes('data-action="older-chat"'), html);
+    // The whole chat loaded (no older events): nothing is said.
+    const whole = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, chat]]), coverage: new Map([[CHAT, { hasOlder: false }]]), runId: "run-1", now: NOW });
+    assert.ok(whole.groups.every(group => !group.truncated));
+});
+
+test("UI-10: older visits not in the run's loaded history offer Load older visits", () => {
+    const partial = { ...node, partial: true };
+    const log = workflowAgentNodeLog({ node: partial, events, chats: new Map([[CHAT, chat]]), runId: "run-1", now: NOW });
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk", onOlderVisits: () => {} }));
+    assert.ok(html.includes("Older visits are not in the loaded history of this run.") && html.includes('data-action="older-executions"'), html);
+});
+
+test("UI-10: a continued chat's later visit carries the base instructions an earlier visit had, without their text", () => {
+    const withBase = [...chat.slice(0, 2), chatEvent(2.1, "system.message", "17:40:02", { content: SUMMARY, baseInstructions: KEPT }), ...chat.slice(2)];
+    const log = workflowAgentNodeLog({ node, events, chats: new Map([[CHAT, withBase]]), runId: "run-1", now: NOW });
+    const [second, first] = log.groups;
+    assert.equal(first.rows.filter(row => row.label === "Base instructions").length, 1);
+    const carried = second.rows.find(row => row.label === "Base instructions");
+    assert.deepEqual({ text: carried.text, from: carried.carriedFrom, ref: carried.instructions }, { text: "The same as visit 1 (this chat continues).", from: 1, ref: null });
+    assert.ok(second.rows.indexOf(carried) < second.rows.findIndex(row => row.label === "Prompt"), "before the visit's prompt");
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2AgentLog, { log, nodeId: "talk" }));
+    assert.ok(html.includes('data-carried-from="1"') && html.includes("The same as visit 1 (this chat continues)."));
+});

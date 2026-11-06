@@ -587,7 +587,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
             onPanel: id => setTab({ runPanel: id }) },
             panel === "node" ? h(RunNodePanel, { controller, child, selected,
                 onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
-            panel === "log" ? h(RunLogPanel, { controller, events, runId, selected, scope: logScope, onScope: setLogScope,
+            panel === "log" ? h(RunLogPanel, { controller, workflowSessionId: sessionId, events, runId, selected, scope: logScope, onScope: setLogScope,
                 instructionsReadable: workflowBaseInstructionsReadable(readModel) }) : null,
             panel === "variables" ? (variables ? h(WorkflowV2Variables, { controller, sessionId, model: variables }) : h("p", { className: "ps-wf-muted" }, "No variables."))
                 : null),
@@ -670,13 +670,13 @@ function LegacyNodePanel({ selected }) {
  * The Log panel (W10; finding 8). For an agent node: its own Log with its chat (AgentNodeLog), or, switched, the whole
  * Workflow's. For any other node: the whole Workflow's, as before.
  */
-function RunLogPanel({ controller, events, runId, selected, scope, onScope, instructionsReadable = true }) {
+function RunLogPanel({ controller, workflowSessionId = null, events, runId, selected, scope, onScope, instructionsReadable = true }) {
     if (!(selected?.shape === "v2" && selected.kind === "agent")) return h(WorkflowLog, { events, runId });
     return h("div", { className: "ps-wf-log-panel" },
         h("div", { className: "ps-wf-switch is-log", role: "group", "aria-label": "Log of" },
             [["node", `Node ${selected.id}`], ["all", "Whole Workflow"]].map(([id, label]) => h("button", { key: id, type: "button",
                 "aria-pressed": scope === id, className: scope === id ? "is-on" : "", onClick: () => onScope(id) }, label))),
-        scope === "all" ? h(WorkflowLog, { events, runId }) : h(AgentNodeLog, { controller, node: selected, events, runId, instructionsReadable }));
+        scope === "all" ? h(WorkflowLog, { events, runId }) : h(AgentNodeLog, { controller, workflowSessionId, node: selected, events, runId, instructionsReadable }));
 }
 
 /**
@@ -684,7 +684,7 @@ function RunLogPanel({ controller, events, runId, selected, scope, onScope, inst
  * of the shown visits is read once; while the newest visit works, its chat is read again every 5 s and at each new line
  * of the Workflow (a catch-up of the newer events only).
  */
-function AgentNodeLog({ controller, node, events, runId, instructionsReadable = true }) {
+function AgentNodeLog({ controller, workflowSessionId = null, node, events, runId, instructionsReadable = true }) {
     const [limit, setLimit] = React.useState(WORKFLOW_AGENT_LOG_VISITS);
     const chatIds = React.useMemo(() => workflowAgentLogChats(node, limit), [node, limit]);
     const chatKey = chatIds.join(",");
@@ -703,7 +703,17 @@ function AgentNodeLog({ controller, node, events, runId, instructionsReadable = 
     }, [controller, working, lines]);
     const chats = React.useMemo(() => new Map(chatIds.map(id => [id, histories?.get?.(id)?.events])), [chatKey, histories]);
     const failed = React.useMemo(() => new Set(chatIds.filter(id => histories?.get?.(id)?.loadState === "failed")), [chatKey, histories]);
-    const log = React.useMemo(() => workflowAgentNodeLog({ node, events, chats, runId, limit }), [node, events, chats, runId, limit]);
+    // Review UI-10: each chat's coverage (older events exist), and Load older for one chat or the run's older visits.
+    const coverage = React.useMemo(() => new Map(chatIds.map(id => [id, { hasOlder: histories?.get?.(id)?.hasOlderEvents === true }])), [chatKey, histories]);
+    const [olderChatLoading, setOlderChatLoading] = React.useState(() => new Set());
+    const onOlderChat = chatId => {
+        setOlderChatLoading(current => new Set([...current, chatId]));
+        Promise.resolve(controller.expandSessionHistory(chatId)).catch(() => {}).finally(() =>
+            setOlderChatLoading(current => { const next = new Set(current); next.delete(chatId); return next; }));
+    };
+    const onOlderVisits = workflowSessionId && typeof controller.loadOlderWorkflowHistory === "function"
+        ? () => { controller.loadOlderWorkflowHistory(workflowSessionId).catch(() => {}); } : null;
+    const log = React.useMemo(() => workflowAgentNodeLog({ node, events, chats, coverage, runId, limit }), [node, events, chats, coverage, runId, limit]);
     // The base instructions are read like any file of a session (the Workflow's), when a person opens their row; only by
     // the Workflow's owner (review SF-3): anyone else sees the summary row and is told so. The text read is shown only
     // when its sha256 is the recorded one (review SF-4); opened again, it is read again.
@@ -718,7 +728,7 @@ function AgentNodeLog({ controller, node, events, runId, instructionsReadable = 
     };
     const onInstructions = instructionsReadable
         ? ref => { controller.ensureFilePreview(ref.sessionId, ref.artifact, { force: true }).catch(() => {}); } : null;
-    return h(WorkflowV2AgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions,
+    return h(WorkflowV2AgentLog, { log, failed, nodeId: node.id, readInstructions, onInstructions, onOlderChat, olderChatLoading, onOlderVisits,
         onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS) });
 }
 

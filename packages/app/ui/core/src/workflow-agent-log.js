@@ -112,7 +112,11 @@ export function workflowAgentLogChats(node, limit = WORKFLOW_AGENT_LOG_VISITS) {
     return [...new Set(workflowAgentLogVisits(node, limit).map(visit => visit.agent?.childSessionId).filter(id => typeof id === "string" && id))];
 }
 
-/** A chat's events by the visit they belong to: each event goes to the visit whose prompt came last before it. */
+/**
+ * A chat's events by the visit they belong to: each event goes to the visit whose prompt came last before it. Events
+ * loaded before any prompt of a shown visit belong to `firstVisit` (review UI-10: the visit before the first prompt in
+ * the window, when that prompt is on an older page), never dropped.
+ */
 function chatByVisit(events, visitIds, firstVisit) {
     const byVisit = new Map();
     let current = firstVisit;
@@ -215,21 +219,44 @@ function workflowRows(events, runId, visitId) {
 }
 
 /**
- * The Log of an agent node: { groups, more, partial, loading, note }. `chats` maps an agent chat's session id to its loaded events
- * (undefined: not read yet). Each group is { visitId, ordinal, header, status, rows, loading }; rows are { key, kind
- * (prompt, agent, result or workflow), label, text, more?, detail?, at, time }.
+ * The visit whose events start a continued chat's loaded window (review UI-10): the shown visit just before the first
+ * shown visit whose prompt is loaded, when the window starts after that earlier visit's prompt (it is on an older page);
+ * else null (the window starts at a prompt, or with no shown visit before it).
  */
-export function workflowAgentNodeLog({ node, events = [], chats = new Map(), runId = null, limit = WORKFLOW_AGENT_LOG_VISITS, now = Date.now() } = {}) {
+function leadingVisit(events, own) {
+    const sorted = (Array.isArray(events) ? events : []).filter(isRecord).slice().sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    const ids = own.map(visit => visit.id);
+    for (const event of sorted) {
+        const prompted = workflowPromptVisit(event);
+        if (!prompted) continue;
+        const at = ids.indexOf(prompted);
+        return at > 0 && sorted[0] !== event ? ids[at - 1] : null;
+    }
+    return own.length ? own[own.length - 1].id : null;
+}
+
+/**
+ * The Log of an agent node: { groups, more, partial, loading, note }. `chats` maps an agent chat's session id to its loaded events
+ * (undefined: not read yet); `coverage` maps it to { hasOlder } (the chat has events older than those loaded). Each
+ * group is { visitId, ordinal, header, status, rows, loading, truncated }: `truncated` when the start of the visit's
+ * chat (its prompt) is not loaded and older chat events exist (review UI-10: the Log says so and offers Load older,
+ * never shows such a group as a complete visit). rows are { key, kind (prompt, agent, result or workflow), label, text,
+ * more?, detail?, at, time }; a continued chat's visit without its own Base instructions row carries the reference of
+ * the nearest earlier loaded visit's ("the same as visit N"), without its text.
+ */
+export function workflowAgentNodeLog({ node, events = [], chats = new Map(), coverage = new Map(), runId = null, limit = WORKFLOW_AGENT_LOG_VISITS,
+    now = Date.now() } = {}) {
     const all = (Array.isArray(node?.executions) ? node.executions : []).filter(item => typeof item?.id === "string");
     const visits = workflowAgentLogVisits(node, limit);
     const shownIds = new Set(visits.map(visit => visit.id));
     const read = typeof chats?.get === "function" ? chats : new Map(Object.entries(chats ?? {}));
+    const covered = typeof coverage?.get === "function" ? coverage : new Map(Object.entries(coverage ?? {}));
     // Each chat is cut once by the prompts of the visits shown; a visit with its own chat takes all of it.
     const cut = new Map();
     for (const chatId of new Set(visits.map(visit => visit.agent?.childSessionId).filter(Boolean))) {
         const own = visits.filter(visit => visit.agent?.childSessionId === chatId).sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
         const loaded = read.get(chatId);
-        if (Array.isArray(loaded)) cut.set(chatId, chatByVisit(loaded, new Set(own.map(visit => visit.id)), own.length === 1 ? own[0].id : null));
+        if (Array.isArray(loaded)) cut.set(chatId, chatByVisit(loaded, new Set(own.map(visit => visit.id)), own.length === 1 ? own[0].id : leadingVisit(loaded, own)));
     }
     let loading = false;
     const groups = visits.map(visit => {
@@ -246,11 +273,27 @@ export function workflowAgentNodeLog({ node, events = [], chats = new Map(), run
         if (base > asked && asked >= 0) sorted.splice(asked, 0, ...sorted.splice(base, 1));
         const rows = sorted.map(({ order, ...row }) => ({ ...row, time: row.at === null ? null : workflowNodeClock(row.at, now) }));
         const started = visit.enteredAt ? workflowNodeClock(visit.enteredAt, now) : null;
+        // UI-10: the visit's start (its prompt) is not loaded while the chat has older events: the group is not complete.
+        const truncated = !waiting && Boolean(chatId) && covered.get(chatId)?.hasOlder === true && !rows.some(row => row.label === "Prompt");
         return {
-            visitId: visit.id, ordinal: visit.ordinal ?? null, chatId, loading: waiting,
+            visitId: visit.id, ordinal: visit.ordinal ?? null, chatId, loading: waiting, truncated,
             header: `Visit ${visit.ordinal ?? "—"}${started ? ` · ${started}` : ""}`, status: workflowNodeNow(node, visit, now), rows,
         };
     });
+    // UI-10: a continued chat's later visits carry the base instructions the chat had at an earlier visit (one row, no text).
+    const byOrdinal = groups.slice().sort((a, b) => (a.ordinal ?? 0) - (b.ordinal ?? 0));
+    const lastBase = new Map();
+    for (const group of byOrdinal) {
+        const own = group.rows.find(row => row.label === "Base instructions");
+        if (own) { lastBase.set(group.chatId, { row: own, ordinal: group.ordinal }); continue; }
+        const earlier = group.chatId ? lastBase.get(group.chatId) : null;
+        if (!earlier || group.loading) continue;
+        const prompt = group.rows.findIndex(row => row.label === "Prompt");
+        const carried = { key: `carried:${group.visitId}`, kind: "prompt", label: "Base instructions", at: null, time: null,
+            text: `The same as visit ${earlier.ordinal ?? "—"} (this chat continues).`, carriedFrom: earlier.ordinal ?? null,
+            instructions: null, instructionsKept: earlier.row.instructionsKept === true };
+        group.rows.splice(prompt >= 0 ? prompt : 0, 0, carried);
+    }
     // `more`: older visits are loaded but not shown ("Show older visits"); `partial`: the run's loaded history has no older ones.
     return { groups, more: all.length > visits.length, partial: Boolean(node?.partial), loading, note: WORKFLOW_AGENT_LOG_NOTE };
 }

@@ -414,7 +414,9 @@ function BaseInstructions({ row, readInstructions, onInstructions }) {
 /** One row of an agent node's Log: its label and time, then its text (folded with Show more) or its call (to expand). */
 function AgentLogRow({ row, readInstructions = null, onInstructions = null }) {
     const [open, setOpen] = React.useState(false);
-    const body = row.label === "Base instructions" ? h(BaseInstructions, { row, readInstructions, onInstructions })
+    const body = row.label === "Base instructions" && row.carriedFrom !== undefined
+        ? h("p", { className: "ps-wf-muted", "data-carried-from": row.carriedFrom ?? "" }, row.text)
+        : row.label === "Base instructions" ? h(BaseInstructions, { row, readInstructions, onInstructions })
         : row.detail !== undefined
         ? h("details", null, h("summary", null, row.text), h("pre", null, row.detail))
         : h("div", { className: "ps-wf-alog-text" },
@@ -432,17 +434,25 @@ function AgentLogRow({ row, readInstructions = null, onInstructions = null }) {
  * apart by their label and the colour of their edge. `failed` names the chats that could not be read; `onMore` shows
  * older visits.
  */
-export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId = null, readInstructions = null, onInstructions = null }) {
+export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId = null, readInstructions = null, onInstructions = null,
+    onOlderChat = null, olderChatLoading = null, onOlderVisits = null }) {
     return h("div", { className: "ps-wf-alog", "aria-label": nodeId ? `Log of node ${nodeId}` : "Agent node log" },
         h("p", { className: "ps-wf-muted ps-wf-alog-note" }, log.note),
         log.groups.length ? null : h("p", { className: "ps-wf-muted" }, "This node has not run yet."),
         log.groups.map(group => h("section", { key: group.visitId, className: "ps-wf-alog-visit", "data-visit": group.ordinal ?? undefined },
             h("h3", null, group.header, group.status ? h("span", { className: "ps-wf-alog-status" }, ` · ${group.status}`) : null),
             group.loading ? h("p", { className: "ps-wf-muted" }, failed?.has?.(group.chatId) ? "Its agent chat could not be read." : "Reading its agent chat…") : null,
+            // Review UI-10: the start of this visit's chat is not loaded; it is not shown as complete.
+            group.truncated ? h("p", { className: "ps-wf-muted", "data-truncated": "" }, "The start of this visit's chat is not loaded. ",
+                onOlderChat ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-chat",
+                    disabled: Boolean(olderChatLoading?.has?.(group.chatId)), onClick: () => onOlderChat(group.chatId) },
+                olderChatLoading?.has?.(group.chatId) ? "Loading…" : "Load older") : null) : null,
             group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row, readInstructions,
                 onInstructions }))) : null)),
         log.more && onMore ? h("button", { type: "button", className: "ps-mini-button", "data-action": "older-visits", onClick: onMore }, "Show older visits") : null,
-        !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits are not in the loaded history of this run.") : null);
+        !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits are not in the loaded history of this run. ",
+            onOlderVisits ? h("button", { type: "button", className: "ps-link-button", "data-action": "older-executions", onClick: onOlderVisits }, "Load older visits") : null)
+            : null);
 }
 
 /**
