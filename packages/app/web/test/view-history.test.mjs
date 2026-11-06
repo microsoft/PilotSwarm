@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createViewHistory, cleanView, navigationShortcut, viewKey, workflowTabOnReload, workflowTabPatch } from "../src/navigation/view-history.js";
+import {
+    createViewHistory, cleanView, navigationShortcut, reloadReadySessionId, viewKey, workflowTabOnReload, workflowTabPatch,
+} from "../src/navigation/view-history.js";
 const view = id => cleanView({ mode: "workspace", sessionId: String(id) });
 
 test("history retains ten views, clamps ends, and replaces the forward branch", () => {
@@ -96,4 +98,25 @@ test("UI-D3: a view keeps the Workflow tab's context; Back/Forward and a reload 
     assert.equal(workflowTabOnReload(shown, state("owner-1", { "owner-1": { view: "definition" } })), null, "already chosen in this page");
     assert.equal(workflowTabOnReload({ ...shown, mode: "admin" }, state("owner-1")), null);
     assert.equal(workflowTabOnReload(undefined, state("owner-1")), null);
+});
+
+// Review UI-F2: a reload's saved view is applied, and the startup view taken, only once the initial session is resolved: a
+// stored profile can select the session before the catalog answers (the ca43135a/10447048 browser runs), and a view taken
+// then has no Workflow tab context, since that needs the session's row.
+test("UI-F2: the startup view waits for the selected session's row and for a deep link to resolve", () => {
+    const row = { sessionId: "owner-1", title: "Release triage agent" };
+    const state = (activeSessionId, byId = {}, navigationIntent = null) => ({ sessions: { activeSessionId, byId, navigationIntent } });
+    assert.equal(reloadReadySessionId(state(null)), null, "nothing selected");
+    assert.equal(reloadReadySessionId(state("owner-1")), null, "selected by the profile before the catalog answered");
+    assert.equal(reloadReadySessionId(state("owner-1", { "owner-1": row })), "owner-1");
+    assert.equal(reloadReadySessionId(state("owner-1", { "owner-1": row }, { sessionId: "owner-2", status: "pending" })), null,
+        "a deep link is still resolving");
+    assert.equal(reloadReadySessionId(state("owner-1", { "owner-1": row }, { sessionId: "owner-1", status: "resolved" })), "owner-1");
+    assert.equal(reloadReadySessionId(state("owner-1", { "owner-1": row }, { sessionId: "gone", status: "failed" })), "owner-1");
+    assert.equal(reloadReadySessionId(undefined), null);
+    // Once resolved, the saved view of that session still gives its context (nothing chosen in its tab yet).
+    const shown = cleanView({ mode: "workspace", sessionId: "owner-1", canvasOpen: true, sidePaneTab: "workflow",
+        workflowTab: { ownerId: "owner-1", workflowId: "wf-b", definition: "watch-v2", view: "workflows" } });
+    const ready = { ...state("owner-1", { "owner-1": row }), ui: { workflowTabs: {} } };
+    assert.deepEqual(workflowTabOnReload(shown, ready), { ownerId: "owner-1", patch: { workflowId: "wf-b", definition: "watch-v2", view: "workflows" } });
 });

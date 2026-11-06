@@ -4,7 +4,9 @@ import {
     activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, selectWorkflowTabContext, updateMoaDashboard, workflowHighlightedSessionId,
     workflowRowTitle,
 } from "pilotswarm/ui-core";
-import { cleanView, createViewHistory, navigationShortcut, viewKey, workflowTabOnReload, workflowTabPatch } from "./view-history.js";
+import {
+    cleanView, createViewHistory, navigationShortcut, reloadReadySessionId, viewKey, workflowTabOnReload, workflowTabPatch,
+} from "./view-history.js";
 
 function capture(controller, moa) {
     const s = controller.getState(), dashboard = activeMoaDashboard(normalizeMoa(s.ui.moa));
@@ -57,12 +59,13 @@ export function useViewNavigation(controller, moa) {
         return p && (p.subject || p.email) && s.ui.moaLoaded ? JSON.stringify([p.provider || "", p.subject || p.email]) : null;
     });
     const data = React.useRef(null), generation = React.useRef(0), gesture = React.useRef(null);
-    // Review UI-F2: the saved current view of a reload, kept until the initial session is selected (the catalog may answer
-    // after the profile), then applied once for that session unless a choice made meanwhile supersedes it.
+    // Review UI-F2: the saved current view of a reload, kept until the initial session is resolved (selected, its row loaded,
+    // no deep link still resolving; the catalog may answer after the profile), then applied once for that session unless a
+    // choice made meanwhile supersedes it.
     const reloadCandidate = React.useRef(null);
     const [, redraw] = React.useReducer(n => n + 1, 0);
     const createdSessionId = useControllerSelector(controller, s => s.ui.revealedCreatedSessionId);
-    const activeSessionId = useControllerSelector(controller, s => s.sessions.activeSessionId ?? null);
+    const readySessionId = useControllerSelector(controller, reloadReadySessionId);
     const publish = React.useCallback(() => {
         const current = data.current;
         if (!current) return;
@@ -75,31 +78,32 @@ export function useViewNavigation(controller, moa) {
         let saved; try { saved = sessionStorage.getItem(key); } catch {}
         const history = createViewHistory(saved);
         data.current = { key, history };
-        if (controller.getState().sessions.activeSessionId) {
+        if (reloadReadySessionId(controller.getState())) {
             // Review UI-D3: a reload shows the Workflow tab context this tab last had for the session it opens on.
             const reloaded = workflowTabOnReload(history.current, controller.getState());
             if (reloaded) controller.dispatch({ type: "ui/workflowTab", ownerId: reloaded.ownerId, patch: reloaded.patch });
             history.visit(capture(controller, latest.current));
         } else {
-            // Review UI-F2: no session is selected yet (a deep link waits for the catalog). Keep the saved view as the reload
-            // candidate, and record no unready startup view over it; the effect below finishes when a session is selected.
+            // Review UI-F2: the initial session is not resolved yet: none is selected (a deep link waits for the catalog), or
+            // the profile selected one whose row is not loaded (its Workflow tab context cannot be taken). Keep the saved
+            // view as the reload candidate, and record no unready startup view over it; the effect below finishes.
             reloadCandidate.current = { entry: history.current ?? null };
         }
         publish();
         return () => { generation.current++; data.current = null; reloadCandidate.current = null; };
     }, [controller, scope, publish]);
 
-    // Review UI-F2: the initial session is selected: apply the reload candidate once, for that session only, and only while
+    // Review UI-F2: the initial session is resolved: apply the reload candidate once, for that session only, and only while
     // its Workflow tab has nothing chosen yet (workflowTabOnReload); then record the startup view.
     React.useEffect(() => {
         const current = data.current, pending = reloadCandidate.current;
-        if (!current || !pending || !activeSessionId) return;
+        if (!current || !pending || !readySessionId) return;
         reloadCandidate.current = null;
         const reloaded = workflowTabOnReload(pending.entry, controller.getState());
         if (reloaded) controller.dispatch({ type: "ui/workflowTab", ownerId: reloaded.ownerId, patch: reloaded.patch });
         current.history.visit(capture(controller, latest.current));
         publish();
-    }, [activeSessionId, controller, publish, scope]);
+    }, [readySessionId, controller, publish, scope]);
 
     React.useEffect(() => {
         if (!createdSessionId || !moa.desktop) return;

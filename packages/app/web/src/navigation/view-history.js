@@ -13,6 +13,17 @@ function cleanWorkflowTab(value) {
     return { ownerId, workflowId: text(value.workflowId), definition: text(value.definition),
         view: WORKFLOW_TAB_VIEWS.includes(value.view) ? value.view : null };
 }
+/**
+ * Review UI-F2: the session a reload's startup view can be taken for: the active session once its row is loaded and no deep
+ * link is still resolving; else null. A stored profile can select a session before the catalog answers, and a view taken
+ * then has no Workflow tab context (that needs the session's row). Pure.
+ */
+export function reloadReadySessionId(state) {
+    const sessions = state?.sessions;
+    const id = sessions?.activeSessionId ?? null;
+    if (!id || !sessions.byId?.[id]) return null;
+    return sessions.navigationIntent?.status === "pending" ? null : id;
+}
 /** The ui/workflowTab patch that shows a view's Workflow tab context again. */
 export function workflowTabPatch(tab) {
     return { workflowId: tab.workflowId, definition: tab.definition, view: tab.view };
