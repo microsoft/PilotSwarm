@@ -203,13 +203,23 @@ export function workflowStateOf(session, view = null) {
  * a folded block. `headline` reads "poll failed: …" ("check failed on item 3: …"); `reason`, beside a Failed chip, reads
  * "at poll: …". Null when nothing says.
  */
-export function workflowFailure(run, { itemOf = null } = {}) {
+export function workflowFailure(run, { itemOf = null, summary = null } = {}) {
     if (!isRecord(run) || run.status !== "failed") return null;
     const envelope = jsonRecord(run.error);
     const causeId = text(envelope?.details?.nodeExecutionId);
     const rows = [...(Array.isArray(run.nodeExecutions) ? run.nodeExecutions : []), ...(Array.isArray(run.openExecutions) ? run.openExecutions : [])];
-    const cause = causeId ? rows.find(row => isRecord(row) && (row.nodeExecutionId === causeId || row.id === causeId)) ?? null : null;
-    const stateId = text(run.terminalState) ?? text(cause?.stateId);
+    let cause = causeId ? rows.find(row => isRecord(row) && (row.nodeExecutionId === causeId || row.id === causeId)) ?? null : null;
+    const terminal = text(run.terminalState);
+    // Owner, 2026-11-06T14:35Z (F6): a run that a failure route took to a failed terminal has no error of its own, and its
+    // terminal's name and outcome say nothing ("failed failed"). Never repeat them: the error of the execution that took
+    // the failure route says why; else the terminal's summary; else "Ended at <terminal> (<outcome>)".
+    const routed = !cause && terminal && !workflowErrorWords(run.error) ? failureRouteCause(rows, terminal) : null;
+    if (routed) cause = routed;
+    if (!routed && !causeId && terminal && !workflowErrorWords(run.error)) {
+        const ended = text(summary) ?? `Ended at ${terminal}${text(run.outcome) ? ` (${text(run.outcome)})` : ""}`;
+        return { stateId: terminal, item: null, words: text(summary), details: null, leavesOut: false, executionId: null, headline: ended, reason: ended };
+    }
+    const stateId = (routed ? text(routed.stateId) : null) ?? terminal ?? text(cause?.stateId);
     const source = cause && workflowErrorWords(cause.errorPreview) ? cause.errorPreview : run.error;
     const words = workflowErrorWords(source);
     const item = !cause ? null : typeof itemOf === "function" ? itemOf(cause)
@@ -224,6 +234,17 @@ export function workflowFailure(run, { itemOf = null } = {}) {
         headline: `${stateId ? `${stateId} failed${item ? ` on item ${item}` : ""}` : `Failed${item ? ` on item ${item}` : ""}`}${words ? `: ${words}` : ""}`,
         reason: `${where ? `at ${where}` : ""}${where && words ? ": " : ""}${words ?? ""}`,
     };
+}
+
+/**
+ * F6: the execution that took a failure route to the run's terminal `terminal`: the step just before the terminal's own
+ * (by step number), when it ended with a runtime error whose words say why; null otherwise.
+ */
+function failureRouteCause(rows, terminal) {
+    const steps = rows.filter(row => isRecord(row) && Number.isSafeInteger(row.ordinal)).sort((a, b) => a.ordinal - b.ordinal);
+    const end = [...steps].reverse().find(row => row.stateId === terminal) ?? null;
+    const before = (end ? steps.filter(row => row.ordinal < end.ordinal) : steps).at(-1) ?? null;
+    return before && before.stateId !== terminal && before.resultKind === "runtime_error" && workflowErrorWords(before.errorPreview) ? before : null;
 }
 
 /** workflowFailure's headline ("poll failed: the script stopped with an error: …"); null when nothing says. */

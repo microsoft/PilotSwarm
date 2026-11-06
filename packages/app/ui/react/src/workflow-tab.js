@@ -552,7 +552,15 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
     const runId = projection?.runId ?? readModel?.run?.runId ?? null;
     const times = workflowRunTimes(events, runId);
     const revision = Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null;
-    const failure = state?.key === "failed" && readModel?.run && readModel.run.mode !== "test" ? workflowFailure(readModel.run) : null;
+    // F6: a failed terminal's summary, from the run's end event, for a run whose failure route ended it with no error of its own.
+    const endSummary = React.useMemo(() => {
+        for (let at = events.length - 1; at >= 0; at -= 1) {
+            const event = events[at];
+            if (event?.eventType === "workflow.failed" && (!runId || event.data?.runId === runId)) return typeof event.data?.summary === "string" ? event.data.summary : null;
+        }
+        return null;
+    }, [events, runId]);
+    const failure = state?.key === "failed" && readModel?.run && readModel.run.mode !== "test" ? workflowFailure(readModel.run, { summary: endSummary }) : null;
     const [stopping, setStopping] = React.useState(false);
     // An agent node's Log shows its chat (finding 8); "Whole Workflow" shows every line of this Workflow.
     const [logScope, setLogScope] = React.useState("node");
