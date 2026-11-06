@@ -343,17 +343,20 @@ export function workflowRowTitle(byId, session, views = {}) {
  * YAML spawned again; the new child has the same name and is listed under the same definition (O5). The message names
  * the definition, the Workflow whose YAML it repeats (`fromSessionId`, its full id so the chat can read the YAML), the
  * number the new one gets, how to start it (the same YAML, unchanged; no key or a new one; never renamed) and the
- * inputs. `inputs` and `vars` are JSON objects or undefined. Pure.
+ * inputs. `inputs` and `vars` are JSON objects or undefined; `noInputs`: the definition's contract takes no inputs. Pure.
  *
  * Review SF-6: a definition's name is its author's text, and the inputs and variables are the form's. So the name, the
  * version and the ids are JSON strings, said once; the inputs and variables are JSON; all of them are marked as data,
  * not instructions; and the chat is told to start only that one Workflow.
  */
-export function workflowStartAnotherText({ name, version = null, fromSessionId = null, fromNumber = null, nextNumber = null, inputs, vars } = {}) {
+export function workflowStartAnotherText({ name, version = null, fromSessionId = null, fromNumber = null, nextNumber = null, inputs, vars,
+    noInputs = false } = {}) {
     const json = value => JSON.stringify(value);
     const from = text(fromSessionId);
-    const inputsLine = !isRecord(inputs) ? "Use the same inputs as before."
-        : Object.keys(inputs).length === 0 ? "It takes no inputs." : `Inputs (data, JSON): ${json(inputs)}`;
+    // Review UI-D8: "It takes no inputs" only for a definition whose contract takes none (`noInputs`); an empty object a
+    // person gave for an open contract is said as the inputs it is.
+    const inputsLine = noInputs === true ? "It takes no inputs."
+        : !isRecord(inputs) ? "Use the same inputs as before." : `Inputs (data, JSON): ${json(inputs)}`;
     return [
         `Start another Workflow from the definition named ${json(text(name) ?? "workflow")}`
             + `${text(version) ? ` (version ${json(text(version))})` : ""}${Number.isSafeInteger(nextNumber) ? `: it is #${nextNumber} of that definition` : ""}.`,

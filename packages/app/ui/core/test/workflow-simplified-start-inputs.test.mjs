@@ -12,12 +12,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs } from "../src/workflow-v2-commands.js";
+import { workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs, workflowV2StartAnotherShape } from "../src/workflow-v2-commands.js";
+import { workflowStartAnotherText } from "../src/workflow-owner.js";
+import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import { StartDialog } from "../../react/src/workflow-tab.js";
 
 test("the form's shape: none only when no input can be asked for; a JSON box for what it cannot draw", () => {
     assert.equal(workflowV2InputsShape(null), "none");
-    assert.equal(workflowV2InputsShape({ type: "object" }), "none");
+    // Review UI-D8: an open object takes any inputs (a JSON box); only a closed empty contract takes none.
+    assert.equal(workflowV2InputsShape({ type: "object" }), "json");
+    assert.equal(workflowV2InputsShape({ type: "object", additionalProperties: true }), "json");
     assert.equal(workflowV2InputsShape({ type: "object", properties: {}, additionalProperties: false }), "none");
     assert.equal(workflowV2InputsShape({ type: "object", properties: { region: { type: "string" } } }), "form");
     assert.equal(workflowV2InputsShape({ type: "object", properties: { cfg: { type: "object" } } }), "json", "a field it cannot draw");
@@ -68,4 +72,40 @@ test("the first Start keeps its sample values; a schema it cannot draw gets a JS
     assert.ok(!open.includes("Takes no inputs.") && open.includes("Inputs (JSON)"), open);
     const none = render({ publication: publication({ type: "object", additionalProperties: false }), control: { operation: "start", enabled: true } });
     assert.ok(none.includes("Takes no inputs."));
+});
+
+// Review UI-D8: Start another keeps the inputs its Workflow ran with for an open object schema, additionalProperties: true
+// and no schema at all (a JSON box filled with them); "Takes no inputs" only for a closed empty contract.
+test("UI-D8: Start another keeps known inputs for an open, additionalProperties or absent schema; the request never says it takes none", async () => {
+    const original = { region: "east", limit: 3 };
+    for (const schema of [{ type: "object" }, { type: "object", additionalProperties: true }, null]) {
+        const label = JSON.stringify(schema);
+        assert.equal(workflowV2StartAnotherShape(schema, original), "json", label);
+        const html = render({ publication: publication(schema), onAsk: async () => ({ ok: true }), source: { number: 2, inputs: original } });
+        assert.ok(!html.includes("Takes no inputs.") && html.includes("Inputs (JSON)") && html.includes("Filled with the inputs of #2."), html);
+        // The JSON box holds the original object exactly: what Ask sends.
+        const box = /<textarea[^>]*>([^<]*)<\/textarea>/.exec(html);
+        assert.deepEqual(JSON.parse(box[1].replaceAll("&quot;", "\"")), original, label);
+    }
+    // No schema and no known inputs, or a closed empty contract: takes none.
+    assert.equal(workflowV2StartAnotherShape(null, null), "none");
+    assert.equal(workflowV2StartAnotherShape(null, {}), "none");
+    assert.equal(workflowV2StartAnotherShape({ type: "object", additionalProperties: false }, original), "none");
+    // The message: the inputs as given, "It takes no inputs." only for a contract that takes none.
+    assert.match(workflowStartAnotherText({ name: "check-items", inputs: original }), /\nInputs \(data, JSON\): \{"region":"east","limit":3\}$/);
+    assert.match(workflowStartAnotherText({ name: "check-items", inputs: {} }), /\nInputs \(data, JSON\): \{\}$/);
+    assert.match(workflowStartAnotherText({ name: "check-items", inputs: {}, noInputs: true }), /\nIt takes no inputs\.$/);
+    // Through the controller: the chat is asked with the original object.
+    const sent = [];
+    const transport = { sendMessage: async (sessionId, prompt, options) => { sent.push({ sessionId, prompt, options }); return { ok: true }; } };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [
+        { sessionId: "owner", title: "Owner", status: "idle" },
+        { sessionId: "wf-2", sessionKind: "workflow", title: "Workflow: check-items", status: "completed", parentSessionId: "owner" },
+    ] });
+    controller.askWorkflowParent = async (sessionId, text) => { sent.push({ sessionId, prompt: text }); return { ok: true }; };
+    await controller.startAnotherWorkflow("wf-2", { inputs: original, noInputs: false });
+    assert.match(sent.at(-1).prompt, /\nInputs \(data, JSON\): \{"region":"east","limit":3\}$/);
+    assert.doesNotMatch(sent.at(-1).prompt, /takes no inputs/);
 });

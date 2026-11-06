@@ -41,7 +41,9 @@ test("the message names the definition, the Workflow it repeats, the new number,
         "Start it as the first one was started (for version 2: state published and start true).",
         'Inputs (data, JSON): {"items":["apple","cherry"]}',
     ].join("\n"));
-    assert.match(workflowStartAnotherText({ name: "check-items", inputs: {} }), /\nIt takes no inputs\.$/);
+    // Review UI-D8: "It takes no inputs." only for a contract that takes none; an empty object given is said as itself.
+    assert.match(workflowStartAnotherText({ name: "check-items", inputs: {}, noInputs: true }), /\nIt takes no inputs\.$/);
+    assert.match(workflowStartAnotherText({ name: "check-items", inputs: {} }), /\nInputs \(data, JSON\): \{\}$/);
     assert.match(workflowStartAnotherText({ name: "check-items" }), /\nUse the same inputs as before\.$/);
     assert.match(workflowStartAnotherText({ name: "check-items", inputs: {}, vars: { limit: 3 } }), /\nVariables \(data, JSON\): \{"limit":3\}$/);
     assert.match(workflowStartAnotherText({}), /^Start another Workflow from the definition named "workflow"\./);

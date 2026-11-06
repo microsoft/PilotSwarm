@@ -8085,7 +8085,7 @@ export class PilotSwarmUiController {
      * the same definition (O5). The person's own draft in the composer is not touched. `inputs` and `vars` are JSON
      * objects or undefined. Never throws.
      */
-    async startAnotherWorkflow(sessionId, { inputs = undefined, vars = undefined } = {}) {
+    async startAnotherWorkflow(sessionId, { inputs = undefined, vars = undefined, noInputs = false } = {}) {
         const state = this.getState();
         const byId = state.sessions.byId;
         const session = byId[sessionId] ?? null;
@@ -8096,7 +8096,7 @@ export class PilotSwarmUiController {
         const model = workflowChildModel(views[sessionId] ?? null);
         const nextNumber = (definition?.workflows.length ?? 0) + 1;
         const text = workflowStartAnotherText({ name, version: model?.definition?.semver ?? null, fromSessionId: sessionId,
-            fromNumber: workflowNumberOf(byId, sessionId, views), nextNumber, inputs, vars });
+            fromNumber: workflowNumberOf(byId, sessionId, views), nextNumber, inputs, vars, noInputs: noInputs === true });
         const result = await this.askWorkflowParent(sessionId, text);
         if (result.ok) this.dispatch({ type: "ui/status", text: `Asked the chat to start ${name} #${nextNumber}.` });
         return result;

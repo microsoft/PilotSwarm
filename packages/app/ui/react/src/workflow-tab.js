@@ -6,7 +6,7 @@ import { formatSeconds, projectWorkflowV2, workflowLogEvents, workflowV2Activity
 import {
     WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2JsonObjectDraft, workflowV2RunCommandNotice,
     workflowV2RunControls, workflowV2RunVariables, workflowV2SampleInputs, workflowV2TestControls, workflowV2TestModeListed, workflowV2TestResponder,
-    workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs,
+    workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs, workflowV2StartAnotherShape,
 } from "../../core/src/workflow-v2-commands.js";
 import { formatLocalTime } from "../../core/src/formatting.js";
 import { AUTO_HISTORY_EVENT_SOFT_CAP } from "../../core/src/controller.js";
@@ -446,7 +446,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                 inputs: workflowV2RunInputs(workflowModel) },
             publication: { inputsSchema: publication?.inputsSchema ?? graphInputsSchema(workflowModel), revision, publishedRevision: revision,
                 state: "published", valid: true },
-            onAsk: ({ inputs, vars }) => controller.startAnotherWorkflow(sessionId, { inputs, vars }),
+            onAsk: ({ inputs, vars, noInputs }) => controller.startAnotherWorkflow(sessionId, { inputs, vars, noInputs }),
             onClose: () => setAsking(false), onStarted: () => setAsking(false) }) : null);
 }
 
@@ -880,8 +880,9 @@ export function StartDialog({ controller, sessionId, publication, control = null
     const properties = schema?.properties && typeof schema.properties === "object" ? schema.properties : {};
     const keys = Object.keys(properties);
     const required = new Set(Array.isArray(schema?.required) ? schema.required : []);
-    const shape = workflowV2InputsShape(schema);
     const repeated = onAsk && source?.inputs && typeof source.inputs === "object" ? source.inputs : null;
+    // Review UI-D8: Start another never erases the inputs its Workflow had: with no schema, its known inputs stay, as JSON.
+    const shape = onAsk ? workflowV2StartAnotherShape(schema, repeated) : workflowV2InputsShape(schema);
     const sample = React.useMemo(() => (onAsk ? repeated ?? {} : workflowV2SampleInputs(schema) ?? {}),
         [JSON.stringify(schema ?? null), JSON.stringify(repeated)]);
     const [asJson, setAsJson] = React.useState(shape === "json");
@@ -913,7 +914,7 @@ export function StartDialog({ controller, sessionId, publication, control = null
         setError(null);
         setBusy(true);
         if (onAsk) {
-            const asked = await onAsk({ inputs, vars });
+            const asked = await onAsk({ inputs, vars, noInputs: shape === "none" });
             setBusy(false);
             if (asked?.ok) onStarted();
             else setError(asked?.reason || "The message to the chat was not sent.");

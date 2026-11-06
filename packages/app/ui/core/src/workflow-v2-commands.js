@@ -1571,10 +1571,11 @@ const UNLISTED_INPUT_KEYWORDS = ["oneOf", "anyOf", "allOf", "not", "if", "then",
     "dependentRequired", "propertyNames", "unevaluatedProperties"];
 
 /**
- * How the Start form asks for a definition's inputs (review UI-13): "none" when it takes none (no schema, or an object
- * schema that lists, requires and allows no field), "form" when it lists fields the form can draw, else "json": a JSON
- * box, also for a schema that asks for input in a way the form cannot draw (fields it cannot draw, oneOf, references,
- * typed additionalProperties, minProperties, a non-object type). Never "none" when input could be required. Pure.
+ * How the Start form asks for a definition's inputs (reviews UI-13, UI-D8): "none" when it takes none (no schema, or a
+ * closed object schema that lists, requires and allows no field: additionalProperties false), "form" when it lists
+ * fields the form can draw, else "json": a JSON box, also for an open object schema (it takes any inputs) and for a
+ * schema that asks for input in a way the form cannot draw (fields it cannot draw, oneOf, references, typed
+ * additionalProperties, minProperties, a non-object type). Never "none" when input could be given. Pure.
  */
 export function workflowV2InputsShape(schema) {
     if (!isRecord(schema)) return "none";
@@ -1584,9 +1585,18 @@ export function workflowV2InputsShape(schema) {
     const asks = (schema.type !== undefined && schema.type !== "object")
         || (Array.isArray(schema.required) && schema.required.length > 0)
         || (Number.isFinite(schema.minProperties) && schema.minProperties > 0)
-        || isRecord(schema.additionalProperties)
+        || schema.additionalProperties !== false
         || UNLISTED_INPUT_KEYWORDS.some(keyword => Object.hasOwn(schema, keyword));
     return asks ? "json" : "none";
+}
+
+/**
+ * The Start form's shape for Start another (review UI-D8): the definition's (workflowV2InputsShape), except that with no
+ * schema the inputs its Workflow had, when known and not empty, stay: a JSON box filled with them, never "none". Pure.
+ */
+export function workflowV2StartAnotherShape(schema, sourceInputs) {
+    const declared = workflowV2InputsShape(schema);
+    return declared === "none" && !isRecord(schema) && isRecord(sourceInputs) && Object.keys(sourceInputs).length > 0 ? "json" : declared;
 }
 
 /**
