@@ -1931,7 +1931,8 @@ test("f-06: the graph is fitted once and keeps its view through the bottom panel
     await flowReady(graph);
     sameView(await settledView(graph), chosen);
     await viewSwitch(main, "Workflows").click();
-    await main.getByRole("button", { name: "Open watch-v2 #1", exact: true }).click();
+    // A Workflows list row is a button with the row role (a table row people click).
+    await main.getByRole("row", { name: "Open watch-v2 #1", exact: true }).click();
     await flowReady(graph);
     sameView(await settledView(graph), chosen);
     await panelTab(main, "Log").click();
