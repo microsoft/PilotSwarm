@@ -3023,8 +3023,11 @@ test("UI-F2: a reload whose session list arrives after the profile still shows t
     page.on("pageerror", (error) => errors.push(error.message));
     await routeOwned(page);
     const profile = await routeProfileSaves(page);
+    // A reload's profile carries the parent's own desktop view (columns are kept per session, and selecting a session applies
+    // its view, no columns when it has none), as the portal recorded it when the Workflow tab was opened for that session.
     profile.stored = { sessionOwnerFilter: { all: true }, activeSessionId: AGENT_ID, rightPaneMode: "canvas",
-        desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "workflow" } };
+        desktopPanes: { canvasOpen: true, diagnosticsOpen: false, zen: false, sideTab: "workflow" },
+        sessionViews: { [AGENT_ID]: { desktop: { at: 1, canvasOpen: true, diagnosticsOpen: false, zen: false, layout: {} } } } };
     await routeViewer(page, TEST_OWNER);
     // The tab's saved history, as a reload finds it: the parent's view showing #2 of watch-v2.
     const key = `pilotswarm.view-history.v1:${JSON.stringify([TEST_OWNER.provider, TEST_OWNER.subject])}`;
