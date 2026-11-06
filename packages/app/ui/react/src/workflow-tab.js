@@ -172,14 +172,16 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null }) 
                     onAnother: () => setTab({ view: "definition", another: true }) }));
 }
 
-/** D1: the session's definitions, with the newest revision and how many Workflows each has; New definition asks the chat. */
+/**
+ * D1: the session's definitions, each with its newest revision; New definition asks the chat. No count of Workflows
+ * beside the definition (owner, 2026-11-06T13:43Z): the Workflow picker says how many.
+ */
 function DefinitionPicker({ definitions, chosen, views, onChoose, onNew }) {
     const id = `wf-def-${React.useId().replace(/:/g, "")}`;
     const option = definition => {
         const model = workflowChildModel(views?.[definition.newestId] ?? null);
         const revision = Number.isSafeInteger(model?.definition?.currentRevision) ? `revision ${model.definition.currentRevision}` : null;
-        const count = definition.workflows.length;
-        return [definition.name, revision, `${count} ${count === 1 ? "Workflow" : "Workflows"}`].filter(Boolean).join(" · ");
+        return [definition.name, revision].filter(Boolean).join(" · ");
     };
     return h("span", { className: "ps-wf-picker" },
         h("label", { htmlFor: id, className: "ps-sr-only" }, "Workflow definition"),

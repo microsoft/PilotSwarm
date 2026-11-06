@@ -2908,7 +2908,7 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
     await expect(picker).toHaveValue("report-v2");
     await expect.poll(async () => (await picker.locator("option").allTextContents()).map(text => text.replace(/ · revision \d+/u, "")))
-        .toEqual(["report-v2 · 0 Workflows", "watch-v2 · 2 Workflows", "New definition… (asks the chat)"]);
+        .toEqual(["report-v2", "watch-v2", "New definition… (asks the chat)"]);
     await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
     await expect(viewSwitch(main, "Workflows")).toHaveAttribute("aria-pressed", "false");
     await expect(viewSwitch(main, "Workflows")).toHaveText("");
