@@ -3103,10 +3103,17 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (earlier.length === 0) return null;
         const last = earlier[earlier.length - 1];
         const previous = await store.readNodeExecution(last.nodeExecutionId);
-        const kvNow = node.kvRevision !== null ? await store.readKv(runId, node.kvRevision).catch(() => null) : null;
-        const kvBefore = previous?.kvRevision != null ? await store.readKv(runId, previous.kvRevision).catch(() => null) : null;
-        const now = isJsonObject(kvNow) ? kvNow : {};
-        const before = isJsonObject(kvBefore) ? kvBefore : {};
+        // A pinned KV revision is read as it is (review RT-7): a read that fails throws, so this spawn attempt fails before
+        // anything is sent and is retried, and a revision that is not an object is corrupt. Only a visit with no pinned
+        // revision (null) has no variables to read: it counts as none.
+        const pinnedKv = async (revision: number | null | undefined): Promise<{ [key: string]: JsonValue } | null> => {
+            if (revision === null || revision === undefined) return null;
+            const kv = await store.readKv(runId, revision);
+            if (!isJsonObject(kv)) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId}'s KV revision ${revision} is not an object.`);
+            return kv;
+        };
+        const now = (await pinnedKv(node.kvRevision)) ?? {};
+        const before = (previous ? await pinnedKv(previous.kvRevision) : null) ?? {};
         const changed = [...new Set([...Object.keys(now), ...Object.keys(before)])]
             .filter(key => canonicalJson(now[key] ?? null) !== canonicalJson(before[key] ?? null) || Object.hasOwn(now, key) !== Object.hasOwn(before, key))
             .sort();

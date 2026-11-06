@@ -398,6 +398,41 @@ describe("chat: continue on controller 1.9.0 (test-only registration)", () => {
         }
     });
 
+    it("RT-7: a KV read that fails is not read as no variables: the spawn retries before it sends, and the prompt has the variables now", { timeout: TIMEOUT }, async () => {
+        // Once the variables changed, the first read of KV revision 1 (the cycle's read of the previous visit's
+        // variables; admissions read the current revision) fails once. Swallowed, it would read as no variables, and
+        // `keep`, which did not change, would be reported changed.
+        let armed = false;
+        let failures = 0;
+        const h = await harness(getEnv(), { storeHooks: {
+            readKv: (result, [, revision]) => {
+                if (armed && revision === 1 && failures === 0) {
+                    failures += 1;
+                    throw new Error("a transient read failure");
+                }
+                return result;
+            },
+        } });
+        try {
+            const run = await started(h, CHAT_YAML({ limit: `"\${kv.limit}"` }), { limit: 3, keep: "x" });
+            await spawnedVisit(h, 1);
+            await controlWorkflowV2Run(h.host, run.workflowSessionId,
+                { operation: "set_vars", runId: null, set: { limit: 3600, topic: "postgres" }, delete: [], expectedKvRevision: 1 },
+                { actor: ACTOR, operationId: "vars-1" });
+            armed = true;
+            const second = await spawnedVisit(h, 2);
+            expect(failures).toBe(1);
+            expect(JSON.parse(second.prompt.split("\n")[1])).toMatchObject({
+                cycle: 2, variables: { limit: 3600, topic: "postgres", keep: "x" }, changedVariables: ["limit", "topic"],
+            });
+            expect(h.spawns).toHaveLength(2);
+            await controlWorkflowV2Run(h.host, run.workflowSessionId, { operation: "cancel", runId: null, reason: "done" }, { actor: ACTOR, operationId: "cancel-rt7" });
+            expect(await ended(h, run.runId)).toMatchObject({ status: "cancelled" });
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("a cancel ends the chat; a graceful stop ends an idle chat at once", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
