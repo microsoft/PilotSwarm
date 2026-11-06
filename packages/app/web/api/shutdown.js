@@ -4,10 +4,11 @@
  * deadline and no exit: a browser's WebSocket that reconnected while the runtime stopped (the server still listened), or
  * an HTTP request still in flight, kept the process alive after the server stopped listening.
  *
- * Order: stop accepting (the HTTP server and each WebSocket server, so a late upgrade gets 503); idle keep-alive
- * connections end; each WebSocket client gets a close frame (1001, going away); the relays and the runtime stop, each
- * bounded; then the remaining connections get until the deadline to end, and are cut at it. A step's failure is logged
- * and never keeps the shutdown from ending.
+ * Order: stop accepting: the listener closes, so a new TCP connection is refused (not answered), and the server is
+ * marked closing, so an upgrade still delivered on a connection accepted before gets HTTP 503 (api/ws.js; review
+ * SF-D3); each WebSocket server closes; idle keep-alive connections end; each WebSocket client gets a close frame (1001,
+ * going away); the relays and the runtime stop, each bounded; then the remaining connections get until the deadline to
+ * end, and are cut at it. A step's failure is logged and never keeps the shutdown from ending.
  */
 
 /** The portal's shutdown deadline when PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS does not set it: inside Kubernetes' default 30 s grace. */
@@ -72,6 +73,7 @@ export function createPortalShutdown({ server, socketServers = [], steps = [], t
                     if (!done) late.push(name);
                 });
             };
+            server.portalClosing = true;
             const serverClosed = new Promise((resolve) => {
                 try {
                     server.close(() => resolve());

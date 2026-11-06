@@ -170,3 +170,41 @@ test("exitOnSignals exits once the shutdown ends, and by its backstop if the shu
     await new Promise((resolve) => setTimeout(resolve, 2_100));
     assert.deepEqual(stuckExits, [1]);
 });
+
+// Review SF-D3: an upgrade still delivered after the shutdown began (on a connection accepted before) gets HTTP 503 and
+// no WebSocket; a new TCP connection after the listener closed is refused, not answered.
+test("an upgrade delivered after the shutdown began gets 503 and no WebSocket; the shutdown marks the server closing", async () => {
+    const { attachWebSockets } = await import("../api/ws.js");
+    const server = http.createServer((_req, res) => res.end("ok"));
+    const [wss] = attachWebSockets(server, {}, [{ path: "/ws" }]);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = server.address().port;
+    try {
+        // Before: the upgrade is accepted.
+        const before = await deafWebSocket(port);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(wss.clients.size, 1);
+        before.destroy();
+        // The shutdown marks the server closing as it begins; an upgrade delivered then is refused with 503.
+        server.portalClosing = true;
+        const socket = net.connect(port, "127.0.0.1");
+        socket.on("error", () => {});
+        socket.write("GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+        let answer = "";
+        socket.on("data", (chunk) => { answer += chunk; });
+        await closed(socket);
+        assert.match(answer, /^HTTP\/1\.1 503 Service Unavailable\r\n/);
+        assert.match(answer, /The portal is shutting down$/);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(wss.clients.size, 0, "no WebSocket was made");
+    } finally {
+        server.closeAllConnections?.();
+        await new Promise((resolve) => server.close(resolve));
+    }
+    // createPortalShutdown marks it as it begins.
+    const marked = http.createServer();
+    await new Promise((resolve) => marked.listen(0, "127.0.0.1", resolve));
+    await createPortalShutdown({ server: marked, timeoutMs: 100, log: { error() {}, warn() {} } })();
+    assert.equal(marked.portalClosing, true);
+});
