@@ -69,6 +69,13 @@ test.afterAll(async () => { await new Promise((resolve) => stub.server.close(res
 
 /** The Workflow tab (the right block's, a phone's Workflow pane, or, for a Workflow whose session is not loaded, the middle). */
 const workflowTab = (page) => page.locator(".ps-wf-tab").filter({ visible: true }).first();
+/** Whether any element of `locator` is where a person sees it: its centre point hit-tests to it (clipping and covering count). */
+const shownOnScreen = (locator) => locator.evaluateAll((elements) => elements.some((element) => {
+    const box = element.getBoundingClientRect();
+    if (!box.width || !box.height) return false;
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return Boolean(hit && (hit === element || element.contains(hit)));
+}));
 /** The Node panel of the Workflow tab; its node's name is NODE_NAME. */
 const nodeDetails = (page) => page.locator(".ps-wf-node").filter({ visible: true });
 const NODE_NAME = ".ps-wf-node-head strong";
@@ -3045,8 +3052,13 @@ test("the right block stays on the Workflow tab through profile reads, and the p
     for (let poll = 0; poll < 3; poll++) {
         await page.waitForTimeout(5_500);
         await expect(page.locator(".ps-wf-tab").filter({ visible: true })).toHaveCount(1);
-        // The chat's canvas is parked beside the Workflow tab (UI-6: kept mounted, off to the side), never shown.
-        await expect(page.locator(".ps-side-pane-layer:not(.is-parked)").getByText("Nothing on the canvas yet.", { exact: true })).toHaveCount(0);
+        // What a person sees: the canvas text is nowhere on screen. The chat's canvas stays mounted beside the Workflow tab
+        // (UI-6), parked out of the box that clips it, inert and hidden from assistive technology; Playwright's `visible`
+        // ignores that clipping, so the check hit-tests the text's own point.
+        expect(await shownOnScreen(page.getByText("Nothing on the canvas yet.", { exact: true }))).toBe(false);
+        const parked = page.getByRole("region", { name: "Session canvas" }).locator(".ps-side-pane-layer.is-parked");
+        expect(await parked.evaluateAll((layers) => layers.length > 0 && layers.every((layer) => layer.getAttribute("aria-hidden") === "true"
+            && layer.inert === true))).toBe(true);
     }
     expect(errors).toEqual([]);
 });

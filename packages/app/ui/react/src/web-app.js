@@ -9201,7 +9201,10 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // side (not hidden: a canvas frame must never load hidden, see the iOS
     // note on .ps-canvas-pane .ps-html-preview-frame).
     React.createElement("div", { className: "ps-artifact-pane-body ps-side-pane-body" },
-        React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas },
+        // A parked layer is inert and hidden from assistive technology too: it is not on screen (moved out of a box that
+        // clips it), so nothing may read it as shown.
+        React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas,
+            ...(onCanvas ? {} : { "aria-hidden": "true" }) },
             activeWorkflow
                 ? React.createElement("div", { className: "ps-canvas-blank" }, React.createElement("p", null, "This Workflow is shown in the middle."))
                 : view.exists
@@ -9223,7 +9226,8 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                     React.createElement("p", null,
                         "Ask the agent to draw — a dashboard, a chart, a diagram — or it will draw when it has something worth showing."))),
         workspaceTab
-            ? React.createElement("div", { className: `ps-side-pane-layer${onCanvas || onWorkflow ? " is-parked" : ""}`, inert: onCanvas || onWorkflow },
+            ? React.createElement("div", { className: `ps-side-pane-layer${onCanvas || onWorkflow ? " is-parked" : ""}`, inert: onCanvas || onWorkflow,
+                ...(onCanvas || onWorkflow ? { "aria-hidden": "true" } : {}) },
                 React.createElement(WorkspacePane, { key: view.sessionId || "none", controller, sessionId: view.sessionId, visible: visible && !onCanvas && !onWorkflow }))
             : null,
         // The Workflow tab (06): mounted only while the right block shows it (a hidden block is parked, not unmounted, so a
