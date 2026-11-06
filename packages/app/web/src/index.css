@@ -12840,6 +12840,28 @@ button.ps-wf-list-row:focus-visible { background: var(--ps-highlight-background)
 .ps-wf-next { display: grid; gap: 4px; justify-items: start; }
 .ps-wf-next ul { margin: 0; padding-left: 18px; }
 .ps-wf-next p, .ps-wf-summary > p.ps-wf-muted { margin: 0; }
+/* An agent node's Log (finding 8): one group per visit; Prompt, Agent and Workflow rows told apart by label and edge. */
+.ps-wf-log-panel { display: grid; gap: 8px; }
+.ps-wf-switch.is-log { justify-self: start; }
+.ps-wf-alog { display: grid; gap: 12px; }
+.ps-wf-alog-note { margin: 0; }
+.ps-wf-alog-visit h3 { margin: 0 0 4px; font-size: 0.85em; font-weight: 600; }
+.ps-wf-alog-status { font-weight: 400; color: var(--ps-muted); }
+.ps-wf-alog-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ps-wf-alog-row { border-left: 3px solid var(--ps-border); padding: 2px 0 2px 8px; display: grid; gap: 2px; min-width: 0; }
+.ps-wf-alog-row[data-kind="prompt"] { border-left-color: var(--ps-accent); }
+.ps-wf-alog-row[data-kind="agent"] { border-left-color: var(--ps-success); }
+.ps-wf-alog-row[data-kind="result"] { border-left-color: var(--ps-success); background: var(--ps-highlight-background); }
+.ps-wf-alog-row[data-kind="workflow"] { border-left-color: var(--ps-muted); color: var(--ps-muted); }
+.ps-wf-alog-row[data-level="warning"] { color: var(--ps-warning); }
+.ps-wf-alog-row[data-level="error"] { color: var(--ps-danger); }
+.ps-wf-alog-head { display: flex; gap: 8px; align-items: baseline; font-size: 0.8em; }
+.ps-wf-alog-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.ps-wf-alog-head time { color: var(--ps-muted); }
+.ps-wf-alog-text { display: grid; gap: 2px; justify-items: start; }
+.ps-wf-alog-text p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ps-wf-alog-row details summary { cursor: pointer; overflow-wrap: anywhere; }
+.ps-wf-alog-row pre { margin: 4px 0 0; max-height: 14em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.9em; }
 .ps-wf-log { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .ps-wf-log li { display: grid; grid-template-columns: auto 1fr; gap: 8px; overflow-wrap: anywhere; }
 .ps-wf-log li[data-level="error"] { color: var(--ps-danger); }

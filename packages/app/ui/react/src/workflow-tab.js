@@ -9,12 +9,14 @@ import {
 } from "../../core/src/workflow-v2-commands.js";
 import { formatLocalTime } from "../../core/src/formatting.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
+import { WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog } from "../../core/src/workflow-agent-log.js";
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowFailureText, workflowStarted,
     workflowPanelHeight, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
-    WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2NoGraph, WorkflowV2NodeSummary, WorkflowV2RevisionCompare, WorkflowV2RunCommandNotice,
+    WorkflowV2AgentLog, WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2NoGraph, WorkflowV2NodeSummary, WorkflowV2RevisionCompare,
+    WorkflowV2RunCommandNotice,
     WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock, WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2Variables,
     WorkflowV2YamlView,
 } from "./workflow-v2-panels.js";
@@ -538,6 +540,8 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
     const revision = Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null;
     const failure = state?.key === "failed" && readModel?.run && readModel.run.mode !== "test" ? workflowFailureText(readModel.run) : null;
     const [stopping, setStopping] = React.useState(false);
+    // An agent node's Log shows its chat (finding 8); "Whole Workflow" shows every line of this Workflow.
+    const [logScope, setLogScope] = React.useState("node");
     const controls = runControls?.controls ?? [];
     const has = operation => controls.find(control => control.operation === operation) ?? null;
     const pause = has("pause"), resume = has("resume"), stop = has("stop"), cancel = has("cancel");
@@ -575,8 +579,9 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
         h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"), panel, mobile,
             onPanel: id => setTab({ runPanel: id }) },
-            panel === "node" ? h(RunNodePanel, { controller, child, selected }) : null,
-            panel === "log" ? h(WorkflowLog, { events, runId }) : null,
+            panel === "node" ? h(RunNodePanel, { controller, child, selected,
+                onLog: () => { setLogScope("node"); setTab({ runPanel: "log" }); } }) : null,
+            panel === "log" ? h(RunLogPanel, { controller, events, runId, selected, scope: logScope, onScope: setLogScope }) : null,
             panel === "variables" ? (variables ? h(WorkflowV2Variables, { controller, sessionId, model: variables }) : h("p", { className: "ps-wf-muted" }, "No variables."))
                 : null),
         stopping ? h(StopDialog, { controller, sessionId, runId: runControls?.runId ?? runId, title: `${definition.name} #${number}`, stop, cancel,
@@ -598,7 +603,7 @@ function WorkflowNumberPicker({ definition, chosen, onOpen }) {
  * it is now, how often it ran, its last result, an agent node's chat and what its agent is told, and where each outcome
  * goes (WorkflowV2NodeSummary). No Details / Output / History tabs inside the panel's tab: the Log has the visits.
  */
-function RunNodePanel({ controller, child, selected }) {
+function RunNodePanel({ controller, child, selected, onLog = null }) {
     const { sessionId, view, projection } = child;
     const [branchPick, setBranchPick] = React.useState(null);
     if (!selected) return h("p", { className: "ps-wf-muted" }, "Select a node to see it.");
@@ -608,6 +613,8 @@ function RunNodePanel({ controller, child, selected }) {
         h("p", { className: "ps-wf-node-head" }, h("strong", null, selected.id), ` · ${selected.label}`),
         h(WorkflowV2NodeSummary, {
             selected, nodes: child.nodes, runId,
+            // An agent node's visits, with its chat, are in its Log (finding 8).
+            onLog: selected.kind === "agent" ? onLog : null,
             select: id => controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: id } }),
             openSession: id => { controller.loadSession(id).catch(() => {}); },
             executionValues: view.executionValues ?? null,
@@ -650,6 +657,47 @@ function LegacyNodePanel({ selected }) {
                     ? String(result.error || result.reason || result.outputPreview || result.summary || "No output was recorded.")
                     : "This node has no result in the loaded history."),
                 result?.stderrTail ? h(React.Fragment, null, h("h3", null, "Standard error"), h("pre", null, String(result.stderrTail))) : null));
+}
+
+/**
+ * The Log panel (W10; finding 8). For an agent node: its own Log with its chat (AgentNodeLog), or, switched, the whole
+ * Workflow's. For any other node: the whole Workflow's, as before.
+ */
+function RunLogPanel({ controller, events, runId, selected, scope, onScope }) {
+    if (!(selected?.shape === "v2" && selected.kind === "agent")) return h(WorkflowLog, { events, runId });
+    return h("div", { className: "ps-wf-log-panel" },
+        h("div", { className: "ps-wf-switch is-log", role: "group", "aria-label": "Log of" },
+            [["node", `Node ${selected.id}`], ["all", "Whole Workflow"]].map(([id, label]) => h("button", { key: id, type: "button",
+                "aria-pressed": scope === id, className: scope === id ? "is-on" : "", onClick: () => onScope(id) }, label))),
+        scope === "all" ? h(WorkflowLog, { events, runId }) : h(AgentNodeLog, { controller, node: selected, events, runId }));
+}
+
+/**
+ * An agent node's Log (finding 8): its visits with its chat, read with the same history reads as any session. Each chat
+ * of the shown visits is read once; while the newest visit works, its chat is read again every 5 s and at each new line
+ * of the Workflow (a catch-up of the newer events only).
+ */
+function AgentNodeLog({ controller, node, events, runId }) {
+    const [limit, setLimit] = React.useState(WORKFLOW_AGENT_LOG_VISITS);
+    const chatIds = React.useMemo(() => workflowAgentLogChats(node, limit), [node, limit]);
+    const chatKey = chatIds.join(",");
+    const histories = useControllerSelector(controller, state => state.history.bySessionId);
+    React.useEffect(() => {
+        for (const id of chatIds) controller.ensureSessionHistory(id).catch(() => {});
+    }, [controller, chatKey]);
+    const working = node.current?.status === "pending" ? node.current.agent?.childSessionId ?? null : null;
+    const lines = Array.isArray(events) ? events.length : 0;
+    React.useEffect(() => {
+        if (!working) return undefined;
+        const read = () => { controller.ensureSessionHistory(working, { force: true }).catch(() => {}); };
+        read();
+        const timer = setInterval(read, 5_000);
+        return () => clearInterval(timer);
+    }, [controller, working, lines]);
+    const chats = React.useMemo(() => new Map(chatIds.map(id => [id, histories?.get?.(id)?.events])), [chatKey, histories]);
+    const failed = React.useMemo(() => new Set(chatIds.filter(id => histories?.get?.(id)?.loadState === "failed")), [chatKey, histories]);
+    const log = React.useMemo(() => workflowAgentNodeLog({ node, events, chats, runId, limit }), [node, events, chats, runId, limit]);
+    return h(WorkflowV2AgentLog, { log, failed, nodeId: node.id, onMore: () => setLimit(limit + WORKFLOW_AGENT_LOG_VISITS) });
 }
 
 /**

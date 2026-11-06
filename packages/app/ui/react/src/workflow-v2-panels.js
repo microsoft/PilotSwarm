@@ -390,6 +390,38 @@ function KvApplied({ execution, runId, kv }) {
                     h("td", null, row.after === null ? "—" : h("code", { style: { overflowWrap: "anywhere" } }, row.after)))))) : null) : null);
 }
 
+/** One row of an agent node's Log: its label and time, then its text (folded with Show more) or its call (to expand). */
+function AgentLogRow({ row }) {
+    const [open, setOpen] = React.useState(false);
+    const body = row.detail !== undefined
+        ? h("details", null, h("summary", null, row.text), h("pre", null, row.detail))
+        : h("div", { className: "ps-wf-alog-text" },
+            h("p", null, open && row.more ? row.more : row.text),
+            row.more ? h("button", { type: "button", className: "ps-mini-button", "data-action": "fold", onClick: () => setOpen(!open) },
+                open ? "Show less" : "Show more") : null);
+    return h("li", { className: "ps-wf-alog-row", "data-kind": row.kind, "data-level": row.level ?? undefined },
+        h("div", { className: "ps-wf-alog-head" }, h("span", { className: "ps-wf-alog-label" }, row.label), row.time ? h("time", null, row.time) : null),
+        body);
+}
+
+/**
+ * An agent node's Log (finding 8; workflowAgentNodeLog): what is not recorded, said once; then one group per visit,
+ * newest first ("Visit 4 · 17:42:01" and where it ended), with its Prompt, Agent and Workflow rows in time order, told
+ * apart by their label and the colour of their edge. `failed` names the chats that could not be read; `onMore` shows
+ * older visits.
+ */
+export function WorkflowV2AgentLog({ log, failed = null, onMore = null, nodeId = null }) {
+    return h("div", { className: "ps-wf-alog", "aria-label": nodeId ? `Log of node ${nodeId}` : "Agent node log" },
+        h("p", { className: "ps-wf-muted ps-wf-alog-note" }, log.note),
+        log.groups.length ? null : h("p", { className: "ps-wf-muted" }, "This node has not run yet."),
+        log.groups.map(group => h("section", { key: group.visitId, className: "ps-wf-alog-visit", "data-visit": group.ordinal ?? undefined },
+            h("h3", null, group.header, group.status ? h("span", { className: "ps-wf-alog-status" }, ` · ${group.status}`) : null),
+            group.loading ? h("p", { className: "ps-wf-muted" }, failed?.has?.(group.chatId) ? "Its agent chat could not be read." : "Reading its agent chat…") : null,
+            group.rows.length ? h("ol", { className: "ps-wf-alog-rows" }, group.rows.map(row => h(AgentLogRow, { key: row.key, row }))) : null)),
+        log.more && onMore ? h("button", { type: "button", className: "ps-mini-button", "data-action": "older-visits", onClick: onMore }, "Show older visits") : null,
+        !log.more && log.partial ? h("p", { className: "ps-wf-muted" }, "Older visits are not in the loaded history of this run.") : null);
+}
+
 /**
  * A Workflow's Node panel (Workflow Simplified; owner feedback 2026-11-06, finding 7): one view, no tabs inside the tab.
  * What the node does in one sentence; Now and Runs in one line each; its last result as readable text (Read the whole
