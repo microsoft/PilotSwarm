@@ -16302,6 +16302,10 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         selectActivity: () => setMobilePane("activity"),
         selectInspector: () => setMobilePane("inspector"),
     }), [mobilePane]);
+
+    // Match the CSS and MoA breakpoint. The padded shell is narrower than
+    // the browser and otherwise flips to mobile while the header is desktop.
+    const mobile = useMediaQuery(MOBILE_MEDIA_QUERY);
     // The phone's view history: which screen is showing (chat, diagnostics and
     // its tab, canvas) is phone-local state, so the history reads and restores
     // it through this bridge. Desktop never registers one.
@@ -16325,9 +16329,6 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         enabled: Boolean(mobile && viewNavigation && !suspended),
         navigation: viewNavigation,
     });
-    // Match the CSS and MoA breakpoint. The padded shell is narrower than
-    // the browser and otherwise flips to mobile while the header is desktop.
-    const mobile = useMediaQuery(MOBILE_MEDIA_QUERY);
     // The slide-over belongs to Main on a phone; leaving either closes it.
     React.useEffect(() => {
         if (!mobile || mobilePane !== "workspace") setMobileSessionsOpen(false);
