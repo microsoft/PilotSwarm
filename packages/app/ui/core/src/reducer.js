@@ -10,7 +10,9 @@ import { getPromptInputRows } from "./layout.js";
 import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
-import { normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, workflowDefinitionName, workflowSelectionTarget } from "./workflow-owner.js";
+import {
+    normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, workflowAncestorOf, workflowDefinitionName, workflowNodeStateOfChat, workflowSelectionTarget,
+} from "./workflow-owner.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
@@ -881,7 +883,28 @@ export function appReducer(state, action) {
     // A link to a Workflow (S8, `?session=<workflow>`) opens its session's Workflow tab once, when the link resolves, on
     // that Workflow (remembered as a row selection is, so a later reload of the session keeps it).
     if (workflowLinkResolved(state, reconciled)) return openWorkflowTab(rememberWorkflowRow(reconciled));
-    return workflowTarget ? openWorkflowTab(reconciled) : reconciled;
+    if (workflowTarget) return openWorkflowTab(reconciled);
+    // Review UI-9: selecting an agent node's chat (or one of its sub-agents) is a choice of its Workflow and that node, made
+    // now: the node is selected in its Workflow (a later click on the graph chooses again) and the Workflow tab opens.
+    if (effective.type === "sessions/selected") {
+        const agentNode = agentNodeOfSelection(reconciled);
+        if (agentNode) {
+            const chosen = agentNode.nodeStateId
+                ? baseReducer(reconciled, { type: "ui/workflowView", sessionId: agentNode.workflowId, view: { selectedNodeId: agentNode.nodeStateId } })
+                : reconciled;
+            return openWorkflowTab(chosen, { phone: false });
+        }
+    }
+    return reconciled;
+}
+
+/** The Workflow and node of a selected agent node chat or its sub-agent (S6): { workflowId, nodeStateId }, else null. */
+function agentNodeOfSelection(state) {
+    const byId = state.sessions?.byId || {};
+    const activeId = state.sessions?.activeSessionId ?? null;
+    const ancestor = activeId ? workflowAncestorOf(byId, activeId) : null;
+    if (!ancestor) return null;
+    return { workflowId: ancestor.workflowId, nodeStateId: workflowNodeStateOfChat(byId[ancestor.nodeSessionId]) };
 }
 
 /** The session's Workflow tab on its selected Workflow row (S4, S5): the Workflows view of that Workflow. */
@@ -903,13 +926,14 @@ function workflowLinkResolved(before, after) {
 }
 
 // The right block shows the Workflow tab (L1, S4): the canvas column, on its Workflow side, recorded as the session's own
-// view as a person's toggle is. `workflowOpenSeq` ticks so the phone brings its Workflow pane up.
-function openWorkflowTab(state) {
+// view as a person's toggle is. `workflowOpenSeq` ticks so the phone brings its Workflow pane up, unless `phone` is false
+// (an agent chat chosen on the phone shows that chat; its Workflow is one tap away).
+function openWorkflowTab(state, { phone = true } = {}) {
     const ui = state.ui;
     const next = {
         ...state,
         ui: { ...ui, canvasOpen: true, rightPaneMode: "canvas", sidePaneTab: WORKFLOW_SIDE_TAB, sidePaneTabChosen: true, canvasMaximized: false,
-            workflowOpenSeq: (Number(ui.workflowOpenSeq) || 0) + 1 },
+            workflowOpenSeq: (Number(ui.workflowOpenSeq) || 0) + (phone ? 1 : 0) },
     };
     return reconcileSessionView(state, next, { type: "ui/workflowTabOpened" });
 }

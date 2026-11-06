@@ -190,6 +190,26 @@ test("an agent node's chat shows in the middle; the tab shows its Workflow with 
     assert.deepEqual(selectWorkflowTabContext(state), { ownerId: OWNER, workflowId: "wf-3", nodeSessionId: "agent-1", nodeStateId: "summarize" });
 });
 
+// Review UI-9: selecting an agent node's chat chooses its Workflow and node now, whatever node was selected before, and
+// opens the Workflow tab when the right block was closed; a later click on the graph chooses again.
+test("selecting an agent node's chat selects that node in its Workflow and opens the Workflow tab", () => {
+    let state = appReducer(loaded(), { type: "ui/workflowView", sessionId: "wf-3", view: { selectedNodeId: "fetch" } });
+    state = appReducer(state, { type: "ui/canvasOpen", open: false });
+    assert.equal(state.ui.canvasOpen, false);
+    state = appReducer(state, { type: "sessions/selected", sessionId: "agent-1" });
+    assert.equal(state.sessions.activeSessionId, "agent-1", "its chat is in the middle");
+    assert.equal(state.ui.workflowViews["wf-3"].selectedNodeId, "summarize", "the node, not the one chosen before");
+    assert.equal(state.ui.canvasOpen, true);
+    assert.equal(state.ui.sidePaneTab, "workflow");
+    assert.equal(Number(state.ui.workflowOpenSeq) || 0, 0, "the phone keeps showing the chat that was tapped");
+    // A click on the graph chooses again.
+    state = appReducer(state, { type: "ui/workflowView", sessionId: "wf-3", view: { selectedNodeId: "fetch" } });
+    assert.equal(state.ui.workflowViews["wf-3"].selectedNodeId, "fetch");
+    // An ordinary chat's selection changes nothing of it.
+    const other = appReducer(state, { type: "sessions/selected", sessionId: "other" });
+    assert.equal(other.ui.workflowViews["wf-3"].selectedNodeId, "fetch");
+});
+
 test("a Workflow whose session is not loaded stays the active session and is the tab's Workflow", () => {
     const alone = [workflow("wf-x", "check-items", 1, "running", { parentSessionId: "missing" })];
     const state = appReducer(loaded(alone), { type: "sessions/selected", sessionId: "wf-x" });
