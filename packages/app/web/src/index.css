@@ -12962,7 +12962,8 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 }
 .ps-wf-tab.is-phone .ps-wf-bar-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-wf-tab.is-phone .ps-wf-tab-head .ps-mini-button.ps-workflow-tool-button,
-.ps-wf-tab.is-phone .ps-wf-bar .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
+.ps-wf-tab.is-phone .ps-wf-bar .ps-mini-button.ps-workflow-tool-button,
+.ps-wf-tab.is-phone .ps-workflow-yaml-strip .ps-mini-button.ps-workflow-tool-button { min-width: 44px; min-height: 44px; }
 
 /* Dialogs: Start (11) and Stop (W9). */
 .ps-wf-dialog-body { display: grid; gap: 12px; padding: 12px 20px; }
