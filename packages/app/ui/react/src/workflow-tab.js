@@ -6,6 +6,7 @@ import { formatSeconds, projectWorkflowV2, workflowV2Activity, workflowV2BranchP
 import {
     WORKFLOW_V2_TEST_NEEDS_DRAFT_TEXT, workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2JsonObjectDraft, workflowV2RunCommandNotice,
     workflowV2RunControls, workflowV2RunVariables, workflowV2SampleInputs, workflowV2TestControls, workflowV2TestModeListed, workflowV2TestResponder,
+    workflowV2DrawableInput, workflowV2InputsShape, workflowV2RunInputs,
 } from "../../core/src/workflow-v2-commands.js";
 import { formatLocalTime } from "../../core/src/formatting.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
@@ -432,7 +433,10 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                     : null),
         starting && startControl ? h(StartDialog, { controller, sessionId, publication, control: startControl, name: definition.name, number: nextNumber,
             onClose: () => setStarting(false), onStarted: () => { setStarting(false); onStarted(sessionId); } }) : null,
+        // Review UI-13: Start another repeats the definition's newest Workflow, filled with its own inputs when the read has them.
         asking ? h(StartDialog, { controller, sessionId, name: definition.name, number: nextNumber,
+            source: { number: definition.workflows.find(item => item.sessionId === definition.newestId)?.number ?? null,
+                inputs: workflowV2RunInputs(workflowModel) },
             publication: { inputsSchema: publication?.inputsSchema ?? graphInputsSchema(workflowModel), revision, publishedRevision: revision,
                 state: "published", valid: true },
             onAsk: ({ inputs, vars }) => controller.startAnotherWorkflow(sessionId, { inputs, vars }),
@@ -781,15 +785,9 @@ function StopDialog({ controller, sessionId, runId, title, stop, cancel, onClose
         h("p", { className: "ps-wf-muted" }, "Effects that already happened are not undone."));
 }
 
-const DRAWABLE = new Set(["string", "number", "integer", "boolean"]);
 
 /** Whether the Start form can draw a field for one input property (F-1); anything else is edited as JSON (F-4). */
-function drawable(property) {
-    if (!property || typeof property !== "object") return false;
-    if (Array.isArray(property.enum)) return property.enum.every(value => ["string", "number", "boolean"].includes(typeof value));
-    if (DRAWABLE.has(property.type)) return true;
-    return property.type === "array" && property.items && typeof property.items === "object" && ["string", "number", "integer"].includes(property.items.type);
-}
+const drawable = workflowV2DrawableInput;
 
 /** What a field's type is called (F-1). */
 function typeWords(property) {
@@ -843,17 +841,26 @@ function InputField({ name, property, required, value, onChange }) {
  * F-1–F-7: Start asks only for what the definition needs, filled with sample values. With `onAsk` (Run again, W8) it is
  * the form for another Workflow of a started definition: the same fields, and its button asks the chat to start it
  * (`onAsk({ inputs, vars })`, answering { ok, reason }); nothing is sent to the engine from here.
+ *
+ * Review UI-13: a schema the form cannot draw, or that asks for input without listing it, gets a JSON box, never "Takes
+ * no inputs". Start another (`source`: the Workflow it repeats, its number and its inputs) is filled with that
+ * Workflow's own inputs, never sample values; when the read does not have them it says so and asks the chat to use the
+ * same ones (inputs undefined), unless the person chooses to give others.
  */
-function StartDialog({ controller, sessionId, publication, control = null, name, number, onClose, onStarted, onAsk = null }) {
+export function StartDialog({ controller, sessionId, publication, control = null, name, number, onClose, onStarted, onAsk = null, source = null }) {
     const schema = publication.inputsSchema && typeof publication.inputsSchema === "object" ? publication.inputsSchema : null;
     const properties = schema?.properties && typeof schema.properties === "object" ? schema.properties : {};
     const keys = Object.keys(properties);
     const required = new Set(Array.isArray(schema?.required) ? schema.required : []);
-    const sample = React.useMemo(() => workflowV2SampleInputs(schema) ?? {}, [JSON.stringify(schema ?? null)]);
-    const formable = keys.length > 0 && keys.every(key => drawable(properties[key]));
-    const [asJson, setAsJson] = React.useState(!formable && keys.length > 0);
+    const shape = workflowV2InputsShape(schema);
+    const repeated = onAsk && source?.inputs && typeof source.inputs === "object" ? source.inputs : null;
+    const sample = React.useMemo(() => (onAsk ? repeated ?? {} : workflowV2SampleInputs(schema) ?? {}),
+        [JSON.stringify(schema ?? null), JSON.stringify(repeated)]);
+    const [asJson, setAsJson] = React.useState(shape === "json");
     const [values, setValues] = React.useState(() => ({ ...sample }));
     const [jsonText, setJsonText] = React.useState(() => JSON.stringify(sample, null, 2));
+    // Start another whose source inputs are not known: the same ones (the chat has them) until the person gives others.
+    const [sameInputs, setSameInputs] = React.useState(Boolean(onAsk) && repeated === null && shape !== "none");
     const [varsOpen, setVarsOpen] = React.useState(false);
     const [varsText, setVarsText] = React.useState("{}");
     const [error, setError] = React.useState(null);
@@ -862,7 +869,8 @@ function StartDialog({ controller, sessionId, publication, control = null, name,
     const toJson = () => { setJsonText(JSON.stringify(values, null, 2)); setAsJson(true); };
     const send = async () => {
         let inputs = values;
-        if (keys.length === 0) inputs = {};
+        if (shape === "none") inputs = {};
+        else if (sameInputs) inputs = undefined;
         else if (asJson) {
             const parsed = workflowV2JsonObjectDraft(jsonText, { label: "Inputs" });
             if (!parsed.ok) { setError(parsed.error); return; }
@@ -905,8 +913,15 @@ function StartDialog({ controller, sessionId, publication, control = null, name,
                 : `Workflow #${number} runs revision ${revision ?? "—"}.`),
         ] },
         h("p", { className: "ps-wf-muted ps-wf-dialog-sub" }, `revision ${revision ?? "—"} · ${publication.valid ? "valid" : "not valid"}`),
-        keys.length === 0
+        repeated && shape !== "none" ? h("p", { className: "ps-wf-muted", "data-field": "from-source" },
+            `Filled with the inputs of ${source?.number ? `#${source.number}` : "the Workflow it repeats"}.`) : null,
+        shape === "none"
             ? h("div", { className: "ps-wf-field" }, h("span", { className: "ps-wf-label" }, "Inputs"), h("p", { "data-field": "no-inputs" }, "Takes no inputs."))
+            : sameInputs
+                ? h("div", { className: "ps-wf-field" }, h("span", { className: "ps-wf-label" }, "Inputs"),
+                    h("p", { "data-field": "same-inputs" }, `The same as ${source?.number ? `#${source.number}` : "before"}. This screen cannot read them; `
+                        + "the chat uses the ones it started it with. ",
+                    h("button", { type: "button", className: "ps-link-button", "data-action": "other-inputs", onClick: () => setSameInputs(false) }, "Give other inputs")))
             : asJson
                 ? h("div", { className: "ps-wf-field" },
                     h("label", { htmlFor: `${sessionId}-inputs-json` }, "Inputs (JSON)"),

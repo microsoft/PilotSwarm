@@ -155,7 +155,7 @@ async function routeHarness({ config, enforce = true, shared = [] } = {}) {
     const adapterCalls = [];
     // The stand-in rows have every field of the store's current rows: these runs have no stop, virtual clock or scenario,
     // and the definition pins no agent.
-    const run = (runId, mode, status) => ({ runId, workflowSessionId: "wf1", mode, status, revision: 1, irSha256: "i", terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
+    const run = (runId, mode, status) => ({ runId, workflowSessionId: "wf1", mode, status, revision: 1, irSha256: "i", inputs: {}, terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
         terminalOutput: null, terminalError: null, kvRevision: 0, kv: {}, controllerVersion: null, stop: null,
         testAgentMode: mode === "test" ? "mocked" : null, virtualNow: null, testScenario: null, deadlineAt: null });
     const runs = [run("run-live", "live", "running"), run("R", "live", "completed"), run("T", "test", "running")];

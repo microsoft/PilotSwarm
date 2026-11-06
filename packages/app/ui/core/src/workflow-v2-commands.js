@@ -1556,6 +1556,55 @@ export function workflowV2SampleInputs(schema) {
     return JSON.stringify(value, null, 2).length > SAMPLE_MAX_CHARS ? null : value;
 }
 
+const DRAWABLE_TYPES = new Set(["string", "number", "integer", "boolean"]);
+
+/** Whether the Start form draws a field for one input property (text, number, yes or no, a list, or one of a list). Pure. */
+export function workflowV2DrawableInput(property) {
+    if (!isRecord(property)) return false;
+    if (Array.isArray(property.enum)) return property.enum.every(value => ["string", "number", "boolean"].includes(typeof value));
+    if (DRAWABLE_TYPES.has(property.type)) return true;
+    return property.type === "array" && isRecord(property.items) && ["string", "number", "integer"].includes(property.items.type);
+}
+
+/** Keywords that let an object schema ask for input without listing it in `properties` (review UI-13). */
+const UNLISTED_INPUT_KEYWORDS = ["oneOf", "anyOf", "allOf", "not", "if", "then", "else", "$ref", "patternProperties", "dependentSchemas",
+    "dependentRequired", "propertyNames", "unevaluatedProperties"];
+
+/**
+ * How the Start form asks for a definition's inputs (review UI-13): "none" when it takes none (no schema, or an object
+ * schema that lists, requires and allows no field), "form" when it lists fields the form can draw, else "json": a JSON
+ * box, also for a schema that asks for input in a way the form cannot draw (fields it cannot draw, oneOf, references,
+ * typed additionalProperties, minProperties, a non-object type). Never "none" when input could be required. Pure.
+ */
+export function workflowV2InputsShape(schema) {
+    if (!isRecord(schema)) return "none";
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    const keys = Object.keys(properties);
+    if (keys.length > 0) return keys.every(key => workflowV2DrawableInput(properties[key])) ? "form" : "json";
+    const asks = (schema.type !== undefined && schema.type !== "object")
+        || (Array.isArray(schema.required) && schema.required.length > 0)
+        || (Number.isFinite(schema.minProperties) && schema.minProperties > 0)
+        || isRecord(schema.additionalProperties)
+        || UNLISTED_INPUT_KEYWORDS.some(keyword => Object.hasOwn(schema, keyword));
+    return asks ? "json" : "none";
+}
+
+/**
+ * The inputs a Workflow's run started with, from its read model (`run.inputs`, a bounded JSON preview; review UI-13):
+ * an object, or null when the read has none, or cut them (Start another then says it cannot read them). Pure.
+ */
+export function workflowV2RunInputs(model) {
+    const preview = isRecord(model) && isRecord(model.run) ? model.run.inputs : undefined;
+    if (isRecord(preview)) return preview;
+    if (typeof preview !== "string") return null;
+    try {
+        const value = JSON.parse(preview);
+        return isRecord(value) ? value : null;
+    } catch {
+        return null;
+    }
+}
+
 /** The text of a JSON box that a sample may fill: empty, or an empty object as written ("{}" with any spacing). */
 export function workflowV2InputsBoxEmpty(textValue) {
     return typeof textValue !== "string" || /^\s*(\{\s*\})?\s*$/.test(textValue);

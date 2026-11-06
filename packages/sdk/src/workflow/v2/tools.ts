@@ -1232,6 +1232,9 @@ async function readOverview(store: WorkflowStore, workflowSessionId: string, opt
             error: selected.terminalError === null ? null : previewJson(selected.terminalError, 2_000),
             kvRevision: selected.kvRevision,
             kv: previewJson(selected.kv, 4_000),
+            // The run's inputs as it started with them (review UI-13: Start another fills its form with them), bounded as
+            // the variables are; a cut preview is not JSON, and a screen then says it cannot read them.
+            inputs: previewJson(selected.inputs, 4_000),
             nodeExecutions: sections.executions.rows.map(node => nodeExecutionViewOf(node, sections.agents)),
             openExecutions: sections.openExecutions.map(node => nodeExecutionViewOf(node, sections.agents)),
             inbox: sections.inbox.rows.map(inboxViewOf),
