@@ -32,6 +32,10 @@ async function openTheme(page, viewport) {
 }
 
 const layers = page => page.locator(".portal-header").evaluate(header => getComputedStyle(header, "::before").backgroundImage);
+// Each art file carries a root id (hd-<name>); Vite inlines the small ones as data URIs and emits
+// the large ones as hashed files, so a layer is found by either form.
+const art = name => new RegExp(`hd-${name}(?![-a-z])|/${name}-[A-Za-z0-9_-]{8}\\.svg`);
+const where = (images, name) => images.search(art(name));
 
 test("desktop: the GA line, a compact header, and every layer from the bundle", async ({ page }) => {
     const failed = await openTheme(page, { width: 1440, height: 900 });
@@ -41,11 +45,11 @@ test("desktop: the GA line, a compact header, and every layer from the bundle", 
     expect(box.height).toBeGreaterThanOrEqual(96);
     expect(box.height).toBeLessThanOrEqual(110);
     const images = await layers(page);
-    const order = ["mountains-front", "mountains-back", "orion", "sky"].map(name => images.search(new RegExp(`/${name}[-.]`)));
+    const order = ["mountains-front", "mountains-back", "orion", "sky"].map(name => where(images, name));
     expect(order.every(index => index >= 0), images).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order); // land is drawn over the sky
     expect(images).not.toMatch(/googleapis|gstatic/);
-    expect(await page.locator(".portal-logo-frame").evaluate(el => getComputedStyle(el).backgroundImage)).toMatch(/\/logo[-.]/);
+    expect(await page.locator(".portal-logo-frame").evaluate(el => getComputedStyle(el).backgroundImage)).toMatch(art("logo"));
     expect(await page.evaluate(() => document.fonts.check('600 13px "PS Sora"'))).toBe(true);
     await page.waitForTimeout(500);
     expect(failed).toEqual([]);
@@ -55,15 +59,16 @@ test("reduced motion: still art for the mark, Orion and the sky", async ({ page 
     await page.emulateMedia({ reducedMotion: "reduce" });
     await openTheme(page, { width: 1440, height: 900 });
     const images = await layers(page);
-    expect(images).toMatch(/orion-still/);
-    expect(images).toMatch(/sky-still/);
-    expect(await page.locator(".portal-logo-frame").evaluate(el => getComputedStyle(el).backgroundImage)).toMatch(/logo-still/);
+    expect(images).toMatch(art("orion-still"));
+    expect(images).toMatch(art("sky-still"));
+    expect(images).not.toMatch(art("orion"));
+    expect(await page.locator(".portal-logo-frame").evaluate(el => getComputedStyle(el).backgroundImage)).toMatch(art("logo-still"));
 });
 
 test("phone: Orion and the GA line stay on screen, nothing scrolls sideways", async ({ page }) => {
     const failed = await openTheme(page, { width: 390, height: 844 });
     const images = await layers(page);
-    expect(images).toMatch(/orion-phone/);
+    expect(images).toMatch(art("orion-phone"));
     const header = await page.locator(".portal-header").boundingBox();
     expect(header.width).toBeLessThanOrEqual(390);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
