@@ -12148,7 +12148,8 @@ textarea.ps-link-input {
 :root[data-ps-theme="horizon-dawn"] .portal-header {
   position: relative;
   isolation: isolate;
-  min-height: 140px;
+  min-height: 100px;
+  padding-bottom: 26px;
   overflow: hidden;
   border-bottom: 1px solid #5cc8f273;
   backdrop-filter: none;
@@ -12165,9 +12166,9 @@ textarea.ps-link-input {
   z-index: -1;
   pointer-events: none;
   background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion), var(--dawn-sky);
-  background-size: 100% 100%, 100% 100%, 300px 140px, 400px 140px;
-  background-position: center bottom, center bottom, left 400px bottom, left bottom;
-  background-repeat: no-repeat, no-repeat, no-repeat, repeat-x;
+  background-size: 100% 100%, 100% 100%, 300px 100px, 400px 100px;
+  background-position: center bottom, center bottom, left 400px top, left top;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat;
 }
 /* The GA line, set on the horizon. */
 :root[data-ps-theme="horizon-dawn"] .portal-header::after {
@@ -12257,9 +12258,9 @@ textarea.ps-link-input {
   /* Phone: the land is a low band; Orion is in open sky above it, behind the land. */
   :root[data-ps-theme="horizon-dawn"] .portal-header::before {
     background-image: var(--dawn-mountains-front), var(--dawn-mountains-back), var(--dawn-orion-phone), var(--dawn-sky);
-    background-size: 100% 26px, 100% 46px, 390px 56px, 400px 140px;
+    background-size: 100% 26px, 100% 46px, 390px 56px, 400px 100px;
     background-position: center bottom, center bottom, right 0 top 50px, left top;
-    background-repeat: no-repeat, no-repeat, no-repeat, repeat-x;
+    background-repeat: no-repeat, no-repeat, no-repeat, repeat;
   }
   :root[data-ps-theme="horizon-dawn"] .portal-header::after {
     left: 16px;
