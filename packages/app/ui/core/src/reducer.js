@@ -10,7 +10,7 @@ import { getPromptInputRows } from "./layout.js";
 import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
 import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
-import { WORKFLOW_SIDE_TAB, workflowDefinitionName, workflowSelectionTarget } from "./workflow-owner.js";
+import { normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, workflowDefinitionName, workflowSelectionTarget } from "./workflow-owner.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
@@ -1086,6 +1086,18 @@ function baseReducer(state, action) {
             return { ...state, ui: { ...state.ui, workflowLayouts: next } };
         }
 
+        // The Workflow tab's bottom panel height for one device class (owner feedback 2026-11-06); null forgets it.
+        case "ui/workflowPanelHeight": {
+            const device = action.device === "phone" ? "phone" : "desktop";
+            const current = normalizeWorkflowPanelHeights(state.ui.workflowPanelHeights);
+            const next = { ...current };
+            if (action.height === null) delete next[device];
+            else next[device] = action.height;
+            const normalized = normalizeWorkflowPanelHeights(next);
+            if (normalized[device] === current[device]) return state;
+            return { ...state, ui: { ...state.ui, workflowPanelHeights: normalized } };
+        }
+
         case "ui/themeSound": {
             // device "mobile" edits the phone's own setting; anything else the desktop's.
             const key = action.device === "mobile" ? "themeSoundMobile" : "themeSound";
@@ -1267,6 +1279,9 @@ function baseReducer(state, action) {
                     workflowLayouts: hasWorkflowLayouts
                         ? normalizeWorkflowLayouts(settings.workflowLayouts)
                         : selection.ui.workflowLayouts,
+                    workflowPanelHeights: Object.prototype.hasOwnProperty.call(settings, "workflowPanelHeights")
+                        ? normalizeWorkflowPanelHeights(settings.workflowPanelHeights)
+                        : selection.ui.workflowPanelHeights,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
                         ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: keepWorkflowTab ? WORKFLOW_SIDE_TAB : normalizeSidePaneTab(nextDesktopPanes.sideTab) }

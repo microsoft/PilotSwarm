@@ -448,6 +448,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Workflow Simplified: each session's Workflow tab (its definition, Definition | Workflows view, the Workflow it
             // shows and its bottom panel), keyed by the session that owns the workflows. Not persisted.
             workflowTabs: {},
+            // The Workflow tab's bottom panel height per device class (profile settings workflowPanelHeights).
+            workflowPanelHeights: {},
             // Failed Workflows a person has opened (O6: the badge counts failed ones not yet opened). Not persisted.
             workflowSeen: {},
             // Ticks when a Workflow row is selected, so the phone brings its Workflow pane up (as canvas/flip does for a canvas).

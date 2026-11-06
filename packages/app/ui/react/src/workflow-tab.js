@@ -10,7 +10,7 @@ import {
 import { formatLocalTime } from "../../core/src/formatting.js";
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowFailureText, workflowStarted,
-    workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_RUN_PANELS,
+    workflowPanelHeight, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
     WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RevisionCompare, WorkflowV2RunCommandNotice,
@@ -236,9 +236,42 @@ function NodeFacts({ node }) {
         row("Time limit", Number.isFinite(node.timeoutSeconds) ? formatSeconds(node.timeoutSeconds) : null));
 }
 
-/** The bottom panel (L5): one panel at a time, closed by default; a phone shows it as a sheet with a way back (12). */
-function BottomPanel({ panels, panel, onPanel, mobile, children, extra = null }) {
+/** How far one arrow key moves the bottom panel's edge, and Shift or Page Up/Down. */
+const PANEL_STEP = 16;
+const PANEL_BIG_STEP = 64;
+/** What stays above the bottom panel: the graph's minimum (L5) and the bars over it. */
+const PANEL_ROOM_ABOVE = 190;
+
+/**
+ * The bottom panel (L5): one panel at a time, closed by default; a phone shows it as a sheet with a way back (12). Open,
+ * it keeps ONE height whatever tab shows (owner feedback 2026-11-06: no jumping between Node, Log and Variables), and
+ * its contents scroll inside. Its top edge is a handle: drag it, or focus it and use the arrow keys (Shift or Page
+ * Up/Down for bigger steps, Home and End for the smallest and largest); a double-click puts the default back. The
+ * height is remembered per device class in the profile settings (workflowPanelHeights).
+ */
+function BottomPanel({ controller, panels, panel, onPanel, mobile, children, extra = null }) {
     const sheetRef = React.useRef(null);
+    const device = mobile ? "phone" : "desktop";
+    const stored = useControllerSelector(controller, state => state.ui.workflowPanelHeights?.[device] ?? null);
+    const [dragHeight, setDragHeight] = React.useState(null);
+    const [room, setRoom] = React.useState(Infinity);
+    // The panel's container height bounds it: the graph keeps its minimum above it.
+    React.useEffect(() => {
+        const box = sheetRef.current?.parentElement;
+        if (!box) return undefined;
+        const measure = () => {
+            const height = box.getBoundingClientRect().height;
+            if (height > 0) setRoom(current => (current === height - PANEL_ROOM_ABOVE ? current : Math.max(WORKFLOW_PANEL_HEIGHT_MIN, height - PANEL_ROOM_ABOVE)));
+        };
+        measure();
+        if (typeof ResizeObserver === "undefined") return undefined;
+        const observer = new ResizeObserver(measure);
+        observer.observe(box);
+        return () => observer.disconnect();
+    }, [Boolean(panel)]);
+    const height = workflowPanelHeight({ [device]: dragHeight ?? stored ?? undefined }, device, room);
+    const keep = next => controller.dispatch({ type: "ui/workflowPanelHeight", device,
+        height: next === null ? null : workflowPanelHeight({ [device]: next }, device, room) });
     // The phone's Back gesture closes the sheet first (12): the sheet adds one history entry while it is open.
     React.useEffect(() => {
         if (!mobile || !panel || typeof window === "undefined") return undefined;
@@ -256,8 +289,39 @@ function BottomPanel({ panels, panel, onPanel, mobile, children, extra = null })
     const tabs = h("div", { className: "ps-wf-panel-tabs", role: "tablist", "aria-label": "Workflow panel" },
         panels.map(id => h("button", { key: id, type: "button", role: "tab", "aria-selected": panel === id, className: panel === id ? "is-on" : "",
             onClick: () => onPanel(panel === id && !mobile ? null : id) }, labels[id])));
-    if (!panel) return h("div", { className: "ps-wf-panel is-closed" }, tabs, extra);
-    return h("div", { ref: sheetRef, className: `ps-wf-panel${mobile ? " is-sheet" : ""}`, "data-panel": panel },
+    if (!panel) return h("div", { ref: sheetRef, className: "ps-wf-panel is-closed" }, tabs, extra);
+    const onPointerDown = event => {
+        if (event.button !== undefined && event.button !== 0) return;
+        event.preventDefault();
+        const startY = event.clientY;
+        const startHeight = height;
+        const target = event.currentTarget;
+        target.setPointerCapture?.(event.pointerId);
+        const move = next => setDragHeight(workflowPanelHeight({ [device]: startHeight - (next.clientY - startY) }, device, room));
+        const up = next => {
+            target.removeEventListener("pointermove", move);
+            target.removeEventListener("pointerup", up);
+            target.removeEventListener("pointercancel", up);
+            keep(startHeight - (next.clientY - startY));
+            setDragHeight(null);
+        };
+        target.addEventListener("pointermove", move);
+        target.addEventListener("pointerup", up);
+        target.addEventListener("pointercancel", up);
+    };
+    const onKeyDown = event => {
+        const big = event.shiftKey ? PANEL_BIG_STEP : PANEL_STEP;
+        const by = { ArrowUp: big, ArrowDown: -big, PageUp: PANEL_BIG_STEP, PageDown: -PANEL_BIG_STEP }[event.key];
+        if (by !== undefined) { event.preventDefault(); keep(height + by); }
+        else if (event.key === "Home") { event.preventDefault(); keep(WORKFLOW_PANEL_HEIGHT_MIN); }
+        else if (event.key === "End") { event.preventDefault(); keep(Number.isFinite(room) ? room : height + PANEL_BIG_STEP * 4); }
+    };
+    return h("div", { ref: sheetRef, className: `ps-wf-panel${mobile ? " is-sheet" : ""}`, "data-panel": panel, style: { height: `${height}px` } },
+        h("div", { className: "ps-wf-panel-resize", role: "separator", tabIndex: 0, "aria-orientation": "horizontal",
+            "aria-label": "Resize the bottom panel", "aria-valuemin": WORKFLOW_PANEL_HEIGHT_MIN,
+            "aria-valuemax": Number.isFinite(room) ? Math.round(room) : undefined, "aria-valuenow": Math.round(height),
+            title: "Drag, or use the arrow keys, to resize. Double-click puts it back.",
+            onPointerDown, onKeyDown, onDoubleClick: () => keep(null) }),
         h("div", { className: "ps-wf-panel-bar" },
             mobile ? h("button", { type: "button", className: "ps-mini-button ps-wf-back", onClick: () => onPanel(null) }, "← Graph") : null,
             tabs, extra,
@@ -341,7 +405,7 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         mode === "yaml" ? h("div", { className: "ps-wf-main ps-wf-yaml" },
             editor ? h(WorkflowV2DraftEditor, { key: sessionId, controller, sessionId, model: editor, savedEdit: view.draftEdit ?? null })
                 : h(WorkflowV2YamlView, { key: sessionId, controller, sessionId, model: workflowModel, reads: view.definitionRevisions ?? null })) : null,
-        h(BottomPanel, { panels, panel, mobile, onPanel: id => setTab({ definitionPanel: id }) },
+        h(BottomPanel, { controller, panels, panel, mobile, onPanel: id => setTab({ definitionPanel: id }) },
             panel === "node" ? h(NodeFacts, { node: selected })
                 : panel === "test" ? h(TestPanel, { controller, child, runCommand })
                 : panel === "revisions"
@@ -496,7 +560,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
                 places: places ?? null, onPlaces, mobile })
                 : projection ? h(WorkflowV2NoGraph, { projection })
                 : h("p", { className: "ps-wf-muted" }, view.error || "Loading the Workflow…")),
-        h(BottomPanel, { panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"), panel, mobile,
+        h(BottomPanel, { controller, panels: variables ? WORKFLOW_RUN_PANELS : WORKFLOW_RUN_PANELS.filter(id => id !== "variables"), panel, mobile,
             onPanel: id => setTab({ runPanel: id }) },
             panel === "node" ? h(RunNodePanel, { controller, child, selected }) : null,
             panel === "log" ? h(WorkflowLog, { events, runId }) : null,

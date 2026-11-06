@@ -12766,17 +12766,39 @@ button.ps-wf-list-row:focus-visible { background: var(--ps-highlight-background)
 .ps-wf-list-state { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .ps-wf-list-reason { color: var(--ps-danger); font-size: 0.9em; overflow-wrap: anywhere; }
 
-/* The bottom panel (L5): closed is one strip of panel tabs. */
+/* The bottom panel (L5): closed is one strip of panel tabs; open, it has ONE height (set inline from the person's
+   choice, per device class) whatever tab shows, and its body scrolls. Its top edge is the resize handle. */
 .ps-wf-panel {
   display: flex;
   flex-direction: column;
   flex: 0 0 auto;
-  max-height: 45%;
   min-height: 0;
   border-top: 1px solid var(--ps-border);
   background: var(--ps-surface);
 }
 .ps-wf-panel.is-closed { flex-direction: row; align-items: center; padding: 2px 6px; }
+.ps-wf-panel-resize {
+  position: relative;
+  flex: 0 0 auto;
+  height: 10px;
+  margin-top: -6px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.ps-wf-panel-resize::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  width: 40px;
+  height: 3px;
+  margin-left: -20px;
+  border-radius: 2px;
+  background: var(--ps-border);
+}
+.ps-wf-panel-resize:hover::after,
+.ps-wf-panel-resize:focus-visible::after { background: var(--ps-accent, var(--ps-foreground)); }
+.ps-wf-panel-resize:focus-visible { outline: 2px solid var(--ps-selection-background); outline-offset: -2px; }
 .ps-wf-panel-bar { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid var(--ps-border); }
 .ps-wf-panel-tabs { display: inline-flex; gap: 2px; }
 .ps-wf-panel-close {
@@ -12789,7 +12811,7 @@ button.ps-wf-list-row:focus-visible { background: var(--ps-highlight-background)
   cursor: pointer;
   padding: 2px 6px;
 }
-.ps-wf-panel-body { overflow: auto; min-height: 0; padding: 8px 10px; }
+.ps-wf-panel-body { flex: 1 1 auto; overflow: auto; min-height: 0; padding: 8px 10px; }
 .ps-wf-facts { display: grid; gap: 4px; }
 .ps-wf-fact { display: grid; grid-template-columns: 8em 1fr; gap: 8px; }
 .ps-wf-fact > span { color: var(--ps-muted); }
@@ -12809,7 +12831,7 @@ button.ps-wf-list-row:focus-visible { background: var(--ps-highlight-background)
   left: 0;
   right: 0;
   bottom: 0;
-  max-height: 70%;
+  max-height: calc(100% - 120px);
   z-index: 5;
   box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
 }

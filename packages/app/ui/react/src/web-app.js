@@ -9,7 +9,7 @@ import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
-import { WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowBadgeCount } from "../../core/src/workflow-owner.js";
+import { normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowBadgeCount } from "../../core/src/workflow-owner.js";
 import { normalizeSidePaneTab } from "../../core/src/state.js";
 import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
 import { WorkflowInputWait, workflowInputWait } from "./workflow-input-wait.js";
@@ -445,6 +445,10 @@ function normalizeProfileSettings(settings) {
     if (hasOwn(candidate, "workflowLayouts")) {
         normalized.workflowLayouts = normalizeWorkflowLayouts(candidate.workflowLayouts);
     }
+    // The Workflow tab's bottom panel height per device class (owner feedback 2026-11-06).
+    if (hasOwn(candidate, "workflowPanelHeights")) {
+        normalized.workflowPanelHeights = normalizeWorkflowPanelHeights(candidate.workflowPanelHeights);
+    }
     // Phones and desktops keep SEPARATE view preferences: rich prose reads well
     // on a wide transcript and poorly in a 390px column, so a single shared
     // value would have each device overwriting the other's choice.
@@ -571,6 +575,10 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         // both device classes, as the places are the person's, not the screen's.
         ...(state.workflowLayouts && typeof state.workflowLayouts === "object"
             ? { workflowLayouts: state.workflowLayouts }
+            : {}),
+        // The bottom panel heights, once there is one: from both device classes (each keeps the other's).
+        ...(state.workflowPanelHeights && Object.keys(state.workflowPanelHeights).length
+            ? { workflowPanelHeights: state.workflowPanelHeights }
             : {}),
         // setCurrentUserProfileSettings REPLACES the settings object, so the
         // other device class's slot has to be written back verbatim or saving
@@ -729,6 +737,9 @@ function materializeProfileSettings(remoteSettings, defaults) {
         // Same rule: an absent key leaves the places this tab has.
         ...(hasOwn(normalizedRemote, "workflowLayouts")
             ? { workflowLayouts: normalizedRemote.workflowLayouts }
+            : {}),
+        ...(hasOwn(normalizedRemote, "workflowPanelHeights")
+            ? { workflowPanelHeights: normalizedRemote.workflowPanelHeights }
             : {}),
     });
 }
@@ -16623,6 +16634,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         activeSessionIsWorkflow: activeSessionIsWorkflow(rootState),
         // Live reference, saved with the profile (batch 6, f-03).
         workflowLayouts: rootState.ui.workflowLayouts,
+        workflowPanelHeights: rootState.ui.workflowPanelHeights,
         paneAdjust: rootState.ui.layout?.paneAdjust ?? 0,
         sessionPaneAdjust: rootState.ui.layout?.sessionPaneAdjust ?? 0,
         portalSessionColumnAdjust: rootState.ui.layout?.portalSessionColumnAdjust ?? 0,
@@ -16986,7 +16998,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile, state.workflowLayouts]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile, state.workflowLayouts, state.workflowPanelHeights]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);

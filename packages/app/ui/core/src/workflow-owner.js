@@ -27,6 +27,34 @@ export const WORKFLOW_TAB_VIEWS = Object.freeze(["definition", "workflows"]);
 export const WORKFLOW_DEFINITION_PANELS = Object.freeze(["node", "revisions"]);
 export const WORKFLOW_RUN_PANELS = Object.freeze(["node", "log", "variables"]);
 
+/**
+ * The bottom panel's height (owner feedback 2026-11-06: "sizes of these bottom panels need to be consistent… the box
+ * needs to be resizable"): one height for every tab, set by its drag handle and remembered per device class in the
+ * profile settings (`workflowPanelHeights: { desktop, phone }`, pixels). The graph keeps its own minimum above it.
+ */
+export const WORKFLOW_PANEL_HEIGHT_DEFAULTS = Object.freeze({ desktop: 280, phone: 360 });
+export const WORKFLOW_PANEL_HEIGHT_MIN = 120;
+const WORKFLOW_PANEL_HEIGHT_LIMIT = 2_000;
+
+/** The stored heights, kept only where they are whole pixels in range; anything else is left out. Pure. */
+export function normalizeWorkflowPanelHeights(value) {
+    const out = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+    for (const device of ["desktop", "phone"]) {
+        const height = Math.round(Number(value[device]));
+        if (Number.isFinite(height) && height >= WORKFLOW_PANEL_HEIGHT_MIN && height <= WORKFLOW_PANEL_HEIGHT_LIMIT) out[device] = height;
+    }
+    return out;
+}
+
+/** The panel height for `device` ("desktop" or "phone"): the stored one, else the default, within [min, `max`]. Pure. */
+export function workflowPanelHeight(heights, device, max = Infinity) {
+    const key = device === "phone" ? "phone" : "desktop";
+    const stored = normalizeWorkflowPanelHeights(heights)[key] ?? WORKFLOW_PANEL_HEIGHT_DEFAULTS[key];
+    const ceiling = Number.isFinite(max) ? Math.max(WORKFLOW_PANEL_HEIGHT_MIN, Math.round(max)) : Infinity;
+    return Math.min(Math.max(stored, WORKFLOW_PANEL_HEIGHT_MIN), ceiling);
+}
+
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const text = value => (typeof value === "string" && value.trim() ? value.trim() : null);
 

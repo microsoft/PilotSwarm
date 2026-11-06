@@ -2996,3 +2996,86 @@ test("after a Workflow row, a click on its session's row selects the session alo
     await expect(ownerRow).toHaveClass(/is-chat-owner/);
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// The bottom panel (owner feedback 2026-11-06: "sizes of these bottom panels need to be consistent. they can't jump up and
+// down when I switch between them… the box needs to be resizable"): one height across Node, Log and the Node panel's own
+// views; its top edge is a handle that drags and takes the arrow keys; the height is kept in the profile and comes back
+// after a reload; a double-click puts the default back. The phone sheet keeps one height too.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "bottom panel keeps one height" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+const panelHeight = async (tab) => Math.round((await tab.locator(".ps-wf-panel[data-panel]").boundingBox()).height);
+async function everyPanelHeight(tab) {
+    const heights = [];
+    for (const name of await tab.getByRole("tablist", { name: "Workflow panel" }).getByRole("tab").allTextContents()) {
+        const button = panelTab(tab, name);
+        if ((await button.getAttribute("aria-selected")) !== "true") await button.click();
+        await expect(tab.locator(".ps-wf-panel[data-panel]")).toBeVisible();
+        heights.push(await panelHeight(tab));
+        const views = tab.getByRole("tablist", { name: "Node detail views" }).getByRole("tab");
+        for (let index = 0; index < await views.count(); index++) {
+            await views.nth(index).click();
+            heights.push(await panelHeight(tab));
+        }
+    }
+    return heights;
+}
+
+test("the bottom panel keeps one height across its tabs, resizes by drag and keys, and keeps the height after a reload", async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { onCommand: (route, command) => accept(route, command) });
+    const profile = await routeProfileSaves(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    await panelTab(main, "Node").click();
+    const start = await panelHeight(main);
+    expect(new Set(await everyPanelHeight(main))).toEqual(new Set([start]));
+    // Drag the handle up 80 px: the panel grows by 80, and the graph keeps its minimum.
+    const handle = main.getByRole("separator", { name: "Resize the bottom panel", exact: true });
+    const box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 80, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(() => panelHeight(main)).toBe(start + 80);
+    expect((await main.getByRole("group", { name: "Workflow graph" }).boundingBox()).height).toBeGreaterThanOrEqual(150);
+    expect(new Set(await everyPanelHeight(main))).toEqual(new Set([start + 80]));
+    // By keyboard: an arrow key moves it 16 px.
+    await handle.focus();
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(() => panelHeight(main)).toBe(start + 96);
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(() => panelHeight(main)).toBe(start + 80);
+    await expect(handle).toHaveAttribute("aria-valuenow", String(start + 80));
+    await shot(page, "bottom-panel-resized");
+    // Kept in the profile, for this device class, and back after a reload.
+    await expect.poll(() => profile.stored?.workflowPanelHeights?.desktop ?? null, { timeout: 15_000 }).toBe(start + 80);
+    await page.reload();
+    await panelTab(workflowTab(page), "Log").click();
+    await expect.poll(() => panelHeight(workflowTab(page))).toBe(start + 80);
+    // A double-click puts the default back.
+    await workflowTab(page).getByRole("separator", { name: "Resize the bottom panel", exact: true }).dblclick();
+    await expect.poll(() => panelHeight(workflowTab(page))).toBe(start);
+    expect(errors).toEqual([]);
+});
+
+test("on a phone the bottom panel's sheet keeps one height across its tabs", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { onCommand: (route, command) => accept(route, command) });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    await panelTab(main, "Log").click();
+    await expect(main.locator(".ps-wf-panel.is-sheet")).toBeVisible();
+    const heights = await everyPanelHeight(main);
+    expect(heights.length).toBeGreaterThan(1);
+    expect(new Set(heights).size).toBe(1);
+    await expect(main.getByRole("separator", { name: "Resize the bottom panel", exact: true })).toBeVisible();
+    expect(errors).toEqual([]);
+});
