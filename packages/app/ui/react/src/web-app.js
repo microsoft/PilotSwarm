@@ -3263,7 +3263,7 @@ const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.
 // browser's own pinch is switched off and the two fingers are reported to the
 // portal, which magnifies the frame within its box. A page that handles two
 // fingers itself (it calls preventDefault) keeps them.
-const CANVAS_PINCH_BRIDGE = `<style>html{touch-action:pan-x pan-y}</style><script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'canvas-pinch',phase:'start',x:p.x,y:p.y,d:p.d,t:performance.timeOrigin+e.timeStamp})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'canvas-pinch',phase:'move',x:p.x,y:p.y,d:p.d,t:performance.timeOrigin+e.timeStamp})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'canvas-pinch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',end,{passive:true});addEventListener('gesturestart',function(e){e.preventDefault()});addEventListener('gesturechange',function(e){e.preventDefault()})})();</script>`;
+const CANVAS_PINCH_BRIDGE = `<style>html{touch-action:pan-x pan-y}</style><script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'canvas-pinch',phase:'start',x:p.x,y:p.y,d:p.d,t:performance.timeOrigin+performance.now()})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'canvas-pinch',phase:'move',x:p.x,y:p.y,d:p.d,t:performance.timeOrigin+performance.now()})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'canvas-pinch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',end,{passive:true});addEventListener('gesturestart',function(e){e.preventDefault()});addEventListener('gesturechange',function(e){e.preventDefault()})})();</script>`;
 const CANVAS_PINCH_MAX = 5;
 // The "two fingers to move" hint shows once per page load, on the first zoom.
 let canvasPanHintShown = false;
@@ -8291,14 +8291,13 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         el.style.transition = animate ? "transform 180ms ease-out" : "";
         el.style.transformOrigin = "top left";
         el.style.transform = scale === 1 && !tx && !ty ? (base ? base.trim() : "") : `translate(${tx}px, ${ty}px) scale(${scale})${base}`;
-        // A touch inside the frame is located against the frame as last DRAWN,
-        // which trails this style by a frame or two. Note when this transform
-        // is on screen, so each touch is read against the one it was found in.
+        // The frame's touches arrive by message, so a touch reported after this
+        // line may have been located against an earlier transform. Note when
+        // each transform began, and read each touch against the one in force
+        // when the frame handled it (the frame stamps the time it handled it).
         const seen = pinchRef.current.seen;
-        const entry = { at: Infinity, s: scale, tx, ty };
-        seen.push(entry);
+        seen.push({ at: performance.timeOrigin + performance.now(), s: scale, tx, ty });
         if (seen.length > 40) seen.splice(0, seen.length - 40);
-        requestAnimationFrame(() => requestAnimationFrame(() => { entry.at = performance.timeOrigin + performance.now(); }));
     }, []);
     const resetPinch = React.useCallback(() => {
         pinchRef.current = { s: 1, tx: 0, ty: 0, start: null, seen: [] };
