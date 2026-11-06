@@ -3770,9 +3770,10 @@ const AGENT_STATES = [
 /**
  * The agent node fixture (findings 7 and 8): Workflow fact-loop whose agent node `fact` continues ONE chat (AGENT_CHAT)
  * across two visits; visit 1 ended with its typed result, visit 2 is at work. Routes its read model, events, the chat's
- * events and the kept base instructions.
+ * events and the kept base instructions. `done`: visit 2 has ended too (no visit at work, so no chat read repeats). It
+ * returns `served`: how many of the chat's events its route answers with (all by default).
  */
-async function routeAgentNode(page) {
+async function routeAgentNode(page, { done = false } = {}) {
     const ago = seconds => new Date(Date.now() - seconds * 1000).toISOString();
     const wf = (seq, eventType, seconds, data) => ({ sessionId: WORKFLOW_ID, seq, eventType, createdAt: ago(seconds), data: { runId: "run-1", stateId: "fact", ...data } });
     const events = [
@@ -3787,8 +3788,10 @@ async function routeAgentNode(page) {
     const agent = { childSessionId: AGENT_CHAT, controllingSessionId: AGENT_ID, spawned: true, spawnAttempts: 1, end: null, endSent: false };
     const model = { ...V2_WITH_CONTROLS, revision: { ...V2_READ_MODEL.revision, name: "fact-loop" }, graph: { revision: 1, initial: "fact", states: AGENT_STATES },
         run: { ...V2_READ_MODEL.run, nodeExecutions: [
-            { nodeExecutionId: "nx-fact-2", stateId: "fact", ordinal: 2, state: "pending", outcome: null, resultKind: null, winner: null, attempts: 0,
-                kvRevision: 1, enteredAt: ago(30), deadline: new Date(Date.now() + 60_000).toISOString(), agent },
+            { nodeExecutionId: "nx-fact-2", stateId: "fact", ordinal: 2, state: done ? "completed" : "pending", outcome: done ? "produced" : null,
+                resultKind: done ? "business" : null, winner: done ? "agent" : null, attempts: 0, kvRevision: 1, enteredAt: ago(30),
+                deadline: new Date(Date.now() + 60_000).toISOString(), ...(done ? { endedAt: ago(15), outputPreview: "{\"fact\":\"VACUUM frees dead rows.\"}" } : {}),
+                agent },
             { nodeExecutionId: "nx-fact-1", stateId: "fact", ordinal: 1, state: "completed", outcome: "produced", resultKind: "business", winner: "agent",
                 attempts: 0, kvRevision: 1, enteredAt: ago(110), endedAt: ago(100), outputPreview: "{\"fact\":\"PostgreSQL keeps old row versions (MVCC).\"}", agent },
         ] } };
@@ -3811,14 +3814,16 @@ async function routeAgentNode(page) {
         prompt(7, "nx-fact-2", 28, "[SYSTEM: WORKFLOW NODE INVOCATION, CYCLE 2.]\n{\"cycle\":2}\n[SYSTEM: The task of this state:]\nTell one new fact about PostgreSQL."),
         said(8, "assistant.message", 20, { content: "Looking for a fact I have not given yet." }),
     ];
+    const served = { count: Infinity };
     await page.route("**/api/v1/**", async (route) => {
         const pathname = new URL(route.request().url()).pathname;
-        if (pathname.includes(`/sessions/${AGENT_CHAT}/events`)) return route.fulfill({ json: { ok: true, result: chat } });
+        if (pathname.includes(`/sessions/${AGENT_CHAT}/events`)) return route.fulfill({ json: { ok: true, result: chat.slice(0, served.count) } });
         if (pathname.endsWith(`/sessions/${WORKFLOW_ID}/artifacts/${BASE_ARTIFACT}/text`)) {
             return route.fulfill({ json: { ok: true, result: BASE_TEXT } });
         }
         return route.fallback();
     });
+    return served;
 }
 
 test("agent node: the Node panel says what it does and the Log shows its chat, visit by visit", async ({ page }) => {
@@ -3923,5 +3928,37 @@ test("agent node: a chat: continue node's Log shows one chat across two visits",
     await second.scrollIntoViewIfNeeded();
     await expect(second.locator("h3")).toBeInViewport();
     await shot(page, "agent-log-continue-1440");
+    expect(errors).toEqual([]);
+});
+
+// r4 C04 (usability re-test on live data): the Log read its chats once (ensureSessionHistory without force) and again only
+// while a visit was at work, so a visit that ran while the Log was not shown had no chat lines when it was shown again.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "r4 C04" (from packages/app/web, after build).
+test("agent node: r4 C04 the Log shown again reads the chat lines of a visit that ran while it was not shown", async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const served = await routeAgentNode(page, { done: true });
+    served.count = 6; // visit 1's lines only: visit 2 has not run in the chat yet
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    await flowReady(graph);
+    await graph.getByRole("button", { name: "Inspect fact", exact: true }).click();
+    await nodeDetails(page).getByRole("button", { name: "See all 2 runs in the Log", exact: true }).click();
+    const log = bottomPanel(main, "log");
+    const visits = log.locator(".ps-wf-alog-visit:not(.is-earlier)");
+    await expect(visits).toHaveCount(2);
+    await expect(visits.nth(1).locator('[data-kind="agent"]').filter({ hasText: "PostgreSQL keeps old row versions (MVCC)." })).toHaveCount(1);
+    await expect(visits.nth(0).locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION" })).toHaveCount(0);
+    // Visit 2's lines are stored while the Node tab is shown; the Log, shown again, reads them.
+    const tabs = main.getByRole("tablist", { name: "Workflow panel" });
+    await tabs.getByRole("tab", { name: "Node", exact: true }).click();
+    await expect(log).toHaveCount(0);
+    served.count = Infinity;
+    await tabs.getByRole("tab", { name: "Log", exact: true }).click();
+    await expect(visits.nth(0).locator('[data-kind="prompt"]').filter({ hasText: "WORKFLOW NODE INVOCATION, CYCLE 2" })).toHaveCount(1);
+    await expect(visits.nth(0).locator('[data-kind="agent"]')).toContainText("Looking for a fact I have not given yet.");
     expect(errors).toEqual([]);
 });

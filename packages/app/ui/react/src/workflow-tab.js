@@ -758,8 +758,10 @@ function AgentNodeLog({ controller, workflowSessionId = null, node, events, runI
     const chatIds = React.useMemo(() => workflowAgentLogChats(node, limit), [node, limit]);
     const chatKey = chatIds.join(",");
     const histories = useControllerSelector(controller, state => state.history.bySessionId);
+    // r4 C04: each time the Log is shown it reads the lines its chats got since they were loaded (a forced read of a loaded
+    // chat reads only the newer events): visits that ran while the Log was not shown are read too, not only a working one.
     React.useEffect(() => {
-        for (const id of chatIds) controller.ensureSessionHistory(id).catch(() => {});
+        for (const id of chatIds) controller.ensureSessionHistory(id, { force: true }).catch(() => {});
     }, [controller, chatKey]);
     const working = node.current?.status === "pending" ? node.current.agent?.childSessionId ?? null : null;
     const lines = Array.isArray(events) ? events.length : 0;
