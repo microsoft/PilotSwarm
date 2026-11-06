@@ -440,6 +440,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Chat-rail + canvas-workbench mode. Persisted with the columns.
             canvasZen: desktopPanes.zen,
             sidePaneTab: desktopPanes.sideTab,
+            // Whether this tab chose its side tab (the person, or a Workflow opened): profile reads then keep it (UI-7).
+            sidePaneTabChosen: false,
             // Canvas filling the workspace. Deliberately NOT persisted: it is
             // a "look at this now" gesture, and returning to a portal with no
             // chat and no session list would read as a broken app.

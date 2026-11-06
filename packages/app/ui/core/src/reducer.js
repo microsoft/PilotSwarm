@@ -908,7 +908,7 @@ function openWorkflowTab(state) {
     const ui = state.ui;
     const next = {
         ...state,
-        ui: { ...ui, canvasOpen: true, rightPaneMode: "canvas", sidePaneTab: WORKFLOW_SIDE_TAB, canvasMaximized: false,
+        ui: { ...ui, canvasOpen: true, rightPaneMode: "canvas", sidePaneTab: WORKFLOW_SIDE_TAB, sidePaneTabChosen: true, canvasMaximized: false,
             workflowOpenSeq: (Number(ui.workflowOpenSeq) || 0) + 1 },
     };
     return reconcileSessionView(state, next, { type: "ui/workflowTabOpened" });
@@ -1196,10 +1196,11 @@ function baseReducer(state, action) {
                 state.sessions.navigationIntent
                 && state.sessions.navigationIntent.status !== "failed",
             );
-            // Workflow Simplified (L1, S4): while a Workflow row is selected and the right block shows its Workflow tab, a
-            // profile read never turns the block back to the canvas (owner feedback 2026-11-06, "the canvas pops back
-            // up"); the right block changes when the person chooses, or when an agent draws on the canvas.
-            const keepWorkflowTab = state.ui.sidePaneTab === WORKFLOW_SIDE_TAB && Boolean(state.sessions.workflowRowId);
+            // Workflow Simplified (L1, S4; review UI-7): once this tab chose the Workflow tab (the person's choice, or a
+            // Workflow opened), a profile read never turns it away (owner feedback 2026-11-06, "the canvas pops back up"),
+            // whatever row is selected: a Workflow's, its parent's, or none while a definition is shown. Before this tab chose
+            // it (hydration), and for the canvas and Workspace tabs, a profile's side tab applies as before.
+            const keepSideTab = state.ui.sidePaneTabChosen === true && state.ui.sidePaneTab === WORKFLOW_SIDE_TAB;
             // Saved selection is a boot preference. Once this tab navigates,
             // a slow profile read (or another device) must not navigate it back.
             const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId")
@@ -1284,7 +1285,7 @@ function baseReducer(state, action) {
                         : selection.ui.workflowPanelHeights,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
-                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: keepWorkflowTab ? WORKFLOW_SIDE_TAB : normalizeSidePaneTab(nextDesktopPanes.sideTab) }
+                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: keepSideTab ? state.ui.sidePaneTab : normalizeSidePaneTab(nextDesktopPanes.sideTab) }
                         : {}),
                     layout: nextLayout,
                     sessionViews: nextSessionViews,
@@ -3753,8 +3754,8 @@ function baseReducer(state, action) {
         // The side pane's tab: the session's canvas, or its Workspace.
         case "ui/sidePaneTab": {
             const tab = normalizeSidePaneTab(action.tab);
-            if (tab === normalizeSidePaneTab(state.ui.sidePaneTab)) return state;
-            return { ...state, ui: { ...state.ui, sidePaneTab: tab } };
+            if (tab === normalizeSidePaneTab(state.ui.sidePaneTab)) return state.ui.sidePaneTabChosen ? state : { ...state, ui: { ...state.ui, sidePaneTabChosen: true } };
+            return { ...state, ui: { ...state.ui, sidePaneTab: tab, sidePaneTabChosen: true } };
         }
 
         // Workflow Simplified: one session's Workflow tab (its definition, view, shown Workflow and bottom panel).
