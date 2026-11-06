@@ -2963,3 +2963,36 @@ test("the right block stays on the Workflow tab through profile reads, and the p
     }
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// S4 (owner feedback 2026-11-06, "can't select the parent session once the workflow session is selected"): with a
+// Workflow row selected, a click on its session's row selects the session alone; the chat stays and the right block stays
+// as it was.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "selects the session alone" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("after a Workflow row, a click on its session's row selects the session alone", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeOwned(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${OWNED.running}`);
+    const ownerRow = page.locator(`.ps-session-list-button[data-session-id="${AGENT_ID}"]`);
+    const workflowRow = page.locator(`.ps-session-list-button[data-session-id="${OWNED.running}"]`);
+    await expect(workflowRow).toHaveClass(/is-selected/);
+    await expect(ownerRow).toHaveClass(/is-chat-owner/);
+    await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
+    await ownerRow.locator(".ps-session-row-content").first().click();
+    await expect(ownerRow).toHaveClass(/is-selected/);
+    await expect(ownerRow).not.toHaveClass(/is-chat-owner/);
+    await expect(ownerRow).toHaveAttribute("aria-selected", "true");
+    await expect(workflowRow).not.toHaveClass(/is-selected/);
+    await expect(page.locator(".ps-session-list-button.is-selected")).toHaveCount(1);
+    // The chat stays, and so does the right block with the Workflow it showed.
+    await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
+    await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
+    // The Workflow row selects it again.
+    await workflowRow.locator(".ps-session-row-content").first().click();
+    await expect(workflowRow).toHaveClass(/is-selected/);
+    await expect(ownerRow).toHaveClass(/is-chat-owner/);
+    expect(errors).toEqual([]);
+});

@@ -6185,7 +6185,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // (after an empty-space deselect) loadSession would short-circuit and
         // leave the list looking permanently deselected, so re-arm directly
         // rather than re-running selection and disturbing chat scroll memory.
-        if (row.sessionId === current.activeSessionId) {
+        if (row.chatOwner) {
+            // Workflow Simplified (S4): the session whose chat is on screen while one of its Workflow rows is selected.
+            // Clicking it selects the session itself: the Workflow row's highlight goes, the chat stays, and the right
+            // block stays as the person left it (owner feedback 2026-11-06, "can't select the parent session").
+            ctl.loadSession(row.sessionId).catch(() => {});
+        } else if (row.sessionId === current.activeSessionId) {
             ctl.dispatch({ type: "sessions/listReselect" });
         } else if (!row.active) {
             ctl.loadSession(row.sessionId).catch(() => {});
@@ -9193,8 +9198,9 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
             ? React.createElement("div", { className: `ps-side-pane-layer${onCanvas || onWorkflow ? " is-parked" : ""}`, inert: onCanvas || onWorkflow },
                 React.createElement(WorkspacePane, { key: view.sessionId || "none", controller, sessionId: view.sessionId, visible: visible && !onCanvas && !onWorkflow }))
             : null,
-        // The Workflow tab (06): mounted while it shows; its state lives in the store.
-        onWorkflow
+        // The Workflow tab (06): mounted only while the right block shows it (a hidden block is parked, not unmounted, so a
+        // tab left mounted would keep reading its Workflows); its state lives in the store.
+        onWorkflow && visible
             ? React.createElement("div", { className: "ps-side-pane-layer ps-wf-layer" },
                 React.createElement(WorkflowTab, { controller, mobile }))
             : null),
