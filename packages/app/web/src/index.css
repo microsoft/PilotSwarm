@@ -12382,7 +12382,9 @@ textarea.ps-link-input {
   border-radius: 999px;
   background: color-mix(in srgb, var(--ps-surface) 88%, transparent);
   color: var(--ps-foreground);
-  font: 600 13px/1 var(--ps-font-ui, system-ui, sans-serif);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
 }
 /* A pinch that starts on the canvas's own chrome must not zoom the page. */

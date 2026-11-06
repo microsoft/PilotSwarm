@@ -14,6 +14,8 @@ test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 6, 
 test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
 
 const diagnostics = page => page.locator('.ps-toolbar.is-mobile button[aria-label^="Diagnostics"]').first();
+// The view history starts once the signed-in user and the dashboards load.
+const historyReady = page => page.waitForFunction(() => Object.keys(sessionStorage).some((key) => key.startsWith("pilotswarm.view-history.v1:")));
 
 for (const viewport of [{ width: 844, height: 390 }, { width: 932, height: 430 }]) {
     test(`landscape ${viewport.width}x${viewport.height} keeps the phone layout`, async ({ page }) => {
@@ -36,6 +38,7 @@ test("swipe right goes back, swipe left goes forward, and the screen follows the
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(base);
     await expect(page.locator(".ps-mobile-chat-pane textarea")).toBeVisible();
+    await historyReady(page);
     await diagnostics(page).click();
     await expect(diagnostics(page)).toHaveAttribute("aria-label", "Diagnostics — back to the chat");
     await diagnostics(page).click();

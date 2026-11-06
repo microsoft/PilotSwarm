@@ -143,7 +143,8 @@ export function useViewNavigation(controller, moa) {
         const begin = event => {
             if (!data.current || event.repeat || event.isComposing) return;
             if (event.type === "keydown") {
-                const direction = navigationShortcut(event);
+                // Keyboard shortcuts are the desktop's; a phone moves by swipe.
+                const direction = latest.current.desktop ? navigationShortcut(event) : 0;
                 if (direction && !document.querySelector('.ps-modal-backdrop, .ps-moa-dialog, .ps-share-overlay')) {
                     event.preventDefault(); event.stopPropagation(); move(direction); return;
                 }
