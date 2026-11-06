@@ -3205,6 +3205,9 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
             await expect(page.getByRole("tooltip")).toHaveText(/^Stop… — /);
             await tipFits();
             await stopIcon.dispatchEvent("pointerup", { pointerType: "touch" });
+            // For the owner: the right-most icon's tooltip, open (it stays about 3 s after the finger lifts).
+            await expect(page.getByRole("tooltip")).toHaveText(/^Stop… — /);
+            await shot(page, "owner-1343-stop-tooltip-390");
             const pill = bar.locator(".ps-wf-state");
             await pill.dispatchEvent("pointerdown", { pointerType: "touch" });
             await pill.dispatchEvent("pointerup", { pointerType: "touch" });
