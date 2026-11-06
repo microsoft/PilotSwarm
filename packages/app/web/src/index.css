@@ -12122,8 +12122,10 @@ textarea.ps-link-input {
   }
 }
 
-:root[data-ps-theme="horizon-dawn"] body {
+:root[data-ps-theme="horizon-dawn"] :is(body, #root) {
   font-family: var(--dawn-ui);
+}
+:root[data-ps-theme="horizon-dawn"] body {
   background-image:
     radial-gradient(ellipse at 9% 0%, #14395c 0%, transparent 46%),
     linear-gradient(180deg, #071125 0%, #0c1c33 65%, #10263d 100%);
