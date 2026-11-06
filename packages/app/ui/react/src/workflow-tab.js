@@ -178,7 +178,8 @@ export function WorkflowTab({ controller, mobile = false }) {
             : workflow
                 ? h(WorkflowRunView, { key: workflow.sessionId, controller, definition, workflow, tab, setTab, mobile, onOpen: openWorkflow,
                     nodeStateId: context.nodeStateId })
-                : h(WorkflowList, { controller, definition, byId, views, onOpen: openWorkflow, onStart: () => setTab({ view: "definition", start: true }) }));
+                : h(WorkflowList, { controller, definition, byId, views, onOpen: openWorkflow, onStart: () => setTab({ view: "definition", start: true }),
+                    onAnother: () => setTab({ view: "definition", another: true }) }));
 }
 
 /** D1: the session's definitions, with the newest revision and how many Workflows each has; New definition asks the chat. */
@@ -282,6 +283,9 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
         ? publication.controls.find(control => control.operation === "publish_and_start" || control.operation === "start") ?? null : null;
     const [mode, setMode] = React.useState("graph");
     const [starting, setStarting] = React.useState(false);
+    // Run again (W8): another Workflow from this definition. On the tested engine the chat starts it with the same YAML.
+    const startedAlready = !definition.startable && definition.workflows.length > 0;
+    const [asking, setAsking] = React.useState(false);
     // "Start…" from the Workflows list opens the Start form here once the definition's commands are read.
     React.useEffect(() => {
         if (!tab.start) return;
@@ -290,6 +294,12 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
             if (startControl.enabled) setStarting(true);
         } else if (!definition.startable) setTab({ start: false });
     }, [tab.start, startControl?.enabled, definition.startable]);
+    // "Start another…" from the Workflows list opens its form here.
+    React.useEffect(() => {
+        if (!tab.another) return;
+        setTab({ another: false });
+        if (startedAlready) setAsking(true);
+    }, [tab.another, startedAlready]);
     // Test mode (spec 16): hidden unless the server lists a test operation for this workflow (PILOTSWARM_WORKFLOW_TEST_MODE=on).
     const testing = workflowV2TestModeListed(workflowModel);
     const panels = testing ? [...WORKFLOW_DEFINITION_PANELS, "test"] : WORKFLOW_DEFINITION_PANELS;
@@ -311,11 +321,11 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
             h("span", { className: "ps-wf-bar-text" }, revision !== null ? `Revision ${revision}` : null),
             startControl ? h("button", { type: "button", className: "ps-mini-button is-primary", "data-action": "start", disabled: !startControl.enabled,
                 title: startControl.enabled ? `Start Workflow #${nextNumber}` : startControl.title, onClick: () => setStarting(true) }, "Start…") : null,
+            startedAlready ? h("button", { type: "button", className: "ps-mini-button is-primary", "data-action": "start-another",
+                title: `Ask the chat to start ${definition.name} #${nextNumber} from this definition`, onClick: () => setAsking(true) }, "Start another…") : null,
             h("button", { type: "button", className: "ps-mini-button", "aria-pressed": mode === "yaml", onClick: () => setMode(mode === "yaml" ? "graph" : "yaml") }, "YAML"),
             h("button", { type: "button", className: "ps-mini-button", "aria-pressed": panel === "revisions",
                 onClick: () => setTab({ definitionPanel: panel === "revisions" ? null : "revisions" }) }, "Compare")),
-        !definition.startable && definition.workflows.length
-            ? h("p", { className: "ps-wf-line is-quiet" }, `This definition's newest copy has started as Workflow #${definition.workflows.length}. To start it again, ask the chat.`) : null,
         line ? h("p", { className: `ps-wf-line ${line.calm ? "is-quiet" : "is-error"}`, role: "status", "data-drafting": line.calm ? "true" : undefined },
             line.text) : null,
         notice ? h(WorkflowV2RunCommandNotice, { controller, sessionId, notice }) : null,
@@ -340,7 +350,18 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
                         : h("p", { className: "ps-wf-muted" }, revision === null ? "Loading the revisions…" : "Only one revision so far."))
                     : null),
         starting && startControl ? h(StartDialog, { controller, sessionId, publication, control: startControl, name: definition.name, number: nextNumber,
-            onClose: () => setStarting(false), onStarted: () => { setStarting(false); onStarted(sessionId); } }) : null);
+            onClose: () => setStarting(false), onStarted: () => { setStarting(false); onStarted(sessionId); } }) : null,
+        asking ? h(StartDialog, { controller, sessionId, name: definition.name, number: nextNumber,
+            publication: { inputsSchema: publication?.inputsSchema ?? graphInputsSchema(workflowModel), revision, publishedRevision: revision,
+                state: "published", valid: true },
+            onAsk: ({ inputs, vars }) => controller.startAnotherWorkflow(sessionId, { inputs, vars }),
+            onClose: () => setAsking(false), onStarted: () => setAsking(false) }) : null);
+}
+
+/** The inputs schema of a definition's graph, when its read model has one; null otherwise. */
+function graphInputsSchema(model) {
+    const schema = model?.graph?.inputsSchema;
+    return schema && typeof schema === "object" && !Array.isArray(schema) ? schema : null;
 }
 
 /**
@@ -371,7 +392,7 @@ function TestPanel({ controller, child, runCommand }) {
 }
 
 /** The Workflows list (08, W1): one row per Workflow of the definition, newest first. */
-function WorkflowList({ controller, definition, byId, views, onOpen, onStart }) {
+function WorkflowList({ controller, definition, byId, views, onOpen, onStart, onAnother }) {
     const rows = [...definition.workflows].reverse();
     const ids = rows.map(row => row.sessionId);
     const histories = useControllerSelector(controller, state => state.history.bySessionId);
@@ -407,8 +428,12 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart }) 
                         h("span", { role: "cell" }, times.started !== null ? shownTime(times.started) : "—"),
                         h("span", { role: "cell" }, times.took !== null ? tookText(times.took) : "—"));
                 })),
-        rows.length && definition.startable ? h("div", { className: "ps-wf-bar is-foot" },
-            h("button", { type: "button", className: "ps-mini-button is-primary", onClick: onStart }, "Start…")) : null);
+        rows.length ? h("div", { className: "ps-wf-bar is-foot" },
+            definition.startable
+                ? h("button", { type: "button", className: "ps-mini-button is-primary", onClick: onStart }, "Start…")
+                // Run again (W8): another Workflow from this definition, which the chat starts with the same YAML.
+                : h("button", { type: "button", className: "ps-mini-button is-primary", "data-action": "start-another", onClick: onAnother },
+                    "Start another…")) : null);
 }
 
 /** One Workflow (08): its header, controls by state, its failure first, its graph and its bottom panel. */
@@ -687,8 +712,12 @@ function InputField({ name, property, required, value, onChange }) {
     return h("div", { className: "ps-wf-field" }, h("label", { htmlFor: id }, head), control);
 }
 
-/** F-1–F-7: Start asks only for what the definition needs, filled with sample values. */
-function StartDialog({ controller, sessionId, publication, control, name, number, onClose, onStarted }) {
+/**
+ * F-1–F-7: Start asks only for what the definition needs, filled with sample values. With `onAsk` (Run again, W8) it is
+ * the form for another Workflow of a started definition: the same fields, and its button asks the chat to start it
+ * (`onAsk({ inputs, vars })`, answering { ok, reason }); nothing is sent to the engine from here.
+ */
+function StartDialog({ controller, sessionId, publication, control = null, name, number, onClose, onStarted, onAsk = null }) {
     const schema = publication.inputsSchema && typeof publication.inputsSchema === "object" ? publication.inputsSchema : null;
     const properties = schema?.properties && typeof schema.properties === "object" ? schema.properties : {};
     const keys = Object.keys(properties);
@@ -720,6 +749,13 @@ function StartDialog({ controller, sessionId, publication, control, name, number
         }
         setError(null);
         setBusy(true);
+        if (onAsk) {
+            const asked = await onAsk({ inputs, vars });
+            setBusy(false);
+            if (asked?.ok) onStarted();
+            else setError(asked?.reason || "The message to the chat was not sent.");
+            return;
+        }
         const command = control.operation === "start"
             ? { operation: "start", definitionHash: publication.publishedDefinitionHash, inputs, ...(vars ? { vars } : {}) }
             : { operation: "publish_and_start", expectedRevision: publication.revision, definitionHash: publication.definitionHash, inputs, ...(vars ? { vars } : {}) };
@@ -728,13 +764,18 @@ function StartDialog({ controller, sessionId, publication, control, name, number
         if (result?.ok) onStarted();
         else if (result?.error) setError(result.error.message || "The Workflow was not started.");
     };
-    return h(Dialog, { title: `Start ${name}`, onClose, className: "is-start",
+    return h(Dialog, { title: onAsk ? `Start another ${name}` : `Start ${name}`, onClose, className: "is-start",
         footer: [
-            h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-operation": control.operation,
-                disabled: busy || !control.enabled, title: control.enabled ? undefined : control.title, onClick: send }, busy ? "Starting…" : `Start #${number}`),
+            onAsk
+                ? h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-action": "ask-start-another", disabled: busy,
+                    onClick: send }, busy ? "Sending…" : `Ask the chat to start #${number}`)
+                : h("button", { key: "start", type: "button", className: "ps-mini-button is-primary", "data-operation": control.operation,
+                    disabled: busy || !control.enabled, title: control.enabled ? undefined : control.title, onClick: send }, busy ? "Starting…" : `Start #${number}`),
             // One way to leave without starting in words (the ✕ is the dialog's Close).
             h("button", { key: "cancel", type: "button", className: "ps-mini-button", onClick: onClose }, "Cancel"),
-            h("span", { key: "note", className: "ps-wf-muted" }, `Workflow #${number} runs revision ${revision ?? "—"}.`),
+            h("span", { key: "note", className: "ps-wf-muted" }, onAsk
+                ? `The chat starts ${name} #${number} from the same definition.`
+                : `Workflow #${number} runs revision ${revision ?? "—"}.`),
         ] },
         h("p", { className: "ps-wf-muted ps-wf-dialog-sub" }, `revision ${revision ?? "—"} · ${publication.valid ? "valid" : "not valid"}`),
         keys.length === 0

@@ -103,7 +103,9 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
                 type: "string",
                 description:
                     "Optional idempotency key. The same key in this session always names the same workflow session, "
-                    + "so a repeated call returns it instead of starting another run. Omit it to start a new run each call.",
+                    + "so a repeated call returns it instead of starting another run. Omit it to start a new run each call. "
+                    + "To start another Workflow from a definition you already started, pass the same YAML (the same metadata.name "
+                    + "and version) with no key or a new key; never rename the definition to start another.",
             },
             state: {
                 type: "string",

@@ -46,6 +46,13 @@ value stays `cancelled`.
   **Log** and **Variables** in a bottom panel). A failed Workflow shows its
   failure first. **Stop…** opens one dialog: **Let started nodes finish** or
   **Cancel now**; its close button says **Keep running**.
+- **Start another… (Run again).** A definition that has started offers
+  **Start another…** in its Definition view and its Workflows list. Its form
+  asks for the inputs and sends the session's chat one message: start another
+  Workflow from this definition with the same YAML, unchanged (no key or a new
+  one; never renamed). The chat spawns it, and it is listed under the same
+  definition as the next number. The base guidance and the authoring skill
+  tell an agent the same when a person asks in words.
 - **Nodes** show their type by icon, the start node, end rings, unreached
   nodes dimmed, For each counts with nouns (`2 ok · 1 failed`), failures in
   red and `ran 3 times` where a node repeated.

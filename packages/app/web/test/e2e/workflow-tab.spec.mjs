@@ -2744,25 +2744,40 @@ const OWNED_MODELS = {
     [OWNED.unstarted]: { ...V2_READ_MODEL, workflowId: OWNED.unstarted,
         revision: { ...V2_READ_MODEL.revision, name: "report-v2" }, runs: [], run: null },
 };
-async function routeOwned(page) {
+/**
+ * The session and its Workflows (OWNED_ROWS), with each Workflow's read model and events. Messages a person sends to the
+ * session are recorded (`messages`: { prompt, options }), and `onMessage` may answer one (Run again: the chat starts
+ * another Workflow, here by adding its row to `rows`).
+ */
+async function routeOwned(page, { onMessage = null } = {}) {
+    const rows = [...OWNED_ROWS];
+    const messages = [];
     await routeApi(page, { workflowEvents: V2_EVENTS, onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: V2_READ_MODEL } }) });
     await page.route("**/api/v1/**", async (route) => {
         const req = route.request();
         const pathname = new URL(req.url()).pathname;
         const answer = (result) => route.fulfill({ json: { ok: true, result } });
-        const sessions = [SESSIONS[0], ...OWNED_ROWS];
+        const sessions = [SESSIONS[0], ...rows];
         if (pathname.endsWith("/management/sessions")) return answer({ sessions, hasMore: false, nextCursor: null });
         if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions, hasMore: false });
-        for (const row of OWNED_ROWS) {
-            if (pathname.endsWith(`/sessions/${row.sessionId}/workflow`) && req.method() === "GET") return answer(OWNED_MODELS[row.sessionId]);
+        if (pathname.endsWith(`/sessions/${AGENT_ID}/messages`) && req.method() === "POST") {
+            const body = req.postDataJSON();
+            messages.push({ prompt: body.prompt, options: body.options ?? null });
+            onMessage?.(body, rows);
+            return answer({ accepted: true });
+        }
+        for (const row of rows) {
+            const model = OWNED_MODELS[row.sessionId] ?? { ...V2_READ_MODEL, workflowId: row.sessionId };
+            if (pathname.endsWith(`/sessions/${row.sessionId}/workflow`) && req.method() === "GET") return answer(model);
             if (pathname.includes(`/sessions/${row.sessionId}/events`)) {
                 return answer(row.sessionId === OWNED.unstarted ? [] : [{ ...V2_EVENTS[0], sessionId: row.sessionId,
-                    data: { ...V2_EVENTS[0].data, runId: OWNED_MODELS[row.sessionId].runs[0].runId } }]);
+                    data: { ...V2_EVENTS[0].data, runId: model.runs[0].runId } }]);
             }
             if (pathname.endsWith(`/sessions/${row.sessionId}`)) return answer({ ...row, events: [], messages: [] });
         }
         return route.fallback();
     });
+    return { rows, messages };
 }
 const sessionRow = (page, text) => page.locator(".ps-session-row-content", { hasText: text });
 
@@ -2812,16 +2827,18 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await expect(main.getByText("No Workflows yet.", { exact: true })).toHaveCount(1);
     await expect(main.getByRole("button", { name: "Start…", exact: true })).toBeVisible();
 
-    // watch-v2: its Definition view says its newest copy has started (run again is the chat's, W8 stage 2); its Workflows
-    // view lists #2 then #1 with their states.
+    // watch-v2: it has started, so its Definition view and its Workflows list offer Start another… (Run again, W8); its
+    // Workflows view lists #2 then #1 with their states.
     await picker.selectOption("watch-v2");
     await expect(viewSwitch(main, "Workflows")).toHaveText("Workflows · 2");
     const list = main.getByRole("table", { name: "Workflows of watch-v2" });
     await expect(list.getByRole("row", { name: /^Open watch-v2 #/ })).toHaveCount(2);
     await expect(list.getByRole("row", { name: "Open watch-v2 #2", exact: true }).locator(".ps-wf-state")).toHaveText("Failed");
     await expect(list.getByRole("row", { name: "Open watch-v2 #1", exact: true }).locator(".ps-wf-state")).toHaveText("Running");
+    await expect(main.getByRole("button", { name: "Start another…", exact: true })).toBeVisible();
     await viewSwitch(main, "Definition").click();
-    await expect(main.locator(".ps-wf-line.is-quiet")).toHaveText("This definition's newest copy has started as Workflow #2. To start it again, ask the chat.");
+    await expect(main.getByRole("button", { name: "Start another…", exact: true })).toBeVisible();
+    await expect(main.getByRole("button", { name: "Start…", exact: true })).toHaveCount(0);
     await viewSwitch(main, "Workflows").click();
     await shot(page, "layout-workflows-list");
 
@@ -2862,5 +2879,58 @@ test("layout: on a phone the Workflow pane lies over the chat, a panel opens as 
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
     await showWorkflowPane(page);
     await expect(workflowTab(page).getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.running);
+    expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------------------------------------------------------
+// Run again (W8, in stage 1 after the owner's feedback of 2026-11-06): a started definition offers Start another…, in its
+// Workflows list and its Definition view. Its form asks for the inputs and sends the session's chat ONE ordinary message
+// naming the definition, the Workflow whose YAML it repeats and the new number; the chat starts it with the same YAML
+// (no key or a new one, never renamed), so the new Workflow is listed under the same definition as #3 (O5). The
+// person's draft in the composer is not touched.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "Run again" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("Run again: Start another… asks the chat once to start the same definition, and the new Workflow is listed under it as #3", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const another = "aaaaaaa4-2222-3333-4444-555555555555";
+    const { messages } = await routeOwned(page, {
+        // The chat spawns the same YAML: a third child with the same name.
+        onMessage: (_body, rows) => rows.push({ sessionId: another, title: "Workflow: watch-v2", status: "running", sessionKind: "workflow",
+            parentSessionId: AGENT_ID, createdAt: Date.now(), updatedAt: Date.now() }),
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    const composer = page.locator(".ps-prompt-input").filter({ visible: true });
+    await composer.fill("my own draft");
+    await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
+    const main = workflowTab(page);
+    await main.getByRole("combobox", { name: "Workflow definition", exact: true }).selectOption("watch-v2");
+    await viewSwitch(main, "Workflows").click();
+    await main.getByRole("button", { name: "Start another…", exact: true }).click();
+    const form = page.getByRole("dialog", { name: "Start another watch-v2", exact: true });
+    await expect(form).toBeVisible();
+    await expect(form.locator('[data-field="no-inputs"]')).toHaveText("Takes no inputs.");
+    await expect(form).toContainText("The chat starts watch-v2 #3 from the same definition.");
+    await shot(page, "run-again-form");
+    await form.getByRole("button", { name: "Ask the chat to start #3", exact: true }).click();
+    await expect(form).toHaveCount(0);
+    await expect.poll(() => messages.length).toBe(1);
+    const [{ prompt, options }] = messages;
+    expect(options).toMatchObject({ enqueueOnly: true });
+    expect(prompt).toContain("Start another Workflow from the definition watch-v2");
+    expect(prompt).toContain(": it is watch-v2 #3.");
+    expect(prompt).toContain("Call spawn_workflow with the same YAML as watch-v2 #2, unchanged: the same metadata.name and version.");
+    expect(prompt).toContain("Pass no key, or a new key. Do not rename the definition.");
+    expect(prompt).toContain(`workflow_id ${OWNED.failed}, include_yaml true`);
+    expect(prompt).toContain("It takes no inputs.");
+    await expect(composer).toHaveValue("my own draft");
+    // The chat's new Workflow arrives with the next session-list read: #3, under the same definition.
+    await viewSwitch(main, "Workflows").click();
+    await expect(viewSwitch(main, "Workflows")).toHaveText("Workflows · 3", { timeout: 15_000 });
+    await expect(main.getByRole("table", { name: "Workflows of watch-v2" }).getByRole("row", { name: "Open watch-v2 #3", exact: true })).toBeVisible();
+    await expect(main.getByRole("combobox", { name: "Workflow definition", exact: true }).locator("option")).toHaveCount(3);
+    await shot(page, "run-again-listed");
+    expect(messages).toHaveLength(1);
     expect(errors).toEqual([]);
 });

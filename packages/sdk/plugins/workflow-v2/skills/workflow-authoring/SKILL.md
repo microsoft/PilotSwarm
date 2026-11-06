@@ -223,6 +223,10 @@ the branches.
    version needs a new workflow child.
 4. Start the live run explicitly: `start` (or `publish_and_start`) with
    `inputs` and optional `vars`. A workflow child has one live run.
+   To start another Workflow from a definition, call `spawn_workflow` again
+   with the same YAML, unchanged (the same `metadata.name` and `version`) and
+   no `key` or a new one. Never rename the definition: a new name makes a
+   new definition.
 5. Control the run: `pause` and `resume`; `stop` with `grace_seconds` (admit
    nothing new, let admitted work settle, then end `stopped`); `cancel`;
    `set_vars` with `expected_kv_revision`. If `read_workflow` shows

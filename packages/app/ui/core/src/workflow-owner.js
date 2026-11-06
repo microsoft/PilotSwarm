@@ -261,6 +261,32 @@ export function workflowRowTitle(byId, session, views = {}) {
 }
 
 /**
+ * The message that asks the session's chat to start another Workflow from a definition (Run again, W8; owner feedback
+ * 2026-11-06). On the tested engine a Workflow is a workflow child with one live run, so another Workflow is the same
+ * YAML spawned again; the new child has the same name and is listed under the same definition (O5). The message names
+ * the definition, the Workflow whose YAML it repeats (`fromSessionId`, its full id so the chat can read the YAML), the
+ * number the new one gets, how to start it (the same YAML, unchanged; no key or a new one; never renamed) and the
+ * inputs. `inputs` and `vars` are JSON objects or undefined. Pure.
+ */
+export function workflowStartAnotherText({ name, version = null, fromSessionId = null, fromNumber = null, nextNumber = null, inputs, vars } = {}) {
+    const label = text(name) ?? "workflow";
+    const from = text(fromSessionId);
+    const json = value => JSON.stringify(value);
+    const inputsLine = !isRecord(inputs) ? "Use the same inputs as before."
+        : Object.keys(inputs).length === 0 ? "It takes no inputs." : `Inputs: ${json(inputs)}`;
+    return [
+        `Start another Workflow from the definition ${label}${text(version) ? ` (version ${text(version)})` : ""}`
+            + `${Number.isSafeInteger(nextNumber) ? `: it is ${label} #${nextNumber}` : ""}.`,
+        `Call spawn_workflow with the same YAML${Number.isSafeInteger(fromNumber) ? ` as ${label} #${fromNumber}` : ""}, unchanged: `
+            + `the same metadata.name and version. Pass no key, or a new key. Do not rename the definition.`,
+        ...(from ? [`If you do not have that YAML, read it with read_workflow (workflow_id ${from}, include_yaml true).`] : []),
+        "Start it as the first one was started (for version 2: state published and start true).",
+        inputsLine,
+        ...(isRecord(vars) && Object.keys(vars).length ? [`Variables: ${json(vars)}`] : []),
+    ].join("\n");
+}
+
+/**
  * The nearest workflow child that holds a session (an agent node's chat and its sub-agents, S3/S6), as
  * { workflowId, nodeSessionId: the agent node's own chat }, or null for a session outside every workflow. Bounded.
  */

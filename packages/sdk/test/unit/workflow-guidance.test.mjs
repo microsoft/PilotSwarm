@@ -45,3 +45,22 @@ test("a new v2 workflow stays a draft unless the person asks to run it now; then
     assert.match(state.description, /draft \(default, runs nothing; keep it unless the person asks to run the workflow now\)/);
     assert.match(start.description, /when the person asks to run the workflow now/);
 });
+
+// Workflow Simplified (Run again in stage 1, owner feedback 2026-11-06): another Workflow of a definition is the same YAML
+// spawned again, with no key or a new one. Renaming the definition made a new definition instead of a second Workflow.
+test("another Workflow from the same definition: the same YAML, no key or a new one, never a renamed definition", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { WORKFLOW_V2_SKILLS_DIR } = await import("../../dist/workflow/guidance.js");
+    const skill = fs.readFileSync(path.join(WORKFLOW_V2_SKILLS_DIR, "workflow-authoring", "SKILL.md"), "utf8").replace(/\s+/g, " ");
+    for (const [where, text] of [["base guidance", WORKFLOW_SESSION_GUIDANCE], ["authoring skill", skill]]) {
+        assert.ok(text.includes("To start another Workflow from a definition, call `spawn_workflow` again with the same YAML, unchanged "
+            + "(the same `metadata.name` and `version`) and no `key` or a new one"), where);
+        assert.ok(text.includes("Never rename the definition: a new name makes a new definition."), where);
+    }
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("an old key returns the Workflow it named"));
+    assert.ok(WORKFLOW_SESSION_GUIDANCE.includes("for version 2, pass `state: published` and `start: true` with the inputs"));
+    const key = SPAWN_WORKFLOW_TOOL_SPEC.parameters.properties.key.description;
+    assert.match(key, /^Optional idempotency key\./);
+    assert.match(key, /pass the same YAML \(the same metadata\.name and version\) with no key or a new key; never rename the definition to start another\.$/);
+});

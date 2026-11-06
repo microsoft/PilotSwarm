@@ -78,7 +78,10 @@ import {
     selectVisibleSessionRows,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
-import { workflowActiveChildIds, workflowHighlightedSessionId, workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStateOf } from "./workflow-owner.js";
+import {
+    workflowActiveChildIds, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowHighlightedSessionId, workflowNumberOf, workflowOwnerId,
+    workflowPaneTarget, workflowRowTitle, workflowSelectionTarget, workflowStartAnotherText, workflowStateOf,
+} from "./workflow-owner.js";
 import { getTheme, listThemes } from "./themes/index.js";
 
 function preserveNativeTaskProgress(history, current, sessionId) {
@@ -8052,6 +8055,30 @@ export class PilotSwarmUiController {
         this.syncSessionEvents(parentSessionId).catch(() => {});
         this.dispatch({ type: "ui/status", text: workflowV2AskParentSent(parentSessionId) });
         return { ok: true, parentSessionId };
+    }
+
+    /**
+     * Workflow Simplified, Run again (W8; owner feedback 2026-11-06): ask the chat of the session that owns workflow child
+     * `sessionId` to start another Workflow from its definition, as an ordinary message (workflowStartAnotherText): the
+     * same YAML spawned again, no key or a new one, never renamed. The new child has the same name, so it is listed under
+     * the same definition (O5). The person's own draft in the composer is not touched. `inputs` and `vars` are JSON
+     * objects or undefined. Never throws.
+     */
+    async startAnotherWorkflow(sessionId, { inputs = undefined, vars = undefined } = {}) {
+        const state = this.getState();
+        const byId = state.sessions.byId;
+        const session = byId[sessionId] ?? null;
+        const views = state.ui.workflowViews || {};
+        const ownerId = workflowOwnerId(session);
+        const name = workflowDefinitionName(session, views[sessionId] ?? null);
+        const definition = ownerId ? workflowDefinitionsOf(byId, ownerId, views).find(item => item.name === name) ?? null : null;
+        const model = workflowChildModel(views[sessionId] ?? null);
+        const nextNumber = (definition?.workflows.length ?? 0) + 1;
+        const text = workflowStartAnotherText({ name, version: model?.definition?.semver ?? null, fromSessionId: sessionId,
+            fromNumber: workflowNumberOf(byId, sessionId, views), nextNumber, inputs, vars });
+        const result = await this.askWorkflowParent(sessionId, text);
+        if (result.ok) this.dispatch({ type: "ui/status", text: `Asked the chat to start ${name} #${nextNumber}.` });
+        return result;
     }
 
     /**
