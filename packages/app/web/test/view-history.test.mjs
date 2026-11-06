@@ -43,3 +43,15 @@ test("keyboard supports Option-produced characters and composer navigation witho
     for (const extra of [{ altKey: false }, { ctrlKey: true }, { metaKey: true }, { repeat: true }, { isComposing: true }, { getModifierState: () => true }, { target: { isContentEditable: true } }, { target: { closest: () => ({}) } }])
         assert.equal(navigationShortcut(event(extra)), 0);
 });
+
+test("a phone screen is part of the view: chat, diagnostics and canvas are separate stops", () => {
+    const h = createViewHistory();
+    h.visit({ ...view(1), mobilePane: "workspace" });
+    assert.equal(h.visit({ ...view(1), mobilePane: "inspector" }), true);
+    assert.equal(h.visit({ ...view(1), mobilePane: "activity" }), true);
+    assert.equal(h.entries.length, 3);
+    assert.equal(cleanView({ ...view(1), mobilePane: "anything" }).mobilePane, null);
+    const restored = createViewHistory(h.serialize());
+    assert.equal(restored.current.mobilePane, "activity");
+    assert.equal(restored.destination(-1).mobilePane, "inspector");
+});
