@@ -9,7 +9,9 @@ import { useMobileAdminNavigation, useMobileAdminOverlay } from "./mobile-admin-
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkflowTab } from "./workflow-tab.js";
-import { normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowBadgeCount } from "../../core/src/workflow-owner.js";
+import {
+    normalizeWorkflowPanelHeights, WORKFLOW_SIDE_TAB, selectWorkflowTabContext, workflowBadgeCount, workflowHighlightedSessionId,
+} from "../../core/src/workflow-owner.js";
 import { normalizeSidePaneTab } from "../../core/src/state.js";
 import { ModalDialog, focusGivenBack } from "./modal-dialog.js";
 import { WorkflowInputWait, workflowInputWait } from "./workflow-input-wait.js";
@@ -518,7 +520,8 @@ function profileViewState(root) {
         ...root.ui, ...root.ui.layout,
         ownerFilter: root.sessions.ownerFilter, pinnedIds: root.sessions.pinnedIds,
         manualOrder: root.sessions.manualOrder, sessionSortMode: root.sessions.sortMode, sessionUsedAt: root.sessions.usedAt, collapsedSessionIds: root.sessions.collapsedIds,
-        activeSessionId: root.sessions.activeSessionId, canvasPrefs: root.canvas?.prefs,
+        // Review UI-8: a Workflow selected under its chat is saved as the selection (a reload selects it again).
+        activeSessionId: workflowHighlightedSessionId(root.sessions), canvasPrefs: root.canvas?.prefs,
     };
 }
 
@@ -16629,7 +16632,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         // identity across renders (a fresh array would break memoization).
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
         collapsedSessionIds: rootState.sessions.collapsedIds,
-        activeSessionId: rootState.sessions.activeSessionId || null,
+        activeSessionId: workflowHighlightedSessionId(rootState.sessions) || null,
         revealedCreatedSessionId: rootState.ui.revealedCreatedSessionId || null,
         promptRows: getStatePromptRows(rootState),
         rightPaneMode: rootState.ui.rightPaneMode || "panes",

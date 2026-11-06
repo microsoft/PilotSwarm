@@ -1,6 +1,7 @@
 // Only navigation references are persisted: never drafts, transcripts or file contents.
 export const VIEW_HISTORY_LIMIT = 10;
 const text = value => typeof value === "string" && value.length <= 1024 ? value : null;
+const SIDE_TABS = ["canvas", "workspace", "workflow"];
 export function cleanView(value) {
     if (!value || !["workspace", "moa", "admin", "budget"].includes(value.mode)) return null;
     return {
@@ -12,6 +13,9 @@ export function cleanView(value) {
         canvasSlot: Number.isInteger(value.canvasSlot) && value.canvasSlot >= 1 && value.canvasSlot <= 5 ? value.canvasSlot : 1,
         diagnosticsOpen: value.diagnosticsOpen === true,
         artifactSessionId: text(value.artifactSessionId), artifactFilename: text(value.artifactFilename),
+        // Workflow Simplified (review UI-8): the Workflow row selected under its chat, and the right block's tab.
+        workflowRowId: text(value.workflowRowId),
+        sidePaneTab: SIDE_TABS.includes(value.sidePaneTab) ? value.sidePaneTab : "canvas",
     };
 }
 export function viewKey(view) {
@@ -19,7 +23,8 @@ export function viewKey(view) {
     if (view.mode !== "workspace") return view.mode;
     return JSON.stringify([view.mode, view.sessionId, view.canvasOpen,
         view.canvasOpen ? view.canvasSlot : null, view.canvasMaximized, view.canvasZen,
-        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename]);
+        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename,
+        view.workflowRowId ?? null, view.canvasOpen ? view.sidePaneTab ?? "canvas" : null]);
 }
 export function createViewHistory(saved) {
     let entries = [], index = -1;

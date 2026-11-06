@@ -1,6 +1,8 @@
 import React from "react";
 import { useControllerSelector } from "pilotswarm/ui-react";
-import { activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, updateMoaDashboard } from "pilotswarm/ui-core";
+import {
+    activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, updateMoaDashboard, workflowHighlightedSessionId, workflowRowTitle,
+} from "pilotswarm/ui-core";
 import { cleanView, createViewHistory, navigationShortcut, viewKey } from "./view-history.js";
 
 function capture(controller, moa) {
@@ -14,7 +16,14 @@ function capture(controller, moa) {
         canvasMaximized: s.ui.canvasMaximized, canvasZen: s.ui.canvasZen, diagnosticsOpen: s.ui.diagnosticsOpen,
         artifactSessionId: separator >= 0 ? artifact.slice(0, separator) : null,
         artifactFilename: separator >= 0 ? artifact.slice(separator + 1) : null,
+        // Review UI-8: a Workflow selected under its chat is its own view, as is the right block's tab.
+        workflowRowId: workflowRowOf(s), sidePaneTab: s.ui.sidePaneTab,
     });
+}
+/** The Workflow row selected under the active chat, or null. */
+function workflowRowOf(state) {
+    const id = workflowHighlightedSessionId(state.sessions);
+    return id && id !== state.sessions.activeSessionId ? id : null;
 }
 function label(view, state) {
     if (!view) return "";
@@ -22,7 +31,14 @@ function label(view, state) {
     if (view.mode === "admin") return "Settings";
     if (view.mode === "budget") return "Budget";
     const title = state.sessions.byId[view.sessionId]?.title || "Session";
-    return view.artifactFilename ? `${title} · ${view.artifactFilename}` : view.canvasOpen ? `${title} · Canvas ${view.canvasSlot}` : title;
+    // Review UI-8: a Workflow view is named as one, never "Canvas N".
+    const workflow = view.workflowRowId && state.sessions.byId[view.workflowRowId]
+        ? workflowRowTitle(state.sessions.byId, state.sessions.byId[view.workflowRowId], state.ui.workflowViews) : null;
+    if (workflow) return `${title} · Workflow ${workflow}`;
+    if (view.artifactFilename) return `${title} · ${view.artifactFilename}`;
+    if (view.canvasOpen && view.sidePaneTab === "workflow") return `${title} · Workflows`;
+    if (view.canvasOpen && view.sidePaneTab === "workspace") return `${title} · Workspace`;
+    return view.canvasOpen ? `${title} · Canvas ${view.canvasSlot}` : title;
 }
 
 export function useViewNavigation(controller, moa) {
@@ -84,12 +100,15 @@ export function useViewNavigation(controller, moa) {
         controller.openWorkspace();
         controller.dispatch({ type: "files/pane", open: false });
         controller.dispatch({ type: "files/fullscreen", fullscreen: false });
-        if (view.sessionId) {
-            controller.loadSession(view.sessionId).catch(unavailable);
-            controller.dispatch({ type: "sessions/navigationIntent", sessionId: view.sessionId });
-            if (wasMoa) currentMoa.restoreSessionDraft(view.sessionId);
+        // Review UI-8: a Workflow view selects that Workflow (its chat in the middle, the Workflow in the right block).
+        const target = view.workflowRowId && controller.getState().sessions.byId[view.workflowRowId] ? view.workflowRowId : view.sessionId;
+        if (target) {
+            controller.loadSession(target).catch(unavailable);
+            controller.dispatch({ type: "sessions/navigationIntent", sessionId: target });
+            if (wasMoa && view.sessionId) currentMoa.restoreSessionDraft(view.sessionId);
         }
         controller.dispatch({ type: "ui/canvasOpen", open: view.canvasOpen, manual: true });
+        if (view.canvasOpen) controller.dispatch({ type: "ui/sidePaneTab", tab: view.sidePaneTab ?? "canvas" });
         controller.dispatch({ type: "ui/canvasSlot", slot: view.canvasSlot });
         controller.dispatch({ type: "ui/canvasMaximized", on: view.canvasMaximized });
         controller.dispatch({ type: "ui/canvasZen", on: view.canvasZen });

@@ -1250,8 +1250,11 @@ function baseReducer(state, action) {
             const nextManualOrder = hasSessionOrder
                 ? normalizeStoredSessionOrder(settings.sessionOrder)
                 : state.sessions.manualOrder;
+            const storedActive = hasActive ? normalizeStoredActiveSessionId(settings.activeSessionId) : null;
+            // Review UI-8: a saved Workflow selection selects its chat with that Workflow row, as a click on the row does.
+            const storedWorkflow = hasActive && storedActive ? workflowSelectionTarget(state.sessions.byId, storedActive) : null;
             const nextActiveSessionId = hasActive
-                ? normalizeStoredActiveSessionId(settings.activeSessionId)
+                ? (storedWorkflow ? storedWorkflow.ownerId : storedActive)
                 : state.sessions.activeSessionId;
             const remoteUsage = normalizeSessionUsage(settings.sessionUsedAt);
             const nextSessions = {
@@ -1276,6 +1279,7 @@ function baseReducer(state, action) {
                 collapsedIds: nextCollapsedIds,
                 collapsedIdsExplicit: hasCollapsed ? true : state.sessions.collapsedIdsExplicit,
                 activeSessionId: nextActiveSessionId,
+                ...(hasActive ? { workflowRowId: storedWorkflow ? storedWorkflow.workflowId : null } : {}),
                 flat: (hasPins || hasCollapsed || hasSessionOrder)
                     ? buildSessionTree(Object.values(state.sessions.byId), nextCollapsedIds, state.sessions.orderById, nextPinnedIds, nextManualOrder)
                     : state.sessions.flat,

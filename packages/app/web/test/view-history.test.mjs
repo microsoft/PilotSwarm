@@ -43,3 +43,21 @@ test("keyboard supports Option-produced characters and composer navigation witho
     for (const extra of [{ altKey: false }, { ctrlKey: true }, { metaKey: true }, { repeat: true }, { isComposing: true }, { getModifierState: () => true }, { target: { isContentEditable: true } }, { target: { closest: () => ({}) } }])
         assert.equal(navigationShortcut(event(extra)), 0);
 });
+
+// Workflow Simplified, review UI-8: two Workflows of one chat are two views, and the right block's tab is part of a view.
+test("a Workflow selected under its chat and the right block's tab are part of a view", () => {
+    const base = { mode: "workspace", sessionId: "owner-1", canvasOpen: true, canvasSlot: 1 };
+    const a = cleanView({ ...base, workflowRowId: "wf-1", sidePaneTab: "workflow" });
+    const b = cleanView({ ...base, workflowRowId: "wf-2", sidePaneTab: "workflow" });
+    assert.equal(a.workflowRowId, "wf-1");
+    assert.equal(a.sidePaneTab, "workflow");
+    assert.notEqual(viewKey(a), viewKey(b), "two Workflows, two views");
+    assert.notEqual(viewKey(cleanView({ ...base, sidePaneTab: "canvas" })), viewKey(cleanView({ ...base, sidePaneTab: "workflow" })));
+    assert.equal(cleanView({ ...base, sidePaneTab: "junk" }).sidePaneTab, "canvas");
+    // With the right block closed, its tab does not make another view.
+    assert.equal(viewKey(cleanView({ ...base, canvasOpen: false, sidePaneTab: "canvas" })), viewKey(cleanView({ ...base, canvasOpen: false, sidePaneTab: "workflow" })));
+    const history = createViewHistory(null);
+    assert.equal(history.visit(a), true);
+    assert.equal(history.visit(b), true);
+    assert.equal(history.move(-1).workflowRowId, "wf-1");
+});
