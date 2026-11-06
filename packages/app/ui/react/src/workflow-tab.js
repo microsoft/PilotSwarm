@@ -15,8 +15,9 @@ import {
     WORKFLOW_AGENT_LOG_VISITS, workflowAgentLogChats, workflowAgentNodeLog, workflowBaseInstructionsMatch, workflowBaseInstructionsReadable,
 } from "../../core/src/workflow-agent-log.js";
 import {
-    selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowFailure, workflowStarted,
-    workflowPanelHeight, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS, WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
+    selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowElapsedText, workflowFailure,
+    workflowPanelHeight, workflowRunTimes, workflowStarted, workflowStateOf, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS,
+    WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
 import {
     WorkflowV2AgentLog, WorkflowV2Diagnostics, WorkflowV2DraftEditor, WorkflowV2FailureDetails, WorkflowV2NoGraph, WorkflowV2NodeSummary, WorkflowV2RevisionCompare,
@@ -84,33 +85,6 @@ function shownTime(value) {
     if (!Number.isFinite(ms)) return null;
     const today = new Date().toDateString() === new Date(ms).toDateString();
     return formatLocalTime(ms, { clock: today });
-}
-
-/** A duration as m:ss or h:mm:ss (W1 "took"). */
-function tookText(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return null;
-    const total = Math.round(ms / 1000);
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const seconds = String(total % 60).padStart(2, "0");
-    return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
-}
-
-const END_EVENTS = new Set(["workflow.completed", "workflow.failed", "workflow.cancelled", "workflow.stopped"]);
-
-/** When a Workflow started and how long it took, from its own events (its live run's start and end). */
-function workflowTimes(events, runId = null) {
-    let started = null;
-    let ended = null;
-    for (const event of Array.isArray(events) ? events : []) {
-        const data = event?.data && typeof event.data === "object" ? event.data : {};
-        if (data.mode === "test" || (runId && data.runId && data.runId !== runId)) continue;
-        const at = Date.parse(event?.createdAt ?? "");
-        if (!Number.isFinite(at)) continue;
-        if (event.eventType === "workflow.started" && started === null) started = at;
-        if (END_EVENTS.has(event.eventType)) ended = at;
-    }
-    return { started, took: started === null ? null : (ended ?? Date.now()) - started };
 }
 
 /** The tone class of a state chip. */
@@ -509,7 +483,7 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
                     const state = workflowStateOf(session, view);
                     const model = workflowChildModel(view);
                     const live = Array.isArray(model?.runs) ? model.runs.find(run => run?.mode === "live") ?? null : null;
-                    const times = workflowTimes(histories?.get?.(row.sessionId)?.events, live?.runId ?? null);
+                    const times = workflowRunTimes(histories?.get?.(row.sessionId)?.events, live?.runId ?? null);
                     const reason = state?.key === "failed" && model?.run && model.run.mode !== "test" ? workflowFailure(model.run)?.reason ?? null : null;
                     // Review UI-16: a real row with cells; its action is a named button in its first cell (a click anywhere on
                     // the row does the same).
@@ -522,7 +496,7 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
                             reason ? h("span", { className: "ps-wf-list-reason" }, reason) : null),
                         h("span", { role: "cell" }, Number.isSafeInteger(live?.revision) ? String(live.revision) : "—"),
                         h("span", { role: "cell" }, times.started !== null ? shownTime(times.started) : "—"),
-                        h("span", { role: "cell" }, times.took !== null ? tookText(times.took) : "—"));
+                        h("span", { role: "cell" }, times.took !== null ? workflowElapsedText(times.took) : "—"));
                 })),
         rows.length ? h("div", { className: "ps-wf-bar is-foot" },
             definition.startable
@@ -553,7 +527,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
     const variables = React.useMemo(() => workflowV2RunVariables(readModel, runCommand), [readModel, runCommand]);
     const notice = workflowV2RunCommandNotice(runCommand);
     const runId = projection?.runId ?? readModel?.run?.runId ?? null;
-    const times = workflowTimes(events, runId);
+    const times = workflowRunTimes(events, runId);
     const revision = Number.isSafeInteger(projection?.readModel?.runRevision) ? projection.readModel.runRevision : null;
     const failure = state?.key === "failed" && readModel?.run && readModel.run.mode !== "test" ? workflowFailure(readModel.run) : null;
     const [stopping, setStopping] = React.useState(false);
@@ -577,7 +551,7 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
             h(WorkflowNumberPicker, { definition, chosen: sessionId, onOpen }),
             h(StateChip, { state }),
             h("span", { className: "ps-wf-bar-text" }, [revision !== null ? `revision ${revision}` : null,
-                times.started !== null ? shownTime(times.started) : null, times.took !== null ? tookText(times.took) : null].filter(Boolean).join(" · ")),
+                times.started !== null ? shownTime(times.started) : null, times.took !== null ? workflowElapsedText(times.took) : null].filter(Boolean).join(" · ")),
             h("span", { className: "ps-wf-bar-actions" },
                 pause ? h("button", { type: "button", className: "ps-mini-button", "data-operation": "pause", disabled: !pause.enabled, title: pause.title,
                     onClick: () => controller.sendWorkflowRunCommand(sessionId, { operation: "pause", runId: runControls.runId }) }, pause.label) : null,

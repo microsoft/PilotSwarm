@@ -504,3 +504,76 @@ export function workflowActiveChildIds(byId, ownerId, limit = 10) {
         .reverse()
         .slice(0, limit);
 }
+
+const WORKFLOW_END_EVENTS = new Set(["workflow.completed", "workflow.failed", "workflow.cancelled", "workflow.stopped"]);
+
+/**
+ * When a Workflow started and how long it took (W1), from its own events: its live run's start and end (a test run's
+ * are left out). { started, took } in ms; `took` runs to `now` while the run has not ended; null when not known.
+ */
+export function workflowRunTimes(events, runId = null, now = Date.now()) {
+    let started = null;
+    let ended = null;
+    for (const event of Array.isArray(events) ? events : []) {
+        const data = isRecord(event?.data) ? event.data : {};
+        if (data.mode === "test" || (runId && data.runId && data.runId !== runId)) continue;
+        const at = Date.parse(event?.createdAt ?? "");
+        if (!Number.isFinite(at)) continue;
+        if (event.eventType === "workflow.started" && started === null) started = at;
+        if (WORKFLOW_END_EVENTS.has(event.eventType)) ended = at;
+    }
+    return { started, took: started === null ? null : (ended ?? now) - started };
+}
+
+/** A duration as m:ss or h:mm:ss (W1 "took"); null when not known. */
+export function workflowElapsedText(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return null;
+    const total = Math.round(ms / 1000);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const seconds = String(total % 60).padStart(2, "0");
+    return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+/**
+ * Owner, 2026-11-06T13:43Z (F2): the count of a definition's Workflows is in the Workflow picker, not beside the
+ * definition. The picker's open list is one group labelled with the count ("7 Workflows"), newest first; each option
+ * reads "#7 · Running · 05:38:01" (a part not known yet is left out); the closed picker reads "#7 of 7".
+ */
+export function workflowPickerGroupLabel(count) {
+    const n = Number.isSafeInteger(count) && count >= 0 ? count : 0;
+    return `${n} ${n === 1 ? "Workflow" : "Workflows"}`;
+}
+
+/** One option of the Workflow picker: `#number · state · started` (state and started as a person reads them, or null). */
+export function workflowPickerOptionLabel({ number, state = null, started = null }) {
+    return [`#${number}`, text(state), text(started)].filter(Boolean).join(" · ");
+}
+
+/** The closed Workflow picker: `#7 of 7`. */
+export function workflowPickerFace(number, count) {
+    return Number.isSafeInteger(count) && count > 0 ? `#${number} of ${count}` : `#${number}`;
+}
+
+/**
+ * Owner, 2026-11-06T13:43Z (F1): the Workflow tab's header and toolbar buttons are icons. Each keeps the words it showed
+ * as its accessible name and shows "name — explanation" as its tooltip; these are the explanations. `name` and `number`
+ * name the definition and the Workflow a start makes; `revision`, the revision an edit is saved after.
+ */
+export function workflowTabButtonTip(kind, { name = null, number = null, revision = null } = {}) {
+    const which = Number.isSafeInteger(number) ? ` #${number}` : "";
+    switch (kind) {
+        case "definition": return "the definition's graph";
+        case "workflows": return "every Workflow started from this definition";
+        case "start": return `start Workflow${which} from this definition`;
+        case "start-another": return `ask the chat to start ${text(name) ?? "this definition"}${which} from this definition`;
+        case "yaml": return "show the definition's YAML instead of its graph";
+        case "compare": return "compare the definition's revisions";
+        case "pause": return "no new step starts; running steps finish";
+        case "resume": return "steps start again where the Workflow paused";
+        case "stop": return "choose: let started steps finish, or cancel now";
+        case "save": return Number.isSafeInteger(revision) ? `save as a new revision after revision ${revision}` : "save as a new revision";
+        case "discard": return "go back to the saved revision";
+        default: return null;
+    }
+}
