@@ -15,6 +15,7 @@ import { errorDetail } from "./api/error-detail.js";
 import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
 import { createLivePlane } from "./api/live-plane.js";
+import { createPortalShutdown, exitOnSignals } from "./api/shutdown.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
@@ -398,20 +399,17 @@ export async function startServer(opts = {}) {
         { path: WS_PATH },
     ]);
 
-    async function shutdown() {
-        await canvasPlane.stop().catch(() => {});
-        await livePlane.stop().catch(() => {});
-        for (const socketServer of socketServers) {
-            for (const client of socketServer.clients) {
-                try {
-                    client.close();
-                } catch {}
-            }
-        }
-        await runtime.stop().catch(() => {});
-        server.close();
-    }
-
+    // FU-12: one deadline (PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS, 20 s by default) for the whole shutdown, so it ends
+    // whatever the clients and the database do (api/shutdown.js). Run as the portal process, a signal then exits it.
+    const shutdown = createPortalShutdown({
+        server,
+        socketServers,
+        steps: [
+            { name: "the canvas relay", stop: () => canvasPlane.stop() },
+            { name: "the live relay", stop: () => livePlane.stop() },
+            { name: "the runtime", stop: () => runtime.stop() },
+        ],
+    });
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
 
@@ -430,7 +428,10 @@ export async function startServer(opts = {}) {
 }
 
 if (process.argv[1]?.endsWith("server.js") || import.meta.url === `file://${process.argv[1]}`) {
-    startServer().catch((error) => {
+    startServer().then((server) => {
+        // The portal process exits once its shutdown ends, by its deadline at the latest (FU-12).
+        exitOnSignals(server.stopPortal);
+    }).catch((error) => {
         console.error("[portal] Failed to start:", error);
         process.exitCode = 1;
     });

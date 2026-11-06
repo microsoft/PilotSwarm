@@ -180,6 +180,11 @@ Same public API boundary as the TUI — only `PilotSwarmClient`,
 `PilotSwarmManagementClient`, and `PilotSwarmWorker` APIs. No internal
 module imports.
 
+On SIGTERM or SIGINT the portal stops accepting connections, sends WebSocket
+clients a close frame, stops its relays and runtime, and exits within
+`PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS` (20 s by default, inside Kubernetes'
+default 30 s grace). Connections still open then are closed, with one log line.
+
 ## Package Relationship
 
 ```
