@@ -1932,9 +1932,10 @@ test("f-06: the graph is fitted once and keeps its view through the bottom panel
     await main.getByRole("button", { name: "YAML", exact: true }).click();
     await flowReady(graph);
     sameView(await settledView(graph), chosen);
+    // The Workflows view comes back on the Workflow that was open (#1, from the link), not its list: no row to click.
     await viewSwitch(main, "Workflows").click();
-    // A Workflows list row is a button with the row role (a table row people click).
-    await main.getByRole("row", { name: "Open watch-v2 #1", exact: true }).click();
+    await expect(main.locator(`.ps-wf-body[data-session-id="${WORKFLOW_ID}"]`)).toBeVisible();
+    await expect(main.getByRole("table", { name: "Workflows of watch-v2" })).toHaveCount(0);
     await flowReady(graph);
     sameView(await settledView(graph), chosen);
     await panelTab(main, "Log").click();
