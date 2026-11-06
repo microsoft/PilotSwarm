@@ -177,6 +177,7 @@ test('same workflow retains dev qualification and skips only deployment steps', 
   assert.doesNotMatch(qualification, /if:/);
   assert.match(qualification, /providers: all\s+mode: parallel\s+qualify-failures: "true"/);
   assert.match(workflow, /github.ref == 'refs\/heads\/main'/);
+  assert.equal(workflow.split("if: github.ref == 'refs/heads/main' || inputs.dev_release").length - 1, 2);
   assert.match(workflow, /environment: azure-deploy/);
   assert.match(workflow, /dev_release:[\s\S]*type: boolean/);
   assert.match(workflow, /source_branch:/);
@@ -207,6 +208,13 @@ test('dev source pins a repository branch; stable source remains captured main',
     source_sha: sourceSha, source_directory: 'candidate', version: '' });
   assert.deepEqual(await resolveReleaseSource({ ...args, development: 'false', branch: 'main' }),
     { development: 'false', source_branch: 'main', source_sha: workflowSha, source_directory: '.', version });
+  assert.deepEqual(await resolveReleaseSource({ ...args, branch: '', workflowRef: 'refs/heads/feature/dev',
+    api: async () => assert.fail('Blank source must use the captured workflow SHA, not a moving branch head') }),
+  { development: 'true', source_branch: 'feature/dev', source_sha: workflowSha, source_directory: 'candidate', version: '' });
+  assert.deepEqual(await resolveReleaseSource({ ...args, development: 'false', branch: '' }),
+    { development: 'false', source_branch: 'main', source_sha: workflowSha, source_directory: '.', version });
+  await assert.rejects(resolveReleaseSource({ ...args, development: 'false', branch: 'main',
+    workflowRef: 'refs/heads/feature/dev' }), /Stable releases require main/);
   await assert.rejects(resolveReleaseSource({ ...args, development: 'false' }), /Stable releases require main/);
   await assert.rejects(resolveReleaseSource({ ...args, development: 'false', branch: 'main', version: '0.0.0-dev.1' }), /Stable releases/);
   await assert.rejects(resolveReleaseSource({ ...args, development: 'invalid' }), /boolean/);
@@ -243,12 +251,19 @@ test('dev snapshot commit changes only release metadata and preserves the select
   writeFileSync(join(root, 'CHANGELOG.md'), 'unexpected edit');
   assert.throws(() => prepareDevSnapshot('0.0.0-dev.2', snapshotSha, { root, gitFn }), /clean source/);
 });
-test('dev source selection refuses reruns and non-main workflow execution', async () => {
+test('dev source selection allows branch workflows, but refuses reruns and non-main stable execution', async t => {
   const env = { GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'workflow_dispatch',
     DEV_RELEASE: 'true', GITHUB_RUN_ATTEMPT: '2' };
   const api = async () => { assert.fail('No API calls should happen before validation'); };
   for (const command of ['resolve', 'prepare']) await assert.rejects(selectRelease(command, env, api), /new dev release/);
-  await assert.rejects(selectRelease('resolve', { ...env, GITHUB_REF: 'refs/heads/feature' }, api), /main workflow/);
+  await assert.rejects(selectRelease('resolve', { ...env, DEV_RELEASE: 'false', GITHUB_REF: 'refs/heads/feature' }, api), /stable workflows must use main/);
+  const root = licenseFixture(t);
+  const source = 'a'.repeat(40);
+  const output = join(root, 'output');
+  await selectRelease('resolve', { ...env, GITHUB_RUN_ATTEMPT: '1', GITHUB_REF: 'refs/heads/feature',
+    GITHUB_SHA: source, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: join(root, 'summary') }, api);
+  assert.match(readFileSync(output, 'utf8'), /source_branch=feature/);
+  assert(readFileSync(output, 'utf8').includes(`source_sha=${source}`));
 });
 test('publication packs the tested snapshot, preserves stable flags and stops on incorrect prerelease status', t => {
   for (const mode of ['stable', 'dev', 'wrong-status']) {
@@ -280,8 +295,21 @@ if (args[1] === 'create') {
 `, { mode: 0o755 });
     const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), 'publish'], {
       cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
-        GITHUB_ACTIONS: 'true', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: sourceSha,
+        GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_REF: development ? 'refs/heads/feature/dev' : 'refs/heads/main',
+        DEV_RELEASE: String(development), GITHUB_SHA: sourceSha,
         RELEASE_SOURCE_SHA: snapshotSha, RELEASE_VERSION: releaseVersion, GH_TOKEN: 'fixture-token' },
+    });
+    test('publication rejects stable releases and notice maintenance from branch workflows', () => {
+      for (const [command, dev, releaseVersion] of [['publish', 'false', version], ['notices', 'true', version],
+        ['publish', 'true', version]]) {
+        const result = spawnSync(process.execPath, [fileURLToPath(new URL('../release.mjs', import.meta.url)), command], {
+          encoding: 'utf8', env: { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+            GITHUB_REF: 'refs/heads/feature/dev', DEV_RELEASE: dev, RELEASE_VERSION: releaseVersion },
+        });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /stable releases and notices must use main|selected stable or dev mode/);
+      }
     });
     const calls = readFileSync(join(root, 'gh-calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     if (mode === 'wrong-status') {

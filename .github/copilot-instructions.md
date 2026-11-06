@@ -625,7 +625,10 @@ baseline and real HorizonDB coverage, publishes three GitHub Release package tar
 plus checksums, then deploys the same tested source commit to the Azure test
 environment. Its optional `dev_release` mode pins a repository `source_branch`
 before approval, then allocates the next `0.0.0-dev.N` beyond remote tags and
-releases (including drafts) under release concurrency. Trusted main controls
+releases (including drafts) under release concurrency. Dev workflows may run
+from repository branches; blank `source_branch` uses the captured workflow
+commit. Approval trusts both workflow/control and source code with CI credentials,
+and protected environment branch-admission policies still apply. Captured controls
 create a version-only snapshot commit, test and tag that commit, and publish it
 as a non-latest prerelease without deploying or modifying the source branch.
 Dev reruns must be new dispatches; stable releases remain main-only.

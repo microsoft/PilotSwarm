@@ -38,12 +38,19 @@ export function stampDevVersion(version, manifests, lock) {
   for (const entry of Object.values(lock.packages)) updateDependencies(entry);
 }
 
-export async function resolveReleaseSource({ development, branch = 'main', version, workflowSha, repository, api, gitFn = git }) {
-  if (!shaPattern.test(workflowSha || '')) throw new Error('Expected a captured full main workflow SHA.');
+export async function resolveReleaseSource({ development, branch = '', version, workflowSha,
+  workflowRef = 'refs/heads/main', repository, api, gitFn = git }) {
+  if (!shaPattern.test(workflowSha || '') || !workflowRef.startsWith('refs/heads/')) throw new Error('Expected a captured branch workflow and full SHA.');
   if (!['true', 'false'].includes(development)) throw new Error('Expected a boolean dev release selection.');
   if (development === 'false') {
-    if (branch !== 'main' || releaseOptions(version).development) throw new Error('Stable releases require main and a prepared stable version.');
+    if (workflowRef !== 'refs/heads/main' || (branch && branch !== 'main') || releaseOptions(version).development) {
+      throw new Error('Stable releases require main for workflow and source, and a prepared stable version.');
+    }
     return { development, source_branch: 'main', source_sha: workflowSha, source_directory: '.', version };
+  }
+  if (!branch) {
+    return { development, source_branch: workflowRef.slice('refs/heads/'.length),
+      source_sha: workflowSha, source_directory: 'candidate', version: '' };
   }
   gitFn(['check-ref-format', `refs/heads/${branch}`]);
   const ref = await api(`repos/${repository}/git/ref/heads/${encodeURIComponent(branch)}`);
@@ -76,20 +83,23 @@ export function prepareDevSnapshot(version, sourceSha, { root = process.cwd(), g
 }
 
 export async function main(command, env = process.env, api = githubApi({ token: env.GH_TOKEN })) {
-  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_EVENT_NAME !== 'workflow_dispatch') {
-    throw new Error('Release source selection runs only through the dispatched main workflow.');
+  if (env.GITHUB_ACTIONS !== 'true' || !env.GITHUB_REF?.startsWith('refs/heads/') ||
+      (env.GITHUB_REF !== 'refs/heads/main' && env.DEV_RELEASE !== 'true') || env.GITHUB_EVENT_NAME !== 'workflow_dispatch') {
+    throw new Error('Release source selection requires a dispatched branch workflow; stable workflows must use main.');
   }
   if (env.DEV_RELEASE === 'true' && env.GITHUB_RUN_ATTEMPT !== '1') {
     throw new Error('Dispatch a new dev release instead of rerunning selection or allocating a different snapshot within a run.');
   }
   if (command === 'resolve') {
-    const target = await resolveReleaseSource({ development: env.DEV_RELEASE, branch: env.SOURCE_BRANCH || 'main',
-      version: env.RELEASE_VERSION, workflowSha: env.GITHUB_SHA, repository: env.GITHUB_REPOSITORY, api });
+    const target = await resolveReleaseSource({ development: env.DEV_RELEASE, branch: env.SOURCE_BRANCH || '',
+      version: env.RELEASE_VERSION, workflowSha: env.GITHUB_SHA, workflowRef: env.GITHUB_REF,
+      repository: env.GITHUB_REPOSITORY, api });
     writeOutputs(env.GITHUB_OUTPUT, target);
     appendFileSync(env.GITHUB_STEP_SUMMARY,
-      `## Selected release source\n\nBranch: \`${target.source_branch}\`\n\nSource commit: \`${target.source_sha}\`\n\n` +
+      `## Selected release source\n\nWorkflow: \`${env.GITHUB_REF}\` at \`${env.GITHUB_SHA}\`\n\n` +
+      `Branch: \`${target.source_branch}\`\n\nSource commit: \`${target.source_sha}\`\n\n` +
       (target.development === 'true'
-        ? '**Dev release approval trusts this exact source, including install/build/test code, with CI credentials and the Azure CI identity. The separate main controls are not a sandbox. A version-only snapshot commit will be created and tested; the source branch is not modified.**\n'
+        ? '**Dev release approval trusts the captured workflow/control code and selected source, including install/build/test code, with CI credentials and the Azure CI identity. Separate checkouts are not a sandbox. A version-only snapshot commit will be created and tested; the source branch is not modified.**\n'
         : `Prepared stable version: \`${target.version}\`\n`));
   } else if (command === 'prepare') {
     if (env.DEV_RELEASE !== 'true') throw new Error('Automatic version preparation is dev-only.');

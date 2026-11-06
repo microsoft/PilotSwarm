@@ -11,8 +11,8 @@ on:
         type: boolean
         default: false
       source_branch:
-        description: Repository branch to snapshot for dev; stable releases require main
-        default: main
+        description: Optional dev source branch; blank snapshots the selected workflow commit. Stable releases require main.
+        default: ""
 permissions:
   contents: write
   id-token: write
@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   resolve:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || inputs.dev_release
     name: Select source for approval
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -50,7 +50,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
   release:
     needs: resolve
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || inputs.dev_release
     name: Test, publish tarballs and deploy
     environment: azure-deploy
     runs-on: ubuntu-latest
@@ -70,7 +70,7 @@ jobs:
         options: --health-cmd="pg_isready -U postgres" --health-interval=10s
           --health-timeout=5s --health-retries=5
     steps:
-      - name: Checkout trusted main controls
+      - name: Checkout captured workflow controls
         uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
@@ -104,6 +104,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.snapshot.outputs.version || needs.resolve.outputs.version }}
           RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || needs.resolve.outputs.source_sha }}
+          DEV_RELEASE: ${{ needs.resolve.outputs.development }}
       - uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -128,6 +129,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.snapshot.outputs.version || needs.resolve.outputs.version }}
           RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || needs.resolve.outputs.source_sha }}
+          DEV_RELEASE: ${{ needs.resolve.outputs.development }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Refresh Azure login for deployment
         if: needs.resolve.outputs.development == 'false'

@@ -80,7 +80,12 @@ function run(command, args, { optional = false } = {}) {
   return r.stdout.trim();
 }
 export function main(command) {
-  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('Release publication runs only through the main-branch GitHub Action.');
+  const development = command !== 'notices' && process.env.DEV_RELEASE === 'true';
+  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
+      !process.env.GITHUB_REF?.startsWith('refs/heads/') ||
+      (process.env.GITHUB_REF !== 'refs/heads/main' && !development)) {
+    throw new Error('Release publication requires a dispatched branch workflow; stable releases and notices must use main.');
+  }
   const version = process.env.RELEASE_VERSION;
   if (command === 'notices') {
     addReleaseLicense(version, { repository: process.env.GITHUB_REPOSITORY });
@@ -88,6 +93,7 @@ export function main(command) {
   }
   const manifests = packages.map(p => JSON.parse(readFileSync(`packages/${p}/package.json`, 'utf8')));
   const options = releaseOptions(version);
+  if (options.development !== development) throw new Error('Release version must match the selected stable or dev mode.');
   validateRelease(version, manifests, JSON.parse(readFileSync('package-lock.json', 'utf8')), readFileSync('CHANGELOG.md', 'utf8'));
   const license = validatePackageLicenses();
   const sha = run('git', ['rev-parse', 'HEAD']);

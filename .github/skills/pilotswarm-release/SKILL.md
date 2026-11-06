@@ -20,12 +20,16 @@ Run `npm run check:privacy` after staging release changes.
 - The first Microsoft release was **v0.6.0**. Check remote tags and releases
   before selecting the next version; never replace a published tag as part of
   an ordinary release.
-- **Create release** (`release-tarballs.yml`) is a manual GitHub Action on `main`.
+- **Create release** (`release-tarballs.yml`) is a manual GitHub Action. Stable
+  releases require main for both workflow and source; dev workflows may use branches.
   Merging a PR or pushing a tag does not publish a release.
-- Dev releases select `dev_release=true` and a repository `source_branch`,
-  while the workflow itself stays on main. Trusted main controls resolve and
+- Dev releases select `dev_release=true` and any repository workflow branch.
+  Blank `source_branch` snapshots the captured workflow commit; an explicit
+  branch snapshots its head. Captured workflow controls resolve and
   display the immutable source SHA before approval. Approval trusts candidate
-  install/build/test code with CI credentials; separate controls are not a sandbox.
+  workflow/control and source install/build/test code with CI credentials;
+  separate checkouts are not a sandbox. The protected environment must permit
+  the workflow branch; the workflow does not bypass branch admission policies.
   The serialized release job allocates the next `0.0.0-dev.N` (starting at 1)
   beyond existing tags and releases, including drafts, and creates a version-only
   snapshot commit without modifying the source branch. It tests and tags that
@@ -65,7 +69,8 @@ Run `npm run check:privacy` after staging release changes.
 ## Preparation
 
 The steps below prepare a stable release. For dev snapshots, keep **Use workflow
-from** on `main`, enable `dev_release`, and enter `source_branch`; the workflow
+from** on the desired branch, enable `dev_release`, and leave `source_branch`
+blank (or explicitly select another source branch); the workflow
 stamps versions automatically. Inspect the selected SHA before environment
 approval. See [development snapshots](../../CI.md#development-snapshots).
 

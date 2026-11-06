@@ -35,6 +35,13 @@ against the managed environment.
 | Publish a stable release and deploy its tested source, or publish a dev prerelease without deployment | **Create release** (`release-tarballs.yml`) |
 | Add the copyright/permission notice to an existing release without changing packages or deploying | **Add release license notice** (`release-notices.yml`) |
 
+Dev releases are the exception to the main-only workflow column: select
+`dev_release=true` to run **Create release** from a repository branch. Blank
+`source_branch` uses that captured workflow commit; an explicit branch selects
+its head before approval. Stable releases still require main for both workflow
+and source. Dev approval trusts the captured workflow/control and source code
+with CI credentials; environment branch-admission policies still apply.
+
 Use `--repo microsoft/PilotSwarm` for this repository's GitHub commands.
 Honor authorization already given in the conversation; do not repeatedly ask
 for the same deployment or environment approval. Release publication and
