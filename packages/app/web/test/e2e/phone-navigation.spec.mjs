@@ -14,7 +14,14 @@ test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 6, 
 test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
 
 const diagnostics = page => page.locator('.ps-toolbar.is-mobile button[aria-label^="Diagnostics"]').first();
-// The view history starts once the signed-in user and the dashboards load.
+// The view history keys on the signed-in user: give the stub one.
+async function signedIn(page) {
+    await page.route("**/api/v1/**", (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path.endsWith("/bootstrap")) return route.fulfill({ json: { ok: true, result: { auth: { principal: { provider: "none", subject: "test", email: "test@example.com" }, authorization: { allowed: true, role: "user" } } } } });
+        return route.fallback();
+    });
+}
 const historyReady = page => page.waitForFunction(() => Object.keys(sessionStorage).some((key) => key.startsWith("pilotswarm.view-history.v1:")));
 
 for (const viewport of [{ width: 844, height: 390 }, { width: 932, height: 430 }]) {
@@ -35,6 +42,7 @@ test("a tablet-sized landscape window stays desktop", async ({ page }) => {
 
 test("swipe right goes back, swipe left goes forward, and the screen follows the finger", async ({ page, context }) => {
     test.skip(browserName !== "chromium", "real touch events need the Chromium protocol");
+    await signedIn(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(base);
     await expect(page.locator(".ps-mobile-chat-pane textarea")).toBeVisible();
