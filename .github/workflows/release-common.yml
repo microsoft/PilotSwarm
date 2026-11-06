@@ -1,0 +1,129 @@
+name: Shared release pipeline
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Prepared stable version; unused for dev
+        type: string
+        required: false
+        default: ""
+      development:
+        description: Automatically version and publish a dev prerelease without deployment
+        type: boolean
+        required: true
+      source_sha:
+        description: Dev source SHA pinned before approval; stable uses the captured main commit
+        type: string
+        required: false
+        default: ""
+permissions:
+  contents: write
+  id-token: write
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main' || inputs.development
+    name: Test, publish tarballs and deploy
+    environment: azure-deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    concurrency:
+      group: ci-provider-database
+      cancel-in-progress: false
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: durable_copilot
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U postgres" --health-interval=10s
+          --health-timeout=5s --health-retries=5
+    steps:
+      - name: Checkout captured workflow controls
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout pinned dev source
+        if: inputs.development
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+          cache: npm
+          cache-dependency-path: ${{ inputs.development && 'candidate' || '.' }}/package-lock.json
+      - name: Allocate and prepare dev snapshot
+        if: inputs.development
+        id: snapshot
+        working-directory: candidate
+        run: node "$GITHUB_WORKSPACE/.github/scripts/release-source.mjs" prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV_RELEASE: ${{ inputs.development }}
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+      - name: Validate release candidate
+        working-directory: ${{ inputs.development && 'candidate' || '.' }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" validate
+        env:
+          RELEASE_VERSION: ${{ steps.snapshot.outputs.version || inputs.version }}
+          RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
+          DEV_RELEASE: ${{ inputs.development }}
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Qualify complete all-provider coverage
+        uses: ./.github/actions/provider-tests
+        with:
+          providers: all
+          mode: parallel
+          qualify-failures: "true"
+          working-directory: ${{ inputs.development && 'candidate' || '.' }}
+          source-sha: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
+          postgres-container: ${{ job.services.postgres.id }}
+        env:
+          CI_TEST_ENV_JSON: ${{ secrets.CI_TEST_ENV_JSON }}
+          MODEL_PROVIDERS_JSON: ${{ secrets.MODEL_PROVIDERS_JSON }}
+          AZURE_CI_DATABASE_JSON: ${{ secrets.AZURE_CI_DATABASE_JSON }}
+      - name: Publish verified package tarballs
+        working-directory: ${{ inputs.development && 'candidate' || '.' }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/release.mjs" publish
+        env:
+          RELEASE_VERSION: ${{ steps.snapshot.outputs.version || inputs.version }}
+          RELEASE_SOURCE_SHA: ${{ steps.snapshot.outputs.snapshot_sha || github.sha }}
+          DEV_RELEASE: ${{ inputs.development }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refresh Azure login for deployment
+        if: ${{ !inputs.development }}
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy released source to test environment
+        if: ${{ !inputs.development }}
+        uses: ./.github/actions/deploy-azure
+        env:
+          AZURE_DEPLOY_ENV: ${{ secrets.AZURE_DEPLOY_ENV }}
+          AZURE_FOUNDRY_DEPLOYMENTS_JSON: ${{ secrets.AZURE_FOUNDRY_DEPLOYMENTS_JSON }}
+          AZURE_MODEL_PROVIDERS_JSON: ${{ secrets.AZURE_MODEL_PROVIDERS_JSON }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_DEPLOY_PRINCIPAL_OBJECT_ID: ${{ secrets.AZURE_DEPLOY_PRINCIPAL_OBJECT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          # Plain switches, from the environment's variables rather than the
+          # secret. A set variable wins over the same key in AZURE_DEPLOY_ENV;
+          # an unset one is empty and changes nothing (loadEnv in
+          # deploy/scripts/lib/common.mjs).
+          WORKSPACES_ENABLED: ${{ vars.WORKSPACES_ENABLED }}
+          USER_POOL_MIN_COUNT: ${{ vars.USER_POOL_MIN_COUNT }}
+          PILOTSWARM_NATIVE_SUBAGENTS: ${{ vars.PILOTSWARM_NATIVE_SUBAGENTS }}
