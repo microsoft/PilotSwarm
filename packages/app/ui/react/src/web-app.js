@@ -427,7 +427,9 @@ function normalizeProfileSettings(settings) {
             canvasOpen: candidate.desktopPanes.canvasOpen === true,
             diagnosticsOpen: candidate.desktopPanes.diagnosticsOpen === true,
             zen: candidate.desktopPanes.zen === true,
-            sideTab: candidate.desktopPanes.sideTab === "workspace" ? "workspace" : "canvas",
+            // The Workflow tab is a side tab too (L1): a profile that maps it to "canvas" turns the right block back to the
+            // canvas on the next profile read (owner feedback 2026-11-06, "the canvas pops back up").
+            sideTab: normalizeSidePaneTab(candidate.desktopPanes.sideTab),
         };
     }
     if (hasOwn(candidate, "canvasPrefs")) {
@@ -558,7 +560,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             }
             : {
                 rightPaneMode: state.canvasOpen ? "canvas" : "panes",
-                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true, sideTab: state.sidePaneTab === "workspace" ? "workspace" : "canvas" },
+                desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true, sideTab: normalizeSidePaneTab(state.sidePaneTab) },
             }),
         canvasPrefs: state.canvasPrefs,
         // Written from BOTH device classes: a phone carries the desktop's
@@ -627,7 +629,7 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
                     canvasOpen: state?.ui?.canvasOpen === true,
                     diagnosticsOpen: state?.ui?.diagnosticsOpen === true,
                     zen: state?.ui?.canvasZen === true,
-                    sideTab: state?.ui?.sidePaneTab === "workspace" ? "workspace" : "canvas",
+                    sideTab: normalizeSidePaneTab(state?.ui?.sidePaneTab),
                 },
             }),
         canvasPrefs: state?.canvas?.prefs,
@@ -16607,7 +16609,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         diagnosticsOpen: rootState.ui.diagnosticsOpen === true,
         canvasMaximized: rootState.ui.canvasMaximized === true,
         canvasZen: rootState.ui.canvasZen === true,
-        sidePaneTab: rootState.ui.sidePaneTab === "workspace" ? "workspace" : "canvas",
+        sidePaneTab: normalizeSidePaneTab(rootState.ui.sidePaneTab),
         // Live reference — reducer updates replace the object, so
         // shallow-equal sees changes and the save effect fires.
         canvasPrefs: rootState.canvas?.prefs,

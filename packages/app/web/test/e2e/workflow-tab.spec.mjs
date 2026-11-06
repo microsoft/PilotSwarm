@@ -2934,3 +2934,32 @@ test("Run again: Start another… asks the chat once to start the same definitio
     expect(messages).toHaveLength(1);
     expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------------------------------------------------------
+// The right block stays on the Workflow tab (L1; owner feedback 2026-11-06, "the canvas pops back up time from time"):
+// the profile saved the Workflow tab as "canvas", so the next profile read that changed anything turned the block back.
+// Here the profile keeps the Workflow tab, and a profile change from elsewhere (another theme) is applied while the
+// Workflow tab stays, through several polls.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "stays on the Workflow tab" (from packages/app/web, after build).
+// ------------------------------------------------------------------------------------------------------------
+test("the right block stays on the Workflow tab through profile reads, and the profile keeps it", async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeV2(page, { onCommand: (route, command) => accept(route, command) });
+    const profile = await routeProfileSaves(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = workflowTab(page);
+    await expect(main.getByRole("group", { name: "Workflow graph" })).toBeVisible();
+    await expect.poll(() => profile.stored?.desktopPanes?.sideTab ?? null, { timeout: 15_000 }).toBe("workflow");
+    // Another change arrives with the profile (here another theme): it is applied, and the Workflow tab stays.
+    profile.stored = { ...profile.stored, themeId: "terminal-green" };
+    await expect(page.locator("html")).toHaveAttribute("data-ps-theme", "terminal-green", { timeout: 15_000 });
+    for (let poll = 0; poll < 3; poll++) {
+        await page.waitForTimeout(5_500);
+        await expect(page.locator(".ps-wf-tab").filter({ visible: true })).toHaveCount(1);
+        await expect(page.getByText("Nothing on the canvas yet.", { exact: true }).filter({ visible: true })).toHaveCount(0);
+    }
+    expect(errors).toEqual([]);
+});

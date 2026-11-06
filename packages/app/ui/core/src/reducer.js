@@ -1184,6 +1184,10 @@ function baseReducer(state, action) {
                 state.sessions.navigationIntent
                 && state.sessions.navigationIntent.status !== "failed",
             );
+            // Workflow Simplified (L1, S4): while a Workflow row is selected and the right block shows its Workflow tab, a
+            // profile read never turns the block back to the canvas (owner feedback 2026-11-06, "the canvas pops back
+            // up"); the right block changes when the person chooses, or when an agent draws on the canvas.
+            const keepWorkflowTab = state.ui.sidePaneTab === WORKFLOW_SIDE_TAB && Boolean(state.sessions.workflowRowId);
             // Saved selection is a boot preference. Once this tab navigates,
             // a slow profile read (or another device) must not navigate it back.
             const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId")
@@ -1265,7 +1269,7 @@ function baseReducer(state, action) {
                         : selection.ui.workflowLayouts,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
-                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: normalizeSidePaneTab(nextDesktopPanes.sideTab) }
+                        ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true, sidePaneTab: keepWorkflowTab ? WORKFLOW_SIDE_TAB : normalizeSidePaneTab(nextDesktopPanes.sideTab) }
                         : {}),
                     layout: nextLayout,
                     sessionViews: nextSessionViews,
