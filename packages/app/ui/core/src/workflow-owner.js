@@ -383,6 +383,81 @@ function computeDefinitions(byId, ownerId, views) {
         .map(({ newestAt, ...group }) => group);
 }
 
+/**
+ * Owner, 2026-11-06T19:40Z (F9): a workflow child's definition facts from its read model, { version, state, revision }:
+ * its metadata.version ("1.1.0"), "draft" or "published", and its current revision; each null until it is read. In stage 1
+ * a chat's "another revision" is often a new child (spawn_workflow with new YAML under the same name): its revision is 1
+ * again, so the version and whether it has started are what tell it apart.
+ */
+export function workflowChildDefinitionFacts(view) {
+    const model = workflowChildModel(view);
+    const definition = isRecord(model?.definition) ? model.definition : null;
+    return {
+        version: text(definition?.semver) ?? text(model?.revision?.version),
+        state: definition?.state === "draft" || definition?.state === "published" ? definition.state : null,
+        revision: Number.isSafeInteger(definition?.currentRevision) ? definition.currentRevision : null,
+    };
+}
+
+/**
+ * F9: the definition picker's option for a definition (its newest child): "name · version · revision N" once started,
+ * "name · version · draft" (or "· not started" for a published one) before. Parts not read yet are left out.
+ */
+export function workflowDefinitionOptionLabel({ name, version = null, revision = null, state = null, started = true }) {
+    const status = started ? (Number.isSafeInteger(revision) ? `revision ${revision}` : null)
+        : state === "draft" ? "draft" : state === "published" ? "not started" : null;
+    return [text(name) ?? "workflow", text(version), status].filter(Boolean).join(" · ");
+}
+
+/**
+ * F9: the Definition view's line about the definition it shows: "Revision 1 · 1.0.0" once started; before, also
+ * "draft, not started" (or "published, not started") and when it was made ("made 11:35:04 PST", `made` as shown).
+ */
+export function workflowDefinitionHeaderText({ revision = null, version = null, state = null, started = true, made = null }) {
+    const parts = [Number.isSafeInteger(revision) ? `Revision ${revision}` : null, text(version)];
+    if (!started && state) parts.push(state === "draft" ? "draft, not started" : "published, not started");
+    if (!started && text(made)) parts.push(`made ${text(made)}`);
+    const line = parts.filter(Boolean).join(" · ");
+    return line || null;
+}
+
+/**
+ * F9: a definition's children that have not started (drafts, and published ones with no live run), newest first:
+ * [{ sessionId, version, state, revision, createdAt, newest }]. Every one must be reachable from the Workflow tab (only
+ * the newest is the Definition view's own; the Workflows view lists them).
+ */
+export function workflowUnstartedChildren(byId, definition, views = {}) {
+    const children = Array.isArray(definition?.children) ? definition.children : [];
+    return children.filter(id => isWorkflowChild(byId?.[id]) && !workflowStarted(byId[id], views?.[id] ?? null))
+        .map(id => ({ sessionId: id, ...workflowChildDefinitionFacts(views?.[id] ?? null), createdAt: byId[id].createdAt ?? null,
+            newest: id === definition.newestId }))
+        .reverse();
+}
+
+/**
+ * F9: the Workflows view's line about them: "A newer draft, 1.1.0, is not started yet." for one (newer: it is the
+ * definition's newest child, made after every Workflow of it), "2 drafts are not started yet." for more. Null for none.
+ */
+export function workflowUnstartedLine(items) {
+    const list = Array.isArray(items) ? items : [];
+    if (!list.length) return null;
+    if (list.length === 1) {
+        const [only] = list;
+        const what = only.state === "draft" ? "draft" : only.state === "published" ? "published definition" : "definition";
+        return `A ${only.newest ? "newer " : ""}${what}${text(only.version) ? `, ${only.version},` : ""} is not started yet.`;
+    }
+    return `${list.length} ${list.every(item => item.state === "draft") ? "drafts" : "definitions"} are not started yet.`;
+}
+
+/**
+ * F9: a Workflow's cell in the Workflows list's Revision column: its run's revision, and its version too when the
+ * definition's Workflows run different versions ("1 · version 1.1.0"). "—" when not read.
+ */
+export function workflowListRevisionText({ revision = null, version = null, mixed = false }) {
+    if (!Number.isSafeInteger(revision)) return mixed && text(version) ? `version ${version}` : "—";
+    return mixed && text(version) ? `${revision} · version ${version}` : String(revision);
+}
+
 /** A Workflow's number within its definition (#1 is the oldest started child of that name), or null. */
 export function workflowNumberOf(byId, sessionId, views = {}) {
     const session = byId?.[sessionId];

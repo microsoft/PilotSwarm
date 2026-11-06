@@ -17,7 +17,8 @@ import {
 import {
     selectWorkflowTabContext, workflowChildModel, workflowDefinitionName, workflowDefinitionsOf, workflowElapsedText, workflowFailure,
     workflowAttentionAt, workflowPanelHeight, workflowPickerFace, workflowPickerGroupLabel, workflowPickerOptionLabel, workflowRunTimes, workflowStarted,
-    workflowStateOf,
+    workflowStateOf, workflowChildDefinitionFacts, workflowDefinitionHeaderText, workflowDefinitionOptionLabel, workflowListRevisionText,
+    workflowUnstartedChildren, workflowUnstartedLine,
     workflowTabButtonTip, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS,
     WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
@@ -138,6 +139,27 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null, di
         ?? definitions[0] ?? null;
     const view = tab.view === "definition" || tab.view === "workflows" ? tab.view : shownId ? "workflows" : "definition";
     const workflow = shownId && definition ? definition.workflows.find(item => item.sessionId === shownId) ?? null : null;
+    // F9 (owner, 2026-11-06T19:40Z): the Definition view shows the definition's newest child, or one not started that the
+    // person chose from the Workflows view (every child that has not started is reachable there).
+    const chosenChild = definition && typeof tab.definitionChild === "string" && definition.children.includes(tab.definitionChild)
+        ? tab.definitionChild : null;
+    const shownDefinition = React.useMemo(() => (!definition || !chosenChild || chosenChild === definition.newestId ? definition
+        : { ...definition, newestId: chosenChild, startable: !workflowStarted(byId?.[chosenChild], views?.[chosenChild] ?? null) }),
+    [definition, chosenChild, byId, views]);
+    // F9: the definitions' newest children and the children not started are read, so the picker and the Workflows view can
+    // say each one's version and whether it is a draft (at most LIST_READ_LIMIT; a read of an unchanged one is skipped).
+    const toRead = React.useMemo(() => {
+        const ids = [];
+        for (const item of definitions) {
+            ids.push(item.newestId);
+            for (const child of workflowUnstartedChildren(byId, item, views)) ids.push(child.sessionId);
+        }
+        return [...new Set(ids.filter(Boolean))].slice(0, LIST_READ_LIMIT);
+    }, [definitions, byId, views]);
+    const readStamp = toRead.map(id => `${id}:${byId?.[id]?.updatedAt ?? ""}`).join(",");
+    React.useEffect(() => {
+        for (const id of toRead) controller.ensureWorkflowReadModel(id).catch(() => {});
+    }, [controller, readStamp]);
     // A failed Workflow counts on the badge until it is opened (O6).
     const shownState = workflow ? workflowStateOf(shownSession, views?.[shownId] ?? null) : null;
     React.useEffect(() => {
@@ -145,7 +167,7 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null, di
     }, [controller, workflow?.sessionId, view, shownState?.key]);
     // Opening one Workflow, here or in the session list, selects its row (W2); going back to the list selects the session.
     const openWorkflow = React.useCallback(id => {
-        setTab({ view: "workflows", workflowId: id, definition: definition?.name ?? null });
+        setTab({ view: "workflows", workflowId: id, definition: definition?.name ?? null, definitionChild: null });
         const target = id ?? ownerId;
         if (target) controller.dispatch({ type: "sessions/selected", sessionId: target });
     }, [controller, setTab, ownerId, definition?.name]);
@@ -166,7 +188,7 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null, di
         "data-definition": definition.name },
         h("header", { className: "ps-wf-tab-head" },
             h(DefinitionPicker, { definitions, chosen: definition.name, views,
-                onChoose: name => setTab({ definition: name, workflowId: null }), onNew: () => askChat("Create a new workflow definition: ") }),
+                onChoose: name => setTab({ definition: name, workflowId: null, definitionChild: null }), onNew: () => askChat("Create a new workflow definition: ") }),
             // Owner, 2026-11-06T13:43Z (F1): two icon toggles with tooltips; no count beside the definition (F2: it is in the
             // Workflow picker).
             h("div", { className: "ps-wf-switch is-icons", role: "group", "aria-label": "Definition or Workflows" },
@@ -176,13 +198,17 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null, di
                     "aria-pressed": view === "workflows", onClick: () => setTab({ view: "workflows" }) })),
             modeButtons ? h("span", { className: "ps-wf-tab-modes" }, modeButtons) : null),
         view === "definition"
-            ? h(DefinitionView, { key: definition.newestId, controller, definition, tab, setTab, mobile, displayMode, ownerTitle: byId?.[ownerId]?.title ?? null,
+            ? h(DefinitionView, { key: shownDefinition.newestId, controller, definition: shownDefinition, tab, setTab, mobile, displayMode,
+                newestId: definition.newestId, onShowNewest: () => setTab({ definitionChild: null }), ownerTitle: byId?.[ownerId]?.title ?? null,
                 ownerWorking: ownerId ? workflowParentWorking(byId?.[ownerId]) : false, onStarted: id => openWorkflow(id), askChat })
             : workflow
                 ? h(WorkflowRunView, { key: workflow.sessionId, controller, definition, workflow, tab, setTab, mobile, phone, displayMode, onOpen: openWorkflow,
                     nodeStateId: context.nodeStateId })
-                : h(WorkflowList, { controller, definition, byId, views, onOpen: openWorkflow, onStart: () => setTab({ view: "definition", start: true }),
-                    onAnother: () => setTab({ view: "definition", another: true }) }));
+                : h(WorkflowList, { controller, definition, byId, views, onOpen: openWorkflow,
+                    onStart: () => setTab({ view: "definition", start: true, definitionChild: null }),
+                    onAnother: () => setTab({ view: "definition", another: true, definitionChild: null }),
+                    // F9: a child not started, shown in the Definition view (and its Start form opened, `start`).
+                    onShowChild: (id, { start = false } = {}) => setTab({ view: "definition", definitionChild: id, ...(start ? { start: true } : {}) }) }));
 }
 
 /**
@@ -191,11 +217,9 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null, di
  */
 function DefinitionPicker({ definitions, chosen, views, onChoose, onNew }) {
     const id = `wf-def-${React.useId().replace(/:/g, "")}`;
-    const option = definition => {
-        const model = workflowChildModel(views?.[definition.newestId] ?? null);
-        const revision = Number.isSafeInteger(model?.definition?.currentRevision) ? `revision ${model.definition.currentRevision}` : null;
-        return [definition.name, revision].filter(Boolean).join(" · ");
-    };
+    // F9: the newest child's version, and "draft" (or "not started") until it has started.
+    const option = definition => workflowDefinitionOptionLabel({ name: definition.name, ...workflowChildDefinitionFacts(views?.[definition.newestId] ?? null),
+        started: !definition.startable });
     return h("span", { className: "ps-wf-picker" },
         h("label", { htmlFor: id, className: "ps-sr-only" }, "Workflow definition"),
         h("select", { id, className: "ps-workflow-input ps-wf-picker-select", value: chosen,
@@ -347,9 +371,10 @@ function BottomPanel({ controller, panels, panel, onPanel, mobile, children, ext
 }
 
 /** The Definition view (07). `definition.newestId` is the workflow child whose definition it shows. */
-function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted, ownerTitle = null, ownerWorking = false, displayMode = "normal" }) {
+function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted, ownerTitle = null, ownerWorking = false, displayMode = "normal",
+    newestId = null, onShowNewest = null }) {
     const child = useWorkflowChild(controller, definition.newestId);
-    const { sessionId, view, workflowModel, places } = child;
+    const { sessionId, session, view, workflowModel, places } = child;
     const projection = useDefinitionProjection(child);
     const graph = projection ? projection.definition : view.definition;
     const nodes = projection ? projection.nodes : child.legacyNodes;
@@ -397,9 +422,17 @@ function DefinitionView({ controller, definition, tab, setTab, mobile, onStarted
     const revision = Number.isSafeInteger(workflowModel?.revision?.revision) ? workflowModel.revision.revision : null;
     const notice = workflowV2RunCommandNotice(runCommand);
     const nextNumber = definition.workflows.length + 1;
+    // F9 (owner, 2026-11-06T19:40Z): which definition this is: its version, and while it has not started, a draft (or not
+    // started) and when it was made. A child not started that is not the newest says so, with the way to the newest.
+    const facts = workflowChildDefinitionFacts(view);
+    const headline = workflowDefinitionHeaderText({ revision, version: facts.version, state: facts.state, started: !definition.startable,
+        made: session?.createdAt != null ? shownTime(session.createdAt) : null });
+    const older = Boolean(newestId) && newestId !== sessionId;
     return h("div", { className: "ps-wf-body" },
         h("div", { className: "ps-wf-bar" },
-            h("span", { className: "ps-wf-bar-text" }, revision !== null ? `Revision ${revision}` : null),
+            h("span", { className: "ps-wf-bar-text", "data-definition-child": sessionId }, headline),
+            older && onShowNewest ? h("button", { type: "button", className: "ps-link-button", "data-action": "show-newest", onClick: onShowNewest },
+                "Not the newest: show the newest") : null,
             // Owner, 2026-11-06T13:43Z (F1): icons; each keeps its words as its name and explains itself in its tooltip.
             h("span", { className: "ps-wf-bar-actions" },
                 startControl ? h(WorkflowToolButton, { label: "Start…", glyph: "start", "data-action": "start", disabled: !startControl.enabled,
@@ -480,8 +513,17 @@ function TestPanel({ controller, child, runCommand }) {
 }
 
 /** The Workflows list (08, W1): one row per Workflow of the definition, newest first. */
-function WorkflowList({ controller, definition, byId, views, onOpen, onStart, onAnother }) {
+function WorkflowList({ controller, definition, byId, views, onOpen, onStart, onAnother, onShowChild = null }) {
     const rows = [...definition.workflows].reverse();
+    // F9 (owner, 2026-11-06T19:40Z): the definition's children that have not started (a chat's new draft is one), newest
+    // first: one line says so; each opens in the Definition view with its version and when it was made.
+    const unstarted = workflowUnstartedChildren(byId, definition, views);
+    const unstartedLine = rows.length || unstarted.length > 1 ? workflowUnstartedLine(unstarted) : null;
+    const itemWords = item => [item.version ?? null, item.state === "draft" ? "draft" : "not started",
+        item.createdAt != null ? `made ${shownTime(item.createdAt)}` : null].filter(Boolean).join(" · ");
+    // F9: the Revision column says the version too when Workflows of this name run different versions.
+    const versions = new Set(rows.map(row => workflowChildDefinitionFacts(views?.[row.sessionId] ?? null).version).filter(Boolean));
+    const mixed = versions.size > 1;
     const ids = rows.map(row => row.sessionId);
     const histories = useControllerSelector(controller, state => state.history.bySessionId);
     const stamp = rows.map(row => `${row.sessionId}:${byId?.[row.sessionId]?.updatedAt ?? ""}`).join(",");
@@ -493,6 +535,18 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
         }
     }, [controller, stamp]);
     return h("div", { className: "ps-wf-body" },
+        unstartedLine ? h("div", { className: "ps-wf-unstarted", role: "status", "data-count": unstarted.length },
+            h("p", { className: "ps-wf-line" }, unstartedLine,
+                unstarted.length === 1 && onShowChild ? h(React.Fragment, null, " ",
+                    h("button", { type: "button", className: "ps-link-button", "data-action": "show-unstarted",
+                        onClick: () => onShowChild(unstarted[0].sessionId) }, "Show it"), " ",
+                    h("button", { type: "button", className: "ps-link-button", "data-action": "start-unstarted",
+                        onClick: () => onShowChild(unstarted[0].sessionId, { start: true }) }, "Start…")) : null),
+            unstarted.length > 1 ? h("ul", { className: "ps-wf-unstarted-list", "aria-label": "Not started yet" },
+                unstarted.map(item => h("li", { key: item.sessionId, "data-session-id": item.sessionId },
+                    h("span", null, itemWords(item)), " ",
+                    onShowChild ? h("button", { type: "button", className: "ps-link-button", "data-action": "show-unstarted",
+                        "aria-label": `Show ${itemWords(item)}`, onClick: () => onShowChild(item.sessionId) }, "Show it") : null))) : null) : null,
         rows.length === 0
             ? h("div", { className: "ps-wf-empty" }, h("p", null, "No Workflows yet."), definition.startable
                 ? h("button", { type: "button", className: "ps-mini-button is-primary", onClick: onStart }, "Start…") : null)
@@ -516,7 +570,8 @@ function WorkflowList({ controller, definition, byId, views, onOpen, onStart, on
                                 onClick: () => onOpen(row.sessionId) }, `#${row.number}`)),
                         h("span", { role: "cell", className: "ps-wf-list-state" }, h(StateChip, { state }),
                             reason ? h("span", { className: "ps-wf-list-reason" }, reason) : null),
-                        h("span", { role: "cell" }, Number.isSafeInteger(live?.revision) ? String(live.revision) : "—"),
+                        h("span", { role: "cell" }, workflowListRevisionText({ revision: live?.revision ?? null,
+                            version: workflowChildDefinitionFacts(view).version, mixed })),
                         h("span", { role: "cell" }, times.started !== null ? shownTime(times.started) : "—"),
                         h("span", { role: "cell" }, times.took !== null ? workflowElapsedText(times.took) : "—"));
                 })),

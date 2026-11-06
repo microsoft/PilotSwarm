@@ -2058,6 +2058,56 @@ test("owner 19:40Z F8: zen, full screen and normal fit the graph again, until th
     expect(errors).toEqual([]);
 });
 
+// Owner, 2026-11-06T19:40Z (F9): "I asked the chat for another revision of the workflow, it supposedly built one, but i
+// can't find it anywhere". His chat called spawn_workflow with new YAML as a draft (the executor's read-only dump): a third
+// child of the name, version 1.1.0, its own revision 1, never started, beside #1 and #2 (1.0.0, running). His shape here:
+// the picker names the draft's version and says draft; the Definition view says its version, "draft, not started" and when
+// it was made; the Workflows view says a newer draft is not started yet, and Show it opens it.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "owner 19:40Z F9" (from packages/app/web, after build).
+test("owner 19:40Z F9: a chat's new draft of a running definition is named, marked draft, and reachable from the Workflows view", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const DRAFT = OWNED.unstarted;
+    const models = {
+        [OWNED.running]: { ...V2_READ_MODEL, workflowId: OWNED.running },
+        [OWNED.failed]: { ...V2_READ_MODEL, workflowId: OWNED.failed, runs: [{ runId: "run-2", mode: "live", status: "running", revision: 1, outcome: null }],
+            run: { ...V2_READ_MODEL.run, runId: "run-2" } },
+        [DRAFT]: { ...V2_READ_MODEL, workflowId: DRAFT, definition: { state: "draft", semver: "1.1.0", currentRevision: 1, publishedRevision: null },
+            revision: { ...V2_READ_MODEL.revision, definitionHash: "hash-11", name: "watch-v2" }, runs: [], run: null },
+    };
+    const { rows } = await routeOwned(page, { models });
+    rows.splice(0, rows.length,
+        { ...OWNED_ROWS[0], status: "running" },
+        { ...OWNED_ROWS[1], status: "running" },
+        { ...OWNED_ROWS[2], title: "Workflow: watch-v2", status: "pending" });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
+    const main = workflowTab(page);
+    const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
+    await expect.poll(() => picker.locator("option").allTextContents()).toEqual(["watch-v2 · 1.1.0 · draft", "New definition… (asks the chat)"]);
+    // The Definition view shows the newest child, the draft: its version, draft, not started and when it was made.
+    await viewSwitch(main, "Definition").click();
+    await expect(main.locator(".ps-wf-bar-text")).toHaveText(/^Revision 1 · 1\.1\.0 · draft, not started · made \d{1,2}:\d{2}:\d{2}/);
+    await expect(main.locator(".ps-wf-bar-text")).toHaveAttribute("data-definition-child", DRAFT);
+    await shot(page, "owner-1940-f9-definition-1440");
+    // The Workflows view: #2 and #1, and one line about the draft with Show it and Start….
+    await viewSwitch(main, "Workflows").click();
+    const line = main.locator(".ps-wf-unstarted");
+    await expect(line).toContainText("A newer draft, 1.1.0, is not started yet.");
+    await expect(line.getByRole("button", { name: "Show it", exact: true })).toBeVisible();
+    await expect(line.getByRole("button", { name: "Start…", exact: true })).toBeVisible();
+    await expect(main.getByRole("button", { name: "Open watch-v2 #2", exact: true })).toBeVisible();
+    await expect(main.getByRole("button", { name: "Open watch-v2 #1", exact: true })).toBeVisible();
+    // Both run 1.0.0: the Revision column is the revision alone.
+    await expect(main.locator('.ps-wf-list-row[data-session-id] [role="cell"]:nth-child(3)')).toHaveText(["1", "1"]);
+    await shot(page, "owner-1940-f9-workflows-1440");
+    await line.getByRole("button", { name: "Show it", exact: true }).click();
+    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
+    await expect(main.locator(".ps-wf-bar-text")).toHaveAttribute("data-definition-child", DRAFT);
+    expect(errors).toEqual([]);
+});
+
 // Removed (spec draft 3, D4 and F-7; 21 stage 1 "Publish removed"): the f-04 tests of the compact Publish review. The
 // draft fixture stays for the tests that use it.
 const PUBLISH_MODEL = {
@@ -3038,8 +3088,9 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await expect(main).toBeVisible();
     const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
     await expect(picker).toHaveValue("report-v2");
-    await expect.poll(async () => (await picker.locator("option").allTextContents()).map(text => text.replace(/ · revision \d+/u, "")))
-        .toEqual(["report-v2", "watch-v2", "New definition… (asks the chat)"]);
+    // F9 (owner, 2026-11-06T19:40Z): each names its newest child's version, and report-v2's has not started.
+    await expect.poll(async () => picker.locator("option").allTextContents())
+        .toEqual(["report-v2 · 1.0.0 · not started", "watch-v2 · 1.0.0 · revision 1", "New definition… (asks the chat)"]);
     await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
     await expect(viewSwitch(main, "Workflows")).toHaveAttribute("aria-pressed", "false");
     await expect(viewSwitch(main, "Workflows")).toHaveText("");
@@ -3319,7 +3370,8 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
         // "#n · state · start"; closed, "#1 of 2".
         await expect(viewSwitch(main, "Workflows")).toHaveText("");
         await expect.poll(() => main.getByRole("combobox", { name: "Workflow definition", exact: true }).locator("option").allTextContents())
-            .toEqual([expect.stringMatching(/^report-v2( · revision \d+)?$/), expect.stringMatching(/^watch-v2( · revision \d+)?$/), "New definition… (asks the chat)"]);
+            .toEqual([expect.stringMatching(/^report-v2( · 1\.0\.0)?( · not started)?$/), expect.stringMatching(/^watch-v2( · 1\.0\.0)?( · revision \d+)?$/),
+                "New definition… (asks the chat)"]);
         await expect(shown.locator("optgroup")).toHaveAttribute("label", "2 Workflows");
         await expect.poll(() => shown.locator("optgroup option").allTextContents())
             .toEqual([expect.stringMatching(/^#2 · Failed · \d/), expect.stringMatching(/^#1 · Running · \d/)]);

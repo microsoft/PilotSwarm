@@ -112,7 +112,8 @@ test("the Workflow tab's header and toolbar buttons are named icons with tooltip
         ["Stop…", "", "choose: let started steps finish, or cancel now"],
     ]);
     // The definition picker: the definition and its revision, no count.
-    assert.match(html, /<option value="watch-v2" selected="">watch-v2 · revision 1<\/option>/);
+    // F9 (owner, 2026-11-06T19:40Z): the newest child's version as well.
+    assert.match(html, /<option value="watch-v2" selected="">watch-v2 · 1\.0\.0 · revision 1<\/option>/);
     // The Workflow picker: one group that says how many, newest first; closed, "#1 of 2".
     assert.match(html, /<span class="ps-workflow-input ps-wf-picker-face" aria-hidden="true">#1 of 2<\/span>/);
     assert.match(html, /<optgroup label="2 Workflows"><option value="wf-2">#2 · Failed<\/option><option value="wf-1"[^>]*>#1 · Running<\/option><\/optgroup><option value="__all__">All Workflows<\/option>/);
