@@ -182,8 +182,13 @@ module imports.
 
 On SIGTERM or SIGINT the portal stops accepting connections, sends WebSocket
 clients a close frame, stops its relays and runtime, and exits within
-`PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS` (20 s by default, inside Kubernetes'
-default 30 s grace). Connections still open then are closed, with one log line.
+`PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS`. Connections still open then are
+closed, with one log line. When that variable is not set, the deadline is
+20 s in remote mode (inside Kubernetes' default 30 s grace); in local mode,
+where the portal runs its own workers (`WORKERS`, 4 by default), it is the
+workers' shutdown budget, `PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS` (60 s) plus
+`PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS` (15 s), plus 5 s, so Ctrl-C waits for
+them.
 
 ## Package Relationship
 

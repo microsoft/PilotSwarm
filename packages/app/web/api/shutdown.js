@@ -12,11 +12,35 @@
 
 /** The portal's shutdown deadline when PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS does not set it: inside Kubernetes' default 30 s grace. */
 export const PORTAL_SHUTDOWN_TIMEOUT_DEFAULT_MS = 20_000;
+/** What a portal with embedded workers adds to their own shutdown budget, by default. */
+export const PORTAL_SHUTDOWN_WORKER_MARGIN_MS = 5_000;
 
-/** The deadline from the environment (PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS), else the default. */
-export function portalShutdownTimeoutMs(env = process.env) {
-    const value = Number.parseInt(env.PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS || "", 10);
-    return Number.isFinite(value) && value >= 0 ? value : PORTAL_SHUTDOWN_TIMEOUT_DEFAULT_MS;
+const envMs = (env, name, fallback) => {
+    const value = Number.parseInt(env[name] || "", 10);
+    return Number.isFinite(value) && value >= 0 ? value : fallback;
+};
+
+/**
+ * Whether the portal runs workers in its own process (local mode: NodeSdkTransport starts WORKERS of them, 4 by default;
+ * remote mode starts none). `mode` is the portal's (server.js getPortalMode).
+ */
+export function portalHasEmbeddedWorkers(mode, env = process.env) {
+    if (mode === "remote") return false;
+    const count = Number.parseInt(env.WORKERS || "4", 10);
+    return Number.isFinite(count) && count > 0;
+}
+
+/**
+ * The shutdown deadline: PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS when it is set; else, with embedded workers, their own
+ * shutdown budget (PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS, 60 s by default, plus PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS,
+ * 15 s by default) and PORTAL_SHUTDOWN_WORKER_MARGIN_MS, so a Ctrl-C waits for them as before; else 20 s.
+ */
+export function portalShutdownTimeoutMs(env = process.env, { embeddedWorkers = false } = {}) {
+    const explicit = envMs(env, "PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS", null);
+    if (explicit !== null) return explicit;
+    if (!embeddedWorkers) return PORTAL_SHUTDOWN_TIMEOUT_DEFAULT_MS;
+    return envMs(env, "PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS", 60_000) + envMs(env, "PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS", 15_000)
+        + PORTAL_SHUTDOWN_WORKER_MARGIN_MS;
 }
 
 /**
@@ -26,7 +50,9 @@ export function portalShutdownTimeoutMs(env = process.env) {
  */
 export function createPortalShutdown({ server, socketServers = [], steps = [], timeoutMs = portalShutdownTimeoutMs(), log = console }) {
     let running = null;
-    return function shutdown() {
+    shutdown.timeoutMs = timeoutMs;
+    return shutdown;
+    function shutdown() {
         running ??= (async () => {
             const deadline = Date.now() + Math.max(0, timeoutMs);
             const late = [];
@@ -81,14 +107,15 @@ export function createPortalShutdown({ server, socketServers = [], steps = [], t
             return late.length > 0;
         })();
         return running;
-    };
+    }
 }
 
 /**
- * Exit on SIGINT and SIGTERM after `shutdown`, at the deadline at the latest: a backstop timer (the deadline plus 2 s)
- * exits even if the shutdown itself were stuck. `exit` is process.exit, given for tests.
+ * Exit on SIGINT and SIGTERM after `shutdown`, at the deadline at the latest: a backstop timer (the shutdown's own
+ * deadline plus 2 s) exits even if the shutdown itself were stuck. `exit` is process.exit, given for tests.
  */
-export function exitOnSignals(shutdown, { timeoutMs = portalShutdownTimeoutMs(), exit = (code) => process.exit(code), target = process } = {}) {
+export function exitOnSignals(shutdown, { timeoutMs = shutdown.timeoutMs ?? portalShutdownTimeoutMs(), exit = (code) => process.exit(code),
+    target = process } = {}) {
     const onSignal = () => {
         const backstop = setTimeout(() => exit(1), Math.max(0, timeoutMs) + 2_000);
         backstop.unref?.();

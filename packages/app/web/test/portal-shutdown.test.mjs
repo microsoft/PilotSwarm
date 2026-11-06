@@ -8,7 +8,10 @@ import http from "node:http";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { WebSocketServer } from "ws";
-import { createPortalShutdown, exitOnSignals, portalShutdownTimeoutMs, PORTAL_SHUTDOWN_TIMEOUT_DEFAULT_MS } from "../api/shutdown.js";
+import {
+    createPortalShutdown, exitOnSignals, portalHasEmbeddedWorkers, portalShutdownTimeoutMs, PORTAL_SHUTDOWN_TIMEOUT_DEFAULT_MS,
+    PORTAL_SHUTDOWN_WORKER_MARGIN_MS,
+} from "../api/shutdown.js";
 
 const SHUTDOWN_URL = new URL("../api/shutdown.js", import.meta.url).href;
 
@@ -98,6 +101,26 @@ test("the deadline comes from PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS, else 20 s",
     assert.equal(portalShutdownTimeoutMs({}), 20_000);
     assert.equal(portalShutdownTimeoutMs({ PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS: "1500" }), 1_500);
     assert.equal(portalShutdownTimeoutMs({ PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS: "soon" }), 20_000);
+});
+
+test("with embedded workers (local mode) the default deadline covers their own shutdown budget; remote mode keeps 20 s", () => {
+    // Which portals run workers in their own process: local mode, WORKERS 4 by default; remote mode none.
+    assert.equal(portalHasEmbeddedWorkers("local", {}), true);
+    assert.equal(portalHasEmbeddedWorkers("local", { WORKERS: "2" }), true);
+    assert.equal(portalHasEmbeddedWorkers("local", { WORKERS: "0" }), false);
+    assert.equal(portalHasEmbeddedWorkers("remote", { WORKERS: "4" }), false);
+    const embedded = (env) => portalShutdownTimeoutMs(env, { embeddedWorkers: true });
+    assert.equal(PORTAL_SHUTDOWN_WORKER_MARGIN_MS, 5_000);
+    // The workers' drain (60 s) and grace (15 s) by default, plus the margin.
+    assert.equal(embedded({}), 80_000);
+    assert.equal(embedded({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "10000", PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS: "2000" }), 17_000);
+    assert.equal(embedded({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "0", PILOTSWARM_WORKER_SHUTDOWN_GRACE_MS: "0" }), 5_000);
+    // An explicit portal deadline wins, with or without embedded workers.
+    assert.equal(embedded({ PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS: "3000", PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "60000" }), 3_000);
+    assert.equal(portalShutdownTimeoutMs({ PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS: "60000" }, { embeddedWorkers: false }), 20_000);
+    // The signal handler's backstop follows the shutdown's own deadline.
+    const shutdown = createPortalShutdown({ server: { close: (cb) => cb() }, timeoutMs: embedded({}) });
+    assert.equal(shutdown.timeoutMs, 80_000);
 });
 
 test("a TERM exits the process within its deadline while a stream is held open", async () => {

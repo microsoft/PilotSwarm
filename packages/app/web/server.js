@@ -15,7 +15,7 @@ import { errorDetail } from "./api/error-detail.js";
 import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
 import { createLivePlane } from "./api/live-plane.js";
-import { createPortalShutdown, exitOnSignals } from "./api/shutdown.js";
+import { createPortalShutdown, exitOnSignals, portalHasEmbeddedWorkers, portalShutdownTimeoutMs } from "./api/shutdown.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
@@ -399,11 +399,13 @@ export async function startServer(opts = {}) {
         { path: WS_PATH },
     ]);
 
-    // FU-12: one deadline (PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS, 20 s by default) for the whole shutdown, so it ends
-    // whatever the clients and the database do (api/shutdown.js). Run as the portal process, a signal then exits it.
+    // FU-12: one deadline (PILOTSWARM_PORTAL_SHUTDOWN_TIMEOUT_MS; by default 20 s, or with embedded workers their own
+    // shutdown budget plus a margin) for the whole shutdown, so it ends whatever the clients and the database do
+    // (api/shutdown.js). Run as the portal process, a signal then exits it.
     const shutdown = createPortalShutdown({
         server,
         socketServers,
+        timeoutMs: portalShutdownTimeoutMs(process.env, { embeddedWorkers: portalHasEmbeddedWorkers(mode, process.env) }),
         steps: [
             { name: "the canvas relay", stop: () => canvasPlane.stop() },
             { name: "the live relay", stop: () => livePlane.stop() },
