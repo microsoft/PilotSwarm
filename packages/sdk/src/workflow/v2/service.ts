@@ -301,6 +301,11 @@ export interface CreateWorkflowV2Request {
     notifyParent?: boolean;
     /** Host-captured tool grant for scripts; never from YAML or a public payload. */
     binding?: WorkflowToolBinding | null;
+    /**
+     * SEMVER_REUSED (WorkflowStore.requireVersionFree): refuse a new Workflow whose metadata.name and version another
+     * Workflow of the same parent has with other YAML. Set by spawn_workflow; checked before anything is written.
+     */
+    refuseVersionReuse?: boolean;
 }
 
 /** Operation ids are stored as TEXT and compared exactly; refuse text PostgreSQL would reject or rewrite. */
@@ -695,6 +700,14 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
     if (tombstone?.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
+    // One name and version, one definition, among the parent's Workflows: checked before the claim, so a refusal writes
+    // nothing; a replay of a creation that stored its definition is answered below, as before.
+    if (request.refuseVersionReuse === true && tombstone === null && request.parentSessionId && compiled.name && compiled.version) {
+        await host.store.requireVersionFree({
+            parentSessionId: request.parentSessionId, workflowSessionId: request.workflowSessionId, name: compiled.name,
+            semver: compiled.version, yamlSha256: compiled.yamlSha256, irSha256: compiled.irSha256, nothingSaved: "Nothing was saved.",
+        });
+    }
     // The session row is claimed exclusively: an existing row of any kind,
     // or one a concurrent creator inserts first, is never modified here.
     if (!host.catalog.createWorkflowSessionV2) throw new WorkflowStoreError("WORKFLOW_V2_UNAVAILABLE", "This session catalog cannot create v2 workflows.");
@@ -782,7 +795,7 @@ export async function updateWorkflowV2(
     host: WorkflowV2Host,
     workflowSessionId: string,
     command: WorkflowV2Command,
-    context: { actor: WorkflowActor; operationId: string },
+    context: { actor: WorkflowActor; operationId: string; refuseVersionReuse?: boolean },
 ): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(context.operationId);
     let stored: StoredOperation<WorkflowDefinitionReceipt>;
@@ -794,6 +807,7 @@ export async function updateWorkflowV2(
             declaredSemver: compiled.version ?? declaredSemver(command.yaml), actor: context.actor, operationId: context.operationId,
             requestSha256: jsonSha256({ kind: "replace_definition", yamlSha256: compiled.yamlSha256, expectedRevision: command.expectedRevision }),
             title: `Workflow: ${compiled.name ?? "draft"}`,
+            ...(context.refuseVersionReuse === true ? { refuseVersionReuse: true } : {}),
         });
         return stored;
     }

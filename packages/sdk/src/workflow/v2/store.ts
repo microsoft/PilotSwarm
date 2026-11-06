@@ -2340,6 +2340,49 @@ export class WorkflowStore {
      * Create the definition with revision 1, optionally publishing it and
      * admitting its live run in the same transaction.
      */
+    /**
+     * SEMVER_REUSED (owner revision dump 2, 2026-11-06): one name and version, one definition, among the Workflows of one
+     * session. Refused when another live Workflow of `parentSessionId` has the same metadata.name and version with other
+     * YAML: its published revision, or its current draft revision, has neither this YAML hash nor (both valid) this IR
+     * hash. Read from the stored definitions and revisions; no lock, so two creations at the same moment can both pass.
+     */
+    async requireVersionFree(input: {
+        parentSessionId: string;
+        workflowSessionId: string;
+        name: string;
+        semver: string;
+        yamlSha256: string;
+        irSha256: string | null;
+        /** The text after the refusal's reason: what was not saved. */
+        nothingSaved: string;
+    }, client?: PoolClient): Promise<void> {
+        const sql =
+            `SELECT d.workflow_session_id, d.state, r.revision
+               FROM ${this.t.definitions} d
+               JOIN ${this.t.revisions} r
+                 ON r.workflow_session_id = d.workflow_session_id AND r.revision = COALESCE(d.published_revision, d.current_revision)
+               JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id
+              WHERE d.parent_session_id = $1 AND d.workflow_session_id <> $2 AND d.state <> 'deleted' AND s.deleted_at IS NULL
+                AND r.name = $3 AND r.semver = $4 AND r.yaml_sha256 <> $5
+                AND (r.ir_sha256 IS NULL OR $6::text IS NULL OR r.ir_sha256 <> $6::text)
+              ORDER BY d.created_at DESC, d.workflow_session_id
+              LIMIT 1`;
+        const params = [input.parentSessionId, input.workflowSessionId, input.name, input.semver, input.yamlSha256, input.irSha256];
+        const { rows } = client ? await client.query(sql, params) : await this.pool.query(sql, params);
+        if (!rows[0]) return;
+        const workflowId = str(rows[0], "workflow_session_id");
+        const state = str(rows[0], "state");
+        const revision = int(rows[0], "revision");
+        const label = `${input.name} ${input.semver}`;
+        const what = state === "published"
+            ? `${label} is already Workflow ${workflowId} of this session (published, revision ${revision}) with other YAML. `
+                + "A published version never changes: raise metadata.version and spawn the change as a draft."
+            : `${label} is already Workflow ${workflowId} of this session (a draft, revision ${revision}) with other YAML. `
+                + "To change that draft, use update_workflow replace_definition on it; for a new definition, raise metadata.version.";
+        throw new WorkflowStoreError("SEMVER_REUSED", `${what} ${input.nothingSaved}`,
+            { name: input.name, version: input.semver, workflowId, state, revision });
+    }
+
     async createDefinition(input: {
         workflowSessionId: string;
         parentSessionId: string | null;
@@ -2412,6 +2455,8 @@ export class WorkflowStore {
         operationId: string;
         requestSha256: string;
         title: string;
+        /** SEMVER_REUSED (requireVersionFree): refuse a replacement whose name and version another Workflow of the parent has with other YAML. */
+        refuseVersionReuse?: boolean;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         requireStoredYamlWithinLimit(input.yaml);
         return this.transaction(async client => {
@@ -2431,6 +2476,13 @@ export class WorkflowStore {
             if (definition.semver && input.declaredSemver && definition.semver !== input.declaredSemver) {
                 throw new WorkflowStoreError("SEMVER_IMMUTABLE", `This workflow child is version ${definition.semver}; a new version needs a new workflow child.`,
                     { semver: definition.semver });
+            }
+            if (input.refuseVersionReuse === true && definition.parentSessionId && input.compiled.name && input.compiled.version) {
+                await this.requireVersionFree({
+                    parentSessionId: definition.parentSessionId, workflowSessionId: input.workflowSessionId, name: input.compiled.name,
+                    semver: input.compiled.version, yamlSha256: input.compiled.yamlSha256, irSha256: input.compiled.irSha256,
+                    nothingSaved: "Nothing was saved: the draft keeps its revision.",
+                }, client);
             }
             await this.requireRevisionRoom(client, input.workflowSessionId, input.yaml);
             const nextRevision = definition.currentRevision + 1;

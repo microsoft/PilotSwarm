@@ -95,7 +95,8 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         + "run_id names the run for set_vars, pause, resume, cancel and recover (default the live run). "
         + "operation_id makes every operation idempotent: repeating it returns the original receipt; reusing it for a different request fails. "
         + "A receipt shows the run as the command was accepted; read_workflow shows it now. "
-        + "A published definition never changes; a new version needs a new workflow child. Returns JSON.",
+        + "A published definition never changes; a new version needs a new workflow child. One name and version is one definition: "
+        + "a version that another workflow of this session has with other YAML is refused (SEMVER_REUSED). Returns JSON.",
     parameters: {
         type: "object",
         properties: {
@@ -639,7 +640,9 @@ export async function runUpdateWorkflowCommand(args: Record<string, unknown>, ho
     }
     const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args, { milestone, testing });
     await authorize(workflowSessionId);
-    const stored = await updateWorkflowV2(host, workflowSessionId, command, { actor, operationId });
+    // SEMVER_REUSED: an agent's or a person's draft replacement keeps one definition per name and version among the
+    // parent's Workflows (WorkflowStore.requireVersionFree).
+    const stored = await updateWorkflowV2(host, workflowSessionId, command, { actor, operationId, refuseVersionReuse: true });
     return receiptJson(stored.receipt, stored.replayed);
 }
 
@@ -1677,7 +1680,7 @@ export async function spawnWorkflowV2FromTool(
             workflowSessionId: context.workflowSessionId, parentSessionId: context.callerSessionId, owner: context.owner,
             yaml: args.yaml, actor: { kind: "agent", sessionId: context.callerSessionId }, operationId: context.operationId,
             publish, start: args.start === true ? { inputs, ...(vars !== null ? { vars } : {}) } : null, notifyParent: args.notify_on_completion !== false,
-            binding: context.binding,
+            binding: context.binding, refuseVersionReuse: true,
         });
         return payload({
             ok: true, ...receiptJson(stored.receipt, stored.replayed),
