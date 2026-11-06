@@ -3458,6 +3458,9 @@ test("r3 C02 phone: a failed Workflow's failure is one line with Details beside 
     await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(OWNED.failed);
     const line = main.locator(".ps-wf-failure > .ps-wf-line.is-error");
     await expect(line).toHaveText("Failed: the feed did not answer");
+    // The line is a button (re-review note: keyboard as well as touch).
+    const toggle = line.getByRole("button", { name: "Failed: the feed did not answer", exact: true });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
     const details = main.locator(".ps-wf-failure > .ps-wf-failure-details");
     await expect(details).toBeVisible();
     const [lineBox, detailsBox] = await Promise.all([line.boundingBox(), details.boundingBox()]);
@@ -3465,12 +3468,18 @@ test("r3 C02 phone: a failed Workflow's failure is one line with Details beside 
     expect(Math.abs((detailsBox.y + detailsBox.height / 2) - (lineBox.y + lineBox.height / 2))).toBeLessThan(6);
     expect(detailsBox.x).toBeGreaterThan(lineBox.x + lineBox.width - 2);
     expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(150);
-    await expect(line).toHaveCSS("white-space", "nowrap");
-    await expect(line).toHaveCSS("text-overflow", "ellipsis");
+    await expect(toggle).toHaveCSS("white-space", "nowrap");
+    await expect(toggle).toHaveCSS("text-overflow", "ellipsis");
     await shot(page, "r3-c02-phone-failed");
-    // A tap shows all of it; Details opens under the line.
-    await line.click();
-    await expect(line).toHaveCSS("white-space", "normal");
+    // A tap shows all of it, and Enter folds it again; Details opens under the line.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(toggle).toHaveCSS("white-space", "normal");
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await page.keyboard.press(" ");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await details.locator("summary").click();
     await expect(details).toHaveAttribute("open", "");
     expect((await details.boundingBox()).y).toBeGreaterThanOrEqual((await line.boundingBox()).y + (await line.boundingBox()).height - 1);

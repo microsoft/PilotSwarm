@@ -605,8 +605,10 @@ function WorkflowRunView({ controller, definition, workflow, tab, setTab, mobile
                     onClick: () => setStopping(true) }) : null)),
         // Failure first, in plain words; the error as it arrived is folded under it (coordinator 2026-11-06).
         failure ? h("div", { className: `ps-wf-failure${phone && failureOpen ? " is-open" : ""}` },
-            h("p", { className: "ps-wf-line is-error", role: "status", title: phone ? failure.headline : undefined,
-                onClick: phone ? () => setFailureOpen(open => !open) : undefined }, failure.headline),
+            // On a phone the line is a button (Enter and Space too) that shows all of it; the status still reads it whole.
+            h("p", { className: "ps-wf-line is-error", role: "status" },
+                phone ? h("button", { type: "button", className: "ps-wf-failure-toggle", "aria-expanded": failureOpen, title: failure.headline,
+                    onClick: () => setFailureOpen(open => !open) }, failure.headline) : failure.headline),
             h(WorkflowV2FailureDetails, { failure, runId, executionValues: view.executionValues ?? null,
                 onReadWholeValue: executionId => { controller.loadWorkflowExecutionValue(sessionId, { runId, executionId }).catch(() => {}); } })) : null,
         readError ? h("p", { className: "ps-wf-line is-error", role: "alert" }, `This Workflow could not be read: ${readError} `,

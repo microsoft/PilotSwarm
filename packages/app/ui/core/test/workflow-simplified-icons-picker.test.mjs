@@ -134,3 +134,25 @@ test("on a phone the Workflow tab has no meta line: the state carries the time t
         if (hadWindow) globalThis.window = before; else delete globalThis.window;
     }
 });
+
+test("r3 (390 px): on a phone a failed Workflow's failure line is a button that shows all of it; a desktop keeps the plain line", () => {
+    const failedTab = () => {
+        const controller = mountTab();
+        controller.dispatch({ type: "ui/workflowView", sessionId: "wf-2", view: { readModel: modelOf("wf-2", "run-2", "failed", {
+            run: { runId: "run-2", mode: "live", status: "failed", outcome: null, nodeExecutions: [], inbox: [], outbox: [], kv: "{}", kvRevision: 1,
+                error: JSON.stringify({ code: "SCRIPT_FAILED", message: "the feed did not answer" }) } }), readModelRunId: null } });
+        controller.dispatch({ type: "sessions/selected", sessionId: "owner", workflowRowId: "wf-2" });
+        return controller;
+    };
+    const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, "window");
+    const before = globalThis.window;
+    globalThis.window = { matchMedia: query => ({ matches: query === "(max-width: 600px)", addEventListener() {}, removeEventListener() {} }) };
+    try {
+        const phone = renderToStaticMarkup(React.createElement(WorkflowTab, { controller: failedTab(), mobile: true }));
+        assert.match(phone, /<p class="ps-wf-line is-error" role="status"><button type="button" class="ps-wf-failure-toggle" aria-expanded="false" title="Failed: the feed did not answer">Failed: the feed did not answer<\/button><\/p>/);
+    } finally {
+        if (hadWindow) globalThis.window = before; else delete globalThis.window;
+    }
+    const desktop = renderToStaticMarkup(React.createElement(WorkflowTab, { controller: failedTab(), mobile: false }));
+    assert.match(desktop, /<p class="ps-wf-line is-error" role="status">Failed: the feed did not answer<\/p>/);
+});
