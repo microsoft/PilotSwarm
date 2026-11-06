@@ -1635,7 +1635,6 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-accent);
 }
 
-.ps-scroll-panel.is-wrapped .ps-line,
 /* The rename box's character count: quiet, right-aligned under the field. */
 .ps-modal-input-count {
   margin: 4px 2px 0;
@@ -1646,6 +1645,7 @@ body.is-resizing-pane-y iframe {
 }
 .ps-modal-input-count.is-at-limit { color: var(--ps-warning, #d29922); }
 
+.ps-scroll-panel.is-wrapped .ps-line,
 .ps-modal-details .ps-line,
 .ps-filter-column .ps-line {
   white-space: pre-wrap;
