@@ -478,7 +478,11 @@ and its tests stay. One deployment flag shows it again:
 Off, agents are not declared the test operations, and an agent's tool answers
 one exactly as an operation that does not exist (the unknown operation's
 refusal, with no word of testing); so does a person's command (Web API, MCP).
-The portal and the terminal UI show no test control or test run. Stored test
+"Absent" means an unknown operation, not an unknown route: there is no test
+route, so `POST /api/v1/sessions/{id}/workflow/commands` with a test operation
+answers `400 WORKFLOW_COMMAND_INVALID`, exactly as any unknown operation does
+(an unknown route would be 404). The portal and the terminal UI show no test
+control or test run. Stored test
 runs are kept but not shown: the workflow read (SDK, Web API, MCP) does not
 list them, and refuses a test run's id, as a run, a page cursor's run, an
 execution's or a variables revision's, exactly as it refuses an unknown run's.
