@@ -88,6 +88,10 @@ export interface LiveTurnControlOptions {
  * has not returned; steers still queued then are not sent (the stopped turn
  * labels them not delivered). Once the turn is retired, or its run ended,
  * nothing more is sent and no confirmation moves the cursor.
+ *
+ * Review RT-D1: admission (a continued chat's turn-to-visit fence) runs on its own chain, in position order, never behind
+ * a steer's send: a Stop is applied as soon as it is admitted. It can still wait for an earlier batch's admission (its
+ * request-id read, bounded by the CMS retry), never for a send.
  */
 export class LiveTurnControl implements TurnControlBinding {
     readonly sessionId: string;
@@ -96,7 +100,10 @@ export class LiveTurnControl implements TurnControlBinding {
     sent: number;
     /** The last steer the model run confirmed; saved with the turn. */
     cursor: number;
+    /** The send chain: drains of queued steers, one at a time. */
     private chain: Promise<void> = Promise.resolve();
+    /** Review RT-D1: admissions, in position order, apart from the send chain. */
+    private admitChain: Promise<void> = Promise.resolve();
     private readonly queue: TurnControl[] = [];
     private port: TurnControlSessionPort | null = null;
     private runEnded = false;
@@ -124,7 +131,7 @@ export class LiveTurnControl implements TurnControlBinding {
 
     /** Take new controls; they are applied one at a time, in position order. */
     enqueue(controls: TurnControl[]): Promise<void> {
-        if (this.retired) return this.chain;
+        if (this.retired) return Promise.resolve();
         const fresh: TurnControl[] = [];
         for (const control of [...controls].sort((a, b) => a.seq - b.seq)) {
             if (control.seq <= this.sent) continue;              // a duplicate wake-up
@@ -136,18 +143,23 @@ export class LiveTurnControl implements TurnControlBinding {
             this.queue.push(...fresh);
             return this.takeQueued();
         }
-        // Admitted in order with earlier takes (the chain), so the queue keeps position order.
-        this.chain = this.chain
+        // RT-D1: admitted in order with earlier admissions (admitChain, never the send chain), so the queue keeps position
+        // order and a Stop is applied once admitted, also while a steer's send has not returned.
+        let taken: Promise<void> = Promise.resolve();
+        const step = this.admitChain
             .then(async () => {
+                if (this.retired) return;
                 const kept = await admit(fresh);
                 if (this.retired) return;
                 this.queue.push(...kept.sort((a, b) => a.seq - b.seq));
+                taken = this.takeQueued();
             })
             .catch((err) => {
                 const port = this.port;
                 if (!this.retired && !this.stopping && port) port.failTurn(err);
             });
-        return this.chain.then(() => this.takeQueued());
+        this.admitChain = step;
+        return step.then(() => taken);
     }
 
     /** Apply a queued Stop at once while the gate is open, else drain what is queued. */
