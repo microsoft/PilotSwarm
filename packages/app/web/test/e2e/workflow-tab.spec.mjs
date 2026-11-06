@@ -961,6 +961,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(how.getByRole("radio")).toHaveCount(2);
         await expect(how.getByRole("radio", { name: /^Let started nodes finish/ })).toBeChecked();
         await expect(how.getByRole("radio", { name: /^Cancel now/ })).toBeEnabled();
+        // The dialog open, for the delivery screenshots (the Stop… button alone does not show it).
+        await shot(page, `stop-dialog-open-${viewport.width}`);
         await dialog.getByRole("button", { name: "Keep running", exact: true }).click();
         await expect(dialog).toHaveCount(0);
         await expect(stopButton).toBeFocused();
@@ -1997,11 +1999,11 @@ test("d-1: a workflow's session details say what it runs, link its parent, and f
     await flowReady(workflowTab(page).getByRole("group", { name: "Workflow graph" }));
     await openDetails(page);
 
-    // S4: a link to a Workflow whose session is loaded shows that session's chat, so the details are the chat's (with its
-    // ten rows). A Workflow's own rows show where it is the active session: when its session is not loaded (below).
-    await expect.poll(() => detailLabels(page)).toEqual(["Title", "ID", "Owner", "Model", "Context", "Cron", "Agent", "Updated", "Children", "Access"]);
+    // S4: a link to a Workflow selects its row and keeps its session's chat in the middle; the details describe the
+    // selected row, the Workflow: what it runs, in ten rows (a chat's box height), never a chat's Model, Context or Cron.
+    await expect.poll(() => detailLabels(page)).toEqual(["Title", "ID", "Owner", "Workflow", "Revision", "Run", "Started by", "Steps", "Updated", "Access"]);
     const chatHeight = Math.round((await page.locator(".ps-session-detail-box").boundingBox()).height);
-    await shot(page, "d1-chat-details-beside-workflow");
+    await shot(page, "d1-workflow-details-beside-chat");
 
     // The step's agent session: "Step of" the workflow, a link, instead of Cron; the link opens the Workflow tab on it.
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${STEP_ID}`);
