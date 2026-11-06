@@ -7,10 +7,10 @@ const HOVER_TOOLTIP_MS = 400;
 const LONG_PRESS_MS = 450;
 /** How long a long-press tooltip stays after the finger lifts (the top bar's IconButton). */
 const LONG_PRESS_LINGER_MS = 3_000;
-/** The tooltip's distance from the viewport's edges and from its button (the top bar's IconButton). */
-const TIP_MARGIN = 6;
-/** Closes the tooltip shown now: one tooltip at a time, so a new one closes the one before. */
-let closeShownTip = null;
+/** The tooltip's distance from the viewport's edges and from its button. */
+const TIP_MARGIN = 8;
+/** The tooltip's widest: min(260 px, the viewport less its margins); narrower only when its text is. */
+const TIP_MAX_WIDTH = 260;
 
 /** A 24-unit stroked glyph in the app's icon style (the top bar's SVG icon buttons). */
 function glyph(...children) {
@@ -79,8 +79,10 @@ export const WORKFLOW_TOOL_GLYPHS = Object.freeze({
  * why. `data-title` keeps that explanation readable to tests. On touch, as the top bar's icon buttons do (IconButton):
  * a tap acts; holding the button about half a second shows the tooltip above it instead (the click that follows is not
  * acted on), and it stays about 3 s after the finger lifts (owner, 2026-11-06T13:43Z: icons only, on the phone too).
- * As the top bar's, the tooltip is sized to its text (at most 220 px) and kept inside the viewport: a button at the edge
- * moves its tooltip in instead of squeezing it into a narrow column. One tooltip shows at a time.
+ * The tooltip is sized to its text, at most min(260 px, the viewport less 16 px), and kept inside the viewport with an
+ * 8 px margin by moving it, never by narrowing it (a button at the edge squeezed it into a one-word column); with no room
+ * above its button it shows below. On touch one tooltip is open at a time: any new touch, a long-press elsewhere or a tap
+ * anywhere, closes it. Mouse hover and keyboard focus behave as before.
  * `badge` (a count) shows on the icon, tinted by `badgeLevel`; the count is said in `title` too, for screen readers.
  */
 export function WorkflowToolButton({ label, glyph: glyphName, title = null, danger = false, disabled = false, badge = null, badgeLevel = null, onClick, ...rest }) {
@@ -93,29 +95,29 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
     const pressOriginRef = React.useRef(null);
     const describedId = `wf-tool-${React.useId().replace(/:/g, "")}`;
     const explain = typeof title === "string" && title && title !== label ? title : null;
-    // A finger covers what is below it: a long-press prefers above. Either flips when there is no room.
-    const closeRef = React.useRef(null);
-    closeRef.current = () => { clearTimeout(hideTimerRef.current); setTip(null); };
-    const close = React.useRef(() => closeRef.current()).current;
-    const show = (preferAbove = false) => {
+    // A finger covers what is below it: a long-press (`touch`) prefers above. Either flips when there is no room.
+    const show = (touch = false) => {
         const element = buttonRef.current;
         if (!element || typeof window === "undefined") return;
         const box = element.getBoundingClientRect();
-        const below = preferAbove ? box.top - 56 < 0 : box.bottom + 56 < window.innerHeight;
-        if (closeShownTip && closeShownTip !== close) closeShownTip();
-        closeShownTip = close;
-        setTip({ x: box.left + box.width / 2, y: below ? box.bottom + TIP_MARGIN : box.top - TIP_MARGIN, placement: below ? "below" : "above" });
+        const below = touch ? box.top - 56 < 0 : box.bottom + 56 < window.innerHeight;
+        setTip({ x: box.left + box.width / 2, y: below ? box.bottom + TIP_MARGIN : box.top - TIP_MARGIN, placement: below ? "below" : "above",
+            touch: touch === true });
     };
     const hide = () => {
         clearTimeout(timerRef.current);
         clearTimeout(hideTimerRef.current);
         setTip(null);
     };
-    React.useEffect(() => () => {
-        clearTimeout(timerRef.current);
-        clearTimeout(hideTimerRef.current);
-        if (closeShownTip === close) closeShownTip = null;
-    }, []);
+    React.useEffect(() => () => { clearTimeout(timerRef.current); clearTimeout(hideTimerRef.current); }, []);
+    // A touch tooltip closes at the next touch anywhere: a tap, or a long-press on another button (one at a time).
+    const touchTip = Boolean(tip?.touch);
+    React.useEffect(() => {
+        if (!touchTip || typeof document === "undefined") return undefined;
+        const onDown = () => { clearTimeout(hideTimerRef.current); setTip(null); };
+        document.addEventListener("pointerdown", onDown, true);
+        return () => document.removeEventListener("pointerdown", onDown, true);
+    }, [touchTip]);
     // Sized to its text and kept inside the (visual) viewport, before it is painted (IconButton's measure).
     React.useLayoutEffect(() => {
         const element = tipRef.current, button = buttonRef.current;
@@ -125,7 +127,7 @@ export function WorkflowToolButton({ label, glyph: glyphName, title = null, dang
         const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
         const box = button.getBoundingClientRect();
         element.style.width = "max-content";
-        element.style.maxWidth = `${Math.min(220, width - 2 * TIP_MARGIN)}px`;
+        element.style.maxWidth = `${Math.min(TIP_MAX_WIDTH, width - 2 * TIP_MARGIN)}px`;
         const own = element.getBoundingClientRect();
         let below = tip.placement === "below";
         if (!below && box.top - own.height - TIP_MARGIN < top) below = true;

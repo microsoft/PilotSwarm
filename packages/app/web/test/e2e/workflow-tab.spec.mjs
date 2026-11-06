@@ -3125,15 +3125,26 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
 
         // F1: no words on a header or toolbar button; each has a name; a Workflow tool button explains itself in its tooltip.
         const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        // One tooltip at a time, inside the viewport, sized to its text: a button at the edge moves its tooltip in instead of
-        // squeezing it into a narrow column (the 281d86cf screenshot at 390 px).
+        // One tooltip at a time, inside the viewport, at least 160 px wide (or its text's own width, when that is less): a
+        // button at the edge moves its tooltip in instead of squeezing it into a one-word column (the 281d86cf screenshot at
+        // 390 px; coordinator 14:30Z).
         const tipFits = async () => {
-            await expect(page.getByRole("tooltip")).toHaveCount(1);
-            const tip = await page.getByRole("tooltip").boundingBox();
+            const tooltip = page.getByRole("tooltip");
+            await expect(tooltip).toHaveCount(1);
+            const tip = await tooltip.boundingBox();
+            const natural = await tooltip.evaluate(element => {
+                const copy = element.cloneNode(true);
+                Object.assign(copy.style, { position: "fixed", left: "0px", top: "0px", width: "max-content", maxWidth: "none", visibility: "hidden" });
+                document.body.appendChild(copy);
+                const width = copy.getBoundingClientRect().width;
+                copy.remove();
+                return width;
+            });
             expect(tip.x).toBeGreaterThanOrEqual(0);
             expect(tip.x + tip.width).toBeLessThanOrEqual(viewport.width);
             expect(tip.y).toBeGreaterThanOrEqual(0);
-            expect(tip.width).toBeGreaterThanOrEqual(120);
+            expect(tip.y + tip.height).toBeLessThanOrEqual(viewport.height);
+            expect(tip.width).toBeGreaterThanOrEqual(Math.min(160, natural) - 0.5);
         };
         const checkIcons = async (names) => {
             const buttons = main.locator(".ps-wf-tab-head button, .ps-wf-bar button");
@@ -3182,6 +3193,18 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
         await expect(main.locator(".ps-wf-picker-face")).toHaveText("#1 of 2");
 
         if (phone) {
+            // Coordinator 14:30Z: the right-most icon, Stop…, long-pressed: one tooltip, inside the viewport, not narrowed;
+            // a tap anywhere closes it.
+            const stopIcon = bar.getByRole("button", { name: "Stop…", exact: true });
+            const stopBox = await stopIcon.boundingBox();
+            await stopIcon.dispatchEvent("pointerdown", { pointerType: "touch", clientX: stopBox.x + stopBox.width / 2, clientY: stopBox.y + stopBox.height / 2 });
+            await expect(page.getByRole("tooltip")).toHaveText(/^Stop… — /);
+            await tipFits();
+            await stopIcon.dispatchEvent("pointerup", { pointerType: "touch" });
+            const pill = bar.locator(".ps-wf-state");
+            await pill.dispatchEvent("pointerdown", { pointerType: "touch" });
+            await pill.dispatchEvent("pointerup", { pointerType: "touch" });
+            await expect(page.getByRole("tooltip")).toHaveCount(0);
             // Two rows above the graph; the meta line is relocated: the time taken joins the state, its start and revision
             // are in the state's tooltip.
             expect(await graphTopBelowTab(page)).toBeLessThanOrEqual(150);
