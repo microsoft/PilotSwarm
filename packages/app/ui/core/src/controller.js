@@ -6516,6 +6516,11 @@ export class PilotSwarmUiController {
      * (the active session alone has a live subscription). Loads its history and merges its live events, as the active
      * session's subscription does; its own events, when it is the active session itself, come from that subscription.
      * Counted per Workflow; returns the function that stops this watch. Never throws.
+     *
+     * r4 C04: a watch that starts again (the tab showed the Workflow, then its list or another view, then the Workflow)
+     * subscribes and then reads the events after the last one loaded (syncSessionEvents, as attachActiveSession does): the
+     * events of the time it was not watched are read too. A Workflow that then stays still (a 15-minute wait) never
+     * pushes them again, so without the read its lines stayed at the first load.
      */
     watchWorkflow(sessionId) {
         if (!sessionId) return () => {};
@@ -6524,7 +6529,6 @@ export class PilotSwarmUiController {
         if (!entry) {
             entry = { count: 0, unsubscribe: null };
             this.workflowWatches.set(sessionId, entry);
-            this.ensureSessionHistory(sessionId).catch(() => {});
             if (typeof this.transport?.subscribeSession === "function") {
                 try {
                     entry.unsubscribe = this.transport.subscribeSession(sessionId, (event) => {
@@ -6537,6 +6541,7 @@ export class PilotSwarmUiController {
                     entry.unsubscribe = null;
                 }
             }
+            this.syncSessionEvents(sessionId).catch(() => {});
         }
         entry.count += 1;
         let released = false;
