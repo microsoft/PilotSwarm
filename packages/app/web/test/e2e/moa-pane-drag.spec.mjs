@@ -32,8 +32,11 @@ async function fixture(page, {tree=example,theme='terminal-green',composerMode='
 }
 async function afterPeriodicRefresh(f) {
     const settle = async () => { let last=-1; while (last!==f.reads.length) { last=f.reads.length; await new Promise(r=>setTimeout(r,600)); } };
-    const start=f.reads.length;
-    await expect.poll(()=>f.reads.length,{timeout:6000,intervals:[100]}).toBeGreaterThan(start);
+    // Session 4 is not bound to a pane. Its read identifies the global poll,
+    // unlike the send-triggered session reads that can still be settling.
+    const periodicReads = () => f.reads.filter(path => path.endsWith(sid(4))).length;
+    const start=periodicReads();
+    await expect.poll(periodicReads,{timeout:6000,intervals:[100]}).toBeGreaterThan(start);
     await settle();
 }
 async function startDrag(page,source,target,edge='center',extend=false) {
