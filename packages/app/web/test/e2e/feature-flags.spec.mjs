@@ -66,7 +66,7 @@ async function featurePage(page, { admin = true, themeId = "workspace-dark", clu
     await page.locator(".ps-session-list-button").first().waitFor();
     await page.getByRole("button", { name: admin ? "Admin console" : "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Feature flags", exact: true }).click();
-    await page.locator(".ps-feature-flag").waitFor();
+    await page.locator(".ps-feature-flag").first().waitFor();
     return { state, stop: async () => {
         await page.close();
         const closed = new Promise(resolve => {
