@@ -80,7 +80,7 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
     const blocks = await page.locator(".ps-chat-panel .ps-line").count();
     expect(blocks, "expected a long transcript to measure against").toBeGreaterThan(100);
 
-    const { ms, reference, samples } = await page.evaluate(() => {
+    const { ms, reference, ratio, samples } = await page.evaluate(() => {
         const relayout = (node) => {
             const t0 = performance.now();
             node.style.width = `${node.clientWidth - 9}px`;
@@ -106,22 +106,25 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
             samples.reference.push(relayout(ref));
             samples.panel.push(relayout(panel));
         }
+        samples.ratios = samples.panel.map((ms, i) => ms / samples.reference[i]);
+        const median = samples.ratios.map((ratio, index) => ({ ratio, index }))
+            .sort((a, b) => a.ratio - b.ratio)[3];
+        samples.selectedPair = median.index;
         ref.remove();
-        return { ms: Math.min(...samples.panel), reference: Math.min(...samples.reference), samples };
+        return { ms: samples.panel[median.index], reference: samples.reference[median.index], ratio: median.ratio, samples };
     });
-    console.log(`TRANSCRIPT-PERF ${JSON.stringify({ browser: process.env.PS_TEST_BROWSER || "chromium", ms, reference, ratio: ms / reference, blocks, samples })}`);
+    console.log(`TRANSCRIPT-PERF ${JSON.stringify({ browser: process.env.PS_TEST_BROWSER || "chromium", ms, reference, ratio, blocks, samples })}`);
     // Warm both layouts, then alternate seven reference/panel pairs. Separate
     // sampling windows can expose only the panel to a later scheduling burst.
+    // Median paired ratios compare matched moments, unlike dividing minima
+    // taken independently from the two sample sets.
     // The reference keeps the ceiling relative to this machine rather than
     // fixing a millisecond limit.
-    // Twenty interleaved runs per browser at two workers peaked at 3.70x in
-    // Chromium and 4.16x in WebKit. With 10% headroom, the next one-decimal
-    // ceiling above the larger peak is 4.6x.
     //
     // The ceiling is a REGRESSION CEILING relative to this machine: it catches
     // the cost going up several-fold, which is what an accidental re-layout of
     // every block, or losing the block memo guarded below, would do.
-    expect(ms / reference, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines, ${reference.toFixed(1)}ms for the same lines plain`).toBeLessThan(4.6);
+    expect(ratio, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines, ${reference.toFixed(1)}ms for the same lines plain in the median-ratio pair`).toBeLessThan(4.6);
 });
 
 test("dragging the pane splitter does not re-render the whole transcript", async ({ page }) => {
