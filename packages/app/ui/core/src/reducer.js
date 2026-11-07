@@ -935,8 +935,13 @@ function showWorkflowInOwnerTab(state, workflowId) {
     const workflow = state.sessions?.byId?.[workflowId];
     const ownerId = workflow ? workflowOwnerId(workflow) : null;
     const key = ownerId || workflowId;
-    return baseReducer(state, { type: "ui/workflowTab", ownerId: key, patch: { view: "workflows", workflowId,
-        definition: workflowDefinitionName(workflow, state.ui.workflowViews?.[workflowId]) } });
+    const tabs = state.ui.workflowTabs || {};
+    const previous = tabs[key] || {};
+    // Review UI4-F2: a choice made in the tab before (Show it, a version) gives way to this Workflow.
+    const tab = { ...withoutChosenVersion(previous), view: "workflows", workflowId,
+        definition: workflowDefinitionName(workflow, state.ui.workflowViews?.[workflowId]) };
+    const same = Object.keys(previous).length === Object.keys(tab).length && Object.entries(tab).every(([field, value]) => previous[field] === value);
+    return same ? state : { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [key]: tab } } };
 }
 
 /** The Workflow and node of a selected agent node chat or its sub-agent (S6): { workflowId, nodeStateId }, else null. */
@@ -948,9 +953,13 @@ function agentNodeOfSelection(state) {
     return { workflowId: ancestor.workflowId, nodeStateId: workflowNodeStateOfChat(byId[ancestor.nodeSessionId]) };
 }
 
-/** A Workflow tab's state without a version chosen in it (owner, 2026-11-07T00:03Z): a Workflow row chosen shows its own. */
+/**
+ * A Workflow tab's state without a version or definition child chosen in it (owner, 2026-11-07T00:03Z): a Workflow row
+ * chosen shows its own. Review UI4-F2: that includes a child shown with Show it (`definitionChild`), and review UI4-F1 the
+ * version chosen as a child (`versionChild`), so the picker and the Definition view describe the Workflow selected.
+ */
 function withoutChosenVersion(tab) {
-    const { version, versionKey, ...rest } = tab || {};
+    const { version, versionKey, versionChild, definitionChild, ...rest } = tab || {};
     return rest;
 }
 

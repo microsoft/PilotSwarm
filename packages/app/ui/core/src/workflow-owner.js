@@ -513,16 +513,51 @@ export function workflowDefinitionVersions(byId, definition, views = {}) {
 
 /**
  * Review UI3-F9: the words that tell an entry apart from another of the same version: its Workflows' numbers ("#2, #4"),
- * else "made <time>" for one that has not started (`made` as shown). Null when the version is its own.
+ * else "made <time>" for one that has not started (`made` as shown), with its number when that reads like another
+ * (review UI4-F4, `number` from workflowMadeNumbers for its newest child). Null when the version is its own.
  */
-export function workflowVersionDiscriminator(entry, made = null) {
+export function workflowVersionDiscriminator(entry, made = null, number = null) {
     if (!entry?.shared) return null;
     const numbers = Array.isArray(entry.numbers) ? entry.numbers : [];
     if (numbers.length) {
         const shown = numbers.slice(-3).map(number => `#${number}`);
         return numbers.length > 3 ? `… ${shown.join(", ")}` : shown.join(", ");
     }
-    return text(made) ? `made ${text(made)}` : null;
+    return workflowMadeWords(made, number);
+}
+
+/**
+ * Review UI4-F4: "made 01:00:00 UTC", and when another child not started of the same version reads the same (made in the
+ * same shown second, or both without a time), its number among them: "made 01:00:00 UTC (2)", or "(2)" alone. Null for
+ * neither.
+ */
+export function workflowMadeWords(made = null, number = null) {
+    const words = [text(made) ? `made ${text(made)}` : null, Number.isSafeInteger(number) && number > 0 ? `(${number})` : null].filter(Boolean).join(" ");
+    return words || null;
+}
+
+/**
+ * Review UI4-F4: the number of each child not started that would otherwise read like another of the same version: same
+ * version and the same shown time (`madeOf(item)`: its creation time as shown, null when unknown). `items` as
+ * workflowUnstartedChildren returns them (newest first); numbered by when each was made, oldest 1, so an older one keeps
+ * its number when a newer one arrives. Map of sessionId to number; children that read apart from every other are not in
+ * it. The definition picker, Compare and the Workflows view's list of drafts use the same numbers. Pure.
+ */
+export function workflowMadeNumbers(items, madeOf = () => null) {
+    const list = Array.isArray(items) ? [...items].reverse() : [];
+    const groupOf = item => `${item?.version ?? ""}${VERSION_VALUE_SEPARATOR}${text(madeOf(item)) ?? ""}`;
+    const counts = new Map();
+    for (const item of list) counts.set(groupOf(item), (counts.get(groupOf(item)) ?? 0) + 1);
+    const seen = new Map();
+    const numbers = new Map();
+    for (const item of list) {
+        const group = groupOf(item);
+        if ((counts.get(group) ?? 0) < 2 || typeof item?.sessionId !== "string") continue;
+        const number = (seen.get(group) ?? 0) + 1;
+        seen.set(group, number);
+        numbers.set(item.sessionId, number);
+    }
+    return numbers;
 }
 
 /**
@@ -541,6 +576,35 @@ export function workflowChosenVersion(versions, { child = null, key = null, work
 }
 
 const VERSION_VALUE_SEPARATOR = "\u001f";
+
+/**
+ * Review UI4-F1, UI4-F3: the child a version choice in the Workflow tab stands for. A choice is stored as a child
+ * (`tab.versionChild`: the newest child of the entry chosen), so it keeps its place when that child is read for the first
+ * time or a draft's new revision gives it another hash (another entry key); the view shows the newest child of the entry
+ * that holds it. `children`: the definition's children. Returns:
+ * - { child, legacy: false, gone: false } for a stored child that is still one of them;
+ * - { child: null, legacy: false, gone: true } when it no longer is (it was deleted: the view says so and shows the newest,
+ *   never a Workflow shown before, which the person did not choose);
+ * - { child, legacy: true, gone: false } for a choice in an earlier shape, resolved to its entry's newest child so it can be
+ *   stored as a child: an entry key (`tab.versionKey`), a bare version (`tab.version`, or an old option's "1.0.0"), or an
+ *   entry key whose hash is gone (its version); a version is the entry of that version that holds `tab.workflowId` (the
+ *   Workflow shown with it), else its newest;
+ * - null for no choice, or one in an earlier shape that cannot be resolved yet (its version not read).
+ * Pure.
+ */
+export function workflowVersionChoice(versions, tab, children = []) {
+    const list = Array.isArray(versions) ? versions : [];
+    const own = Array.isArray(children) ? children : [];
+    const stored = typeof tab?.versionChild === "string" && tab.versionChild ? tab.versionChild : null;
+    if (stored) return own.includes(stored) ? { child: stored, legacy: false, gone: false } : { child: null, legacy: false, gone: true };
+    const key = typeof tab?.versionKey === "string" && tab.versionKey ? tab.versionKey : null;
+    const byKey = key ? list.find(entry => entry.key === key) ?? null : null;
+    const version = text(tab?.version) ?? (key ? text(key.split(VERSION_VALUE_SEPARATOR)[0]) : null);
+    const ofVersion = !byKey && version ? list.filter(entry => entry.version === version) : [];
+    const known = typeof tab?.workflowId === "string" ? ofVersion.find(entry => entry.children.includes(tab.workflowId)) ?? null : null;
+    const entry = byKey ?? known ?? ofVersion[0] ?? null;
+    return entry?.newestId ? { child: entry.newestId, legacy: true, gone: false } : null;
+}
 
 /**
  * The definition picker's value for one entry: the definition's name for the entry that holds its newest child (so the

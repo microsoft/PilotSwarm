@@ -2266,6 +2266,131 @@ test("UI3-F7, UI3-F8: at 390 px many drafts scroll in their own area, the oldest
     expect(errors).toEqual([]);
 });
 
+// UI re-review of 0d67b8a6, UI4-F1: a version chosen in the picker is stored as its child, so the draft's next revision (a
+// new hash: another entry key) keeps the Definition view, its YAML and its commands on that draft; the run shown before (A)
+// never takes the choice back. By mouse, then by keyboard. On 0d67b8a6 the view fell back to A when B's hash changed.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI4-F1" (from packages/app/web, after build).
+test("UI4-F1: a draft chosen in the picker stays shown through its new revisions (another hash), by mouse and keyboard", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const [A, B] = [OWNED.running, OWNED.unstarted];
+    const draft = revision => ({ ...V2_READ_MODEL, workflowId: B,
+        definition: { state: "draft", semver: "1.1.0", currentRevision: revision, publishedRevision: null },
+        revision: { ...V2_READ_MODEL.revision, revision, definitionHash: `hash-b${revision}`, irSha256: `ir-b${revision}` },
+        graph: { ...V2_READ_MODEL.graph, revision }, runs: [], run: null });
+    const models = {
+        [A]: { ...V2_READ_MODEL, workflowId: A, runs: [{ runId: "run-a", mode: "live", status: "completed", revision: 1, outcome: "succeeded" }],
+            run: { ...V2_READ_MODEL.run, runId: "run-a", status: "completed", outcome: "succeeded" } },
+        [B]: draft(1),
+    };
+    const yamlOf = id => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: "${id === A ? "1.0.0" : "1.1.0"}" }\ninitial: poll\n`;
+    const { rows } = await routeOwned(page, { models, yamlOf });
+    rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "completed" }, { ...OWNED_ROWS[2], title: "Workflow: watch-v2", status: "pending" });
+    // B saved again (the chat or the person): its row changes, and the next read has the new revision and hash.
+    const revise = revision => {
+        models[B] = draft(revision);
+        rows[1] = { ...rows[1], updatedAt: Date.now() };
+    };
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${A}`);
+    const main = workflowTab(page);
+    const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
+    const selected = () => picker.locator("option:checked").textContent();
+    const bar = main.locator(".ps-wf-bar-text").first();
+    // A's run is shown: the picker says A.
+    await expect.poll(() => picker.locator("option").allTextContents())
+        .toEqual(["watch-v2 · 1.1.0 · draft", "watch-v2 · 1.0.0", "New definition… (asks the chat)"]);
+    await expect.poll(selected).toBe("watch-v2 · 1.0.0");
+    // Mouse: B chosen, its YAML open; B's revision 2 arrives with another hash.
+    await picker.selectOption({ label: "watch-v2 · 1.1.0 · draft" });
+    await expect(bar).toHaveAttribute("data-definition-child", B);
+    await main.getByRole("button", { name: "YAML", exact: true }).click();
+    await expect(main.locator(".ps-wf-yaml")).toBeVisible();
+    revise(2);
+    await expect(bar).toHaveText(/^Revision 2 · 1\.1\.0/, { timeout: 20_000 });
+    await expect(bar).toHaveAttribute("data-definition-child", B);
+    await expect(main.locator(".ps-wf-yaml")).toBeVisible();
+    await expect(main.getByRole("button", { name: "YAML", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(selected).toBe("watch-v2 · 1.1.0 · draft");
+    await expect(main).toHaveAttribute("data-version", "1.1.0");
+    await shot(page, "ui4-f1-draft-revised-1440");
+    // Keyboard: A, then B again; YAML by the keyboard; B's revision 3 arrives.
+    await picker.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(bar).toHaveAttribute("data-definition-child", A);
+    await page.keyboard.press("ArrowUp");
+    await expect(bar).toHaveAttribute("data-definition-child", B);
+    await main.getByRole("button", { name: "YAML", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(main.locator(".ps-wf-yaml")).toBeVisible();
+    revise(3);
+    await expect(bar).toHaveText(/^Revision 3 · 1\.1\.0/, { timeout: 20_000 });
+    await expect(bar).toHaveAttribute("data-definition-child", B);
+    await expect(main.locator(".ps-wf-yaml")).toBeVisible();
+    await expect.poll(selected).toBe("watch-v2 · 1.1.0 · draft");
+    expect(errors).toEqual([]);
+});
+
+// UI re-review of 0d67b8a6, UI4-F2: Show it on the draft B, then A's row selected in the session list (mouse, then
+// keyboard): the picker, the Definition view and its YAML are A's, not B's. On 0d67b8a6 the row selection kept B.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI4-F2" (from packages/app/web, after build).
+test("UI4-F2: after Show it on a draft, selecting a Workflow row in the session list shows that Workflow's definition, by mouse and keyboard", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const [A, B] = [OWNED.running, OWNED.unstarted];
+    const models = {
+        [A]: { ...V2_READ_MODEL, workflowId: A, runs: [{ runId: "run-a", mode: "live", status: "completed", revision: 1, outcome: "succeeded" }],
+            run: { ...V2_READ_MODEL.run, runId: "run-a", status: "completed", outcome: "succeeded" } },
+        [B]: { ...V2_READ_MODEL, workflowId: B, definition: { state: "draft", semver: "1.1.0", currentRevision: 1, publishedRevision: null },
+            revision: { ...V2_READ_MODEL.revision, definitionHash: "hash-b", irSha256: "ir-b" }, runs: [], run: null },
+    };
+    const yamlOf = id => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: "${id === A ? "1.0.0" : "1.1.0"}" }\ninitial: poll\n`;
+    const { rows } = await routeOwned(page, { models, yamlOf });
+    rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "completed" }, { ...OWNED_ROWS[2], title: "Workflow: watch-v2", status: "pending" });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    const rowA = await revealRow(page, "watch-v2 #1");
+    await expect(rowA).toBeVisible();
+    await showWorkflowPane(page);
+    const main = workflowTab(page);
+    const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
+    const selected = () => picker.locator("option:checked").textContent();
+    const bar = main.locator(".ps-wf-bar-text").first();
+    const showB = () => main.locator('.ps-wf-unstarted [data-action="show-unstarted"]').first();
+    const expectA = async () => {
+        await expect(main).toHaveAttribute("data-view", "workflows");
+        await expect(main.getByRole("combobox", { name: "Workflow", exact: true })).toHaveValue(A);
+        await expect.poll(selected).toBe("watch-v2 · 1.0.0");
+    };
+    for (const how of ["mouse", "keyboard"]) {
+        // The Workflows list, and Show it on B.
+        await viewSwitch(main, "Workflows").click();
+        const shown = main.getByRole("combobox", { name: "Workflow", exact: true });
+        if (await shown.count()) await shown.selectOption("__all__");
+        await expect(main.locator(".ps-wf-unstarted")).toContainText("1.1.0");
+        if (how === "mouse") await showB().click();
+        else { await showB().focus(); await page.keyboard.press("Enter"); }
+        await expect(bar).toHaveAttribute("data-definition-child", B);
+        await expect.poll(selected).toBe("watch-v2 · 1.1.0 · draft");
+        // A's row in the session list.
+        const button = page.locator(`.ps-session-list-button[data-session-id="${A}"]`);
+        if (how === "mouse") await button.locator(".ps-session-row-content").first().click();
+        else { await button.focus(); await page.keyboard.press("Enter"); }
+        await expect(button).toHaveClass(/is-selected/);
+        await expectA();
+        // Its Definition and YAML are A's.
+        if (how === "mouse") await viewSwitch(main, "Definition").click();
+        else { await viewSwitch(main, "Definition").focus(); await page.keyboard.press("Enter"); }
+        await expect(bar).toHaveAttribute("data-definition-child", A);
+        await expect.poll(selected).toBe("watch-v2 · 1.0.0");
+        await main.getByRole("button", { name: "YAML", exact: true }).click();
+        await expect(main.locator(".ps-wf-yaml textarea")).toHaveValue(/version: "1\.0\.0"/);
+        await shot(page, `ui4-f2-row-after-show-it-${how}-1440`);
+        await main.getByRole("button", { name: "YAML", exact: true }).click();
+    }
+    expect(errors).toEqual([]);
+});
+
 // Removed (spec draft 3, D4 and F-7; 21 stage 1 "Publish removed"): the f-04 tests of the compact Publish review. The
 // draft fixture stays for the tests that use it.
 const PUBLISH_MODEL = {
