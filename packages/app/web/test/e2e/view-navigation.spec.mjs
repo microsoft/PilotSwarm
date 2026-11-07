@@ -235,6 +235,10 @@ test('a canvas with hidden chrome retains compact history, but mobile omits it',
     await expect(page.getByRole('button',{name:'Show chrome',exact:true})).toBeVisible();
     await expect(back(page)).toBeVisible(); await expect(forward(page)).toBeVisible();
     await expect(page.locator('.ps-canvas-layer.is-maximized')).toBeVisible();
+    await expect.poll(async () => {
+        const history = await saved(page);
+        return history.entries[history.index];
+    }).toMatchObject({ sessionId: sid(2), canvasOpen: true, canvasMaximized: true });
     const prior = (await saved(page)).index;
     await back(page).click();
     await expect.poll(async () => (await saved(page)).index).toBe(prior-1);
