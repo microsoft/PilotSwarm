@@ -188,6 +188,14 @@ for (const invalid of ["non-finite", "outside"]) {
             { phase: "end" },
         ]);
         expect(await liveCanvas(page).evaluate(el => el.style.transform)).toBe("");
+        if (invalid === "non-finite") {
+            await postPinch(frame, [
+                { phase: "start", x: 150, y: 180, d: 200 },
+                { phase: "move", x: Infinity, y: 180, d: 400 },
+                { phase: "end" },
+            ]);
+            expect(await liveCanvas(page).evaluate(el => el.style.transform)).toBe("");
+        }
         // A valid gesture proves the bridge is live, not silently inactive.
         await scaleCanvas(frame);
         await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toContain("scale(2)");
@@ -225,6 +233,7 @@ test("a new canvas revision starts with no pinch transform", async ({ page }) =>
     socket.send(JSON.stringify({ type: "sessionEvent", sessionId, event: { seq: 2, sessionId, eventType: "session.canvas_updated", data: { slot: 1, rev: 2, sizeBytes: PAGE.length, name: "revision-two" } } }));
     await expect(page.locator(".ps-mobile-canvas-layer")).toContainText("revision-two", { timeout: 20_000 });
     await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toBe("");
+    await expect(page.locator(".ps-mobile-canvas-layer .ps-canvas-pinch-reset")).toHaveCount(0);
 });
 
 for (const manual of [false, true]) {
