@@ -5,7 +5,7 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { createWebPilotSwarmController, PilotSwarmWebApp, CogGlyph, setPortalLinkOrigins, setPortalWorkspaceFiles } from "pilotswarm/ui-react";
 import { jsonMergePatch } from "pilotswarm-sdk/api";
-import { getTheme } from "pilotswarm/ui-core";
+import { getTheme, matchesMobileViewport } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
@@ -660,7 +660,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
 
     React.useEffect(() => {
         let active = true;
-        controller.start({ initialSessionId })
+        const landing = controller.start({ initialSessionId })
             .then(() => {
                 // An artifact deep link opens the chat AND the artifact, side by
                 // side — the transcript is the context that makes the artifact
@@ -689,9 +689,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                     return null;
                 }
                 if (!deepLinkTarget?.artifact) return null;
-                const isPhone = typeof window !== "undefined"
-                    && typeof window.matchMedia === "function"
-                    && window.matchMedia("(max-width: 920px)").matches;
+                const isPhone = matchesMobileViewport();
                 return controller.revealArtifact(initialSessionId, deepLinkTarget.artifact, isPhone
                     ? { fullscreen: true }
                     : { pane: true }).catch(() => null);
@@ -704,8 +702,12 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                     statusText: `Startup failed: ${error?.message || String(error)}`,
                 });
             });
+        // The view history records a deep link's view once it has landed:
+        // the session, and its artifact or canvas when the link names one.
+        if (initialSessionId) controller.deepLinkLanding = landing.then(() => true, () => false);
         return () => {
             active = false;
+            if (controller.deepLinkLanding) delete controller.deepLinkLanding;
             controller.stop().catch(() => {});
             transport.stop().catch(() => {});
         };

@@ -826,28 +826,45 @@ function toggleOwnerFilterItem(currentFilter, item, principal) {
         : { all: true, includeSystem: false, includeUnowned: false, includeMe: false, includeShared: false, ownerKeys: [] };
 }
 
-function getRenameSessionPrefix(session) {
+// The longest title a person may give a session. A named agent's prefix is
+// extra; the server (management-client MAX_SESSION_TITLE_LENGTH) keeps the same
+// limit. Folders keep their own, shorter one.
+export const RENAME_SESSION_MAX_LENGTH = 100;
+const RENAME_FOLDER_MAX_LENGTH = 60;
+
+function comparableAgentTitle(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
+}
+
+/**
+ * The named-agent prefix a rename keeps, by the same rule as the server
+ * (management-client getNamedAgentTitlePrefix): the longest of the agent's
+ * catalog `agentTitles` the title starts with, else the text before the first
+ * ": " of an agent session's title. A rename never drops a prefix.
+ */
+export function getRenameSessionPrefix(session, agentTitles = []) {
     if (!session?.agentId || session?.isSystem) return null;
     const currentTitle = String(session?.title || "").trim();
-    if (!currentTitle) return null;
-    const separatorIndex = currentTitle.indexOf(": ");
-    if (separatorIndex > 0) {
-        return currentTitle.slice(0, separatorIndex).trim() || null;
+    let known = null;
+    for (const candidate of agentTitles || []) {
+        const title = String(candidate || "").trim();
+        if (title && currentTitle.startsWith(`${title}: `) && (!known || title.length > known.length)) known = title;
     }
-    return null;
+    if (known) return known;
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex <= 0) return null;
+    return currentTitle.slice(0, separatorIndex).trim() || null;
 }
 
 function getRenameSessionMaxLength(session) {
-    const prefix = getRenameSessionPrefix(session);
-    if (!prefix) return 60;
-    return Math.max(1, 60 - `${prefix}: `.length);
+    return session?.isGroup ? RENAME_FOLDER_MAX_LENGTH : RENAME_SESSION_MAX_LENGTH;
 }
 
-function getRenameSessionEditableTitle(session) {
+export function getRenameSessionEditableTitle(session, agentTitles = []) {
     const currentTitle = String(session?.title || "").trim();
     if (!currentTitle) return "";
 
-    const prefix = getRenameSessionPrefix(session);
+    const prefix = getRenameSessionPrefix(session, agentTitles);
     if (prefix && currentTitle.startsWith(`${prefix}: `)) {
         const suffix = currentTitle.slice(`${prefix}: `.length).trim();
         if (!suffix || suffix === shortSessionIdValue(session?.sessionId)) return "";
@@ -1329,7 +1346,12 @@ function expandPromptAttachments(prompt, attachments = []) {
 }
 
 function clampRenameSessionValue(value, maxLength) {
-    return String(value || "").replace(/\r?\n/g, " ").slice(0, Math.max(0, Number(maxLength) || 0));
+    const text = String(value || "").replace(/\r?\n/g, " ");
+    const limit = Math.max(0, Number(maxLength) || 0);
+    if (text.length <= limit) return text;
+    // Keep surrogate pairs (emoji) whole at the limit, as the server does.
+    const end = limit > 0 && /[\uD800-\uDBFF]/u.test(text[limit - 1]) ? limit - 1 : limit;
+    return text.slice(0, end);
 }
 
 function displayWidth(value) {
@@ -2643,6 +2665,9 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "sessions/navigationIntent", sessionId: deepLinkSessionId });
         }
         await this.refreshSessions();
+        // Agent display titles decide how a named agent session's title reads
+        // in the list; fetched once, off the start path.
+        void this.loadAgentTitles().catch(() => {});
         this.catalogTimer = setInterval(() => {
             // Do not queue more catalog traffic behind a slow periodic read.
             if (this.catalogPollInFlight) return;
@@ -7532,6 +7557,7 @@ export class PilotSwarmUiController {
             agents = typeof this.transport.listCreatableAgents === "function"
                 ? await this.transport.listCreatableAgents()
                 : [];
+            this.rememberAgentTitles(agents);
         } catch (error) {
             // The previous step is deliberately still on screen. If the fetch
             // fails we own dismissing it — otherwise the flow strands on a step
@@ -8659,8 +8685,9 @@ export class PilotSwarmUiController {
             return;
         }
 
-        const value = getRenameSessionEditableTitle(session);
-        const agentTitlePrefix = getRenameSessionPrefix(session);
+        const agentTitles = this.cachedAgentTitles(session.agentId);
+        const value = getRenameSessionEditableTitle(session, agentTitles || []);
+        const agentTitlePrefix = getRenameSessionPrefix(session, agentTitles || []);
         const maxLength = getRenameSessionMaxLength(session);
         this.dispatch({
             type: "ui/modal",
@@ -8690,6 +8717,48 @@ export class PilotSwarmUiController {
                     ? `Rename title for ${agentTitlePrefix}; the agent-name prefix stays fixed`
                     : "Type a new session title and press Enter to save",
         });
+        // The agent's display title decides whether a prefix such as
+        // "Agent Smith" is the agent's name. Load it once; if it changes the
+        // answer while the person has not typed yet, correct the open box.
+        if (session.agentId && !agentTitles) {
+            void this.loadAgentTitles().then(() => {
+                const titles = this.cachedAgentTitles(session.agentId) || [];
+                const open = this.getState().ui.modal;
+                if (!open || open.type !== "renameSession" || open.sessionId !== sessionId || open.value !== value) return;
+                const nextPrefix = getRenameSessionPrefix(session, titles);
+                if (nextPrefix === agentTitlePrefix) return;
+                const nextValue = getRenameSessionEditableTitle(session, titles);
+                this.updateRenameSessionModal({ agentTitlePrefix: nextPrefix, value: nextValue, cursorIndex: nextValue.length });
+            }).catch(() => {});
+        }
+    }
+
+    /** Catalog display titles for an agent, or null until the catalog has loaded. */
+    cachedAgentTitles(agentId) {
+        const byAgent = this.getState().agentTitles;
+        if (!byAgent) return null;
+        return byAgent[comparableAgentTitle(agentId)] || [];
+    }
+
+    rememberAgentTitles(agents) {
+        if (!Array.isArray(agents)) return;
+        const byAgent = {};
+        for (const agent of agents) {
+            if (!agent?.name || !agent?.title) continue;
+            const key = comparableAgentTitle(agent.name);
+            (byAgent[key] ||= []).push(String(agent.title));
+        }
+        const current = this.getState().agentTitles;
+        if (current && JSON.stringify(current) === JSON.stringify(byAgent)) return;
+        this.dispatch({ type: "agents/titles", agentTitles: byAgent });
+    }
+
+    async loadAgentTitles() {
+        if (this.getState().agentTitles || typeof this.transport.listCreatableAgents !== "function") return;
+        this._agentTitlesLoad ||= this.transport.listCreatableAgents()
+            .then((agents) => this.rememberAgentTitles(agents))
+            .finally(() => { this._agentTitlesLoad = null; });
+        await this._agentTitlesLoad;
     }
 
     /**

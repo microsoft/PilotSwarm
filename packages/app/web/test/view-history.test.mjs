@@ -43,3 +43,33 @@ test("keyboard supports Option-produced characters and composer navigation witho
     for (const extra of [{ altKey: false }, { ctrlKey: true }, { metaKey: true }, { repeat: true }, { isComposing: true }, { getModifierState: () => true }, { target: { isContentEditable: true } }, { target: { closest: () => ({}) } }])
         assert.equal(navigationShortcut(event(extra)), 0);
 });
+
+test("a phone screen is part of the view: chat, diagnostics and canvas are separate stops", () => {
+    const h = createViewHistory();
+    h.visit({ ...view(1), mobilePane: "workspace" });
+    assert.equal(h.visit({ ...view(1), mobilePane: "inspector" }), true);
+    assert.equal(h.visit({ ...view(1), mobilePane: "activity" }), true);
+    assert.equal(h.entries.length, 3);
+    assert.equal(cleanView({ ...view(1), mobilePane: "anything" }).mobilePane, null);
+    const restored = createViewHistory(h.serialize());
+    assert.equal(restored.current.mobilePane, "activity");
+    assert.equal(restored.destination(-1).mobilePane, "inspector");
+});
+
+test("a phone's full-screen artifact preview is a stop of its own, and older entries still load", () => {
+    const h = createViewHistory();
+    h.visit({ ...view(1), mobilePane: "workspace" });
+    const preview = { ...view(1), mobilePane: "workspace", artifactSessionId: "1", artifactFilename: "report.html", artifactFullscreen: true };
+    assert.equal(h.visit(preview), true, "opening the preview is a visit");
+    assert.notEqual(viewKey(cleanView(preview)), viewKey(cleanView({ ...preview, artifactFullscreen: false })));
+    // The preview covers the screen under it: over chat or over the Files
+    // tab, it is the same place, so a deep link landing on it adds no stop.
+    assert.equal(viewKey(cleanView(preview)), viewKey(cleanView({ ...preview, mobilePane: "inspector" })));
+    assert.equal(h.visit({ ...preview, mobilePane: "inspector" }), false, "the same preview refreshes its stop");
+    assert.equal(h.index, 1);
+    const restored = createViewHistory(h.serialize());
+    assert.equal(restored.current.artifactFullscreen, true);
+    assert.equal(restored.destination(-1).artifactFullscreen, false);
+    // An entry saved before the field existed reads as the desktop pane.
+    assert.equal(cleanView({ mode: "workspace", sessionId: "9", artifactSessionId: "9", artifactFilename: "a.md" }).artifactFullscreen, false);
+});

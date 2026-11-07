@@ -15,9 +15,13 @@ async function openPagedTranscript(page, themeId = null) {
         data: { content: `Recent message ${index}: reading the review.` },
     }));
     await page.route(/\/events(?:\?|$)/, route => route.fulfill({ json: { ok: true, result: recent } }));
-    let releasePage;
+    // Every held page request waits for release(), including one that reaches
+    // the route after release() was called: the indicator can show before the
+    // browser hands the request to the route, and other reads share the path.
+    let released = false;
+    const waiting = [];
     await page.route(/\/events-before(?:\?|$)/, async route => {
-        await new Promise(resolve => { releasePage = resolve; });
+        if (!released) await new Promise(resolve => { waiting.push(resolve); });
         await route.fulfill({ json: { ok: true, result: [{
             sessionId, seq: 1, eventType: "user.message", createdAt: Date.now() - 1000,
             data: { content: "Earlier message" },
@@ -27,7 +31,7 @@ async function openPagedTranscript(page, themeId = null) {
     const pane = page.locator(".ps-chat-panel .ps-scroll-panel");
     await expect(pane.getByText("Recent message 299:")).toBeVisible();
     await pane.evaluate(node => { node.scrollTop = 0; });
-    return { pane, release: () => releasePage?.() };
+    return { pane, release: () => { released = true; waiting.splice(0).forEach(resolve => resolve()); } };
 }
 
 test("wheel paging shows the timeline spinner during the request", async ({ page }) => {

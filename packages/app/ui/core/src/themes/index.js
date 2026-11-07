@@ -20,6 +20,7 @@ import rustTheme from "./rust.js";
 import duroxideTheme from "./duroxide.js";
 import spongebobTheme from "./spongebob.js";
 import hearthTheme from "./hearth.js";
+import horizonDawnTheme from "./horizon-dawn.js";
 
 // Themes are ordered by GROUP first, then alphabetically inside it — the
 // picker renders a heading whenever the group changes, so this sort IS the
@@ -59,6 +60,7 @@ const THEMES = Object.freeze([
     duroxideTheme,
     spongebobTheme,
     hearthTheme,
+    horizonDawnTheme,
 ].sort(byGroupThenLabel));
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));

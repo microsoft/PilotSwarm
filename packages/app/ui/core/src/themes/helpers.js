@@ -71,7 +71,7 @@ export function isThemeLight(theme) {
     return getRelativeLuminance(background) >= 0.5;
 }
 
-export function createTheme({ id, label, description, group = THEME_GROUP_OTHER, page, terminal, tui = {}, icon = null, sound = null }) {
+export function createTheme({ id, label, description, group = THEME_GROUP_OTHER, page, terminal, tui = {}, icon = null, sound = null, codeFont = null }) {
     const baseTui = {
         background: page?.background || terminal?.background || "#000000",
         surface: terminal?.background || page?.background || "#000000",
@@ -116,6 +116,9 @@ export function createTheme({ id, label, description, group = THEME_GROUP_OTHER,
         // Optional ambient sound, by name. The portal decides whether and when
         // to play it; ui/core only carries the description.
         sound: sound || null,
+        // Optional default code font ("jetbrains"); the person's own choice
+        // in Appearance outranks it. Null keeps the system monospace stack.
+        codeFont: codeFont || null,
         page,
         terminal,
         tui: {

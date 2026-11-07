@@ -23,7 +23,23 @@ async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPa
         await page.route('**/api/auth/me', route => route.fulfill({json:{ok:true,principal:{provider:'dev',subject:'test',displayName:persona.displayName,email:persona.email},authorization:{allowed:true,role:'user'}}}));
     }
     const errors = [];
-    page.on('pageerror', e => errors.push(e.message));
+    // When a test loads a new page, WebKit cancels the old page's requests
+    // still in flight and reports each one as a page error ("... due to access
+    // control checks."). That is the unloading page, not a fault in the new
+    // one, so only that exact message, for this stub's own API, is ignored.
+    let navigating = false;
+    const cancelledByNavigation = message => navigating && process.env.PS_TEST_BROWSER === 'webkit'
+        && /due to access control checks\.$/.test(message) && message.includes(`${new URL(base).host}/api/`);
+    page.on('pageerror', e => { if (!cancelledByNavigation(e.message)) errors.push(e.message); });
+    page.on('load', () => { navigating = false; });
+    for (const method of ['goto', 'reload']) {
+        const original = page[method].bind(page);
+        page[method] = async (...args) => {
+            navigating = true;
+            try { return await original(...args); }
+            catch (error) { navigating = false; throw error; }
+        };
+    }
     let settings = { themeId, touchScale, moa: normalizeMoa({ version:3, activeDashboardId:'ops', dashboards:[
         { id:'ops', name:'Operations', tree:{id:'one',type:'chat',sessionId:sid(1)}, focusedPanelId:'one' },
         { id:'review', name:'Review', tree:{id:reviewPanelId,type:'chat',sessionId:sid(2)}, focusedPanelId:reviewPanelId },
@@ -43,6 +59,41 @@ async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPa
     return { errors };
 }
 async function select(page, i) { await row(page, i).click(); await expect(main(page)).toContainText(`Session ${i}`); }
+
+test('reload at a deep-linked session preserves the saved history index', async ({page}) => {
+    await fixture(page);
+    await select(page, 1);
+    await select(page, 2);
+    await back(page).click();
+    await expect(main(page)).toContainText('Session 1');
+    await expect.poll(async () => (await saved(page)).entries[(await saved(page)).index].sessionId).toBe(sid(1));
+    const before = await saved(page);
+    await page.evaluate(url => history.replaceState(null, '', url), base + `/?session=${sid(1)}`);
+    await page.reload({ waitUntil: 'load' });
+    await expect(main(page)).toContainText('Session 1');
+    await expect.poll(async () => (await saved(page)).index).toBe(before.index);
+    expect((await saved(page)).entries).toEqual(before.entries);
+});
+
+test('API access-control errors outside navigation are not suppressed', async ({page}) => {
+    const f = await fixture(page);
+    const message = `Blocked ${new URL(base).host}/api/test due to access control checks.`;
+    await page.evaluate(message => { queueMicrotask(() => { throw new Error(message); }); }, message);
+    await expect.poll(() => f.errors).toContain(message);
+});
+
+test('API errors after load remain visible while goto awaits network idle', async ({page}) => {
+    const f = await fixture(page);
+    const message = `Blocked ${new URL(base).host}/api/after-load due to access control checks.`;
+    await page.addInitScript(message => {
+        if (window !== window.top) return;
+        window.addEventListener('load', () => {
+            requestAnimationFrame(() => requestAnimationFrame(() => { throw new Error(message); }));
+        }, { once: true });
+    }, message);
+    await page.goto(base + `/?session=${sid(0)}`, { waitUntil: 'networkidle' });
+    expect(f.errors).toContain(message);
+});
 
 test('session Back/Forward preserves drafts and branches after new navigation', async ({page}) => {
     const f = await fixture(page);
@@ -184,6 +235,10 @@ test('a canvas with hidden chrome retains compact history, but mobile omits it',
     await expect(page.getByRole('button',{name:'Show chrome',exact:true})).toBeVisible();
     await expect(back(page)).toBeVisible(); await expect(forward(page)).toBeVisible();
     await expect(page.locator('.ps-canvas-layer.is-maximized')).toBeVisible();
+    await expect.poll(async () => {
+        const history = await saved(page);
+        return history.entries[history.index];
+    }).toMatchObject({ sessionId: sid(2), canvasOpen: true, canvasMaximized: true });
     const prior = (await saved(page)).index;
     await back(page).click();
     await expect.poll(async () => (await saved(page)).index).toBe(prior-1);
@@ -403,6 +458,9 @@ async function headerGeometry(page) {
 const geometryCases = ['rust','terminal-green','win95','winamp','ms-dos'].flatMap(theme => [1920,1280,921].map(width => ({theme,width})));
 geometryCases.push({theme:'terminal-green',width:1600}, {theme:'terminal-green',width:1024}, {theme:'rust',width:1440,admin:true,touchScale:true}, {theme:'win95',width:1024,admin:true,touchScale:true});
 for (const {theme,width,admin=false,touchScale=false} of geometryCases) test(`${theme} ${width}px: identical navigation coordinates across desktop screens`, async ({page}) => {
+    // Eleven screens and two screenshots can exhaust WebKit's whole-test
+    // budget under suite load. Individual geometry assertions remain at 5 s.
+    if (process.env.PS_TEST_BROWSER === 'webkit') test.setTimeout(60_000);
     await page.route('**/api/v1/**', async route => {
         const url=new URL(route.request().url());
         if(url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated')) return route.fulfill({json:{ok:true,result:[1,2].map(slot=>({seq:slot,eventType:'session.canvas_updated',data:{slot,rev:1,sizeBytes:128,name:`Long canvas display name for slot ${slot}`}}))}});
@@ -432,7 +490,13 @@ for (const {theme,width,admin=false,touchScale=false} of geometryCases) test(`${
     await expect(page.locator('.portal-header').getByRole('button',{name:'Zoom out',exact:true})).toBeVisible();
     await expect(page.locator('.portal-header').getByRole('combobox',{name:'Choose canvas',exact:true})).toBeVisible();
     await check('maximized canvas');
-    if(theme==='win95') await expect(page.locator('.portal-header').getByRole('button',{name:'Zoom out',exact:true})).toHaveCSS('color','rgb(255, 255, 255)');
+    // Win95 (PR 120): full-screen canvas controls in the header are raised grey
+    // buttons with black text, like every other Win95 control.
+    if(theme==='win95') {
+        const zoomOut=page.locator('.portal-header').getByRole('button',{name:'Zoom out',exact:true});
+        await expect(zoomOut).toHaveCSS('color','rgb(0, 0, 0)');
+        await expect(zoomOut).toHaveCSS('background-color','rgb(192, 192, 192)');
+    }
     await page.screenshot({path:test.info().outputPath('maximized-canvas.png')});
     await page.getByRole('button',{name:'Restore canvas',exact:true}).click();
     await check('restored canvas');

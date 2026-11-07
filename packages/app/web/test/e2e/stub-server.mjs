@@ -317,6 +317,22 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
         res.end(fs.readFileSync(file));
     });
 
+    // Tests close this stub after their assertions, sometimes while the page
+    // is still open. Drop active requests too, or close() waits on that page's
+    // connections and teardown can hang until the test timeout.
+    // Node drops an idle keep-alive connection after 5 s. When that lands
+    // just as the browser (or Playwright's route.fetch) reuses the same
+    // connection, the request fails with ECONNRESET. Keep idle connections
+    // well past any client's own idle limit; close() still drops them.
+    server.keepAliveTimeout = 120_000;
+    server.headersTimeout = 125_000;
+    const closeServer = server.close.bind(server);
+    server.close = (callback) => {
+        const result = closeServer(callback);
+        server.closeAllConnections?.();
+        return result;
+    };
+
     return new Promise((resolve) => {
         server.listen(port, "127.0.0.1", () => {
             resolve({

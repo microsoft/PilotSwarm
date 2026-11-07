@@ -8,7 +8,21 @@ test.use({ browserName: process.env.PS_TEST_BROWSER || "chromium",
 async function phoneFixture(page, { admin = true, themeId = "hearth" } = {}) {
     const errors = [];
     let profileSettings = { themeId, touchScale: false };
-    page.on("pageerror", error => errors.push(error.message));
+    // When a test reloads the page, WebKit cancels the old page's requests
+    // still in flight and reports each as a page error ("... due to access
+    // control checks."). That is the unloading page, not a fault in the new
+    // one: only that exact message, for the portal's own API, and only while
+    // a reload is under way, is ignored.
+    let navigating = false;
+    const cancelledByNavigation = message => navigating && process.env.PS_TEST_BROWSER === "webkit"
+        && /due to access control checks\.$/.test(message) && /\/api\//.test(message);
+    page.on("pageerror", error => { if (!cancelledByNavigation(error.message)) errors.push(error.message); });
+    page.on("load", () => { navigating = false; });
+    const reload = page.reload.bind(page);
+    page.reload = async (...args) => {
+        navigating = true;
+        try { return await reload(...args); } catch (error) { navigating = false; throw error; }
+    };
     const persona = { id: "phone-test", displayName: "Test User", email: "test@example.com" };
     await page.addInitScript(persona => sessionStorage.setItem("pilotswarm.devAuth.persona", JSON.stringify(persona)), persona);
     await page.route("**/api/portal-config", async route => {

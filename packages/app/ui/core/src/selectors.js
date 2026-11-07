@@ -682,13 +682,54 @@ function normalizeAgentTitleComparable(value) {
     return String(value || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
 }
 
-function isLikelyAgentTitlePrefix(prefix, session) {
-    const comparablePrefix = normalizeAgentTitleComparable(prefix);
+const PERSONA_TYPE = /^(.+?)\s+[–—-]\s+(.+)$/u;
+
+// The agent-name prefix of a named agent session's title, for DISPLAY: the
+// longest catalog display title (state.agentTitles, comparable agent id ->
+// titles) the title starts with; else the text before the first ": " when it
+// is the agent's id; else, when the catalog has no titles for this agent (not
+// loaded yet, or an agent nobody can create), a "Persona - Type" name. A
+// prefix the catalog does not vouch for is the person's own text and is shown
+// as typed. Returns { prefix, rest } or null.
+function findAgentTitlePrefix(session, currentTitle, agentTitles = null) {
     const comparableAgentId = normalizeAgentTitleComparable(session?.agentId);
-    return Boolean(comparablePrefix && comparableAgentId && comparablePrefix === comparableAgentId);
+    if (!comparableAgentId) return null;
+    const titles = Array.isArray(agentTitles?.[comparableAgentId]) ? agentTitles[comparableAgentId] : [];
+    let known = null;
+    for (const candidate of titles) {
+        const title = String(candidate || "").trim();
+        if (title && currentTitle.startsWith(`${title}: `) && (!known || title.length > known.length)) known = title;
+    }
+    if (known) return { prefix: known, rest: currentTitle.slice(known.length + 2).trim() };
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex <= 0) return null;
+    const prefix = currentTitle.slice(0, separatorIndex).trim();
+    const rest = currentTitle.slice(separatorIndex + 2).trim();
+    if (normalizeAgentTitleComparable(prefix) === comparableAgentId) return { prefix, rest };
+    if (titles.length === 0 && PERSONA_TYPE.test(prefix)) return { prefix, rest };
+    return null;
 }
 
-function splitAgentPrefixedSessionTitle(session) {
+function isLikelyAgentTitlePrefix(prefix, session, agentTitles = null) {
+    const comparablePrefix = normalizeAgentTitleComparable(prefix);
+    const comparableAgentId = normalizeAgentTitleComparable(session?.agentId);
+    if (!comparablePrefix || !comparableAgentId) return false;
+    if (comparablePrefix === comparableAgentId) return true;
+    const titles = agentTitles?.[comparableAgentId];
+    return Array.isArray(titles) && titles.some((title) => normalizeAgentTitleComparable(title) === comparablePrefix);
+}
+
+// A recognised agent name shown after the title. A "Persona - Type" name
+// reads title, then type, then persona however it was recognised, so a row
+// does not change shape when the catalog arrives.
+function agentTitleParts(prefix) {
+    const persona = PERSONA_TYPE.exec(prefix);
+    return persona && persona[1].trim() && persona[2].trim()
+        ? { agentTitle: persona[1].trim(), typeTitle: persona[2].trim() }
+        : { agentTitle: prefix };
+}
+
+function splitAgentPrefixedSessionTitle(session, agentTitles = null) {
     if (!session?.agentId || session?.isSystem) return null;
     const currentTitle = String(session?.title || "").trim();
     if (!currentTitle) return null;
@@ -698,38 +739,22 @@ function splitAgentPrefixedSessionTitle(session) {
     if (suffixIndex > 0) {
         const displayTitle = currentTitle.slice(0, suffixIndex).trim();
         const agentTitle = currentTitle.slice(suffixIndex + suffixSeparator.length).trim();
-        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session)) {
+        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session, agentTitles)) {
+            // The older stored shape "<type>: <title> · <persona>".
+            const typeIndex = displayTitle.indexOf(": ");
+            const typeTitle = typeIndex > 0 ? displayTitle.slice(0, typeIndex).trim() : "";
+            const userTitle = typeIndex > 0 ? displayTitle.slice(typeIndex + 2).trim() : "";
+            if (typeTitle && userTitle) return { displayTitle: userTitle, agentTitle, typeTitle };
             return { displayTitle, agentTitle };
         }
     }
 
-    const dashMatch = /^(.+?)\s+[–—-]\s+(.+)$/u.exec(currentTitle);
-    if (dashMatch) {
-        const agentTitle = dashMatch[1].trim();
-        const displayTitle = dashMatch[2].trim();
-        if (agentTitle && displayTitle) return { displayTitle, agentTitle };
-    }
-
-    const separatorIndex = currentTitle.indexOf(": ");
-    if (separatorIndex > 0) {
-        const agentTitle = currentTitle.slice(0, separatorIndex).trim();
-        const displayTitle = currentTitle.slice(separatorIndex + 2).trim();
-        if (displayTitle && isLikelyAgentTitlePrefix(agentTitle, session)) {
-            return { displayTitle, agentTitle };
-        }
-    }
-
-    return null;
-}
-
-function splitTypedSessionTitle(displayTitle) {
-    const title = String(displayTitle || "");
-    const separatorIndex = title.indexOf(": ");
-    if (separatorIndex <= 0) return null;
-    const typeTitle = title.slice(0, separatorIndex).trim();
-    const userTitle = title.slice(separatorIndex + 2).trim();
-    if (!typeTitle || !userTitle) return null;
-    return { userTitle, typeTitle };
+    // "<agent name>: <title>": everything after the agent name is the title
+    // the person gave (or the session id), shown whole and in order; a " - "
+    // or ": " the person typed is never read as structure.
+    const found = findAgentTitlePrefix(session, currentTitle, agentTitles);
+    if (!found || !found.rest) return null;
+    return { displayTitle: found.rest, ...agentTitleParts(found.prefix) };
 }
 
 // Titles are plain text everywhere they are rendered (terminal runs, DOM
@@ -757,31 +782,35 @@ export function decodeHtmlEntitiesForDisplay(value) {
     return text;
 }
 
-function buildSessionDisplayTitle(session) {
-    // Decode at the single exit so the agent-prefixed and typed-title paths
-    // are covered too, not just the bare title.
-    return decodeHtmlEntitiesForDisplay(buildRawSessionDisplayTitle(session));
+/** A session's title as the list shows it (agent name after the title). */
+export function sessionDisplayTitle(session, agentTitles = null) {
+    return buildSessionDisplayTitle(session, agentTitles);
 }
 
-function buildRawSessionDisplayTitle(session) {
+function buildSessionDisplayTitle(session, agentTitles = null) {
+    // Decode at the single exit so the agent-prefixed and typed-title paths
+    // are covered too, not just the bare title.
+    return decodeHtmlEntitiesForDisplay(buildRawSessionDisplayTitle(session, agentTitles));
+}
+
+function buildRawSessionDisplayTitle(session, agentTitles = null) {
     const title = String(session?.title || "").trim();
-    const splitTitle = splitAgentPrefixedSessionTitle(session);
+    const splitTitle = splitAgentPrefixedSessionTitle(session, agentTitles);
     if (!splitTitle) return title;
-    const typedTitle = splitTypedSessionTitle(splitTitle.displayTitle);
-    if (typedTitle) {
-        return `${typedTitle.userTitle} · ${typedTitle.typeTitle} · ${splitTitle.agentTitle}`;
+    if (splitTitle.typeTitle) {
+        return `${splitTitle.displayTitle} · ${splitTitle.typeTitle} · ${splitTitle.agentTitle}`;
     }
     return `${splitTitle.displayTitle} · ${splitTitle.agentTitle}`;
 }
 
-function buildSessionTitle(session, brandingTitle) {
+function buildSessionTitle(session, brandingTitle, agentTitles = null) {
     const shortId = shortSessionId(session?.sessionId);
 
     if (session?.isSystem) {
         return `${canonicalSystemTitle(session, brandingTitle)} (${shortId})`;
     }
 
-    const title = buildSessionDisplayTitle(session);
+    const title = buildSessionDisplayTitle(session, agentTitles);
     if (!title) return `(${shortId})`;
     return title.includes(shortId) ? title : `${title} (${shortId})`;
 }
@@ -1099,7 +1128,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     // the title on the line and expand id·age·model·ctx only when selected.
     const rawTitle = session?.isSystem
         ? canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")
-        : buildSessionDisplayTitle(session);
+        : buildSessionDisplayTitle(session, state.agentTitles);
     const hasRealTitle = Boolean(session?.isSystem || session?.isGroup || (rawTitle && rawTitle.trim()));
 
     const titleRuns = [...prefixRuns];
@@ -1531,6 +1560,9 @@ export function selectSessionRows(state) {
             // built under one branding to a caller using another, and the root
             // session's name would flip between them.
             state.branding?.title,
+            // Agent display titles decide how a named agent's title is
+            // ordered; the row is rebuilt once the catalog arrives.
+            state.agentTitles,
             // The canvas marker below reads these. Without them the memo hands
             // back a row built before the draw and the marker never appears.
             state.canvas?.bySessionId?.[entry.sessionId],
@@ -3913,7 +3945,7 @@ export function selectChatPaneChrome(state, options = {}) {
     const title = buildPaneTitleRuns(
         session.isSystem
             ? `⚙ ${canonicalSystemTitle(session, state.branding?.title || "PilotSwarm")}`
-            : (buildSessionDisplayTitle(session) || "Chat"),
+            : (buildSessionDisplayTitle(session, state.agentTitles) || "Chat"),
         mainColor,
     );
 
@@ -7849,6 +7881,20 @@ export function selectRenameSessionModal(state, maxWidth = 76) {
             color: "white",
             bold: true,
         }],
+        // The limit is on the person's text only, so the count never
+        // includes the agent-name prefix. At the limit, say so: the box
+        // stops taking characters and that must not look like a fault.
+        ...(Number(modal.maxLength) > 0
+            ? [[{
+                text: "Length: ",
+                color: "gray",
+            }, {
+                text: value.length >= Number(modal.maxLength)
+                    ? `${value.length} / ${Number(modal.maxLength)}, the limit`
+                    : `${value.length} / ${Number(modal.maxLength)}`,
+                color: value.length >= Number(modal.maxLength) ? "yellow" : "gray",
+            }]]
+            : []),
         ...(agentTitlePrefix
             ? [[{
                 text: "Named-agent prefix stays fixed.",
@@ -7857,8 +7903,15 @@ export function selectRenameSessionModal(state, maxWidth = 76) {
             : []),
     ];
 
+    const maxLength = Number(modal.maxLength) > 0 ? Number(modal.maxLength) : 0;
     return {
         title: modal.title || "Rename Session",
+        // The portal shows this under the field; the terminal draws the same
+        // count in the details above.
+        lengthLine: maxLength
+            ? (value.length >= maxLength ? `${value.length} / ${maxLength} characters, the limit` : `${value.length} / ${maxLength} characters`)
+            : null,
+        atLimit: Boolean(maxLength) && value.length >= maxLength,
         value,
         cursorIndex: Math.max(0, Math.min(Number(modal.cursorIndex) || 0, value.length)),
         placeholder: agentTitlePrefix
@@ -8180,7 +8233,7 @@ export function selectArtifactUploadModal(state, maxWidth = 82) {
     const sessionId = modal.sessionId || state.ui.promptAttachments?.[0]?.sessionId || state.sessions?.activeSessionId || null;
     const targetSession = sessionId ? state.sessions?.byId?.[sessionId] || null : null;
     const targetLabel = sessionId
-        ? (targetSession ? buildSessionTitle(targetSession, state.branding?.title) : shortSessionId(sessionId))
+        ? (targetSession ? buildSessionTitle(targetSession, state.branding?.title, state.agentTitles) : shortSessionId(sessionId))
         : "A new session will be created on upload";
 
     const detailsLines = [
@@ -8519,7 +8572,7 @@ export function selectArtifactPickerModal(state, maxWidth = 88) {
         const download = state.files?.bySessionId?.[selectedItem.sessionId]?.downloads?.[selectedItem.filename] || null;
         detailsLines = [
             [{ text: selectedItem.filename, color: "white", bold: true }],
-            [{ text: session ? buildSessionTitle(session, state.branding?.title) : shortSessionId(selectedItem.sessionId), color: "gray" }],
+            [{ text: session ? buildSessionTitle(session, state.branding?.title, state.agentTitles) : shortSessionId(selectedItem.sessionId), color: "gray" }],
             ...(download?.localPath
                 ? [[{ text: `Saved to: ${download.localPath}`, color: "white" }]]
                 : modal.exportDirectory
