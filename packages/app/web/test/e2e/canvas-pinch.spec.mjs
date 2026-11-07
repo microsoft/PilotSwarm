@@ -21,17 +21,7 @@ const PAGE = `<!doctype html><html><body style="margin:0;background:#123">
 
 test("pinch zooms inside the box, two fingers move it, 1:1 resets", async ({ page, context }) => {
     test.skip(browserName !== "chromium", "multi-touch input needs the Chromium protocol");
-    await page.route("**/api/v1/**", async (route) => {
-        const url = new URL(route.request().url());
-        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
-            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: PAGE.length, name: "pinch-test" } }] } });
-        }
-        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) return route.fulfill({ contentType: "text/html", body: PAGE });
-        return route.fallback();
-    });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
-    await page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first().click();
+    await openCanvasWithHistory(page);
     const frameEl = page.locator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)");
     await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas", { timeout: 15_000 });
     const box = await frameEl.boundingBox();
@@ -205,25 +195,34 @@ for (const invalid of ["non-finite", "outside"]) {
 }
 
 test("changing canvas zoom clears pinch translation and magnification", async ({ page }) => {
-    const { frame } = await openCanvasWithHistory(page);
+    await openCanvasWithHistory(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const canvas = page.locator(".ps-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)");
+    await expect(canvas.contentFrame().locator("h1")).toHaveText("Canvas");
+    const frame = page.frames().find(f => f !== page.mainFrame() && f.url() !== "about:blank");
     await scaleCanvas(frame);
     await postPinch(frame, [{ phase: "end" }]);
-    await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toContain("scale(2)");
-    await page.locator(".ps-mobile-canvas-layer").getByRole("button", { name: "Zoom in", exact: true }).click();
-    await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).not.toContain("translate(");
-    await expect(liveCanvas(page)).not.toHaveCSS("transform", "none");
-    await expect(page.locator(".ps-mobile-canvas-layer .ps-canvas-pinch-reset")).toHaveCount(0);
+    await expect.poll(() => canvas.evaluate(el => el.style.transform)).toContain("scale(2)");
+    await page.getByRole("button", { name: "Zoom in", exact: true }).first().click();
+    await expect.poll(() => canvas.evaluate(el => el.style.transform)).toBe("scale(1.1)");
+    await expect(page.locator(".ps-canvas-layer .ps-canvas-pinch-reset")).toHaveCount(0);
 });
 
 test("a new canvas revision starts with no pinch transform", async ({ page }) => {
+    let socket;
+    await page.routeWebSocket("**", ws => {
+        socket = ws;
+        ws.onMessage(message => {
+            const data = JSON.parse(message);
+            if (data.type === "subscribeSession") ws.send(JSON.stringify({ type: "subscribedSession", sessionId: data.sessionId }));
+        });
+    });
     const { frame } = await openCanvasWithHistory(page);
     await scaleCanvas(frame);
     await postPinch(frame, [{ phase: "end" }]);
     await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toContain("scale(2)");
-    await page.route("**/api/v1/**/events-before?**", route => {
-        if (!route.request().url().includes("session.canvas_updated")) return route.fallback();
-        return route.fulfill({ json: { ok: true, result: [{ seq: 2, eventType: "session.canvas_updated", data: { slot: 1, rev: 2, sizeBytes: PAGE.length, name: "revision-two" } }] } });
-    });
+    expect(socket).toBeTruthy();
+    socket.send(JSON.stringify({ type: "sessionEvent", sessionId, event: { seq: 2, sessionId, eventType: "session.canvas_updated", data: { slot: 1, rev: 2, sizeBytes: PAGE.length, name: "revision-two" } } }));
     await expect(page.locator(".ps-mobile-canvas-layer")).toContainText("revision-two", { timeout: 20_000 });
     await expect.poll(() => liveCanvas(page).evaluate(el => el.style.transform)).toBe("");
 });

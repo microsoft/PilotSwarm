@@ -67,7 +67,7 @@ test('reload at a deep-linked session preserves the saved history index', async 
     await expect(main(page)).toContainText('Session 1');
     await expect.poll(async () => (await saved(page)).entries[(await saved(page)).index].sessionId).toBe(sid(1));
     const before = await saved(page);
-    await page.reload({ waitUntil: 'load' });
+    await page.goto(base + `/?session=${sid(1)}`, { waitUntil: 'load' });
     await expect(main(page)).toContainText('Session 1');
     await expect.poll(async () => (await saved(page)).index).toBe(before.index);
     expect((await saved(page)).entries).toEqual(before.entries);

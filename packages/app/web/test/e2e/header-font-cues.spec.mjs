@@ -28,8 +28,11 @@ test("the desktop toolbar changes from two rows to one at 1040 container pixels"
 
 test("code uses the bundled mono face and loadingdone remeasures pane columns", async ({ page }) => {
     const externalFonts = [];
+    const bundledFonts = [];
     page.on("request", req => {
-        if (req.resourceType() === "font" && new URL(req.url()).origin !== base) externalFonts.push(req.url());
+        if (req.resourceType() !== "font") return;
+        if (new URL(req.url()).origin !== base) externalFonts.push(req.url());
+        else bundledFonts.push(req.url());
     });
     await page.goto(base + `/?session=${sid(0)}`);
     const code = page.locator(".ps-chat-panel code").first();
@@ -46,7 +49,7 @@ test("code uses the bundled mono face and loadingdone remeasures pane columns", 
     expect(externalFonts).toEqual([]);
     const css = await page.locator('link[rel="stylesheet"]').first().evaluate(async el => (await fetch(el.href)).text());
     expect(css).toMatch(/font-family:["']?PS JetBrains Mono/);
-    expect(css).toMatch(/data:font\/woff2;base64/);
+    expect(bundledFonts.some(url => /\/assets\/jetbrains-mono-.*\.woff2$/.test(url))).toBe(true);
     // Observe the real measurement primitive, not a product-only test hook.
     await page.evaluate(() => {
         window.columnProbes = 0;
@@ -88,6 +91,10 @@ async function soundFixture(page) {
     await page.route("**/api/v1/me/profile", route => route.fulfill({ json: { ok: true, result: {
         profileSettings: { themeId: "horizon-dawn", themeSound: { on: true, volume: 40 } },
     } } }));
+    await page.route("**/api/v1/bootstrap", route => route.fulfill({ json: { ok: true, result: {
+        auth: { principal: { provider: "none", subject: "test", email: "test@example.com" }, authorization: { role: "user", allowed: true } },
+    } } }));
+    await page.route("**/access", route => route.fulfill({ json: { ok: true, result: { canManage: true, canWrite: true, relation: "owner", owner: { provider: "none", subject: "test" } } } }));
     await page.goto(base + `/?session=${sid(0)}`);
     await expect(page.locator(".ps-chat-panel textarea")).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.audioNotes.length)).toBeGreaterThan(0);
@@ -104,8 +111,13 @@ test("an empty Send has no cue, while an enabled tab ticks", async ({ page }) =>
     await page.locator(".ps-chat-panel .ps-send-button").click();
     expect(await cueNotes(page, "send")).toBe(sends);
     const ticks = await cueNotes(page, "tick");
-    await page.getByRole("tab", { name: "Activity", exact: true }).first().click();
+    await page.locator(`.ps-session-list-button[data-session-id="${sid(0)}"]`).click();
+    await page.getByRole("button", { name: /^Manage session/ }).first().click();
+    const beforeTab = await cueNotes(page, "tick");
+    await page.getByRole("tab", { name: "General", exact: true }).click();
+    await expect.poll(() => cueNotes(page, "tick")).toBeGreaterThan(beforeTab);
     await expect.poll(() => cueNotes(page, "tick")).toBeGreaterThan(ticks);
+    await page.locator(".ps-share-modal").getByRole("button", { name: "Close", exact: true }).click();
     await page.locator(".ps-chat-panel textarea").fill("a real outgoing message");
     await page.locator(".ps-chat-panel .ps-send-button").click();
     await expect.poll(() => cueNotes(page, "send")).toBeGreaterThan(sends);

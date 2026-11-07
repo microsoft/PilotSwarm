@@ -53,6 +53,10 @@ test("Manage keeps the catalog prefix outside the 100-character input and saves 
         let title = "Ops: Fleet Watcher: nightly";
         let readsAfterSave = 0;
         const writes = [];
+        await page.route("**/api/v1/bootstrap", route => route.fulfill({ json: { ok: true, result: {
+            auth: { principal: { provider: "none", subject: "test", email: "test@example.com" }, authorization: { role: "user", allowed: true } },
+        } } }));
+        await page.route("**/access", route => route.fulfill({ json: { ok: true, result: { canManage: true, canWrite: true, relation: "owner", owner: { provider: "none", subject: "test" } } } }));
         await page.route("**/api/v1/agents", route => route.fulfill({ json: { ok: true, result: [{ name: "ops", title: "Ops: Fleet Watcher" }] } }));
         await page.route(url => /\/api\/.*\/sessions(?:\/[^/]+)?$/.test(url.pathname), async route => {
             if (route.request().method() === "PATCH") {
@@ -74,6 +78,7 @@ test("Manage keeps the catalog prefix outside the 100-character input and saves 
         await page.goto(base + `/?session=${id}`);
         const row = page.locator(`.ps-session-list-button[data-session-id="${id}"]`);
         await expect(row).toContainText("nightly");
+        await row.click();
         await page.getByRole("button", { name: /^Manage session/ }).first().click();
         const modal = page.locator(".ps-share-modal");
         const input = modal.getByRole("textbox", { name: "Session title after Ops: Fleet Watcher", exact: true });

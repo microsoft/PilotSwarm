@@ -12,6 +12,8 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
+test.use({ browserName: process.env.PS_TEST_BROWSER || "chromium" });
+
 // These used to target `.ps-rich-chat`, the rich renderer, served by asking the
 // stub for a "workspace-dark-rich" theme. Both are gone: the rich renderer was
 // retired and that theme no longer exists, so the selector matched nothing and
@@ -99,6 +101,7 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
         ref.remove();
         return { ms: Math.min(relayout(panel), relayout(panel), relayout(panel)), reference };
     });
+    console.log(`TRANSCRIPT-PERF ${JSON.stringify({ browser: process.env.PS_TEST_BROWSER || "chromium", ms, reference, ratio: ms / reference, blocks })}`);
     // MEASURED (Nov 2026, suite pods): the portal re-lays out 1,650 lines in
     // 21-24 ms, 1.8-3.0x the plain-lines reference; on a fast laptop the same
     // portal takes 6-8 ms. A fixed millisecond ceiling therefore failed on

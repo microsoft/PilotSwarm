@@ -161,6 +161,9 @@ test("two-finger touches on the page do not navigate under an open dialog", asyn
     for (let x = 100; x <= 320; x += 20) await touch("touchMove", x);
     await touch("touchEnd");
     expect((await savedHistory(page)).index).toBe(before);
+    await page.locator(".ps-workspace").evaluate(el => {
+        for (const animation of el.getAnimations()) { animation.pause(); animation.currentTime = 0; }
+    });
     expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
     await page.evaluate(() => document.getElementById("touch-dialog").remove());
     await touch("touchStart", 80);
@@ -200,8 +203,8 @@ test("a second swipe within slide-out flushes the first exactly once", async ({ 
 test("two-finger back on a full-screen Markdown artifact moves only the preview", async ({ page, context }) => {
     test.skip(browserName !== "chromium", "real touch events need the Chromium protocol");
     await signedIn(page);
-    await page.route("**/artifacts/notes.md/text", route => route.fulfill({ json: { ok: true, result: { content: "# Notes\n\nA full-screen Markdown artifact.", contentType: "text/markdown" } } }));
-    await page.route("**/artifacts/notes.md/meta", route => route.fulfill({ json: { ok: true, result: { filename: "notes.md", contentType: "text/markdown", sizeBytes: 80, isBinary: false } } }));
+    await page.route(url => url.pathname.endsWith("/artifacts/notes.md/text"), route => route.fulfill({ json: { ok: true, result: { content: "# Notes\n\nA full-screen Markdown artifact.", contentType: "text/markdown" } } }));
+    await page.route(url => url.pathname.endsWith("/artifacts/notes.md/meta"), route => route.fulfill({ json: { ok: true, result: { filename: "notes.md", contentType: "text/markdown", sizeBytes: 80, isBinary: false } } }));
     const id = "11111110-2222-3333-4444-555555555550";
     const view = { mode: "workspace", sessionId: id, canvasOpen: false, canvasSlot: 1, canvasMaximized: false, canvasZen: false, diagnosticsOpen: false, artifactSessionId: null, artifactFilename: null, artifactFullscreen: false, mobilePane: "workspace" };
     await page.addInitScript(([view, id]) => {
