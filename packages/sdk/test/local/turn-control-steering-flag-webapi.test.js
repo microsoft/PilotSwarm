@@ -1,13 +1,16 @@
 /**
- * The sessions.steering flag end to end through the real Web API (session
- * turn control, design 4.3 and 4.11).
+ * The always-on sessions.steering flag end to end through the real Web API
+ * (session turn control, design 4.3 and 4.11).
  *
  * The real portal server (startServer: Express, /api/v1, dev sign-in) runs
  * against the test schema with no embedded workers; a real worker with the
  * scripted model runs the session's turns. A person's Steer and Stop, the
- * admin's cluster flag changes and the viewer's flag view all go through
- * HTTP with dev tokens, exactly as the portal sends them. The session's
- * turns block in a test tool, so a turn is running when the person acts.
+ * refused flag changes and the viewer's flag view all go through HTTP with
+ * dev tokens, exactly as the portal sends them. The session's turns block in
+ * a test tool, so a turn is running when the person acts.
+ *
+ * The migrated cluster Off row stays in the database; the flag is always on
+ * regardless, and no admin or user can turn it off.
  */
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -88,8 +91,8 @@ function persona(apiUrl, id) {
     };
 }
 
-describe("turn control: the steering flag through the real Web API", () => {
-    it("off by default, on and off by the admin, never by a user; Stop is never gated", { timeout: TIMEOUT }, async () => {
+describe("turn control: the always-on steering flag through the real Web API", () => {
+    it("on for everyone with no setting, cannot be changed by an admin or a user, Steer delivered, Stop works", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const block = blockingTool();
         await withScriptedModel(env, { tools: [block.tool], respond: responder }, async ({ client, model, qualifiedModel }) => {
@@ -125,42 +128,32 @@ describe("turn control: the steering flag through the real Web API", () => {
                     await expect.poll(async () => (await who("GET", "/management/users/me/features")).status, { timeout: 10_000 }).toBe(200);
                 }
 
+                // ── 1. Always on for every viewer, with the notice.
+                for (const who of [alice, ada]) {
+                    expect(await myFlag(who)).toMatchObject({ effective: true, alwaysOn: true, source: "always_on",
+                        notice: "This switch is now always on and may be removed in a future release." });
+                }
+
+                // ── 2. Nobody can change it: the admin gets 409 FEATURE_ALWAYS_ON;
+                // a user cannot reach the cluster route and gets 409 for a preference.
+                for (const enabled of [false, true]) {
+                    const refused = await setCluster(ada, enabled);
+                    expect(refused.status).toBe(409);
+                    expect(refused.body.error).toMatchObject({ code: "FEATURE_ALWAYS_ON" });
+                }
+                expect((await ada("DELETE", `/management/features/cluster/${FLAG}?expectedRevision=${(await myFlag(ada)).revision}&requestId=${randomUUID()}`)).status).toBe(409);
+                expect((await setCluster(alice, false)).status).toBe(403);
+                const pref = await alice("PUT", `/management/users/me/features/${FLAG}`, {
+                    enabled: false, expectedRevision: (await myFlag(alice)).revision, requestId: randomUUID(),
+                });
+                expect(pref.status).toBe(409);
+                expect(pref.body.error).toMatchObject({ code: "FEATURE_ALWAYS_ON" });
+                expect(await myFlag(alice)).toMatchObject({ effective: true, source: "always_on", user: null });
+
+                // ── 3. The owner's steer is accepted and delivered.
                 const session = await client.createSession({ model: qualifiedModel, owner: ALICE, tools: [block.tool] });
                 const sessionId = session.sessionId;
-
-                // ── 1. Off by default: Steer refused and nothing recorded; Stop works.
-                expect(await myFlag(alice)).toMatchObject({ effective: false });
-                expect(await myFlag(ada)).toMatchObject({ effective: false });
                 await session.send("PTW-FIRST blocking turn");
-                await block.started;
-                const offSteer = await steer(sessionId, "PTW-STEER while off");
-                expect(offSteer).toEqual({ status: 200, body: { ok: true, result: { outcome: "steering_disabled" } } });
-                expect(await steers(sessionId)).toEqual([]);
-
-                // ── 4. A user cannot change the cluster flag, and with
-                // allowUserOverride false a user preference does not enable it.
-                expect((await setCluster(alice, true)).status).toBe(403);
-                const pref = await alice("PUT", `/management/users/me/features/${FLAG}`, {
-                    enabled: true, expectedRevision: (await myFlag(alice)).revision, requestId: randomUUID(),
-                });
-                expect(pref.status).toBe(200);
-                expect(await myFlag(alice)).toMatchObject({ effective: false, userOverrideIgnored: true });
-                expect((await steer(sessionId, "PTW-STEER with a user preference")).body.result).toEqual({ outcome: "steering_disabled" });
-                expect(await steers(sessionId)).toEqual([]);
-
-                const stop = await alice("POST", `/management/sessions/${sessionId}/stop-turn`, { options: { reason: "stop while steering is off" } });
-                expect(stop.status).toBe(200);
-                expect(stop.body.result).toMatchObject({ outcome: "stopped", controlSeq: expect.any(Number) });
-                await waitForSessionState(catalog, sessionId, "idle", WAIT);
-                block.release();
-
-                // ── 2. The admin turns it on: the owner's steer is accepted and delivered.
-                block.rearm();
-                const on = await setCluster(ada, true);
-                expect(on.status).toBe(200);
-                expect(await myFlag(alice)).toMatchObject({ effective: true });
-                expect(await myFlag(ada)).toMatchObject({ effective: true });
-                await session.send("PTW-SECOND blocking turn");
                 await block.started;
                 const requestId = randomUUID();
                 const accepted = await steer(sessionId, "PTW-STEER use metric units", requestId);
@@ -183,15 +176,20 @@ describe("turn control: the steering flag through the real Web API", () => {
                 expect(recorded[0].data.actor).toMatchObject({ kind: "user", provider: "dev", subject: "alice" });
                 const followed = model.requests.filter((r) => r.session && r.position.lastUserText.includes("PTW-STEER use metric units"));
                 expect(followed.at(-1)?.answer).toEqual({ content: "followed the steer" });
-
-                // ── 3. The admin turns it off again: a new request id is
-                // refused; a retry of the accepted request id gets its first answer.
-                expect((await setCluster(ada, false)).status).toBe(200);
-                expect(await myFlag(alice)).toMatchObject({ effective: false });
-                expect((await steer(sessionId, "PTW-STEER after off")).body.result).toEqual({ outcome: "steering_disabled" });
+                // A retry of the accepted request id gets its first answer and records nothing.
                 const retry = await steer(sessionId, "PTW-STEER use metric units", requestId);
                 expect(retry.body.result).toEqual({ outcome: "accepted", steerId, turn: accepted.body.result.turn, repeat: true });
                 expect(await steers(sessionId)).toHaveLength(1);
+
+                // ── 4. Stop works as before.
+                block.rearm();
+                await session.send("PTW-SECOND blocking turn");
+                await block.started;
+                const stop = await alice("POST", `/management/sessions/${sessionId}/stop-turn`, { options: { reason: "stop a running turn" } });
+                expect(stop.status).toBe(200);
+                expect(stop.body.result).toMatchObject({ outcome: "stopped", controlSeq: expect.any(Number) });
+                await waitForSessionState(catalog, sessionId, "idle", WAIT);
+                block.release();
             } finally {
                 block.release();
                 try {

@@ -59,7 +59,7 @@ describe("scripted-model harness", () => {
             }] };
             return { content: "MCP_NOT_AVAILABLE" };
         };
-        const workerOptions = { pluginDirs: [pluginDir], nativeSubagents: "off" };
+        const workerOptions = { pluginDirs: [pluginDir] };
         await withScriptedModel(env, { respond, worker: workerOptions }, async ({ client, worker, model, modelProvidersPath, qualifiedModel }) => {
             const session = await client.createSessionForAgent("analyst", { model: qualifiedModel, owner });
             expect(await session.sendAndWait("Discover the optional notes MCP.", TIMEOUT)).toBe("MCP_DISCOVERED");

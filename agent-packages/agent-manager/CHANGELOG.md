@@ -1,5 +1,12 @@
 # Changelog — agent-manager
 
+## 1.3.1
+
+### Changed
+
+- Feature policy guidance: flags listed with `alwaysOn: true` (native tasks,
+  Base Agent V2 and steering) are always on and cannot be changed.
+
 ## 1.3.0
 
 ### Changed

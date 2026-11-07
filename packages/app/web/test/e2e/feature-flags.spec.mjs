@@ -1,14 +1,17 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
-const KEY = "copilot.native_tasks";
+// Generic flag machinery runs on a normal (not always-on) flag.
+const KEY = "debug.enable_model_event_logging";
+const ALWAYS_ON_KEY = "sessions.steering";
+const NOTICE = "This switch is now always on and may be removed in a future release.";
 const targetUsers = [
     { userId: 901, subject: "target-owner", displayName: "Test Target", email: "target@test" },
     { userId: 902, subject: "other-owner", displayName: "Other Target", email: "other@test" },
 ];
 
 // Real browser/controller/HTTP transport; mutable policy service and worker wire telemetry.
-async function featurePage(page, { admin = true, themeId = "workspace-dark", cluster = { enabled: false, allowUserOverride: true }, user = null, workers = null } = {}) {
+async function featurePage(page, { admin = true, themeId = "workspace-dark", cluster = { enabled: false, allowUserOverride: true }, user = null, workers = null, alwaysOn = false } = {}) {
     const stub = await startStubServer(0, { sessionCount: 1, admin, themeId });
     const state = { revision: 1, cluster, preferences: { me: user, 901: user, 902: null }, defaults: { enabled: false, allowUserOverride: false },
         appliedRevision: "1", calls: [], reads: 0, nextError: null, holdMutation: null, workers };
@@ -16,9 +19,13 @@ async function featurePage(page, { admin = true, themeId = "workspace-dark", clu
         const enabled = state.cluster?.enabled ?? state.defaults.enabled;
         const override = state.cluster?.allowUserOverride ?? state.defaults.allowUserOverride;
         const preference = scope === "cluster" ? null : state.preferences[userId] ?? null;
-        return { flags: [{ featureKey: KEY, displayName: "Native Copilot tasks", description: "Delegate local work on the same worker.",
+        return { flags: [...(alwaysOn ? [{ featureKey: ALWAYS_ON_KEY, displayName: "Steer running turns", description: "Add guidance to a running turn.",
+            revision: "1", defaultEnabled: false, defaultAllowUserOverride: false, requiredCapability: null,
+            cluster: { enabled: false, allowUserOverride: false }, user: null, supported: true,
+            effective: true, source: "always_on", userOverrideIgnored: false, alwaysOn: true, notice: NOTICE }] : []),
+        { featureKey: KEY, displayName: "Model event logging", description: "Record model trace events.",
             revision: String(state.revision), defaultEnabled: state.defaults.enabled, defaultAllowUserOverride: state.defaults.allowUserOverride,
-            requiredCapability: KEY, cluster: state.cluster, user: preference, supported: true,
+            requiredCapability: null, cluster: state.cluster, user: preference, supported: true, alwaysOn: false,
             effective: override && preference ? preference.enabled : enabled,
             source: override && preference ? "user" : "cluster", userOverrideIgnored: Boolean(preference && !override) }] };
     };
@@ -344,15 +351,24 @@ test("partial telemetry identifies unknown workers and excludes draining workers
     } finally { await fixture.stop(); }
 });
 
-test("known native unavailability is visible beside saved On rather than hidden in diagnostics", async ({ page }) => {
-    const fixture = await featurePage(page, { user: { enabled: true }, workers: [{ workerNodeId: "no-native", phase: "ready", updatedAt: new Date().toISOString(),
-        state: { "feature-flags": { initialized: true, protocolVersion: 1, supportedKeys: [KEY], appliedRevisions: { [KEY]: "1" }, nativeCapability: "off" } } }] });
+for (const scope of ["My", "Cluster"]) test(`an always-on flag is a greyed, disabled On switch with the notice and no settings (${scope})`, async ({ page }) => {
+    const fixture = await featurePage(page, { alwaysOn: true });
     try {
-        await expect(saved(page)).toHaveText("On for you");
-        await expect(page.locator(".ps-feature-delivery")).toContainText("1 of 1 reporting workers updated");
-        await expect(page.locator(".ps-feature-blocker")).toBeVisible();
-        await expect(page.locator(".ps-feature-blocker")).toContainText("Native tasks cannot run on those workers");
-        expect(await page.locator(".ps-feature-details").getAttribute("open")).toBeNull();
+        if (scope === "Cluster") await scopeTab(page, "Cluster").click();
+        const row = page.locator(`[data-feature-key="${ALWAYS_ON_KEY}"]`);
+        await expect(row).toBeVisible();
+        await expect(row).toHaveAttribute("data-always-on", "true");
+        const toggle = row.getByRole("switch");
+        await expect(toggle).toBeChecked();
+        await expect(toggle).toBeDisabled();
+        await expect(row).toContainText(`Always on. ${NOTICE}`);
+        await expect(row.getByRole("radio")).toHaveCount(0);
+        await expect(row.getByRole("button", { name: /Save|Discard|Preview|Review/ })).toHaveCount(0);
+        await expect(row).not.toContainText("Settings delivery");
+        expect(await toggle.evaluate(node => Number(getComputedStyle(node).opacity))).toBeLessThan(1);
+        // The normal flag beside it keeps its controls.
+        await expect(page.locator(`[data-feature-key="${KEY}"]`).getByRole("radio").first()).toBeVisible();
+        expect(fixture.state.calls).toHaveLength(0);
     } finally { await fixture.stop(); }
 });
 

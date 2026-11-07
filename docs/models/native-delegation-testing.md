@@ -100,7 +100,9 @@ The evaluator supplies the production discovery tool to each isolated session;
 worker tests separately verify its default admission to ordinary and named
 sessions. These model evaluations do not exercise worker startup or publication.
 The worker ceiling stays enabled in both runs; an isolated real feature cache
-sets `copilot.native_tasks` on or off. Before every model call, the evaluator
+sets `copilot.native_tasks` on or off. (Since `copilot.native_tasks` became
+always on, a stored Off no longer disables native tasks; an Off comparison
+needs a session manager built with `nativeSubagents: "off"`.) Before every model call, the evaluator
 asserts the resolved flag, actual session admission, and SDK native-profile
 catalog. A missing cache or an ON run that silently becomes OFF fails setup.
 The deterministic setup tests exercise that safeguard and fixture scope shapes.
@@ -169,7 +171,8 @@ complete inline inputs so that asking for missing files would not be misgraded
 as a role-selection failure.
 
 For actual durable orchestration plus native filesystem execution, start the
-localhost deployment with `PILOTSWARM_NATIVE_SUBAGENTS=sync`, then run:
+localhost deployment (native tasks are always on; `PILOTSWARM_NATIVE_SUBAGENTS`
+defaults to `sync` and an `off` is ignored), then run:
 
 ```sh
 npm run test:native-filesystem:live -- --url=http://127.0.0.1:3017

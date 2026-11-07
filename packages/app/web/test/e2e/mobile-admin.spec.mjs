@@ -38,8 +38,13 @@ async function phoneFixture(page, { admin = true, themeId = "hearth" } = {}) {
         return route.fulfill({ json: { ok: true, result } });
     });
     await page.route(/\/api\/v1\/management\/(?:features\/cluster|users\/me\/features)(?:\?.*)?$/, route => route.fulfill({ json: { ok: true, result: { flags: [{
-        featureKey: "copilot.native_tasks", revision: "1", displayName: "Native tasks", description: "Local delegation",
-        defaultEnabled: false, defaultAllowUserOverride: true, cluster: null, user: null, effective: false, source: "default", supported: true,
+        featureKey: "debug.enable_model_event_logging", revision: "1", displayName: "Model event logging", description: "Record model trace events",
+        defaultEnabled: false, defaultAllowUserOverride: true, cluster: null, user: null, effective: false, source: "default", supported: true, alwaysOn: false,
+    }, {
+        featureKey: "sessions.steering", revision: "1", displayName: "Steer running turns", description: "Add guidance to a running turn",
+        defaultEnabled: false, defaultAllowUserOverride: false, cluster: { enabled: false, allowUserOverride: false }, user: null,
+        effective: true, source: "always_on", supported: true, alwaysOn: true,
+        notice: "This switch is now always on and may be removed in a future release.",
     }] } } }));
     await page.route("**/api/v1/management/features/users**", route => route.fulfill({ json: { ok: true, result: [] } }));
     await page.route("**/api/v1/me/profile**", route => {
@@ -515,7 +520,14 @@ for (const admin of [true, false]) {
         try {
             await openConsole(page, admin);
             await page.getByRole("button", { name: "Feature flags", exact: true }).click();
-            const flag = page.getByRole("switch", { name: /Native tasks/ });
+            // An always-on flag: checked, greyed out and disabled for everyone, with the notice.
+            const always = page.getByRole("switch", { name: /Steer running turns/ });
+            await expect(always).toBeVisible();
+            await expect(always).toBeChecked();
+            await expect(always).toBeDisabled();
+            await expect(page.locator('[data-feature-key="sessions.steering"]'))
+                .toContainText("Always on. This switch is now always on and may be removed in a future release.");
+            const flag = page.getByRole("switch", { name: /Model event logging/ });
             await expect(flag).toBeVisible();
             if (admin) {
                 await expect(flag).toBeEnabled();

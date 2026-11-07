@@ -1706,7 +1706,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Steer the running turn (options: { text, requestId, replacesClientMessageId? }); needs the sessions.steering feature. replacesClientMessageId converts that queued message: a delivered steer replaces it. Outcome accepted (steerId, turn, repeat?) or a refusal: no_turn | legacy_turn | not_found | too_many | request_id_reused | steering_disabled | already_received.
+     * Steer the running turn (options: { text, requestId, replacesClientMessageId? }); the sessions.steering feature is always on. replacesClientMessageId converts that queued message: a delivered steer replaces it. Outcome accepted (steerId, turn, repeat?) or a refusal: no_turn | legacy_turn | not_found | too_many | request_id_reused | steering_disabled | already_received.
      * @remarks `POST /management/sessions/:sessionId/steer` — access: `session:write`
      */
     steerSessionTurn(params: {

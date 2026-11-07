@@ -6,9 +6,11 @@ import { PilotSwarmUiController, appReducer, createInitialState, createStore, se
 import { FeatureFlagsPanel, featureWorkerStatus } from "../../react/src/feature-flags-panel.js";
 import { projectWorker } from "../../../../sdk/api/src/admin-diagnostics.js";
 
-const KEY = "copilot.native_tasks";
+// Generic flag machinery runs on a normal (not always-on) flag.
+const KEY = "debug.enable_model_event_logging";
+const NOTICE = "This switch is now always on and may be removed in a future release.";
 const ADMIN = { provider: "test", subject: "admin", isAdmin: true };
-const flag = (revision = "1", extra = {}) => ({ featureKey: KEY, revision, displayName: "Native tasks", description: "Local delegation",
+const flag = (revision = "1", extra = {}) => ({ featureKey: KEY, revision, displayName: "Model event logging", description: "Record model trace events",
     defaultEnabled: false, defaultAllowUserOverride: false, cluster: null, user: null,
     effective: false, source: "default", supported: true, ...extra });
 const data = (revision = "1", extra = {}) => ({ flags: [flag(revision, extra)] });
@@ -162,7 +164,8 @@ test("adoption follows shared worker refresh and exposes errors/capability witho
     store.dispatch({ type: "admin/workers/loaded", list: [worker("5")] });
     const html = render(controller, store);
     assert.match(html, /Settings delivery: 1 of 1 reporting workers updated/);
-    assert.match(html, /Native task support: 0 of 1 reporting workers configured; 1 configured Off; 0 unknown/);
+    // Native tasks are always on: no per-flag native capability lines remain.
+    assert.doesNotMatch(html, /Native task support|native task configuration|configured for native tasks/);
     assert.match(html, /1 reported a refresh problem/); assert.match(html, /settings refresh problem/);
     assert.doesNotMatch(html, /PRIVATE database hostname and credentials|allow native execution/);
     assert.match(html, /Settings delivery does not confirm that each session has refreshed its tools/);
@@ -231,7 +234,6 @@ test("restricted worker diagnostics render current delivery without raw state or
     store.dispatch({ type: "admin/workers/loaded", list: [projected] });
     const html = render(controller, store);
     assert.match(html, /Settings delivery: 1 of 1 reporting workers updated/);
-    assert.match(html, /Native task support: 1 of 1 reporting workers configured/);
     assert.match(html, /settings refresh problem/); assert.doesNotMatch(html, /PRIVATE-CANARY/);
     for (const supportedKeys of [[7, null], [KEY, 7], [null]]) {
         const projectedMalformed = projectWorker(telemetryWorker("malformed", { supportedKeys }));
@@ -240,3 +242,63 @@ test("restricted worker diagnostics render current delivery without raw state or
         assert.equal(result.unsupported, 0);
     }
 });
+
+const alwaysOnRow = (featureKey, extra = {}) => ({ featureKey, revision: "3", displayName: `Always ${featureKey}`, description: "Code-owned flag",
+    defaultEnabled: false, defaultAllowUserOverride: true, cluster: { enabled: false, allowUserOverride: true }, user: { enabled: false },
+    effective: true, source: "always_on", supported: true, alwaysOn: true, notice: NOTICE, userOverrideIgnored: false, ...extra });
+
+for (const [mode, isAdmin] of [["mine", false], ["mine", true], ["cluster", true], ["users", true]]) {
+    for (const mobile of [false, true]) test(`an always-on row renders a checked, disabled switch with the notice and no override controls (${mode}, admin=${isAdmin}, mobile=${mobile})`, () => {
+        const { controller, store } = setup({}, isAdmin ? ADMIN : { ...ADMIN, isAdmin: false });
+        store.dispatch({ type: "admin/features", patch: { mode, userId: mode === "users" ? 7 : null,
+            data: { flags: [alwaysOnRow("copilot.native_tasks"), flag("2")] } } });
+        const html = render(controller, store, { isAdmin, mobile });
+        const section = html.slice(html.indexOf('data-feature-key="copilot.native_tasks"'));
+        const row = section.slice(0, section.indexOf("</section>"));
+        assert.match(row, /data-always-on="true"/);
+        const toggle = [...row.matchAll(/<input\b[^>]*>/g)].map(match => match[0]);
+        assert.equal(toggle.length, 1, "exactly one control: the switch");
+        assert.match(toggle[0], /role="switch"/); assert.match(toggle[0], /checked=""/); assert.match(toggle[0], /disabled=""/);
+        assert.match(row, new RegExp(`Always on\\. ${NOTICE.replace(/\./g, "\\.")}`));
+        assert.doesNotMatch(row, /Cluster setting|Personal settings|Your choice|On for me|Off for me|Save changes|Discard changes|Preview default policy|Settings delivery|Saved setting/);
+        assert.doesNotMatch(row, /requires Native Copilot tasks|configured for native tasks/);
+        // The normal flag beside it keeps its controls.
+        assert.match(html, new RegExp(`data-feature-key="${KEY.replace(/\./g, "\\.")}"`));
+    });
+}
+
+test("an always-on row without a server notice uses the shared notice text", () => {
+    const { controller, store } = setup();
+    const { notice: _notice, ...row } = alwaysOnRow("sessions.steering");
+    store.dispatch({ type: "admin/features", patch: { data: { flags: [row] } } });
+    assert.match(render(controller, store), new RegExp(`Always on\\. ${NOTICE.replace(/\./g, "\\.")}`));
+});
+
+test("the controller never drafts or saves an always-on flag", async () => {
+    const writes = [];
+    const write = async (...args) => { writes.push(args); return { revision: "4", setting: null }; };
+    const { controller, store, features } = setup({ setMyFeatureFlag: write, unsetMyFeatureFlag: write, setClusterFeatureFlag: write,
+        resetClusterFeatureFlag: write, setUserFeatureFlag: write, unsetUserFeatureFlag: write });
+    for (const [mode, userId] of [["mine", null], ["cluster", null], ["users", 7]]) {
+        store.dispatch({ type: "admin/features", patch: { mode, userId, data: { flags: [alwaysOnRow("agents.base_v2")] } } });
+        controller.setFeatureDraft("agents.base_v2", { enabled: false, allowUserOverride: false });
+        controller.setFeatureDraft("agents.base_v2", null);
+        assert.equal(controller.getFeatureDraft("agents.base_v2"), undefined);
+        await controller.saveFeatureFlag("agents.base_v2", { enabled: false, allowUserOverride: false });
+        await controller.saveFeatureFlag("agents.base_v2", null);
+    }
+    assert.deepEqual(writes, []);
+    assert.equal(features().saving, false);
+});
+
+test("saving a normal flag leaves always-on rows as the server sent them", async () => {
+    const rows = () => ({ flags: [alwaysOnRow("copilot.native_tasks"), alwaysOnRow("agents.base_v2"), flag("1")] });
+    const { controller, features } = setup({ getMyFeatureFlags: async () => rows(),
+        setMyFeatureFlag: async input => ({ revision: "2", setting: { enabled: input.enabled } }) }, { ...ADMIN, isAdmin: false });
+    await controller.refreshFeatureFlags();
+    await controller.saveFeatureFlag(KEY, { enabled: true });
+    for (const key of ["copilot.native_tasks", "agents.base_v2"]) {
+        assert.deepEqual(features().data.flags.find(row => row.featureKey === key), alwaysOnRow(key));
+    }
+});
+

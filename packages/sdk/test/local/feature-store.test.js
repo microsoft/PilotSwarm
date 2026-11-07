@@ -2,10 +2,12 @@ import { beforeAll, beforeEach, afterAll, describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { FEATURE_FLAGS } from "../../src/feature-flags.ts";
+import { FEATURE_ALWAYS_ON_NOTICE, FEATURE_FLAGS } from "../../src/feature-flags.ts";
 import { FeatureFlagCache } from "../../src/feature-flag-cache.ts";
 
-const key = "copilot.native_tasks";
+// Generic store machinery runs on a normal (not always-on) flag.
+const key = "debug.enable_model_event_logging";
+const ALWAYS_ON = ["copilot.native_tasks", "agents.base_v2", "sessions.steering"];
 const schema = `ps_test_features_${randomUUID().replaceAll("-", "")}`;
 const url = process.env.PS_TEST_DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/pilotswarm";
 const pool = new pg.Pool({ connectionString: url, max: 3 });
@@ -221,3 +223,66 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
             VALUES ($1, 'user', $2, true, true, 1, 'test')`, [key, aliceId])).rejects.toMatchObject({ code: "23514" });
     });
 });
+
+describe("always-on flags in PostgreSQL", () => {
+    const storeOff = async alwaysKey => {
+        await pool.query(`INSERT INTO "${schema}".feature_flag_settings(feature_key, scope, enabled, allow_user_override, revision, updated_by)
+            VALUES ($1, 'cluster', false, true, 1, 'test')`, [alwaysKey]);
+        await pool.query(`INSERT INTO "${schema}".feature_flag_settings(feature_key, scope, user_id, enabled, allow_user_override, revision, updated_by)
+            VALUES ($1, 'user', $2, false, NULL, 1, 'test')`, [alwaysKey, aliceId]);
+    };
+    const settingsRows = async () => (await pool.query(`SELECT feature_key, scope, user_id, enabled, revision FROM "${schema}".feature_flag_settings ORDER BY feature_key, scope, user_id`)).rows;
+
+    it("list rows carry alwaysOn, effective true, source always_on and the notice despite stored Off rows", async () => {
+        for (const alwaysKey of ALWAYS_ON) await storeOff(alwaysKey);
+        for (const [viewer, scope, userId] of [[alice, "user"], [admin, "cluster"], [admin, "user", aliceId], [bob, "user"]]) {
+            const view = await store.read(viewer, scope, userId);
+            for (const alwaysKey of ALWAYS_ON) {
+                const row = view.flags.find(candidate => candidate.featureKey === alwaysKey);
+                expect(row, `${alwaysKey} for ${viewer.principal.subject}/${scope}`).toMatchObject({ alwaysOn: true, effective: true,
+                    source: "always_on", notice: FEATURE_ALWAYS_ON_NOTICE, supported: true, userOverrideIgnored: false });
+                expect(row.reason).toBeUndefined();
+            }
+            const normal = view.flags.find(candidate => candidate.featureKey === key);
+            expect(normal).toMatchObject({ alwaysOn: false, effective: false });
+            expect(normal.notice).toBeUndefined();
+        }
+    });
+
+    it("refuses cluster and user set/unset with 409 FEATURE_ALWAYS_ON and writes nothing", async () => {
+        await storeOff("copilot.native_tasks");
+        const before = { settings: await settingsRows(), revisions: await store.revisions(), changes: await store.changes(admin) };
+        for (const alwaysKey of ALWAYS_ON) {
+            const change = extra => ({ featureKey: alwaysKey, expectedRevision: "1", requestId: randomUUID(), ...extra });
+            const attempts = [
+                () => store.mutate(admin, "cluster", change({ enabled: false, allowUserOverride: true })),
+                () => store.mutate(admin, "cluster", change(), true),
+                () => store.mutate(alice, "user", change({ enabled: false })),
+                () => store.mutate(alice, "user", change(), true),
+                () => store.mutate(admin, "user", change({ enabled: false }), false, bobId),
+                () => store.mutate(admin, "user", change(), true, aliceId),
+                // Refused before any other check: even a malformed or unauthorized request gets the same answer.
+                () => store.mutate(alice, "cluster", change({ enabled: true, allowUserOverride: false })),
+                () => store.mutate(alice, "user", { featureKey: alwaysKey, expectedRevision: "x", requestId: "" }),
+            ];
+            for (const attempt of attempts) {
+                const error = await attempt().then(() => null, caught => caught);
+                expect(error).toMatchObject({ name: "FeatureFlagError", code: "FEATURE_ALWAYS_ON", status: 409 });
+                expect(error.message).toContain(FEATURE_ALWAYS_ON_NOTICE);
+            }
+        }
+        expect(await settingsRows()).toEqual(before.settings);
+        expect(await store.revisions()).toEqual(before.revisions);
+        expect(await store.changes(admin)).toEqual(before.changes);
+    });
+
+    it("worker caches resolve always-on keys On over stored Off rows", async () => {
+        for (const alwaysKey of ALWAYS_ON) await storeOff(alwaysKey);
+        const cache = new FeatureFlagCache(store); await cache.pollRevisionsAndRefresh();
+        for (const alwaysKey of ALWAYS_ON) {
+            expect(cache.resolve(alwaysKey, alice.principal, { required: true })).toEqual({ enabled: true, source: "always_on", revision: null, stale: false });
+        }
+        await cache.stop();
+    });
+});
+

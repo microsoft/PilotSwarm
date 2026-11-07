@@ -4258,7 +4258,8 @@ export class PilotSwarmUiController {
         if (features.saving || features.mode !== "mine" && !this._featureIsAdmin()
             || features.mode === "users" && !features.userId) return;
         const flag = features.data?.flags?.find(item => item.featureKey === featureKey);
-        if (!flag?.supported) return;
+        // An always-on row (server field alwaysOn) has no settings to edit.
+        if (!flag?.supported || flag.alwaysOn === true) return;
         const key = this._featureDraftKey(featureKey);
         const existing = features.drafts?.[key];
         const stored = features.mode === "cluster" ? flag.cluster : flag.user;
@@ -4378,7 +4379,8 @@ export class PilotSwarmUiController {
         const features = this.getState().admin?.features;
         if (!features || features.saving || features.loading || features.mode !== "mine" && !this._featureIsAdmin()) return;
         const definition = features.data?.flags?.find(flag => flag.featureKey === featureKey);
-        if (!definition?.supported || features.mode === "users" && !features.userId) return;
+        // The server refuses any change to an always-on flag (FEATURE_ALWAYS_ON); do not send one.
+        if (!definition?.supported || definition.alwaysOn === true || features.mode === "users" && !features.userId) return;
         const target = this._featureContext();
         const draftKey = this._featureDraftKey(featureKey);
         const expectedRevision = draft?.expectedRevision ?? definition.revision;
@@ -4407,22 +4409,10 @@ export class PilotSwarmUiController {
                     updated.source = allowUser && updated.user ? "user" : updated.cluster ? "cluster" : "default";
                     updated.userOverrideIgnored = Boolean(updated.user && !allowUser);
                     const data = this.getState().admin.features.data;
+                    // Only the saved row changes. Always-on rows (never saved
+                    // here) keep the server's effective value and source.
                     const flags = data.flags.map(flag => flag.featureKey === featureKey ? updated : flag);
-                    // Preserve independent saved preferences, but do not display
-                    // Base V2 as active when the native prerequisite is Off.
-                    // Recompute both when either setting changes; the following
-                    // refresh may fail after a successfully saved mutation.
-                    const nativeEnabled = flags.find(flag => flag.featureKey === "copilot.native_tasks")?.effective === true;
-                    const effectiveFlags = flags.map(flag => {
-                        if (flag.featureKey !== "agents.base_v2") return flag;
-                        const { reason: _reason, ...baseFlag } = flag;
-                        const allowPersonal = flag.cluster?.allowUserOverride ?? flag.defaultAllowUserOverride;
-                        const configured = allowPersonal && flag.user ? flag.user.enabled : flag.cluster?.enabled ?? flag.defaultEnabled;
-                        return { ...baseFlag, effective: configured && nativeEnabled,
-                            ...(configured && !nativeEnabled ? { reason: "requires_native_tasks" } : {}) };
-                    });
-                    this.dispatch({ type: "admin/features", patch: { data: { ...data,
-                        flags: effectiveFlags } } });
+                    this.dispatch({ type: "admin/features", patch: { data: { ...data, flags } } });
                 }
                 if (draft && this.getState().admin.features.drafts?.[draftKey] === draft) {
                     const drafts = { ...this.getState().admin.features.drafts };
@@ -4434,7 +4424,7 @@ export class PilotSwarmUiController {
             }
         } catch (error) {
             if (this._featureContext() === target) {
-                if (draft && (error?.status === 409 || error?.code === "FEATURE_CONFLICT")) {
+                if (draft && error?.code !== "FEATURE_ALWAYS_ON" && (error?.status === 409 || error?.code === "FEATURE_CONFLICT")) {
                     this._featureMutationRetries.delete(signature);
                     this.dispatch({ type: "admin/features", patch: { drafts: { ...this.getState().admin.features.drafts,
                         [draftKey]: { ...draft, needsReview: true } } } });
@@ -11301,7 +11291,8 @@ export class PilotSwarmUiController {
     _applySteeringFeatureView(view) {
         if (!Array.isArray(view?.flags)) return;
         const flag = view.flags.find((candidate) => candidate?.featureKey === STEERING_FEATURE_KEY);
-        this.dispatch({ type: "turnControl/steering", enabled: flag?.effective === true });
+        // An always-on flag is effective by definition; alwaysOn also covers a row without effective.
+        this.dispatch({ type: "turnControl/steering", enabled: flag?.effective === true || flag?.alwaysOn === true });
     }
 
     /**
