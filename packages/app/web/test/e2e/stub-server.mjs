@@ -317,6 +317,17 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
         res.end(fs.readFileSync(file));
     });
 
+    // close() waits for every open connection to end. A test that closes the
+    // stub while its page is still open (the page keeps an idle keep-alive
+    // connection) then hangs until the test timeout, a few runs in a hundred.
+    // Closing the stub also drops those idle connections.
+    const closeServer = server.close.bind(server);
+    server.close = (callback) => {
+        const result = closeServer(callback);
+        server.closeAllConnections?.();
+        return result;
+    };
+
     return new Promise((resolve) => {
         server.listen(port, "127.0.0.1", () => {
             resolve({
