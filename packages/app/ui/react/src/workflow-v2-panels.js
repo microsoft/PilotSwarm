@@ -9,7 +9,7 @@ import {
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import { workflowNodeSummary } from "../../core/src/workflow-node-summary.js";
 import { WORKFLOW_BASE_INSTRUCTIONS_CHANGED, WORKFLOW_BASE_INSTRUCTIONS_OWNER_ONLY } from "../../core/src/workflow-agent-log.js";
-import { workflowTabButtonTip } from "../../core/src/workflow-owner.js";
+import { workflowTabButtonTip, workflowVersionCompareSides } from "../../core/src/workflow-owner.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
@@ -1353,27 +1353,30 @@ export function WorkflowV2RevisionCompare({ controller, sessionId, latest, reads
 /**
  * Owner, 2026-11-07T00:03Z: compare two versions of a definition. In stage 1 each version is its own workflow child, so
  * each side is its newest child's current revision, read once as a revision is (controller.loadWorkflowDefinitionRevision);
- * reading changes nothing. `versions`: [{ version, sessionId, revision, read }] (highest first; `read` the child's
- * `definitionRevisions` entry); `chosen`: the version the Definition view shows, the default "To". The default "From" is
- * the next version below it (or the one above, for the lowest).
+ * reading changes nothing. `versions`: [{ key, version, label, sessionId, revision, read }] (highest first; review UI3-F9:
+ * one per definition of a version; `read` the child's `definitionRevisions` entry); `chosen`: the key of the entry the
+ * Definition view shows, the default "To". The default "From" is the next entry below it (or the one above, for the lowest).
+ * Review UI3-F5: a side whose entry is no longer listed (its child deleted) is replaced by the default for that side, so the
+ * pickers and the comparison always name sides that exist.
  */
 export function WorkflowV2VersionCompare({ controller, versions, chosen }) {
-    const list = Array.isArray(versions) ? versions.filter(item => item && typeof item.version === "string" && item.sessionId) : [];
-    const at = Math.max(0, list.findIndex(item => item.version === chosen));
-    const [to, setTo] = React.useState(list[at]?.version ?? null);
-    const [from, setFrom] = React.useState(list[at + 1]?.version ?? list[at - 1]?.version ?? null);
-    const side = version => list.find(item => item.version === version) ?? null;
+    const list = Array.isArray(versions) ? versions.filter(item => item && typeof item.key === "string" && item.sessionId) : [];
+    const [choice, setChoice] = React.useState({ from: null, to: null });
+    const { from, to } = workflowVersionCompareSides(list.map(item => item.key), chosen, choice);
+    const setFrom = key => setChoice(current => ({ ...current, from: key }));
+    const setTo = key => setChoice(current => ({ ...current, to: key }));
+    const side = key => list.find(item => item.key === key) ?? null;
     const before = side(from), after = side(to);
     React.useEffect(() => {
         for (const item of [before, after]) {
             if (item && Number.isSafeInteger(item.revision)) controller.loadWorkflowDefinitionRevision?.(item.sessionId, item.revision)?.catch?.(() => {});
         }
     }, [controller, before?.sessionId, before?.revision, after?.sessionId, after?.revision]);
-    const compared = workflowV2VersionCompare({ version: from, read: before?.read ?? null }, { version: to, read: after?.read ?? null });
+    const compared = workflowV2VersionCompare({ version: before?.label ?? null, read: before?.read ?? null }, { version: after?.label ?? null, read: after?.read ?? null });
     const pick = (label, value, onChange, field) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4 } }, label,
         h("select", { className: "ps-workflow-input", value: value ?? "", "data-field": field, onChange: event => onChange(event.target.value) },
-            list.map(item => h("option", { key: item.version, value: item.version }, `Version ${item.version}`))));
-    return h(CompareView, { label: "Compare two versions", from, to, compared, kind: "versions",
+            list.map(item => h("option", { key: item.key, value: item.key }, `Version ${item.label ?? item.version}`))));
+    return h(CompareView, { label: "Compare two versions", from: before?.label ?? "", to: after?.label ?? "", compared, kind: "versions",
         pickers: [pick("From", from, setFrom, "compare-from-version"), pick("To", to, setTo, "compare-to-version")],
         unparsed: " A version that does not parse is shown as saved." });
 }

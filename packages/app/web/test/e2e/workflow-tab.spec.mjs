@@ -2159,11 +2159,110 @@ test("owner 00:03Z versions: each version is its own option, the Definition view
     await expect(main.locator(".ps-wf-list-row[data-session-id] .ps-wf-state")).toHaveText(["Completed", "Canceled"]);
     // #1 opened: the picker says its version, and the Workflow picker says each one's.
     await main.getByRole("button", { name: "Open watch-v2 #1", exact: true }).click();
-    await expect(picker).toHaveValue("watch-v2\u001f1.0.0");
+    const selected = () => picker.locator("option:checked").textContent();
+    await expect.poll(selected).toBe("watch-v2 · 1.0.0");
     const shown = main.getByRole("combobox", { name: "Workflow", exact: true });
     await expect.poll(() => shown.locator("optgroup option").allTextContents())
         .toEqual([expect.stringMatching(/^#2 · 1\.1\.0 · Completed( · .+)?$/), expect.stringMatching(/^#1 · 1\.0\.0 · Canceled( · .+)?$/)]);
     await shot(page, "owner-0003-version-workflow-1440");
+    // Review UI3-F1: with #1 shown, the newest option chosen shows the newest child, by mouse or keyboard; #1 does not take
+    // the choice back.
+    await picker.selectOption({ label: "watch-v2 · 1.1.0" });
+    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
+    await expect(bar).toHaveAttribute("data-definition-child", V2);
+    await expect.poll(selected).toBe("watch-v2 · 1.1.0");
+    await main.getByRole("button", { name: "YAML", exact: true }).click();
+    await expect(main.locator(".ps-wf-yaml textarea")).toHaveValue(/version: "1\.1\.0"/);
+    await picker.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(bar).toHaveAttribute("data-definition-child", V1);
+    await page.keyboard.press("ArrowUp");
+    await expect(bar).toHaveAttribute("data-definition-child", V2);
+    expect(errors).toEqual([]);
+});
+
+// Final UI review of 24948403, UI3-F9: children of one version with different YAML (the owner made four YAMLs at 1.1.3)
+// are separate options, told apart by their Workflows' numbers; a run's Definition is its own child, never a sibling's.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI3-F9" (from packages/app/web, after build).
+test("UI3-F9: one version with different YAML: separate options by their Workflows; a run's Definition and YAML are its own", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const [A1, B, A2] = [OWNED.running, OWNED.failed, OWNED.unstarted];
+    const of = (workflowId, hash, runId) => ({ ...V2_READ_MODEL, workflowId, definition: { ...V2_READ_MODEL.definition, semver: "1.1.3" },
+        revision: { ...V2_READ_MODEL.revision, irSha256: `ir-${hash}`, definitionHash: `hash-${hash}` },
+        runs: [{ runId, mode: "live", status: "completed", revision: 1, outcome: "succeeded" }], run: { ...V2_READ_MODEL.run, runId, status: "completed", outcome: "succeeded" } });
+    const models = { [A1]: of(A1, "a", "run-1"), [B]: of(B, "b", "run-2"), [A2]: of(A2, "a", "run-3") };
+    const yamlOf = id => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: "1.1.3" }\n# ${id === B ? "definition b" : "definition a"}\n`;
+    const { rows } = await routeOwned(page, { models, yamlOf });
+    rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "completed" }, { ...OWNED_ROWS[1], status: "completed" },
+        { ...OWNED_ROWS[2], title: "Workflow: watch-v2", status: "completed" });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${A1}`);
+    const main = workflowTab(page);
+    const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
+    await expect.poll(() => picker.locator("option").allTextContents())
+        .toEqual(["watch-v2 · 1.1.3 · #1, #3", "watch-v2 · 1.1.3 · #2", "New definition… (asks the chat)"]);
+    await expect.poll(() => picker.locator("option:checked").textContent()).toBe("watch-v2 · 1.1.3 · #1, #3");
+    // #1's Definition is #1's own child.
+    await viewSwitch(main, "Definition").click();
+    const bar = main.locator(".ps-wf-bar-text").first();
+    await expect(bar).toHaveAttribute("data-definition-child", A1);
+    await expect(main.locator('[data-action="show-newest"]')).toHaveCount(0);
+    // The other definition of 1.1.3, chosen: #2's child; Compare names both definitions.
+    await picker.selectOption({ label: "watch-v2 · 1.1.3 · #2" });
+    await expect(bar).toHaveAttribute("data-definition-child", B);
+    await main.getByRole("button", { name: "Compare", exact: true }).click();
+    const compare = main.getByRole("region", { name: "Compare two versions", exact: true });
+    await expect(compare).toHaveAttribute("data-from", "1.1.3 · #1, #3");
+    await expect(compare).toHaveAttribute("data-to", "1.1.3 · #2");
+    await expect(compare.getByRole("status")).toHaveText("Version 1.1.3 · #1, #3 → 1.1.3 · #2: 1 line added, 1 removed");
+    await shot(page, "ui3-f9-same-version-1440");
+    expect(errors).toEqual([]);
+});
+
+// Final UI review of 24948403, UI3-F7 and UI3-F8, at 390 px: a long list of drafts scrolls in its own bounded area, so the
+// oldest is reachable and the started Workflows keep their room; Show it and Start… are 44 px targets themselves.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI3-F7" (from packages/app/web, after build).
+test("UI3-F7, UI3-F8: at 390 px many drafts scroll in their own area, the oldest opens, the started list stays, targets are 44 px", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const draftIds = Array.from({ length: 24 }, (_, index) => `d${String(index + 1).padStart(7, "0")}-2222-3333-4444-555555555555`);
+    const draftOf = (workflowId, semver) => ({ ...V2_READ_MODEL, workflowId, definition: { state: "draft", semver, currentRevision: 1, publishedRevision: null },
+        revision: { ...V2_READ_MODEL.revision, definitionHash: `hash-${workflowId}`, irSha256: `ir-${semver}` }, runs: [], run: null });
+    const models = { ...OWNED_MODELS };
+    draftIds.forEach((id, index) => { models[id] = draftOf(id, `2.${index % 8}.0`); });
+    const { rows } = await routeOwned(page, { models });
+    rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "running" }, { ...OWNED_ROWS[1], status: "failed" },
+        ...draftIds.map((sessionId, index) => ({ sessionId, title: "Workflow: watch-v2", status: "pending", sessionKind: "workflow", parentSessionId: AGENT_ID,
+            createdAt: now - 20_000 + index * 100, updatedAt: now - 20_000 + index * 100 })));
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await showWorkflowPane(page);
+    const main = workflowTab(page);
+    await viewSwitch(main, "Workflows").click();
+    const list = main.locator(".ps-wf-unstarted-list");
+    await expect(main.locator(".ps-wf-unstarted")).toContainText("24 drafts are not started yet.");
+    await expect(list.locator("li")).toHaveCount(24);
+    // The list scrolls in its own area; the started Workflows stay on screen below it.
+    const sizes = await list.evaluate(element => ({ scroll: element.scrollHeight, client: element.clientHeight }));
+    expect(sizes.scroll).toBeGreaterThan(sizes.client);
+    await expect(main.getByRole("button", { name: "Open watch-v2 #1", exact: true })).toBeInViewport();
+    // Every draft action is a 44 px target itself; the oldest is reached by scrolling the list, and its top edge opens it.
+    const oldest = list.locator("li").last().getByRole("button", { name: /^Show / });
+    await oldest.scrollIntoViewIfNeeded();
+    const box = await oldest.boundingBox();
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    for (const button of await main.locator(".ps-wf-unstarted .ps-link-button").all()) {
+        const each = await button.boundingBox();
+        if (each) expect(each.height).toBeGreaterThanOrEqual(44);
+    }
+    await shot(page, "ui3-f7-drafts-390");
+    await oldest.click({ position: { x: box.width / 2, y: 3 } });
+    await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
+    await expect(main.locator(".ps-wf-bar-text").first()).toHaveAttribute("data-definition-child", draftIds[0]);
+    const page_width = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(page_width).toBeLessThanOrEqual(390);
     expect(errors).toEqual([]);
 });
 
@@ -3108,7 +3207,7 @@ async function routeOwned(page, { onMessage = null, models = OWNED_MODELS, yamlO
                     definitionHash: `hash-${row.sessionId}-${revision}` } } : model);
             }
             if (pathname.includes(`/sessions/${row.sessionId}/events`)) {
-                return answer(row.sessionId === OWNED.unstarted ? [] : [{ ...V2_EVENTS[0], sessionId: row.sessionId,
+                return answer(row.sessionId === OWNED.unstarted || !model.runs?.length ? [] : [{ ...V2_EVENTS[0], sessionId: row.sessionId,
                     data: { ...V2_EVENTS[0].data, runId: model.runs[0].runId } }]);
             }
             if (pathname.endsWith(`/sessions/${row.sessionId}`)) return answer({ ...row, events: [], messages: [] });

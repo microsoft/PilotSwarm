@@ -1744,6 +1744,12 @@ function providerPickerNote(provider, statusRow, now = Date.now()) {
  * identity: the same run selection and session row version, and at least
  * the events loaded now (no history loaded matches only no history loaded).
  */
+/** Review UI3-F6: how many pages of 200 events a Workflow's watch reads when it starts again, before it reloads its history. */
+const WORKFLOW_WATCH_CATCH_UP_PAGES = 5;
+
+/** Review UI3-F2: how long after a failed read of a Workflow's model it is read again (when it is still wanted). */
+const WORKFLOW_READ_RETRY_MS = 30_000;
+
 function workflowReadAttemptCurrent(attempt, identity) {
     if (!attempt || (attempt.runId ?? null) !== identity.runId) return false;
     if ((attempt.sessionUpdatedAt ?? null) !== identity.sessionUpdatedAt) return false;
@@ -6543,7 +6549,8 @@ export class PilotSwarmUiController {
                     entry.unsubscribe = null;
                 }
             }
-            this.syncSessionEvents(sessionId).catch(() => {});
+            // Review UI3-F6: more than one page of events may have been recorded while it was not watched.
+            this.syncSessionEvents(sessionId, { maxPages: WORKFLOW_WATCH_CATCH_UP_PAGES }).catch(() => {});
         }
         entry.count += 1;
         let released = false;
@@ -6652,6 +6659,30 @@ export class PilotSwarmUiController {
      * error; any other failure sets `readModelError` (bounded text) and keeps
      * the last read model.
      */
+    /** The identity a read of a Workflow's model is made for now: the run shown, the events loaded and the row's update. */
+    workflowReadIdentity(sessionId) {
+        const state = this.getState();
+        const view = state.ui.workflowViews?.[sessionId] || {};
+        const history = state.history.bySessionId.get(sessionId);
+        return {
+            runId: view.selectedRunId ?? null,
+            afterSeq: history ? Number(history.lastSeq) || 0 : null,
+            sessionUpdatedAt: state.sessions.byId[sessionId]?.updatedAt ?? null,
+        };
+    }
+
+    /**
+     * Whether ensureWorkflowReadModel would read a Workflow's model now: never read for its identity, or (review UI3-F2) its
+     * last read failed and `workflowReadRetryMs` has passed since. Reads changes nothing.
+     */
+    workflowReadWanted(sessionId) {
+        const view = this.getState().ui.workflowViews?.[sessionId] || {};
+        if (!workflowReadAttemptCurrent(view.readModelAttempt, this.workflowReadIdentity(sessionId))) return true;
+        if (!view.readModelError) return false;
+        const failedAt = Number(view.readModelFailedAt);
+        return !Number.isFinite(failedAt) || Date.now() - failedAt >= (this.workflowReadRetryMs ?? WORKFLOW_READ_RETRY_MS);
+    }
+
     async ensureWorkflowReadModel(sessionId, { force = false } = {}) {
         if (!sessionId || typeof this.transport?.readWorkflow !== "function") return;
         const state = this.getState();
@@ -6667,13 +6698,8 @@ export class PilotSwarmUiController {
             if (force) entry.forceAgain = true;
             return entry.inFlight;
         }
-        const history = state.history.bySessionId.get(sessionId);
-        const identity = {
-            runId: view.selectedRunId ?? null,
-            afterSeq: history ? Number(history.lastSeq) || 0 : null,
-            sessionUpdatedAt: session.updatedAt ?? null,
-        };
-        if (!force && workflowReadAttemptCurrent(view.readModelAttempt, identity)) return;
+        const identity = this.workflowReadIdentity(sessionId);
+        if (!force && !this.workflowReadWanted(sessionId)) return;
         entry.generation += 1;
         const generation = entry.generation;
         const load = async () => {
@@ -6690,9 +6716,11 @@ export class PilotSwarmUiController {
                 && now.sessions.byId[sessionId]?.sessionKind === "workflow"
                 && (current.selectedRunId ?? null) === identity.runId;
             if (own && outcome.error) {
+                // Review UI3-F2: a failed read records its attempt and when it failed; the model it keeps is as fresh as the
+                // row it was read with (readModelAt), which stays.
                 this.dispatch({ type: "ui/workflowView", sessionId, view: outcome.error?.code === "WORKFLOW_NOT_FOUND"
                     ? { readModelAttempt: identity, readModelUnavailable: true, readModelError: null }
-                    : { readModelAttempt: identity, readModelError: boundedWorkflowReadError(outcome.error) } });
+                    : { readModelAttempt: identity, readModelError: boundedWorkflowReadError(outcome.error), readModelFailedAt: Date.now() } });
             } else if (own) {
                 const readModel = outcome.readModel;
                 const shown = (current.readModelRunId ?? null) === identity.runId ? current : null;
@@ -6702,7 +6730,7 @@ export class PilotSwarmUiController {
                 this.dispatch({ type: "ui/workflowView", sessionId, view: older
                     ? { readModelAttempt: identity }
                     : { readModel, readModelRunId: identity.runId, readModelAfterSeq: identity.afterSeq, readModelAttempt: identity,
-                        readModelError: null, readModelUnavailable: false } });
+                        readModelAt: identity.sessionUpdatedAt, readModelError: null, readModelFailedAt: null, readModelUnavailable: false } });
             }
             const again = entry.again || !own;
             const forceAgain = entry.forceAgain;
@@ -8676,28 +8704,38 @@ export class PilotSwarmUiController {
         return requiredLimit === currentLimit ? history : { ...history, loadedEventLimit: requiredLimit };
     }
 
-    async syncSessionEvents(sessionId) {
+    /**
+     * Read the events recorded after the last one loaded, a page of 200 at a time, up to `maxPages` pages (default 1, as
+     * before). Review UI3-F6: a page that comes back full means there are more; after `maxPages` full pages the history
+     * is loaded again (ensureSessionHistory, force: its own catch-up, or the recent window when it is too far behind).
+     */
+    async syncSessionEvents(sessionId, { maxPages = 1 } = {}) {
         if (!sessionId || typeof this.transport.getSessionEvents !== "function") return;
-        const existing = this.getState().history.bySessionId.get(sessionId);
-        if (!existing?.events) {
-            await this.ensureSessionHistory(sessionId, { force: true });
-            return;
-        }
-        const afterSeq = Number(existing.lastSeq || 0);
-        let events = null;
-        try {
-            events = await this.transport.getSessionEvents(sessionId, afterSeq, 200);
-        } catch (error) {
-            if (isSessionGoneError(error)) {
-                this.handleSessionGone(sessionId);
+        const SYNC_PAGE = 200;
+        for (let page = 0; page < maxPages; page += 1) {
+            const existing = this.getState().history.bySessionId.get(sessionId);
+            if (!existing?.events) {
+                await this.ensureSessionHistory(sessionId, { force: true });
                 return;
             }
-            throw error;
+            const afterSeq = Number(existing.lastSeq || 0);
+            let events = null;
+            try {
+                events = await this.transport.getSessionEvents(sessionId, afterSeq, SYNC_PAGE);
+            } catch (error) {
+                if (isSessionGoneError(error)) {
+                    this.handleSessionGone(sessionId);
+                    return;
+                }
+                throw error;
+            }
+            if (!Array.isArray(events) || events.length === 0) return;
+            for (const event of events) {
+                this.mergeSessionEvent(sessionId, event);
+            }
+            if (events.length < SYNC_PAGE || maxPages <= 1) return;
         }
-        if (!Array.isArray(events) || events.length === 0) return;
-        for (const event of events) {
-            this.mergeSessionEvent(sessionId, event);
-        }
+        await this.ensureSessionHistory(sessionId, { force: true });
     }
 
     attachActiveSession(sessionId) {

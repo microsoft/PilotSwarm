@@ -173,8 +173,17 @@ function rowEndedAfterRead(session, view) {
     const key = stateFromRow(session);
     if (key !== "completed" && key !== "failed" && key !== "canceled") return null;
     const updated = msOf(session?.updatedAt);
+    if (!Number.isFinite(updated)) return null;
+    // Review UI3-F2: the model's freshness is the row it was read with (`readModelAt`), not the last attempt: a read that
+    // failed records its attempt and keeps the older model. When the last read failed and the model's own row is not
+    // known, the model's freshness is not known either, and the ended row wins.
+    if (view?.readModelAt !== undefined && view?.readModelAt !== null) {
+        const read = msOf(view.readModelAt);
+        return Number.isFinite(read) && updated > read ? key : null;
+    }
+    if (view?.readModelError || view?.readModelUnavailable) return key;
     const read = msOf(view?.readModelAttempt?.sessionUpdatedAt ?? null);
-    return Number.isFinite(updated) && Number.isFinite(read) && updated > read ? key : null;
+    return Number.isFinite(read) && updated > read ? key : null;
 }
 
 /**
@@ -392,10 +401,14 @@ function computeDefinitions(byId, ownerId, views) {
 export function workflowChildDefinitionFacts(view) {
     const model = workflowChildModel(view);
     const definition = isRecord(model?.definition) ? model.definition : null;
+    const revision = isRecord(model?.revision) ? model.revision : null;
     return {
-        version: text(definition?.semver) ?? text(model?.revision?.version),
+        version: text(definition?.semver) ?? text(revision?.version),
         state: definition?.state === "draft" || definition?.state === "published" ? definition.state : null,
         revision: Number.isSafeInteger(definition?.currentRevision) ? definition.currentRevision : null,
+        // Review UI3-F9: which definition it is, as the server tells definitions apart (YAML that compiles to the same
+        // definition is the same one): its revision's IR hash, else its YAML hash; null until read.
+        identity: text(revision?.irSha256) ?? text(revision?.definitionHash) ?? text(definition?.publishedDefinitionHash),
     };
 }
 
@@ -404,83 +417,185 @@ export function workflowChildDefinitionFacts(view) {
  * "name · version" once its newest child has started, "name · version · draft" (or "· not started" for a published one)
  * before. Parts not read yet are left out. F9's "· revision N" is gone: the Definition view's line says the revision.
  */
-export function workflowDefinitionOptionLabel({ name, version = null, state = null, started = true }) {
+export function workflowDefinitionOptionLabel({ name, version = null, state = null, started = true, discriminator = null }) {
     const status = started ? null : state === "draft" ? "draft" : state === "published" ? "not started" : null;
-    return [text(name) ?? "workflow", text(version), status].filter(Boolean).join(" · ");
+    // Review UI3-F9: another entry of the same version says which it is (workflowVersionDiscriminator).
+    return [text(name) ?? "workflow", text(version), text(discriminator), status].filter(Boolean).join(" · ");
 }
 
-/** Versions in the picker's order: the higher semantic version first ("1.10.0" above "1.9.0"); a version not read yet last. */
-function compareVersionsDescending(a, b) {
-    if (a === b) return 0;
-    if (a === null) return 1;
-    if (b === null) return -1;
-    const parts = value => /^(\d+)\.(\d+)\.(\d+)(.*)$/u.exec(value);
-    const left = parts(a), right = parts(b);
-    if (left && right) {
-        for (let index = 1; index <= 3; index += 1) {
-            const by = Number(right[index]) - Number(left[index]);
-            if (by !== 0) return by;
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+
+/** A semantic version (2.0.0) as parts, or null for a text that is not one (a leading zero, a stray suffix). */
+function semverOf(value) {
+    const match = typeof value === "string" ? SEMVER.exec(value) : null;
+    if (!match) return null;
+    return { release: [match[1], match[2], match[3]].map(BigInt), pre: match[4] ? match[4].split(".") : [] };
+}
+
+/** Semantic-version precedence of two pre-release identifier lists (an empty list, a release, ranks highest). */
+function comparePrerelease(a, b) {
+    if (!a.length || !b.length) return a.length === b.length ? 0 : a.length ? -1 : 1;
+    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+        if (index >= a.length) return -1;
+        if (index >= b.length) return 1;
+        const left = a[index], right = b[index];
+        const leftNumber = /^\d+$/.test(left), rightNumber = /^\d+$/.test(right);
+        if (leftNumber && rightNumber) {
+            const by = BigInt(left) - BigInt(right);
+            if (by !== 0n) return by > 0n ? 1 : -1;
+        } else if (leftNumber !== rightNumber) {
+            return leftNumber ? -1 : 1;
+        } else if (left !== right) {
+            return left < right ? -1 : 1;
         }
-        // A release ranks above its pre-releases ("1.0.0" above "1.0.0-rc.1").
-        if (!left[4] !== !right[4]) return left[4] ? 1 : -1;
-    } else if (left || right) return left ? -1 : 1;
-    return b.localeCompare(a);
+    }
+    return 0;
 }
 
 /**
- * Owner, 2026-11-07T00:03Z: the versions of one definition (its workflow children grouped by metadata.version), highest
- * version first: [{ version (null: not read yet), children (ids, oldest first), newestId (its newest child: the one the
- * Definition view shows for it), startable (that child has not started) }]. Children whose version is not read yet are an
- * entry of their own only while no version is known, or when they hold the definition's newest child (so it is always
- * reachable); otherwise they join once read. Display only: in stage 1 each version is one or more workflow children.
+ * Versions in the picker's order (review UI3-F4): semantic versions first, highest precedence first (2.0.0's rules:
+ * numeric release parts, a release above its pre-releases, numeric pre-release identifiers compared as numbers and below
+ * alphanumeric ones, build metadata ignored), equal precedence by their text; then texts that are not semantic versions,
+ * by their text; then a version not read yet. Stable for equal texts.
+ */
+export function workflowCompareVersions(a, b) {
+    if (a === b) return 0;
+    if (a === null || a === undefined) return 1;
+    if (b === null || b === undefined) return -1;
+    const left = semverOf(a), right = semverOf(b);
+    if (left && right) {
+        for (let index = 0; index < 3; index += 1) {
+            if (left.release[index] !== right.release[index]) return left.release[index] > right.release[index] ? -1 : 1;
+        }
+        const pre = comparePrerelease(left.pre, right.pre);
+        if (pre !== 0) return -pre;
+    } else if (left || right) {
+        return left ? -1 : 1;
+    }
+    return a < b ? 1 : a > b ? -1 : 0;
+}
+
+/**
+ * Owner, 2026-11-07T00:03Z: the versions of one definition, highest version first: its workflow children grouped by
+ * metadata.version and, review UI3-F9, by which definition they hold (`identity`: children of one version with different
+ * YAML are separate entries, never silently one another's). Each entry: { key (version and identity, the picker's and
+ * Compare's handle), version (null: not read yet), identity, children (ids, oldest first), newestId (its newest child: the
+ * one the Definition view shows for it), startable (that child has not started), numbers (its started Workflows' numbers),
+ * shared (another entry has the same version) }. Children whose version is not read yet are an entry of their own only while
+ * no version is known, or when they hold the definition's newest child (so it is always reachable); otherwise they join once
+ * read. Display only: in stage 1 each version is one or more workflow children.
  */
 export function workflowDefinitionVersions(byId, definition, views = {}) {
     const children = Array.isArray(definition?.children) ? definition.children : [];
+    const numbers = new Map((Array.isArray(definition?.workflows) ? definition.workflows : []).map(item => [item.sessionId, item.number]));
     const groups = new Map();
     for (const id of children) {
         if (!isWorkflowChild(byId?.[id])) continue;
-        const version = workflowChildDefinitionFacts(views?.[id] ?? null).version;
-        const key = version ?? "";
-        const group = groups.get(key) ?? { version, children: [], newestId: null };
+        const facts = workflowChildDefinitionFacts(views?.[id] ?? null);
+        const version = facts.version;
+        const identity = version === null ? null : facts.identity;
+        const key = `${version ?? ""}${VERSION_VALUE_SEPARATOR}${identity ?? ""}`;
+        const group = groups.get(key) ?? { key, version, identity, children: [], newestId: null, numbers: [] };
         group.children.push(id);
         group.newestId = id;
+        if (numbers.has(id)) group.numbers.push(numbers.get(id));
         groups.set(key, group);
     }
     let list = [...groups.values()];
     if (list.some(group => group.version !== null)) list = list.filter(group => group.version !== null || group.children.includes(definition?.newestId));
-    return list.sort((a, b) => compareVersionsDescending(a.version, b.version))
-        .map(group => ({ ...group, startable: !workflowStarted(byId[group.newestId], views?.[group.newestId] ?? null) }));
+    const sorted = list.sort((a, b) => workflowCompareVersions(a.version, b.version)
+        || children.indexOf(b.newestId) - children.indexOf(a.newestId));
+    const counts = new Map();
+    for (const group of sorted) counts.set(group.version ?? "", (counts.get(group.version ?? "") ?? 0) + 1);
+    return sorted.map(group => ({ ...group, shared: (counts.get(group.version ?? "") ?? 0) > 1,
+        startable: !workflowStarted(byId[group.newestId], views?.[group.newestId] ?? null) }));
 }
 
 /**
- * The version the Workflow tab shows (owner, 2026-11-07T00:03Z), from `versions` (workflowDefinitionVersions): the one that
- * holds `child` (a child the person chose to show), else the one the person chose (`version`: its text, "" for a version not
- * read yet; null: none chosen), else the one of the Workflow shown (`workflowId`), else the one that holds the definition's
- * newest child (`newestId`), else the first. Null when there are none. Pure.
+ * Review UI3-F9: the words that tell an entry apart from another of the same version: its Workflows' numbers ("#2, #4"),
+ * else "made <time>" for one that has not started (`made` as shown). Null when the version is its own.
  */
-export function workflowChosenVersion(versions, { child = null, version = null, workflowId = null, newestId = null } = {}) {
+export function workflowVersionDiscriminator(entry, made = null) {
+    if (!entry?.shared) return null;
+    const numbers = Array.isArray(entry.numbers) ? entry.numbers : [];
+    if (numbers.length) {
+        const shown = numbers.slice(-3).map(number => `#${number}`);
+        return numbers.length > 3 ? `… ${shown.join(", ")}` : shown.join(", ");
+    }
+    return text(made) ? `made ${text(made)}` : null;
+}
+
+/**
+ * The entry the Workflow tab's Definition view shows (owner, 2026-11-07T00:03Z), from `versions`
+ * (workflowDefinitionVersions): the one that holds `child` (a child the person chose to show, or the Workflow shown, whose
+ * own definition the view shows: review UI3-F9), else the one the person chose (`key`: its handle; review UI3-F1, every
+ * choice is explicit), else the one of the Workflow shown (`workflowId`), else the one that holds the definition's newest
+ * child (`newestId`), else the first. Null when there are none. Pure.
+ */
+export function workflowChosenVersion(versions, { child = null, key = null, workflowId = null, newestId = null } = {}) {
     const list = Array.isArray(versions) ? versions : [];
     const holding = id => (id ? list.find(entry => entry.children.includes(id)) ?? null : null);
     return holding(child)
-        ?? (typeof version === "string" ? list.find(entry => (entry.version ?? "") === version) ?? null : null)
+        ?? (typeof key === "string" ? list.find(entry => entry.key === key) ?? null : null)
         ?? holding(workflowId) ?? holding(newestId) ?? list[0] ?? null;
 }
 
 const VERSION_VALUE_SEPARATOR = "\u001f";
 
 /**
- * The definition picker's value for one version: the definition's name for the version that holds its newest child (so
- * the name alone still chooses the definition), `name␟version` for the others. workflowVersionFromOptionValue reads it.
+ * The definition picker's value for one entry: the definition's name for the entry that holds its newest child (so the
+ * name alone still chooses the definition), `name␟key` for the others. workflowVersionFromOptionValue reads it; review
+ * UI3-F1: a bare name is resolved to its newest entry's key before it is stored (workflowVersionKeyOfName).
  */
-export function workflowVersionOptionValue({ name, version = null, newest = false }) {
-    return newest ? String(name) : `${name}${VERSION_VALUE_SEPARATOR}${version ?? ""}`;
+export function workflowVersionOptionValue({ name, key = null, newest = false }) {
+    return newest ? String(name) : `${name}${VERSION_VALUE_SEPARATOR}${key ?? ""}`;
 }
 
-/** { name, version }: `version` is the version's text ("" for one not read yet), or null for a bare name (its newest). */
+/** { name, key }: `key` is the entry's handle, or null for a bare name (its newest entry). */
 export function workflowVersionFromOptionValue(value) {
     const raw = String(value ?? "");
     const at = raw.indexOf(VERSION_VALUE_SEPARATOR);
-    return at < 0 ? { name: raw, version: null } : { name: raw.slice(0, at), version: raw.slice(at + 1) };
+    return at < 0 ? { name: raw, key: null } : { name: raw.slice(0, at), key: raw.slice(at + 1) };
+}
+
+/**
+ * Review UI3-F5: the two sides Compare shows, from the entries' keys (highest first), the key the Definition view shows
+ * (`chosen`) and the person's choices (`choice`: { from, to }, each a key or null). A choice no longer listed (its child
+ * was deleted) gives way to the default for its side: "To" the shown entry, "From" the next entry below it (or above, for
+ * the lowest), never the same as "To". { from, to }, each a listed key or null. Pure.
+ */
+export function workflowVersionCompareSides(keys, chosen, choice = {}) {
+    const list = Array.isArray(keys) ? keys.filter(key => typeof key === "string") : [];
+    const listed = key => typeof key === "string" && list.includes(key);
+    const at = Math.max(0, list.indexOf(chosen));
+    const to = listed(choice.to) ? choice.to : list[at] ?? null;
+    const fallback = list[list.indexOf(to) + 1] ?? list[list.indexOf(to) - 1] ?? null;
+    const from = listed(choice.from) && choice.from !== to ? choice.from : fallback;
+    return { from: from === to ? null : from, to };
+}
+
+/**
+ * Review UI3-F3: which workflow children the Workflow tab reads for their definition facts now, at most `limit`: each
+ * definition's newest child and its children not started, then every other child not read yet, newest first; only those
+ * `wanted(id)` says a read is due for (never read for their row as it is, or failed and due again), the bound taken after
+ * that filter, so the queue moves on as reads complete.
+ */
+export function workflowVersionReadIds(definitions, byId, views = {}, wanted = () => true, limit = 10) {
+    const ids = [];
+    for (const item of Array.isArray(definitions) ? definitions : []) {
+        ids.push(item.newestId);
+        for (const child of workflowUnstartedChildren(byId, item, views)) ids.push(child.sessionId);
+    }
+    for (const item of Array.isArray(definitions) ? definitions : []) {
+        for (const id of [...(item.children ?? [])].reverse()) if (!workflowChildModel(views?.[id] ?? null)) ids.push(id);
+    }
+    return [...new Set(ids.filter(Boolean))].filter(id => wanted(id)).slice(0, limit);
+}
+
+/** Review UI3-F1: the key of a definition's newest entry (the one that holds its newest child), or null when none. */
+export function workflowNewestVersionKey(versions, newestId) {
+    const list = Array.isArray(versions) ? versions : [];
+    return (list.find(entry => entry.children.includes(newestId)) ?? list[0] ?? null)?.key ?? null;
 }
 
 /**
@@ -755,8 +870,10 @@ export function workflowAttentionChildIds(byId, ownerId, views = {}, limit = 10)
     return workflowChildrenOf(byId, ownerId)
         .filter(session => {
             if (!["completed", "failed", "cancelled", "error"].includes(session.status)) return true;
-            const attempt = views?.[session.sessionId]?.readModelAttempt;
-            return Boolean(attempt) && (attempt.sessionUpdatedAt ?? null) !== (session.updatedAt ?? null);
+            const view = views?.[session.sessionId] ?? null;
+            const attempt = view?.readModelAttempt;
+            // Review UI3-F2: an ended row whose last read failed stays wanted (the controller retries after a pause).
+            return Boolean(attempt) && ((attempt.sessionUpdatedAt ?? null) !== (session.updatedAt ?? null) || Boolean(view?.readModelError));
         })
         .map(session => session.sessionId)
         .reverse()

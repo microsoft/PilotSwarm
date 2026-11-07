@@ -12748,8 +12748,18 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 /* Owner, 2026-11-06T19:40Z (F9): the Workflows view's line about a definition's children not started yet, and their list. */
 .ps-wf-unstarted { flex: none; }
 .ps-wf-unstarted > .ps-wf-line .ps-link-button { margin-left: 4px; }
-.ps-wf-unstarted-list { margin: 0; padding: 4px 10px 6px 28px; border-bottom: 1px solid var(--ps-border); overflow-wrap: anywhere; }
+/* Review UI3-F7: a long list of children not started scrolls in its own bounded area, so its oldest Show it stays
+   reachable and the started Workflows below keep their room. */
+.ps-wf-unstarted-list { margin: 0; padding: 4px 10px 6px 28px; border-bottom: 1px solid var(--ps-border); overflow-wrap: anywhere;
+  max-height: min(14em, 35vh); overflow-y: auto; overscroll-behavior: contain; }
 .ps-wf-unstarted-list > li { padding: 2px 0; }
+/* Review UI3-F8: on a phone the draft actions (Show it, Start…, the way to the newest) are 44 px targets themselves. */
+@media (max-width: 600px) {
+  .ps-wf-unstarted .ps-link-button,
+  .ps-wf-bar .ps-link-button[data-action="show-newest"] {
+    display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 8px;
+  }
+}
 /* A failed Workflow's error as it arrived, folded under its plain-words headline. */
 .ps-wf-failure { flex: none; }
 .ps-wf-failure-details { padding: 4px 10px 6px; border-bottom: 1px solid var(--ps-border); }

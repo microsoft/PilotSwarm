@@ -950,7 +950,7 @@ function agentNodeOfSelection(state) {
 
 /** A Workflow tab's state without a version chosen in it (owner, 2026-11-07T00:03Z): a Workflow row chosen shows its own. */
 function withoutChosenVersion(tab) {
-    const { version, ...rest } = tab || {};
+    const { version, versionKey, ...rest } = tab || {};
     return rest;
 }
 

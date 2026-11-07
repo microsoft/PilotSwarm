@@ -87,7 +87,7 @@ test("the words: the picker's option, the Definition view's line, the Workflows 
     assert.equal(workflowListVersionText({ revision: 2, version: "1.1.0" }), "1.1.0 · revision 2");
     assert.equal(workflowListVersionText({ revision: 2 }), "revision 2");
     assert.equal(workflowListVersionText({}), "—");
-    assert.deepEqual(workflowChildDefinitionFacts(null), { version: null, state: null, revision: null });
+    assert.deepEqual(workflowChildDefinitionFacts(null), { version: null, state: null, revision: null, identity: null });
 });
 
 test("his shape: every child not started is listed, newest first, with its version, state and time", () => {
@@ -111,7 +111,7 @@ test("the picker says the draft's version and 'draft'; the Workflows view says a
     // #1 and #2 are listed as before, each with its version (owner, 2026-11-07T00:03Z); the picker lists 1.0.0 too.
     assert.match(html, /aria-label="Open hacker-news-top-change-monitor #2"/);
     assert.match(words, /#2 Running 1\.0\.0/);
-    assert.match(html, new RegExp(`<option value="${NAME}\u001f1\\.0\\.0">${NAME} · 1\\.0\\.0</option>`));
+    assert.match(html, new RegExp(`<option value="${NAME}\u001f1\\.0\\.0\u001fh-6e43">${NAME} · 1\\.0\\.0</option>`));
 });
 
 test("the Definition view shows the draft: its version, 'draft, not started' and when it was made", () => {
@@ -130,7 +130,7 @@ test("two drafts: the line says how many, each opens with its version and time; 
     // Owner, 2026-11-07T00:03Z: it is version 1.1.0, chosen in the picker; it is the newest of its version, so no link.
     assert.match(text(older), /Revision 1 · 1\.1\.0 · draft, not started · made (?:\d{4}-\d{2}-\d{2} )?19:35:04 UTC/);
     assert.ok(!older.includes("show-newest"));
-    assert.match(older, new RegExp(`<option value="${NAME}\u001f1\\.1\\.0" selected="">${NAME} · 1\\.1\\.0 · draft</option>`));
+    assert.match(older, new RegExp(`<option value="${NAME}\u001f1\\.1\\.0\u001fh-5e54" selected="">${NAME} · 1\\.1\\.0 · draft</option>`));
     assert.match(older, new RegExp(`<option value="${NAME}">${NAME} · 1\\.2\\.0 · draft</option>`));
     // A choice of another definition, or the newest, drops it.
     const newest = render(h, { view: "definition", definitionChild: null });
