@@ -26,6 +26,8 @@ const horizonDawnTheme = createTheme({
     label: "Horizon Dawn",
     description: "Azure HorizonDB, generally available: Orion over a pre-dawn horizon.",
     group: THEME_GROUP_OTHER,
+    // Code in JetBrains Mono unless the person picks another code font.
+    codeFont: "jetbrains",
     // The HorizonDB mark: a database cylinder with a white chevron and a
     // sky-cyan peak. The header shows an animated version from the portal CSS.
     icon: {

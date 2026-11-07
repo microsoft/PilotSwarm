@@ -101,6 +101,8 @@ import {
     MOBILE_MEDIA_QUERY,
     PHONE_LANDSCAPE_MEDIA_QUERY,
     matchesMobileViewport,
+    normalizeCodeFont,
+    resolveCodeFont,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
@@ -385,6 +387,11 @@ function normalizeProfileSettings(settings) {
         const themeSoundMobile = normalizeThemeSound(candidate.themeSoundMobile);
         if (themeSoundMobile) normalized.themeSoundMobile = themeSoundMobile;
     }
+    // The code font, one choice for every device.
+    if (hasOwn(candidate, "codeFont")) {
+        const codeFont = normalizeCodeFont(candidate.codeFont);
+        if (codeFont) normalized.codeFont = codeFont;
+    }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
         const storedFilter = candidate.sessionOwnerFilter;
         // Profiles saved before the "Shared with me" bucket existed have no
@@ -577,6 +584,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         chatReading: state.chatReading,
         ...(state.themeSound ? { themeSound: state.themeSound } : {}),
         ...(state.themeSoundMobile ? { themeSoundMobile: state.themeSoundMobile } : {}),
+        ...(state.codeFont ? { codeFont: state.codeFont } : {}),
     });
 }
 
@@ -696,6 +704,9 @@ function materializeProfileSettings(remoteSettings, defaults) {
             : {}),
         ...(hasOwn(normalizedRemote, "themeSoundMobile")
             ? { themeSoundMobile: normalizedRemote.themeSoundMobile }
+            : {}),
+        ...(hasOwn(normalizedRemote, "codeFont")
+            ? { codeFont: normalizedRemote.codeFont }
             : {}),
         // Read back for the same reason as touchScale above: written but never
         // merged means the fold state resets on every reload. No default here
@@ -1083,6 +1094,12 @@ function applyTouchScale(enabled) {
     // or a class the stylesheet owns, so this needs no per-component wiring.
     if (enabled) document.documentElement.dataset.psTouch = "1";
     else delete document.documentElement.dataset.psTouch;
+}
+
+function applyCodeFont(choice, themeId) {
+    if (typeof document === "undefined") return;
+    // One attribute; the stylesheet maps it to --ps-mono.
+    document.documentElement.dataset.psMono = resolveCodeFont(choice, getTheme(themeId));
 }
 
 function applyDocumentTheme(themeId) {
@@ -14989,6 +15006,24 @@ function ThemeSoundControl({ setting, theme, onChange }) {
             : React.createElement("p", { className: "ps-admin-console__hint" }, "This theme has no sound."));
 }
 
+const CODE_FONT_LABELS = { theme: "Theme default", jetbrains: "JetBrains Mono", system: "System" };
+
+/** The code font: the theme's choice, JetBrains Mono, or the system monospace. */
+function CodeFontControl({ value, onChange }) {
+    const current = normalizeCodeFont(value) || "theme";
+    return React.createElement("div", { className: "ps-reading-control is-stacked ps-code-font-control" },
+        React.createElement("div", { className: "ps-reading-width" },
+            React.createElement("span", null, "Code font"),
+            React.createElement("span", { className: "ps-reading-align", role: "group", "aria-label": "Code font" },
+                Object.entries(CODE_FONT_LABELS).map(([id, label]) => React.createElement("button", {
+                    key: id,
+                    type: "button",
+                    className: current === id ? "is-on" : "",
+                    "aria-pressed": current === id,
+                    onClick: () => onChange(id),
+                }, label)))));
+}
+
 function MobileThemeSoundRows({ setting, theme, onChange }) {
     const value = setting || { on: true, volume: 40 };
     const set = (patch) => onChange({ ...value, ...patch });
@@ -15028,6 +15063,8 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
     const themeSoundMobile = useControllerSelector(controller, (state) => state.ui.themeSoundMobile);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const touchScale = useControllerSelector(controller, state => state.ui.touchScale);
+    const codeFont = useControllerSelector(controller, (state) => state.ui.codeFont);
+    const setCodeFont = (next) => controller.dispatch({ type: "ui/codeFont", codeFont: next });
     // Phone only: which people's sessions the list shows. The phone toolbar
     // has no room for the funnel the desktop keeps beside New session.
     const ownerFilterSummary = useControllerSelector(controller, (state) => {
@@ -15051,6 +15088,14 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
         React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
             onClick: () => controller.openThemePicker() },
             React.createElement("span", null, "Theme"), React.createElement("span", null, getTheme(themeId)?.label || themeId, " ›")),
+        React.createElement("label", { className: "ps-mobile-setting-row" },
+            React.createElement("span", null, "Code font"),
+            React.createElement("select", {
+                className: "ps-mobile-setting-select",
+                "aria-label": "Code font",
+                value: normalizeCodeFont(codeFont) || "theme",
+                onChange: (event) => setCodeFont(event.target.value),
+            }, Object.entries(CODE_FONT_LABELS).map(([id, label]) => React.createElement("option", { key: id, value: id }, label)))),
         React.createElement("button", { type: "button", className: "ps-mobile-setting-row",
             "aria-label": "Filter sessions",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_SESSION_FILTER).catch(() => {}) },
@@ -15076,7 +15121,8 @@ function AppearanceSettingsPane({ controller, mobile = false }) {
                 setting: themeSound,
                 theme: getTheme(themeId),
                 onChange: (next) => controller.dispatch({ type: "ui/themeSound", themeSound: next }),
-            })));
+            }),
+            React.createElement(CodeFontControl, { value: codeFont, onChange: setCodeFont })));
 }
 
 function AdminConsolePanel({ controller, mobile = false, navigation = null }) {
@@ -16554,6 +16600,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         chatReading: rootState.ui.chatReading,
         themeSound: rootState.ui.themeSound,
         themeSoundMobile: rootState.ui.themeSoundMobile,
+        codeFont: rootState.ui.codeFont,
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
         agentPickerUsage: rootState.ui.agentPickerUsage,
         ownerFilter: rootState.sessions.ownerFilter,
@@ -16984,12 +17031,13 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound, state.themeSoundMobile, state.codeFont]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
         applyTouchScale(state.touchScale);
-    }, [state.themeId, state.touchScale]);
+        applyCodeFont(state.codeFont, state.themeId);
+    }, [state.themeId, state.touchScale, state.codeFont]);
 
     // The theme's ambient sound, if it has one and the person turned sounds on.
     // Each device class has its own setting: crossing the phone breakpoint

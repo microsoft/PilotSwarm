@@ -1,5 +1,6 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
 import { defaultThemeSound, defaultThemeSoundMobile } from "./theme-sound.js";
+import { DEFAULT_CODE_FONT } from "./code-font.js";
 import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
 import { createMotdState, createMotdAdminState } from "./motd.js";
 
@@ -473,6 +474,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // default; a phone in silent mode stays silent.
             themeSound: defaultThemeSound(),
             themeSoundMobile: defaultThemeSoundMobile(),
+            // The code font (code-font.js): the theme's own choice unless the
+            // person picks one in Appearance.
+            codeFont: DEFAULT_CODE_FONT,
             // The session detail box starts folded to its one-line summary. It
             // is ten rows of reference detail against a list you are trying to
             // read, and most of it is looked up once per session, not per

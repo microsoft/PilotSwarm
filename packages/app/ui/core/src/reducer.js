@@ -1,6 +1,7 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
 import { normalizeThemeSound } from "./theme-sound.js";
+import { normalizeCodeFont } from "./code-font.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
@@ -1041,6 +1042,12 @@ function baseReducer(state, action) {
             return { ...state, ui: { ...state.ui, [key]: next } };
         }
 
+        case "ui/codeFont": {
+            const next = normalizeCodeFont(action.codeFont);
+            if (!next || next === state.ui.codeFont) return state;
+            return { ...state, ui: { ...state.ui, codeFont: next } };
+        }
+
         case "ui/chatReading": {
             const next = normalizeChatReading(action.reading);
             if (!next) return state;
@@ -1091,6 +1098,9 @@ function baseReducer(state, action) {
                 : null;
             const nextThemeSoundMobile = Object.prototype.hasOwnProperty.call(settings, "themeSoundMobile")
                 ? normalizeThemeSound(settings.themeSoundMobile)
+                : null;
+            const nextCodeFont = Object.prototype.hasOwnProperty.call(settings, "codeFont")
+                ? normalizeCodeFont(settings.codeFont)
                 : null;
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
@@ -1196,6 +1206,7 @@ function baseReducer(state, action) {
                     chatReading: nextChatReading || selection.ui.chatReading,
                     themeSound: nextThemeSound || selection.ui.themeSound,
                     themeSoundMobile: nextThemeSoundMobile || selection.ui.themeSoundMobile,
+                    codeFont: nextCodeFont || selection.ui.codeFont,
                     sessionDetailCollapsed: hasSessionDetailCollapsed
                         ? settings.sessionDetailCollapsed
                         : selection.ui.sessionDetailCollapsed,

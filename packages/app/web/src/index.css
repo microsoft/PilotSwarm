@@ -72,7 +72,7 @@
   /* The one monospace stack, named. Several rules asked for it by variable
      and every one of them carried its own inline fallback, so "the mono face"
      was really four slightly different lists. */
-  --ps-mono: "PS JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  --ps-mono: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
   /* Scroll-past-end room at the foot of the session list. At the bottom of a
      long list the last row otherwise sits flush against the detail box below
      it, which reads as "the list is cut off" rather than "this is the end".
@@ -8176,8 +8176,8 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
      still a clear break from the system stack every other theme uses. */
   --ps-ui-font: "Fira Sans", "Source Sans 3", "Source Sans Pro", -apple-system,
     BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --ps-mono: "Fira Code", "Fira Mono", "PS JetBrains Mono", ui-monospace,
-    SFMono-Regular, Menlo, Consolas, monospace;
+  --ps-mono: "Fira Code", "Fira Mono", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
 }
 
 /* Chrome goes proportional; the transcript and every technical surface stay
@@ -12496,4 +12496,24 @@ textarea.ps-link-input {
 }
 @media (prefers-reduced-motion: reduce) {
   .ps-canvas-pinch-hint { animation: none; }
+}
+
+/* The code font: JetBrains Mono when the person picks it in Appearance, or
+   when the theme names it as its default (data-ps-mono, set from the profile).
+   Last in the file so it outranks a theme's own monospace stack. */
+:root[data-ps-mono="jetbrains"] {
+  --ps-mono: "PS JetBrains Mono", ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+}
+
+/* A native picker on the phone's Appearance list; 16 px so iOS does not zoom. */
+.ps-mobile-setting-select {
+  min-height: 36px;
+  max-width: 55%;
+  padding: 4px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-surface);
+  color: var(--ps-foreground);
+  font: inherit;
+  font-size: 16px;
 }
