@@ -400,13 +400,87 @@ export function workflowChildDefinitionFacts(view) {
 }
 
 /**
- * F9: the definition picker's option for a definition (its newest child): "name · version · revision N" once started,
- * "name · version · draft" (or "· not started" for a published one) before. Parts not read yet are left out.
+ * The definition picker's option for one version of a definition (owner, 2026-11-07T00:03Z: versions are first-class):
+ * "name · version" once its newest child has started, "name · version · draft" (or "· not started" for a published one)
+ * before. Parts not read yet are left out. F9's "· revision N" is gone: the Definition view's line says the revision.
  */
-export function workflowDefinitionOptionLabel({ name, version = null, revision = null, state = null, started = true }) {
-    const status = started ? (Number.isSafeInteger(revision) ? `revision ${revision}` : null)
-        : state === "draft" ? "draft" : state === "published" ? "not started" : null;
+export function workflowDefinitionOptionLabel({ name, version = null, state = null, started = true }) {
+    const status = started ? null : state === "draft" ? "draft" : state === "published" ? "not started" : null;
     return [text(name) ?? "workflow", text(version), status].filter(Boolean).join(" · ");
+}
+
+/** Versions in the picker's order: the higher semantic version first ("1.10.0" above "1.9.0"); a version not read yet last. */
+function compareVersionsDescending(a, b) {
+    if (a === b) return 0;
+    if (a === null) return 1;
+    if (b === null) return -1;
+    const parts = value => /^(\d+)\.(\d+)\.(\d+)(.*)$/u.exec(value);
+    const left = parts(a), right = parts(b);
+    if (left && right) {
+        for (let index = 1; index <= 3; index += 1) {
+            const by = Number(right[index]) - Number(left[index]);
+            if (by !== 0) return by;
+        }
+        // A release ranks above its pre-releases ("1.0.0" above "1.0.0-rc.1").
+        if (!left[4] !== !right[4]) return left[4] ? 1 : -1;
+    } else if (left || right) return left ? -1 : 1;
+    return b.localeCompare(a);
+}
+
+/**
+ * Owner, 2026-11-07T00:03Z: the versions of one definition (its workflow children grouped by metadata.version), highest
+ * version first: [{ version (null: not read yet), children (ids, oldest first), newestId (its newest child: the one the
+ * Definition view shows for it), startable (that child has not started) }]. Children whose version is not read yet are an
+ * entry of their own only while no version is known, or when they hold the definition's newest child (so it is always
+ * reachable); otherwise they join once read. Display only: in stage 1 each version is one or more workflow children.
+ */
+export function workflowDefinitionVersions(byId, definition, views = {}) {
+    const children = Array.isArray(definition?.children) ? definition.children : [];
+    const groups = new Map();
+    for (const id of children) {
+        if (!isWorkflowChild(byId?.[id])) continue;
+        const version = workflowChildDefinitionFacts(views?.[id] ?? null).version;
+        const key = version ?? "";
+        const group = groups.get(key) ?? { version, children: [], newestId: null };
+        group.children.push(id);
+        group.newestId = id;
+        groups.set(key, group);
+    }
+    let list = [...groups.values()];
+    if (list.some(group => group.version !== null)) list = list.filter(group => group.version !== null || group.children.includes(definition?.newestId));
+    return list.sort((a, b) => compareVersionsDescending(a.version, b.version))
+        .map(group => ({ ...group, startable: !workflowStarted(byId[group.newestId], views?.[group.newestId] ?? null) }));
+}
+
+/**
+ * The version the Workflow tab shows (owner, 2026-11-07T00:03Z), from `versions` (workflowDefinitionVersions): the one that
+ * holds `child` (a child the person chose to show), else the one the person chose (`version`: its text, "" for a version not
+ * read yet; null: none chosen), else the one of the Workflow shown (`workflowId`), else the one that holds the definition's
+ * newest child (`newestId`), else the first. Null when there are none. Pure.
+ */
+export function workflowChosenVersion(versions, { child = null, version = null, workflowId = null, newestId = null } = {}) {
+    const list = Array.isArray(versions) ? versions : [];
+    const holding = id => (id ? list.find(entry => entry.children.includes(id)) ?? null : null);
+    return holding(child)
+        ?? (typeof version === "string" ? list.find(entry => (entry.version ?? "") === version) ?? null : null)
+        ?? holding(workflowId) ?? holding(newestId) ?? list[0] ?? null;
+}
+
+const VERSION_VALUE_SEPARATOR = "\u001f";
+
+/**
+ * The definition picker's value for one version: the definition's name for the version that holds its newest child (so
+ * the name alone still chooses the definition), `name␟version` for the others. workflowVersionFromOptionValue reads it.
+ */
+export function workflowVersionOptionValue({ name, version = null, newest = false }) {
+    return newest ? String(name) : `${name}${VERSION_VALUE_SEPARATOR}${version ?? ""}`;
+}
+
+/** { name, version }: `version` is the version's text ("" for one not read yet), or null for a bare name (its newest). */
+export function workflowVersionFromOptionValue(value) {
+    const raw = String(value ?? "");
+    const at = raw.indexOf(VERSION_VALUE_SEPARATOR);
+    return at < 0 ? { name: raw, version: null } : { name: raw.slice(0, at), version: raw.slice(at + 1) };
 }
 
 /**
@@ -450,12 +524,14 @@ export function workflowUnstartedLine(items) {
 }
 
 /**
- * F9: a Workflow's cell in the Workflows list's Revision column: its run's revision, and its version too when the
- * definition's Workflows run different versions ("1 · version 1.1.0"). "—" when not read.
+ * A Workflow's cell in the Workflows list's Version column (owner, 2026-11-07T00:03Z: every Workflow says its version):
+ * "1.0.0", with its run's revision when it is past 1 ("1.0.0 · revision 2": a draft edited before it was published).
+ * "revision 2" when the version is not read, "—" when neither is.
  */
-export function workflowListRevisionText({ revision = null, version = null, mixed = false }) {
-    if (!Number.isSafeInteger(revision)) return mixed && text(version) ? `version ${version}` : "—";
-    return mixed && text(version) ? `${revision} · version ${version}` : String(revision);
+export function workflowListVersionText({ revision = null, version = null }) {
+    const edited = Number.isSafeInteger(revision) && revision > 1 ? `revision ${revision}` : null;
+    const words = [text(version), edited].filter(Boolean).join(" · ");
+    return words || (Number.isSafeInteger(revision) ? `revision ${revision}` : "—");
 }
 
 /** A Workflow's number within its definition (#1 is the oldest started child of that name), or null. */
@@ -728,11 +804,13 @@ export function workflowPickerGroupLabel(count) {
 }
 
 /**
- * One option of the Workflow picker: `#number · state · started` (state and started as a person reads them, or null).
- * Review UI2-F5: on a phone, where no meta line shows it, its run's revision follows (`· revision 2`) when known.
+ * One option of the Workflow picker: `#number · version · state · started` (each as a person reads it, or null; owner,
+ * 2026-11-07T00:03Z: "#1 · 1.0.0 · Canceled · 15:40"). Review UI2-F5: on a phone, where no meta line shows it, its run's
+ * revision follows (`· revision 2`) when known.
  */
-export function workflowPickerOptionLabel({ number, state = null, started = null, revision = null }) {
-    return [`#${number}`, text(state), text(started), Number.isSafeInteger(revision) ? `revision ${revision}` : null].filter(Boolean).join(" · ");
+export function workflowPickerOptionLabel({ number, version = null, state = null, started = null, revision = null }) {
+    return [`#${number}`, text(version), text(state), text(started), Number.isSafeInteger(revision) ? `revision ${revision}` : null]
+        .filter(Boolean).join(" · ");
 }
 
 /** The closed Workflow picker: `#7 of 7`. */
@@ -753,7 +831,7 @@ export function workflowTabButtonTip(kind, { name = null, number = null, revisio
         case "start": return `start Workflow${which} from this definition`;
         case "start-another": return `ask the chat to start ${text(name) ?? "this definition"}${which} from this definition`;
         case "yaml": return "show the definition's YAML instead of its graph";
-        case "compare": return "compare the definition's revisions";
+        case "compare": return "compare the definition's versions and revisions";
         case "pause": return "no new step starts; running steps finish";
         case "resume": return "steps start again where the Workflow paused";
         case "stop": return "choose: let started steps finish, or cancel now";

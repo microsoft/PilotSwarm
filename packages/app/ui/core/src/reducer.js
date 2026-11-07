@@ -948,13 +948,19 @@ function agentNodeOfSelection(state) {
     return { workflowId: ancestor.workflowId, nodeStateId: workflowNodeStateOfChat(byId[ancestor.nodeSessionId]) };
 }
 
+/** A Workflow tab's state without a version chosen in it (owner, 2026-11-07T00:03Z): a Workflow row chosen shows its own. */
+function withoutChosenVersion(tab) {
+    const { version, ...rest } = tab || {};
+    return rest;
+}
+
 /** The session's Workflow tab on its selected Workflow row (S4, S5): the Workflows view of that Workflow. */
 function rememberWorkflowRow(state) {
     const ownerId = state.sessions?.activeSessionId ?? null;
     const rowId = state.sessions?.workflowRowId ?? null;
     if (!ownerId || !rowId) return state;
     const tabs = state.ui.workflowTabs || {};
-    return { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [ownerId]: { ...(tabs[ownerId] || {}), view: "workflows", workflowId: rowId,
+    return { ...state, ui: { ...state.ui, workflowTabs: { ...tabs, [ownerId]: { ...withoutChosenVersion(tabs[ownerId]), view: "workflows", workflowId: rowId,
         definition: workflowDefinitionName(state.sessions.byId?.[rowId], state.ui.workflowViews?.[rowId]) } } } };
 }
 
@@ -2181,7 +2187,7 @@ function baseReducer(state, action) {
             // Workflow Simplified (S4): the Workflow row chosen, and the session's Workflow tab on it.
             const workflowRowId = typeof action.workflowRowId === "string" && action.workflowRowId ? action.workflowRowId : null;
             const workflowTabs = workflowRowId && action.sessionId
-                ? { ...(state.ui.workflowTabs || {}), [action.sessionId]: { ...(state.ui.workflowTabs?.[action.sessionId] || {}), view: "workflows",
+                ? { ...(state.ui.workflowTabs || {}), [action.sessionId]: { ...withoutChosenVersion(state.ui.workflowTabs?.[action.sessionId]), view: "workflows",
                     workflowId: workflowRowId,
                     definition: workflowDefinitionName(state.sessions.byId?.[workflowRowId], state.ui.workflowViews?.[workflowRowId]) } }
                 : state.ui.workflowTabs;

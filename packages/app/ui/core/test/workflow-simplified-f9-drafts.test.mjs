@@ -8,7 +8,8 @@
  * - the Definition view says the version, "draft, not started" and when it was made;
  * - the Workflows view says a draft is not started yet, with Show it and Start…; with more than one, how many, and each
  *   opens with its version and when it was made; a chosen older one says it is not the newest;
- * - the Revision column says the version too when Workflows of one name run different versions.
+ * - the Revision column says the version too when Workflows of one name run different versions (owner, 2026-11-07T00:03Z:
+ *   now a Version column for every Workflow, and the picker lists each version; workflow-simplified-versions.test.mjs).
  *
  * Run: node --test ui/core/test/workflow-simplified-f9-drafts.test.mjs
  */
@@ -18,7 +19,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import {
-    workflowChildDefinitionFacts, workflowDefinitionHeaderText, workflowDefinitionOptionLabel, workflowDefinitionsOf, workflowListRevisionText,
+    workflowChildDefinitionFacts, workflowDefinitionHeaderText, workflowDefinitionOptionLabel, workflowDefinitionsOf, workflowListVersionText,
     workflowUnstartedChildren, workflowUnstartedLine,
 } from "../src/workflow-owner.js";
 import { WorkflowTab } from "../../react/src/workflow-tab.js";
@@ -66,9 +67,10 @@ const render = (h, patch) => {
 };
 const text = html => html.replace(/<[^>]*>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 
-test("the words: the picker's option, the Definition view's line, the Workflows view's line and the Revision cell", () => {
+test("the words: the picker's option, the Definition view's line, the Workflows view's line and the Version cell", () => {
     assert.equal(workflowDefinitionOptionLabel({ name: NAME, version: "1.1.0", revision: 1, state: "draft", started: false }), `${NAME} · 1.1.0 · draft`);
-    assert.equal(workflowDefinitionOptionLabel({ name: NAME, version: "1.0.0", revision: 1, state: "published", started: true }), `${NAME} · 1.0.0 · revision 1`);
+    // Owner, 2026-11-07T00:03Z: a started version reads by its version alone; the Definition view's line says its revision.
+    assert.equal(workflowDefinitionOptionLabel({ name: NAME, version: "1.0.0", revision: 1, state: "published", started: true }), `${NAME} · 1.0.0`);
     assert.equal(workflowDefinitionOptionLabel({ name: "report-v2", version: "1.0.0", revision: 1, state: "published", started: false }), "report-v2 · 1.0.0 · not started");
     assert.equal(workflowDefinitionOptionLabel({ name: NAME, started: false }), NAME, "not read yet: the name");
     assert.equal(workflowDefinitionHeaderText({ revision: 1, version: "1.1.0", state: "draft", started: false, made: "19:35:04 UTC" }),
@@ -81,9 +83,10 @@ test("the words: the picker's option, the Definition view's line, the Workflows 
     assert.equal(workflowUnstartedLine([{ state: "draft" }, { state: "draft" }]), "2 drafts are not started yet.");
     assert.equal(workflowUnstartedLine([{ state: "draft" }, { state: "published" }, { state: null }]), "3 definitions are not started yet.");
     assert.equal(workflowUnstartedLine([]), null);
-    assert.equal(workflowListRevisionText({ revision: 1, version: "1.0.0", mixed: false }), "1");
-    assert.equal(workflowListRevisionText({ revision: 1, version: "1.1.0", mixed: true }), "1 · version 1.1.0");
-    assert.equal(workflowListRevisionText({}), "—");
+    assert.equal(workflowListVersionText({ revision: 1, version: "1.0.0" }), "1.0.0");
+    assert.equal(workflowListVersionText({ revision: 2, version: "1.1.0" }), "1.1.0 · revision 2");
+    assert.equal(workflowListVersionText({ revision: 2 }), "revision 2");
+    assert.equal(workflowListVersionText({}), "—");
     assert.deepEqual(workflowChildDefinitionFacts(null), { version: null, state: null, revision: null });
 });
 
@@ -105,34 +108,37 @@ test("the picker says the draft's version and 'draft'; the Workflows view says a
     assert.match(words, /A newer draft, 1\.1\.0, is not started yet\. Show it Start…/);
     assert.match(html, /data-action="show-unstarted"[^>]*>Show it<\/button>/);
     assert.match(html, /data-action="start-unstarted"[^>]*>Start…<\/button>/);
-    // #1 and #2 are listed as before; both run 1.0.0, so the Revision column is the revision alone.
+    // #1 and #2 are listed as before, each with its version (owner, 2026-11-07T00:03Z); the picker lists 1.0.0 too.
     assert.match(html, /aria-label="Open hacker-news-top-change-monitor #2"/);
-    assert.ok(!words.includes("version 1.0.0"), words);
+    assert.match(words, /#2 Running 1\.0\.0/);
+    assert.match(html, new RegExp(`<option value="${NAME}\u001f1\\.0\\.0">${NAME} · 1\\.0\\.0</option>`));
 });
 
 test("the Definition view shows the draft: its version, 'draft, not started' and when it was made", () => {
     const html = render(harness(), { view: "definition" });
-    assert.match(text(html), /Revision 1 · 1\.1\.0 · draft, not started · made 19:35:04 UTC/);
+    assert.match(text(html), /Revision 1 · 1\.1\.0 · draft, not started · made (?:\d{4}-\d{2}-\d{2} )?19:35:04 UTC/);
     assert.match(html, /data-definition-child="wf-3"/);
     assert.ok(!html.includes("show-newest"), "it is the newest");
 });
 
-test("two drafts: the line says how many, each opens with its version and time; an older one says it is not the newest", () => {
+test("two drafts: the line says how many, each opens with its version and time; it shows as its own version", () => {
     const h = harness({ more: [["wf-4", "1.2.0", Date.parse("2026-11-06T19:50:00.000Z")]] });
     const list = text(render(h, { view: "workflows" }));
-    assert.match(list, /2 drafts are not started yet\. 1\.2\.0 · draft · made 19:50:00 UTC Show it 1\.1\.0 · draft · made 19:35:04 UTC Show it/);
+    assert.match(list, /2 drafts are not started yet\. 1\.2\.0 · draft · made (?:\d{4}-\d{2}-\d{2} )?19:50:00 UTC Show it 1\.1\.0 · draft · made (?:\d{4}-\d{2}-\d{2} )?19:35:04 UTC Show it/);
     const older = render(h, { view: "definition", definitionChild: "wf-3" });
     assert.match(older, /data-definition-child="wf-3"/);
-    assert.match(text(older), /Revision 1 · 1\.1\.0 · draft, not started · made 19:35:04 UTC Not the newest: show the newest/);
-    // The picker still names the newest.
-    assert.match(older, new RegExp(`${NAME} · 1\\.2\\.0 · draft</option>`));
+    // Owner, 2026-11-07T00:03Z: it is version 1.1.0, chosen in the picker; it is the newest of its version, so no link.
+    assert.match(text(older), /Revision 1 · 1\.1\.0 · draft, not started · made (?:\d{4}-\d{2}-\d{2} )?19:35:04 UTC/);
+    assert.ok(!older.includes("show-newest"));
+    assert.match(older, new RegExp(`<option value="${NAME}\u001f1\\.1\\.0" selected="">${NAME} · 1\\.1\\.0 · draft</option>`));
+    assert.match(older, new RegExp(`<option value="${NAME}">${NAME} · 1\\.2\\.0 · draft</option>`));
     // A choice of another definition, or the newest, drops it.
     const newest = render(h, { view: "definition", definitionChild: null });
     assert.match(newest, /data-definition-child="wf-4"/);
 });
 
-test("Workflows of one name that run different versions: the Revision column says each one's version", () => {
+test("Workflows of one name that run different versions: the Version column says each one's version", () => {
     const html = text(render(harness({ second: "1.1.0" }), { view: "workflows" }));
-    assert.match(html, /#2 Running 1 · version 1\.1\.0/);
-    assert.match(html, /#1 Running 1 · version 1\.0\.0/);
+    assert.match(html, /#2 Running 1\.1\.0/);
+    assert.match(html, /#1 Running 1\.0\.0/);
 });

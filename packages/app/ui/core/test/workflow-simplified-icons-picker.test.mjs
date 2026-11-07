@@ -23,6 +23,8 @@ test("the Workflow picker's group says the count, each option its number, state 
     // Review UI2-F5: on a phone the run's revision follows, when known.
     assert.equal(workflowPickerOptionLabel({ number: 7, state: "Running", started: "05:38:01", revision: 2 }), "#7 · Running · 05:38:01 · revision 2");
     assert.equal(workflowPickerOptionLabel({ number: 7, state: "Running", revision: null }), "#7 · Running");
+    // Owner, 2026-11-07T00:03Z: "#1 · 1.0.0 · Canceled · 15:40".
+    assert.equal(workflowPickerOptionLabel({ number: 1, version: "1.0.0", state: "Canceled", started: "15:40" }), "#1 · 1.0.0 · Canceled · 15:40");
     assert.equal(workflowPickerFace(7, 7), "#7 of 7");
     assert.equal(workflowPickerFace(2, 7), "#2 of 7");
     assert.equal(workflowPickerFace(1, 0), "#1");
@@ -111,12 +113,12 @@ test("the Workflow tab's header and toolbar buttons are named icons with tooltip
         ["Pause", "", "no new step starts; running steps finish"],
         ["Stop…", "", "choose: let started steps finish, or cancel now"],
     ]);
-    // The definition picker: the definition and its revision, no count.
-    // F9 (owner, 2026-11-06T19:40Z): the newest child's version as well.
-    assert.match(html, /<option value="watch-v2" selected="">watch-v2 · 1\.0\.0 · revision 1<\/option>/);
+    // The definition picker: the definition and its version (owner, 2026-11-07T00:03Z: each version its own option), no count.
+    assert.match(html, /<option value="watch-v2" selected="">watch-v2 · 1\.0\.0<\/option>/);
     // The Workflow picker: one group that says how many, newest first; closed, "#1 of 2".
     assert.match(html, /<span class="ps-workflow-input ps-wf-picker-face" aria-hidden="true">#1 of 2<\/span>/);
-    assert.match(html, /<optgroup label="2 Workflows"><option value="wf-2">#2 · Failed<\/option><option value="wf-1"[^>]*>#1 · Running<\/option><\/optgroup><option value="__all__">All Workflows<\/option>/);
+    // Owner, 2026-11-07T00:03Z: each Workflow's version follows its number.
+    assert.match(html, /<optgroup label="2 Workflows"><option value="wf-2">#2 · 1\.0\.0 · Failed<\/option><option value="wf-1"[^>]*>#1 · 1\.0\.0 · Running<\/option><\/optgroup><option value="__all__">All Workflows<\/option>/);
     // Desktop keeps its meta line.
     assert.match(html, /<span class="ps-wf-bar-text">revision 1<\/span>/);
 });

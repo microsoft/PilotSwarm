@@ -13,7 +13,7 @@ import { workflowTabButtonTip } from "../../core/src/workflow-owner.js";
 import { WorkflowToolButton } from "./workflow-tool-button.js";
 import {
     WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS, WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, WORKFLOW_V2_VARIABLES_HELP_TEXT, workflowV2AdvanceDraft, workflowV2DraftEdit, workflowV2DraftMarks, workflowV2JsonObjectDraft,
-    workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
+    workflowV2LineDiff, workflowV2PublicationEvidenceRows, workflowV2RevisionCompare, workflowV2VersionCompare, workflowV2StepInputKey, workflowV2StepInputRequest, workflowV2StepInputRows, workflowV2StepInputSummary,
     workflowV2StepInputEditorState, workflowV2StepInputEdited, workflowV2StepInputLoadWaiting,
     workflowV2ScenarioDraft, workflowV2TestAnswerTemplate, workflowV2TestResponseDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
     workflowV2VariableEdit, workflowV2VariableEditState, WORKFLOW_V2_VARIABLE_EDIT_EMPTY,
@@ -1337,14 +1337,55 @@ const loadDiffEditor = () => (diffEditorModule ??= import("./workspace-editor.js
 export function WorkflowV2RevisionCompare({ controller, sessionId, latest, reads }) {
     const [from, setFrom] = React.useState(Math.max(1, latest - 1));
     const [to, setTo] = React.useState(latest);
-    const [layout, setLayout] = React.useState("split");
-    const [viewer, setViewer] = React.useState("pending");
-    const hostRef = React.useRef(null);
     React.useEffect(() => {
         controller.loadWorkflowDefinitionRevision?.(sessionId, from)?.catch?.(() => {});
         controller.loadWorkflowDefinitionRevision?.(sessionId, to)?.catch?.(() => {});
     }, [controller, sessionId, from, to]);
     const compared = workflowV2RevisionCompare(reads, from, to);
+    const options = Array.from({ length: latest }, (_, index) => index + 1);
+    const pick = (label, value, onChange, field) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4 } }, label,
+        h("select", { className: "ps-workflow-input", value, "data-field": field, onChange: event => onChange(Number(event.target.value)) },
+            options.map(revision => h("option", { key: revision, value: revision }, `Revision ${revision}${revision === latest ? " (latest)" : ""}`))));
+    return h(CompareView, { label: "Compare versions", from, to, compared, pickers: [pick("From", from, setFrom, "compare-from"), pick("To", to, setTo, "compare-to")],
+        unparsed: " A revision that does not parse is shown as saved." });
+}
+
+/**
+ * Owner, 2026-11-07T00:03Z: compare two versions of a definition. In stage 1 each version is its own workflow child, so
+ * each side is its newest child's current revision, read once as a revision is (controller.loadWorkflowDefinitionRevision);
+ * reading changes nothing. `versions`: [{ version, sessionId, revision, read }] (highest first; `read` the child's
+ * `definitionRevisions` entry); `chosen`: the version the Definition view shows, the default "To". The default "From" is
+ * the next version below it (or the one above, for the lowest).
+ */
+export function WorkflowV2VersionCompare({ controller, versions, chosen }) {
+    const list = Array.isArray(versions) ? versions.filter(item => item && typeof item.version === "string" && item.sessionId) : [];
+    const at = Math.max(0, list.findIndex(item => item.version === chosen));
+    const [to, setTo] = React.useState(list[at]?.version ?? null);
+    const [from, setFrom] = React.useState(list[at + 1]?.version ?? list[at - 1]?.version ?? null);
+    const side = version => list.find(item => item.version === version) ?? null;
+    const before = side(from), after = side(to);
+    React.useEffect(() => {
+        for (const item of [before, after]) {
+            if (item && Number.isSafeInteger(item.revision)) controller.loadWorkflowDefinitionRevision?.(item.sessionId, item.revision)?.catch?.(() => {});
+        }
+    }, [controller, before?.sessionId, before?.revision, after?.sessionId, after?.revision]);
+    const compared = workflowV2VersionCompare({ version: from, read: before?.read ?? null }, { version: to, read: after?.read ?? null });
+    const pick = (label, value, onChange, field) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4 } }, label,
+        h("select", { className: "ps-workflow-input", value: value ?? "", "data-field": field, onChange: event => onChange(event.target.value) },
+            list.map(item => h("option", { key: item.version, value: item.version }, `Version ${item.version}`))));
+    return h(CompareView, { label: "Compare two versions", from, to, compared, kind: "versions",
+        pickers: [pick("From", from, setFrom, "compare-from-version"), pick("To", to, setTo, "compare-to-version")],
+        unparsed: " A version that does not parse is shown as saved." });
+}
+
+/**
+ * The comparison's pickers, its layout buttons, its summary and its diff (the Workspace pane's read-only diff view, or
+ * until it has loaded, and wherever it cannot load, the same comparison as lines marked + and -).
+ */
+function CompareView({ label, from, to, compared, pickers, unparsed, kind = null }) {
+    const [layout, setLayout] = React.useState("split");
+    const [viewer, setViewer] = React.useState("pending");
+    const hostRef = React.useRef(null);
     const beforeText = compared.before.text, afterText = compared.after.text;
     React.useEffect(() => {
         if (!compared.ready || !hostRef.current) return undefined;
@@ -1360,18 +1401,14 @@ export function WorkflowV2RevisionCompare({ controller, sessionId, latest, reads
         }).catch(() => { if (!disposed) setViewer("failed"); });
         return () => { disposed = true; handle?.destroy(); };
     }, [compared.ready, beforeText, afterText, layout]);
-    const options = Array.from({ length: latest }, (_, index) => index + 1);
-    const pick = (label, value, onChange, field) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4 } }, label,
-        h("select", { className: "ps-workflow-input", value, "data-field": field, onChange: event => onChange(Number(event.target.value)) },
-            options.map(revision => h("option", { key: revision, value: revision }, `Revision ${revision}${revision === latest ? " (latest)" : ""}`))));
-    return h("section", { className: "ps-workflow-compare", "aria-label": "Compare versions", "data-from": from, "data-to": to,
+    return h("section", { className: "ps-workflow-compare", "aria-label": label, "data-from": from, "data-to": to, "data-compare": kind ?? undefined,
         style: { display: "grid", gap: 6 } },
     h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 } },
-        pick("From", from, setFrom, "compare-from"), pick("To", to, setTo, "compare-to"),
+        ...pickers,
         h("button", { type: "button", className: "ps-mini-button", "aria-pressed": layout === "split", onClick: () => setLayout("split") }, "Side by side"),
         h("button", { type: "button", className: "ps-mini-button", "aria-pressed": layout === "inline", onClick: () => setLayout("inline") }, "One column")),
     h("p", { role: compared.failed ? "alert" : "status", style: { margin: 0, color: compared.failed ? TONES.error : "var(--ps-muted)" } }, compared.summary,
-        compared.ready && !(compared.before.formatted && compared.after.formatted) ? " A revision that does not parse is shown as saved." : ""),
+        compared.ready && !(compared.before.formatted && compared.after.formatted) ? unparsed : ""),
     // The diff view's own element (CodeMirror fills it; React renders nothing into it), shown once it is ready.
     compared.ready ? h("div", { ref: hostRef, className: "ps-workflow-compare-view",
         style: viewer === "ready" ? { maxHeight: "28em", overflow: "auto", border: "1px solid var(--ps-border)" } : { display: "none" } }) : null,

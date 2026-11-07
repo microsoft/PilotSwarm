@@ -1145,6 +1145,32 @@ export function workflowV2RevisionCompare(reads, from, to) {
     return { before, after, ready, failed, diff, summary };
 }
 
+/**
+ * Owner, 2026-11-07T00:03Z: what a comparison of two versions of a definition shows. In stage 1 each version is its own
+ * workflow child, so each side is that child's current revision, read as a revision is (loadWorkflowDefinitionRevision);
+ * `from` and `to` are { version, read } with `read` the child's `definitionRevisions` entry for that revision. The same
+ * shape as workflowV2RevisionCompare, its words about versions. Pure.
+ */
+export function workflowV2VersionCompare(from, to) {
+    const side = item => {
+        const entry = isRecord(item?.read) ? item.read : null;
+        const value = isRecord(entry?.value?.definitionRevision) ? entry.value.definitionRevision : null;
+        return { version: text(item?.version), phase: entry?.phase ?? "missing", error: text(entry?.error),
+            text: value ? (text(value.formatted) ?? String(value.yaml ?? "")) : null, formatted: Boolean(value && text(value.formatted)),
+            valid: value ? value.valid === true : null };
+    };
+    const before = side(from), after = side(to);
+    const name = item => item.version ?? "a version not read yet";
+    const failed = [before, after].find(item => item.phase === "failed") ?? null;
+    const ready = before.text !== null && after.text !== null;
+    const diff = ready ? workflowV2LineDiff(before.text, after.text) : null;
+    const summary = failed ? `Version ${name(failed)} could not be read: ${failed.error ?? "no reason given"}`
+        : !ready ? `Reading versions ${name(before)} and ${name(after)}…`
+            : diff.added || diff.removed ? `Version ${name(before)} → ${name(after)}: ${diff.added} line${diff.added === 1 ? "" : "s"} added, ${diff.removed} removed`
+                : `Versions ${name(before)} and ${name(after)} have the same YAML.`;
+    return { before, after, ready, failed, diff, summary };
+}
+
 /** What an agent step's input field can take its value from (owner decision q6), in the words the editor shows. */
 export const WORKFLOW_V2_STEP_INPUT_SOURCE_LABELS = Object.freeze({
     none: "Not set",

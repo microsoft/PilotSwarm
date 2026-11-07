@@ -2085,7 +2085,8 @@ test("owner 19:40Z F9: a chat's new draft of a running definition is named, mark
     await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
     const main = workflowTab(page);
     const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
-    await expect.poll(() => picker.locator("option").allTextContents()).toEqual(["watch-v2 · 1.1.0 · draft", "New definition… (asks the chat)"]);
+    // Owner, 2026-11-07T00:03Z: each version its own option, highest first; #1 and #2 run 1.0.0.
+    await expect.poll(() => picker.locator("option").allTextContents()).toEqual(["watch-v2 · 1.1.0 · draft", "watch-v2 · 1.0.0", "New definition… (asks the chat)"]);
     // The Definition view shows the newest child, the draft: its version, draft, not started and when it was made.
     await viewSwitch(main, "Definition").click();
     await expect(main.locator(".ps-wf-bar-text")).toHaveText(/^Revision 1 · 1\.1\.0 · draft, not started · made \d{1,2}:\d{2}:\d{2}/);
@@ -2099,12 +2100,70 @@ test("owner 19:40Z F9: a chat's new draft of a running definition is named, mark
     await expect(line.getByRole("button", { name: "Start…", exact: true })).toBeVisible();
     await expect(main.getByRole("button", { name: "Open watch-v2 #2", exact: true })).toBeVisible();
     await expect(main.getByRole("button", { name: "Open watch-v2 #1", exact: true })).toBeVisible();
-    // Both run 1.0.0: the Revision column is the revision alone.
-    await expect(main.locator('.ps-wf-list-row[data-session-id] [role="cell"]:nth-child(3)')).toHaveText(["1", "1"]);
+    // Both run 1.0.0: the Version column says so (owner, 2026-11-07T00:03Z: every Workflow says its version).
+    await expect(main.locator('.ps-wf-list-row[data-session-id] [role="cell"]:nth-child(3)')).toHaveText(["1.0.0", "1.0.0"]);
     await shot(page, "owner-1940-f9-workflows-1440");
     await line.getByRole("button", { name: "Show it", exact: true }).click();
     await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
     await expect(main.locator(".ps-wf-bar-text")).toHaveAttribute("data-definition-child", DRAFT);
+    expect(errors).toEqual([]);
+});
+
+// Owner, 2026-11-07T00:03Z: "how does versioning work" — his screenshot: hn-top-watch #1 (Canceled) and #2 (Completed), and
+// the definition picker showed one entry, "· 1.1.0 · revision 1". In stage 1 each version is its own workflow child; the
+// tab now shows them as versions. His shape here (#1 1.0.0, #2 1.1.0): the picker lists both versions, highest first; the
+// Definition view follows the one chosen; Compare compares the two versions' YAML; the Workflows list and the Workflow
+// picker say each Workflow's version; a Workflow shown is its own version in the picker.
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "owner 00:03Z versions" (from packages/app/web, after build).
+test("owner 00:03Z versions: each version is its own option, the Definition view and Compare follow it, every Workflow says its version", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const V1 = OWNED.running, V2 = OWNED.failed;
+    const versioned = (workflowId, semver, status, outcome, runId) => ({ ...V2_READ_MODEL, workflowId,
+        definition: { ...V2_READ_MODEL.definition, semver }, runs: [{ runId, mode: "live", status, revision: 1, outcome }],
+        run: { ...V2_READ_MODEL.run, runId, status, outcome } });
+    const models = { [V1]: versioned(V1, "1.0.0", "cancelled", null, "run-1"), [V2]: versioned(V2, "1.1.0", "completed", "succeeded", "run-2") };
+    const yamlOf = id => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: "${id === V1 ? "1.0.0" : "1.1.0"}" }\ninitial: poll\n`;
+    const { rows } = await routeOwned(page, { models, yamlOf });
+    rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "cancelled" }, { ...OWNED_ROWS[1], status: "completed" });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await page.getByRole("button", { name: /^Workflow( —|$)/ }).click();
+    const main = workflowTab(page);
+    const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
+    // The picker lists each version, highest first; the newest is chosen.
+    await expect.poll(() => picker.locator("option").allTextContents()).toEqual(["watch-v2 · 1.1.0", "watch-v2 · 1.0.0", "New definition… (asks the chat)"]);
+    await expect(picker).toHaveValue("watch-v2");
+    await viewSwitch(main, "Definition").click();
+    const bar = main.locator(".ps-wf-bar-text").first();
+    await expect(bar).toHaveText(/^Revision 1 · 1\.1\.0$/);
+    await expect(bar).toHaveAttribute("data-definition-child", V2);
+    // 1.0.0 chosen: the Definition view shows it (its YAML and Start another… are its own).
+    await picker.selectOption({ label: "watch-v2 · 1.0.0" });
+    await expect(bar).toHaveText(/^Revision 1 · 1\.0\.0$/);
+    await expect(bar).toHaveAttribute("data-definition-child", V1);
+    await expect(main).toHaveAttribute("data-version", "1.0.0");
+    await shot(page, "owner-0003-version-picker-1440");
+    // Compare, from 1.1.0: the two versions' YAML, one line changed.
+    await picker.selectOption({ label: "watch-v2 · 1.1.0" });
+    await expect(bar).toHaveAttribute("data-definition-child", V2);
+    await main.getByRole("button", { name: "Compare", exact: true }).click();
+    const compare = main.getByRole("region", { name: "Compare two versions", exact: true });
+    await expect(compare).toHaveAttribute("data-from", "1.0.0");
+    await expect(compare).toHaveAttribute("data-to", "1.1.0");
+    await expect(compare.getByRole("status")).toHaveText("Version 1.0.0 → 1.1.0: 1 line added, 1 removed");
+    await shot(page, "owner-0003-version-compare-1440");
+    // The Workflows list: each Workflow's version.
+    await viewSwitch(main, "Workflows").click();
+    await expect(main.locator('.ps-wf-list-row[data-session-id] [role="cell"]:nth-child(3)')).toHaveText(["1.1.0", "1.0.0"]);
+    await expect(main.locator(".ps-wf-list-row[data-session-id] .ps-wf-state")).toHaveText(["Completed", "Canceled"]);
+    // #1 opened: the picker says its version, and the Workflow picker says each one's.
+    await main.getByRole("button", { name: "Open watch-v2 #1", exact: true }).click();
+    await expect(picker).toHaveValue("watch-v2\u001f1.0.0");
+    const shown = main.getByRole("combobox", { name: "Workflow", exact: true });
+    await expect.poll(() => shown.locator("optgroup option").allTextContents())
+        .toEqual([expect.stringMatching(/^#2 · 1\.1\.0 · Completed( · .+)?$/), expect.stringMatching(/^#1 · 1\.0\.0 · Canceled( · .+)?$/)]);
+    await shot(page, "owner-0003-version-workflow-1440");
     expect(errors).toEqual([]);
 });
 
@@ -3021,8 +3080,9 @@ const OWNED_MODELS = {
  * The session and its Workflows (OWNED_ROWS), with each Workflow's read model and events. Messages a person sends to the
  * session are recorded (`messages`: { prompt, options }), and `onMessage` may answer one (Run again: the chat starts
  * another Workflow, here by adding its row to `rows`). `models` replaces OWNED_MODELS (each Workflow's read model).
+ * `yamlOf(sessionId)`: a definitionRevision read answers that Workflow's YAML (Compare).
  */
-async function routeOwned(page, { onMessage = null, models = OWNED_MODELS } = {}) {
+async function routeOwned(page, { onMessage = null, models = OWNED_MODELS, yamlOf = null } = {}) {
     const rows = [...OWNED_ROWS];
     const messages = [];
     await routeApi(page, { workflowEvents: V2_EVENTS, onReadWorkflow: (route) => route.fulfill({ json: { ok: true, result: V2_READ_MODEL } }) });
@@ -3041,7 +3101,12 @@ async function routeOwned(page, { onMessage = null, models = OWNED_MODELS } = {}
         }
         for (const row of rows) {
             const model = models[row.sessionId] ?? { ...V2_READ_MODEL, workflowId: row.sessionId };
-            if (pathname.endsWith(`/sessions/${row.sessionId}/workflow`) && req.method() === "GET") return answer(model);
+            if (pathname.endsWith(`/sessions/${row.sessionId}/workflow`) && req.method() === "GET") {
+                const revision = new URL(req.url()).searchParams.get("definitionRevision");
+                const yaml = revision && yamlOf ? yamlOf(row.sessionId) : null;
+                return answer(yaml !== null ? { ...model, definitionRevision: { revision: Number(revision), yaml, formatted: yaml,
+                    definitionHash: `hash-${row.sessionId}-${revision}` } } : model);
+            }
             if (pathname.includes(`/sessions/${row.sessionId}/events`)) {
                 return answer(row.sessionId === OWNED.unstarted ? [] : [{ ...V2_EVENTS[0], sessionId: row.sessionId,
                     data: { ...V2_EVENTS[0].data, runId: model.runs[0].runId } }]);
@@ -3090,7 +3155,7 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     await expect(picker).toHaveValue("report-v2");
     // F9 (owner, 2026-11-06T19:40Z): each names its newest child's version, and report-v2's has not started.
     await expect.poll(async () => picker.locator("option").allTextContents())
-        .toEqual(["report-v2 · 1.0.0 · not started", "watch-v2 · 1.0.0 · revision 1", "New definition… (asks the chat)"]);
+        .toEqual(["report-v2 · 1.0.0 · not started", "watch-v2 · 1.0.0", "New definition… (asks the chat)"]);
     await expect(viewSwitch(main, "Definition")).toHaveAttribute("aria-pressed", "true");
     await expect(viewSwitch(main, "Workflows")).toHaveAttribute("aria-pressed", "false");
     await expect(viewSwitch(main, "Workflows")).toHaveText("");
@@ -3129,7 +3194,7 @@ test("layout: Workflow rows read 'name #n' with a state, an unstarted child has 
     const shownPicker = main.getByRole("combobox", { name: "Workflow", exact: true });
     await expect(shownPicker.locator("optgroup")).toHaveAttribute("label", "2 Workflows");
     await expect.poll(() => shownPicker.locator("optgroup option").allTextContents())
-        .toEqual([expect.stringMatching(/^#2 · Failed( · .+)?$/), expect.stringMatching(/^#1 · Running( · .+)?$/)]);
+        .toEqual([expect.stringMatching(/^#2 · 1\.0\.0 · Failed( · .+)?$/), expect.stringMatching(/^#1 · 1\.0\.0 · Running( · .+)?$/)]);
     await expect(main.locator(".ps-wf-picker-face")).toHaveText("#2 of 2");
     await expect(page.locator(".ps-prompt-input").filter({ visible: true })).toBeVisible();
     // The Workflow panel is shown: no dot.
@@ -3374,7 +3439,7 @@ for (const viewport of OWNER_1343_VIEWPORTS) {
                 "New definition… (asks the chat)"]);
         await expect(shown.locator("optgroup")).toHaveAttribute("label", "2 Workflows");
         await expect.poll(() => shown.locator("optgroup option").allTextContents())
-            .toEqual([expect.stringMatching(/^#2 · Failed · \d/), expect.stringMatching(/^#1 · Running · \d/)]);
+            .toEqual([expect.stringMatching(/^#2 · 1\.0\.0 · Failed · \d/), expect.stringMatching(/^#1 · 1\.0\.0 · Running · \d/)]);
         await expect(main.locator(".ps-wf-picker-face")).toHaveText("#1 of 2");
 
         if (phone) {

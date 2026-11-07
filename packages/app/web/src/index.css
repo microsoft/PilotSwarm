@@ -12825,7 +12825,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-list { display: flex; flex-direction: column; overflow: auto; flex: 1 1 auto; min-height: 0; }
 .ps-wf-list-row {
   display: grid;
-  grid-template-columns: 3.5em minmax(8em, 2fr) 5em minmax(6em, 1fr) 4.5em;
+  grid-template-columns: 3.5em minmax(8em, 2fr) minmax(5em, 7em) minmax(6em, 1fr) 4.5em;
   align-items: start;
   gap: 8px;
   width: 100%;
@@ -12844,6 +12844,7 @@ select.ps-workflow-input optgroup { background: var(--ps-background); color: var
 .ps-wf-list-number { font-weight: 700; }
 .ps-wf-list-state { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .ps-wf-list-reason { color: var(--ps-danger); font-size: 0.9em; overflow-wrap: anywhere; }
+.ps-wf-list-version { min-width: 0; overflow-wrap: anywhere; }
 
 /* The bottom panel (L5): closed is one strip of panel tabs; open, it has ONE height (set inline from the person's
    choice, per device class) whatever tab shows, and its body scrolls. Its top edge is the resize handle. */
