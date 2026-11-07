@@ -55,27 +55,27 @@ export function useViewNavigation(controller, moa) {
         const key = `pilotswarm.view-history.v1:${scope}`;
         let saved; try { saved = sessionStorage.getItem(key); } catch {}
         const history = createViewHistory(saved);
-        // On a reload the deep-linked session may still be loading, and the
-        // workspace briefly shows no session or the one the profile last
-        // saved. Neither is a place: recording it would push the saved
-        // history a step on. Record the view once the linked session shows.
+        // A reload, or a link into the portal, lands in steps: first a
+        // workspace with no session (or the one the profile last saved),
+        // then the linked session, then its artifact or canvas. None of the
+        // steps is a place: recording one would push the saved history on.
+        // With a saved history, a deep link's view is recorded once it has
+        // landed; it refreshes the saved stop when it is the same place.
         const first = capture(controller, latest.current);
-        const intent = controller.getState().sessions?.navigationIntent;
-        const linked = intent && intent.status !== "failed" ? intent.sessionId : null;
-        const transient = Boolean(history.current) && first.mode === "workspace"
-            && (!first.sessionId || (linked && first.sessionId !== linked));
-        let unsubscribe = null;
-        if (!transient) history.visit(first);
-        else if (linked) {
-            unsubscribe = controller.subscribe(() => {
-                if (!data.current || data.current.history !== history) return;
-                if (controller.getState().sessions?.activeSessionId !== linked) return;
-                unsubscribe?.(); unsubscribe = null;
+        const landing = history.current ? controller.deepLinkLanding : null;
+        let cancelled = false;
+        if (landing) {
+            // Two frames after landing: a phone shows its canvas pane from
+            // a render that follows the canvas flip.
+            landing.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))).then(() => {
+                if (cancelled || !data.current || data.current.history !== history) return;
                 history.visit(capture(controller, latest.current)); publish();
             });
+        } else if (!history.current || first.mode !== "workspace" || first.sessionId) {
+            history.visit(first);
         }
         data.current = { key, history }; publish();
-        return () => { unsubscribe?.(); generation.current++; data.current = null; };
+        return () => { cancelled = true; generation.current++; data.current = null; };
     }, [controller, scope, publish]);
 
     React.useEffect(() => {

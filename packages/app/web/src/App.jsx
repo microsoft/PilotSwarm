@@ -660,7 +660,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
 
     React.useEffect(() => {
         let active = true;
-        controller.start({ initialSessionId })
+        const landing = controller.start({ initialSessionId })
             .then(() => {
                 // An artifact deep link opens the chat AND the artifact, side by
                 // side — the transcript is the context that makes the artifact
@@ -702,8 +702,12 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                     statusText: `Startup failed: ${error?.message || String(error)}`,
                 });
             });
+        // The view history records a deep link's view once it has landed:
+        // the session, and its artifact or canvas when the link names one.
+        if (initialSessionId) controller.deepLinkLanding = landing.then(() => true, () => false);
         return () => {
             active = false;
+            if (controller.deepLinkLanding) delete controller.deepLinkLanding;
             controller.stop().catch(() => {});
             transport.stop().catch(() => {});
         };
