@@ -8415,7 +8415,10 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // canvas-ws: why the server refused this app's manifest, shown until a redraw.
     // A page shows only its own guess; the owner needs the real reason.
     const [brokenManifest, setBrokenManifest] = React.useState(null);
-    React.useEffect(() => { setBrokenManifest(null); }, [latestRev]);
+    // A dismissed notice stays dismissed for this revision: the page's
+    // reads that are still in flight report the same reason again.
+    const dismissedManifestRef = React.useRef(null);
+    React.useEffect(() => { setBrokenManifest(null); dismissedManifestRef.current = null; }, [latestRev]);
     const hostBox = useElementBox(hostRef);
     // The frame geometry each revision LOADED at. A sandboxed page cannot be
     // poked after the fact (no reaching into an opaque origin), and pages
@@ -8661,7 +8664,8 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 const fail = (error, code = "ERROR") => {
                     const message = String(error?.message || error || "failed");
                     if (error?.code === "CANVAS_WS_UNDECLARED" && /manifest is broken/i.test(message)) {
-                        setBrokenManifest(message.replace(/^.*?manifest is broken[^:]*:\s*/i, ""));
+                        const reason = message.replace(/^.*?manifest is broken[^:]*:\s*/i, "");
+                        if (reason !== dismissedManifestRef.current) setBrokenManifest(reason);
                     }
                     post({ type: "canvas-ws-result", id, ok: false, error: message, code: error?.code || code });
                 };
@@ -8987,7 +8991,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         brokenManifest && !loadError
             ? React.createElement("div", { className: "ps-canvas-load-error", role: "status" },
                 React.createElement("span", null, `This canvas app cannot use the session's files: its manifest is broken (${brokenManifest}). Ask the agent to draw it again.`),
-                React.createElement("button", { type: "button", className: "ps-artifact-pane-btn", onClick: () => setBrokenManifest(null) }, "Dismiss"))
+                React.createElement("button", { type: "button", className: "ps-artifact-pane-btn", onClick: () => { dismissedManifestRef.current = brokenManifest; setBrokenManifest(null); } }, "Dismiss"))
             : null,
         loadError
             ? React.createElement("div", { className: "ps-canvas-load-error" },

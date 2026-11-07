@@ -162,13 +162,18 @@ test("a download the page starts by itself is refused; a folder downloads as .zi
 
 test("a canvas whose manifest the server refuses says why, outside the page", async ({ page }) => {
     const reason = 'command "history": run[1] must be a git subcommand canvas apps may use';
-    await drawApp(page, (call) => (call.op === "info" || call.op === "watch"
+    const { frame } = await drawApp(page, (call) => (call.op === "info" || call.op === "watch"
         ? { status: 403, error: { code: "CANVAS_WS_UNDECLARED", message: `this canvas app's manifest is broken, so it has no workspace access: ${reason}` } }
         : ANSWERS(call)));
     const notice = page.getByRole("status").filter({ hasText: "its manifest is broken" });
     await expect(notice).toContainText(reason);
     await expect(notice).toContainText("Ask the agent to draw it again.");
     await notice.getByRole("button", { name: "Dismiss" }).click();
+    await expect(notice).toHaveCount(0);
+    // A later read is refused for the same reason: the dismissed notice stays dismissed.
+    await frame.locator("body").evaluate(() => ws.info().catch(() => { document.body.dataset.again = "refused"; }));
+    await expect(frame.locator("body")).toHaveAttribute("data-again", "refused");
+    await page.waitForTimeout(300);
     await expect(notice).toHaveCount(0);
 });
 
