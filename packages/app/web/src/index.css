@@ -9174,10 +9174,17 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    plain `.ps-canvas-layer.is-maximized` loses to it on specificity and the
    canvas would stay a column while claiming to be full screen. */
 .ps-workspace-column-host > .ps-canvas-layer.is-maximized,
-.ps-workspace-column-host.is-split > .ps-canvas-layer.is-maximized {
+.ps-workspace-column-host.is-split > .ps-canvas-layer.is-maximized,
+.ps-workspace-column-host > .ps-artifact-layer.is-maximized,
+.ps-workspace-column-host.is-split > .ps-artifact-layer.is-maximized {
   position: absolute;
   inset: 0;
   z-index: 60;
+}
+/* Panels are translucent in some themes: the reader at full screen must not
+   show the chat and session list through its bar. */
+.ps-workspace-column-host > .ps-artifact-layer.is-maximized {
+  background: var(--ps-page-background, var(--ps-background));
 }
 
 /* While a canvas is maximized its HOST must stop being a positioned ancestor,
@@ -12516,4 +12523,33 @@ textarea.ps-link-input {
   color: var(--ps-foreground);
   font: inherit;
   font-size: 16px;
+}
+
+/* The phone's preview at full screen: no bar, the file fills the screen
+   (still clear of the notch and home bar), and one small button in the
+   top-right corner brings the bar back. Its touch target reaches 44 px. */
+.ps-artifact-overlay-restore {
+  position: absolute;
+  top: max(8px, env(safe-area-inset-top, 0px));
+  right: calc(8px + env(safe-area-inset-right, 0px));
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--ps-border) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ps-surface) 72%, transparent);
+  color: var(--ps-foreground);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  opacity: 0.8;
+  cursor: pointer;
+}
+.ps-artifact-overlay-restore::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
 }

@@ -7597,7 +7597,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
  * ✕ hands the column back to the inspector/activity split, or re-collapses it
  * if it was already collapsed when the pane opened (see closeArtifactPane).
  */
-function ArtifactTakeoverPane({ controller, onClose }) {
+function ArtifactTakeoverPane({ controller, onClose, maximized = false, onToggleMaximized = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const view = useControllerSelector(controller, (state) => {
@@ -7635,8 +7635,9 @@ function ArtifactTakeoverPane({ controller, onClose }) {
         if (event.metaKey || event.ctrlKey || event.altKey) return;
         if (event.key === "ArrowLeft" || event.key === "[") { event.preventDefault(); step(-1); return; }
         if (event.key === "ArrowRight" || event.key === "]") { event.preventDefault(); step(1); return; }
-        if (event.key === "Escape") { event.preventDefault(); onClose(); }
-    }, [onClose, step]);
+        // Escape steps down one rung: full screen first, then close.
+        if (event.key === "Escape") { event.preventDefault(); if (maximized && onToggleMaximized) onToggleMaximized(); else onClose(); }
+    }, [maximized, onClose, onToggleMaximized, step]);
 
     const deepLink = buildArtifactLinkUrl(view.sessionId, view.filename);
 
@@ -7706,6 +7707,15 @@ function ArtifactTakeoverPane({ controller, onClose }) {
                 title: "Download",
                 "aria-label": "Download",
             }, React.createElement(DownloadGlyph)),
+            onToggleMaximized
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-artifact-pane-btn",
+                    onClick: onToggleMaximized,
+                    title: maximized ? "Back to the reader column (Esc)" : "Full screen — hide chat and sessions",
+                    "aria-label": maximized ? "Restore preview" : "Full screen preview",
+                }, React.createElement(maximized ? RestoreGlyph : MaximizeGlyph))
+                : null,
             React.createElement("button", {
                 type: "button",
                 className: "ps-artifact-pane-btn is-close",
@@ -7821,13 +7831,26 @@ function MobileArtifactOverlay({ controller }) {
         || isDiffArtifact(view.filename);
     const [contentWidth, setContentWidth] = React.useState(false);
     React.useEffect(() => { setContentWidth(false); }, [view.filename]);
+    // Full screen: the bar and the preview's own header step aside and the
+    // file takes the whole screen; one small button in the corner brings
+    // them back. Stepping to another file keeps it, closing drops it.
+    const [maximized, setMaximized] = React.useState(false);
 
     const step = React.useCallback((delta) => {
         controller.stepArtifactPreview(delta).catch(() => {});
     }, [controller]);
 
-    return React.createElement("div", { className: "ps-artifact-overlay" },
-        React.createElement("header", { className: "ps-artifact-overlay-bar" },
+    return React.createElement("div", { className: `ps-artifact-overlay${maximized ? " is-maximized" : ""}` },
+        maximized
+            ? React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-overlay-restore",
+                onClick: () => setMaximized(false),
+                title: "Show the bar again",
+                "aria-label": "Restore preview",
+            }, React.createElement(RestoreGlyph))
+            : null,
+        maximized ? null : React.createElement("header", { className: "ps-artifact-overlay-bar" },
             React.createElement("button", {
                 type: "button",
                 className: "ps-artifact-overlay-btn",
@@ -7857,13 +7880,20 @@ function MobileArtifactOverlay({ controller }) {
                 disabled: !view.canNext,
                 onClick: () => step(1),
                 "aria-label": "Next artifact",
-            }, "›")),
+            }, "›"),
+            React.createElement("button", {
+                type: "button",
+                className: "ps-artifact-overlay-btn",
+                onClick: () => setMaximized(true),
+                title: "Full screen — hide this bar",
+                "aria-label": "Full screen preview",
+            }, React.createElement(MaximizeGlyph))),
         // No swipe handlers: horizontal drag belongs to the content, so a wide
         // code line can be scrolled without also changing which file you are on.
         React.createElement("div", {
             className: `ps-artifact-overlay-body${contentWidth ? " is-content-width" : ""}`,
         }, React.createElement(FilesPane, {
-            controller, focused: true, mobile: true, previewOnly: true, nativeScroll: true,
+            controller, focused: true, mobile: true, previewOnly: true, nativeScroll: true, chromeless: maximized,
         })));
 }
 
@@ -17234,6 +17264,23 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const closeArtifactPane = React.useCallback(() => {
         controller.closeArtifactPane().catch(() => {});
     }, [controller]);
+    // The reader can take the whole workspace, as the canvas can. Closing the
+    // reader drops it, so the next one opens in its column again.
+    const [artifactFullScreen, setArtifactFullScreen] = React.useState(false);
+    React.useEffect(() => { if (!artifactPaneActive) setArtifactFullScreen(false); }, [artifactPaneActive]);
+    const artifactMaximized = artifactPaneActive && artifactFullScreen;
+    const toggleArtifactFullScreen = React.useCallback(() => setArtifactFullScreen((on) => !on), []);
+    React.useEffect(() => {
+        if (suspended || !artifactMaximized) return undefined;
+        const onKey = (e) => {
+            if (e.key !== "Escape" || e.defaultPrevented) return;
+            const target = e.target;
+            if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+            setArtifactFullScreen(false);
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [artifactMaximized, suspended]);
 
     const estimatedMainGridWidth = Math.max(0, (viewport.width || 0) * 0.68);
     const measuredMainGridWidth = mainGridViewport.width || estimatedMainGridWidth;
@@ -17356,10 +17403,15 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // The artifact reader still takes the WHOLE right side while it is open —
     // canvas, inspector and activity all step aside — which is why
     // diagnosticsActive already excludes it.
-    React.createElement("div", { className: `ps-workspace-column-host is-split${canvasMaximized ? " has-maximized" : ""}` },
+    React.createElement("div", { className: `ps-workspace-column-host is-split${canvasMaximized || artifactMaximized ? " has-maximized" : ""}` },
     artifactPaneActive
-        ? React.createElement("div", { className: "ps-workspace-column is-artifact" },
-            React.createElement(ArtifactTakeoverPane, { controller, onClose: closeArtifactPane }))
+        ? React.createElement("div", { className: `ps-workspace-column is-artifact ps-artifact-layer${artifactMaximized ? " is-maximized" : ""}` },
+            React.createElement(ArtifactTakeoverPane, {
+                controller,
+                onClose: closeArtifactPane,
+                maximized: artifactMaximized,
+                onToggleMaximized: toggleArtifactFullScreen,
+            }))
         : null,
     // The canvas keeps its DOCUMENT alive across toggles: once opened for this
     // session it stays mounted in a hidden layer — unmounting destroys typed
