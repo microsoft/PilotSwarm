@@ -189,7 +189,8 @@ test("pinch below 1.08 snaps back rather than leaving a tiny magnification", asy
 });
 
 for (const invalid of ["non-finite", "outside"]) {
-    test(`a pinch with a ${invalid} start cannot magnify the canvas`, async ({ page }) => {
+    const description = invalid === "outside" ? "an out-of-box start" : "non-finite coordinates";
+    test(`a pinch with ${description} cannot magnify the canvas`, async ({ page }) => {
         const { frame } = await openCanvasWithHistory(page);
         const x = invalid === "outside" ? -40 : Infinity;
         await postPinch(frame, [
@@ -201,7 +202,7 @@ for (const invalid of ["non-finite", "outside"]) {
         if (invalid === "non-finite") {
             await postPinch(frame, [
                 { phase: "start", x: 150, y: 180, d: 200 },
-                { phase: "move", x: Infinity, y: 180, d: 400 },
+                { phase: "move", x: 150, y: Infinity, d: 400 },
                 { phase: "end" },
             ]);
             expect(await liveCanvas(page).evaluate(el => el.style.transform)).toBe("");
@@ -255,6 +256,9 @@ for (const manual of [false, true]) {
         await page.setViewportSize({ width: 844, height: 390 });
         await expect(layer).toHaveClass(/is-maximized/);
         await page.setViewportSize({ width: 390, height: 844 });
+        // Landscape already has this class; wait for portrait's effects
+        // before checking that the person's full-screen choice persists.
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         if (manual) await expect(layer).toHaveClass(/is-maximized/);
         else await expect(layer).not.toHaveClass(/is-maximized/);
     });

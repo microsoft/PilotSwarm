@@ -38,7 +38,7 @@ test("code uses the bundled mono face and loadingdone remeasures pane columns", 
     const code = page.locator(".ps-chat-panel code").first();
     await expect(code).toBeVisible();
     const font = await code.evaluate(el => getComputedStyle(el).fontFamily);
-    expect(font).toMatch(/^"PS JetBrains Mono"/);
+    expect(font.split(",")[0].trim().replace(/^["']|["']$/g, "")).toBe("PS JetBrains Mono");
     const faces = await page.evaluate(async () => {
         await document.fonts.ready;
         await document.fonts.load('14px "PS JetBrains Mono"');
@@ -51,7 +51,8 @@ test("code uses the bundled mono face and loadingdone remeasures pane columns", 
     expect(css).toMatch(/font-family:["']?PS JetBrains Mono/);
     expect(bundledFonts.some(url => /\/assets\/jetbrains-mono-.*\.woff2$/.test(url))).toBe(true);
     // Observe the real measurement primitive, not a product-only test hook.
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         window.columnProbes = 0;
         const original = Element.prototype.getBoundingClientRect;
         Element.prototype.getBoundingClientRect = function (...args) {

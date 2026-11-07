@@ -13,6 +13,9 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
 test.use({ browserName: process.env.PS_TEST_BROWSER || "chromium" });
+test.beforeEach(async ({ browser }) => {
+    expect(browser.browserType().name()).toBe(process.env.PS_TEST_BROWSER || "chromium");
+});
 
 // These used to target `.ps-rich-chat`, the rich renderer, served by asking the
 // stub for a "workspace-dark-rich" theme. Both are gone: the rich renderer was
