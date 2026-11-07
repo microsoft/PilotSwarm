@@ -156,7 +156,9 @@ directory, including when that parent is itself a durable child. Separate
 durable sessions still cannot assume they share files. No orchestration or data
 model change is needed for this selection guidance.
 
-`PILOTSWARM_NATIVE_SUBAGENTS=off` remains the default. Tests exercise disabled
+`PILOTSWARM_NATIVE_SUBAGENTS=off` remains the default. (Superseded: native
+tasks are now always on; the setting defaults to `sync` and an explicit `off`
+is ignored with a warning.) Tests exercise disabled
 new/warm/cold sessions, durable spawning while disabled, and saved-session
 sync-to-OFF revocation. See [the test guide](../models/native-delegation-testing.md)
 for the unified suite, live routing evaluation, and repeatable durable/native

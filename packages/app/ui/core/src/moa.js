@@ -1,10 +1,19 @@
+import { randomUuid } from "./random-id.js";
 // Personal dashboards contain references and geometry only, never session data.
 export const MOA_MAX_DASHBOARDS = 5;
 export const MOA_MAX_PANELS = 16;
 export const MOA_BREAKPOINT = 920;
+// A phone held sideways keeps the phone layout: wider than the breakpoint, but
+// short, touch-first and no wider than a large phone. Tablets stay desktop.
+export const PHONE_LANDSCAPE_MEDIA_QUERY = "(orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse)";
+// The mobile layout: narrow windows, and phones in either orientation.
+export const MOBILE_MEDIA_QUERY = `(max-width: ${MOA_BREAKPOINT}px), ${PHONE_LANDSCAPE_MEDIA_QUERY}`;
+export function matchesMobileViewport(win = typeof window === "undefined" ? null : window) {
+    return Boolean(win && typeof win.matchMedia === "function" && win.matchMedia(MOBILE_MEDIA_QUERY).matches);
+}
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 const id = (v) => typeof v === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(v);
-export const emptyMoaPanel = () => ({ id: crypto.randomUUID(), type: "empty" });
+export const emptyMoaPanel = () => ({ id: randomUuid(), type: "empty" });
 export const moaLeaves = (n) => !n ? [] : n.type === "split" ? [...moaLeaves(n.first), ...moaLeaves(n.second)] : [n];
 export function normalizeMoaLayout(value) {
     if (!object(value)) throw new Error("Invalid MoA layout.");

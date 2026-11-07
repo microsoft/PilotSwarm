@@ -3,6 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
+import { randomUuid } from "./random-id.js";
 import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow, createMotdDraft, motdLocalParts, isMotdMessage, motdRequestId } from "./motd.js";
 import {
     appendEventToHistory,
@@ -826,28 +827,45 @@ function toggleOwnerFilterItem(currentFilter, item, principal) {
         : { all: true, includeSystem: false, includeUnowned: false, includeMe: false, includeShared: false, ownerKeys: [] };
 }
 
-function getRenameSessionPrefix(session) {
+// The longest title a person may give a session. A named agent's prefix is
+// extra; the server (management-client MAX_SESSION_TITLE_LENGTH) keeps the same
+// limit. Folders keep their own, shorter one.
+export const RENAME_SESSION_MAX_LENGTH = 100;
+const RENAME_FOLDER_MAX_LENGTH = 60;
+
+function comparableAgentTitle(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
+}
+
+/**
+ * The named-agent prefix a rename keeps, by the same rule as the server
+ * (management-client getNamedAgentTitlePrefix): the longest of the agent's
+ * catalog `agentTitles` the title starts with, else the text before the first
+ * ": " of an agent session's title. A rename never drops a prefix.
+ */
+export function getRenameSessionPrefix(session, agentTitles = []) {
     if (!session?.agentId || session?.isSystem) return null;
     const currentTitle = String(session?.title || "").trim();
-    if (!currentTitle) return null;
-    const separatorIndex = currentTitle.indexOf(": ");
-    if (separatorIndex > 0) {
-        return currentTitle.slice(0, separatorIndex).trim() || null;
+    let known = null;
+    for (const candidate of agentTitles || []) {
+        const title = String(candidate || "").trim();
+        if (title && currentTitle.startsWith(`${title}: `) && (!known || title.length > known.length)) known = title;
     }
-    return null;
+    if (known) return known;
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex <= 0) return null;
+    return currentTitle.slice(0, separatorIndex).trim() || null;
 }
 
 function getRenameSessionMaxLength(session) {
-    const prefix = getRenameSessionPrefix(session);
-    if (!prefix) return 60;
-    return Math.max(1, 60 - `${prefix}: `.length);
+    return session?.isGroup ? RENAME_FOLDER_MAX_LENGTH : RENAME_SESSION_MAX_LENGTH;
 }
 
-function getRenameSessionEditableTitle(session) {
+export function getRenameSessionEditableTitle(session, agentTitles = []) {
     const currentTitle = String(session?.title || "").trim();
     if (!currentTitle) return "";
 
-    const prefix = getRenameSessionPrefix(session);
+    const prefix = getRenameSessionPrefix(session, agentTitles);
     if (prefix && currentTitle.startsWith(`${prefix}: `)) {
         const suffix = currentTitle.slice(`${prefix}: `.length).trim();
         if (!suffix || suffix === shortSessionIdValue(session?.sessionId)) return "";
@@ -1329,7 +1347,12 @@ function expandPromptAttachments(prompt, attachments = []) {
 }
 
 function clampRenameSessionValue(value, maxLength) {
-    return String(value || "").replace(/\r?\n/g, " ").slice(0, Math.max(0, Number(maxLength) || 0));
+    const text = String(value || "").replace(/\r?\n/g, " ");
+    const limit = Math.max(0, Number(maxLength) || 0);
+    if (text.length <= limit) return text;
+    // Keep surrogate pairs (emoji) whole at the limit, as the server does.
+    const end = limit > 0 && /[\uD800-\uDBFF]/u.test(text[limit - 1]) ? limit - 1 : limit;
+    return text.slice(0, end);
 }
 
 function displayWidth(value) {
@@ -2643,6 +2666,9 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "sessions/navigationIntent", sessionId: deepLinkSessionId });
         }
         await this.refreshSessions();
+        // Agent display titles decide how a named agent session's title reads
+        // in the list; fetched once, off the start path.
+        void this.loadAgentTitles().catch(() => {});
         this.catalogTimer = setInterval(() => {
             // Do not queue more catalog traffic behind a slow periodic read.
             if (this.catalogPollInFlight) return;
@@ -4258,7 +4284,8 @@ export class PilotSwarmUiController {
         if (features.saving || features.mode !== "mine" && !this._featureIsAdmin()
             || features.mode === "users" && !features.userId) return;
         const flag = features.data?.flags?.find(item => item.featureKey === featureKey);
-        if (!flag?.supported) return;
+        // An always-on row (server field alwaysOn) has no settings to edit.
+        if (!flag?.supported || flag.alwaysOn === true) return;
         const key = this._featureDraftKey(featureKey);
         const existing = features.drafts?.[key];
         const stored = features.mode === "cluster" ? flag.cluster : flag.user;
@@ -4378,13 +4405,14 @@ export class PilotSwarmUiController {
         const features = this.getState().admin?.features;
         if (!features || features.saving || features.loading || features.mode !== "mine" && !this._featureIsAdmin()) return;
         const definition = features.data?.flags?.find(flag => flag.featureKey === featureKey);
-        if (!definition?.supported || features.mode === "users" && !features.userId) return;
+        // The server refuses any change to an always-on flag (FEATURE_ALWAYS_ON); do not send one.
+        if (!definition?.supported || definition.alwaysOn === true || features.mode === "users" && !features.userId) return;
         const target = this._featureContext();
         const draftKey = this._featureDraftKey(featureKey);
         const expectedRevision = draft?.expectedRevision ?? definition.revision;
         const signature = JSON.stringify([target, featureKey, expectedRevision, values]);
         this._featureMutationRetries ??= new Map();
-        const requestId = this._featureMutationRetries.get(signature) ?? globalThis.crypto.randomUUID();
+        const requestId = this._featureMutationRetries.get(signature) ?? randomUuid();
         this._featureMutationRetries.set(signature, requestId);
         const input = { featureKey, expectedRevision, requestId, ...(values || {}) };
         this.dispatch({ type: "admin/features", patch: { saving: true, error: null, notice: null } });
@@ -4407,22 +4435,10 @@ export class PilotSwarmUiController {
                     updated.source = allowUser && updated.user ? "user" : updated.cluster ? "cluster" : "default";
                     updated.userOverrideIgnored = Boolean(updated.user && !allowUser);
                     const data = this.getState().admin.features.data;
+                    // Only the saved row changes. Always-on rows (never saved
+                    // here) keep the server's effective value and source.
                     const flags = data.flags.map(flag => flag.featureKey === featureKey ? updated : flag);
-                    // Preserve independent saved preferences, but do not display
-                    // Base V2 as active when the native prerequisite is Off.
-                    // Recompute both when either setting changes; the following
-                    // refresh may fail after a successfully saved mutation.
-                    const nativeEnabled = flags.find(flag => flag.featureKey === "copilot.native_tasks")?.effective === true;
-                    const effectiveFlags = flags.map(flag => {
-                        if (flag.featureKey !== "agents.base_v2") return flag;
-                        const { reason: _reason, ...baseFlag } = flag;
-                        const allowPersonal = flag.cluster?.allowUserOverride ?? flag.defaultAllowUserOverride;
-                        const configured = allowPersonal && flag.user ? flag.user.enabled : flag.cluster?.enabled ?? flag.defaultEnabled;
-                        return { ...baseFlag, effective: configured && nativeEnabled,
-                            ...(configured && !nativeEnabled ? { reason: "requires_native_tasks" } : {}) };
-                    });
-                    this.dispatch({ type: "admin/features", patch: { data: { ...data,
-                        flags: effectiveFlags } } });
+                    this.dispatch({ type: "admin/features", patch: { data: { ...data, flags } } });
                 }
                 if (draft && this.getState().admin.features.drafts?.[draftKey] === draft) {
                     const drafts = { ...this.getState().admin.features.drafts };
@@ -4434,7 +4450,7 @@ export class PilotSwarmUiController {
             }
         } catch (error) {
             if (this._featureContext() === target) {
-                if (draft && (error?.status === 409 || error?.code === "FEATURE_CONFLICT")) {
+                if (draft && error?.code !== "FEATURE_ALWAYS_ON" && (error?.status === 409 || error?.code === "FEATURE_CONFLICT")) {
                     this._featureMutationRetries.delete(signature);
                     this.dispatch({ type: "admin/features", patch: { drafts: { ...this.getState().admin.features.drafts,
                         [draftKey]: { ...draft, needsReview: true } } } });
@@ -7532,6 +7548,7 @@ export class PilotSwarmUiController {
             agents = typeof this.transport.listCreatableAgents === "function"
                 ? await this.transport.listCreatableAgents()
                 : [];
+            this.rememberAgentTitles(agents);
         } catch (error) {
             // The previous step is deliberately still on screen. If the fetch
             // fails we own dismissing it — otherwise the flow strands on a step
@@ -8659,8 +8676,9 @@ export class PilotSwarmUiController {
             return;
         }
 
-        const value = getRenameSessionEditableTitle(session);
-        const agentTitlePrefix = getRenameSessionPrefix(session);
+        const agentTitles = this.cachedAgentTitles(session.agentId);
+        const value = getRenameSessionEditableTitle(session, agentTitles || []);
+        const agentTitlePrefix = getRenameSessionPrefix(session, agentTitles || []);
         const maxLength = getRenameSessionMaxLength(session);
         this.dispatch({
             type: "ui/modal",
@@ -8690,6 +8708,48 @@ export class PilotSwarmUiController {
                     ? `Rename title for ${agentTitlePrefix}; the agent-name prefix stays fixed`
                     : "Type a new session title and press Enter to save",
         });
+        // The agent's display title decides whether a prefix such as
+        // "Agent Smith" is the agent's name. Load it once; if it changes the
+        // answer while the person has not typed yet, correct the open box.
+        if (session.agentId && !agentTitles) {
+            void this.loadAgentTitles().then(() => {
+                const titles = this.cachedAgentTitles(session.agentId) || [];
+                const open = this.getState().ui.modal;
+                if (!open || open.type !== "renameSession" || open.sessionId !== sessionId || open.value !== value) return;
+                const nextPrefix = getRenameSessionPrefix(session, titles);
+                if (nextPrefix === agentTitlePrefix) return;
+                const nextValue = getRenameSessionEditableTitle(session, titles);
+                this.updateRenameSessionModal({ agentTitlePrefix: nextPrefix, value: nextValue, cursorIndex: nextValue.length });
+            }).catch(() => {});
+        }
+    }
+
+    /** Catalog display titles for an agent, or null until the catalog has loaded. */
+    cachedAgentTitles(agentId) {
+        const byAgent = this.getState().agentTitles;
+        if (!byAgent) return null;
+        return byAgent[comparableAgentTitle(agentId)] || [];
+    }
+
+    rememberAgentTitles(agents) {
+        if (!Array.isArray(agents)) return;
+        const byAgent = {};
+        for (const agent of agents) {
+            if (!agent?.name || !agent?.title) continue;
+            const key = comparableAgentTitle(agent.name);
+            (byAgent[key] ||= []).push(String(agent.title));
+        }
+        const current = this.getState().agentTitles;
+        if (current && JSON.stringify(current) === JSON.stringify(byAgent)) return;
+        this.dispatch({ type: "agents/titles", agentTitles: byAgent });
+    }
+
+    async loadAgentTitles() {
+        if (this.getState().agentTitles || typeof this.transport.listCreatableAgents !== "function") return;
+        this._agentTitlesLoad ||= this.transport.listCreatableAgents()
+            .then((agents) => this.rememberAgentTitles(agents))
+            .finally(() => { this._agentTitlesLoad = null; });
+        await this._agentTitlesLoad;
     }
 
     /**
@@ -11152,7 +11212,7 @@ export class PilotSwarmUiController {
     // message id.
 
     _newTurnControlRequestId() {
-        return globalThis.crypto?.randomUUID?.() || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        return randomUuid();
     }
 
     _turnControlEntry(sessionId) {
@@ -11301,7 +11361,8 @@ export class PilotSwarmUiController {
     _applySteeringFeatureView(view) {
         if (!Array.isArray(view?.flags)) return;
         const flag = view.flags.find((candidate) => candidate?.featureKey === STEERING_FEATURE_KEY);
-        this.dispatch({ type: "turnControl/steering", enabled: flag?.effective === true });
+        // An always-on flag is effective by definition; alwaysOn also covers a row without effective.
+        this.dispatch({ type: "turnControl/steering", enabled: flag?.effective === true || flag?.alwaysOn === true });
     }
 
     /**

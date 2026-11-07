@@ -1,5 +1,5 @@
 import type { Pool, PoolClient, QueryResult } from "pg";
-import { FeatureFlagError, applyBaseAgentPrerequisite, isFeatureKey, resolveFeatureDefinition,
+import { FEATURE_ALWAYS_ON_NOTICE, FeatureFlagError, applyBaseAgentPrerequisite, assertFeatureMutable, isAlwaysOn, isFeatureKey, resolveFeatureDefinition,
     type FeatureDecision, type FeatureDefinition, type FeatureOwner, type FeatureSetting, type FeatureSnapshot } from "./feature-flags.js";
 
 /** Trusted transport/worker identity, never deserialized from a request body. */
@@ -11,7 +11,9 @@ export interface FeatureMutation {
 export interface FeatureView {
     userId: number | null;
     flags: Array<FeatureDefinition & { cluster: FeatureSetting | null; user: FeatureSetting | null;
-        effective: boolean; source: string; reason?: FeatureDecision["reason"]; userOverrideIgnored: boolean; supported: boolean }>;
+        effective: boolean; source: FeatureDecision["source"]; reason?: FeatureDecision["reason"]; userOverrideIgnored: boolean; supported: boolean;
+        /** Code-owned always-on flag: effective is true, source "always_on", and changes are refused. */
+        alwaysOn: boolean; notice?: string }>;
 }
 export interface FeatureMutationResult { featureKey: string; scope: "cluster" | "user"; userId: number | null; revision: string; setting: FeatureSetting | null }
 
@@ -79,15 +81,20 @@ export class FeatureStore {
         return { userId: result.userId, flags: result.definitions.map(definition => {
             const cluster = result.settings.find(setting => setting.featureKey === definition.featureKey && setting.scope === "cluster");
             const user = result.settings.find(setting => setting.featureKey === definition.featureKey && setting.scope === "user");
+            const alwaysOn = isAlwaysOn(definition.featureKey);
             const decision = applyBaseAgentPrerequisite(definition.featureKey, decisions.get(definition.featureKey)!, decisions.get("copilot.native_tasks"));
             return { ...definition, cluster: cluster ?? null, user: user ?? null, effective: decision.enabled,
                 ...(decision.reason ? { reason: decision.reason } : {}),
                 source: decision.source, supported: isFeatureKey(definition.featureKey),
-                userOverrideIgnored: Boolean(user && !(cluster?.allowUserOverride ?? definition.defaultAllowUserOverride)) };
+                // Stored rows of an always-on flag are ignored, so none of them is an ignored override.
+                userOverrideIgnored: !alwaysOn && Boolean(user && !(cluster?.allowUserOverride ?? definition.defaultAllowUserOverride)),
+                alwaysOn, ...(alwaysOn ? { notice: FEATURE_ALWAYS_ON_NOTICE } : {}) };
         }) };
     }
     async mutate(viewer: FeatureViewer, scope: "cluster" | "user", input: FeatureMutation, unset = false, userId?: number): Promise<FeatureMutationResult> {
         if (!input || !isFeatureKey(input.featureKey)) throw new FeatureFlagError("FEATURE_NOT_FOUND", "Unknown feature key", 404);
+        // Code-owned: refused for every scope and viewer before any database call.
+        assertFeatureMutable(input.featureKey);
         if (typeof input.expectedRevision !== "string" || !/^[1-9]\d*$/.test(input.expectedRevision)
             || BigInt(input.expectedRevision) > 9223372036854775807n || typeof input.requestId !== "string" || !input.requestId.trim() || input.requestId.length > 128
             || userId !== undefined && (!Number.isSafeInteger(userId) || userId <= 0)

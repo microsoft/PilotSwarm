@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from '../src/index.js';
 
-const KEY='copilot.native_tasks';
+// Generic draft machinery runs on a normal (not always-on) flag.
+const KEY='debug.enable_model_event_logging';
 const ADMIN={provider:'test',subject:'admin',isAdmin:true};
-const flag=(revision='1',extra={})=>({featureKey:KEY,revision,displayName:'Native tasks',description:'Local delegation',
+const flag=(revision='1',extra={})=>({featureKey:KEY,revision,displayName:'Model event logging',description:'Record model trace events',
     defaultEnabled:false,defaultAllowUserOverride:false,cluster:{enabled:false,allowUserOverride:true},user:{enabled:false},
     effective:false,source:'user',supported:true,...extra});
 const data=(revision='1',extra={})=>({flags:[flag(revision,extra)]});

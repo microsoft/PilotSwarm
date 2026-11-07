@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+**Always-on feature flags.** The code registry can mark a feature flag
+always on with one line. Such a flag is on everywhere before any stored
+setting is read: on workers, in the management client, the Web API, MCP,
+the management agents' tools, the portal and the TUI. Stored settings for it
+are ignored and need no migration. Changing it, at cluster or user scope, is
+refused with 409 `FEATURE_ALWAYS_ON`, and feature reads mark its row
+`alwaysOn` with source `always_on`. Settings → Feature flags shows it as a
+greyed, checked switch: "Always on. This switch is now always on and may be
+removed in a future release."
+
+Native Copilot tasks (`copilot.native_tasks`), Base Agent V2
+(`agents.base_v2`) and Steer running turns (`sessions.steering`) are now
+always on. Model event logging stays a normal flag, off by default. System,
+service and tuner sessions still run without native tasks.
+
+**Native tasks on every worker.** `PILOTSWARM_NATIVE_SUBAGENTS` now defaults
+to `sync`. An explicit `off` is ignored with one warning per process
+("PILOTSWARM_NATIVE_SUBAGENTS=off is ignored: native tasks are always on.");
+any other value is still refused. The Azure deploy env template and the
+worker overlay default to `sync`, and an older env file's `off` deploys as
+`sync`.
+
 ## 0.8.9 — 2026-11-04
 
 **Phone session list.** The session list no longer sits in a strip above the

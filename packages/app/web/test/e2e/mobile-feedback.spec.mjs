@@ -24,7 +24,7 @@ for (const browserName of ['chromium', 'webkit']) {
  const status=await page.locator('.ps-chat-panel .ps-panel-title-right').boundingBox();
  expect((await maximize.boundingBox()).x).toBeGreaterThanOrEqual(status.x+status.width);
  // The rightmost toolbar button: its long-press tooltip must stay on screen.
- const main=page.getByRole('button',{name:/^Diagnostics — /}).first();
+ const main=page.getByRole('button',{name:/^Diagnostics/}).first();
  await main.dispatchEvent('pointerdown',{pointerType:'touch',clientX:330,clientY:100});
  const tip=page.getByRole('tooltip'); await expect(tip).toBeVisible();
  const box=await tip.boundingBox(); expect(box.x).toBeGreaterThanOrEqual(0);expect(box.y).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(390);expect(box.y+box.height).toBeLessThanOrEqual(844);

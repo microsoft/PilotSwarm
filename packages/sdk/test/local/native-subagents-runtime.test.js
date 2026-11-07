@@ -159,72 +159,49 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
         });
     });
 
-    // Six turns with multiple real CLI restarts need a startup budget as well as execution time.
-    it.each(["cluster", "user"])("applies %s OFF during native work, latches denial across ON, and rebinds warm/cold turns", { timeout: 120_000 }, async scope => {
-        let phase = "revoke", parentStage = 0, policy, proofNonce = randomUUID();
+    // copilot.native_tasks is always on. A stored cluster or user Off, even
+    // one saved while native work runs, neither denies a task in the running
+    // turn nor removes the tool on later warm or cold turns. (The mid-turn
+    // revocation path in ManagedSession can no longer be reached from the flag.)
+    it.each(["cluster", "user"])("ignores a stored %s OFF during and after native work (always-on flag)", { timeout: 120_000 }, async scope => {
+        let parentStage = 0, policy, proofNonce = randomUUID();
         await harness(async (body) => {
-            if (parentRequest(body)) {
-                if (phase === "off") {
-                    // A newly enabled flag must not add tools to the running turn.
-                    if (parentStage++ === 0) {
-                        await policy.set(true);
-                        return { tools: [nativeTask({ agent_type: "swarm-task" })] };
-                    }
-                    return { content: "OFF_TURN_FINISHED" };
-                }
-                if (phase === "revoke") return parentStage++ < 2
-                    ? { tools: [nativeTask({ agent_type: "swarm-task" })] }
-                    : { content: "REVOCATION_FINISHED" };
-                return body.messages.at(-1).role === "tool"
-                    ? { content: "ENABLED_TURN_FINISHED" } : { tools: [nativeTask({ agent_type: "swarm-task" })] };
-            }
+            if (parentRequest(body)) return parentStage++ < 2
+                ? { tools: [nativeTask({ agent_type: "swarm-task" })] }
+                : { content: "TURN_FINISHED" };
             if (body.messages.at(-1).role === "tool") return { content: "ADMITTED_NATIVE_FINISHED" };
-            if (phase === "revoke") { await policy.set(false); await policy.set(true); }
+            // Store Off while the native child runs.
+            await policy.set(false);
             return { tools: [nodeShell(`require('fs').writeFileSync('admitted-proof.txt',${JSON.stringify(proofNonce)})`, "Finish admitted local work")] };
         }, async ({ home, server, config, sessionId, createManager, policy: fixturePolicy }) => {
             const owner = { provider: "test", subject: "native-policy-owner" };
             policy = scope === "user" ? { set: value => fixturePolicy.setForUser(owner, value) } : fixturePolicy;
-            await policy.set(true);
+            await policy.set(false);
             const configuredManager = () => {
                 const manager = createManager();
                 if (scope === "user") manager.setSessionCatalog({ getSession: async () => ({ owner }), recordEvents: async () => {}, getUserRole: async () => ({ role: "user", seenAt: new Date() }) });
                 return manager;
             };
             let manager = configuredManager();
-            let managed = await manager.getOrCreate(sessionId, config, { turnIndex: 0 });
-            const events = [];
-            expect((await managed.runTurn("Delegate twice", { onEvent: event => events.push(event) })).type).toBe("completed");
-            expect(readFileSync(join(home, "admitted-proof.txt"), "utf8")).toBe(proofNonce);
-            expect(events.filter(e => e.eventType === "subagent.started")).toHaveLength(1);
-            const denied = events.filter(e => e.eventType === "tool.execution_complete" && e.data.toolName === "task").at(-1);
-            expect(denied?.data.success).toBe(false);
-            expect(JSON.stringify(denied.data)).toContain("Native tasks are disabled by current feature policy for this turn");
-            expect((await managed.getCopilotSession().rpc.tasks.list()).tasks.filter(t => t.type === "agent")).toEqual([]);
-            // ON after revocation is available next turn, preserving session identity.
-            for (let turn = 1; turn <= 5; turn++) {
-                phase = turn % 2 ? "enabled" : "off";
+            for (let turn = 0; turn < 3; turn++) {
                 parentStage = 0; proofNonce = randomUUID();
                 rmSync(join(home, "admitted-proof.txt"), { force: true });
-                if (phase === "off") await policy.set(false);
-                if (turn === 4) { await manager.shutdown(); manager = configuredManager(); }
+                if (turn === 2) { await manager.shutdown(); manager = configuredManager(); }
                 const start = server.requests.length;
-                managed = await manager.getOrCreate(sessionId, config, { turnIndex: turn });
-                const turnEvents = [];
-                const result = await managed.runTurn(`Policy transition turn ${turn}`, { onEvent: event => turnEvents.push(event) });
+                const managed = await manager.getOrCreate(sessionId, config, { turnIndex: turn });
+                const events = [];
+                const result = await managed.runTurn(`Delegate twice, turn ${turn}`, { onEvent: event => events.push(event) });
                 expect(result.type, JSON.stringify(result)).toBe("completed");
                 const parent = server.requests.slice(start).find(parentRequest);
-                expect(parent.tools.some(t => t.function?.name === "task")).toBe(phase === "enabled");
-                expect(systemPrompt(parent).includes("## Native local delegation")).toBe(phase === "enabled");
+                expect(parent.tools.some(t => t.function?.name === "task")).toBe(true);
+                expect(systemPrompt(parent)).toContain("## Native local delegation");
                 expect(managed.getCopilotSession().sessionId).toBe(sessionId);
-                const task = turnEvents.find(e => e.eventType === "tool.execution_complete" && e.data.toolName === "task");
-                expect(task?.data.success).toBe(phase === "enabled");
-                if (phase === "enabled") {
-                    expect(server.requests.slice(start).filter(body => !parentRequest(body)).length).toBeGreaterThan(0);
-                    expect(readFileSync(join(home, "admitted-proof.txt"), "utf8")).toBe(proofNonce);
-                } else {
-                    expect(server.requests.slice(start).filter(body => !parentRequest(body))).toHaveLength(0);
-                    expect(existsSync(join(home, "admitted-proof.txt"))).toBe(false);
-                }
+                expect(events.filter(e => e.eventType === "subagent.started")).toHaveLength(2);
+                const tasks = events.filter(e => e.eventType === "tool.execution_complete" && e.data.toolName === "task");
+                expect(tasks).toHaveLength(2);
+                expect(tasks.every(e => e.data.success === true), JSON.stringify(tasks.map(e => e.data))).toBe(true);
+                expect(JSON.stringify(tasks.map(e => e.data))).not.toContain("disabled by current feature policy");
+                expect(readFileSync(join(home, "admitted-proof.txt"), "utf8")).toBe(proofNonce);
                 expect((await managed.getCopilotSession().rpc.tasks.list()).tasks.filter(t => t.type === "agent")).toEqual([]);
             }
         });
@@ -415,7 +392,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
         });
     });
 
-    it("keeps task disabled by default", { timeout: 60_000 }, async () => {
+    it("keeps task disabled for a session manager without native tasks (the system-session path)", { timeout: 60_000 }, async () => {
         await harness(() => ({ content: "NO_DELEGATION" }), async ({ config, sessionId, createManager, server }) => {
             config.turnTimeoutMs = 30_000;
             const managed = await createManager().getOrCreate(sessionId, config, { turnIndex: 0 });
