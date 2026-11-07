@@ -13,6 +13,7 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
         let snapshot = { status: 'idle', statusVersion: 6, updatedAt: T0 };
         let reads = 0, sends = 0, releaseStop, releaseSteer;
         const stops = [], steers = [];
+        let settings = { themeId, moa: { version: 2, tree: { id: 'header-panel', type: 'chat', sessionId }, aspectRatio: 2 } };
         // acceptsTurnControl: the running turn listens for Stop/Steer; the
         // composer offers Steer only while the session is also running.
         const row = () => ({ sessionId, title: themeId === 'ms-dos' ? '' : 'Footer regression', model: 'github-copilot:claude-sonnet-5',
@@ -22,7 +23,8 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await page.route('**/api/v1/**', async route => {
                 const request = route.request(), path = new URL(request.url()).pathname;
                 const answer = result => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, result }) });
-                if (path.endsWith('/me/profile')) return answer({isAdmin:false,profileSettings:{themeId,moa:{version:2,tree:{id:'header-panel',type:'chat',sessionId},aspectRatio:2}}});
+                if (path.endsWith('/me/profile/settings')) { settings = structuredClone(request.postDataJSON().settings); return answer({ profileSettings: settings }); }
+                if (path.endsWith('/me/profile')) return answer({isAdmin:false,profileSettings:settings});
                 if (path.endsWith('/management/sessions')) {
                     reads += 1;
                     return answer({ sessions: [row()], hasMore: false });
@@ -191,12 +193,16 @@ test('MoA: Steer routes to the focused panel only', async ({ page }) => {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     const steers = [];
+    let settings = { themeId: 'terminal-green',
+        moa: { version: 2, composerMode: 'shared', tree: { id: 'split', type: 'split', direction: 'row', ratio: 50, first: chat(0), second: chat(2) } } };
     try {
         await page.route('**/api/v1/**', async route => {
             const request = route.request(), path = new URL(request.url()).pathname;
             const answer = result => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, result }) });
-            if (path.endsWith('/me/profile')) return answer({ isAdmin: false, profileSettings: { themeId: 'terminal-green',
-                moa: { version: 2, composerMode: 'shared', tree: { id: 'split', type: 'split', direction: 'row', ratio: 50, first: chat(0), second: chat(2) } } } });
+            // Keep what the portal saves, like the real profile store: a fixed
+            // answer made the next profile poll undo the focus click.
+            if (path.endsWith('/me/profile/settings')) { settings = structuredClone(request.postDataJSON().settings); return answer({ profileSettings: settings }); }
+            if (path.endsWith('/me/profile')) return answer({ isAdmin: false, profileSettings: settings });
             if (path.endsWith('/management/users/me/features')) return answer({ userId: 1, flags: [{ featureKey: 'sessions.steering', effective: true }] });
             const detail = /\/sessions\/([^/]+)$/.exec(path);
             if (detail && request.method() === 'GET') {

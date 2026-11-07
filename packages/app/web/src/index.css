@@ -10722,8 +10722,14 @@ textarea.ps-link-input {
   .ps-toolbar-canvas-rev { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
 /* Use the SAME two rows in every mode when the rails cannot fit. Reserving
-   both rows keeps the navigation's vertical position stable as well. */
-@container header-tools (max-width: 960px) {
+   both rows keeps the navigation's vertical position stable as well. The
+   widest mode decides: a full-screen canvas puts its controls (pane tabs,
+   canvas picker, zoom, zen, restore: about 341 px) in the left rail, and the
+   two rails are equal around the 294 px navigation, so one row needs about
+   1,000 px. At 960 a header that measured 961-1,000 px (WebKit's narrower
+   brand at 1,280 px) kept one row and the canvas controls ran into the
+   navigation. */
+@container header-tools (max-width: 1040px) {
   .ps-toolbar:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 44px max(36px, var(--ps-control-min-height, 34px)); gap: 4px 6px; }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-navigation { grid-column: 1; grid-row: 1; }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; grid-row: 2; min-height: max(36px, var(--ps-control-min-height, 34px)); }
