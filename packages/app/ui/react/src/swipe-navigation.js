@@ -185,25 +185,67 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
             if (overlay && host.contains(overlay)) return overlay;
             return root.contains(target) ? root : null;
         };
-        const onStart = (event) => {
+        // A touch keeps the element it started on as its target, even when
+        // that element leaves the page. A second swipe that starts during a
+        // slide-out finishes the first navigation at once, which can replace
+        // the screen under the fingers; its moves then reach only the removed
+        // element. So the fingers' own targets are listened to as well as the
+        // host, and each event is handled once.
+        const handled = new WeakSet();
+        let followed = [];
+        const unfollow = () => {
+            for (const node of followed) {
+                node.removeEventListener("touchmove", onMove);
+                node.removeEventListener("touchend", onEnd);
+                node.removeEventListener("touchcancel", onCancel);
+            }
+            followed = [];
+        };
+        const follow = (event) => {
+            unfollow();
+            for (const touch of event.touches) {
+                const node = touch.target;
+                if (!node || followed.includes(node) || typeof node.addEventListener !== "function") continue;
+                node.addEventListener("touchmove", onMove, { passive: false });
+                node.addEventListener("touchend", onEnd, { passive: true });
+                node.addEventListener("touchcancel", onCancel, { passive: true });
+                followed.push(node);
+            }
+        };
+        const once = (event) => {
+            if (handled.has(event)) return false;
+            handled.add(event);
+            return true;
+        };
+        function onStart(event) {
             if (event.touches.length === 2) {
                 if (dialogOpen()) return;
                 const target = surfaceFor(event.target);
                 if (!target) return;
                 touched = target === root ? null : target;
+                follow(event);
                 const p = twoFingers(event); begin(p.x, p.y, p.d);
                 return;
             }
-            if (event.touches.length > 2) cancel();
-        };
-        const onMove = (event) => {
-            if (!gesture || event.touches.length !== 2) return;
+            if (event.touches.length > 2) { unfollow(); cancel(); }
+        }
+        function onMove(event) {
+            if (!once(event) || !gesture || event.touches.length !== 2) return;
             const p = twoFingers(event);
             // Claimed from the first move: iOS decides on the first move
             // whether the page pinches or scrolls, and ignores a later refusal.
             if (update(p.x, p.y, p.d) && event.cancelable) event.preventDefault();
-        };
-        const onEnd = (event) => { if (gesture && event.touches.length < 2) end(); };
+        }
+        function onEnd(event) {
+            if (!once(event) || event.touches.length >= 2) return;
+            unfollow();
+            if (gesture) end();
+        }
+        function onCancel(event) {
+            if (!once(event)) return;
+            unfollow();
+            cancel();
+        }
         // A canvas forwards one gesture at a time, tagged with an identity
         // object; anything that is not the gesture it started is ignored, and
         // a canvas never interrupts fingers already on the page.
@@ -231,16 +273,17 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
         host.addEventListener("touchstart", onStart, { passive: true });
         host.addEventListener("touchmove", onMove, { passive: false });
         host.addEventListener("touchend", onEnd, { passive: true });
-        host.addEventListener("touchcancel", cancel, { passive: true });
+        host.addEventListener("touchcancel", onCancel, { passive: true });
         host.addEventListener("transitionend", onTransitionEnd);
         window.addEventListener(TWO_FINGER_SWIPE_EVENT, onFrameSwipe);
         return () => {
             alive = false;
             cancelPending();
+            unfollow();
             host.removeEventListener("touchstart", onStart);
             host.removeEventListener("touchmove", onMove);
             host.removeEventListener("touchend", onEnd);
-            host.removeEventListener("touchcancel", cancel);
+            host.removeEventListener("touchcancel", onCancel);
             host.removeEventListener("transitionend", onTransitionEnd);
             window.removeEventListener(TWO_FINGER_SWIPE_EVENT, onFrameSwipe);
             move(0);
