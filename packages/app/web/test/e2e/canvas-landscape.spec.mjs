@@ -16,6 +16,24 @@ test.afterAll(async () => { await new Promise((resolve) => stub.server.close(res
 
 const PAGE = `<!doctype html><html><body style="margin:0;background:#123"><h1 style="color:#fff">Canvas</h1></body></html>`;
 
+// Open the phone canvas once the deep-linked session is showing, and wait for
+// its page: a canvas toggled while the session is still arriving can be put
+// back by the session change, and its strip appears only once the canvas is
+// known.
+async function openCanvas(page) {
+    const sessionLoaded = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith(`/api/v1/sessions/${sessionId}`));
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+    await sessionLoaded;
+    const toggle = page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first();
+    await expect(toggle).toBeEnabled();
+    await toggle.click();
+    const layer = page.locator(".ps-mobile-canvas-layer");
+    await expect(layer).toHaveCount(1);
+    await expect(layer).not.toHaveClass(/is-hidden/);
+    await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas", { timeout: 15_000 });
+    return layer;
+}
+
 test("landscape full screen: the controls fold into one button, open on a tap, and fold again", async ({ page }) => {
     await page.route("**/api/v1/**", async (route) => {
         const url = new URL(route.request().url());
@@ -26,11 +44,8 @@ test("landscape full screen: the controls fold into one button, open on a tap, a
         return route.fallback();
     });
     await page.setViewportSize({ width: 844, height: 390 });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
-    await page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first().click();
-    const layer = page.locator(".ps-mobile-canvas-layer");
+    const layer = await openCanvas(page);
     await expect(layer).toHaveClass(/is-maximized/);
-    await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas", { timeout: 15_000 });
 
     const handle = layer.getByRole("button", { name: "Canvas controls" });
     const restore = layer.getByRole("button", { name: "Restore canvas" });
@@ -65,10 +80,10 @@ test("portrait full screen keeps the open strip", async ({ page }) => {
         return route.fallback();
     });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
-    await page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first().click();
-    const layer = page.locator(".ps-mobile-canvas-layer");
-    await layer.getByRole("button", { name: "Maximize canvas" }).tap();
+    const layer = await openCanvas(page);
+    const maximize = layer.getByRole("button", { name: "Maximize canvas" });
+    await expect(maximize).toBeVisible();
+    await maximize.tap();
     await expect(layer).toHaveClass(/is-maximized/);
     await expect(layer.getByRole("button", { name: "Restore canvas" })).toBeVisible();
     await expect(layer.getByRole("button", { name: "Canvas controls" })).toHaveCount(0);
