@@ -120,11 +120,14 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
     // taken independently from the two sample sets.
     // The reference keeps the ceiling relative to this machine rather than
     // fixing a millisecond limit.
+    // Twenty paired-median runs per browser at two workers peaked at 3.11x
+    // and 3.33x. With 15% headroom, the next decimal is 3.9x; the approved
+    // minimum regression ceiling is 4.0x.
     //
     // The ceiling is a REGRESSION CEILING relative to this machine: it catches
     // the cost going up several-fold, which is what an accidental re-layout of
     // every block, or losing the block memo guarded below, would do.
-    expect(ratio, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines, ${reference.toFixed(1)}ms for the same lines plain in the median-ratio pair`).toBeLessThan(4.6);
+    expect(ratio, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines, ${reference.toFixed(1)}ms for the same lines plain in the median-ratio pair`).toBeLessThan(4.0);
 });
 
 test("dragging the pane splitter does not re-render the whole transcript", async ({ page }) => {
