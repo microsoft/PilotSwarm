@@ -27,6 +27,9 @@ test("the desktop toolbar changes from two rows to one at 1040 container pixels"
 });
 
 test("code uses the bundled mono face and loadingdone remeasures pane columns", async ({ page }) => {
+    await page.route("**/api/v1/me/profile", route => route.fulfill({ json: { ok: true, result: {
+        profileSettings: { codeFont: "jetbrains" },
+    } } }));
     const externalFonts = [];
     const bundledFonts = [];
     page.on("request", req => {
@@ -35,6 +38,7 @@ test("code uses the bundled mono face and loadingdone remeasures pane columns", 
         else bundledFonts.push(req.url());
     });
     await page.goto(base + `/?session=${sid(0)}`);
+    await expect(page.locator("html")).toHaveAttribute("data-ps-mono", "jetbrains");
     const code = page.locator(".ps-chat-panel code").first();
     await expect(code).toBeVisible();
     const font = await code.evaluate(el => getComputedStyle(el).fontFamily);
