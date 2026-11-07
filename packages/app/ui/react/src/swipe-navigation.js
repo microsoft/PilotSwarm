@@ -17,6 +17,12 @@ import React from "react";
 
 export const TWO_FINGER_SWIPE_EVENT = "ps-two-finger-swipe";
 
+// While one of these is open the person is in a dialog, not on a screen:
+// two fingers must not navigate away under it. Several of them are fixed
+// overlays inside the workspace, which a transform would also displace.
+const DIALOG_OPEN = ".ps-modal-backdrop, .ps-share-overlay, .ps-budget-sheet-backdrop, .ps-moa-dialog";
+const dialogOpen = () => typeof document !== "undefined" && Boolean(document.querySelector(DIALOG_OPEN));
+
 const DECIDE_PX = 12;          // movement before the gesture picks a kind
 const COMMIT_PX = 84;          // distance that commits a navigation
 const COMMIT_VELOCITY = 0.45;  // or a quick flick, in px per ms
@@ -79,7 +85,10 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
         // transform on the workspace would make it the containing block of
         // the fixed full-screen layer, which would jump into the content box.
         let moved = null;
-        const surface = () => root.querySelector(":scope > .ps-mobile-canvas-layer.is-maximized:not(.is-hidden)") || root;
+        let touched = null;
+        const surface = () => (touched?.isConnected ? touched : null)
+            || root.querySelector(":scope > .ps-mobile-canvas-layer.is-maximized:not(.is-hidden)")
+            || root;
         const move = (x, transition = "") => {
             const el = surface();
             if (moved && moved !== el) { moved.style.transition = ""; moved.style.transform = ""; }
@@ -88,8 +97,31 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
             moved = x || transition ? el : null;
         };
 
-        const begin = (x, y, d, decided = false) => {
-            gesture = { x, y, d, time: Date.now(), kind: decided ? "swipe" : null, dx: 0, can: false };
+        // Timers and frames of a committed swipe. Cleanup cancels them, so a
+        // surface that is gone (phone layout off, MoA opened, unmount) can
+        // never navigate or write a transform afterwards.
+        let alive = true;
+        const pending = { timer: null, frames: [], go: null };
+        const cancelPending = () => {
+            if (pending.timer) window.clearTimeout(pending.timer);
+            pending.timer = null;
+            pending.go = null;
+            for (const frame of pending.frames) cancelAnimationFrame(frame);
+            pending.frames = [];
+        };
+        // A new swipe during the slide-out finishes the first one at once:
+        // its navigation happens and the screen is put straight back.
+        const flushPending = () => {
+            const go = pending.go;
+            cancelPending();
+            if (!go) return;
+            go();
+            touched = null;
+            move(0);
+        };
+        const begin = (x, y, d, decided = false, source = null) => {
+            flushPending();
+            gesture = { x, y, d, time: Date.now(), kind: decided ? "swipe" : null, dx: 0, can: false, source };
         };
         // Returns true while the gesture is (or may become) a swipe.
         const update = (x, y, d) => {
@@ -124,10 +156,18 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
             if (reduced) { move(0); go(); return; }
             // Out with the old screen, then in with the new from the far side.
             move(direction * width, "transform 150ms ease-in");
-            window.setTimeout(() => {
+            pending.go = go;
+            pending.timer = window.setTimeout(() => {
+                pending.timer = null;
+                pending.go = null;
+                if (!alive) return;
                 go();
+                // The new screen slides in, whatever was touched.
+                touched = null;
                 move(-direction * width * 0.35);
-                requestAnimationFrame(() => requestAnimationFrame(() => move(0, "transform 220ms cubic-bezier(.2,.8,.2,1)")));
+                pending.frames.push(requestAnimationFrame(() => {
+                    pending.frames.push(requestAnimationFrame(() => { if (alive) move(0, "transform 220ms cubic-bezier(.2,.8,.2,1)"); }));
+                }));
             }, 150);
         };
         const cancel = () => {
@@ -136,8 +176,24 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
             clearHint();
         };
 
+        // Fingers count on the workspace and on the phone's full-screen
+        // artifact preview, which sits over it outside this element. The
+        // preview slides by itself; dialogs and everything else are left alone.
+        const host = root.parentElement || root;
+        const surfaceFor = (target) => {
+            const overlay = target?.closest?.(".ps-artifact-overlay");
+            if (overlay && host.contains(overlay)) return overlay;
+            return root.contains(target) ? root : null;
+        };
         const onStart = (event) => {
-            if (event.touches.length === 2) { const p = twoFingers(event); begin(p.x, p.y, p.d); return; }
+            if (event.touches.length === 2) {
+                if (dialogOpen()) return;
+                const target = surfaceFor(event.target);
+                if (!target) return;
+                touched = target === root ? null : target;
+                const p = twoFingers(event); begin(p.x, p.y, p.d);
+                return;
+            }
             if (event.touches.length > 2) cancel();
         };
         const onMove = (event) => {
@@ -148,27 +204,41 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
             if (update(p.x, p.y, p.d) && event.cancelable) event.preventDefault();
         };
         const onEnd = (event) => { if (gesture && event.touches.length < 2) end(); };
+        // A canvas forwards one gesture at a time, tagged with an identity
+        // object; anything that is not the gesture it started is ignored, and
+        // a canvas never interrupts fingers already on the page.
         const onFrameSwipe = (event) => {
-            const { phase, x, y } = event.detail || {};
-            if (phase === "start") begin(Number(x) || 0, Number(y) || 0, 0, true);
-            else if (phase === "move") update(Number(x) || 0, Number(y) || 0, 0);
+            const { phase, x, y, gesture: source } = event.detail || {};
+            if (!source || typeof source !== "object") return;
+            if (phase === "start") {
+                if (gesture && !gesture.source) return;
+                if (dialogOpen()) return;
+                if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+                touched = null;
+                begin(x, y, 0, true, source);
+                return;
+            }
+            if (!gesture || gesture.source !== source) return;
+            if (phase === "move" && Number.isFinite(x) && Number.isFinite(y)) update(x, y, 0);
             else if (phase === "end") end();
             else cancel();
         };
         const onTransitionEnd = (event) => { if (event.target === moved && !moved.style.transform) { moved.style.transition = ""; moved = null; } };
 
-        root.addEventListener("touchstart", onStart, { passive: true });
-        root.addEventListener("touchmove", onMove, { passive: false });
-        root.addEventListener("touchend", onEnd, { passive: true });
-        root.addEventListener("touchcancel", cancel, { passive: true });
-        root.addEventListener("transitionend", onTransitionEnd);
+        host.addEventListener("touchstart", onStart, { passive: true });
+        host.addEventListener("touchmove", onMove, { passive: false });
+        host.addEventListener("touchend", onEnd, { passive: true });
+        host.addEventListener("touchcancel", cancel, { passive: true });
+        host.addEventListener("transitionend", onTransitionEnd);
         window.addEventListener(TWO_FINGER_SWIPE_EVENT, onFrameSwipe);
         return () => {
-            root.removeEventListener("touchstart", onStart);
-            root.removeEventListener("touchmove", onMove);
-            root.removeEventListener("touchend", onEnd);
-            root.removeEventListener("touchcancel", cancel);
-            root.removeEventListener("transitionend", onTransitionEnd);
+            alive = false;
+            cancelPending();
+            host.removeEventListener("touchstart", onStart);
+            host.removeEventListener("touchmove", onMove);
+            host.removeEventListener("touchend", onEnd);
+            host.removeEventListener("touchcancel", cancel);
+            host.removeEventListener("transitionend", onTransitionEnd);
             window.removeEventListener(TWO_FINGER_SWIPE_EVENT, onFrameSwipe);
             move(0);
             hint?.remove();

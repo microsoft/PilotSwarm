@@ -682,9 +682,34 @@ function normalizeAgentTitleComparable(value) {
     return String(value || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
 }
 
-// An agent is named by its id or by its display title from the agent catalog
-// (state.agentTitles: comparable agent id -> display titles), so a session
-// started from the picker as "DeepWiki Code Explorer: …" is recognized too.
+const PERSONA_TYPE = /^(.+?)\s+[–—-]\s+(.+)$/u;
+
+// The agent-name prefix of a named agent session's title, for DISPLAY: the
+// longest catalog display title (state.agentTitles, comparable agent id ->
+// titles) the title starts with; else the text before the first ": " when it
+// is the agent's id; else, when the catalog has no titles for this agent (not
+// loaded yet, or an agent nobody can create), a "Persona - Type" name. A
+// prefix the catalog does not vouch for is the person's own text and is shown
+// as typed. Returns { prefix, rest } or null.
+function findAgentTitlePrefix(session, currentTitle, agentTitles = null) {
+    const comparableAgentId = normalizeAgentTitleComparable(session?.agentId);
+    if (!comparableAgentId) return null;
+    const titles = Array.isArray(agentTitles?.[comparableAgentId]) ? agentTitles[comparableAgentId] : [];
+    let known = null;
+    for (const candidate of titles) {
+        const title = String(candidate || "").trim();
+        if (title && currentTitle.startsWith(`${title}: `) && (!known || title.length > known.length)) known = title;
+    }
+    if (known) return { prefix: known, rest: currentTitle.slice(known.length + 2).trim() };
+    const separatorIndex = currentTitle.indexOf(": ");
+    if (separatorIndex <= 0) return null;
+    const prefix = currentTitle.slice(0, separatorIndex).trim();
+    const rest = currentTitle.slice(separatorIndex + 2).trim();
+    if (normalizeAgentTitleComparable(prefix) === comparableAgentId) return { prefix, rest };
+    if (titles.length === 0 && PERSONA_TYPE.test(prefix)) return { prefix, rest };
+    return null;
+}
+
 function isLikelyAgentTitlePrefix(prefix, session, agentTitles = null) {
     const comparablePrefix = normalizeAgentTitleComparable(prefix);
     const comparableAgentId = normalizeAgentTitleComparable(session?.agentId);
@@ -692,6 +717,16 @@ function isLikelyAgentTitlePrefix(prefix, session, agentTitles = null) {
     if (comparablePrefix === comparableAgentId) return true;
     const titles = agentTitles?.[comparableAgentId];
     return Array.isArray(titles) && titles.some((title) => normalizeAgentTitleComparable(title) === comparablePrefix);
+}
+
+// A recognised agent name shown after the title. A "Persona - Type" name
+// reads title, then type, then persona however it was recognised, so a row
+// does not change shape when the catalog arrives.
+function agentTitleParts(prefix) {
+    const persona = PERSONA_TYPE.exec(prefix);
+    return persona && persona[1].trim() && persona[2].trim()
+        ? { agentTitle: persona[1].trim(), typeTitle: persona[2].trim() }
+        : { agentTitle: prefix };
 }
 
 function splitAgentPrefixedSessionTitle(session, agentTitles = null) {
@@ -714,26 +749,12 @@ function splitAgentPrefixedSessionTitle(session, agentTitles = null) {
         }
     }
 
-    // A named agent's title is stored "<agent name>: <title>". Only the part
-    // before the FIRST ": " can be the agent's name; everything after it is
-    // the title the person gave (or the session id) and is shown whole, in
-    // order — a " - " or ": " the person typed is never read as structure.
-    const separatorIndex = currentTitle.indexOf(": ");
-    if (separatorIndex > 0) {
-        const prefix = currentTitle.slice(0, separatorIndex).trim();
-        const displayTitle = currentTitle.slice(separatorIndex + 2).trim();
-        if (displayTitle && isLikelyAgentTitlePrefix(prefix, session, agentTitles)) {
-            return { displayTitle, agentTitle: prefix };
-        }
-        // "Persona - Type" agent names lead with the title, then the type,
-        // then the persona: "M61 Conductor · R2D Train Watcher · Mad-Eye Moody".
-        const persona = /^(.+?)\s+[–—-]\s+(.+)$/u.exec(prefix);
-        if (displayTitle && persona && persona[1].trim() && persona[2].trim()) {
-            return { displayTitle, agentTitle: persona[1].trim(), typeTitle: persona[2].trim() };
-        }
-    }
-
-    return null;
+    // "<agent name>: <title>": everything after the agent name is the title
+    // the person gave (or the session id), shown whole and in order; a " - "
+    // or ": " the person typed is never read as structure.
+    const found = findAgentTitlePrefix(session, currentTitle, agentTitles);
+    if (!found || !found.rest) return null;
+    return { displayTitle: found.rest, ...agentTitleParts(found.prefix) };
 }
 
 // Titles are plain text everywhere they are rendered (terminal runs, DOM
@@ -759,6 +780,11 @@ export function decodeHtmlEntitiesForDisplay(value) {
         text = text.replace(pattern, replacement);
     }
     return text;
+}
+
+/** A session's title as the list shows it (agent name after the title). */
+export function sessionDisplayTitle(session, agentTitles = null) {
+    return buildSessionDisplayTitle(session, agentTitles);
 }
 
 function buildSessionDisplayTitle(session, agentTitles = null) {

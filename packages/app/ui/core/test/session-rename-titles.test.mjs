@@ -22,6 +22,7 @@ import {
     getRenameSessionPrefix,
     selectRenameSessionModal,
     selectSessionRows,
+    sessionDisplayTitle,
 } from "../src/index.js";
 
 function rowFor(title, agentId) {
@@ -49,14 +50,16 @@ test("a title that is not an agent name is shown as it is", () => {
     assert.match(rowFor("Release: M70 checklist", undefined), /^Release: M70 checklist/);
 });
 
-test("the rename box keeps the agent prefix only when it is the agent's name", () => {
+test("the rename box keeps the same prefix the server keeps", () => {
     const smith = { sessionId: "s1", agentId: "agent-manager", title: "Agent Smith: TRON MOTD" };
     assert.equal(getRenameSessionPrefix(smith, ["Agent Smith"]), "Agent Smith");
+    assert.equal(getRenameSessionPrefix(smith), "Agent Smith", "without catalog data too");
     assert.equal(getRenameSessionEditableTitle(smith, ["Agent Smith"]), "TRON MOTD");
-    const wall = { sessionId: "s2", agentId: "harbor-clerk", title: "UX card wall: Plain new name" };
-    assert.equal(getRenameSessionPrefix(wall, ["Harbor Clerk"]), null);
-    assert.equal(getRenameSessionEditableTitle(wall, ["Harbor Clerk"]), "UX card wall: Plain new name");
+    const colon = { sessionId: "s2", agentId: "ops", title: "Ops: Fleet Watcher: nightly" };
+    assert.equal(getRenameSessionPrefix(colon, ["Ops: Fleet Watcher"]), "Ops: Fleet Watcher");
+    assert.equal(getRenameSessionEditableTitle(colon, ["Ops: Fleet Watcher"]), "nightly");
     assert.equal(getRenameSessionPrefix({ sessionId: "s3", agentId: "deepwiki", title: "Deepwiki: x" }), "Deepwiki");
+    assert.equal(getRenameSessionPrefix({ sessionId: "s4", title: "Release: M70" }), null);
 });
 
 function controllerWith(session, agents) {
@@ -119,4 +122,42 @@ test("the portal's rename box shows the count under the field", () => {
     modal = selectRenameSessionModal(store.getState());
     assert.equal(modal.lengthLine, "100 / 100 characters, the limit");
     assert.equal(modal.atLimit, true);
+});
+
+function rowWith(title, agentId, agentTitles) {
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "aaaabbbb-1111-2222-3333-444444444447", title, agentId, status: "idle", createdAt: 1, updatedAt: 2 }] });
+    if (agentTitles) store.dispatch({ type: "agents/titles", agentTitles });
+    return (selectSessionRows(store.getState())[0]?.text || "").trim();
+}
+
+test("a prefix the loaded catalog does not vouch for is shown as typed", () => {
+    assert.match(rowWith("Fix login - follow up: notes", "deepwiki", { deepwiki: ["DeepWiki Code Explorer"] }), /^Fix login - follow up: notes/);
+});
+
+test("a Persona - Type agent reads the same before and after the catalog arrives", () => {
+    const title = "Mad-Eye Moody - R2D Train Watcher: M61 Conductor";
+    const before = rowWith(title, "r2d-watcher");
+    const after = rowWith(title, "r2d-watcher", { r2dwatcher: ["Mad-Eye Moody - R2D Train Watcher"] });
+    assert.match(before, /^M61 Conductor · R2D Train Watcher · Mad-Eye Moody/);
+    assert.match(after, /^M61 Conductor · R2D Train Watcher · Mad-Eye Moody/);
+});
+
+test("a catalog title containing ': ' is kept whole in the list", () => {
+    assert.match(rowWith("Ops: Fleet Watcher: nightly sweep", "ops", { ops: ["Ops: Fleet Watcher"] }), /^nightly sweep · Ops: Fleet Watcher/);
+});
+
+test("the rename box keeps emoji whole at the limit", async () => {
+    const session = { sessionId: "aaaabbbb-1111-2222-3333-444444444448", title: "plain", status: "idle", createdAt: 1, updatedAt: 2 };
+    const { controller, store } = controllerWith(session, []);
+    controller.openRenameSessionModal();
+    controller.setRenameSessionValue(`${"a".repeat(99)}😀`);
+    const value = store.getState().ui.modal.value;
+    assert.equal(value, "a".repeat(99));
+});
+
+test("one exported display title for every surface (history labels, MoA, terminal list)", () => {
+    const session = { sessionId: "s9", agentId: "deepwiki", title: "DeepWiki Code Explorer: Weekly notes" };
+    assert.equal(sessionDisplayTitle(session, { deepwiki: ["DeepWiki Code Explorer"] }), "Weekly notes · DeepWiki Code Explorer");
+    assert.equal(sessionDisplayTitle({ sessionId: "s8", title: "Plain" }), "Plain");
 });

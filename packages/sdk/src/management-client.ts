@@ -260,19 +260,23 @@ function createAbortError(message: string, reason?: unknown): Error {
 }
 
 function normalizeSessionTitleInput(title: string, maxLength = MAX_SESSION_TITLE_LENGTH): string {
-    return String(title || "").trim().slice(0, maxLength);
-}
-
-function comparableAgentTitle(value: unknown): string {
-    return String(value || "").toLowerCase().replace(/[^a-z0-9]+/gu, "");
+    const trimmed = String(title || "").trim();
+    if (trimmed.length <= maxLength) return trimmed;
+    // Never cut between the two halves of a surrogate pair (emoji and other
+    // characters outside the BMP): a lone half is not valid text.
+    const end = /[\uD800-\uDBFF]/u.test(trimmed[maxLength - 1]) ? maxLength - 1 : maxLength;
+    return trimmed.slice(0, end).trimEnd();
 }
 
 /**
- * The named-agent prefix a rename keeps: the text before the first ": " of an
- * agent session's title, but only when it IS the agent's name — its id, or
- * one of `agentTitles` (the agent's display title from the catalog). Without
- * a catalog entry, a "Persona - Type" form is accepted too. Anything else is
- * the person's own text and a rename replaces it.
+ * The named-agent prefix a rename keeps. A named agent's session is titled
+ * "<agent name>: <title>" when it is created or spawned, so the prefix is the
+ * text before the first ": ". When the caller knows the agent's display
+ * titles (`agentTitles`, from the agent catalog), the longest one the title
+ * starts with wins instead, so a display title that itself contains ": " is
+ * kept whole. A rename never drops a prefix: without catalog data (an SDK or
+ * MCP caller, an agent that is not creatable, a failed lookup) it keeps
+ * exactly what main kept.
  */
 export function getNamedAgentTitlePrefix(
     session: { agentId?: string | null; title?: string | null } | null | undefined,
@@ -280,15 +284,15 @@ export function getNamedAgentTitlePrefix(
 ): string | null {
     if (!session?.agentId) return null;
     const currentTitle = String(session.title || "").trim();
+    let known: string | null = null;
+    for (const candidate of agentTitles) {
+        const title = String(candidate || "").trim();
+        if (title && currentTitle.startsWith(`${title}: `) && (!known || title.length > known.length)) known = title;
+    }
+    if (known) return known;
     const separatorIndex = currentTitle.indexOf(": ");
     if (separatorIndex <= 0) return null;
-    const prefix = currentTitle.slice(0, separatorIndex).trim();
-    const comparable = comparableAgentTitle(prefix);
-    if (!comparable) return null;
-    if (comparable === comparableAgentTitle(session.agentId)) return prefix;
-    const known = agentTitles.map(comparableAgentTitle).filter(Boolean);
-    if (known.length > 0) return known.includes(comparable) ? prefix : null;
-    return /\S\s+[–—-]\s+\S/u.test(prefix) ? prefix : null;
+    return currentTitle.slice(0, separatorIndex).trim() || null;
 }
 
 export function buildStoredSessionTitle(
@@ -296,9 +300,13 @@ export function buildStoredSessionTitle(
     requestedTitle: string,
     agentTitles: readonly string[] = [],
 ): string {
-    const normalizedTitle = normalizeSessionTitleInput(requestedTitle);
-    if (!normalizedTitle) return "";
     const prefix = getNamedAgentTitlePrefix(session, agentTitles);
+    let requested = String(requestedTitle || "").trim();
+    // A caller that sends the whole stored title back ("Agent Smith: old")
+    // must not get the agent's name twice.
+    if (prefix && requested.startsWith(`${prefix}: `)) requested = requested.slice(prefix.length + 2);
+    const normalizedTitle = normalizeSessionTitleInput(requested);
+    if (!normalizedTitle) return "";
     return prefix ? `${prefix}: ${normalizedTitle}` : normalizedTitle;
 }
 

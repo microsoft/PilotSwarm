@@ -69,6 +69,9 @@ import {
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
+    RENAME_SESSION_MAX_LENGTH,
+    getRenameSessionEditableTitle,
+    getRenameSessionPrefix,
     selectSessionAgentPickerModal,
     selectSessionGroupNameModal,
     selectSessionWorkspaceModal,
@@ -6364,7 +6367,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         ? React.createElement(SessionModifyModal, {
             controller,
             sessionId: activeSession.sessionId,
-            initialTitle: activeSession.title || "",
+            // The same editable part and fixed agent-name prefix as the rename
+            // box: seeding the stored title made Save prefix the agent twice.
+            initialTitle: getRenameSessionEditableTitle(activeSession, controller.cachedAgentTitles?.(activeSession.agentId) || []),
+            titlePrefix: getRenameSessionPrefix(activeSession, controller.cachedAgentTitles?.(activeSession.agentId) || []),
             allowSharing: !actionsOnly,
             currentModel: activeSession.model || "",
             currentReasoningEffort: activeSession.reasoningEffort || "",
@@ -6775,7 +6781,7 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
 // rename, copy link, plus (for the owner/admin) sharing — visibility +
 // per-person grants. Fetches its own access snapshot so callers only pass the
 // session id + current title.
-function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged, allowSharing = true }) {
+function SessionModifyModal({ controller, sessionId, initialTitle, titlePrefix = null, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged, allowSharing = true }) {
     const [tab, setTab] = React.useState("general");
     const [access, setAccess] = React.useState(null);
     const [title, setTitle] = React.useState(initialTitle || "");
@@ -6826,6 +6832,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
 
     const saveTitle = () => run(async () => {
         await controller.transport.renameSession(sessionId, title.trim());
+        await controller.refreshSessions?.();
     });
     // Resolve the typed text to a directory member (by name, email, or id).
     // Falls back to treating the text as a raw subject for a not-yet-seen user.
@@ -6950,9 +6957,13 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             activeTab === "general" ? React.createElement(React.Fragment, null,
                 React.createElement("div", { className: "ps-share-section-label" }, "Name"),
                 React.createElement("div", { className: "ps-share-add-row" },
+                    titlePrefix
+                        ? React.createElement("span", { className: "ps-manage-title-prefix", title: "The agent's name stays in front" }, `${titlePrefix}:`)
+                        : null,
                     React.createElement("input", {
                         className: "ps-share-add-input", placeholder: "Session title",
-                        value: title, disabled: busy,
+                        value: title, disabled: busy, maxLength: RENAME_SESSION_MAX_LENGTH,
+                        "aria-label": titlePrefix ? `Session title after ${titlePrefix}` : "Session title",
                         onChange: (e) => setTitle(e.target.value),
                         onKeyDown: (e) => { if (e.key === "Enter") saveTitle(); },
                     }),
@@ -8313,12 +8324,26 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         setPinched(false);
     }, [applyPinch]);
     // A new revision, or a change of the zoom setting, starts unmagnified.
+    // The transform was written straight onto the frame, so write it back:
+    // React does not reset a style it never set.
     React.useEffect(() => {
         pinchRef.current = { s: 1, tx: 0, ty: 0, start: null, seen: [] };
         setPinched(false);
-    }, [live?.url, zoom]);
+        applyPinch(false);
+    }, [live?.url, zoom, applyPinch]);
     const visibleRef = React.useRef(visible);
     visibleRef.current = visible;
+    // Hiding the canvas or leaving its session ends any two-finger swipe it
+    // was driving, so a half-finished gesture can never complete later.
+    React.useEffect(() => {
+        const pinch = pinchRef.current;
+        if (pinch.mode === "swipe" && typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent(TWO_FINGER_SWIPE_EVENT, { detail: { phase: "cancel", gesture: pinch.gesture } }));
+        }
+        pinch.mode = null;
+        pinch.start = null;
+        pinch.gesture = null;
+    }, [visible, sessionId]);
 
     // The interactive-canvas bridge. Provenance is THIS check: a message is
     // accepted only when its source window is the LIVE canvas iframe — the
@@ -8345,7 +8370,12 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow && stagingIframeElRef.current.dataset.session === sessionId);
             if (!fromLive && !fromStaging) return;
             if (payload.type === "canvas-pinch") {
-                if (!fromLive) return;
+                // Only the canvas the person is looking at: the frame stays
+                // mounted while hidden, and a hidden page must not zoom
+                // itself or move the portal back and forward.
+                if (!fromLive || !visibleRef.current) return;
+                if (!["start", "move", "end"].includes(payload.phase)) return;
+                if (payload.phase !== "end" && !["x", "y", "d"].every((key) => Number.isFinite(Number(payload[key])))) return;
                 const pinch = pinchRef.current;
                 const z = zoomRef.current || 1;
                 const box = hostRef.current?.getBoundingClientRect();
@@ -8361,9 +8391,12 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 const d = Math.max(1, Number(payload.d) || 1) * shown.s * z;
                 const swipe = (phase, x = hx, y = hy) => {
                     if (!box || typeof window === "undefined") return;
-                    window.dispatchEvent(new CustomEvent(TWO_FINGER_SWIPE_EVENT, { detail: { phase, x: box.left + x, y: box.top + y } }));
+                    window.dispatchEvent(new CustomEvent(TWO_FINGER_SWIPE_EVENT, { detail: { phase, x: box.left + x, y: box.top + y, gesture: pinch.gesture } }));
                 };
                 if (payload.phase === "start") {
+                    // A gesture starts on the canvas box or not at all.
+                    if (!box || hx < 0 || hy < 0 || hx > box.width || hy > box.height) { pinch.start = null; pinch.mode = null; return; }
+                    pinch.gesture = {};
                     pinch.start = { s: pinch.s, x: Number(payload.x) || 0, y: Number(payload.y) || 0, d };
                     // Two fingers sideways at 1x are the phone's back and
                     // forward, as everywhere else. A magnified page keeps
@@ -16480,15 +16513,25 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // its tab, canvas) is phone-local state, so the history reads and restores
     // it through this bridge. Desktop never registers one.
     const mobilePaneRef = React.useRef(mobilePane);
+    const mobilePendingPaneRef = React.useRef(null);
+    const mobileCanvasSessionRef = React.useRef(null);
     mobilePaneRef.current = mobilePane;
     React.useEffect(() => {
         if (!mobile) return undefined;
         const bridge = {
             get: () => mobilePaneRef.current,
             set: (pane) => {
+                const next = ["workspace", "inspector", "activity", "canvas"].includes(pane) ? pane : "workspace";
                 setMobileSessionsOpen(false);
-                if (pane === "canvas") setMobileCanvasEverOpened(true);
-                setMobilePane(["workspace", "inspector", "activity", "canvas"].includes(pane) ? pane : "workspace");
+                // History may have just selected another session. The reset
+                // that runs on a session change would then put the pane back,
+                // so leave it the pane to land on for that session.
+                const target = controller.getState().sessions.activeSessionId || null;
+                mobilePendingPaneRef.current = target && target !== mobileCanvasSessionRef.current
+                    ? { sessionId: target, pane: next }
+                    : null;
+                if (next === "canvas") setMobileCanvasEverOpened(true);
+                setMobilePane(next);
             },
         };
         controller.mobileView = bridge;
@@ -16567,15 +16610,28 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // Which pane the canvas was opened FROM. Toggling it off puts that back —
     // chat, activity or inspector — instead of dropping the user on Main.
     const paneBeforeCanvasRef = React.useRef("workspace");
+    // The session the canvas state below belongs to, and a pane the view
+    // history asked for in a session it just selected (see the bridge).
+    mobileCanvasSessionRef.current = canvasShellView.sessionId || null;
     // Once opened, the canvas stays MOUNTED (hidden) for the rest of the
     // session selection — page state (typed input, scroll, game progress)
     // survives toggling. A session switch remounts fresh via the key below.
     const [mobileCanvasEverOpened, setMobileCanvasEverOpened] = React.useState(false);
     const [desktopCanvasEverOpened, setDesktopCanvasEverOpened] = React.useState(false);
     React.useEffect(() => {
+        const pending = mobilePendingPaneRef.current;
+        mobilePendingPaneRef.current = null;
+        setDesktopCanvasEverOpened(false);
+        if (pending && pending.sessionId === (canvasShellView.sessionId || null)) {
+            // Back or Forward into this session's canvas (or another pane):
+            // land there instead of resetting.
+            if (pending.pane !== "canvas") paneBeforeCanvasRef.current = pending.pane;
+            setMobileCanvasEverOpened(pending.pane === "canvas");
+            setMobilePane(pending.pane);
+            return;
+        }
         setMobilePane((current) => (current === "canvas" ? (paneBeforeCanvasRef.current || "workspace") : current));
         setMobileCanvasEverOpened(false);
-        setDesktopCanvasEverOpened(false);
     }, [canvasShellView.sessionId]);
     // iOS scroll-chaining: while the canvas is up, a pan that Safari decides
     // is not the iframe's must not scroll the app shell behind it.

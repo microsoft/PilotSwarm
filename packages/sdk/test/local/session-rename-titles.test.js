@@ -1,12 +1,11 @@
 // Renaming a session: the person's title is kept whole up to 100 characters,
-// and a named agent's prefix is kept only when it really is the agent's name.
+// and a named agent's prefix is always kept, whole.
 //
 // WHY THIS EXISTS: the 60-character limit used to cover the agent-name prefix
 // too, so the longer the agent's name, the more of a rename was silently cut
-// ("Kingsley Shacklebolt — Azure Control Plane: Investigate the"). And any
-// words before the first ": " were treated as the agent's name, so a title a
-// session started with ("UX card wall: …") became a prefix the person could
-// never remove.
+// ("Kingsley Shacklebolt — Azure Control Plane: Investigate the"). A review
+// also showed that guessing which prefixes are "really" agent names deletes
+// real ones for callers without catalog data, so the prefix is never dropped.
 import { describe, it } from "vitest";
 import { buildStoredSessionTitle, getNamedAgentTitlePrefix } from "../../src/management-client.js";
 import { assertEqual } from "../helpers/assertions.js";
@@ -28,20 +27,34 @@ describe("session rename titles", () => {
         assertEqual(buildStoredSessionTitle({ agentId: "deepwiki", title: "Deepwiki: 01babe9e" }, hundredAndTen), `Deepwiki: ${"x".repeat(100)}`);
     });
 
-    it("keeps an agent-name prefix: the agent's id, its catalog title, or a Persona - Type name", () => {
+    it("keeps the agent-name prefix: the longest catalog title it starts with, else the text before the first ': '", () => {
         assertEqual(getNamedAgentTitlePrefix({ agentId: "deepwiki", title: "Deepwiki: 01babe9e" }), "Deepwiki");
         assertEqual(getNamedAgentTitlePrefix({ agentId: "agent-manager", title: "Agent Smith: TRON MOTD" }, ["Agent Smith"]), "Agent Smith");
         assertEqual(getNamedAgentTitlePrefix({ agentId: "r2d-watcher", title: "Mad-Eye Moody - R2D Train Watcher: M61" }), "Mad-Eye Moody - R2D Train Watcher");
-    });
-
-    it("never treats the person's own words as the agent's name", () => {
-        // A title the session started with is not an agent name: the next rename replaces it.
-        assertEqual(getNamedAgentTitlePrefix({ agentId: "harbor-clerk", title: "UX card wall: Harbor arrivals" }, ["Harbor Clerk"]), null);
-        assertEqual(buildStoredSessionTitle({ agentId: "harbor-clerk", title: "UX card wall: Harbor arrivals" }, "Plain new name", ["Harbor Clerk"]), "Plain new name");
-        // With the catalog known, a dash in someone's own title is not a persona.
-        assertEqual(getNamedAgentTitlePrefix({ agentId: "deepwiki", title: "Fix login - follow up: notes" }, ["DeepWiki Code Explorer"]), null);
+        // A display title that itself contains ": " is kept whole when the catalog knows it.
+        assertEqual(getNamedAgentTitlePrefix({ agentId: "ops", title: "Ops: Fleet Watcher: 12ab34cd" }, ["Ops: Fleet Watcher"]), "Ops: Fleet Watcher");
         // Not a named agent session: no prefix at all.
         assertEqual(getNamedAgentTitlePrefix({ title: "Release: M70 checklist" }), null);
+    });
+
+    it("never drops a prefix: SDK and MCP callers without catalog data keep what main kept", () => {
+        // Two-argument callers (local MCP, direct SDK) and agents nobody can create.
+        assertEqual(buildStoredSessionTitle({ agentId: "agent-manager", title: "Agent Smith: old" }, "new"), "Agent Smith: new");
+        assertEqual(buildStoredSessionTitle({ agentId: "child-only", title: "Night Auditor: 9f8e7d6c" }, "Ledger pass"), "Night Auditor: Ledger pass");
+        // A title the session was created with is recorded as the agent's name: kept.
+        assertEqual(buildStoredSessionTitle({ agentId: "harbor-clerk", title: "UX card wall: Harbor arrivals" }, "Plain new name", ["Harbor Clerk"]), "UX card wall: Plain new name");
+    });
+
+    it("sending the whole stored title back does not repeat the agent's name", () => {
+        assertEqual(buildStoredSessionTitle({ agentId: "agent-manager", title: "Agent Smith: old" }, "Agent Smith: old"), "Agent Smith: old");
+        assertEqual(buildStoredSessionTitle({ agentId: "agent-manager", title: "Agent Smith: old" }, "Agent Smith: new name"), "Agent Smith: new name");
+    });
+
+    it("cuts at 100 without splitting an emoji", () => {
+        const title = `${"a".repeat(99)}😀tail`;
+        const stored = buildStoredSessionTitle({ title: "x" }, title);
+        assertEqual(stored, "a".repeat(99));
+        assertEqual(/[\uD800-\uDBFF]$/u.test(stored), false);
     });
 
     it("keeps the person's ' - ' and ': ' inside the title", () => {

@@ -838,23 +838,22 @@ function comparableAgentTitle(value) {
 
 /**
  * The named-agent prefix a rename keeps, by the same rule as the server
- * (management-client getNamedAgentTitlePrefix): the text before the first ": "
- * of an agent session's title, only when it is the agent's id or one of
- * `agentTitles` (from the agent catalog). Without a catalog entry, a
- * "Persona - Type" form also counts. Anything else is the person's own text.
+ * (management-client getNamedAgentTitlePrefix): the longest of the agent's
+ * catalog `agentTitles` the title starts with, else the text before the first
+ * ": " of an agent session's title. A rename never drops a prefix.
  */
 export function getRenameSessionPrefix(session, agentTitles = []) {
     if (!session?.agentId || session?.isSystem) return null;
     const currentTitle = String(session?.title || "").trim();
+    let known = null;
+    for (const candidate of agentTitles || []) {
+        const title = String(candidate || "").trim();
+        if (title && currentTitle.startsWith(`${title}: `) && (!known || title.length > known.length)) known = title;
+    }
+    if (known) return known;
     const separatorIndex = currentTitle.indexOf(": ");
     if (separatorIndex <= 0) return null;
-    const prefix = currentTitle.slice(0, separatorIndex).trim();
-    const comparable = comparableAgentTitle(prefix);
-    if (!comparable) return null;
-    if (comparable === comparableAgentTitle(session.agentId)) return prefix;
-    const known = (agentTitles || []).map(comparableAgentTitle).filter(Boolean);
-    if (known.length > 0) return known.includes(comparable) ? prefix : null;
-    return /\S\s+[–—-]\s+\S/u.test(prefix) ? prefix : null;
+    return currentTitle.slice(0, separatorIndex).trim() || null;
 }
 
 function getRenameSessionMaxLength(session) {
@@ -1347,7 +1346,12 @@ function expandPromptAttachments(prompt, attachments = []) {
 }
 
 function clampRenameSessionValue(value, maxLength) {
-    return String(value || "").replace(/\r?\n/g, " ").slice(0, Math.max(0, Number(maxLength) || 0));
+    const text = String(value || "").replace(/\r?\n/g, " ");
+    const limit = Math.max(0, Number(maxLength) || 0);
+    if (text.length <= limit) return text;
+    // Keep surrogate pairs (emoji) whole at the limit, as the server does.
+    const end = limit > 0 && /[\uD800-\uDBFF]/u.test(text[limit - 1]) ? limit - 1 : limit;
+    return text.slice(0, end);
 }
 
 function displayWidth(value) {

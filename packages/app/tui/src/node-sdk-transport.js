@@ -1517,15 +1517,16 @@ export class NodeSdkTransport {
         await this.mgmt.cancelPendingMessage(sessionId, ids);
     }
 
-    async renameSession(sessionId, title) {
-        // The agent's display title (for example "Agent Smith") is how a named
-        // session's fixed prefix is recognized; without it only the agent id
-        // would count, and a rename would drop a custom agent name.
+    async renameSession(sessionId, title, { viewer = null, isAdmin = false } = {}) {
+        // The agent's display titles let a title that itself contains ": "
+        // ("Ops: Fleet Watcher: …") keep its whole agent name. Looked up as
+        // the caller sees the catalog; with no lookup the prefix before the
+        // first ": " is kept, as always.
         let agentTitles = [];
         try {
             const session = await this.mgmt.getSession(sessionId);
             if (session?.agentId) {
-                const agents = await this.listCreatableAgents(null, true);
+                const agents = await this.listCreatableAgents(viewer, Boolean(isAdmin));
                 const wanted = normalizeAgentName(session.agentId);
                 agentTitles = agents
                     .filter((agent) => normalizeAgentName(agent?.name) === wanted)

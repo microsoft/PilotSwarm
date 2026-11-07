@@ -13,6 +13,8 @@ export function cleanView(value) {
         canvasSlot: Number.isInteger(value.canvasSlot) && value.canvasSlot >= 1 && value.canvasSlot <= 5 ? value.canvasSlot : 1,
         diagnosticsOpen: value.diagnosticsOpen === true,
         artifactSessionId: text(value.artifactSessionId), artifactFilename: text(value.artifactFilename),
+        // A phone's full-screen artifact preview; false for the desktop pane.
+        artifactFullscreen: value.artifactFullscreen === true,
         // The phone's screen within the workspace; null on the desktop.
         mobilePane: MOBILE_PANES.includes(value.mobilePane) ? value.mobilePane : null,
     };
@@ -22,7 +24,8 @@ export function viewKey(view) {
     if (view.mode !== "workspace") return view.mode;
     return JSON.stringify([view.mode, view.sessionId, view.canvasOpen,
         view.canvasOpen ? view.canvasSlot : null, view.canvasMaximized, view.canvasZen,
-        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename, view.mobilePane || null]);
+        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename, view.mobilePane || null,
+        view.artifactFullscreen === true]);
 }
 export function createViewHistory(saved) {
     let entries = [], index = -1;

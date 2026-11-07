@@ -1,11 +1,15 @@
 import React from "react";
 import { useControllerSelector } from "pilotswarm/ui-react";
-import { activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, updateMoaDashboard } from "pilotswarm/ui-core";
+import { activeMoaDashboard, normalizeMoa, moaLeaves, selectArtifactPaneShown, sessionDisplayTitle, updateMoaDashboard } from "pilotswarm/ui-core";
 import { cleanView, createViewHistory, navigationShortcut, viewKey } from "./view-history.js";
 
 function capture(controller, moa) {
     const s = controller.getState(), dashboard = activeMoaDashboard(normalizeMoa(s.ui.moa));
-    const artifact = selectArtifactPaneShown(s) ? s.files.selectedArtifactId : null;
+    // A desktop artifact opens in the right pane; a phone shows it full screen
+    // over everything, and that is a destination of its own too.
+    const paneShown = selectArtifactPaneShown(s);
+    const fullscreenShown = !paneShown && Boolean(s.files.fullscreen && s.files.selectedArtifactId);
+    const artifact = paneShown || fullscreenShown ? s.files.selectedArtifactId : null;
     const separator = artifact?.indexOf("/") ?? -1;
     return cleanView({
         mode: moa.active ? "moa" : s.admin.visible ? "admin" : s.ui.budgetOpen ? "budget" : "workspace",
@@ -14,6 +18,7 @@ function capture(controller, moa) {
         canvasMaximized: s.ui.canvasMaximized, canvasZen: s.ui.canvasZen, diagnosticsOpen: s.ui.diagnosticsOpen,
         artifactSessionId: separator >= 0 ? artifact.slice(0, separator) : null,
         artifactFilename: separator >= 0 ? artifact.slice(separator + 1) : null,
+        artifactFullscreen: fullscreenShown,
         mobilePane: controller.mobileView?.get() || null,
     });
 }
@@ -23,7 +28,9 @@ function label(view, state) {
     if (view.mode === "moa") return normalizeMoa(state.ui.moa).dashboards.find(d => d.id === view.dashboardId)?.name || "Unavailable dashboard";
     if (view.mode === "admin") return "Settings";
     if (view.mode === "budget") return "Budget";
-    const title = state.sessions.byId[view.sessionId]?.title || "Session";
+    const session = state.sessions.byId[view.sessionId];
+    const title = (session && sessionDisplayTitle(session, state.agentTitles)) || "Session";
+    if (view.artifactFullscreen && view.artifactFilename) return `${title} · ${view.artifactFilename}`;
     if (view.mobilePane && PHONE_PANE_LABELS[view.mobilePane]) return `${title} · ${PHONE_PANE_LABELS[view.mobilePane]}`;
     return view.artifactFilename ? `${title} · ${view.artifactFilename}` : view.canvasOpen ? `${title} · Canvas ${view.canvasSlot}` : title;
 }
@@ -99,7 +106,12 @@ export function useViewNavigation(controller, moa) {
         controller.dispatch({ type: "ui/diagnosticsOpen", open: view.diagnosticsOpen });
         // On a phone, put the same screen back: chat, diagnostics or canvas.
         if (controller.mobileView) controller.mobileView.set(view.mobilePane || (view.canvasOpen ? "canvas" : "workspace"));
-        if (view.artifactFilename && view.artifactSessionId) {
+        if (view.artifactFullscreen && view.artifactFilename && view.artifactSessionId) {
+            // The phone's full-screen preview, over the screen restored above.
+            controller.revealArtifact(view.artifactSessionId, view.artifactFilename, { fullscreen: true, preserveSession: true })
+                .then((shown) => { if (shown === false) unavailable(); })
+                .catch(unavailable);
+        } else if (view.artifactFilename && view.artifactSessionId) {
             // Selection happens before the fetch; a late response only warms
             // the cache and can never open a pane over a newer destination.
             controller.dispatch({ type: "files/select", sessionId: view.artifactSessionId, filename: view.artifactFilename });

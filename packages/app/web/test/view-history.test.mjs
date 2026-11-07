@@ -55,3 +55,16 @@ test("a phone screen is part of the view: chat, diagnostics and canvas are separ
     assert.equal(restored.current.mobilePane, "activity");
     assert.equal(restored.destination(-1).mobilePane, "inspector");
 });
+
+test("a phone's full-screen artifact preview is a stop of its own, and older entries still load", () => {
+    const h = createViewHistory();
+    h.visit({ ...view(1), mobilePane: "workspace" });
+    const preview = { ...view(1), mobilePane: "workspace", artifactSessionId: "1", artifactFilename: "report.html", artifactFullscreen: true };
+    assert.equal(h.visit(preview), true, "opening the preview is a visit");
+    assert.notEqual(viewKey(cleanView(preview)), viewKey(cleanView({ ...preview, artifactFullscreen: false })));
+    const restored = createViewHistory(h.serialize());
+    assert.equal(restored.current.artifactFullscreen, true);
+    assert.equal(restored.destination(-1).artifactFullscreen, false);
+    // An entry saved before the field existed reads as the desktop pane.
+    assert.equal(cleanView({ mode: "workspace", sessionId: "9", artifactSessionId: "9", artifactFilename: "a.md" }).artifactFullscreen, false);
+});

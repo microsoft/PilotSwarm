@@ -1635,6 +1635,14 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-accent);
 }
 
+/* The Manage dialog's fixed agent-name prefix, in front of the title field. */
+.ps-manage-title-prefix {
+  flex: none;
+  align-self: center;
+  color: var(--ps-muted);
+  white-space: nowrap;
+}
+
 /* The rename box's character count: quiet, right-aligned under the field. */
 .ps-modal-input-count {
   margin: 4px 2px 0;
