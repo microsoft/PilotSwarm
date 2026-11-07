@@ -105,15 +105,15 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
         return { ms: Math.min(relayout(panel), relayout(panel), relayout(panel)), reference };
     });
     console.log(`TRANSCRIPT-PERF ${JSON.stringify({ browser: process.env.PS_TEST_BROWSER || "chromium", ms, reference, ratio: ms / reference, blocks })}`);
-    // MEASURED (Nov 2026, suite pods): the portal re-lays out 1,650 lines in
-    // 21-24 ms, 1.8-3.0x the plain-lines reference; on a fast laptop the same
-    // portal takes 6-8 ms. A fixed millisecond ceiling therefore failed on
-    // slower machines with no regression at all.
+    // Twenty runs per browser on the suite pod, two workers and 1,650 lines:
+    // Chromium 22.4-37.2 ms, WebKit 55-74 ms. The peak portal/reference
+    // ratios were 4.37 and 4.35; 4.4 is the next one-decimal ceiling above
+    // every observation. The reference keeps this relative to the machine.
     //
     // The ceiling is a REGRESSION CEILING relative to this machine: it catches
     // the cost going up several-fold, which is what an accidental re-layout of
     // every block, or losing the block memo guarded below, would do.
-    expect(ms / reference, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines, ${reference.toFixed(1)}ms for the same lines plain`).toBeLessThan(6);
+    expect(ms / reference, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines, ${reference.toFixed(1)}ms for the same lines plain`).toBeLessThan(4.4);
 });
 
 test("dragging the pane splitter does not re-render the whole transcript", async ({ page }) => {
