@@ -192,9 +192,9 @@ test("a second swipe within slide-out flushes the first exactly once", async ({ 
         for (const animation of el.getAnimations()) { animation.pause(); animation.currentTime = 0; }
     });
     await page.clock.runFor(60);
-    await touch("touchStart", 80);
+    await touch("touchStart", 270);
     expect((await savedHistory(page)).index).toBe(before - 1);
-    for (let x = 100; x <= 320; x += 20) await touch("touchMove", x);
+    for (let x = 290; x <= 385; x += 19) await touch("touchMove", x);
     await touch("touchEnd");
     await page.clock.runFor(160);
     expect((await savedHistory(page)).index).toBe(before - 2);
