@@ -19,7 +19,7 @@ import {
     workflowAttentionAt, workflowPanelHeight, workflowPickerFace, workflowPickerGroupLabel, workflowPickerOptionLabel, workflowRunTimes, workflowStarted,
     workflowStateOf, workflowChildDefinitionFacts, workflowDefinitionHeaderText, workflowDefinitionOptionLabel, workflowListVersionText,
     workflowUnstartedChildren, workflowUnstartedLine, workflowChosenVersion, workflowDefinitionVersions, workflowVersionFromOptionValue,
-    workflowVersionOptionValue, workflowVersionChoice, workflowVersionDiscriminator, workflowVersionReadIds, workflowMadeNumbers, workflowMadeWords,
+    workflowVersionOptionValue, workflowVersionChoice, workflowVersionChoicePatch, workflowPickerChoicePatch, workflowVersionDiscriminator, workflowVersionReadIds, workflowMadeNumbers, workflowMadeWords,
     workflowTabButtonTip, workflowTabContextEqual, WORKFLOW_DEFINITION_PANELS,
     WORKFLOW_PANEL_HEIGHT_MIN, WORKFLOW_RUN_PANELS,
 } from "../../core/src/workflow-owner.js";
@@ -159,9 +159,13 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null, di
         newestId: definition?.newestId ?? null });
     const choiceShown = choice?.child ? (chosenVersion?.children.includes(choice.child) ? chosenVersion.newestId : choice.child) : null;
     const shownChildId = definition ? chosenChild ?? choiceShown ?? ownChild ?? chosenVersion?.newestId ?? definition.newestId : null;
+    // Review UI5-F1: the stored choice follows the child the view shows (a newer child of the same version and definition),
+    // so a revision of that child keeps the view on it; an earlier shape is stored as its child (UI4-F3).
+    const choicePatch = runShown || !definition ? null : workflowVersionChoicePatch(versions, tab, definition.children);
+    const choicePatchKey = choicePatch ? JSON.stringify(choicePatch) : null;
     React.useEffect(() => {
-        if (choice?.legacy && choice.child) setTab({ versionChild: choice.child, versionKey: null, version: null });
-    }, [setTab, choice?.legacy, choice?.child]);
+        if (choicePatch) setTab(choicePatch);
+    }, [setTab, choicePatchKey]);
     const shownDefinition = React.useMemo(() => {
         if (!definition) return definition;
         return shownChildId === definition.newestId ? definition
@@ -207,21 +211,7 @@ export function WorkflowTab({ controller, mobile = false, modeButtons = null, di
         "data-definition": definition.name, "data-version": chosenVersion?.version ?? undefined },
         h("header", { className: "ps-wf-tab-head" },
             h(DefinitionPicker, { definitions, chosen: definition, versions, chosenVersion, byId, views,
-                onChoose: value => {
-                    const picked = workflowVersionFromOptionValue(value);
-                    const pickedDefinition = definitions.find(item => item.name === picked.name) ?? null;
-                    // Review UI3-F1: a bare name is its newest entry, so a Workflow shown or last shown never takes the choice
-                    // back. Review UI4-F1: the choice is stored as the entry's newest child, which keeps its place when that
-                    // child is read or revised (an earlier option's value, a bare version, resolves the same way: UI4-F3).
-                    const list = pickedDefinition === definition ? versions : pickedDefinition ? workflowDefinitionVersions(byId, pickedDefinition, views) : [];
-                    const child = (picked.key ? workflowVersionChoice(list, { versionKey: picked.key }, pickedDefinition?.children)?.child : null)
-                        ?? pickedDefinition?.newestId ?? null;
-                    const choice = { versionChild: child, versionKey: null, version: null, definitionChild: null };
-                    // Another entry of the same name shows in the Definition view (there the picker's entry is the one shown);
-                    // another name keeps the view, as before.
-                    if (picked.name === definition.name) setTab({ ...choice, view: "definition" });
-                    else setTab({ ...choice, definition: picked.name, workflowId: null });
-                },
+                onChoose: value => setTab(workflowPickerChoicePatch(value, { definitions, definition, versions, byId, views })),
                 onNew: () => askChat("Create a new workflow definition: ") }),
             // Owner, 2026-11-06T13:43Z (F1): two icon toggles with tooltips; no count beside the definition (F2: it is in the
             // Workflow picker).

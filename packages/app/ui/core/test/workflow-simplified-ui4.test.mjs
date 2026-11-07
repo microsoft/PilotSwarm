@@ -18,8 +18,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 import {
-    workflowDefinitionVersions, workflowDefinitionsOf, workflowMadeNumbers, workflowMadeWords, workflowUnstartedChildren, workflowVersionChoice,
-    workflowVersionDiscriminator, workflowVersionFromOptionValue,
+    workflowDefinitionVersions, workflowDefinitionsOf, workflowMadeNumbers, workflowMadeWords, workflowPickerChoicePatch, workflowUnstartedChildren,
+    workflowVersionChoice, workflowVersionDiscriminator, workflowVersionFromOptionValue,
 } from "../src/workflow-owner.js";
 import { WorkflowTab } from "../../react/src/workflow-tab.js";
 
@@ -70,12 +70,15 @@ const versionsOf = h => {
     const [definition] = workflowDefinitionsOf(state.sessions.byId, "chat", state.ui.workflowViews);
     return { definition, versions: workflowDefinitionVersions(state.sessions.byId, definition, state.ui.workflowViews) };
 };
-/** What the picker's handler stores for an option's value (workflow-tab.js onChoose). */
+/** The picker's own handler (workflow-tab.js onChoose is workflowPickerChoicePatch) for an option's value, applied to the tab. */
 const choose = (h, value) => {
+    const state = h.store.getState();
     const { definition, versions } = versionsOf(h);
-    const picked = workflowVersionFromOptionValue(value);
-    const child = (picked.key ? workflowVersionChoice(versions, { versionKey: picked.key }, definition.children)?.child : null) ?? definition.newestId;
-    return render(h, { versionChild: child, versionKey: null, version: null, definitionChild: null, view: "definition" });
+    const definitions = workflowDefinitionsOf(state.sessions.byId, "chat", state.ui.workflowViews);
+    const patch = workflowPickerChoicePatch(value, { definitions, definition: definitions.find(item => item.name === definition.name), versions,
+        byId: state.sessions.byId, views: state.ui.workflowViews });
+    h.store.dispatch({ type: "ui/workflowTab", ownerId: "chat", patch });
+    return draw(h);
 };
 
 test("UI4-F1: a draft chosen in the picker stays shown when its new revision changes its hash (A shown before, not taken back)", () => {

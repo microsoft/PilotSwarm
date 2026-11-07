@@ -607,6 +607,41 @@ export function workflowVersionChoice(versions, tab, children = []) {
 }
 
 /**
+ * The Workflow tab's change for an option chosen in its definition picker (`value`: workflowVersionOptionValue's), with the
+ * tab's definitions, the definition shown and its versions. Review UI3-F1: a bare name is its newest entry, so a Workflow
+ * shown or last shown never takes the choice back. Review UI4-F1: the choice is stored as the entry's newest child, which
+ * keeps its place when that child is read or revised (an earlier option's value, a bare version, resolves the same way:
+ * UI4-F3). Another entry of the same name shows in the Definition view (there the picker's entry is the one shown); another
+ * name keeps the view. Pure.
+ */
+export function workflowPickerChoicePatch(value, { definitions = [], definition = null, versions = [], byId = {}, views = {} } = {}) {
+    const picked = workflowVersionFromOptionValue(value);
+    const pickedDefinition = (Array.isArray(definitions) ? definitions : []).find(item => item.name === picked.name) ?? null;
+    const list = pickedDefinition === definition ? versions : pickedDefinition ? workflowDefinitionVersions(byId, pickedDefinition, views) : [];
+    const child = (picked.key ? workflowVersionChoice(list, { versionKey: picked.key }, pickedDefinition?.children)?.child : null)
+        ?? pickedDefinition?.newestId ?? null;
+    const choice = { versionChild: child, versionKey: null, version: null, definitionChild: null };
+    return picked.name === definition?.name ? { ...choice, view: "definition" } : { ...choice, definition: picked.name, workflowId: null };
+}
+
+/**
+ * Review UI5-F1: the change to the Workflow tab's stored version choice that keeps it on the child the view shows, or null
+ * when none is needed. The view shows the newest child of the entry that holds the stored child (a newer child with the same
+ * version and definition joins that entry); when that newest child is another, it becomes the stored choice, so a later
+ * revision of the shown child (which may move it to an entry of its own) keeps the view, its YAML and its Start on it. A
+ * choice in an earlier shape (review UI4-F3) is stored as its child. Nothing while a run is shown, for no choice, or for a
+ * chosen child that is gone (the view says so). Pure: the tab applies the change (setTab) after it renders.
+ */
+export function workflowVersionChoicePatch(versions, tab, children = []) {
+    const choice = workflowVersionChoice(versions, tab, children);
+    if (!choice?.child) return null;
+    const entry = (Array.isArray(versions) ? versions : []).find(item => item.children.includes(choice.child)) ?? null;
+    const shown = entry?.newestId ?? choice.child;
+    if (choice.legacy) return { versionChild: shown, versionKey: null, version: null };
+    return shown !== choice.child ? { versionChild: shown } : null;
+}
+
+/**
  * The definition picker's value for one entry: the definition's name for the entry that holds its newest child (so the
  * name alone still chooses the definition), `name␟key` for the others. workflowVersionFromOptionValue reads it; review
  * UI3-F1: a bare name is resolved to its newest entry's key before it is stored (workflowVersionKeyOfName).

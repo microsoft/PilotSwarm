@@ -2391,6 +2391,79 @@ test("UI4-F2: after Show it on a draft, selecting a Workflow row in the session 
     expect(errors).toEqual([]);
 });
 
+// UI re-check of d5f4fca1, UI5-F1: B is chosen in the picker; an equivalent newer draft C (same version and definition)
+// arrives and the view follows it; then C is revised and gets a definition of its own. The view, its YAML mode, a Start form
+// with typed input and the Start command stay on C (on d5f4fca1 the view went back to B and remounted).
+// Selector: npx playwright test test/e2e/workflow-tab.spec.mjs -g "UI5-F1" (from packages/app/web, after build).
+test("UI5-F1: a newer equivalent draft the view follows stays shown, in YAML mode and in the Start form, when it is revised", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const [A, B, C] = [OWNED.running, OWNED.unstarted, "aaaaaaa4-2222-3333-4444-555555555555"];
+    const yamlOf = (id, revision = 1) => `apiVersion: pilotswarm.dev/v2-draft\nkind: Workflow\nmetadata: { name: watch-v2, version: "${id === A ? "1.0.0" : "1.1.0"}" }\n`
+        + `initial: poll\n# ${id === C ? `c revision ${revision}` : "b"}\n`;
+    const draft = (id, revision, identity) => withSchema({ ...V2_READ_MODEL, workflowId: id,
+        definition: { state: "draft", semver: "1.1.0", currentRevision: revision, publishedRevision: null, publishedDefinitionHash: null },
+        revision: { ...V2_READ_MODEL.revision, revision, definitionHash: `hash-${identity}`, irSha256: `ir-${identity}` },
+        graph: { ...V2_READ_MODEL.graph, revision }, runs: [], run: null,
+        personCommands: { operations: ["replace_definition", "publish", "publish_and_start"], viewer: { allowed: true },
+            draft: { revision, definitionHash: `hash-${identity}`, yaml: yamlOf(id, revision) } } });
+    const models = {
+        [A]: { ...V2_READ_MODEL, workflowId: A, runs: [{ runId: "run-a", mode: "live", status: "completed", revision: 1, outcome: "succeeded" }],
+            run: { ...V2_READ_MODEL.run, runId: "run-a", status: "completed", outcome: "succeeded" } },
+        [B]: draft(B, 1, "same"),
+    };
+    const { rows } = await routeOwned(page, { models, yamlOf });
+    rows.splice(0, rows.length, { ...OWNED_ROWS[0], status: "completed" }, { ...OWNED_ROWS[2], title: "Workflow: watch-v2", status: "pending" });
+    const commands = [];
+    await page.route("**/api/v1/sessions/*/workflow/commands", (route) => {
+        const sessionId = new URL(route.request().url()).pathname.split("/").at(-3);
+        const command = route.request().postDataJSON().command;
+        commands.push({ sessionId, operation: command.operation });
+        return accept(route, command);
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${A}`);
+    const main = workflowTab(page);
+    const picker = main.getByRole("combobox", { name: "Workflow definition", exact: true });
+    const bar = main.locator(".ps-wf-bar-text").first();
+    await expect.poll(() => picker.locator("option").allTextContents())
+        .toEqual(["watch-v2 · 1.1.0 · draft", "watch-v2 · 1.0.0", "New definition… (asks the chat)"]);
+    // B chosen in the picker.
+    await picker.selectOption({ label: "watch-v2 · 1.1.0 · draft" });
+    await expect(bar).toHaveAttribute("data-definition-child", B);
+    // C arrives: the same version and definition. The view follows it.
+    models[C] = draft(C, 1, "same");
+    rows.push({ sessionId: C, title: "Workflow: watch-v2", status: "pending", sessionKind: "workflow", parentSessionId: AGENT_ID,
+        createdAt: Date.now(), updatedAt: Date.now() });
+    await expect(bar).toHaveAttribute("data-definition-child", C, { timeout: 20_000 });
+    // YAML mode on C; then C's revision 2 with a definition of its own arrives.
+    await main.getByRole("button", { name: "YAML", exact: true }).click();
+    await expect(main.locator(".ps-wf-yaml")).toBeVisible();
+    models[C] = draft(C, 2, "c2");
+    rows[2] = { ...rows[2], updatedAt: Date.now() };
+    await expect(bar).toHaveText(/^Revision 2 · 1\.1\.0/, { timeout: 20_000 });
+    await expect(bar).toHaveAttribute("data-definition-child", C);
+    await expect(main.locator(".ps-wf-yaml")).toBeVisible();
+    await expect(main.getByRole("button", { name: "YAML", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await shot(page, "ui5-f1-followed-draft-revised-1440");
+    // The Start form, with typed input; C's revision 3 arrives while it is open; Start goes to C.
+    await main.getByRole("button", { name: "YAML", exact: true }).click();
+    await main.getByRole("button", { name: "Start…", exact: true }).click();
+    const form = page.getByRole("dialog", { name: "Start watch-v2", exact: true });
+    const buildId = form.getByLabel(/^buildId · number · required$/);
+    await buildId.fill("42");
+    models[C] = draft(C, 3, "c3");
+    rows[2] = { ...rows[2], updatedAt: Date.now() };
+    await expect(bar).toHaveText(/^Revision 3 · 1\.1\.0/, { timeout: 20_000 });
+    await expect(bar).toHaveAttribute("data-definition-child", C);
+    await expect(form).toBeVisible();
+    await expect(buildId).toHaveValue("42");
+    await form.getByRole("button", { name: /^Start #/ }).click();
+    await expect.poll(() => commands.length).toBeGreaterThan(0);
+    expect(commands.every(command => command.sessionId === C), JSON.stringify(commands)).toBe(true);
+    expect(errors).toEqual([]);
+});
+
 // Removed (spec draft 3, D4 and F-7; 21 stage 1 "Publish removed"): the f-04 tests of the compact Publish review. The
 // draft fixture stays for the tests that use it.
 const PUBLISH_MODEL = {
