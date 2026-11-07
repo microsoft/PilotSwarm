@@ -8305,6 +8305,18 @@ function MaximizeGlyph() {
         React.createElement("path", { d: "M8 3H3v5M12 3h5v5M12 17h5v-5M8 17H3v-5", ...stroke }));
 }
 
+/** Three dots: the canvas controls, folded away. */
+function MoreGlyph() {
+    return React.createElement("svg", { viewBox: "0 0 20 20", width: 15, height: 15, "aria-hidden": "true" },
+        [5, 10, 15].map((cx) => React.createElement("circle", { key: cx, cx, cy: 10, r: 1.7, fill: "currentColor" })));
+}
+
+// A phone held sideways shows a full-screen canvas edge to edge. Its
+// controls fold into one small button in the corner, so they do not sit on
+// the page's own top bar; a tap opens them, and they fold again after a few
+// seconds without a touch.
+const CANVAS_PILL_FOLD_MS = 4000;
+
 /** Corners pulling IN — back to the canvas inset in the content region. */
 function RestoreGlyph() {
     const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round", strokeLinejoin: "round" };
@@ -9063,9 +9075,43 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // With a Workspace tab the strip always renders: it holds the Canvas |
     // Workspace switch, the only way to reach the Workspace on a phone.
     const showRevStrip = mobile && (workspaceTab || view.exists || maximized);
+    const landscape = useMediaQuery(PHONE_LANDSCAPE_MEDIA_QUERY);
+    const foldable = mobile && maximized && landscape;
+    const [pillOpen, setPillOpen] = React.useState(false);
+    const pillTouch = React.useRef(0);
+    React.useEffect(() => { if (!foldable) setPillOpen(false); }, [foldable]);
+    React.useEffect(() => {
+        if (!foldable || !pillOpen) return undefined;
+        let timer;
+        const arm = () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                // A dialog opened from the controls keeps them open.
+                if (shareOpen) { arm(); return; }
+                setPillOpen(false);
+            }, CANVAS_PILL_FOLD_MS);
+        };
+        arm();
+        pillTouch.current = arm;
+        return () => { clearTimeout(timer); pillTouch.current = 0; };
+    }, [foldable, pillOpen, shareOpen]);
+    const folded = foldable && !pillOpen;
     const header = mobile
-        ? (showRevStrip
-            ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip" },
+        ? (showRevStrip && folded
+            ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip is-folded" },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-canvas-max-btn ps-canvas-pill-handle",
+                    onClick: () => setPillOpen(true),
+                    title: "Canvas controls",
+                    "aria-label": "Canvas controls",
+                    "aria-expanded": "false",
+                }, React.createElement(MoreGlyph)))
+            : showRevStrip
+            ? React.createElement("header", {
+                className: `ps-artifact-pane-bar is-rev-strip${foldable ? " is-unfolded" : ""}`,
+                ...(foldable ? { onPointerDown: () => { if (typeof pillTouch.current === "function") pillTouch.current(); } } : {}),
+            },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
                 React.createElement("span", { className: "ps-artifact-pane-type", title: onCanvas ? (view.note || undefined) : undefined },
                     onCanvas ? (view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),

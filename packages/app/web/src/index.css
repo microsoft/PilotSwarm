@@ -12455,6 +12455,21 @@ textarea.ps-link-input {
     border-radius: 999px;
   }
   .ps-mobile-canvas-layer.is-maximized .ps-canvas-pane { height: 100%; }
+  /* Folded: one small button, quiet, so the page's own top bar stays usable. */
+  .ps-mobile-canvas-layer.is-maximized .ps-artifact-pane-bar.is-rev-strip.is-folded { opacity: 0.6; }
+  .ps-mobile-canvas-layer.is-maximized .ps-artifact-pane-bar.is-rev-strip.is-folded .ps-canvas-pill-handle {
+    position: relative;
+    min-width: 36px;
+    width: 36px;
+    height: 36px;
+  }
+  /* The touch target reaches 44 px around the small button. */
+  .ps-mobile-canvas-layer.is-maximized .ps-canvas-pill-handle::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+  }
+  .ps-mobile-canvas-layer.is-maximized .ps-artifact-pane-bar.is-rev-strip.is-unfolded { opacity: 0.94; }
 }
 /* The first zoom tells you how to move around: two fingers, like a map. */
 .ps-canvas-pinch-hint {
