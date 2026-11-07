@@ -12310,6 +12310,52 @@ textarea.ps-link-input {
   background: #21405d;
   border-color: #5cc8f2;
 }
+/* Full-screen canvas: its controls move into the header and sit on the sky
+   art. One solid plate behind them, with bright text and icons, so they
+   read as controls rather than part of the picture. */
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot {
+  /* The plate hugs the controls instead of filling the header's left side. */
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px 4px 4px;
+  background: #0b1a2ef2;
+  border: 1px solid #45627e;
+  border-radius: 12px;
+  box-shadow: 0 6px 18px #020814b3, inset 0 1px 0 #e5f4ff12;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-toolbar-canvas-rev {
+  color: #d7e8fc;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot :is(.ps-side-pane-tabs, .ps-html-zoom) {
+  background: #142740;
+  border-color: #5a7894;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot :is(.ps-side-pane-tab, .ps-html-zoom-btn, .ps-html-zoom-level, .ps-artifact-pane-btn) {
+  color: #eaf3ff;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-side-pane-tab + .ps-side-pane-tab {
+  border-left-color: #5a7894;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-side-pane-tab.is-on {
+  background: #1c4865;
+  color: #f1fbff;
+  box-shadow: inset 0 -2px 0 #5cc8f2;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-artifact-pane-btn {
+  min-width: 30px;
+  height: 30px;
+  background: #142740;
+  border: 1px solid #5a7894;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot :is(.ps-artifact-pane-btn, .ps-side-pane-tab, .ps-html-zoom-btn, .ps-html-zoom-level):hover:not(:disabled) {
+  background: #21405d;
+  color: #ffffff;
+}
+:root[data-ps-theme="horizon-dawn"] .ps-toolbar-canvas-slot .ps-artifact-pane-btn.is-active {
+  background: #1c4865;
+  border-color: #5cc8f2;
+}
 :root[data-ps-theme="horizon-dawn"] .ps-list-button.is-selected {
   background: linear-gradient(90deg, #1c4865, #153d59);
   border-color: #5cc8f28c;
