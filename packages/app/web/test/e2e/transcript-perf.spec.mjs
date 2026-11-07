@@ -75,28 +75,39 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
     const blocks = await page.locator(".ps-chat-panel .ps-line").count();
     expect(blocks, "expected a long transcript to measure against").toBeGreaterThan(100);
 
-    const ms = await page.evaluate(() => {
-        const panel = document.querySelector(".ps-chat-panel");
-        const measure = () => {
+    const { ms, reference } = await page.evaluate(() => {
+        const relayout = (node) => {
             const t0 = performance.now();
-            panel.style.width = `${panel.clientWidth - 9}px`;
-            void panel.offsetHeight;   // force synchronous layout
-            panel.style.width = "";
-            void panel.offsetHeight;
+            node.style.width = `${node.clientWidth - 9}px`;
+            void node.offsetHeight;   // force synchronous layout
+            node.style.width = "";
+            void node.offsetHeight;
             return performance.now() - t0;
         };
-        return Math.min(measure(), measure());
+        const panel = document.querySelector(".ps-chat-panel");
+        // The same number of plain wrapped lines, same width and font, laid
+        // out on the same machine: what a re-layout costs here without any
+        // portal structure. The portal is measured against that, not against
+        // a fixed number from one developer's laptop.
+        const lines = [...panel.querySelectorAll(".ps-line")];
+        const ref = document.createElement("div");
+        ref.style.cssText = `position:absolute;left:0;top:0;width:${panel.clientWidth}px;visibility:hidden;white-space:pre-wrap;font:${getComputedStyle(lines[0]).font}`;
+        for (const line of lines) { const d = document.createElement("div"); d.textContent = line.textContent; ref.appendChild(d); }
+        document.body.appendChild(ref);
+        void ref.offsetHeight;
+        const reference = Math.min(relayout(ref), relayout(ref), relayout(ref));
+        ref.remove();
+        return { ms: Math.min(relayout(panel), relayout(panel), relayout(panel)), reference };
     });
-
-    // HONEST NUMBER: 6-8ms at this size. The transcript is not virtualised and
-    // the content-visibility fix for it was reverted (see the test above), so
-    // this is the real cost today, not a target.
+    // MEASURED (Nov 2026, suite pods): the portal re-lays out 1,650 lines in
+    // 21-24 ms, 1.8-3.0x the plain-lines reference; on a fast laptop the same
+    // portal takes 6-8 ms. A fixed millisecond ceiling therefore failed on
+    // slower machines with no regression at all.
     //
-    // The ceiling is therefore a REGRESSION CEILING, not a budget met with room
-    // to spare: it catches the cost going up by an order of magnitude — which
-    // is what an accidental re-layout of every block, or losing the block memo
-    // guarded below, would do. Tightening it needs a real fix first.
-    expect(ms, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines`).toBeLessThan(20);
+    // The ceiling is a REGRESSION CEILING relative to this machine: it catches
+    // the cost going up several-fold, which is what an accidental re-layout of
+    // every block, or losing the block memo guarded below, would do.
+    expect(ms / reference, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines, ${reference.toFixed(1)}ms for the same lines plain`).toBeLessThan(6);
 });
 
 test("dragging the pane splitter does not re-render the whole transcript", async ({ page }) => {

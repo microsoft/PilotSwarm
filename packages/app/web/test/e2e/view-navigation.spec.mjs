@@ -432,7 +432,13 @@ for (const {theme,width,admin=false,touchScale=false} of geometryCases) test(`${
     await expect(page.locator('.portal-header').getByRole('button',{name:'Zoom out',exact:true})).toBeVisible();
     await expect(page.locator('.portal-header').getByRole('combobox',{name:'Choose canvas',exact:true})).toBeVisible();
     await check('maximized canvas');
-    if(theme==='win95') await expect(page.locator('.portal-header').getByRole('button',{name:'Zoom out',exact:true})).toHaveCSS('color','rgb(255, 255, 255)');
+    // Win95 (PR 120): full-screen canvas controls in the header are raised grey
+    // buttons with black text, like every other Win95 control.
+    if(theme==='win95') {
+        const zoomOut=page.locator('.portal-header').getByRole('button',{name:'Zoom out',exact:true});
+        await expect(zoomOut).toHaveCSS('color','rgb(0, 0, 0)');
+        await expect(zoomOut).toHaveCSS('background-color','rgb(192, 192, 192)');
+    }
     await page.screenshot({path:test.info().outputPath('maximized-canvas.png')});
     await page.getByRole('button',{name:'Restore canvas',exact:true}).click();
     await check('restored canvas');

@@ -30,6 +30,12 @@ async function fixture(page, {tree=example,theme='terminal-green',composerMode='
     await expect(panel(page,'paw').getByLabel('Session status')).toContainText('Working');
     return {errors,sends,reads,tree:()=>activeMoaDashboard(settings.moa).tree};
 }
+async function afterPeriodicRefresh(f) {
+    const settle = async () => { let last=-1; while (last!==f.reads.length) { last=f.reads.length; await new Promise(r=>setTimeout(r,600)); } };
+    const start=f.reads.length;
+    await expect.poll(()=>f.reads.length,{timeout:6000,intervals:[100]}).toBeGreaterThan(start);
+    await settle();
+}
 async function startDrag(page,source,target,edge='center',extend=false) {
     const head=await panel(page,source).locator(':scope > header .ps-moa-panel-title').boundingBox();
     const box=await panel(page,target).boundingBox();
@@ -85,6 +91,10 @@ test('swap keeps pane DOM, draft, queued prompt, scroll position and connections
     // controller or transcript survived a change in tree parentage.
     await b.evaluate(el=>{window.beforePane=el; window.beforeText=el.querySelector('textarea');});
     const oldB=await bounds(page,'b'), oldPaw=await bounds(page,'paw');
+    // Every panel refreshes its session every 4 s whether or not anything
+    // moves. Start right after one of those refreshes so the window measured
+    // below sees only what the swap itself does.
+    await afterPeriodicRefresh(f);
     const beforeReads=f.reads.length;
     const scrollNode=b.locator('.ps-chat-panel .ps-scroll-panel');
     await expect(scrollNode).toBeVisible();
