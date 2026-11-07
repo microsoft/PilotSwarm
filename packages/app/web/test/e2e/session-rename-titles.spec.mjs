@@ -12,6 +12,10 @@ const browserName = process.env.PS_TEST_BROWSER || "chromium";
 test.use({ browserName });
 let stub, base;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 2 }); base = `http://127.0.0.1:${stub.port}`; });
+test.afterEach(async ({ page }) => {
+    // Let in-flight relabel reads finish before Playwright closes the page.
+    await page.unrouteAll({ behavior: "wait" });
+});
 test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
 
 const TITLE = "Investigate the nightly replication lag regression on the westus3 read replicas";
