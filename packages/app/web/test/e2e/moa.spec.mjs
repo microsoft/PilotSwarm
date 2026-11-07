@@ -196,6 +196,17 @@ test("a MoA enqueue that finishes after zoom still updates the main chat", async
     expect(f.errors).toEqual([]);
 });
 
+test("over plain HTTP, where the browser has no crypto.randomUUID, splitting still adds a panel", async ({ page }) => {
+    await page.addInitScript(() => { delete Crypto.prototype.randomUUID; });
+    const f = await fixture(page, [layout(chat(1))]);
+    await open(page);
+    expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
+    await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Split right", exact: true }).click();
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
+    expect(f.errors).toEqual([]);
+});
+
 test("splitting creates a focused blank panel and right-click opens the familiar session list", async ({ page }) => {
     const f = await fixture(page, [layout(chat(1))]);
     await open(page);

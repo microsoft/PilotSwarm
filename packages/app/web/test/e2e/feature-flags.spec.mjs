@@ -143,6 +143,18 @@ test("personal and cluster edits require Save; a delayed save preserves the save
     } finally { release?.(); await fixture.stop(); }
 });
 
+test("over plain HTTP, where the browser has no crypto.randomUUID, a flag still saves", async ({ page }) => {
+    await page.addInitScript(() => { delete Crypto.prototype.randomUUID; });
+    const fixture = await featurePage(page);
+    try {
+        expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
+        await page.getByRole("radio", { name: "On for me", exact: true }).check();
+        await save(page).click();
+        await expect(saved(page)).toHaveText("On for you");
+        expect(fixture.state.calls[0].input.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    } finally { await fixture.stop(); }
+});
+
 test("failed saves retain drafts; conflicts require reviewing the latest revision before retry", async ({ page }) => {
     const fixture = await featurePage(page);
     try {

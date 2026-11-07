@@ -3,6 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
+import { randomUuid } from "./random-id.js";
 import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow, createMotdDraft, motdLocalParts, isMotdMessage, motdRequestId } from "./motd.js";
 import {
     appendEventToHistory,
@@ -4411,7 +4412,7 @@ export class PilotSwarmUiController {
         const expectedRevision = draft?.expectedRevision ?? definition.revision;
         const signature = JSON.stringify([target, featureKey, expectedRevision, values]);
         this._featureMutationRetries ??= new Map();
-        const requestId = this._featureMutationRetries.get(signature) ?? globalThis.crypto.randomUUID();
+        const requestId = this._featureMutationRetries.get(signature) ?? randomUuid();
         this._featureMutationRetries.set(signature, requestId);
         const input = { featureKey, expectedRevision, requestId, ...(values || {}) };
         this.dispatch({ type: "admin/features", patch: { saving: true, error: null, notice: null } });
@@ -11211,7 +11212,7 @@ export class PilotSwarmUiController {
     // message id.
 
     _newTurnControlRequestId() {
-        return globalThis.crypto?.randomUUID?.() || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        return randomUuid();
     }
 
     _turnControlEntry(sessionId) {

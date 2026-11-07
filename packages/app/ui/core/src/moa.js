@@ -1,3 +1,4 @@
+import { randomUuid } from "./random-id.js";
 // Personal dashboards contain references and geometry only, never session data.
 export const MOA_MAX_DASHBOARDS = 5;
 export const MOA_MAX_PANELS = 16;
@@ -12,7 +13,7 @@ export function matchesMobileViewport(win = typeof window === "undefined" ? null
 }
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 const id = (v) => typeof v === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(v);
-export const emptyMoaPanel = () => ({ id: crypto.randomUUID(), type: "empty" });
+export const emptyMoaPanel = () => ({ id: randomUuid(), type: "empty" });
 export const moaLeaves = (n) => !n ? [] : n.type === "split" ? [...moaLeaves(n.first), ...moaLeaves(n.second)] : [n];
 export function normalizeMoaLayout(value) {
     if (!object(value)) throw new Error("Invalid MoA layout.");
