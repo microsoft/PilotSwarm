@@ -321,6 +321,12 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
     // stub while its page is still open (the page keeps an idle keep-alive
     // connection) then hangs until the test timeout, a few runs in a hundred.
     // Closing the stub also drops those idle connections.
+    // Node drops an idle keep-alive connection after 5 s. When that lands
+    // just as the browser (or Playwright's route.fetch) reuses the same
+    // connection, the request fails with ECONNRESET. Keep idle connections
+    // well past any client's own idle limit; close() still drops them.
+    server.keepAliveTimeout = 120_000;
+    server.headersTimeout = 125_000;
     const closeServer = server.close.bind(server);
     server.close = (callback) => {
         const result = closeServer(callback);
