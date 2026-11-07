@@ -111,17 +111,20 @@ test("one finger sideways and two fingers spreading do not navigate", async ({ p
 
 test("a vertical scroll is not a swipe", async ({ page, context }) => {
     test.skip(browserName !== "chromium", "real touch events need the Chromium protocol");
+    await signedIn(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(base);
     await diagnostics(page).click();
     await diagnostics(page).click();
     const cdp = await context.newCDPSession(page);
     const touch = (type, points) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
-    await touch("touchStart", [[200, 700]]);
-    for (let i = 1; i <= 10; i++) await touch("touchMove", [[200 + i * 3, 700 - i * 30]]);
+    await historyReady(page);
+    const before = await page.evaluate(() => Object.entries(sessionStorage).filter(([k]) => k.startsWith("pilotswarm.view-history.v1:")));
+    await touch("touchStart", [[160, 700], [240, 700]]);
+    for (let i = 1; i <= 10; i++) await touch("touchMove", [[160 + i * 12, 700 - i * 30], [240 + i * 12, 700 - i * 30]]);
     await touch("touchEnd", []);
     await page.waitForTimeout(400);
     await expect(page.locator(".ps-mobile-workspace")).toHaveCount(1);
     expect(await page.locator(".ps-workspace").evaluate(el => el.style.transform)).toBe("");
+    expect(await page.evaluate(() => Object.entries(sessionStorage).filter(([k]) => k.startsWith("pilotswarm.view-history.v1:")))).toEqual(before);
 });
-

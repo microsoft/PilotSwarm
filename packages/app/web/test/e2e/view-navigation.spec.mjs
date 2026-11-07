@@ -27,8 +27,18 @@ async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPa
     // still in flight and reports each one as a page error ("... due to access
     // control checks."). That is the unloading page, not a fault in the new
     // one, so only that exact message, for this stub's own API, is ignored.
-    const cancelledByNavigation = message => /due to access control checks\.$/.test(message) && message.includes(`${new URL(base).host}/api/`);
+    let navigating = false;
+    const cancelledByNavigation = message => navigating && process.env.PS_TEST_BROWSER === 'webkit'
+        && /due to access control checks\.$/.test(message) && message.includes(`${new URL(base).host}/api/`);
     page.on('pageerror', e => { if (!cancelledByNavigation(e.message)) errors.push(e.message); });
+    for (const method of ['goto', 'reload']) {
+        const original = page[method].bind(page);
+        page[method] = async (...args) => {
+            navigating = true;
+            try { return await original(...args); }
+            finally { navigating = false; }
+        };
+    }
     let settings = { themeId, touchScale, moa: normalizeMoa({ version:3, activeDashboardId:'ops', dashboards:[
         { id:'ops', name:'Operations', tree:{id:'one',type:'chat',sessionId:sid(1)}, focusedPanelId:'one' },
         { id:'review', name:'Review', tree:{id:reviewPanelId,type:'chat',sessionId:sid(2)}, focusedPanelId:reviewPanelId },

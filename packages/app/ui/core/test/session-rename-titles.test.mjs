@@ -90,16 +90,25 @@ test("the rename box takes 100 characters whatever the agent's name, and counts 
     assert.match(selectRenameSessionModal(store.getState()).detailsLines.flat().map((run) => run.text).join(""), /5 \/ 100(?!,)/);
 });
 
-test("the rename box learns a custom agent title from the catalog", async () => {
-    const session = { sessionId: "aaaabbbb-1111-2222-3333-444444444445", agentId: "agent-manager", title: "Agent Smith: TRON MOTD", status: "idle", createdAt: 1, updatedAt: 2 };
-    const { controller, store } = controllerWith(session, [{ name: "agent-manager", title: "Agent Smith" }]);
-    controller.openRenameSessionModal();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const modal = store.getState().ui.modal;
-    assert.equal(modal.agentTitlePrefix, "Agent Smith");
-    assert.equal(modal.value, "TRON MOTD");
-});
+for (const edited of [false, true]) {
+    test(`the rename box corrects its catalog prefix only while untouched (edited=${edited})`, async () => {
+        const session = { sessionId: "aaaabbbb-1111-2222-3333-444444444445", agentId: "ops", title: "Ops: Fleet Watcher: nightly", status: "idle", createdAt: 1, updatedAt: 2 };
+        const { controller, store } = controllerWith(session, []);
+        let resolveCatalog;
+        const catalog = new Promise((resolve) => { resolveCatalog = resolve; });
+        controller.transport.listCreatableAgents = () => catalog;
+        controller.openRenameSessionModal();
+        assert.equal(store.getState().ui.modal.agentTitlePrefix, "Ops");
+        assert.equal(store.getState().ui.modal.value, "Fleet Watcher: nightly");
+        if (edited) controller.setRenameSessionValue("person typed this");
+        resolveCatalog([{ name: "ops", title: "Ops: Fleet Watcher" }]);
+        await catalog;
+        await new Promise((resolve) => setImmediate(resolve));
+        const modal = store.getState().ui.modal;
+        assert.equal(modal.value, edited ? "person typed this" : "nightly");
+        assert.equal(modal.agentTitlePrefix, edited ? "Ops" : "Ops: Fleet Watcher");
+    });
+}
 
 test("an agent's catalog title leads nothing: the person's title comes first", () => {
     const store = createStore(appReducer, createInitialState({ mode: "local" }));

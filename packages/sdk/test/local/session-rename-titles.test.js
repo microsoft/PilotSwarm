@@ -6,8 +6,8 @@
 // ("Kingsley Shacklebolt — Azure Control Plane: Investigate the"). A review
 // also showed that guessing which prefixes are "really" agent names deletes
 // real ones for callers without catalog data, so the prefix is never dropped.
-import { describe, it } from "vitest";
-import { buildStoredSessionTitle, getNamedAgentTitlePrefix } from "../../src/management-client.js";
+import { describe, it, expect } from "vitest";
+import { PilotSwarmManagementClient, buildStoredSessionTitle, getNamedAgentTitlePrefix } from "../../src/management-client.js";
 import { assertEqual } from "../helpers/assertions.js";
 
 const LONG = "Investigate the nightly replication lag regression on the westus3 read replicas";
@@ -67,5 +67,22 @@ describe("session rename titles", () => {
 
     it("refuses an empty title", () => {
         assertEqual(buildStoredSessionTitle({ agentId: "deepwiki", title: "Deepwiki: x" }, "   "), "");
+    });
+
+    it("renameSession persists the longest catalog prefix and locks the title", async () => {
+        const client = new PilotSwarmManagementClient({ store: "sqlite::memory:" });
+        client._started = true;
+        let session = { sessionId: "rename-test", agentId: "ops", title: "Ops: Fleet Watcher: old" };
+        const writes = [];
+        client._catalog = {
+            getSession: async (id) => { expect(id).toBe(session.sessionId); return session; },
+            updateSession: async (id, update) => { writes.push({ id, update }); session = { ...session, ...update }; },
+        };
+        await client.renameSession(session.sessionId, "nightly", { agentTitles: ["Ops", "Ops: Fleet Watcher"] });
+        expect(session.title).toBe("Ops: Fleet Watcher: nightly");
+        expect(writes).toEqual([{ id: "rename-test", update: { title: "Ops: Fleet Watcher: nightly", titleLocked: true } }]);
+        await expect(client.renameSession(session.sessionId, "   ", { agentTitles: ["Ops", "Ops: Fleet Watcher"] }))
+            .rejects.toThrow("Title cannot be empty");
+        expect(writes).toHaveLength(1);
     });
 });
