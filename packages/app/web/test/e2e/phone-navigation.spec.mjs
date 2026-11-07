@@ -179,8 +179,8 @@ test("a second swipe within slide-out flushes the first exactly once", async ({ 
     await diagnostics(page).click();
     await expect.poll(async () => (await savedHistory(page)).index).toBeGreaterThanOrEqual(2);
     const before = (await savedHistory(page)).index;
-    await page.clock.install();
-    await page.clock.pauseAt(new Date());
+    await page.clock.install({ time: new Date("2030-01-01T00:00:00Z") });
+    await page.clock.pauseAt(new Date("2030-01-01T00:00:01Z"));
     await page.evaluate(() => {
         window.touchTrace = [];
         for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"]) {
