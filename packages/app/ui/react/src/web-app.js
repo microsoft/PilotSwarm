@@ -11079,13 +11079,14 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     // two flanks get weights that put the middle group on the header's centre;
     // each flank still keeps room for its own content.
     const toolbarRef = React.useRef(null);
-    React.useEffect(() => {
+    // Layout effect and a synchronous observer: the weights land before the
+    // header paints, so its controls never shift (or a MoA tab never
+    // disappears) a frame after they appear.
+    React.useLayoutEffect(() => {
         const bar = toolbarRef.current;
         if (mobile || !headerSlot || !bar || typeof ResizeObserver === "undefined") return undefined;
         const header = bar.closest(".portal-header");
-        let frame = 0;
         const place = () => {
-            frame = 0;
             const nav = bar.querySelector(":scope > .ps-toolbar-navigation");
             const left = bar.querySelector(":scope > .ps-toolbar-side.is-left");
             const right = bar.querySelector(":scope > .ps-toolbar-side.is-right");
@@ -11108,11 +11109,18 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
             bar.style.setProperty("--ps-toolbar-left", `${Math.round(l)}fr`);
             bar.style.setProperty("--ps-toolbar-right", `${Math.round(r)}fr`);
         };
-        const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
-        const observer = new ResizeObserver(schedule);
-        for (const el of [bar, header, ...bar.children]) if (el) observer.observe(el);
-        schedule();
-        return () => { observer.disconnect(); if (frame) cancelAnimationFrame(frame); };
+        // The header, the toolbar and the middle group are placed in the same
+        // frame. The flanks are only watched for a later frame: placing changes
+        // their size, and a same-frame notice for that would be a
+        // ResizeObserver loop error.
+        const nav = bar.querySelector(":scope > .ps-toolbar-navigation");
+        const now = new ResizeObserver(place);
+        for (const el of [header, bar, nav]) if (el) now.observe(el);
+        let frame = 0;
+        const later = new ResizeObserver(() => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; place(); }); });
+        for (const el of bar.querySelectorAll(":scope > .ps-toolbar-side")) later.observe(el);
+        place();
+        return () => { now.disconnect(); later.disconnect(); if (frame) cancelAnimationFrame(frame); };
     }, [mobile, headerSlot]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     // The same panel is Settings for a plain user — their own providers,
