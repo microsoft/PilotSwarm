@@ -10670,6 +10670,12 @@ textarea.ps-link-input {
 .ps-feature-user label { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
 .ps-feature-user-identity { display: flex; flex-wrap: wrap; gap: .35rem 1rem; overflow-wrap: anywhere; }
 .ps-feature-explanation { color: var(--ps-muted); }
+/* Always-on flags: a greyed, disabled switch with the notice; nothing to edit. */
+.ps-feature-flag.is-always-on { color: var(--ps-muted); }
+.ps-feature-flag.is-always-on h3, .ps-feature-flag.is-always-on strong { color: var(--ps-muted); }
+.ps-feature-always-on-switch { display: inline-flex; align-items: center; gap: .4rem; color: var(--ps-muted); cursor: not-allowed; }
+.ps-feature-flag.is-always-on input:disabled { opacity: .6; cursor: not-allowed; accent-color: var(--ps-muted); }
+.ps-feature-always-on { margin: .5rem 0 0; font-style: italic; }
 @media (max-width: 600px), (orientation: landscape) and (max-height: 500px) and (max-width: 1000px) and (pointer: coarse) {
   .ps-feature-flags-panel { padding: .7rem; }
   .ps-feature-flag { padding: .8rem; }

@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog, waitForEventCount, waitForSessionState } from "../helpers/cms-helpers.js";
-import { setClusterFeature, withScriptedModel } from "../helpers/scripted-workers.js";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { messageText } from "../helpers/scripted-model.mjs";
 import { createManagementClient, defineTool } from "../helpers/local-workers.js";
 import { pinSessionStartVersion, sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
@@ -92,13 +92,11 @@ async function waitForChildRequest(model, marker) {
 }
 
 /** Parent and child sessions on one worker; `fn` gets them and the helpers. */
-async function withFamily(env, { steering = true, legacyChild = false } = {}, fn) {
+async function withFamily(env, { legacyChild = false } = {}, fn) {
     const plan = { parent: [] };
     const block = blockingTool();
     await withScriptedModel(env, { tools: [block.tool], respond: responder(plan) }, async ({ client, model, qualifiedModel }) => {
-        // After the scripted provider is the cluster default. The management
-        // client reads the flag on every Steer.
-        await setClusterFeature(env, "sessions.steering", steering);
+        // sessions.steering is always on: no flag setting is needed.
         const catalog = await createCatalog(env);
         const mgmt = await createManagementClient(env);
         const childId = randomUUID();
@@ -187,17 +185,6 @@ describe("turn control: a parent agent steers or stops its sub-agent's turn", ()
         });
     });
 
-    it("deliver now with steering off for the owner queues the message for the next turn", { timeout: TIMEOUT }, async () => {
-        await withFamily(getEnv(), { steering: false }, async ({ model, catalog, child, block, act }) => {
-            await child.send("PTC-BLOCK run the blocking step", { requiredTool: "tc_p_block" });
-            await block.started;
-            await act([{ name: "message_agent", args: { agent_id: child.sessionId, message: "PTC-NEXT steering off", deliver: "now" } }]);
-            expect(parentToolResults(model)[0].result).toContain("Not steered: steering is turned off for this session's owner.");
-            block.release();
-            await waitForChildRequest(model, "PTC-NEXT steering off");
-            expect(await controls(catalog, child.sessionId, "user.steer")).toEqual([]);
-        });
-    });
 
     it("a legacy (1.0.80) child: deliver now queues for the next turn and stop_agent_turn takes the earlier Stop path", { timeout: TIMEOUT }, async () => {
         await withFamily(getEnv(), { legacyChild: true }, async ({ client, model, catalog, child, block, act }) => {

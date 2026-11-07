@@ -123,11 +123,12 @@ describe("Base V2 adversarial policy boundaries", () => {
         expect(found.capabilities.find(item => item.name === "other-shared").ownership).toBe("other_shared");
         expect(found.capabilities.some(item => item.name === "other-secret")).toBe(false);
 
+        // agents.base_v2 is always on: a stored personal Off leaves the session in V2.
         await policy.set(base, { user: false });
-        const legacy = await h.turn(1);
-        expect(legacy.skillCatalog.find(s => s.name === "other-shared").prompt).toBe("FOREIGN BODY");
-        expect(h.calls.at(-1).config.skillDirectories).toEqual(["/static/skills", "/foreign/skills"]);
-        expect(await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("")).not.toContain("## Available workflows and skills");
+        const still = await h.turn(1);
+        expect(still.config.baseAgentPolicy.version).toBe("v2");
+        expect(still.skillCatalog.map(s => s.name).sort()).toEqual(["my-private", "my-shared", "static-method"]);
+        expect(h.calls.at(-1).config.skillDirectories).toEqual(["/static/skills"]);
     });
 
     it("fails closed on unverified shared ownership and still permits static V2 skills", async () => {
@@ -176,9 +177,10 @@ describe("Base V2 adversarial policy boundaries", () => {
         const index = await h.calls[0].config.systemMessage.sections.last_instructions.action("");
         expect(index).toContain("static-method");
         expect(index).not.toContain("published-method");
+        // Always on: a stored cluster Off keeps V2 and its static skill directories.
         await policy.set(base, { enabled: false });
-        await h.turn(1);
-        expect(h.calls.at(-1).config.skillDirectories).toEqual(["/static/skills", "/published/skills"]);
+        expect((await h.turn(1)).config.baseAgentPolicy.version).toBe("v2");
+        expect(h.calls.at(-1).config.skillDirectories).toEqual(["/static/skills"]);
     });
 
     it("renders the V2 index without prompt-time catalog reads and reuses the turn owner for skills", async () => {
@@ -240,57 +242,66 @@ describe("Base V2 adversarial policy boundaries", () => {
         const v2 = await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("");
         expect(v2).toContain("V2 NAMED SECURITY: only permitted skills");
         expect(v2).not.toContain("read-only investigation; do not execute mutations");
+        // Always on: a stored personal Off keeps the V2 composition.
         await policy.set(base, { user: false });
-        await h.turn(1);
-        const v1 = await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("");
+        expect((await h.turn(1)).config.baseAgentPolicy.version).toBe("v2");
+        expect(await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("")).toContain("V2 NAMED SECURITY: only permitted skills");
+        // V1 remains only for a session without native tasks.
+        const legacy = await sessionFixture(policy, { named: true, workerNative: false });
+        legacy.manager.workerDefaults.agentPromptLookup.analyst.baseV2Prompt = "V2 NAMED SECURITY: only permitted skills";
+        expect((await legacy.turn(0)).config.baseAgentPolicy.version).toBe("v1");
+        const v1 = await legacy.calls.at(-1).config.systemMessage.sections.last_instructions.action("");
         expect(v1).toContain("NAMED SECURITY: read-only investigation; do not execute mutations");
     });
 
+    // Both agents.base_v2 and copilot.native_tasks are always on: stored settings are ignored.
     it.each([
-        ["cluster default off", {}, "v1"],
-        ["owner opts in", { [base]: { enabled: false, allowUserOverride: true, user: true } }, "v2"],
-        ["owner opts out", { [base]: { enabled: true, allowUserOverride: true, user: false } }, "v1"],
-        ["cluster locks off", { [base]: { enabled: false, allowUserOverride: false, user: true } }, "v1"],
+        ["cluster default off", {}],
+        ["owner opts in", { [base]: { enabled: false, allowUserOverride: true, user: true } }],
+        ["owner opts out", { [base]: { enabled: true, allowUserOverride: true, user: false } }],
+        ["cluster locks off", { [base]: { enabled: false, allowUserOverride: false, user: true } }],
         ["native owner opts out", { [base]: { enabled: true, allowUserOverride: true },
-            [native]: { enabled: true, allowUserOverride: true, user: false } }, "v1"],
+            [native]: { enabled: true, allowUserOverride: true, user: false } }],
         ["native cluster locks off", { [base]: { enabled: true, allowUserOverride: true },
-            [native]: { enabled: false, allowUserOverride: false, user: true } }, "v1"],
-    ])("resolves %s against independent effective flags", async (_label, initial, expected) => {
+            [native]: { enabled: false, allowUserOverride: false, user: true } }],
+    ])("resolves %s to V2 (always-on flags ignore stored settings)", async (_label, initial) => {
         const policy = await flags(initial);
-        expect(effectivePolicy(policy.cache).version).toBe(expected);
+        expect(effectivePolicy(policy.cache)).toMatchObject({ version: "v2", revision: null });
+        expect(effectivePolicy(policy.cache).reason).toBeUndefined();
     });
 
-    it("fails closed without an owner or initialized catalog", async () => {
-        const policy = await flags({ [base]: { enabled: true, allowUserOverride: true } });
-        expect(effectivePolicy(policy.cache, null)).toMatchObject({ version: "v1", reason: "owner_unavailable" });
-        expect(resolveBaseAgentPolicy(null, owner, true).version).toBe("v1");
+    it("selects V2 without an owner or a feature cache, and V1 only without native tasks", async () => {
+        const policy = await flags({ [base]: { enabled: false, allowUserOverride: false } });
+        expect(effectivePolicy(policy.cache, null).version).toBe("v2");
+        expect(effectivePolicy(policy.cache, null).reason).toBeUndefined();
+        expect(resolveBaseAgentPolicy(null, owner, true).version).toBe("v2");
+        expect(resolveBaseAgentPolicy(null, null, true).version).toBe("v2");
+        expect(resolveBaseAgentPolicy(null, owner, false)).toMatchObject({ version: "v1", fingerprint: "v1", reason: "Requires Native Copilot tasks" });
     });
 
-    it.each([false, true])("changes only the framework instructions at the next boundary (named=%s)", async named => {
+    it.each([false, true])("uses the V2 framework instructions from the first turn and stored changes never rebind (named=%s)", async named => {
         const policy = await flags();
         const h = await sessionFixture(policy, { named });
         const first = await h.turn(0);
-        const originalTools = h.calls[0].config.tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters }));
-        const originalPrompt = h.calls[0].config.systemMessage.sections.custom_instructions.content;
-        expect(originalPrompt).toContain("V1 FRAMEWORK");
-        await policy.set(base, { user: true });
-        expect(h.calls).toHaveLength(1);
-        const second = await h.turn(1);
-        expect(second).not.toBe(first);
-        expect(h.calls[0].handle.disconnect).toHaveBeenCalledTimes(1);
-        const v2 = h.calls.at(-1).config;
+        expect(first.config.baseAgentPolicy.version).toBe("v2");
+        const v2 = h.calls[0].config;
         expect(v2.sessionId).toBe(h.row.sessionId);
         expect(v2.systemMessage.sections.custom_instructions.content).toContain("search_capabilities");
         expect(v2.systemMessage.sections.guidelines.content).toContain("APP SECURITY");
         expect(v2.systemMessage.sections.custom_instructions.content).not.toContain("V1 FRAMEWORK");
         const last = await v2.systemMessage.sections.last_instructions.action("");
         if (named) expect(last).toContain("NAMED SECURITY");
-        expect(v2.tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters }))).toEqual(originalTools);
-        expect(await h.turn(2)).toBe(second);
-        await policy.set(base, { user: false });
-        expect((await h.turn(3)).config.baseAgentPolicy.version).toBe("v1");
-        expect(h.calls.at(-1).config.systemMessage.sections.custom_instructions.content).toContain("V1 FRAMEWORK");
-        expect(h.calls).toHaveLength(3);
+        // Stored base settings are ignored: no rebind, still V2.
+        for (const patch of [{ user: false }, { enabled: false, allowUserOverride: false }, { user: true }]) {
+            await policy.set(base, patch);
+            expect(await h.turn(1)).toBe(first);
+        }
+        expect(h.calls).toHaveLength(1);
+        expect(h.calls[0].handle.disconnect).not.toHaveBeenCalled();
+        // The V1 framework remains for a session without native tasks, with the same tools.
+        const legacy = await sessionFixture(policy, { named, workerNative: false });
+        expect((await legacy.turn(0)).config.baseAgentPolicy.version).toBe("v1");
+        expect(legacy.calls[0].config.systemMessage.sections.custom_instructions.content).toContain("V1 FRAMEWORK");
     });
 
     it.each([{ isSystem: true }, { workerNative: false }])("does not enable V2 for native-ineligible sessions: %o", async options => {
@@ -301,23 +312,20 @@ describe("Base V2 adversarial policy boundaries", () => {
         expect(h.calls[0].config.excludedTools).toContain("task");
     });
 
-    it("reports a blocked prerequisite consistently in feature reads and runtime selection", async () => {
-        const policy = await flags({ [base]: { enabled: true, allowUserOverride: true },
-            [native]: { enabled: false, allowUserOverride: true } });
+    it("reports always-on base and native consistently in feature reads and runtime selection, despite stored Off", async () => {
+        // The native prerequisite can no longer block Base V2: both flags are always on.
+        const policy = await flags({ [base]: { enabled: false, allowUserOverride: true, user: false },
+            [native]: { enabled: false, allowUserOverride: false } });
         const client = { release: vi.fn(), query: async () => ({ rows: [{ result: { userId: 1, ...policy.snapshot() } }] }) };
         const store = new FeatureStore({ connect: async () => client }, "review");
         const view = await store.read({ principal: owner, isAdmin: false }, "user");
-        const baseView = view.flags.find(flag => flag.featureKey === base);
-        expect(effectivePolicy(policy.cache).version).toBe("v1");
-        expect(baseView.effective).toBe(false);
-        expect(baseView.reason).toBe("requires_native_tasks");
-        expect(baseView.cluster.enabled).toBe(true);
-        expect(policy.cache.resolve(base, owner, { fallback: false })).toMatchObject({ enabled: false, reason: "requires_native_tasks" });
-        await policy.set(native, { user: true });
+        for (const key of [base, native]) {
+            const row = view.flags.find(flag => flag.featureKey === key);
+            expect(row).toMatchObject({ effective: true, source: "always_on", alwaysOn: true, userOverrideIgnored: false });
+            expect(row.reason).toBeUndefined();
+            expect(policy.cache.resolve(key, owner, { fallback: false })).toEqual({ enabled: true, source: "always_on", revision: null, stale: false });
+        }
         expect(effectivePolicy(policy.cache).version).toBe("v2");
-        const refreshed = await store.read({ principal: owner, isAdmin: false }, "user");
-        expect(refreshed.flags.find(flag => flag.featureKey === base)).toMatchObject({ effective: true, cluster: { enabled: true } });
-        expect(refreshed.flags.find(flag => flag.featureKey === base).reason).toBeUndefined();
     });
 
     it("does not deny artifact capabilities explicitly granted to native tasks", () => {

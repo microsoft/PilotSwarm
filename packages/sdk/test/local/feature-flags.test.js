@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { FEATURE_FLAGS, resolveFeatureDefinition } from "../../src/feature-flags.ts";
+import { FEATURE_ALWAYS_ON_NOTICE, FEATURE_FLAGS, FeatureFlagError, assertFeatureMutable, isAlwaysOn, resolveFeatureDefinition } from "../../src/feature-flags.ts";
 import { FeatureFlagCache } from "../../src/feature-flag-cache.ts";
 
-const key = "copilot.native_tasks";
+// Generic flag machinery runs on a normal (not always-on) flag.
+const key = "debug.enable_model_event_logging";
 const owner = { provider: "test", subject: "alice" };
 const def = (revision = "1") => ({ featureKey: key, ...FEATURE_FLAGS[key], revision });
 const cluster = (enabled, allowUserOverride) => ({ featureKey: key, scope: "cluster", userId: null, enabled, allowUserOverride, revision: "1" });
@@ -107,8 +108,68 @@ describe("bounded feature cache reads", () => {
         const cache = new FeatureFlagCache({ revisions: () => new Promise(() => {}), snapshot: () => new Promise(() => {}) }, 20);
         const pending = cache.pollRevisionsAndRefresh();
         await pending;
-        expect(cache.resolve("copilot.native_tasks", null, { fallback: false })).toMatchObject({ enabled: false, stale: true, reason: "cache_unavailable" });
+        expect(cache.resolve(key, null, { fallback: false })).toMatchObject({ enabled: false, stale: true, reason: "cache_unavailable" });
         expect(cache.state.lastError).toContain("timed out");
         await cache.stop();
+    });
+});
+
+describe("always-on flags", () => {
+    const ALWAYS_ON = ["copilot.native_tasks", "agents.base_v2", "sessions.steering"];
+    const ON = { enabled: true, source: "always_on", revision: null, stale: false };
+    const aliceOff = alwaysKey => ({ featureKey: alwaysKey, scope: "user", userId: 1, owner, enabled: false, allowUserOverride: null, revision: "1" });
+    const clusterOff = alwaysKey => ({ featureKey: alwaysKey, scope: "cluster", userId: null, enabled: false, allowUserOverride: true, revision: "1" });
+    const alwaysDef = alwaysKey => ({ featureKey: alwaysKey, ...FEATURE_FLAGS[alwaysKey], defaultEnabled: false, revision: "1" });
+
+    it("the registry marks exactly the code-owned keys; model event logging stays a normal flag", () => {
+        expect(Object.keys(FEATURE_FLAGS).filter(isAlwaysOn).sort()).toEqual([...ALWAYS_ON].sort());
+        expect(isAlwaysOn(key)).toBe(false);
+        expect(FEATURE_FLAGS[key].defaultEnabled).toBe(false);
+        expect(isAlwaysOn("typo")).toBe(false);
+        expect(FEATURE_ALWAYS_ON_NOTICE).toBe("This switch is now always on and may be removed in a future release.");
+    });
+
+    for (const alwaysKey of ALWAYS_ON) {
+        it(`${alwaysKey}: on with source always_on before the cache loads, when it is unavailable, and with required:true`, async () => {
+            const never = new FeatureFlagCache({ revisions: () => new Promise(() => {}), snapshot: () => new Promise(() => {}) }, 20);
+            expect(never.resolve(alwaysKey, owner, { fallback: false })).toEqual(ON);
+            expect(never.resolve(alwaysKey, owner, { required: true })).toEqual(ON);
+            await never.pollRevisionsAndRefresh();
+            expect(never.state.lastError).toContain("timed out");
+            expect(never.resolve(alwaysKey, null, { fallback: false })).toEqual(ON);
+            expect(never.resolve(alwaysKey, owner, { required: true })).toEqual(ON);
+            // Option validation still applies.
+            expect(() => never.resolve(alwaysKey, owner, {})).toThrow(TypeError);
+            await never.stop();
+        });
+
+        it(`${alwaysKey}: on despite a stored cluster Off, a user Off, and a missing catalog row`, async () => {
+            let snapshot = { definitions: [alwaysDef(alwaysKey)], settings: [clusterOff(alwaysKey), aliceOff(alwaysKey)] };
+            const cache = new FeatureFlagCache({ revisions: async () => snapshot.definitions.map(({ featureKey, revision }) => ({ featureKey, revision })),
+                snapshot: async () => structuredClone(snapshot) });
+            await cache.pollRevisionsAndRefresh();
+            expect(cache.state.initialized).toBe(true);
+            expect(cache.resolve(alwaysKey, owner, { required: true })).toEqual(ON);
+            expect(cache.resolve(alwaysKey, { ...owner, subject: "bob" }, { fallback: false })).toEqual(ON);
+            expect(resolveFeatureDefinition(alwaysDef(alwaysKey), clusterOff(alwaysKey), aliceOff(alwaysKey))).toEqual(ON);
+            snapshot = { definitions: [], settings: [] };
+            await cache.pollRevisionsAndRefresh();
+            expect(cache.state.appliedRevisions[alwaysKey]).toBeUndefined();
+            expect(cache.resolve(alwaysKey, owner, { required: true })).toEqual(ON);
+            await cache.stop();
+        });
+
+        it(`${alwaysKey}: changes are refused with FEATURE_ALWAYS_ON (409) and the notice`, () => {
+            let error;
+            try { assertFeatureMutable(alwaysKey); } catch (caught) { error = caught; }
+            expect(error).toBeInstanceOf(FeatureFlagError);
+            expect(error).toMatchObject({ code: "FEATURE_ALWAYS_ON", status: 409 });
+            expect(error.message).toContain(FEATURE_ALWAYS_ON_NOTICE);
+        });
+    }
+
+    it("a normal flag stays mutable and still resolves from stored settings", () => {
+        expect(() => assertFeatureMutable(key)).not.toThrow();
+        expect(resolveFeatureDefinition(def(), cluster(true, false)).source).toBe("cluster");
     });
 });

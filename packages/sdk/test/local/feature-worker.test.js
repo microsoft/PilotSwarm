@@ -3,7 +3,8 @@ import { PilotSwarmWorker } from "../../src/worker.ts";
 import { FeatureFlagCache } from "../../src/feature-flag-cache.ts";
 import { FEATURE_FLAGS } from "../../src/feature-flags.ts";
 
-const key = "copilot.native_tasks";
+// Generic cache polling runs on a normal (not always-on) flag.
+const key = "debug.enable_model_event_logging";
 afterEach(() => vi.useRealTimers());
 async function workerFixture(interval = 0) {
     let revision = 1, enabled = false;
@@ -65,6 +66,15 @@ describe("feature worker polling", () => {
             await vi.advanceTimersByTimeAsync(1);
             expect(f.cache.resolve(key, null, { required: true }).enabled).toBe(true);
             expect(f.catalog.workerHeartbeat.mock.calls.at(-1)[0].state["feature-flags"].appliedRevisions[key]).toBe("2");
+        } finally { await f.worker.stop(); warn.mockRestore(); }
+    });
+    it("reports native capability sync even when the worker was configured with off (always on)", async () => {
+        vi.useFakeTimers(); const f = await workerFixture();
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            f.worker.config = { ...f.worker.config, nativeSubagents: "off" };
+            f.worker._startConfigurationPolling(); await vi.advanceTimersByTimeAsync(0);
+            expect(f.catalog.workerHeartbeat.mock.calls.at(-1)[0].state["feature-flags"].nativeCapability).toBe("sync");
         } finally { await f.worker.stop(); warn.mockRestore(); }
     });
     it("discards an in-flight cache load before closing the catalog on stop", async () => {

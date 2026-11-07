@@ -33,7 +33,7 @@
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
-export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
+export { FEATURE_ALWAYS_ON_NOTICE, FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError, isAlwaysOn } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";
 export { FeatureStore } from "./feature-store.js";

@@ -136,7 +136,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Session turn control (Stop and Steer). TUI: `Ctrl+X` (or `Ctrl+Esc`) stops
   the running turn; `Ctrl+T` in the prompt pane sends the prompt text as a
   steer when the turn accepts controls (`acceptsTurnControl` from the
-  detailed session view) and the viewer's `sessions.steering` feature is on;
+  detailed session view); the `sessions.steering` feature is always on;
   otherwise the status line says why. The same key resends an unconfirmed
   request with its original request id, and `Alt+T` gives unresolved
   requests up (steer text returns to the prompt after the draft; the

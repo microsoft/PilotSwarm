@@ -90,7 +90,7 @@ import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions } from "./provider-wake.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
-import { FeatureFlagError, resolveFeatureDefinition } from "./feature-flags.js";
+import { FeatureFlagError, isAlwaysOn, resolveFeatureDefinition } from "./feature-flags.js";
 import {
     TURN_CONTROL_EVENT_TYPES,
     TURN_CONTROL_OUTCOME_POLL_MS,
@@ -2681,6 +2681,8 @@ export class PilotSwarmManagementClient {
 
     /** Resolve `sessions.steering` for the caller's viewer (cluster scope without one). */
     private async _steeringEnabled(caller: TurnControlCaller | undefined): Promise<boolean> {
+        // Always on (code-owned): no catalog read; stored settings do not apply.
+        if (isAlwaysOn(STEERING_FEATURE_KEY)) return true;
         const features = this._catalog?.features;
         if (!features) return false;
         const snapshot = await features.snapshot([STEERING_FEATURE_KEY]);

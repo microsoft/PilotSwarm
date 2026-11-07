@@ -24,7 +24,7 @@ import {
     TurnControlUnavailableError,
 } from "../../dist/turn-control-contract.js";
 import * as sdk from "../../dist/index.js";
-import { FEATURE_FLAGS } from "../../dist/feature-flags.js";
+import { FEATURE_FLAGS, isAlwaysOn } from "../../dist/feature-flags.js";
 import { PgSessionCatalog } from "../../dist/cms.js";
 
 const { OrchestrationContext } = createRequire(import.meta.url)("duroxide");
@@ -357,15 +357,17 @@ test("registerTurnControlActivity registers the V4 names", () => {
     assert.deepEqual(names, ["runTurnV4", "runTurnEpochV4"]);
 });
 
-test("sessions.steering is off, operator-controlled and needs no capability", () => {
+test("sessions.steering is always on and needs no capability", () => {
     assert.deepEqual(FEATURE_FLAGS["sessions.steering"], {
         displayName: "Steer running turns",
         description: FEATURE_FLAGS["sessions.steering"].description,
         defaultEnabled: false,
         defaultAllowUserOverride: false,
         requiredCapability: null,
+        alwaysOn: true,
     });
     assert.ok(FEATURE_FLAGS["sessions.steering"].description.length > 0);
+    assert.equal(isAlwaysOn("sessions.steering"), true);
 });
 
 test("acceptsTurnControl: a running turn that started on the turn-control path", () => {

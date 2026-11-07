@@ -17,6 +17,7 @@ import {
 } from "../lib/common.mjs";
 import { composeDerivedEnv } from "../lib/compose-env.mjs";
 import { DATABASE_URL_KEYS } from "../lib/database-env.mjs";
+import { WORKER_ENV_DEFAULTS, nativeSubagentsSetting } from "../lib/worker-env.mjs";
 
 const ENV_DIR = join(REPO_ROOT, "deploy", "envs");
 const LOCAL_DIR = join(ENV_DIR, "local");
@@ -209,15 +210,18 @@ test("a process variable sets the workspaces and node-pool keys over the file (h
   }
 });
 
-test("PILOTSWARM_NATIVE_SUBAGENTS: off by default, sync from the file or a process variable, anything else refused", () => {
+test("PILOTSWARM_NATIVE_SUBAGENTS: always on (sync by default and for an older off), anything else refused", () => {
   cleanup();
   const before = process.env.PILOTSWARM_NATIVE_SUBAGENTS;
   try {
     delete process.env.PILOTSWARM_NATIVE_SUBAGENTS;
     mkdirSync(dirname(TEST_FILE), { recursive: true });
     writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
-    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "off");
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "sync");
     writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nPILOTSWARM_NATIVE_SUBAGENTS= SYNC \n");
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "sync");
+    // An older env file's off is deployed as sync: native tasks are always on.
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nPILOTSWARM_NATIVE_SUBAGENTS=off\n");
     assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_NATIVE_SUBAGENTS, "sync");
     writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
     process.env.PILOTSWARM_NATIVE_SUBAGENTS = "sync";
@@ -229,6 +233,17 @@ test("PILOTSWARM_NATIVE_SUBAGENTS: off by default, sync from the file or a proce
     if (before === undefined) delete process.env.PILOTSWARM_NATIVE_SUBAGENTS;
     else process.env.PILOTSWARM_NATIVE_SUBAGENTS = before;
     cleanup();
+  }
+});
+
+test("worker-env: the native tasks default is sync; off and unset deploy sync; other values are refused", () => {
+  assert.equal(WORKER_ENV_DEFAULTS.PILOTSWARM_NATIVE_SUBAGENTS, "sync");
+  for (const value of [undefined, "", " ", "off", "OFF", "sync", " Sync "]) {
+    assert.equal(nativeSubagentsSetting({ PILOTSWARM_NATIVE_SUBAGENTS: value }), "sync", String(value));
+  }
+  assert.equal(nativeSubagentsSetting({}), "sync");
+  for (const value of ["on", "true", "async"]) {
+    assert.throws(() => nativeSubagentsSetting({ PILOTSWARM_NATIVE_SUBAGENTS: value }), /must be off or sync/);
   }
 });
 

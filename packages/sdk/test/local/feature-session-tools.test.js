@@ -81,7 +81,7 @@ describe("feature tool session surfaces", () => {
             setRole("admin");
             await manager.getOrCreate(sessionId, { model: "gpt-5.6-terra", agentIdentity: "agent-manager" }, { turnIndex: 0 });
             const tool = declarations(options[0]).find(tool => tool.name === "set_cluster_feature_flag");
-            const input = { featureKey: "copilot.native_tasks", expectedRevision: "1", requestId: "first", enabled: true, allowUserOverride: false };
+            const input = { featureKey: "debug.enable_model_event_logging", expectedRevision: "1", requestId: "first", enabled: true, allowUserOverride: false };
             await expect(tool.handler(input, { sessionId })).resolves.toContain('"revision":"2"');
             setRole("user");
             await expect(tool.handler({ ...input, isAdmin: true, principal: { provider: "system", subject: "system" } }, { sessionId })).rejects.toMatchObject({ code: "FEATURE_FORBIDDEN" });
@@ -123,7 +123,7 @@ describe("feature tool session surfaces", () => {
             await manager.getOrCreate(sessionId, { model: "gpt-5.6-terra", agentIdentity }, { turnIndex: 0 });
             expect(declarations(options[0]).map(tool => tool.name).sort()).toEqual(featureNames);
             const tool = declarations(options[0]).find(tool => tool.name === "set_cluster_feature_flag");
-            await tool.handler({ featureKey: "copilot.native_tasks", expectedRevision: "1", requestId: "system-bootstrap", enabled: false, allowUserOverride: false }, { sessionId });
+            await tool.handler({ featureKey: "debug.enable_model_event_logging", expectedRevision: "1", requestId: "system-bootstrap", enabled: false, allowUserOverride: false }, { sessionId });
             expect(featureCalls.at(-1).viewer).toMatchObject({ principal: { provider: "system", subject: "system" }, isAdmin: true });
 
             // An ownerless ordinary session with the same agent name cannot
@@ -155,11 +155,21 @@ describe("session-scoped Copilot tool exclusions", () => {
 });
 
 describe("native owner resolution", () => {
-    it.each(["unreadable", "absent", "ownerless"])("fails closed for a %s CMS owner while cluster native policy is ON", async condition => {
+    // copilot.native_tasks is always on: no user-level Off exists, so an
+    // unknown owner no longer needs to fail closed.
+    it.each(["unreadable", "absent", "ownerless"])("native tasks stay on for a %s CMS owner (always-on flag)", async condition => {
         await fixture(async ({ manager, sessionId, options, fail, setRow }) => {
             if (condition === "unreadable") fail(true);
             if (condition === "absent") setRow(null);
             if (condition === "ownerless") setRow({ sessionId, isSystem: false });
+            await manager.getOrCreate(sessionId, { model: "gpt-5.6-terra" }, { turnIndex: 0 });
+            expect(options[0].excludedTools).not.toContain("task");
+        }, { native: true });
+    });
+
+    it("system sessions still never get native tasks", async () => {
+        await fixture(async ({ manager, sessionId, options, setRow, owner }) => {
+            setRow({ sessionId, owner, isSystem: true });
             await manager.getOrCreate(sessionId, { model: "gpt-5.6-terra" }, { turnIndex: 0 });
             expect(options[0].excludedTools).toContain("task");
         }, { native: true });

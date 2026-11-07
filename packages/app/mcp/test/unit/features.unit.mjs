@@ -27,7 +27,7 @@ test("MCP feature tools preserve revision, request identity and target-user arit
     await fixture(async (client, calls) => {
         const names = (await client.listTools()).tools.map(t => t.name);
         assert.equal(names.length, 12);
-        const input = { featureKey: "copilot.native_tasks", expectedRevision: "9007199254740993", requestId: "retry-one", enabled: false, userId: 7 };
+        const input = { featureKey: "debug.enable_model_event_logging", expectedRevision: "9007199254740993", requestId: "retry-one", enabled: false, userId: 7 };
         const response = await client.callTool({ name: "set_user_feature_flag", arguments: input });
         assert.ok(!response.isError);
         assert.deepEqual(calls[0], { name: "setUserFeatureFlag", args: [{ principal: { provider: "test", subject: "alice" }, isAdmin: true }, 7, input] });

@@ -5,8 +5,8 @@
  * A6 and F10.
  *
  * Repo agents run as native task children, so native tasks are on: the
- * worker runs with nativeSubagents "sync", the cluster turns on
- * copilot.native_tasks, and each session has an owner.
+ * worker runs with nativeSubagents "sync", copilot.native_tasks is always
+ * on, and each session has an owner.
  *
  * Run: npx vitest run test/local/workspace-repo-agents.test.js
  */
@@ -19,7 +19,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
 import { scriptTurns, systemText } from "../helpers/scripted-model.mjs";
-import { setClusterFeature, withScriptedModel } from "../helpers/scripted-workers.js";
+import { withScriptedModel } from "../helpers/scripted-workers.js";
 import { createGitFixture } from "../helpers/git-fixture.mjs";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 
@@ -34,9 +34,6 @@ const taskTool = (body) => JSON.stringify((body.tools ?? []).find((t) => t.funct
 const toolNames = (body) => (body.tools ?? []).map((t) => t.function?.name);
 const firstLine = (toolResults) => toolResults.join("").trim().split("\n")[0];
 
-/** Native tasks on for the cluster. The suite env is reset after every test, so each test calls it. */
-const nativeTasksOn = (env) => setClusterFeature(env, "copilot.native_tasks", true);
-
 async function events(env, sessionId, type) {
     const catalog = await createCatalog(env);
     try {
@@ -47,9 +44,8 @@ async function events(env, sessionId, type) {
 }
 
 describe("workspace repo agents and skills", () => {
-    it("a repo agent reaches the task tool only with adopt.agents and native tasks (A1)", { timeout: TIMEOUT }, async () => {
+    it("a repo agent reaches the task tool only with adopt.agents; native tasks are always on (A1)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        await nativeTasksOn(env);
         const fixture = await createGitFixture();
         try {
             const clone = await fixture.cloneSession({ rootSessionId: "a1" });
@@ -77,13 +73,13 @@ describe("workspace repo agents and skills", () => {
                 assert(!taskTool(notAdopting.body).includes("reviewer"), "adopt.agents false: no repo agent");
                 assertEqual((await events(env, notAdopting.sessionId, "session.workspace_adopted")).length, 0, "nothing adopted, nothing recorded");
 
-                // No owner: native tasks cannot be resolved, so they are off.
-                const nativeOff = await run("a1 native off", { agents: true, skills: false, instructions: false }, null);
-                assert(!toolNames(nativeOff.body).includes("task"), "native tasks off: no task tool");
-                const [skipped] = await events(env, nativeOff.sessionId, "session.workspace_adopted");
-                assertEqual(JSON.stringify(skipped.data.agents), "[]");
-                assert(skipped.data.skipped.some((s) => s.file === ".github/agents/reviewer.agent.md" && /native tasks are off/.test(s.reason)),
-                    `reported as skipped: ${JSON.stringify(skipped.data.skipped)}`);
+                // No owner: copilot.native_tasks is always on, so the session
+                // still has native tasks and adopts the repo agent.
+                const ownerless = await run("a1 ownerless", { agents: true, skills: false, instructions: false }, null);
+                assert(toolNames(ownerless.body).includes("task"), "native tasks always on: the task tool is there without an owner");
+                assert(taskTool(ownerless.body).includes("reviewer"), `the task tool lists the repo agent: ${taskTool(ownerless.body).slice(0, 600)}`);
+                const [ownerlessAdopted] = await events(env, ownerless.sessionId, "session.workspace_adopted");
+                assertEqual(JSON.stringify(ownerlessAdopted.data.agents), JSON.stringify(["reviewer"]));
             });
         } finally {
             await fixture.cleanup();
@@ -96,7 +92,6 @@ describe("workspace repo agents and skills", () => {
         // used to report one as not found; and the portal showed the task as a
         // plain "Native task". Found on the release stamp with tfenv's agents.
         const env = getEnv();
-        await nativeTasksOn(env);
         const fixture = await createGitFixture();
         try {
             const clone = await fixture.cloneSession({ rootSessionId: "a7" });
@@ -141,7 +136,6 @@ describe("workspace repo agents and skills", () => {
 
     it("filters repo agents, and the child guard lets an adopted agent's child work while a stranger is denied (A2)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        await nativeTasksOn(env);
         const fixture = await createGitFixture();
         try {
             const clone = await fixture.cloneSession({ rootSessionId: "a2" });
@@ -202,7 +196,6 @@ describe("workspace repo agents and skills", () => {
 
     it("get_session_workspace groups agents left out for the same reason; the recorded event keeps each (A8, v0.7.1)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        await nativeTasksOn(env);
         const fixture = await createGitFixture();
         try {
             const clone = await fixture.cloneSession({ rootSessionId: "a8" });
@@ -235,7 +228,6 @@ describe("workspace repo agents and skills", () => {
 
     it("an adopt flip gives the next turn the new set and the agents-changed note; the same adopt again changes nothing (A4)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        await nativeTasksOn(env);
         const fixture = await createGitFixture();
         try {
             const clone = await fixture.cloneSession({ rootSessionId: "a4" });
@@ -293,7 +285,6 @@ describe("workspace repo agents and skills", () => {
 
     it("a branch switch that changes the repo agents, with the same adopt, gives the next turn the new set and the note (A4, K13)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        await nativeTasksOn(env);
         const fixture = await createGitFixture();
         try {
             const clone = await fixture.cloneSession({ rootSessionId: "a4b" });
@@ -320,7 +311,6 @@ describe("workspace repo agents and skills", () => {
 
     it("a child spawned into another checkout adopts that checkout's agents (A6)", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        await nativeTasksOn(env);
         const fixture = await createGitFixture();
         try {
             const parentClone = await fixture.cloneSession({ rootSessionId: "a6" });
