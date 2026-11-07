@@ -1314,6 +1314,15 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             historyScroll.applied = true;
             historyScroll.target = pageScrollTop;
             historyScroll.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
+            // The gesture gap counts from when the person could see the new
+            // page. Laying out and painting a page of messages can take longer
+            // than the gap on a slow phone; without this, the fling still in
+            // progress would count as a new scroll once the paint finished and
+            // throw the reader to the top of the inserted page.
+            const settling = historyScroll;
+            window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+                if (historyScrollRef.current === settling) settling.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
+            }));
         }
         const interaction = userScrollRef.current;
         const now = typeof performance !== "undefined" ? performance.now() : Date.now();

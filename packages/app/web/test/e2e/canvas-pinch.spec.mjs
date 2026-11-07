@@ -144,7 +144,11 @@ test("a hidden canvas cannot move the portal back or forward", async ({ page }) 
     const layer = page.locator(".ps-mobile-canvas-layer");
     await page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first().click();
     await expect(layer).toHaveClass(/is-hidden/);
-    const before = await page.evaluate(() => JSON.stringify(Object.entries(sessionStorage).filter(([k]) => k.startsWith("pilotswarm.view-history.v1:"))));
+    // Hiding the canvas is itself a visit; it is recorded after the click's
+    // event turn. Take the baseline once it is there.
+    const history = () => page.evaluate(() => JSON.stringify(Object.entries(sessionStorage).filter(([k]) => k.startsWith("pilotswarm.view-history.v1:"))));
+    await expect.poll(async () => { const saved = JSON.parse(JSON.parse(await history())[0][1]); return saved.entries[saved.index].canvasOpen; }).toBe(false);
+    const before = await history();
     await forgedSwipe(frame);
     await page.waitForTimeout(600);
     expect(await page.evaluate(() => JSON.stringify(Object.entries(sessionStorage).filter(([k]) => k.startsWith("pilotswarm.view-history.v1:"))))).toBe(before);
