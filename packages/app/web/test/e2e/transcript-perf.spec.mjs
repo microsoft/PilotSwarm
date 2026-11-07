@@ -132,7 +132,9 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
     // The ceiling is a REGRESSION CEILING relative to this machine: it catches
     // the cost going up several-fold, which is what an accidental re-layout of
     // every block, or losing the block memo guarded below, would do.
-    expect(ratio, `${ms.toFixed(1)}ms for ${samples.relayoutsPerSample} relayouts of ${blocks} lines, ${reference.toFixed(1)}ms for the same plain-line batch in the median-ratio pair`).toBeLessThan(5.0);
+    // Twenty mixed-load runs per browser peaked at 4.20x and 3.56x.
+    // Fifteen percent headroom, rounded up to the next tenth, gives 4.9x.
+    expect(ratio, `${ms.toFixed(1)}ms for ${samples.relayoutsPerSample} relayouts of ${blocks} lines, ${reference.toFixed(1)}ms for the same plain-line batch in the median-ratio pair`).toBeLessThan(4.9);
 });
 
 test("dragging the pane splitter does not re-render the whole transcript", async ({ page }) => {
