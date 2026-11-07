@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import type { SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
@@ -303,7 +304,8 @@ export interface CreateWorkflowV2Request {
     binding?: WorkflowToolBinding | null;
     /**
      * SEMVER_REUSED (WorkflowStore.requireVersionFree): refuse a new Workflow whose metadata.name and version another
-     * Workflow of the same parent has with other YAML. Set by spawn_workflow; checked before anything is written.
+     * Workflow of the same parent has with other YAML (or is being created with). Set by spawn_workflow; checked inside the
+     * claim's transaction under a lock on (parent, name), and a refusal rolls the claim back.
      */
     refuseVersionReuse?: boolean;
 }
@@ -700,14 +702,15 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
     if (tombstone?.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
-    // One name and version, one definition, among the parent's Workflows: checked before the claim, so a refusal writes
-    // nothing; a replay of a creation that stored its definition is answered below, as before.
-    if (request.refuseVersionReuse === true && tombstone === null && request.parentSessionId && compiled.name && compiled.version) {
-        await host.store.requireVersionFree({
-            parentSessionId: request.parentSessionId, workflowSessionId: request.workflowSessionId, name: compiled.name,
-            semver: compiled.version, yamlSha256: compiled.yamlSha256, irSha256: compiled.irSha256, nothingSaved: "Nothing was saved.",
-        });
-    }
+    // One name and version, one definition, among the parent's Workflows (SEMVER_REUSED): checked inside the claim's
+    // transaction, once the row is claimed, under a lock on (parent, name). Two creations at the same moment are serialized,
+    // and the later one sees the earlier one's claim; a refusal rolls its own claim back, so it binds no row and no key and
+    // the corrected request may use the same id. A replay (the row exists) claims nothing and is not checked.
+    const parentId = request.parentSessionId;
+    const versionGuard = request.refuseVersionReuse === true && tombstone === null && parentId && compiled.name && compiled.version
+        ? { parentSessionId: parentId, workflowSessionId: request.workflowSessionId, name: compiled.name, semver: compiled.version,
+            yamlSha256: compiled.yamlSha256, irSha256: compiled.irSha256, nothingSaved: "Nothing was saved." }
+        : null;
     // The session row is claimed exclusively: an existing row of any kind,
     // or one a concurrent creator inserts first, is never modified here.
     if (!host.catalog.createWorkflowSessionV2) throw new WorkflowStoreError("WORKFLOW_V2_UNAVAILABLE", "This session catalog cannot create v2 workflows.");
@@ -715,9 +718,13 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         parentSessionId: request.parentSessionId,
         owner: request.owner ?? null,
         creationConfig: {
-            workflowV2: { apiVersion: WORKFLOW_V2_API_VERSION, fingerprint: WORKFLOW_V2_CREATE_FINGERPRINT, requestSha256, operationId: request.operationId },
+            // The name, version and hashes are what a concurrent creation's version check reads until the definition is stored.
+            workflowV2: { apiVersion: WORKFLOW_V2_API_VERSION, fingerprint: WORKFLOW_V2_CREATE_FINGERPRINT, requestSha256, operationId: request.operationId,
+                ...(compiled.name ? { name: compiled.name } : {}), ...(compiled.version ? { version: compiled.version } : {}),
+                yamlSha256: compiled.yamlSha256, ...(compiled.irSha256 ? { irSha256: compiled.irSha256 } : {}) },
             ...(request.binding ? { workflowToolBinding: request.binding } : {}),
         },
+        ...(versionGuard ? { afterClaim: (client: PoolClient) => host.store.requireVersionFreeLocked(client, versionGuard) } : {}),
     });
     if (!claim.created) {
         // Only a retry of this exact creation (interrupted before its
@@ -735,7 +742,9 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         // Compare with the fingerprint the claim recorded; what it did not
         // cover (the owner, the first grant) must match the stored row.
         const grantMatches = sameGrant(creation?.workflowToolBinding, request.binding);
-        const ownerMatches = sameOwner(row.owner, request.owner);
+        // A creation that named no owner took its parent's (the claim inherits it): its replay is compared with that owner.
+        const inherited = !request.owner && request.parentSessionId ? (await host.catalog.getSession(request.parentSessionId))?.owner ?? null : null;
+        const ownerMatches = sameOwner(row.owner, request.owner ?? inherited);
         let sameRequest: boolean;
         if (marker.fingerprint === WORKFLOW_V2_CREATE_FINGERPRINT) {
             sameRequest = marker.requestSha256 === fingerprints.v3 && marker.operationId === request.operationId && grantMatches && ownerMatches;

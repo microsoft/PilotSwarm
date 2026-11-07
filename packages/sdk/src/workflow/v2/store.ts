@@ -2337,14 +2337,14 @@ export class WorkflowStore {
     }
 
     /**
-     * Create the definition with revision 1, optionally publishing it and
-     * admitting its live run in the same transaction.
-     */
-    /**
      * SEMVER_REUSED (owner revision dump 2, 2026-11-06): one name and version, one definition, among the Workflows of one
      * session. Refused when another live Workflow of `parentSessionId` has the same metadata.name and version with other
-     * YAML: its published revision, or its current draft revision, has neither this YAML hash nor (both valid) this IR
-     * hash. Read from the stored definitions and revisions; no lock, so two creations at the same moment can both pass.
+     * YAML, that is neither this YAML hash nor (both valid) this IR hash:
+     * - a Workflow with a definition: its published revision, or its current draft revision;
+     * - a Workflow claimed but whose definition is not stored yet (being created): the name, version and hashes its claim
+     *   recorded (`creation_config.workflowV2`).
+     * Run on `client` inside the transaction that writes, after lockWorkflowVersion: two writers of one session and
+     * name are serialized, and the later one sees the earlier one's committed claim or revision (READ COMMITTED).
      */
     async requireVersionFree(input: {
         parentSessionId: string;
@@ -2357,32 +2357,65 @@ export class WorkflowStore {
         nothingSaved: string;
     }, client?: PoolClient): Promise<void> {
         const sql =
-            `SELECT d.workflow_session_id, d.state, r.revision
-               FROM ${this.t.definitions} d
-               JOIN ${this.t.revisions} r
-                 ON r.workflow_session_id = d.workflow_session_id AND r.revision = COALESCE(d.published_revision, d.current_revision)
-               JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id
-              WHERE d.parent_session_id = $1 AND d.workflow_session_id <> $2 AND d.state <> 'deleted' AND s.deleted_at IS NULL
-                AND r.name = $3 AND r.semver = $4 AND r.yaml_sha256 <> $5
-                AND (r.ir_sha256 IS NULL OR $6::text IS NULL OR r.ir_sha256 <> $6::text)
-              ORDER BY d.created_at DESC, d.workflow_session_id
+            `SELECT workflow_session_id, state, revision FROM (
+                SELECT d.workflow_session_id, d.state, r.revision, d.created_at
+                  FROM ${this.t.definitions} d
+                  JOIN ${this.t.revisions} r
+                    ON r.workflow_session_id = d.workflow_session_id AND r.revision = COALESCE(d.published_revision, d.current_revision)
+                  JOIN ${this.t.sessions} s ON s.session_id = d.workflow_session_id
+                 WHERE d.parent_session_id = $1 AND d.workflow_session_id <> $2 AND d.state <> 'deleted' AND s.deleted_at IS NULL
+                   AND r.name = $3 AND r.semver = $4 AND r.yaml_sha256 <> $5
+                   AND (r.ir_sha256 IS NULL OR $6::text IS NULL OR r.ir_sha256 <> $6::text)
+                UNION ALL
+                SELECT s.session_id, 'claimed', NULL, s.created_at
+                  FROM ${this.t.sessions} s
+                 WHERE s.parent_session_id = $1 AND s.session_id <> $2 AND s.session_kind = 'workflow' AND s.deleted_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM ${this.t.definitions} d WHERE d.workflow_session_id = s.session_id)
+                   AND s.creation_config -> 'workflowV2' ->> 'name' = $3 AND s.creation_config -> 'workflowV2' ->> 'version' = $4
+                   AND s.creation_config -> 'workflowV2' ->> 'yamlSha256' <> $5
+                   AND (s.creation_config -> 'workflowV2' ->> 'irSha256' IS NULL OR $6::text IS NULL
+                        OR s.creation_config -> 'workflowV2' ->> 'irSha256' <> $6::text)
+              ) found
+              ORDER BY created_at DESC, workflow_session_id
               LIMIT 1`;
         const params = [input.parentSessionId, input.workflowSessionId, input.name, input.semver, input.yamlSha256, input.irSha256];
         const { rows } = client ? await client.query(sql, params) : await this.pool.query(sql, params);
         if (!rows[0]) return;
         const workflowId = str(rows[0], "workflow_session_id");
         const state = str(rows[0], "state");
-        const revision = int(rows[0], "revision");
+        const revision = rows[0].revision === null || rows[0].revision === undefined ? null : int(rows[0], "revision");
         const label = `${input.name} ${input.semver}`;
         const what = state === "published"
             ? `${label} is already Workflow ${workflowId} of this session (published, revision ${revision}) with other YAML. `
                 + "A published version never changes: raise metadata.version and spawn the change as a draft."
-            : `${label} is already Workflow ${workflowId} of this session (a draft, revision ${revision}) with other YAML. `
-                + "To change that draft, use update_workflow replace_definition on it; for a new definition, raise metadata.version.";
+            : state === "claimed"
+                ? `${label} is being created as Workflow ${workflowId} of this session with other YAML. Raise metadata.version, `
+                    + "or wait for it and change it as a draft."
+                : `${label} is already Workflow ${workflowId} of this session (a draft, revision ${revision}) with other YAML. `
+                    + "To change that draft, use update_workflow replace_definition on it; for a new definition, raise metadata.version.";
         throw new WorkflowStoreError("SEMVER_REUSED", `${what} ${input.nothingSaved}`,
             { name: input.name, version: input.semver, workflowId, state, revision });
     }
 
+    /**
+     * Serialize the writers of one session's Workflows of one name (SEMVER_REUSED): a transaction-level advisory lock on
+     * (schema, session, name), held until `client`'s transaction ends. Writers of other names or sessions do not wait.
+     */
+    async lockWorkflowVersion(client: PoolClient, parentSessionId: string, name: string): Promise<void> {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [`${this.schema}:workflow-version:${JSON.stringify([parentSessionId, name])}`]);
+    }
+
+    /** lockWorkflowVersion, then requireVersionFree on the same client: the check a claim or a draft's replacement runs. */
+    async requireVersionFreeLocked(client: PoolClient, input: Parameters<WorkflowStore["requireVersionFree"]>[0]): Promise<void> {
+        await this.lockWorkflowVersion(client, input.parentSessionId, input.name);
+        await this.requireVersionFree(input, client);
+    }
+
+    /**
+     * Create the definition with revision 1, optionally publishing it and
+     * admitting its live run in the same transaction.
+     */
     async createDefinition(input: {
         workflowSessionId: string;
         parentSessionId: string | null;
@@ -2478,11 +2511,11 @@ export class WorkflowStore {
                     { semver: definition.semver });
             }
             if (input.refuseVersionReuse === true && definition.parentSessionId && input.compiled.name && input.compiled.version) {
-                await this.requireVersionFree({
+                await this.requireVersionFreeLocked(client, {
                     parentSessionId: definition.parentSessionId, workflowSessionId: input.workflowSessionId, name: input.compiled.name,
                     semver: input.compiled.version, yamlSha256: input.compiled.yamlSha256, irSha256: input.compiled.irSha256,
                     nothingSaved: "Nothing was saved: the draft keeps its revision.",
-                }, client);
+                });
             }
             await this.requireRevisionRoom(client, input.workflowSessionId, input.yaml);
             const nextRevision = definition.currentRevision + 1;

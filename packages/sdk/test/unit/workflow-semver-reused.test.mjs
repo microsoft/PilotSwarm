@@ -2,7 +2,9 @@
  * SEMVER_REUSED (owner revision dump 2, 2026-11-06): a chat reused 1.1.3 for 4 different YAMLs of one definition. One
  * metadata.name and version is one definition among the Workflows of one session: spawn_workflow and a draft's
  * replace_definition (an agent's or a person's) refuse a version that another live Workflow of the same parent has with
- * other YAML. Store SQL and the whole path on PostgreSQL: test/local/workflow-v2-semver-reused.test.js.
+ * other YAML, or is being created with. The check runs inside the claim's transaction under a lock on (parent, name), so
+ * two creations at the same moment are serialized and a refused one binds no row. Store SQL and the whole path on
+ * PostgreSQL: test/local/workflow-v2-semver-reused.test.js.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -31,22 +33,40 @@ async function refusal(promise) {
     assert.fail("expected a refusal");
 }
 
-test("requireVersionFree reads the parent's other live Workflows by name and version, and passes when none has other YAML", async () => {
+test("requireVersionFree reads the parent's other live Workflows, stored or being created, by name and version", async () => {
     const { store, queries } = storeAnswering([]);
     await store.requireVersionFree(CHECK);
     assert.equal(queries.length, 1);
     assert.deepEqual(queries[0].params, ["chat", "wf-new", "monitor", "1.1.3", "y-new", "i-new"]);
     const sql = queries[0].sql.replace(/\s+/g, " ");
     for (const part of [
+        // A Workflow with a definition: its published or current revision.
         `FROM "cms".workflow_definitions d`, `JOIN "cms".workflow_revisions r`, "r.revision = COALESCE(d.published_revision, d.current_revision)",
         `JOIN "cms".sessions s ON s.session_id = d.workflow_session_id`, "d.parent_session_id = $1 AND d.workflow_session_id <> $2",
         "d.state <> 'deleted' AND s.deleted_at IS NULL", "r.name = $3 AND r.semver = $4 AND r.yaml_sha256 <> $5",
         "(r.ir_sha256 IS NULL OR $6::text IS NULL OR r.ir_sha256 <> $6::text)",
+        // A Workflow claimed but not stored yet: what its claim recorded.
+        "UNION ALL", "SELECT s.session_id, 'claimed', NULL, s.created_at",
+        "s.parent_session_id = $1 AND s.session_id <> $2 AND s.session_kind = 'workflow' AND s.deleted_at IS NULL",
+        `NOT EXISTS (SELECT 1 FROM "cms".workflow_definitions d WHERE d.workflow_session_id = s.session_id)`,
+        "s.creation_config -> 'workflowV2' ->> 'name' = $3 AND s.creation_config -> 'workflowV2' ->> 'version' = $4",
+        "s.creation_config -> 'workflowV2' ->> 'yamlSha256' <> $5",
     ]) {
         assert.ok(sql.includes(part), `the sibling read has: ${part}`);
     }
-    // No lock: the read takes none.
+    // The read itself takes no lock: requireVersionFreeLocked takes it first, on the same transaction.
     assert.ok(!/FOR (NO KEY )?UPDATE|FOR SHARE/.test(sql));
+});
+
+test("requireVersionFreeLocked locks (schema, session, name) for the transaction, then reads on the same client", async () => {
+    const { store } = storeAnswering([]);
+    const calls = [];
+    const client = { query: async (sql, params) => { calls.push({ sql: sql.replace(/\s+/g, " "), params }); return { rows: [] }; } };
+    await store.requireVersionFreeLocked(client, CHECK);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].sql, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))");
+    assert.deepEqual(calls[0].params, [`cms:workflow-version:${JSON.stringify(["chat", "monitor"])}`]);
+    assert.match(calls[1].sql, /UNION ALL/);
 });
 
 test("a published Workflow with the version and other YAML refuses it: raise the version and spawn the change as a draft", async () => {
@@ -68,18 +88,34 @@ test("a draft with the version and other YAML refuses it: change that draft with
         + "Nothing was saved: the draft keeps its revision.");
 });
 
-/** A host for createWorkflowV2 whose claim fails with a marker: the guard's decision is all that is observed. */
+test("a Workflow being created with the version and other YAML refuses it: raise the version, or wait and change it as a draft", async () => {
+    const { store } = storeAnswering([{ workflow_session_id: "wf-claimed", state: "claimed", revision: null }]);
+    const error = await refusal(store.requireVersionFree(CHECK));
+    assert.equal(error.code, "SEMVER_REUSED");
+    assert.equal(error.message, "monitor 1.1.3 is being created as Workflow wf-claimed of this session with other YAML. Raise metadata.version, "
+        + "or wait for it and change it as a draft. Nothing was saved.");
+    assert.deepEqual(error.details, { name: "monitor", version: "1.1.3", workflowId: "wf-claimed", state: "claimed", revision: null });
+});
+
+/**
+ * A host for createWorkflowV2 whose claim runs `afterClaim` on a fake client (as the catalog does inside its transaction),
+ * then fails with a marker: the guard's decision and the claim's record are all that is observed.
+ */
 function createHost({ definition = null, guard = async () => {} } = {}) {
-    const calls = { guard: [], claims: 0 };
+    const calls = { guard: [], claims: [], client: { fake: "client" } };
     const host = {
         catalog: {
             getSession: async () => null,
             getSessionCreationConfig: async () => null,
-            createWorkflowSessionV2: async () => { calls.claims += 1; throw new Error("claim reached"); },
+            createWorkflowSessionV2: async (id, opts) => {
+                calls.claims.push({ id, opts });
+                if (opts.afterClaim) await opts.afterClaim(calls.client);
+                throw new Error("claim reached");
+            },
         },
         store: {
             readDefinition: async () => definition,
-            requireVersionFree: async input => { calls.guard.push(input); await guard(input); },
+            requireVersionFreeLocked: async (client, input) => { calls.guard.push({ client, input }); await guard(input); },
         },
         duroxideClient: {},
     };
@@ -89,19 +125,22 @@ function createHost({ definition = null, guard = async () => {} } = {}) {
 const request = (extra = {}) => ({ workflowSessionId: "wf-new", parentSessionId: "chat", yaml: YAML("1.1.3"), actor: { kind: "agent", sessionId: "chat" },
     operationId: "spawn:call:1", ...extra });
 
-test("createWorkflowV2 checks the version before the claim when asked, and a refusal writes nothing", async () => {
+test("createWorkflowV2 checks the version inside the claim, on its transaction, when asked; the claim records the version", async () => {
     const compiled = compileWorkflowV2(YAML("1.1.3"));
     const refused = createHost({ guard: async () => { throw new WorkflowStoreError("SEMVER_REUSED", "reused"); } });
     const error = await refusal(createWorkflowV2(refused.host, request({ refuseVersionReuse: true })));
-    assert.equal(error.code, "SEMVER_REUSED");
-    assert.equal(refused.calls.claims, 0);
-    assert.deepEqual(refused.calls.guard, [{ parentSessionId: "chat", workflowSessionId: "wf-new", name: "monitor", semver: "1.1.3",
-        yamlSha256: compiled.yamlSha256, irSha256: compiled.irSha256, nothingSaved: "Nothing was saved." }]);
+    assert.equal(error.code, "SEMVER_REUSED", "the claim's transaction throws it, so the claim is rolled back");
+    assert.equal(refused.calls.claims.length, 1);
+    assert.equal(refused.calls.guard[0].client, refused.calls.client, "on the claim's own client");
+    assert.deepEqual(refused.calls.guard[0].input, { parentSessionId: "chat", workflowSessionId: "wf-new", name: "monitor", semver: "1.1.3",
+        yamlSha256: compiled.yamlSha256, irSha256: compiled.irSha256, nothingSaved: "Nothing was saved." });
+    // What a concurrent creation's check reads until the definition is stored.
+    assert.deepEqual(refused.calls.claims[0].opts.creationConfig.workflowV2, { ...refused.calls.claims[0].opts.creationConfig.workflowV2,
+        name: "monitor", version: "1.1.3", yamlSha256: compiled.yamlSha256, irSha256: compiled.irSha256 });
 
     const passed = createHost();
     assert.equal((await refusal(createWorkflowV2(passed.host, request({ refuseVersionReuse: true })))).message, "claim reached");
     assert.equal(passed.calls.guard.length, 1);
-    assert.equal(passed.calls.claims, 1);
 });
 
 test("createWorkflowV2 skips the check unless asked, without a parent, and for a creation whose definition is stored (a replay)", async () => {
@@ -113,7 +152,34 @@ test("createWorkflowV2 skips the check unless asked, without a parent, and for a
         const { host, calls } = createHost(options);
         assert.equal((await refusal(createWorkflowV2(host, request(extra)))).message, "claim reached", label);
         assert.equal(calls.guard.length, 0, label);
+        assert.equal(calls.claims[0].opts.afterClaim, undefined, label);
     }
+});
+
+test("a replay of a creation that named no owner is compared with the owner it inherited from its parent", async () => {
+    const compiled = compileWorkflowV2(YAML("1.1.3"));
+    const owner = { provider: "test", subject: "ada" };
+    // The stored claim of the same request (its owner inherited from "chat"), so the replay continues to the definition.
+    const marker = createHost();
+    await refusal(createWorkflowV2(marker.host, request({ refuseVersionReuse: true })));
+    const stored = marker.calls.claims[0].opts.creationConfig;
+    const replayHost = (parentOwner) => ({
+        catalog: {
+            getSession: async id => (id === "wf-new" ? { sessionKind: "workflow", parentSessionId: "chat", deletedAt: null, owner }
+                : id === "chat" ? { sessionId: "chat", owner: parentOwner } : null),
+            getSessionCreationConfig: async () => stored,
+            createWorkflowSessionV2: async () => ({ created: false }),
+        },
+        store: {
+            readDefinition: async () => null,
+            createDefinition: async () => { throw new Error("definition reached"); },
+        },
+        duroxideClient: {},
+    });
+    assert.equal((await refusal(createWorkflowV2(replayHost(owner), request({ refuseVersionReuse: true })))).message, "definition reached");
+    const other = await refusal(createWorkflowV2(replayHost({ provider: "test", subject: "bob" }), request({ refuseVersionReuse: true })));
+    assert.equal(other.code, "WORKFLOW_EXISTS", "the parent's owner changed: not the same request");
+    assert.equal(compiled.valid, true);
 });
 
 test("spawn_workflow asks for the check and answers SEMVER_REUSED in its coded JSON", async () => {
@@ -128,7 +194,7 @@ test("spawn_workflow asks for the check and answers SEMVER_REUSED in its coded J
     assert.match(answer.error.message, /^monitor 1\.1\.3 is already Workflow wf-old/);
     assert.deepEqual(answer.error.details, { name: "monitor", version: "1.1.3", workflowId: "wf-old", state: "published", revision: 1 });
     assert.equal(calls.guard.length, 1);
-    assert.equal(calls.claims, 0);
+    assert.equal(calls.claims.length, 1, "refused inside the claim, which rolls back");
 });
 
 test("update_workflow replace_definition asks the store to refuse a reused version", async () => {

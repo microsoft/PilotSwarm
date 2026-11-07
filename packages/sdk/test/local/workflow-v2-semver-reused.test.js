@@ -102,4 +102,42 @@ describe("workflow v2: one name and version is one definition among a session's 
             await catalog.close();
         }
     });
+
+    // The version check runs inside the claim's transaction under a lock on (parent, name): two creations at the same moment
+    // are serialized, and the later one sees the earlier one's claim (its name, version and hashes) or its definition. Without
+    // the lock both checks could read before either claim committed, and both would pass.
+    it("two creations at the same moment: other YAML, exactly one is created and the other is refused, binding nothing; the same YAML, both", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        try {
+            const host = { catalog, store: catalog.workflowStore(), duroxideClient: {} };
+            const spawn = (chat, id, yaml, operationId = `create-${id}`) => createWorkflowV2(host, { workflowSessionId: id, parentSessionId: chat, owner: PERSON,
+                yaml, actor: ACTOR, operationId, publish: true, refuseVersionReuse: true });
+            for (let round = 0; round < 5; round += 1) {
+                const chat = randomUUID();
+                await catalog.createSession(chat, { owner: PERSON });
+                const ids = [randomUUID(), randomUUID()];
+                const yamls = [YAML("2.0.0", 30), YAML("2.0.0", 45)];
+                const results = await Promise.allSettled([spawn(chat, ids[0], yamls[0]), spawn(chat, ids[1], yamls[1])]);
+                const won = results.findIndex(result => result.status === "fulfilled");
+                const lost = results.findIndex(result => result.status === "rejected");
+                expect(results.map(result => result.status).sort(), `round ${round}: ${JSON.stringify(results.map(result => result.reason?.message ?? null))}`)
+                    .toEqual(["fulfilled", "rejected"]);
+                expect(results[lost].reason.code).toBe("SEMVER_REUSED");
+                expect(results[lost].reason.details).toMatchObject({ name: "hacker-news-database-scan", version: "2.0.0", workflowId: ids[won] });
+                // The refused one bound nothing: no row, no definition, and its corrected request may use the same id.
+                expect(await catalog.getSession(ids[lost])).toBeNull();
+                expect(await host.store.readDefinition(ids[lost])).toBeNull();
+                const corrected = await spawn(chat, ids[lost], YAML("2.0.1", 45), `corrected-${ids[lost]}`);
+                expect(corrected.receipt).toMatchObject({ state: "published", revision: 1 });
+                // The winner's YAML twice at the same moment: more Workflows of the same definition, both created.
+                const same = [randomUUID(), randomUUID()];
+                const both = await Promise.allSettled(same.map(id => spawn(chat, id, yamls[won])));
+                expect(both.map(result => result.status), JSON.stringify(both.map(result => result.reason?.message ?? null))).toEqual(["fulfilled", "fulfilled"]);
+            }
+        } finally {
+            await catalog.close();
+        }
+    });
 });

@@ -1200,6 +1200,11 @@ export interface SessionCatalog {
         parentSessionId: string | null;
         owner: SessionOwnerInfo | null;
         creationConfig: Record<string, unknown>;
+        /**
+         * Run inside the claim's transaction once the row is claimed, before it commits (SEMVER_REUSED: the version
+         * check under its lock). A throw rolls the claim back, so a refused request binds no row and no key.
+         */
+        afterClaim?: (client: import("pg").PoolClient) => Promise<void>;
     }): Promise<{ created: boolean }>;
 
     /** Stamp a session as a service session post-create (migration 0037). */
@@ -1791,6 +1796,7 @@ export class PgSessionCatalog implements SessionCatalog {
         parentSessionId: string | null;
         owner: SessionOwnerInfo | null;
         creationConfig: Record<string, unknown>;
+        afterClaim?: (client: import("pg").PoolClient) => Promise<void>;
     }): Promise<{ created: boolean }> {
         const client = await this.pool.connect();
         let released = false;
@@ -1804,6 +1810,8 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query("ROLLBACK");
                 return { created: false };
             }
+            // A throw here is caught below: the claim is rolled back.
+            if (opts.afterClaim) await opts.afterClaim(client);
             if (opts.owner?.provider && opts.owner?.subject) {
                 await client.query(
                     `SELECT ${this.sql.fn.setSessionOwner}($1, $2, $3, $4, $5)`,
