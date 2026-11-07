@@ -106,3 +106,60 @@ test("two fingers sideways on an unmagnified canvas go back, like everywhere els
     await expect(page.locator(".ps-mobile-chat-pane textarea")).toBeVisible();
     expect(await frameEl.evaluate((el) => el.style.transform)).toBe("");
 });
+
+// Review fixes: a canvas page can post any message it likes, so the portal
+// only takes a two-finger swipe from the canvas the person is looking at, as
+// one gesture, and never while a dialog is open.
+async function openCanvasWithHistory(page) {
+    await page.route("**/api/v1/**", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname.endsWith("/bootstrap")) return route.fulfill({ json: { ok: true, result: { auth: { principal: { provider: "none", subject: "test", email: "test@example.com" }, authorization: { allowed: true, role: "user" } } } } });
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
+            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: PAGE.length, name: "pinch-test" } }] } });
+        }
+        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) return route.fulfill({ contentType: "text/html", body: PAGE });
+        return route.fallback();
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+    await page.waitForFunction(() => Object.keys(sessionStorage).some((key) => key.startsWith("pilotswarm.view-history.v1:")));
+    const diagnostics = page.locator('.ps-toolbar.is-mobile button[aria-label^="Diagnostics"]').first();
+    await diagnostics.click();
+    await expect(diagnostics).toHaveAttribute("aria-label", "Diagnostics — back to the chat");
+    await page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first().click();
+    await expect(page.frameLocator(".ps-mobile-canvas-layer iframe.ps-html-preview-frame:not(.is-staging)").locator("h1")).toHaveText("Canvas");
+    const frame = page.frames().find((f) => f !== page.mainFrame() && f.url() !== "about:blank");
+    return { diagnostics, frame };
+}
+// What a page inside the canvas can send without any fingers on the screen.
+const forgedSwipe = (frame) => frame.evaluate(async () => {
+    const post = (m) => parent.postMessage({ type: "canvas-pinch", t: performance.timeOrigin + performance.now(), ...m }, "*");
+    post({ phase: "start", x: 60, y: 300, d: 80 });
+    for (let i = 1; i <= 12; i++) { await new Promise((r) => setTimeout(r, 16)); post({ phase: "move", x: 60 + i * 20, y: 300, d: 80 }); }
+    post({ phase: "end" });
+});
+
+test("a hidden canvas cannot move the portal back or forward", async ({ page }) => {
+    const { frame } = await openCanvasWithHistory(page);
+    const layer = page.locator(".ps-mobile-canvas-layer");
+    await page.locator('.ps-toolbar.is-mobile button[aria-label*="anvas"]').first().click();
+    await expect(layer).toHaveClass(/is-hidden/);
+    const before = await page.evaluate(() => JSON.stringify(Object.entries(sessionStorage).filter(([k]) => k.startsWith("pilotswarm.view-history.v1:"))));
+    await forgedSwipe(frame);
+    await page.waitForTimeout(600);
+    expect(await page.evaluate(() => JSON.stringify(Object.entries(sessionStorage).filter(([k]) => k.startsWith("pilotswarm.view-history.v1:"))))).toBe(before);
+    await expect(layer).toHaveClass(/is-hidden/);
+});
+
+test("no two-finger navigation while a dialog is open", async ({ page }) => {
+    const { frame } = await openCanvasWithHistory(page);
+    const layer = page.locator(".ps-mobile-canvas-layer");
+    await page.evaluate(() => { const d = document.createElement("div"); d.className = "ps-modal-backdrop"; d.id = "test-dialog"; document.body.appendChild(d); });
+    await forgedSwipe(frame);
+    await page.waitForTimeout(600);
+    await expect(layer).not.toHaveClass(/is-hidden/);
+    await page.evaluate(() => document.getElementById("test-dialog").remove());
+    // With the dialog gone, the same swipe on the visible canvas does go back.
+    await forgedSwipe(frame);
+    await expect(layer).toHaveClass(/is-hidden/);
+});
