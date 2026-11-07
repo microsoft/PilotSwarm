@@ -62,6 +62,11 @@ test("a phone's full-screen artifact preview is a stop of its own, and older ent
     const preview = { ...view(1), mobilePane: "workspace", artifactSessionId: "1", artifactFilename: "report.html", artifactFullscreen: true };
     assert.equal(h.visit(preview), true, "opening the preview is a visit");
     assert.notEqual(viewKey(cleanView(preview)), viewKey(cleanView({ ...preview, artifactFullscreen: false })));
+    // The preview covers the screen under it: over chat or over the Files
+    // tab, it is the same place, so a deep link landing on it adds no stop.
+    assert.equal(viewKey(cleanView(preview)), viewKey(cleanView({ ...preview, mobilePane: "inspector" })));
+    assert.equal(h.visit({ ...preview, mobilePane: "inspector" }), false, "the same preview refreshes its stop");
+    assert.equal(h.index, 1);
     const restored = createViewHistory(h.serialize());
     assert.equal(restored.current.artifactFullscreen, true);
     assert.equal(restored.destination(-1).artifactFullscreen, false);

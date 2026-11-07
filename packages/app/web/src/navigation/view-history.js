@@ -24,7 +24,10 @@ export function viewKey(view) {
     if (view.mode !== "workspace") return view.mode;
     return JSON.stringify([view.mode, view.sessionId, view.canvasOpen,
         view.canvasOpen ? view.canvasSlot : null, view.canvasMaximized, view.canvasZen,
-        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename, view.mobilePane || null,
+        view.diagnosticsOpen, view.artifactSessionId, view.artifactFilename,
+        // A phone's full-screen preview covers the screen under it: the same
+        // preview over chat or over the Files tab is one place.
+        view.artifactFullscreen === true ? null : view.mobilePane || null,
         view.artifactFullscreen === true]);
 }
 export function createViewHistory(saved) {
