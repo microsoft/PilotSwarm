@@ -11058,6 +11058,11 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
+// The narrowest the toolbar's left flank gets: room for the full-screen
+// canvas controls (pane tabs, slot picker, zoom, zen, restore) at their
+// smallest, so they never overlap the session controls.
+const TOOLBAR_LEFT_FLANK_MIN_PX = 360;
+
 function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", mobileDiagnosticsPane = "inspector", onSelectMobilePane = null, mobileSessionsOpen = false, onToggleMobileSessions = null }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
@@ -11068,6 +11073,47 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         // the inline strip; there is no header room for it on a phone.
         setHeaderSlot(!mobile ? document.getElementById("ps-header-toolbar-slot") : null);
     }, [mobile]);
+    // The session controls sit in the middle of the SCREEN, not just of the
+    // toolbar: the brand on the left and the account controls on the right
+    // differ in width, so a toolbar centred between them is off-centre. The
+    // two flanks get weights that put the middle group on the header's centre;
+    // each flank still keeps room for its own content.
+    const toolbarRef = React.useRef(null);
+    React.useEffect(() => {
+        const bar = toolbarRef.current;
+        if (mobile || !headerSlot || !bar || typeof ResizeObserver === "undefined") return undefined;
+        const header = bar.closest(".portal-header");
+        let frame = 0;
+        const place = () => {
+            frame = 0;
+            const nav = bar.querySelector(":scope > .ps-toolbar-navigation");
+            const left = bar.querySelector(":scope > .ps-toolbar-side.is-left");
+            const right = bar.querySelector(":scope > .ps-toolbar-side.is-right");
+            if (!header || !nav || !left || !right) return;
+            const h = header.getBoundingClientRect();
+            const n = nav.getBoundingClientRect();
+            // Weights are the flank widths in px: centring moves width from
+            // one flank to the other. Only geometry decides them, never the
+            // flanks' content, so Back / Forward stay put between screens.
+            // The left flank keeps room for the full-screen canvas controls.
+            // The brand is wider than the space right of the toolbar, so
+            // centring only ever moves width to the right flank: it never
+            // gets less than an even split would give it.
+            const lw = left.getBoundingClientRect().width, rw = right.getBoundingClientRect().width;
+            const total = lw + rw;
+            const wanted = lw + (h.left + h.width / 2) - (n.left + n.width / 2);
+            const l = Math.min(Math.max(TOOLBAR_LEFT_FLANK_MIN_PX, wanted), total / 2);
+            const r = Math.max(1, total - l);
+            if (Math.abs(l - lw) < 1) return;
+            bar.style.setProperty("--ps-toolbar-left", `${Math.round(l)}fr`);
+            bar.style.setProperty("--ps-toolbar-right", `${Math.round(r)}fr`);
+        };
+        const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
+        const observer = new ResizeObserver(schedule);
+        for (const el of [bar, header, ...bar.children]) if (el) observer.observe(el);
+        schedule();
+        return () => { observer.disconnect(); if (frame) cancelAnimationFrame(frame); };
+    }, [mobile, headerSlot]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
     // The same panel is Settings for a plain user — their own providers,
     // default and packages — and the Admin Console for an admin, who also
@@ -11328,7 +11374,7 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         ...pick(["theme"]),
     ];
 
-    const toolbar = React.createElement("div", { className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
+    const toolbar = React.createElement("div", { ref: toolbarRef, className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
         React.createElement("div", { className: "ps-toolbar-side is-left" },
             moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : null,
             // Canvas controls retain their state in CanvasPane. Their portal

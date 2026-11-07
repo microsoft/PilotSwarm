@@ -9202,7 +9202,9 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    squeezed its action buttons out of view — measured, not hypothetical. */
 .ps-toolbar:not(.is-mobile) {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  /* Flank weights are set from the header's geometry (Toolbar), so the
+     middle group sits on the screen's centre; 1fr each without them. */
+  grid-template-columns: var(--ps-toolbar-left, 1fr) auto var(--ps-toolbar-right, 1fr);
   align-items: center;
   width: 100%;
 }
@@ -9236,7 +9238,10 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    canvas name gives way first (the picker names the canvas too), then the
    picker's drop-down, down to 40px. Its arrows never shrink, so nothing
    slides under the zoom control or out of the header's left side. */
-.ps-toolbar-canvas-slot .ps-toolbar-canvas-rev { flex: 0 1000 auto; }
+.ps-toolbar-canvas-slot .ps-toolbar-canvas-rev { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The controls stay inside their flank: the flank is sized to keep Back /
+   Forward on the screen's centre, and the controls shrink to fit it. */
+.ps-toolbar-side.is-left > .ps-toolbar-canvas-slot { min-width: 0; max-width: 100%; }
 .ps-toolbar-canvas-slot .ps-canvas-slot-controls { flex: 0 1 auto; min-width: 96px; /* two arrows and a 40px drop-down */ }
 .ps-toolbar-canvas-slot .ps-canvas-slot-controls > button { flex-shrink: 0; }
 .ps-toolbar-canvas-slot .ps-canvas-slot-select { flex: 0 1 96px; min-width: 40px; max-width: 96px; }
@@ -10705,7 +10710,9 @@ textarea.ps-link-input {
   .ps-toolbar:not(.is-mobile) {
     --ps-header-button: 44px;
     --ps-header-pair: 94px;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    /* The flank weights put Back / Forward on the screen's centre (Toolbar
+       measures the header); equal flanks until they are set. */
+    grid-template-columns: minmax(0, var(--ps-toolbar-left, 1fr)) auto minmax(0, var(--ps-toolbar-right, 1fr));
     column-gap: 12px;
   }
   .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: 0; min-height: 44px; }
