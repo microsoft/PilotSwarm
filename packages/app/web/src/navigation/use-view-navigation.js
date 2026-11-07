@@ -55,13 +55,27 @@ export function useViewNavigation(controller, moa) {
         const key = `pilotswarm.view-history.v1:${scope}`;
         let saved; try { saved = sessionStorage.getItem(key); } catch {}
         const history = createViewHistory(saved);
-        // On a reload the deep-linked session is still loading: a workspace
-        // with no session yet is not a place, and recording it would push the
-        // saved history one step back. The next gesture records the real view.
+        // On a reload the deep-linked session may still be loading, and the
+        // workspace briefly shows no session or the one the profile last
+        // saved. Neither is a place: recording it would push the saved
+        // history a step on. Record the view once the linked session shows.
         const first = capture(controller, latest.current);
-        if (!history.current || first.mode !== "workspace" || first.sessionId) history.visit(first);
+        const intent = controller.getState().sessions?.navigationIntent;
+        const linked = intent && intent.status !== "failed" ? intent.sessionId : null;
+        const transient = Boolean(history.current) && first.mode === "workspace"
+            && (!first.sessionId || (linked && first.sessionId !== linked));
+        let unsubscribe = null;
+        if (!transient) history.visit(first);
+        else if (linked) {
+            unsubscribe = controller.subscribe(() => {
+                if (!data.current || data.current.history !== history) return;
+                if (controller.getState().sessions?.activeSessionId !== linked) return;
+                unsubscribe?.(); unsubscribe = null;
+                history.visit(capture(controller, latest.current)); publish();
+            });
+        }
         data.current = { key, history }; publish();
-        return () => { generation.current++; data.current = null; };
+        return () => { unsubscribe?.(); generation.current++; data.current = null; };
     }, [controller, scope, publish]);
 
     React.useEffect(() => {
