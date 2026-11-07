@@ -262,8 +262,11 @@ for (const [mode, isAdmin] of [["mine", false], ["mine", true], ["cluster", true
         assert.match(row, new RegExp(`Always on\\. ${NOTICE.replace(/\./g, "\\.")}`));
         assert.doesNotMatch(row, /Cluster setting|Personal settings|Your choice|On for me|Off for me|Save changes|Discard changes|Preview default policy|Settings delivery|Saved setting/);
         assert.doesNotMatch(row, /requires Native Copilot tasks|configured for native tasks/);
-        // The normal flag beside it keeps its controls.
-        assert.match(html, new RegExp(`data-feature-key="${KEY.replace(/\./g, "\\.")}"`));
+        // The normal flag beside it keeps its normal row (the mobile row has no data-feature-key).
+        const normal = html.slice(html.indexOf(">Model event logging<"));
+        assert.ok(html.includes(">Model event logging<"), "the normal flag is rendered");
+        assert.doesNotMatch(normal.slice(0, normal.indexOf("</section>")), /data-always-on|Always on\./);
+        if (!mobile) assert.match(html, new RegExp(`data-feature-key="${KEY.replace(/\./g, "\\.")}"`));
     });
 }
 
