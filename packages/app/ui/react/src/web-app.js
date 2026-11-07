@@ -3280,7 +3280,74 @@ const CANVAS_PINCH_MAX = 5;
 // The "two fingers to move" hint shows once per page load, on the first zoom.
 let canvasPanHintShown = false;
 
-function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false) {
+// A phone's HTML artifact preview reports two fingers to the portal, so a
+// two-finger swipe over the page moves Back and Forward as it does
+// everywhere else. Unlike the canvas bridge it changes nothing in the page:
+// the browser's own pinch and scrolling stay as they were, and a page that
+// handles two fingers itself (it calls preventDefault) keeps them.
+const ARTIFACT_TOUCH_BRIDGE = `<script>(function(){var on=false;function at(e){var a=e.touches[0],b=e.touches[1];return{x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)}}function post(m){try{parent.postMessage(m,'*')}catch(x){}}addEventListener('touchstart',function(e){if(e.touches.length===2&&!e.defaultPrevented){on=true;var p=at(e);post({type:'artifact-touch',phase:'start',x:p.x,y:p.y,d:p.d})}else if(on&&e.touches.length>2){on=false;post({type:'artifact-touch',phase:'cancel'})}},{passive:true});addEventListener('touchmove',function(e){if(!on||e.touches.length!==2||e.defaultPrevented)return;var p=at(e);post({type:'artifact-touch',phase:'move',x:p.x,y:p.y,d:p.d})},{passive:true});function end(e){if(on&&e.touches.length<2){on=false;post({type:'artifact-touch',phase:'end'})}}addEventListener('touchend',end,{passive:true});addEventListener('touchcancel',function(){if(on){on=false;post({type:'artifact-touch',phase:'cancel'})}},{passive:true})})();</script>`;
+
+/**
+ * Two fingers reported by a phone's HTML artifact preview frame become the
+ * portal's two-finger swipe. Only the frame's own messages count, a gesture
+ * is classified once (a pinch or a scroll is left to the page), and leaving
+ * the preview cancels a swipe in progress.
+ */
+function useArtifactTouchSwipe(enabled, frameHostRef) {
+    React.useEffect(() => {
+        if (!enabled || typeof window === "undefined") return undefined;
+        let gesture = null;
+        const toPage = (frame, x, y) => {
+            const rect = frame.getBoundingClientRect();
+            // The frame may be scaled to fit the pane or zoomed: its client
+            // coordinates are in its own layout pixels.
+            const scale = frame.offsetWidth > 0 ? rect.width / frame.offsetWidth : 1;
+            return { x: rect.left + x * scale, y: rect.top + y * scale, scale };
+        };
+        const swipe = (phase, extra = {}) => window.dispatchEvent(new CustomEvent(TWO_FINGER_SWIPE_EVENT, { detail: { phase, gesture: gesture?.id, surface: frameHostRef.current, ...extra } }));
+        const onMessage = (event) => {
+            const payload = event.data;
+            if (!payload || payload.type !== "artifact-touch") return;
+            const host = frameHostRef.current;
+            const frame = host ? [...host.querySelectorAll("iframe.ps-html-preview-frame:not(.is-staging)")].find((el) => el.contentWindow === event.source) : null;
+            if (!frame) return;
+            if (payload.phase === "start") {
+                if (gesture?.mode === "swipe") swipe("cancel");
+                gesture = null;
+                if (!["x", "y", "d"].every((key) => Number.isFinite(Number(payload[key])))) return;
+                const p = toPage(frame, Number(payload.x), Number(payload.y));
+                const box = frame.getBoundingClientRect();
+                if (p.x < box.left || p.x > box.right || p.y < box.top || p.y > box.bottom) return;
+                gesture = { id: {}, mode: null, origin: { x: p.x, y: p.y, d: Number(payload.d) * p.scale } };
+                return;
+            }
+            if (!gesture) return;
+            if (payload.phase === "move") {
+                if (!["x", "y", "d"].every((key) => Number.isFinite(Number(payload[key])))) return;
+                const p = toPage(frame, Number(payload.x), Number(payload.y));
+                if (!gesture.mode) {
+                    const kind = classifyTwoFinger(p.x - gesture.origin.x, p.y - gesture.origin.y, Number(payload.d) * p.scale - gesture.origin.d);
+                    if (!kind) return;
+                    if (kind !== "swipe") { gesture = null; return; }
+                    gesture.mode = "swipe";
+                    swipe("start", { x: gesture.origin.x, y: gesture.origin.y });
+                }
+                swipe("move", { x: p.x, y: p.y });
+                return;
+            }
+            if (gesture.mode === "swipe") swipe(payload.phase === "end" ? "end" : "cancel");
+            gesture = null;
+        };
+        window.addEventListener("message", onMessage);
+        return () => {
+            window.removeEventListener("message", onMessage);
+            if (gesture?.mode === "swipe") swipe("cancel");
+            gesture = null;
+        };
+    }, [enabled, frameHostRef]);
+}
+
+function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false, touchBridge = false) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") {
         return Promise.reject(new Error("artifact download unavailable"));
@@ -3295,9 +3362,11 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             const bytes = await response.arrayBuffer();
             // Only MoA canvases opt into panel navigation; ordinary canvases
             // retain native Tab behavior. A canvas gets the link guard; an
-            // artifact preview keeps its exact document bytes.
+            // artifact preview keeps its exact document bytes, except that a
+            // phone's preview reports two fingers for Back and Forward.
             const bridge = (panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "")
-                + (linkGuard ? CANVAS_LINK_GUARD + CANVAS_PINCH_BRIDGE : "");
+                + (linkGuard ? CANVAS_LINK_GUARD + CANVAS_PINCH_BRIDGE : "")
+                + (touchBridge ? ARTIFACT_TOUCH_BRIDGE : "");
             let parts = [bytes];
             if (bridge) {
                 const html = new TextDecoder().decode(bytes);
@@ -3351,6 +3420,10 @@ function HtmlArtifactPreviewPanel({
     // reloaded, and reloading would cost the reader their scroll position on
     // something as ordinary as rotating the phone.
     const frames = useHtmlPreviewReload(frameHostRef, mode === "rendered" && !fitActive, `${sessionId}/${filename}`, zoom);
+    // On a phone the page reports two fingers, so Back and Forward work over
+    // it too. Desktop previews keep their exact bytes.
+    const phone = useMediaQuery(MOBILE_MEDIA_QUERY);
+    useArtifactTouchSwipe(phone && mode === "rendered", frameHostRef);
 
     // The object URL is owned by this component — created on mount, revoked on
     // unmount or artifact change. It deliberately does not share the thumbnail
@@ -3362,7 +3435,7 @@ function HtmlArtifactPreviewPanel({
         if (mode !== "rendered" || !controller || !sessionId || !filename) return undefined;
         let cancelled = false;
         let created = null;
-        fetchArtifactHtmlObjectUrl(controller, sessionId, filename)
+        fetchArtifactHtmlObjectUrl(controller, sessionId, filename, false, false, phone)
             .then((url) => {
                 created = url;
                 if (cancelled) {
@@ -3376,7 +3449,7 @@ function HtmlArtifactPreviewPanel({
             cancelled = true;
             if (created) URL.revokeObjectURL(created);
         };
-    }, [controller, sessionId, filename, mode]);
+    }, [controller, sessionId, filename, mode, phone]);
 
     const deepLink = buildArtifactLinkUrl(sessionId, filename);
     const actions = chromeless ? null : React.createElement(React.Fragment, null,

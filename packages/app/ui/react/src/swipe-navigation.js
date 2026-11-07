@@ -208,13 +208,16 @@ export function useSwipeNavigation(ref, { enabled = true, navigation = null } = 
         // object; anything that is not the gesture it started is ignored, and
         // a canvas never interrupts fingers already on the page.
         const onFrameSwipe = (event) => {
-            const { phase, x, y, gesture: source } = event.detail || {};
+            const { phase, x, y, gesture: source, surface: frameSurface } = event.detail || {};
             if (!source || typeof source !== "object") return;
             if (phase === "start") {
                 if (gesture && !gesture.source) return;
                 if (dialogOpen()) return;
                 if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-                touched = null;
+                // A frame inside the full-screen artifact preview moves the
+                // preview, as fingers on its own bar do.
+                const overlay = frameSurface instanceof Element ? surfaceFor(frameSurface) : null;
+                touched = overlay && overlay !== root ? overlay : null;
                 begin(x, y, 0, true, source);
                 return;
             }
