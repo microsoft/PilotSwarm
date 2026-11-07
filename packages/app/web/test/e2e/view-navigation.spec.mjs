@@ -23,7 +23,12 @@ async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPa
         await page.route('**/api/auth/me', route => route.fulfill({json:{ok:true,principal:{provider:'dev',subject:'test',displayName:persona.displayName,email:persona.email},authorization:{allowed:true,role:'user'}}}));
     }
     const errors = [];
-    page.on('pageerror', e => errors.push(e.message));
+    // When a test loads a new page, WebKit cancels the old page's requests
+    // still in flight and reports each one as a page error ("... due to access
+    // control checks."). That is the unloading page, not a fault in the new
+    // one, so only that exact message, for this stub's own API, is ignored.
+    const cancelledByNavigation = message => /due to access control checks\.$/.test(message) && message.includes(`${new URL(base).host}/api/`);
+    page.on('pageerror', e => { if (!cancelledByNavigation(e.message)) errors.push(e.message); });
     let settings = { themeId, touchScale, moa: normalizeMoa({ version:3, activeDashboardId:'ops', dashboards:[
         { id:'ops', name:'Operations', tree:{id:'one',type:'chat',sessionId:sid(1)}, focusedPanelId:'one' },
         { id:'review', name:'Review', tree:{id:reviewPanelId,type:'chat',sessionId:sid(2)}, focusedPanelId:reviewPanelId },
