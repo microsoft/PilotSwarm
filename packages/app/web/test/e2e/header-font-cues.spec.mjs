@@ -130,20 +130,21 @@ test("an empty Send has no cue, while an enabled tab ticks", async ({ page }) =>
 
 test("a transition from another session's running turn to an idle session does not chime", async ({ page }) => {
     let completed = false;
+    const activeTitle = "Foreground idle session";
     await page.route(url => /\/api\/v1\/sessions(?:\/[^/]+)?$/.test(url.pathname), async route => {
         if (route.request().method() !== "GET") return route.fallback();
         const response = await route.fetch();
         const json = await response.json();
         const update = session => session.sessionId === sid(1)
             ? { ...session, status: completed ? "idle" : "running", title: completed ? "Finished background turn" : session.title }
-            : session;
+            : session.sessionId === sid(0) ? { ...session, title: activeTitle } : session;
         if (json.result?.sessions) json.result.sessions = json.result.sessions.map(update);
         else if (json.result?.sessionId) json.result = update(json.result);
         return route.fulfill({ response, json });
     });
     await soundFixture(page);
+    await expect(page.locator(".ps-chat-panel .ps-panel-title").first()).toHaveText(activeTitle);
     const done = await cueNotes(page, "done");
-    const activeTitle = await page.locator(".ps-chat-panel .ps-panel-title").first().textContent();
     completed = true;
     await page.getByRole("button", { name: "Refresh session order", exact: true }).click();
     await expect(page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`)).toContainText("Finished background turn");
